@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "giteam",
+  "version": "0.1.0",
+  "identifier": "io.giteam.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "giteam",
+        "width": 1720,
+        "height": 980,
+        "minWidth": 1280,
+        "minHeight": 820,
+        "maximized": true,
+        "backgroundColor": "#1E1E1E"
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

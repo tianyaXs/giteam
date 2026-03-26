@@ -1,0 +1,57 @@
+# Handover
+
+Date: 2026-03-25
+
+## What is done
+
+- Architecture doc refined with non-duplication boundaries
+- Desktop scaffold landed with Tauri + React split
+- `git` and `entire` command bridge implemented in Rust command layer
+- Shared Rust command policy added:
+  - timeout
+  - stderr truncation
+  - commit SHA validation
+- SQLite persistence introduced at `.giteam/client.db`
+- Frontend storage moved from localStorage to SQLite-backed tauri commands
+- `entire explain` lightweight text parser added and wired into orchestrator
+- Command and storage layers now scoped by explicit `repoPath`
+- Finding-level review actions (`accept/dismiss/todo`) persisted in SQLite and wired to UI
+- Compile blockers reported during local run were fixed:
+  - tauri icon asset (RGBA PNG)
+  - `db_list_review_actions` type mismatch
+- Real timeline feature added:
+  - load recent commits
+  - select commit
+  - explain selected commit
+  - run review for selected commit
+- Repository-centric client flow added:
+  - import/remove repository
+  - left sidebar repository list
+  - per-repo branch list and commit list
+  - commit context panel and visible status messages
+- Dedicated debug repo created:
+  - `/Users/tianya/Documents/project/giteam/test`
+  - `entire enable --agent cursor --force` completed there
+- First-pass UI can:
+  - query `entire status --detailed`
+  - read `git rev-parse HEAD`
+  - execute scaffold review flow and persist records in SQLite
+
+## Where to continue
+
+1. `apps/desktop/src-tauri/src/commands/db.rs`
+2. `apps/desktop/src-tauri/src/commands/command_runner.rs`
+3. `apps/desktop/src/lib/reviewOrchestrator.ts`
+4. `apps/desktop/src/lib/explainParser.ts`
+5. `docs/worklog/2026-03-25-step-06-test-repo-debug.md`
+6. `docs/worklog/2026-03-25-step-07-repo-path-scoping.md`
+7. `docs/worklog/2026-03-25-step-08-review-actions-and-runtime-check.md`
+8. `docs/worklog/2026-03-25-step-09-compile-fixes.md`
+9. `docs/worklog/2026-03-25-step-10-timeline-feature.md`
+10. `docs/worklog/2026-03-25-step-11-repo-sidebar-and-branch-commit-context.md`
+
+## Suggested immediate tasks
+
+1. Add DB migration tracking and schema versioning
+2. Enrich commit rows with review status badges and filter controls
+3. Run full Tauri runtime UX validation in local GUI session

@@ -1,0 +1,15 @@
+{
+  "name": "giteam",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm --prefix apps/desktop run dev",
+    "build": "npm --prefix apps/desktop run build",
+    "tauri:dev": "npm --prefix apps/desktop run tauri:dev",
+    "tauri:build": "npm --prefix apps/desktop run tauri:build"
+  }
+}
+
