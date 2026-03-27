@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,11 +56,30 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn db_path() -> Result<PathBuf, String> {
-    let root = std::env::current_dir().map_err(|e| format!("cannot resolve current dir: {e}"))?;
-    let dir = root.join(".giteam");
+fn legacy_db_path() -> Option<PathBuf> {
+    let root = std::env::current_dir().ok()?;
+    Some(root.join(".giteam").join("client.db"))
+}
+
+fn db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let app_data = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("cannot resolve app data dir: {e}"))?;
+    let dir = app_data.join(".giteam");
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create .giteam directory: {e}"))?;
-    Ok(dir.join("client.db"))
+    let db = dir.join("client.db");
+
+    if !db.exists() {
+        if let Some(legacy) = legacy_db_path() {
+            if legacy.exists() {
+                fs::copy(&legacy, &db)
+                    .map_err(|e| format!("cannot migrate legacy database from {:?}: {e}", legacy))?;
+            }
+        }
+    }
+
+    Ok(db)
 }
 
 fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, String> {
@@ -76,8 +96,8 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Stri
     Ok(false)
 }
 
-fn open_db() -> Result<Connection, String> {
-    let path = db_path()?;
+fn open_db(app_handle: &AppHandle) -> Result<Connection, String> {
+    let path = db_path(app_handle)?;
     let conn = Connection::open(path).map_err(|e| format!("open sqlite failed: {e}"))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS review_records (
@@ -124,8 +144,8 @@ fn open_db() -> Result<Connection, String> {
 }
 
 #[tauri::command]
-pub fn db_save_review_record(record: ReviewRecord) -> Result<(), String> {
-    let conn = open_db()?;
+pub fn db_save_review_record(app_handle: AppHandle, record: ReviewRecord) -> Result<(), String> {
+    let conn = open_db(&app_handle)?;
     let findings_json =
         serde_json::to_string(&record.findings).map_err(|e| format!("serialize findings failed: {e}"))?;
 
@@ -150,8 +170,12 @@ pub fn db_save_review_record(record: ReviewRecord) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn db_list_review_records(repo_path: &str, limit: Option<i64>) -> Result<Vec<ReviewRecord>, String> {
-    let conn = open_db()?;
+pub fn db_list_review_records(
+    app_handle: AppHandle,
+    repo_path: &str,
+    limit: Option<i64>,
+) -> Result<Vec<ReviewRecord>, String> {
+    let conn = open_db(&app_handle)?;
     let safe_limit = limit.unwrap_or(100).clamp(1, 1000);
     let mut stmt = conn
         .prepare(
@@ -189,7 +213,7 @@ pub fn db_list_review_records(repo_path: &str, limit: Option<i64>) -> Result<Vec
 }
 
 #[tauri::command]
-pub fn db_add_repository(path: &str) -> Result<RepositoryEntry, String> {
+pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<RepositoryEntry, String> {
     if path.trim().is_empty() {
         return Err("repository path is empty".to_string());
     }
@@ -215,7 +239,7 @@ pub fn db_add_repository(path: &str) -> Result<RepositoryEntry, String> {
     let id = format!("repo-{}", now_millis());
     let added_at = chrono_like_now();
 
-    let conn = open_db()?;
+    let conn = open_db(&app_handle)?;
     conn.execute(
         "INSERT OR IGNORE INTO repositories (id, path, name, added_at, added_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -240,8 +264,8 @@ pub fn db_add_repository(path: &str) -> Result<RepositoryEntry, String> {
 }
 
 #[tauri::command]
-pub fn db_list_repositories() -> Result<Vec<RepositoryEntry>, String> {
-    let conn = open_db()?;
+pub fn db_list_repositories(app_handle: AppHandle) -> Result<Vec<RepositoryEntry>, String> {
+    let conn = open_db(&app_handle)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, path, name, added_at
@@ -267,8 +291,8 @@ pub fn db_list_repositories() -> Result<Vec<RepositoryEntry>, String> {
 }
 
 #[tauri::command]
-pub fn db_remove_repository(id: &str) -> Result<(), String> {
-    let conn = open_db()?;
+pub fn db_remove_repository(app_handle: AppHandle, id: &str) -> Result<(), String> {
+    let conn = open_db(&app_handle)?;
     conn.execute("DELETE FROM repositories WHERE id = ?1", params![id])
         .map_err(|e| format!("delete repository failed: {e}"))?;
     Ok(())
@@ -289,8 +313,8 @@ fn chrono_like_now() -> String {
 }
 
 #[tauri::command]
-pub fn db_save_review_action(action: ReviewAction) -> Result<(), String> {
-    let conn = open_db()?;
+pub fn db_save_review_action(app_handle: AppHandle, action: ReviewAction) -> Result<(), String> {
+    let conn = open_db(&app_handle)?;
     conn.execute(
         "INSERT OR REPLACE INTO review_actions
         (id, repo_path, review_id, finding_id, action, note, created_at, created_at_ms)
@@ -312,11 +336,12 @@ pub fn db_save_review_action(action: ReviewAction) -> Result<(), String> {
 
 #[tauri::command]
 pub fn db_list_review_actions(
+    app_handle: AppHandle,
     repo_path: &str,
     review_id: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<ReviewAction>, String> {
-    let conn = open_db()?;
+    let conn = open_db(&app_handle)?;
     let safe_limit = limit.unwrap_or(300).clamp(1, 2000);
     let (sql, bind_review) = if review_id.is_some() {
         (

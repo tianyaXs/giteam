@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { flushSync } from "react-dom";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
 import {
   gitPull,
@@ -54,6 +55,36 @@ type ParsedAgentContext = {
   files: string[];
   transcript: TranscriptMessage[];
 };
+type RuntimeDependencyStatus = {
+  name: string;
+  installed: boolean;
+  path?: string;
+  version?: string;
+  installHint: string;
+};
+type RuntimeRequirementsStatus = {
+  platform: string;
+  homebrewInstalled: boolean;
+  git: RuntimeDependencyStatus;
+  entire: RuntimeDependencyStatus;
+};
+type RuntimeActionJobStatus = {
+  jobId: string;
+  name: string;
+  action: "install" | "uninstall";
+  status: "running" | "succeeded" | "failed";
+  log: string;
+  startedAtMs: number;
+  finishedAtMs?: number;
+  exitCode?: number;
+  error?: string;
+};
+type OnboardingStep = {
+  title: string;
+  body: string;
+};
+
+const ONBOARDING_DONE_KEY = "giteam.onboarding.done.v1";
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
@@ -610,6 +641,9 @@ export function App() {
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [showGraphPopover, setShowGraphPopover] = useState(false);
+  const [showEnvSetup, setShowEnvSetup] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string } | null>(null);
 
@@ -628,6 +662,7 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState("");
   const [selectedFilePatch, setSelectedFilePatch] = useState("");
   const [selectedExplain, setSelectedExplain] = useState("");
+  const [agentContextError, setAgentContextError] = useState("");
   const [statusText, setStatusText] = useState("");
 
   const [records, setRecords] = useState<ReviewRecord[]>([]);
@@ -636,6 +671,14 @@ export function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
+  const [runtimeChecking, setRuntimeChecking] = useState(false);
+  const [installingDep, setInstallingDep] = useState("");
+  const [installingElapsed, setInstallingElapsed] = useState(0);
+  const [runtimeJobId, setRuntimeJobId] = useState("");
+  const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
+  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus | null>(null);
+  const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
 
@@ -648,7 +691,31 @@ export function App() {
     [records, selectedCommit]
   );
   const diffRows = useMemo(() => toDiffRows(selectedFilePatch), [selectedFilePatch]);
-
+  const runtimeLogTail = useMemo(() => {
+    const lines = (runtimeInstallLog || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return lines[lines.length - 1] ?? "";
+  }, [runtimeInstallLog]);
+  const onboardingSteps: OnboardingStep[] = [
+    {
+      title: "Step 1 · Import Project",
+      body: "Click the + button in the left project rail, choose a local Git repository folder, and it will be imported immediately."
+    },
+    {
+      title: "Step 2 · Browse Commits",
+      body: "Select a branch and click a commit from the list. The app loads changed files and default diff automatically."
+    },
+    {
+      title: "Step 3 · Read Context",
+      body: "Use the Context tab to view Agent Context. Click 'Load full context' for full transcript when checkpoint data is available."
+    },
+    {
+      title: "Step 4 · Sync Workflow",
+      body: "Use Refresh / Pull / Push actions from the commit toolbar. Open Settings for theme/layout and runtime checks."
+    }
+  ];
   function ensureRepoSelected(): boolean {
     if (!selectedRepo) {
       setError("请先导入并选择一个仓库。");
@@ -757,6 +824,50 @@ export function App() {
     }
   }
 
+  async function refreshRuntimeRequirements() {
+    setRuntimeChecking(true);
+    try {
+      const res = await invoke<RuntimeRequirementsStatus>("check_runtime_requirements");
+      setRuntimeStatus(res);
+      if (res.git.installed && res.entire.installed) {
+        window.localStorage.setItem("giteam.runtime.ready.v1", "1");
+        const onboardingDone = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "1";
+        if (!onboardingDone) {
+          setOnboardingStep(0);
+          setShowOnboarding(true);
+        }
+      }
+    } finally {
+      setRuntimeChecking(false);
+    }
+  }
+
+  async function runDependencyAction(name: "git" | "entire", action: "install" | "uninstall") {
+    flushSync(() => {
+      setShowEnvSetup(true);
+      setInstallingDep(name);
+      setInstallingElapsed(0);
+      setRuntimeInstallLog("");
+      setRuntimeJob(null);
+      setRuntimeJobId("");
+      setExpandedLogDep(null);
+      setError("");
+      setMessage(`${action === "install" ? "Installing" : "Uninstalling"} ${name}...`);
+      setRuntimeInstallLog(`Starting ${action} for ${name}...\nPlease wait.`);
+    });
+    try {
+      const jobId = await invoke<string>("start_runtime_dependency_action", { name, action });
+      setRuntimeJobId(jobId);
+    } catch (e) {
+      setRuntimeInstallLog(String(e));
+      setError(String(e));
+      setMessage(`${action} ${name} failed to start`);
+      setInstallingDep("");
+      setInstallingElapsed(0);
+      setRuntimeJobId("");
+    }
+  }
+
   function openRepoContextMenu(x: number, y: number, repo: RepositoryEntry) {
     const menuW = 132;
     const menuH = 44;
@@ -824,30 +935,46 @@ export function App() {
   async function refreshCommitContext(commitSha: string) {
     if (!ensureRepoSelected() || !commitSha) return;
     setError("");
+    setAgentContextError("");
     setMessage("加载提交上下文...");
+    let files: string[] = [];
     try {
-      const [files, explainRes] = await Promise.all([
-        getCommitChangedFiles(repoPath, commitSha),
-        explainCommitShort(commitSha, repoPath)
-      ]);
-      setChangedFiles(files);
-      setSelectedFile(files[0] ?? "");
-      setSelectedExplain(explainRes.raw);
-      setDetailTab("context");
-      if (files.length > 0) {
-        const patch = await getCommitFilePatch(repoPath, commitSha, files[0]);
-        setSelectedFilePatch(patch);
-      } else {
-        setSelectedFilePatch("该提交没有文件变更。");
-      }
-      const parsed = parseExplainCommit(explainRes.raw);
-      setMessage(parsed.hasCheckpoint ? "已快速加载上下文摘要，可继续加载完整上下文。" : "该提交未关联 Entire checkpoint。");
+      files = await getCommitChangedFiles(repoPath, commitSha);
     } catch (e) {
       setError(String(e));
-      setMessage("加载上下文失败");
+      setMessage("加载提交文件列表失败");
       setChangedFiles([]);
       setSelectedFile("");
       setSelectedFilePatch("");
+      setSelectedExplain("");
+      return;
+    }
+
+    setChangedFiles(files);
+    setSelectedFile(files[0] ?? "");
+    setDetailTab("context");
+
+    if (files.length > 0) {
+      try {
+        const patch = await getCommitFilePatch(repoPath, commitSha, files[0]);
+        setSelectedFilePatch(patch);
+      } catch (e) {
+        setError(String(e));
+        setSelectedFilePatch("");
+      }
+    } else {
+      setSelectedFilePatch("该提交没有文件变更。");
+    }
+
+    try {
+      const explainRes = await explainCommitShort(commitSha, repoPath);
+      setSelectedExplain(explainRes.raw);
+      const parsed = parseExplainCommit(explainRes.raw);
+      setMessage(parsed.hasCheckpoint ? "已快速加载上下文摘要，可继续加载完整上下文。" : "该提交未关联 Entire checkpoint。");
+    } catch (e) {
+      setSelectedExplain("");
+      setAgentContextError(String(e));
+      setMessage("文件与 Diff 已加载；AI 上下文暂不可用（请检查 Entire CLI）。");
     }
   }
 
@@ -876,9 +1003,11 @@ export function App() {
     try {
       const res = await explainCommit(selectedCommit, repoPath);
       setSelectedExplain(res.raw);
+      setAgentContextError("");
       setDetailTab("context");
       setMessage(`完整上下文已加载（${res.raw.length} chars）`);
     } catch (e) {
+      setAgentContextError(String(e));
       setError(String(e));
       setMessage("完整上下文加载失败");
     } finally {
@@ -1025,6 +1154,76 @@ export function App() {
 
   useEffect(() => {
     void refreshRepositories().catch((e) => setError(String(e)));
+  }, []);
+
+  useEffect(() => {
+    if (!installingDep) return;
+    const timer = window.setInterval(() => {
+      setInstallingElapsed((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [installingDep]);
+
+  useEffect(() => {
+    if (!runtimeJobId) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void invoke<RuntimeActionJobStatus>("get_runtime_dependency_action", { jobId: runtimeJobId })
+        .then((job) => {
+          if (stopped) return;
+          setRuntimeJob(job);
+          setRuntimeInstallLog(job.log || "");
+          if (job.status === "running") return;
+
+          stopped = true;
+          window.clearInterval(timer);
+          setInstallingDep("");
+          setInstallingElapsed(0);
+          setRuntimeJobId("");
+          setMessage(
+            job.status === "succeeded"
+              ? `${job.action} ${job.name} completed`
+              : `${job.action} ${job.name} failed`
+          );
+          if (job.status === "failed" && job.error) {
+            setError(job.error);
+          }
+          void refreshRuntimeRequirements();
+        })
+        .catch((e) => {
+          if (stopped) return;
+          stopped = true;
+          window.clearInterval(timer);
+          setInstallingDep("");
+          setInstallingElapsed(0);
+          setRuntimeJobId("");
+          setError(String(e));
+        });
+    }, 700);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [runtimeJobId]);
+
+  useEffect(() => {
+    const dismissed = window.localStorage.getItem("giteam.runtime.setup.dismissed.v1") === "1";
+    void invoke<RuntimeRequirementsStatus>("check_runtime_requirements")
+      .then((res) => {
+        setRuntimeStatus(res);
+        const missing = [res.git, res.entire].some((d) => !d.installed);
+        if (!dismissed && missing) setShowEnvSetup(true);
+        if (!missing) {
+          window.localStorage.setItem("giteam.runtime.ready.v1", "1");
+          const onboardingDone = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "1";
+          if (!onboardingDone) {
+            setOnboardingStep(0);
+            setShowOnboarding(true);
+          }
+        }
+      })
+      .catch((e) => setError(String(e)));
   }, []);
 
   useEffect(() => {
@@ -1349,6 +1548,16 @@ export function App() {
                       Load full context
                     </button>
                   </div>
+                  {agentContextError ? (
+                    <div className="context-error-card">
+                      <div className="context-block-title">Agent Context Unavailable</div>
+                      <p className="small">
+                        Failed to load via <code>entire explain</code>. Check that <code>entire</code> is installed and
+                        available in PATH for the packaged app.
+                      </p>
+                      <pre>{agentContextError}</pre>
+                    </div>
+                  ) : null}
                   {!parsedAgentContext.transcript.length && !parsedAgentContext.intent ? <MarkdownLite source={selectedExplain} /> : null}
                   </div>
                 </div>
@@ -1528,12 +1737,188 @@ export function App() {
                   </button>
                 </div>
               </div>
+
+              <div className="settings-row">
+                <div className="settings-label">Runtime check</div>
+                <div className="toolbar">
+                  <button
+                    className="chip"
+                    onClick={() => {
+                      setShowEnvSetup(true);
+                      void refreshRuntimeRequirements();
+                    }}
+                  >
+                    Check git / entire
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="toolbar" style={{ justifyContent: "flex-end" }}>
               <button className="chip" onClick={() => setShowSettings(false)}>
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showEnvSetup ? (
+        <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
+          <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Runtime Setup</h3>
+            <p className="small muted">Check required tools for this app: git and Entire CLI.</p>
+
+            <div className="env-check-list">
+              {[runtimeStatus?.git, runtimeStatus?.entire]
+                .filter((d): d is RuntimeDependencyStatus => Boolean(d))
+                .map((dep) => (
+                <div className="env-check-row" key={dep.name}>
+                  <div>
+                    <strong>{dep.name}</strong>{" "}
+                    <span className={dep.installed ? "env-ok" : "env-missing"}>
+                      {dep.installed ? "Installed" : "Missing"}
+                    </span>
+                    {dep.version ? <div className="small muted">{dep.version}</div> : null}
+                    {dep.path ? <div className="small muted">{dep.path}</div> : null}
+                    {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
+                  </div>
+                  <div className="toolbar">
+                    {!dep.installed ? (
+                      <button
+                        className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
+                        disabled={Boolean(installingDep)}
+                        onClick={() => void runDependencyAction(dep.name as "git" | "entire", "install")}
+                      >
+                        {installingDep === dep.name ? (
+                          <>
+                            <span className="env-btn-spinner" aria-hidden="true" />
+                            {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
+                          </>
+                        ) : (
+                          `Install ${dep.name}`
+                        )}
+                      </button>
+                    ) : (
+                      <button
+                        className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
+                        disabled={Boolean(installingDep)}
+                        onClick={() => void runDependencyAction(dep.name as "git" | "entire", "uninstall")}
+                      >
+                        {installingDep === dep.name ? (
+                          <>
+                            <span className="env-btn-spinner" aria-hidden="true" />
+                            {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
+                          </>
+                        ) : (
+                          `Uninstall ${dep.name}`
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  {runtimeJob && runtimeJob.name === dep.name ? (
+                    <div className="env-inline-status">
+                      <button
+                        className="env-progress-button"
+                        onClick={() => setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire")))}
+                        title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
+                      >
+                        <span className="env-progress-track-inline" aria-hidden="true">
+                          <span className={runtimeJob.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
+                        </span>
+                        <span className="env-progress-label">
+                          {runtimeJob.action} · {runtimeJob.status} {installingDep === dep.name ? `· ${installingElapsed}s` : ""}
+                        </span>
+                      </button>
+                      <div className="env-log-tail" title={runtimeLogTail || "No logs yet"}>
+                        {runtimeLogTail || "Waiting for logs..."}
+                      </div>
+                      {expandedLogDep === dep.name ? (
+                        <pre className="env-install-log">{runtimeInstallLog || "No logs yet."}</pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+
+            <div className="toolbar" style={{ justifyContent: "space-between" }}>
+              <button className="chip" disabled={runtimeChecking || Boolean(installingDep)} onClick={() => void refreshRuntimeRequirements()}>
+                {runtimeChecking ? "Checking..." : "Re-check"}
+              </button>
+              <div className="toolbar">
+                <button
+                  className="chip"
+                  onClick={() => {
+                    window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
+                    setShowEnvSetup(false);
+                  }}
+                >
+                  Continue anyway
+                </button>
+                <button className="chip" onClick={() => setShowEnvSetup(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showOnboarding ? (
+        <div className="modal-mask" onClick={() => setShowOnboarding(false)}>
+          <div className="modal-card onboarding-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Quick Guide</h3>
+            <p className="small muted">First-time walkthrough</p>
+
+            <div className="onboarding-step-title">{onboardingSteps[onboardingStep].title}</div>
+            <p className="onboarding-step-body">{onboardingSteps[onboardingStep].body}</p>
+
+            <div className="onboarding-dots">
+              {onboardingSteps.map((_, idx) => (
+                <button
+                  key={`dot-${idx}`}
+                  className={idx === onboardingStep ? "onboarding-dot active" : "onboarding-dot"}
+                  onClick={() => setOnboardingStep(idx)}
+                  aria-label={`Go to step ${idx + 1}`}
+                />
+              ))}
+            </div>
+
+            <div className="toolbar" style={{ justifyContent: "space-between" }}>
+              <button
+                className="chip"
+                disabled={onboardingStep === 0}
+                onClick={() => setOnboardingStep((s) => Math.max(0, s - 1))}
+              >
+                Back
+              </button>
+              <div className="toolbar">
+                <button
+                  className="chip"
+                  onClick={() => {
+                    window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
+                    setShowOnboarding(false);
+                  }}
+                >
+                  Skip
+                </button>
+                {onboardingStep < onboardingSteps.length - 1 ? (
+                  <button className="chip" onClick={() => setOnboardingStep((s) => Math.min(onboardingSteps.length - 1, s + 1))}>
+                    Next
+                  </button>
+                ) : (
+                  <button
+                    className="chip"
+                    onClick={() => {
+                      window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
+                      setShowOnboarding(false);
+                    }}
+                  >
+                    Done
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
