@@ -12,6 +12,7 @@ const INSTALL_TIMEOUT_SECS: u64 = 15 * 60;
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDependencyStatus {
     pub name: String,
+    pub checked: bool,
     pub installed: bool,
     pub path: Option<String>,
     pub version: Option<String>,
@@ -25,6 +26,7 @@ pub struct RuntimeRequirementsStatus {
     pub homebrew_installed: bool,
     pub git: RuntimeDependencyStatus,
     pub entire: RuntimeDependencyStatus,
+    pub opencode: RuntimeDependencyStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -139,11 +141,33 @@ fn check_dep(name: &str, version_args: &[&str], install_hint: &str) -> RuntimeDe
 
     RuntimeDependencyStatus {
         name: name.to_string(),
+        checked: true,
         installed: path_out.is_some(),
         path: path_out,
         version: version_out,
         install_hint: install_hint.to_string(),
     }
+}
+
+#[tauri::command]
+pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencyStatus, String> {
+    let dep_name = name.to_string();
+    tauri::async_runtime::spawn_blocking(move || match dep_name.as_str() {
+        "git" => Ok(check_dep("git", &["--version"], "brew install git")),
+        "entire" => Ok(check_dep(
+            "entire",
+            &["--version"],
+            "brew tap entireio/tap && brew install entireio/tap/entire",
+        )),
+        "opencode" => Ok(check_dep(
+            "opencode",
+            &["--version"],
+            "brew install anomalyco/tap/opencode",
+        )),
+        _ => Err(format!("unsupported dependency: {}", dep_name)),
+    })
+    .await
+    .map_err(|e| format!("failed to check dependency: {e}"))?
 }
 
 fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, String), String> {
@@ -221,12 +245,39 @@ if [ -f "$HOME/.local/bin/entire" ]; then
 fi
 echo "Entire uninstall finished.""##,
         ),
+        ("opencode", "install") => Ok(
+            r##"if command -v brew >/dev/null 2>&1; then
+  brew install anomalyco/tap/opencode
+elif command -v npm >/dev/null 2>&1; then
+  npm install -g opencode-ai
+else
+  curl -fsSL https://opencode.ai/install | bash
+fi"##,
+        ),
+        ("opencode", "uninstall") => Ok(
+            r##"if command -v opencode >/dev/null 2>&1; then
+  opencode uninstall --force || true
+fi
+if command -v brew >/dev/null 2>&1; then
+  brew uninstall anomalyco/tap/opencode || true
+fi
+if command -v npm >/dev/null 2>&1; then
+  npm uninstall -g opencode-ai || true
+fi
+echo "OpenCode uninstall finished.""##,
+        ),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
 }
 
 #[tauri::command]
-pub fn check_runtime_requirements() -> RuntimeRequirementsStatus {
+pub async fn check_runtime_requirements() -> RuntimeRequirementsStatus {
+    tauri::async_runtime::spawn_blocking(check_runtime_requirements_sync)
+        .await
+        .unwrap_or_else(|_| check_runtime_requirements_sync())
+}
+
+fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
     let homebrew = check_dep("brew", &["--version"], "Install Homebrew first.");
     let git = check_dep("git", &["--version"], "brew install git");
     let entire = check_dep(
@@ -234,11 +285,17 @@ pub fn check_runtime_requirements() -> RuntimeRequirementsStatus {
         &["--version"],
         "brew tap entireio/tap && brew install entireio/tap/entire",
     );
+    let opencode = check_dep(
+        "opencode",
+        &["--version"],
+        "See docs: https://opencode.ai/docs/cli/",
+    );
     RuntimeRequirementsStatus {
         platform: std::env::consts::OS.to_string(),
         homebrew_installed: homebrew.installed,
         git,
         entire,
+        opencode,
     }
 }
 

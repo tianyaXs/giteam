@@ -9,6 +9,7 @@ fn main() {
             commands::entire::run_entire_explain_checkpoint,
             commands::entire::run_entire_explain_checkpoint_raw_transcript,
             commands::env::check_runtime_requirements,
+            commands::env::check_runtime_dependency,
             commands::env::start_runtime_dependency_action,
             commands::env::get_runtime_dependency_action,
             commands::git::run_git_head_commit,

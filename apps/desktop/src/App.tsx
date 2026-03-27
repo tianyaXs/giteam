@@ -57,6 +57,7 @@ type ParsedAgentContext = {
 };
 type RuntimeDependencyStatus = {
   name: string;
+  checked: boolean;
   installed: boolean;
   path?: string;
   version?: string;
@@ -67,6 +68,7 @@ type RuntimeRequirementsStatus = {
   homebrewInstalled: boolean;
   git: RuntimeDependencyStatus;
   entire: RuntimeDependencyStatus;
+  opencode: RuntimeDependencyStatus;
 };
 type RuntimeActionJobStatus = {
   jobId: string;
@@ -85,7 +87,24 @@ type OnboardingStep = {
 };
 
 const ONBOARDING_DONE_KEY = "giteam.onboarding.done.v1";
+const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
 
+const EMPTY_DEP = (name: "git" | "entire" | "opencode", installHint: string): RuntimeDependencyStatus => ({
+  name,
+  checked: false,
+  installed: false,
+  path: undefined,
+  version: undefined,
+  installHint
+});
+
+const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
+  platform: "macos",
+  homebrewInstalled: false,
+  git: EMPTY_DEP("git", "brew install git"),
+  entire: EMPTY_DEP("entire", "brew tap entireio/tap && brew install entireio/tap/entire"),
+  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode")
+};
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
 }
@@ -672,12 +691,17 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
+  const [checkingDeps, setCheckingDeps] = useState<Record<"git" | "entire" | "opencode", boolean>>({
+    git: false,
+    entire: false,
+    opencode: false
+  });
   const [installingDep, setInstallingDep] = useState("");
   const [installingElapsed, setInstallingElapsed] = useState(0);
   const [runtimeJobId, setRuntimeJobId] = useState("");
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
-  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus | null>(null);
+  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | "opencode" | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(DEFAULT_RUNTIME_STATUS);
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
@@ -824,12 +848,25 @@ export function App() {
     }
   }
 
-  async function refreshRuntimeRequirements() {
+  async function refreshRuntimeRequirements(): Promise<RuntimeRequirementsStatus> {
     setRuntimeChecking(true);
+    setCheckingDeps({ git: true, entire: true, opencode: true });
     try {
-      const res = await invoke<RuntimeRequirementsStatus>("check_runtime_requirements");
-      setRuntimeStatus(res);
-      if (res.git.installed && res.entire.installed) {
+      const deps: Array<"git" | "entire" | "opencode"> = ["git", "entire", "opencode"];
+      await Promise.all(
+        deps.map(async (dep) => {
+          try {
+            const result = await invoke<RuntimeDependencyStatus>("check_runtime_dependency", { name: dep });
+            setRuntimeStatus((prev) => ({ ...prev, [dep]: result }));
+          } finally {
+            setCheckingDeps((prev) => ({ ...prev, [dep]: false }));
+          }
+        })
+      );
+
+      const final = await invoke<RuntimeRequirementsStatus>("check_runtime_requirements");
+      setRuntimeStatus(final);
+      if (final.git.installed && final.entire.installed) {
         window.localStorage.setItem("giteam.runtime.ready.v1", "1");
         const onboardingDone = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "1";
         if (!onboardingDone) {
@@ -837,12 +874,13 @@ export function App() {
           setShowOnboarding(true);
         }
       }
+      return final;
     } finally {
       setRuntimeChecking(false);
     }
   }
 
-  async function runDependencyAction(name: "git" | "entire", action: "install" | "uninstall") {
+  async function runDependencyAction(name: "git" | "entire" | "opencode", action: "install" | "uninstall") {
     flushSync(() => {
       setShowEnvSetup(true);
       setInstallingDep(name);
@@ -1208,20 +1246,15 @@ export function App() {
   }, [runtimeJobId]);
 
   useEffect(() => {
+    const hasCheckedBefore = window.localStorage.getItem(RUNTIME_FIRST_CHECK_KEY) === "1";
+    if (hasCheckedBefore) return;
+
     const dismissed = window.localStorage.getItem("giteam.runtime.setup.dismissed.v1") === "1";
-    void invoke<RuntimeRequirementsStatus>("check_runtime_requirements")
+    void refreshRuntimeRequirements()
       .then((res) => {
-        setRuntimeStatus(res);
+        window.localStorage.setItem(RUNTIME_FIRST_CHECK_KEY, "1");
         const missing = [res.git, res.entire].some((d) => !d.installed);
         if (!dismissed && missing) setShowEnvSetup(true);
-        if (!missing) {
-          window.localStorage.setItem("giteam.runtime.ready.v1", "1");
-          const onboardingDone = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "1";
-          if (!onboardingDone) {
-            setOnboardingStep(0);
-            setShowOnboarding(true);
-          }
-        }
       })
       .catch((e) => setError(String(e)));
   }, []);
@@ -1739,16 +1772,17 @@ export function App() {
               </div>
 
               <div className="settings-row">
-                <div className="settings-label">Runtime check</div>
+                <div className="settings-label">Plugins</div>
                 <div className="toolbar">
                   <button
                     className="chip"
                     onClick={() => {
                       setShowEnvSetup(true);
-                      void refreshRuntimeRequirements();
+                      const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode].some((d) => !d.checked);
+                      if (unchecked) void refreshRuntimeRequirements();
                     }}
                   >
-                    Check git / entire
+                    Manage plugins
                   </button>
                 </div>
               </div>
@@ -1766,20 +1800,33 @@ export function App() {
       {showEnvSetup ? (
         <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
           <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
-            <h3>Runtime Setup</h3>
-            <p className="small muted">Check required tools for this app: git and Entire CLI.</p>
+            <div className="env-setup-head">
+              <h3>Runtime Setup</h3>
+              <button
+                className="env-refresh-circle"
+                title="Refresh runtime check"
+                aria-label="Refresh runtime check"
+                disabled={runtimeChecking || Boolean(installingDep)}
+                onClick={() => void refreshRuntimeRequirements()}
+              >
+                <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
+              </button>
+            </div>
+            <p className="small muted">Manage git, Entire CLI, and OpenCode plugin runtime.</p>
 
             <div className="env-check-list">
-              {[runtimeStatus?.git, runtimeStatus?.entire]
+              {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode]
                 .filter((d): d is RuntimeDependencyStatus => Boolean(d))
                 .map((dep) => (
                 <div className="env-check-row" key={dep.name}>
                   <div>
                     <strong>{dep.name}</strong>{" "}
-                    <span className={dep.installed ? "env-ok" : "env-missing"}>
-                      {dep.installed ? "Installed" : "Missing"}
+                    <span className={checkingDeps[dep.name as "git" | "entire" | "opencode"] ? "muted" : (dep.installed ? "env-ok" : "env-missing")}>
+                      {checkingDeps[dep.name as "git" | "entire" | "opencode"]
+                        ? "Checking..."
+                        : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
                     </span>
-                    {dep.version ? <div className="small muted">{dep.version}</div> : null}
+                    {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode"] ? <div className="small muted">{dep.version}</div> : null}
                     {dep.path ? <div className="small muted">{dep.path}</div> : null}
                     {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
                   </div>
@@ -1787,8 +1834,8 @@ export function App() {
                     {!dep.installed ? (
                       <button
                         className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                        disabled={Boolean(installingDep)}
-                        onClick={() => void runDependencyAction(dep.name as "git" | "entire", "install")}
+                        disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode"]}
+                        onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode", "install")}
                       >
                         {installingDep === dep.name ? (
                           <>
@@ -1802,8 +1849,8 @@ export function App() {
                     ) : (
                       <button
                         className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                        disabled={Boolean(installingDep)}
-                        onClick={() => void runDependencyAction(dep.name as "git" | "entire", "uninstall")}
+                        disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode"]}
+                        onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode", "uninstall")}
                       >
                         {installingDep === dep.name ? (
                           <>
@@ -1820,7 +1867,7 @@ export function App() {
                     <div className="env-inline-status">
                       <button
                         className="env-progress-button"
-                        onClick={() => setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire")))}
+                        onClick={() => setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode")))}
                         title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
                       >
                         <span className="env-progress-track-inline" aria-hidden="true">
@@ -1843,9 +1890,7 @@ export function App() {
             </div>
 
             <div className="toolbar" style={{ justifyContent: "space-between" }}>
-              <button className="chip" disabled={runtimeChecking || Boolean(installingDep)} onClick={() => void refreshRuntimeRequirements()}>
-                {runtimeChecking ? "Checking..." : "Re-check"}
-              </button>
+              <div />
               <div className="toolbar">
                 <button
                   className="chip"

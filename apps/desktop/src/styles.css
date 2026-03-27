@@ -927,11 +927,48 @@ button {
   animation: spin 700ms linear infinite;
 }
 
+.refresh-spin {
+  display: inline-block;
+  animation: spin 700ms linear infinite;
+}
+
 .env-inline-status {
   margin-top: 8px;
   width: 100%;
   flex-basis: 100%;
   min-width: 0;
+}
+
+.env-setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.env-setup-head h3 {
+  margin: 0;
+}
+
+.env-refresh-circle {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-grid;
+  place-items: center;
+}
+
+.env-refresh-circle:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.env-refresh-circle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .env-progress-button {
