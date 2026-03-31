@@ -24,3 +24,4 @@ This repository now contains the initial scaffold for a desktop app that orchest
 1. Install dependencies and run the app locally
 2. Add migration/version management for SQLite
 3. Implement timeline aggregation and richer review schema
+ 

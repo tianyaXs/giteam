@@ -162,7 +162,7 @@ pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencySta
         "opencode" => Ok(check_dep(
             "opencode",
             &["--version"],
-            "brew install anomalyco/tap/opencode",
+            "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
         )),
         _ => Err(format!("unsupported dependency: {}", dep_name)),
     })
@@ -288,7 +288,7 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
     let opencode = check_dep(
         "opencode",
         &["--version"],
-        "See docs: https://opencode.ai/docs/cli/",
+        "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
     );
     RuntimeRequirementsStatus {
         platform: std::env::consts::OS.to_string(),
