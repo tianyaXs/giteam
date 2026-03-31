@@ -1029,6 +1029,9 @@ fn stream_prompt_via_opencode_service(
                 }
                 if role == "assistant" && !mid.is_empty() {
                     seen_activity = true;
+                    // Surface the server message id so the frontend can load detailed parts
+                    // for the correct message (frontend creates its own local placeholder id).
+                    emit_stream_event(app, request_id, "assistant_message_id", mid.to_string());
                     if let Some(delta) = pending_delta.remove(mid) {
                         if !delta.is_empty() {
                             got_delta = true;
@@ -1143,13 +1146,39 @@ fn stream_prompt_via_opencode_service(
                                 .and_then(|v| v.get("input"))
                                 .and_then(|v| v.as_object());
                             let action = summarize_tool_trace(tool, input);
-                            if status == "error" {
-                                emit_stream_event(app, request_id, "trace", format!("Error {action}"));
-                            } else if status == "completed" {
-                                emit_stream_event(app, request_id, "trace", format!("Done {action}"));
-                            } else {
-                                emit_stream_event(app, request_id, "trace", action);
+                            // OpenCode only enables "fetch detailed execution" for explore tasks.
+                            if tool == "task" {
+                                let subagent = input
+                                    .and_then(|i| i.get("subagent_type"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if subagent == "explore" {
+                                    let payload = serde_json::json!({
+                                        "messageID": message_id,
+                                        "partID": part_id,
+                                        "status": status,
+                                        "input": input,
+                                    });
+                                    emit_stream_event(app, request_id, "explore_task", payload.to_string());
+                                }
                             }
+                            let human = if status == "error" {
+                                format!("Error {action}")
+                            } else if status == "completed" {
+                                format!("Done {action}")
+                            } else {
+                                action
+                            };
+                            let structured = serde_json::json!({
+                                "messageID": message_id,
+                                "partID": part_id,
+                                "type": "tool",
+                                "status": status,
+                                "tool": tool,
+                                "text": human,
+                            });
+                            emit_stream_event(app, request_id, "trace_event", structured.to_string());
+                            emit_stream_event(app, request_id, "trace", human);
                         }
                     }
                 } else if part_type == "step-start" || part_type == "step-finish" {
@@ -1164,7 +1193,17 @@ fn stream_prompt_via_opencode_service(
                             .trim()
                             .to_string();
                         let action = if part_type == "step-start" { "Step" } else { "Done" };
-                        emit_stream_event(app, request_id, "trace", format!("{action} {title}"));
+                        let human = format!("{action} {title}");
+                        let structured = serde_json::json!({
+                            "messageID": message_id,
+                            "partID": part_id,
+                            "type": part_type,
+                            "status": status,
+                            "title": title,
+                            "text": human,
+                        });
+                        emit_stream_event(app, request_id, "trace_event", structured.to_string());
+                        emit_stream_event(app, request_id, "trace", human);
                     }
                 }
 
@@ -1340,6 +1379,43 @@ pub fn get_opencode_session_messages(
             out.push(OpencodeSessionMessage { id, role, content });
         }
         Ok(out)
+    })
+}
+
+#[tauri::command]
+pub fn get_opencode_session_messages_detailed(
+    repo_path: &str,
+    session_id: &str,
+    directory: Option<String>,
+    limit: Option<u32>,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/session/{sid}/message");
+        let mut qs: Vec<String> = Vec::new();
+        if let Some(dir) = &directory {
+            let d = dir.trim();
+            if !d.is_empty() {
+                // Keep behavior aligned with the web client which sends `directory=...`.
+                // Note: run_curl_json also attaches directory header; query param improves compatibility.
+                qs.push(format!("directory={}", urlencoding::encode(d)));
+            }
+        }
+        if let Some(l) = limit {
+            if l > 0 {
+                qs.push(format!("limit={}", l));
+            }
+        }
+        if !qs.is_empty() {
+            url.push('?');
+            url.push_str(qs.join("&").as_str());
+        }
+        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse session messages failed: {e}"))
     })
 }
 

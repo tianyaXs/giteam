@@ -36,6 +36,7 @@ fn main() {
             commands::opencode::create_opencode_session,
             commands::opencode::delete_opencode_session,
             commands::opencode::get_opencode_session_messages,
+            commands::opencode::get_opencode_session_messages_detailed,
             commands::opencode::get_opencode_model_config,
             commands::opencode::get_opencode_config_provider_catalog,
             commands::opencode::get_opencode_server_provider_catalog,

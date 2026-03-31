@@ -999,6 +999,33 @@ body {
   word-break: break-word;
 }
 
+.opencode-msg-body {
+  display: block;
+}
+
+.opencode-stream-caret {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 72%, transparent);
+  opacity: 0.55;
+  animation: opencode-caret-blink 1s steps(1, end) infinite;
+}
+
+@keyframes opencode-caret-blink {
+  0%,
+  45% {
+    opacity: 0.1;
+  }
+  50%,
+  100% {
+    opacity: 0.7;
+  }
+}
+
 .opencode-load-more {
   align-self: center;
   margin: 8px 0 6px;
@@ -1112,11 +1139,28 @@ body {
 .opencode-thinking-title {
   font-size: 12px;
   color: var(--muted);
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
 }
 
 .opencode-thinking-title strong {
   color: var(--text);
   font-weight: 600;
+}
+
+.opencode-thinking-title::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-thinking-summary-tail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
 }
 
 .opencode-thinking-lines {
@@ -1126,6 +1170,13 @@ body {
   overflow: auto;
   font-size: 12px;
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.opencode-thinking-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .opencode-thinking span {
@@ -1262,6 +1313,135 @@ body {
   line-height: 1.45;
   color: var(--text);
   background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+}
+
+.opencode-details-panel {
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.opencode-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px;
+}
+
+.opencode-detail-msg {
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+
+.opencode-detail-msg-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.opencode-detail-msg-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.opencode-detail-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.opencode-detail-part > summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.opencode-detail-sub {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.opencode-detail-files {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.opencode-msg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 4px 0 6px;
+  flex-wrap: wrap;
+}
+
+.opencode-detail-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: color-mix(in srgb, var(--text) 72%, var(--primary));
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.opencode-msg-details {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  padding: 10px;
+}
+
+.opencode-msg-details-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.opencode-msg-progress {
+  margin-top: 8px;
+}
+
+.opencode-progress-details {
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  padding: 10px;
+}
+
+.opencode-progress-details > summary {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.opencode-progress-lines {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.opencode-progress-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .opencode-footer-row .chip {

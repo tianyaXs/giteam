@@ -175,6 +175,11 @@ type OpencodeSessionMessage = {
   role: "user" | "assistant";
   content: string;
 };
+type OpencodeDetailedPart = Record<string, unknown> & { type?: string };
+type OpencodeDetailedMessage = {
+  info?: Record<string, unknown>;
+  parts?: OpencodeDetailedPart[];
+};
 type OnboardingStep = {
   title: string;
   body: string;
@@ -411,20 +416,41 @@ function parseOpencodeCatalog(raw: string): Record<string, string[]> {
 }
 
 function extractOpencodeText(raw: string): string {
-  const lines = (raw || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  // Keep formatting exactly as emitted (newlines/blank lines matter for Markdown).
+  const lines = (raw || "").split("\n");
   const chunks: string[] = [];
+  let sawJson = false;
   for (const line of lines) {
     try {
-      const item = JSON.parse(line) as { type?: string; part?: { text?: string } };
-      if (item?.type === "text" && item.part?.text) {
-        chunks.push(item.part.text);
+      const item = JSON.parse(line.trim()) as { type?: string; text?: string; part?: { text?: string } };
+      sawJson = true;
+      if (item?.type === "text") {
+        const text = item.part?.text ?? item.text ?? "";
+        if (text) chunks.push(text);
       }
     } catch {
       // keep parsing others
     }
   }
   if (chunks.length > 0) return chunks.join("");
-  return raw.trim();
+  // If this stream chunk is structured JSON (e.g. reasoning/tool/step events),
+  // do NOT leak it into the visible assistant text.
+  if (sawJson) return "";
+  return raw || "";
+}
+
+function isPlainObject(input: unknown): input is Record<string, unknown> {
+  return !!input && typeof input === "object" && !Array.isArray(input);
+}
+
+function toDisplayJson(input: unknown, maxLen = 2400): string {
+  try {
+    const raw = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+    if (!raw) return "";
+    return raw.length > maxLen ? `${raw.slice(0, maxLen)}\n…(truncated)` : raw;
+  } catch {
+    return String(input ?? "");
+  }
 }
 
 function applyOpencodeCatalog(
@@ -1169,6 +1195,7 @@ export function App() {
   const [opencodeTestResult, setOpencodeTestResult] = useState("");
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeRunBusy, setOpencodeRunBusy] = useState(false);
+  const [opencodeStreamingAssistantId, setOpencodeStreamingAssistantId] = useState("");
   const [opencodeSessions, setOpencodeSessions] = useState<OpencodeChatSession[]>([]);
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
@@ -1177,6 +1204,13 @@ export function App() {
   const [opencodeThinkingLines, setOpencodeThinkingLines] = useState<string[]>([]);
   const [opencodeThinkingReadCount, setOpencodeThinkingReadCount] = useState(0);
   const [opencodeThinkingSearchCount, setOpencodeThinkingSearchCount] = useState(0);
+  const [opencodeTraceEventsByServerMessageId, setOpencodeTraceEventsByServerMessageId] = useState<Record<string, string[]>>({});
+  const [opencodeServerMessageIdByLocalId, setOpencodeServerMessageIdByLocalId] = useState<Record<string, string>>({});
+  const [opencodeExploreTaskByServerMessageId, setOpencodeExploreTaskByServerMessageId] = useState<Record<string, unknown>>({});
+  const [opencodeExpandedDetailMessageId, setOpencodeExpandedDetailMessageId] = useState("");
+  const [opencodeDetailsLoadingByMessageId, setOpencodeDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
+  const [opencodeDetailsErrorByMessageId, setOpencodeDetailsErrorByMessageId] = useState<Record<string, string>>({});
+  const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeModelPickerRef = useRef<HTMLDivElement | null>(null);
@@ -1219,6 +1253,7 @@ export function App() {
       .filter(Boolean);
     return lines[lines.length - 1] ?? "";
   }, [runtimeInstallLog]);
+
   const activeOpencodeSession = useMemo(() => {
     if (!activeOpencodeSessionId) return null;
     return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
@@ -1503,6 +1538,36 @@ export function App() {
       updatedAt: Date.now()
     }));
     appendOpencodeDebugLog(`session.messages loaded ${id} count=${mapped.length}`);
+  }
+
+  async function loadOpencodeMessageDetails(sessionId: string, messageId: string, limit = 80) {
+    if (!ensureRepoSelected()) return;
+    const id = sessionId.trim();
+    if (!id) return;
+    const mid = messageId.trim();
+    if (!mid) return;
+    const serverMid = (opencodeServerMessageIdByLocalId[mid] || "").trim() || mid;
+    setOpencodeDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: "" }));
+    setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: true }));
+    appendOpencodeDebugLog(`session.messages detailed load ${id} message=${serverMid}`);
+    try {
+      const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
+        repoPath,
+        sessionId: id,
+        directory: repoPath,
+        limit
+      });
+      const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+      const hit = rows.find((m) => String((m as any)?.info?.id || "") === serverMid) ?? null;
+      setOpencodeDetailsByMessageId((prev) => ({ ...prev, [mid]: hit }));
+      appendOpencodeDebugLog(`session.messages detailed loaded ${id} message=${serverMid} hit=${hit ? 1 : 0} total=${rows.length}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? "unknown error");
+      setOpencodeDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: msg }));
+      appendOpencodeDebugLog(`session.messages detailed failed ${id} message=${serverMid} ${msg}`);
+    } finally {
+      setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: false }));
+    }
   }
 
   async function createAndSwitchOpencodeSession(seedPrompt?: string) {
@@ -2233,6 +2298,7 @@ export function App() {
     if (!targetSession) return;
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
+    setOpencodeStreamingAssistantId(assistantId);
     const scrollToBottom = () => {
       if (activeOpencodeSessionId !== sessionId) return;
       const el = opencodeThreadRef.current;
@@ -2296,6 +2362,7 @@ export function App() {
         unlisten = null;
       }
       setOpencodeRunBusy(false);
+      setOpencodeStreamingAssistantId("");
       updateOpencodeSessionById(sessionId, (session) => ({
         ...session,
         messages: session.messages.map((msg) =>
@@ -2335,16 +2402,61 @@ export function App() {
           appendOpencodeDebugLog(payload.text || "");
           return;
         }
+        if (payload.kind === "explore_task") {
+          const raw = (payload.text || "").trim();
+          if (!raw) return;
+          try {
+            const obj = JSON.parse(raw) as { messageID?: string };
+            const serverMid = String(obj?.messageID || "").trim();
+            if (serverMid) {
+              setOpencodeExploreTaskByServerMessageId((prev) => ({ ...prev, [serverMid]: obj }));
+            }
+          } catch {
+            // ignore parse error
+          }
+          return;
+        }
+        if (payload.kind === "assistant_message_id") {
+          const serverMid = (payload.text || "").trim();
+          if (serverMid) {
+            setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [assistantId]: serverMid }));
+            // If details are already expanded for this local message, refresh immediately.
+            if (opencodeExpandedDetailMessageId === assistantId) {
+              void loadOpencodeMessageDetails(sessionId, assistantId, 80);
+            }
+          }
+          return;
+        }
+        if (payload.kind === "trace_event") {
+          const raw = (payload.text || "").trim();
+          if (!raw) return;
+          try {
+            const obj = JSON.parse(raw) as { messageID?: string; text?: string };
+            const serverMid = String(obj?.messageID || "").trim();
+            const text = String(obj?.text || "").trim();
+            if (serverMid && text) {
+              setOpencodeTraceEventsByServerMessageId((prev) => {
+                const cur = prev[serverMid] || [];
+                const next = [...cur, text].slice(-50);
+                return { ...prev, [serverMid]: next };
+              });
+            }
+          } catch {
+            // ignore parse error
+          }
+          return;
+        }
         if (payload.kind === "trace") {
           appendOpencodeThinkingLine(payload.text || "");
           return;
         }
         if (payload.kind === "delta") {
           hadDelta = true;
+          const text = extractOpencodeText(payload.text || "");
           updateOpencodeSessionById(sessionId, (session) => ({
             ...session,
             messages: session.messages.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: (msg.content || "") + (payload.text || "") } : msg
+              msg.id === assistantId ? { ...msg, content: (msg.content || "") + text } : msg
             ),
             updatedAt: Date.now()
           }));
@@ -2384,7 +2496,7 @@ export function App() {
         try {
           const rows = await invoke<OpencodeSessionMessage[]>("get_opencode_session_messages", { repoPath, sessionId, limit: 40 });
           const lastAssistant = (rows || []).slice().reverse().find((m) => m?.role === "assistant");
-          const content = (lastAssistant?.content || "").trim();
+          const content = extractOpencodeText(lastAssistant?.content || "").trim();
           appendOpencodeDebugLog(`prompt.fallback.poll ok assistantChars=${content.length}`);
           if (content) {
             updateOpencodeSessionById(sessionId, (session) => ({
@@ -2976,6 +3088,7 @@ export function App() {
     setOpencodeSessions([]);
     setActiveOpencodeSessionId("");
     setOpencodeRunBusy(false);
+    setOpencodeStreamingAssistantId("");
     setOpencodePromptInput("");
     opencodePrevCountRef.current = 0;
   }, [selectedRepo?.id]);
@@ -3000,13 +3113,166 @@ export function App() {
     });
   }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
 
-  const opencodeRenderedMessages = useMemo(
-    () => {
-      if (opencodeMessages.length <= opencodeVisibleCount) return opencodeMessages;
-      return opencodeMessages.slice(opencodeMessages.length - opencodeVisibleCount);
-    },
-    [opencodeMessages, opencodeVisibleCount]
-  );
+  const opencodeRenderedMessages = useMemo(() => {
+    const visible =
+      opencodeMessages.length <= opencodeVisibleCount
+        ? opencodeMessages
+        : opencodeMessages.slice(opencodeMessages.length - opencodeVisibleCount);
+    // Only show the "Thinking" placeholder for the currently-streaming assistant message.
+    // Any older empty assistant messages are treated as transient placeholders and hidden.
+    return visible.filter((msg) => {
+      if (msg.role !== "assistant") return true;
+      if ((msg.content || "").trim()) return true;
+      return msg.id === opencodeStreamingAssistantId && opencodeRunBusy;
+    });
+  }, [opencodeMessages, opencodeVisibleCount, opencodeStreamingAssistantId, opencodeRunBusy]);
+
+  function renderOpencodeDetailedPart(part: OpencodeDetailedPart, idx: number) {
+    const type = String(part?.type || "");
+    if (type === "text") {
+      const text = String((part as any).text || "");
+      if (!text.trim()) return null;
+      return (
+        <div key={`ocd-text-${idx}`} className="opencode-detail-part opencode-detail-text">
+          <MarkdownLite source={text} />
+        </div>
+      );
+    }
+    if (type === "reasoning") {
+      const text = String((part as any).text || "");
+      const meta = (part as any).metadata;
+      return (
+        <details key={`ocd-reason-${idx}`} className="opencode-detail-part opencode-detail-reasoning" open={false}>
+          <summary>
+            <strong>Reasoning</strong>
+            {meta ? <span className="small muted">（metadata）</span> : null}
+          </summary>
+          <pre className="opencode-detail-pre">{text || toDisplayJson(part)}</pre>
+        </details>
+      );
+    }
+    if (type === "step-start" || type === "step-finish") {
+      const snapshot = (part as any).snapshot ? String((part as any).snapshot) : "";
+      const reason = (part as any).reason ? String((part as any).reason) : "";
+      return (
+        <div key={`ocd-step-${idx}`} className="opencode-detail-part opencode-detail-step">
+          <span className="chip">{type}</span>
+          {reason ? <span className="small muted">{reason}</span> : null}
+          {snapshot ? <code className="small muted">{snapshot.slice(0, 12)}</code> : null}
+        </div>
+      );
+    }
+    if (type === "tool") {
+      const tool = String((part as any).tool || "");
+      const callID = String((part as any).callID || "");
+      const state = (part as any).state;
+      const status = state?.status ? String(state.status) : "";
+      const input = state?.input;
+      const output = state?.output;
+      return (
+        <details key={`ocd-tool-${idx}`} className="opencode-detail-part opencode-detail-tool" open={false}>
+          <summary>
+            <strong>{tool || "tool"}</strong>
+            {status ? <span className="small muted">{status}</span> : null}
+            {callID ? <code className="small muted">{callID}</code> : null}
+          </summary>
+          {input ? (
+            <details className="opencode-detail-sub" open={false}>
+              <summary>input</summary>
+              <pre className="opencode-detail-pre">{toDisplayJson(input)}</pre>
+            </details>
+          ) : null}
+          {output ? (
+            <details className="opencode-detail-sub" open={false}>
+              <summary>output</summary>
+              <pre className="opencode-detail-pre">{typeof output === "string" ? output : toDisplayJson(output, 20000)}</pre>
+            </details>
+          ) : null}
+          {!input && !output ? <pre className="opencode-detail-pre">{toDisplayJson(part)}</pre> : null}
+        </details>
+      );
+    }
+    if (type === "patch") {
+      const files = Array.isArray((part as any).files) ? ((part as any).files as unknown[]) : [];
+      const hash = (part as any).hash ? String((part as any).hash) : "";
+      return (
+        <details key={`ocd-patch-${idx}`} className="opencode-detail-part opencode-detail-patch" open={false}>
+          <summary>
+            <strong>patch</strong>
+            {hash ? <code className="small muted">{hash.slice(0, 12)}</code> : null}
+            {files.length ? <span className="small muted">{files.length} files</span> : null}
+          </summary>
+          {files.length ? (
+            <ul className="opencode-detail-files">
+              {files.map((f, j) => (
+                <li key={`ocd-patch-file-${idx}-${j}`}>
+                  <code>{String(f)}</code>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <pre className="opencode-detail-pre">{toDisplayJson(part)}</pre>
+          )}
+        </details>
+      );
+    }
+    return (
+      <details key={`ocd-unknown-${idx}`} className="opencode-detail-part opencode-detail-unknown" open={false}>
+        <summary>
+          <strong>{type || "part"}</strong>
+          <span className="small muted">raw</span>
+        </summary>
+        <pre className="opencode-detail-pre">{toDisplayJson(part, 20000)}</pre>
+      </details>
+    );
+  }
+
+  function renderOpencodeDetailedMessage(m: OpencodeDetailedMessage, idx: number) {
+    const info = (m?.info || {}) as Record<string, unknown>;
+    const role = String(info.role || "");
+    const agent = String(info.agent || "");
+    const providerID = String((info as any).providerID || (info as any).model?.providerID || "");
+    const modelID = String((info as any).modelID || (info as any).model?.modelID || "");
+    const created = (info as any).time?.created ? Number((info as any).time.created) : 0;
+    const completed = (info as any).time?.completed ? Number((info as any).time.completed) : 0;
+    const titleBits = [role, agent, providerID && modelID ? `${providerID}/${modelID}` : modelID || providerID].filter(Boolean);
+    const parts = Array.isArray(m?.parts) ? (m.parts as OpencodeDetailedPart[]) : [];
+    return (
+      <div key={`ocd-msg-${idx}`} className="opencode-detail-msg">
+        <div className="opencode-detail-msg-head">
+          <strong>{titleBits.join(" · ") || `message ${idx + 1}`}</strong>
+          {created ? <span className="small muted">{new Date(created).toLocaleString()}</span> : null}
+          {completed && completed !== created ? (
+            <span className="small muted">{`→ ${new Date(completed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`}</span>
+          ) : null}
+        </div>
+        <div className="opencode-detail-msg-parts">
+          {parts.length === 0 ? <pre className="opencode-detail-pre">{toDisplayJson(m, 20000)}</pre> : parts.map(renderOpencodeDetailedPart)}
+        </div>
+      </div>
+    );
+  }
+
+  const opencodeExploreTaskByLocalMessageId = useMemo(() => {
+    const mapped: Record<string, unknown> = {};
+    for (const [localId, serverId] of Object.entries(opencodeServerMessageIdByLocalId)) {
+      const payload = opencodeExploreTaskByServerMessageId[serverId];
+      if (payload) mapped[localId] = payload;
+    }
+    return mapped;
+  }, [opencodeServerMessageIdByLocalId, opencodeExploreTaskByServerMessageId]);
+
+  useEffect(() => {
+    const mid = opencodeExpandedDetailMessageId.trim();
+    const sid = activeOpencodeSession?.id?.trim() || "";
+    if (!sid || !mid) return;
+    if (!opencodeRunBusy) return;
+    // When a detail view is expanded during a run, keep it fresh without requiring tab switches.
+    const t = window.setInterval(() => {
+      void loadOpencodeMessageDetails(sid, mid, 80);
+    }, 1200);
+    return () => window.clearInterval(t);
+  }, [opencodeExpandedDetailMessageId, activeOpencodeSession?.id, opencodeRunBusy, opencodeServerMessageIdByLocalId]);
   const opencodeHiddenHistorySpacer = useMemo(() => {
     const hiddenCount = Math.max(0, opencodeMessages.length - opencodeVisibleCount);
     if (hiddenCount <= 0) return 0;
@@ -3536,8 +3802,42 @@ export function App() {
                           key={msg.id}
                           className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}
                         >
+                          {msg.role === "assistant" ? (
+                            <div className="opencode-msg-meta">
+                              {(opencodeExploreTaskByLocalMessageId[msg.id] || opencodeExpandedDetailMessageId === msg.id) ? (
+                                <button
+                                  className="opencode-detail-link"
+                                  onClick={() => {
+                                    const sid = activeOpencodeSession?.id || "";
+                                    if (!sid) return;
+                                    const next = opencodeExpandedDetailMessageId === msg.id ? "" : msg.id;
+                                    setOpencodeExpandedDetailMessageId(next);
+                                    if (next) void loadOpencodeMessageDetails(sid, msg.id, 80);
+                                  }}
+                                >
+                                  {opencodeExpandedDetailMessageId === msg.id ? "收起执行细节" : "查看执行细节"}
+                                </button>
+                              ) : null}
+                              {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
+                              {msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
+                                <span className="small muted">
+                                  {(() => {
+                                    const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+                                    const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
+                                    const last = lines.length ? lines[lines.length - 1] : (opencodeThinkingLines[opencodeThinkingLines.length - 1] || "");
+                                    return last ? `执行中 · ${last}` : "执行中 · 等待执行事件…";
+                                  })()}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                           {msg.content.trim() ? (
-                            <MarkdownLite source={msg.content} />
+                            <div className="opencode-msg-body">
+                              <MarkdownLite source={msg.content} />
+                              {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
+                                <span className="opencode-stream-caret" aria-label="running" />
+                              ) : null}
+                            </div>
                           ) : (
                             <div className="opencode-thinking-wrap">
                               <div className="opencode-thinking">
@@ -3548,27 +3848,87 @@ export function App() {
                               </div>
                             </div>
                           )}
+                          {msg.role === "assistant" && opencodeExpandedDetailMessageId === msg.id ? (
+                            <div className="opencode-msg-details">
+                              {opencodeServerMessageIdByLocalId[msg.id] ? null : (
+                                <div className="small muted">等待服务端消息 ID（执行中会自动补齐）…</div>
+                              )}
+                              {opencodeDetailsErrorByMessageId[msg.id] ? (
+                                <div className="small" style={{ color: "var(--danger)" }}>
+                                  {opencodeDetailsErrorByMessageId[msg.id]}
+                                </div>
+                              ) : null}
+                              {opencodeDetailsByMessageId[msg.id] ? (
+                                <div className="opencode-detail-msg-parts">
+                                  {(opencodeDetailsByMessageId[msg.id]?.parts || []).map(renderOpencodeDetailedPart)}
+                                </div>
+                              ) : (
+                                <div className="small muted">暂无细节（可能还在生成中）。</div>
+                              )}
+                              <div className="opencode-msg-details-actions">
+                                <button
+                                  className="chip"
+                                  disabled={!activeOpencodeSession?.id || !!opencodeDetailsLoadingByMessageId[msg.id]}
+                                  onClick={() => activeOpencodeSession?.id && void loadOpencodeMessageDetails(activeOpencodeSession.id, msg.id, 80)}
+                                >
+                                  刷新
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
+                            <div className="opencode-msg-progress">
+                              <details className="opencode-progress-details" open={true}>
+                                <summary>
+                                  <strong>执行中</strong>
+                                  <span className="small muted">
+                                    {(() => {
+                                      const serverMid = opencodeServerMessageIdByLocalId[msg.id] || "";
+                                      const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
+                                      return lines.length ? ` · ${lines[lines.length - 1]}` : " · 等待执行事件…";
+                                    })()}
+                                  </span>
+                                </summary>
+                                {(() => {
+                                  const serverMid = opencodeServerMessageIdByLocalId[msg.id] || "";
+                                  const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
+                                  return (
+                                    <div className="opencode-progress-lines">
+                                      {(lines.length ? lines.slice(-12) : ["等待执行事件…"]).map((line, idx) => (
+                                        <div key={`opencode-prog-${idx}`} className="opencode-progress-line">
+                                          {line}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                              </details>
+                            </div>
+                          ) : null}
                         </div>
                       ))
                     )}
-                    {opencodeRunBusy && (opencodeThinkingLines.length > 0 || opencodeThinkingReadCount > 0 || opencodeThinkingSearchCount > 0) ? (
-                      <div className="opencode-thinking-log opencode-thinking-log-floating">
-                        <div className="opencode-thinking-title">
-                          正在探索
+                    {opencodeRunBusy ? (
+                      <details className="opencode-thinking-log opencode-thinking-log-floating" open={false}>
+                        <summary className="opencode-thinking-title">
+                          <span>正在探索</span>
                           {opencodeThinkingReadCount > 0 || opencodeThinkingSearchCount > 0 ? (
                             <strong>{` ${opencodeThinkingReadCount} 次读取, ${opencodeThinkingSearchCount} 次搜索`}</strong>
                           ) : null}
-                        </div>
+                          <span className="opencode-thinking-summary-tail">
+                            {opencodeThinkingLines.length > 0 ? opencodeThinkingLines[opencodeThinkingLines.length - 1] : "正在启动任务…"}
+                          </span>
+                        </summary>
                         <div className="opencode-thinking-lines">
                           {opencodeThinkingLines.length === 0 ? (
                             <div>Waiting for tool activity...</div>
                           ) : (
-                            opencodeThinkingLines.slice(-12).map((line, idx) => (
-                              <div key={`think-live-${idx}`}>{line}</div>
+                            opencodeThinkingLines.slice(-40).map((line, idx) => (
+                              <div key={`think-live-${idx}`} className="opencode-thinking-line">{line}</div>
                             ))
                           )}
                         </div>
-                      </div>
+                      </details>
                     ) : null}
                   </div>
                   <div className="opencode-input-row">
