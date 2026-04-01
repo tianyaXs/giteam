@@ -180,6 +180,47 @@ type OpencodeDetailedMessage = {
   info?: Record<string, unknown>;
   parts?: OpencodeDetailedPart[];
 };
+
+function parseReadToolOutput(raw: string): { path: string; type: string; content: string } | null {
+  const src = raw || "";
+  if (!src.includes("<path>") || !src.includes("</path>")) return null;
+  const mPath = src.match(/<path>([\s\S]*?)<\/path>/);
+  const mType = src.match(/<type>([\s\S]*?)<\/type>/);
+  const mContent = src.match(/<content>([\s\S]*?)<\/content>/);
+  const path = (mPath?.[1] || "").trim();
+  const type = (mType?.[1] || "").trim();
+  const content = (mContent?.[1] || "").replace(/\s+$/, "");
+  if (!path && !content) return null;
+  return { path, type, content };
+}
+
+function withLineNumbers(text: string, maxLines = 400): string {
+  const lines = (text || "").split("\n");
+  const slice = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
+  const width = String(slice.length).length;
+  const body = slice.map((l, i) => `${String(i + 1).padStart(width, " ")}│${l}`).join("\n");
+  return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
+}
+
+/** Text / reasoning that should appear in the main chat bubble (OpenCode-style: intro often lives in reasoning). */
+function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
+  const rows = Array.isArray(parts) ? parts : [];
+  const chunks: string[] = [];
+  for (const p of rows) {
+    if (!p) continue;
+    const t = String((p as any)?.type || "");
+    if (t !== "text" && t !== "reasoning") continue;
+    const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
+    if (text) chunks.push(text);
+  }
+  return chunks.join("\n\n");
+}
+
+function isOpencodeDetailOnlyPart(p: OpencodeDetailedPart | undefined | null): boolean {
+  if (!p) return false;
+  const t = String((p as any)?.type || "");
+  return t !== "text" && t !== "reasoning";
+}
 type OnboardingStep = {
   title: string;
   body: string;
@@ -424,7 +465,7 @@ function extractOpencodeText(raw: string): string {
     try {
       const item = JSON.parse(line.trim()) as { type?: string; text?: string; part?: { text?: string } };
       sawJson = true;
-      if (item?.type === "text") {
+      if (item?.type === "text" || item?.type === "reasoning") {
         const text = item.part?.text ?? item.text ?? "";
         if (text) chunks.push(text);
       }
@@ -437,6 +478,23 @@ function extractOpencodeText(raw: string): string {
   // do NOT leak it into the visible assistant text.
   if (sawJson) return "";
   return raw || "";
+}
+
+/** Single-chunk JSON from Rust (`{"type":"reasoning"|"text","text":"..."}`) or legacy multi-line text stream. */
+function extractOpencodeMainStreamDelta(raw: string): string {
+  const s = raw || "";
+  const t = s.trim();
+  if (t.startsWith("{")) {
+    try {
+      const one = JSON.parse(t) as { type?: string; text?: string; part?: { text?: string } };
+      if (one?.type === "text" || one?.type === "reasoning") {
+        return one.part?.text ?? one.text ?? "";
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return extractOpencodeText(s);
 }
 
 function isPlainObject(input: unknown): input is Record<string, unknown> {
@@ -1425,13 +1483,21 @@ export function App() {
       return next.length > 48 ? next.slice(next.length - 48) : next;
     });
     const lower = text.toLowerCase();
-    if (lower.startsWith("read ") || lower.includes(" read ")) {
+    if (
+      lower.startsWith("read ") ||
+      lower.includes(" read ") ||
+      text.includes("读取") ||
+      lower.includes("glob ")
+    ) {
       setOpencodeThinkingReadCount((n) => n + 1);
     } else if (
       lower.startsWith("find ") ||
       lower.startsWith("search ") ||
       lower.includes(" search") ||
-      lower.includes("find ")
+      lower.includes("find ") ||
+      lower.includes("grep") ||
+      text.includes("搜索") ||
+      text.includes("查找")
     ) {
       setOpencodeThinkingSearchCount((n) => n + 1);
     }
@@ -1559,7 +1625,15 @@ export function App() {
       });
       const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
       const hit = rows.find((m) => String((m as any)?.info?.id || "") === serverMid) ?? null;
-      setOpencodeDetailsByMessageId((prev) => ({ ...prev, [mid]: hit }));
+      setOpencodeDetailsByMessageId((prev) => {
+        const cur = prev[mid];
+        try {
+          if (cur && hit && JSON.stringify(cur) === JSON.stringify(hit)) return prev;
+        } catch {
+          /* ignore */
+        }
+        return { ...prev, [mid]: hit };
+      });
       appendOpencodeDebugLog(`session.messages detailed loaded ${id} message=${serverMid} hit=${hit ? 1 : 0} total=${rows.length}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e ?? "unknown error");
@@ -2347,9 +2421,47 @@ export function App() {
       ].join(" ")
     );
     let done = false;
-    let hadDelta = false;
+    /** Server-side assistant message id for this run; avoids stale React state in hydrate. */
+    let serverAssistantMessageId = "";
     let unlisten: (() => void) | null = null;
     let fallbackTimer: number | null = null;
+    const hydrateFinalAssistantText = async () => {
+      try {
+        const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
+          repoPath,
+          sessionId,
+          directory: repoPath,
+          limit: 200
+        });
+        const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+        const targetId = serverAssistantMessageId.trim();
+        let hit: OpencodeDetailedMessage | null = null;
+        if (targetId) {
+          hit = rows.find((m) => String((m as any)?.info?.id || "") === targetId) ?? null;
+        }
+        if (!hit) {
+          hit =
+            [...rows]
+              .reverse()
+              .find((m) => {
+                const role = String((m as any)?.info?.role ?? (m as any)?.role ?? "").trim().toLowerCase();
+                return role === "assistant";
+              }) ?? null;
+        }
+        const mainMd = buildOpencodeMainLineMarkdownFromParts((hit as any)?.parts);
+        appendOpencodeDebugLog(
+          `prompt.hydrateFinal rows=${rows.length} id=${targetId || "(fallback)"} assistantHit=${mainMd.trim() ? 1 : 0}`
+        );
+        if (!mainMd.trim()) return;
+        updateOpencodeSessionById(sessionId, (session) => ({
+          ...session,
+          messages: session.messages.map((msg) => (msg.id === assistantId ? { ...msg, content: mainMd } : msg)),
+          updatedAt: Date.now()
+        }));
+      } catch (e) {
+        appendOpencodeDebugLog(`prompt.hydrateFinal.warn ${String(e)}`);
+      }
+    };
     const finalize = () => {
       if (done) return;
       done = true;
@@ -2363,14 +2475,18 @@ export function App() {
       }
       setOpencodeRunBusy(false);
       setOpencodeStreamingAssistantId("");
-      updateOpencodeSessionById(sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((msg) =>
-          msg.id === assistantId && !msg.content.trim() ? { ...msg, content: "(empty response)" } : msg
-        ),
-        updatedAt: Date.now()
-      }));
       appendOpencodeDebugLog(`prompt.finalize session=${sessionId}`);
+      void (async () => {
+        await hydrateFinalAssistantText();
+        updateOpencodeSessionById(sessionId, (session) => ({
+          ...session,
+          messages: session.messages.map((msg) =>
+            msg.id === assistantId && !(msg.content || "").trim() ? { ...msg, content: "(empty response)" } : msg
+          ),
+          updatedAt: Date.now()
+        }));
+        scrollToBottom();
+      })();
     };
     try {
       // Always re-read the service /config model before sending so the request
@@ -2419,6 +2535,7 @@ export function App() {
         if (payload.kind === "assistant_message_id") {
           const serverMid = (payload.text || "").trim();
           if (serverMid) {
+            serverAssistantMessageId = serverMid;
             setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [assistantId]: serverMid }));
             // If details are already expanded for this local message, refresh immediately.
             if (opencodeExpandedDetailMessageId === assistantId) {
@@ -2451,12 +2568,11 @@ export function App() {
           return;
         }
         if (payload.kind === "delta") {
-          hadDelta = true;
-          const text = extractOpencodeText(payload.text || "");
+          const piece = extractOpencodeMainStreamDelta(payload.text || "");
           updateOpencodeSessionById(sessionId, (session) => ({
             ...session,
             messages: session.messages.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: (msg.content || "") + text } : msg
+              msg.id === assistantId ? { ...msg, content: (msg.content || "") + piece } : msg
             ),
             updatedAt: Date.now()
           }));
@@ -2476,44 +2592,18 @@ export function App() {
           return;
         }
         if (payload.kind === "done") {
-          if (!hadDelta) {
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) =>
-                msg.id === assistantId ? { ...msg, content: "(empty response)" } : msg
-              ),
-              updatedAt: Date.now()
-            }));
-            scrollToBottom();
-          }
           finalize();
         }
       });
 
-      // Fallback: if stream doesn't deliver delta/done, poll session messages and end the run.
-      fallbackTimer = window.setTimeout(async () => {
+      // Never cut off an active stream early: `invoke` returns immediately while Rust keeps reading SSE.
+      // A short fallback was incorrectly calling `finalize()` + `unlisten()` while events were still in flight.
+      // Only bail out if we never receive `done` for an unusually long time (e.g. hung connection).
+      fallbackTimer = window.setTimeout(() => {
         if (done) return;
-        try {
-          const rows = await invoke<OpencodeSessionMessage[]>("get_opencode_session_messages", { repoPath, sessionId, limit: 40 });
-          const lastAssistant = (rows || []).slice().reverse().find((m) => m?.role === "assistant");
-          const content = extractOpencodeText(lastAssistant?.content || "").trim();
-          appendOpencodeDebugLog(`prompt.fallback.poll ok assistantChars=${content.length}`);
-          if (content) {
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) => (msg.id === assistantId ? { ...msg, content } : msg)),
-              updatedAt: Date.now()
-            }));
-            scrollToBottom();
-          } else {
-            appendOpencodeDebugLog("prompt.fallback.poll empty");
-          }
-        } catch (e) {
-          appendOpencodeDebugLog(`prompt.fallback.poll error ${String(e)}`);
-        } finally {
-          finalize();
-        }
-      }, 15000);
+        appendOpencodeDebugLog("prompt.safetyFinalize 600s without done");
+        finalize();
+      }, 600_000);
 
       await invoke("run_opencode_prompt_stream", {
         repoPath,
@@ -3169,6 +3259,8 @@ export function App() {
       const status = state?.status ? String(state.status) : "";
       const input = state?.input;
       const output = state?.output;
+      const readParsed =
+        tool === "read" && typeof output === "string" ? parseReadToolOutput(output) : null;
       return (
         <details key={`ocd-tool-${idx}`} className="opencode-detail-part opencode-detail-tool" open={false}>
           <summary>
@@ -3176,6 +3268,16 @@ export function App() {
             {status ? <span className="small muted">{status}</span> : null}
             {callID ? <code className="small muted">{callID}</code> : null}
           </summary>
+          {readParsed ? (
+            <details className="opencode-detail-file" open={true}>
+              <summary>
+                <strong>文件</strong>
+                <code className="small muted">{readParsed.path}</code>
+                {readParsed.type ? <span className="small muted">{readParsed.type}</span> : null}
+              </summary>
+              <pre className="opencode-detail-pre opencode-detail-code">{withLineNumbers(readParsed.content)}</pre>
+            </details>
+          ) : null}
           {input ? (
             <details className="opencode-detail-sub" open={false}>
               <summary>input</summary>
@@ -3262,17 +3364,7 @@ export function App() {
     return mapped;
   }, [opencodeServerMessageIdByLocalId, opencodeExploreTaskByServerMessageId]);
 
-  useEffect(() => {
-    const mid = opencodeExpandedDetailMessageId.trim();
-    const sid = activeOpencodeSession?.id?.trim() || "";
-    if (!sid || !mid) return;
-    if (!opencodeRunBusy) return;
-    // When a detail view is expanded during a run, keep it fresh without requiring tab switches.
-    const t = window.setInterval(() => {
-      void loadOpencodeMessageDetails(sid, mid, 80);
-    }, 1200);
-    return () => window.clearInterval(t);
-  }, [opencodeExpandedDetailMessageId, activeOpencodeSession?.id, opencodeRunBusy, opencodeServerMessageIdByLocalId]);
+  // 主线正文由 OpenCode 的 SSE（经 Rust 转发为 `delta` 事件）流式更新；`/message` 仅在结束后 hydrate 对齐、或用户展开「执行细节」时拉取。
   const opencodeHiddenHistorySpacer = useMemo(() => {
     const hiddenCount = Math.max(0, opencodeMessages.length - opencodeVisibleCount);
     if (hiddenCount <= 0) return 0;
@@ -3802,7 +3894,11 @@ export function App() {
                           key={msg.id}
                           className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}
                         >
-                          {msg.role === "assistant" ? (
+                          {msg.role === "assistant" &&
+                          (opencodeExploreTaskByLocalMessageId[msg.id] ||
+                            opencodeExpandedDetailMessageId === msg.id ||
+                            opencodeDetailsLoadingByMessageId[msg.id] ||
+                            (msg.id === opencodeStreamingAssistantId && opencodeRunBusy)) ? (
                             <div className="opencode-msg-meta">
                               {(opencodeExploreTaskByLocalMessageId[msg.id] || opencodeExpandedDetailMessageId === msg.id) ? (
                                 <button
@@ -3820,23 +3916,68 @@ export function App() {
                               ) : null}
                               {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
                               {msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                                <span className="small muted">
+                                <span className="opencode-progress-inline" aria-label="running">
+                                  <span className="opencode-progress-bar" aria-hidden="true" />
+                                  <span className="small muted">
                                   {(() => {
                                     const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
                                     const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
                                     const last = lines.length ? lines[lines.length - 1] : (opencodeThinkingLines[opencodeThinkingLines.length - 1] || "");
                                     return last ? `执行中 · ${last}` : "执行中 · 等待执行事件…";
                                   })()}
+                                  </span>
                                 </span>
                               ) : null}
                             </div>
                           ) : null}
-                          {msg.content.trim() ? (
+                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
+                            <details className="opencode-msg-activity" open>
+                              <summary className="opencode-msg-activity-summary">
+                                <span className="opencode-msg-activity-title">活动</span>
+                                <span className="opencode-msg-activity-counts">
+                                  <span>
+                                    已探索 <strong>{opencodeThinkingReadCount}</strong> 次读取
+                                  </span>
+                                  <span className="sep">·</span>
+                                  <span>
+                                    <strong>{opencodeThinkingSearchCount}</strong> 次搜索
+                                  </span>
+                                </span>
+                              </summary>
+                              <div className="opencode-msg-activity-lines">
+                                {(() => {
+                                  const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+                                  const fromTrace = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
+                                  const lines = fromTrace.length ? fromTrace : opencodeThinkingLines;
+                                  const tail = lines.length ? lines.slice(-16) : ["正在启动任务…"];
+                                  return tail.map((line, idx) => (
+                                    <div key={`oc-act-${idx}`} className="opencode-msg-activity-line">
+                                      {line}
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
+                            </details>
+                          ) : null}
+                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
+                            (msg.content || "").trim() ? (
+                              <div className="opencode-msg-body opencode-msg-body-streaming">
+                                <MarkdownLite source={msg.content} />
+                                <span className="opencode-stream-caret" aria-label="running" />
+                              </div>
+                            ) : (
+                              <div className="opencode-thinking-wrap">
+                                <div className="opencode-thinking">
+                                  <span />
+                                  <span />
+                                  <span />
+                                  <em>Thinking</em>
+                                </div>
+                              </div>
+                            )
+                          ) : msg.content.trim() ? (
                             <div className="opencode-msg-body">
                               <MarkdownLite source={msg.content} />
-                              {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                                <span className="opencode-stream-caret" aria-label="running" />
-                              ) : null}
                             </div>
                           ) : (
                             <div className="opencode-thinking-wrap">
@@ -3853,15 +3994,28 @@ export function App() {
                               {opencodeServerMessageIdByLocalId[msg.id] ? null : (
                                 <div className="small muted">等待服务端消息 ID（执行中会自动补齐）…</div>
                               )}
+                              <div className="small muted opencode-detail-hint">
+                                下方仅展示工具、步骤等执行记录；对话正文（含模型开场/思考型旁白）在上方主线气泡。
+                              </div>
                               {opencodeDetailsErrorByMessageId[msg.id] ? (
                                 <div className="small" style={{ color: "var(--danger)" }}>
                                   {opencodeDetailsErrorByMessageId[msg.id]}
                                 </div>
                               ) : null}
                               {opencodeDetailsByMessageId[msg.id] ? (
-                                <div className="opencode-detail-msg-parts">
-                                  {(opencodeDetailsByMessageId[msg.id]?.parts || []).map(renderOpencodeDetailedPart)}
-                                </div>
+                                (() => {
+                                  const dparts = (opencodeDetailsByMessageId[msg.id]?.parts || []).filter(isOpencodeDetailOnlyPart);
+                                  if (!dparts.length) {
+                                    return (
+                                      <div className="small muted">暂无工具/步骤等执行记录（若仅有正文，已全部显示在上方主线）。</div>
+                                    );
+                                  }
+                                  return (
+                                    <div className="opencode-detail-msg-parts">
+                                      {dparts.map((part, dIdx) => renderOpencodeDetailedPart(part, dIdx))}
+                                    </div>
+                                  );
+                                })()
                               ) : (
                                 <div className="small muted">暂无细节（可能还在生成中）。</div>
                               )}
@@ -3876,35 +4030,7 @@ export function App() {
                               </div>
                             </div>
                           ) : null}
-                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                            <div className="opencode-msg-progress">
-                              <details className="opencode-progress-details" open={true}>
-                                <summary>
-                                  <strong>执行中</strong>
-                                  <span className="small muted">
-                                    {(() => {
-                                      const serverMid = opencodeServerMessageIdByLocalId[msg.id] || "";
-                                      const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
-                                      return lines.length ? ` · ${lines[lines.length - 1]}` : " · 等待执行事件…";
-                                    })()}
-                                  </span>
-                                </summary>
-                                {(() => {
-                                  const serverMid = opencodeServerMessageIdByLocalId[msg.id] || "";
-                                  const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
-                                  return (
-                                    <div className="opencode-progress-lines">
-                                      {(lines.length ? lines.slice(-12) : ["等待执行事件…"]).map((line, idx) => (
-                                        <div key={`opencode-prog-${idx}`} className="opencode-progress-line">
-                                          {line}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                })()}
-                              </details>
-                            </div>
-                          ) : null}
+                          {/* 主气泡内不再渲染大段“执行记录”，避免打乱主线内容；需要时在“执行细节”里查看 */}
                         </div>
                       ))
                     )}
@@ -3932,141 +4058,147 @@ export function App() {
                     ) : null}
                   </div>
                   <div className="opencode-input-row">
-                    <div className="opencode-model-picker-wrap" ref={opencodeModelPickerRef}>
-                      <button
-                        className="chip opencode-model-trigger"
-                        onClick={() => {
-                          const next = !showOpencodeModelPicker;
-                          if (next) {
-                            // Clear stale list before first paint of the picker.
-                            setOpencodeConfiguredProviders([]);
-                            setOpencodeConfiguredModelsByProvider({});
-                            setOpencodeConfiguredModelNamesByProvider({});
-                            // Opening the picker should not force-select server /config.model into UI state.
-                            // We only need latest configured catalog here.
-                            void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-                          }
-                          setShowOpencodeModelPicker(next);
-                        }}
-                      >
-                        {(() => {
-                          if (!activeOpencodeModel) return "Select model";
-                          const parsed = parseModelRef(activeOpencodeModel);
-                          const provider = resolveProviderAliasWithNames(
-                            parsed?.provider || "",
-                            opencodeModelsByProvider,
-                            opencodeProviderNames
-                          ) || (parsed?.provider || "");
-                          const mid = parsed?.model || "";
-                          const name =
-                            (provider ? (opencodeModelNamesByProvider[provider]?.[mid] || opencodeConfiguredModelNamesByProvider[provider]?.[mid]) : "") ||
-                            "";
-                          return name || activeOpencodeModel;
-                        })()}
-                      </button>
-                      {showOpencodeModelPicker ? (
-                        <div className="opencode-model-picker">
-                          <div className="opencode-model-picker-head">
-                            <input
-                              className="path-input opencode-model-search"
-                              placeholder="搜索已配置模型..."
-                              value={opencodeModelPickerSearch}
-                              onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
-                            />
-                            <button
-                              className="chip opencode-picker-config-btn"
-                              title="自定义提供商"
-                              onClick={() => {
-                                setShowOpencodeCustomProvider(true);
-                                setShowOpencodeModelPicker(false);
-                              }}
-                            >
-                              ＋
-                            </button>
-                            <button
-                              className="chip opencode-picker-config-btn"
-                              title="选择/连接提供商"
-                              onClick={() => {
-                                setShowOpencodeProviderPicker(true);
-                                // Clear filters so the left list shows all providers by default.
-                                setOpencodeProviderPickerSearch("");
-                                setOpencodeProviderPickerProvider(opencodeModelProvider);
-                                setOpencodeProviderPickerModelSearch("");
-                                void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
-                                setShowOpencodeModelPicker(false);
-                              }}
-                            >
-                              ⚙
-                            </button>
-                          </div>
-                          <div className="opencode-model-list-col">
-                            {opencodeConfiguredModelCandidates.length === 0 ? (
-                              <div className="small muted">暂无已配置模型。点击“＋”添加自定义提供商，或点“⚙”连接厂商。</div>
-                            ) : (
-                              opencodeConfiguredModelCandidates.map((m) => (
+                    <div className="opencode-composer">
+                      <div className="opencode-composer-body">
+                        <div className="opencode-input-shell opencode-composer-editor">
+                          <textarea
+                            ref={opencodeInputRef}
+                            className="opencode-input"
+                            placeholder="Ask OpenCode to code, inspect, or fix..."
+                            value={opencodePromptInput}
+                            onChange={(e) => setOpencodePromptInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (opencodeRunBusy) return;
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                void runOpencodePrompt();
+                              }
+                            }}
+                            rows={1}
+                          />
+                          <div className="opencode-input-hint">Enter to send · Shift+Enter newline</div>
+                        </div>
+                        <button
+                          className="chip opencode-run-btn opencode-composer-send"
+                          disabled={opencodeRunBusy || !opencodePromptInput.trim()}
+                          onClick={() => void runOpencodePrompt()}
+                        >
+                          {opencodeRunBusy ? "…" : "Run"}
+                        </button>
+                      </div>
+                      <div className="opencode-composer-toolbar">
+                        <div className="opencode-model-picker-wrap" ref={opencodeModelPickerRef}>
+                          <button
+                            type="button"
+                            className="chip opencode-model-trigger opencode-composer-model"
+                            onClick={() => {
+                              const next = !showOpencodeModelPicker;
+                              if (next) {
+                                setOpencodeConfiguredProviders([]);
+                                setOpencodeConfiguredModelsByProvider({});
+                                setOpencodeConfiguredModelNamesByProvider({});
+                                void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
+                              }
+                              setShowOpencodeModelPicker(next);
+                            }}
+                          >
+                            {(() => {
+                              if (!activeOpencodeModel) return "选择模型";
+                              const parsed = parseModelRef(activeOpencodeModel);
+                              const provider = resolveProviderAliasWithNames(
+                                parsed?.provider || "",
+                                opencodeModelsByProvider,
+                                opencodeProviderNames
+                              ) || (parsed?.provider || "");
+                              const mid = parsed?.model || "";
+                              const name =
+                                (provider ? (opencodeModelNamesByProvider[provider]?.[mid] || opencodeConfiguredModelNamesByProvider[provider]?.[mid]) : "") ||
+                                "";
+                              return name || activeOpencodeModel;
+                            })()}
+                          </button>
+                          {showOpencodeModelPicker ? (
+                            <div className="opencode-model-picker">
+                              <div className="opencode-model-picker-head">
+                                <input
+                                  className="path-input opencode-model-search"
+                                  placeholder="搜索已配置模型..."
+                                  value={opencodeModelPickerSearch}
+                                  onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
+                                />
                                 <button
-                                  key={`saved-model-${m}`}
-                                  className={m === activeOpencodeModel ? "file-item selected" : "file-item"}
+                                  type="button"
+                                  className="chip opencode-picker-config-btn"
+                                  title="自定义提供商"
                                   onClick={() => {
-                                    void applyOpencodeModel(m);
+                                    setShowOpencodeCustomProvider(true);
                                     setShowOpencodeModelPicker(false);
                                   }}
-                                  title={m}
                                 >
-                                  {(() => {
-                                    const parsed = parseModelRef(m);
-                                    const provider = resolveProviderAliasWithNames(
-                                      parsed?.provider || "",
-                                      opencodeModelsByProvider,
-                                      opencodeProviderNames
-                                    ) || (parsed?.provider || "");
-                                    const mid = parsed?.model || "";
-                                    const name =
-                                      (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") ||
-                                      "";
-                                    return (
-                                      <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
-                                        <span>{name || m}</span>
-                                        {name ? <span className="small muted">{m}</span> : null}
-                                      </span>
-                                    );
-                                  })()}
+                                  ＋
                                 </button>
-                              ))
-                            )}
-                          </div>
+                                <button
+                                  type="button"
+                                  className="chip opencode-picker-config-btn"
+                                  title="选择/连接提供商"
+                                  onClick={() => {
+                                    setShowOpencodeProviderPicker(true);
+                                    setOpencodeProviderPickerSearch("");
+                                    setOpencodeProviderPickerProvider(opencodeModelProvider);
+                                    setOpencodeProviderPickerModelSearch("");
+                                    void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+                                    setShowOpencodeModelPicker(false);
+                                  }}
+                                >
+                                  ⚙
+                                </button>
+                              </div>
+                              <div className="opencode-model-list-col">
+                                {opencodeConfiguredModelCandidates.length === 0 ? (
+                                  <div className="small muted">暂无已配置模型。点击“＋”添加自定义提供商，或点“⚙”连接厂商。</div>
+                                ) : (
+                                  opencodeConfiguredModelCandidates.map((m) => (
+                                    <button
+                                      type="button"
+                                      key={`saved-model-${m}`}
+                                      className={m === activeOpencodeModel ? "file-item selected" : "file-item"}
+                                      onClick={() => {
+                                        void applyOpencodeModel(m);
+                                        setShowOpencodeModelPicker(false);
+                                      }}
+                                      title={m}
+                                    >
+                                      {(() => {
+                                        const parsed = parseModelRef(m);
+                                        const provider = resolveProviderAliasWithNames(
+                                          parsed?.provider || "",
+                                          opencodeModelsByProvider,
+                                          opencodeProviderNames
+                                        ) || (parsed?.provider || "");
+                                        const mid = parsed?.model || "";
+                                        const name =
+                                          (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") ||
+                                          "";
+                                        return (
+                                          <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
+                                            <span>{name || m}</span>
+                                            {name ? <span className="small muted">{m}</span> : null}
+                                          </span>
+                                        );
+                                      })()}
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
-                      ) : null}
+                        <div className="opencode-composer-model-path small muted" title={activeOpencodeModel || ""}>
+                          <span>当前模型</span>
+                          <code>{activeOpencodeModel || "—"}</code>
+                        </div>
+                      </div>
                     </div>
-                    <div className="opencode-input-shell">
-                      <textarea
-                        ref={opencodeInputRef}
-                        className="opencode-input"
-                        placeholder="Ask OpenCode to code, inspect, or fix..."
-                        value={opencodePromptInput}
-                        onChange={(e) => setOpencodePromptInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (opencodeRunBusy) return;
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            void runOpencodePrompt();
-                          }
-                        }}
-                        rows={1}
-                      />
-                      <div className="opencode-input-hint">Enter to send · Shift+Enter newline</div>
-                    </div>
-                    <button
-                      className="chip opencode-run-btn"
-                      disabled={opencodeRunBusy || !opencodePromptInput.trim()}
-                      onClick={() => void runOpencodePrompt()}
-                    >
-                      {opencodeRunBusy ? "Running..." : "Run"}
-                    </button>
-                  </div>
-                  <div className="opencode-footer-row">
-                    <span className="small muted">Current model</span>
-                    <code>{activeOpencodeModel || "(not set)"}</code>
                   </div>
                   {showOpencodeDebugLog ? (
                     <div className="opencode-debug-panel">

@@ -923,11 +923,16 @@ fn stream_prompt_via_opencode_service(
         let timeout = Duration::from_secs(120);
         let mut seen_activity = false;
         let mut part_text: HashMap<String, String> = HashMap::new();
+        let mut reasoning_part_text: HashMap<String, String> = HashMap::new();
         let mut message_roles: HashMap<String, String> = HashMap::new();
         let mut pending_delta: HashMap<String, String> = HashMap::new();
         let mut pending_part_full: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut pending_reasoning_full: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut trace_seen: HashSet<String> = HashSet::new();
-        let mut got_delta = false;
+        // True once we saw `message.part.delta` with `field == "text"` for the assistant (streaming text).
+        let mut got_text_field_delta = false;
+        // True once we saw `message.part.delta` with `field == "reasoning"` for the assistant (streaming reasoning).
+        let mut got_reasoning_field_delta = false;
 
         loop {
             buf.clear();
@@ -935,6 +940,11 @@ fn stream_prompt_via_opencode_service(
                 .read_line(&mut buf)
                 .map_err(|e| format!("read event stream failed: {e}"))?;
             if n == 0 {
+                // SSE ends when the server closes the stream. Treat EOF as completion once we saw work,
+                // instead of erroring — OpenCode may not send a dedicated "done" frame after tool bursts.
+                if seen_activity {
+                    return Ok(());
+                }
                 return Err("event stream closed unexpectedly".to_string());
             }
             let line = buf.trim_end_matches(['\r', '\n']);
@@ -975,8 +985,9 @@ fn stream_prompt_via_opencode_service(
                 }
             }
 
-            // OpenCode marks prompt completion via session idle signals.
-            // When a session becomes idle, we can stop consuming the event stream.
+            // `session.idle` / status=idle can appear *between* tool rounds on some OpenCode versions.
+            // Ending the consumer early makes the desktop UI look "finished" while the server is still working.
+            // We keep reading until the HTTP stream closes (EOF) or the idle-timeout kicks in.
             if typ == "session.idle" {
                 let sid = event
                     .get("properties")
@@ -984,7 +995,13 @@ fn stream_prompt_via_opencode_service(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if sid == session_id {
-                    return Ok(());
+                    emit_stream_event(
+                        app,
+                        request_id,
+                        "debug",
+                        "session.idle (ignored; stream continues until EOF)".to_string(),
+                    );
+                    continue;
                 }
             }
 
@@ -1001,7 +1018,13 @@ fn stream_prompt_via_opencode_service(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     if status_typ == "idle" {
-                        return Ok(());
+                        emit_stream_event(
+                            app,
+                            request_id,
+                            "debug",
+                            "session.status idle (ignored; stream continues until EOF)".to_string(),
+                        );
+                        continue;
                     }
                 }
             }
@@ -1034,8 +1057,17 @@ fn stream_prompt_via_opencode_service(
                     emit_stream_event(app, request_id, "assistant_message_id", mid.to_string());
                     if let Some(delta) = pending_delta.remove(mid) {
                         if !delta.is_empty() {
-                            got_delta = true;
+                            got_text_field_delta = true;
                             emit_stream_event(app, request_id, "delta", delta);
+                        }
+                    }
+                    let reasoning_key = format!("{mid}__reasoning");
+                    if let Some(delta) = pending_delta.remove(&reasoning_key) {
+                        if !delta.is_empty() {
+                            emit_stream_event(app, request_id, "trace", delta.clone());
+                            let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                            emit_stream_event(app, request_id, "delta", payload);
+                            got_reasoning_field_delta = true;
                         }
                     }
                     if let Some(parts) = pending_part_full.remove(mid) {
@@ -1045,8 +1077,22 @@ fn stream_prompt_via_opencode_service(
                             }
                             let key = format!("{mid}:{part_id}");
                             part_text.insert(key, full.clone());
-                            if !got_delta {
+                            if !got_text_field_delta {
                                 emit_stream_event(app, request_id, "delta", full);
+                            }
+                        }
+                    }
+                    if let Some(parts) = pending_reasoning_full.remove(mid) {
+                        for (part_id, full) in parts {
+                            if full.is_empty() {
+                                continue;
+                            }
+                            let key = format!("{mid}:{part_id}");
+                            reasoning_part_text.insert(key.clone(), full.clone());
+                            if !got_reasoning_field_delta {
+                                let payload = serde_json::json!({"type":"reasoning","text": full}).to_string();
+                                emit_stream_event(app, request_id, "delta", payload);
+                                got_reasoning_field_delta = true;
                             }
                         }
                     }
@@ -1074,18 +1120,37 @@ fn stream_prompt_via_opencode_service(
                     .and_then(|p| p.get("field"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if field != "text" {
-                    continue;
-                }
                 let delta = props
                     .and_then(|p| p.get("delta"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !delta.is_empty() {
+                    if field == "reasoning" {
+                        match message_roles.get(message_id).map(String::as_str) {
+                            Some("assistant") => {
+                                seen_activity = true;
+                                emit_stream_event(app, request_id, "trace", delta.to_string());
+                                let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                                emit_stream_event(app, request_id, "delta", payload);
+                                got_reasoning_field_delta = true;
+                            }
+                            Some(_) => {}
+                            None => {
+                                let prev = pending_delta
+                                    .entry(format!("{message_id}__reasoning"))
+                                    .or_insert_with(String::new);
+                                prev.push_str(&delta);
+                            }
+                        }
+                        continue;
+                    }
+                    if field != "text" {
+                        continue;
+                    }
                     match message_roles.get(message_id).map(String::as_str) {
                         Some("assistant") => {
                             seen_activity = true;
-                            got_delta = true;
+                            got_text_field_delta = true;
                             emit_stream_event(app, request_id, "delta", delta.to_string());
                         }
                         Some(_) => {}
@@ -1207,7 +1272,7 @@ fn stream_prompt_via_opencode_service(
                     }
                 }
 
-                if part_type == "text" && !got_delta {
+                if part_type == "text" && !got_text_field_delta {
                     let key = format!("{message_id}:{part_id}");
                     let full = part_obj
                         .get("text")
@@ -1236,33 +1301,44 @@ fn stream_prompt_via_opencode_service(
                         emit_stream_event(app, request_id, "delta", delta);
                     }
                 }
-                continue;
-            }
 
-            if typ == "session.status" {
-                let props = event.get("properties").and_then(|v| v.as_object());
-                let sid = props
-                    .and_then(|p| p.get("sessionID"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if sid != session_id {
-                    continue;
+                if part_type == "reasoning" && !got_reasoning_field_delta {
+                    let key = format!("{message_id}:{part_id}");
+                    let full = part_obj
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    match message_roles.get(message_id).map(String::as_str) {
+                        Some("assistant") => {}
+                        Some(_) => continue,
+                        None => {
+                            let bucket = pending_reasoning_full
+                                .entry(message_id.to_string())
+                                .or_insert_with(HashMap::new);
+                            bucket.insert(part_id.to_string(), full);
+                            continue;
+                        }
+                    }
+                    let prev = reasoning_part_text.get(key.as_str()).cloned().unwrap_or_default();
+                    let delta = if full.starts_with(prev.as_str()) {
+                        full.get(prev.len()..).unwrap_or("").to_string()
+                    } else {
+                        full.clone()
+                    };
+                    reasoning_part_text.insert(key, full);
+                    if !delta.is_empty() {
+                        let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                        emit_stream_event(app, request_id, "delta", payload);
+                    }
                 }
-                let status_type = props
-                    .and_then(|p| p.get("status"))
-                    .and_then(|v| v.get("type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if status_type == "idle" && seen_activity {
-                    break;
-                }
+                continue;
             }
 
             if seen_activity && last_any_event.elapsed() > timeout {
                 return Err("no stream events received within 120s".to_string());
             }
         }
-        Ok(())
     });
 
     if let Some(mut s) = stream_child {
