@@ -985,9 +985,8 @@ fn stream_prompt_via_opencode_service(
                 }
             }
 
-            // `session.idle` / status=idle can appear *between* tool rounds on some OpenCode versions.
-            // Ending the consumer early makes the desktop UI look "finished" while the server is still working.
-            // We keep reading until the HTTP stream closes (EOF) or the idle-timeout kicks in.
+            // `/global/event` is a long-lived stream (with heartbeats), so it does not close per prompt.
+            // For the current session, treat idle as terminal only after assistant activity was observed.
             if typ == "session.idle" {
                 let sid = event
                     .get("properties")
@@ -995,12 +994,11 @@ fn stream_prompt_via_opencode_service(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if sid == session_id {
-                    emit_stream_event(
-                        app,
-                        request_id,
-                        "debug",
-                        "session.idle (ignored; stream continues until EOF)".to_string(),
-                    );
+                    if seen_activity {
+                        emit_stream_event(app, request_id, "debug", "session.idle -> complete".to_string());
+                        return Ok(());
+                    }
+                    emit_stream_event(app, request_id, "debug", "session.idle (no assistant activity yet)".to_string());
                     continue;
                 }
             }
@@ -1018,12 +1016,11 @@ fn stream_prompt_via_opencode_service(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     if status_typ == "idle" {
-                        emit_stream_event(
-                            app,
-                            request_id,
-                            "debug",
-                            "session.status idle (ignored; stream continues until EOF)".to_string(),
-                        );
+                        if seen_activity {
+                            emit_stream_event(app, request_id, "debug", "session.status idle -> complete".to_string());
+                            return Ok(());
+                        }
+                        emit_stream_event(app, request_id, "debug", "session.status idle (no assistant activity yet)".to_string());
                         continue;
                     }
                 }
@@ -1707,6 +1704,12 @@ pub fn get_opencode_server_config(repo_path: &str) -> Result<Value, String> {
     with_service_base(repo_path, |base| {
         run_config_get(repo_path, base)
     })
+}
+
+#[tauri::command]
+pub fn get_opencode_service_base(repo_path: &str) -> Result<String, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    ensure_managed_service(repo_path)
 }
 
 #[tauri::command]

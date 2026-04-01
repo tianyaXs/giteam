@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -159,11 +158,6 @@ type OpencodeChatSession = {
   visibleCount: number;
   loaded: boolean;
 };
-type OpencodeStreamEvent = {
-  requestId: string;
-  kind: string;
-  text: string;
-};
 type OpencodeSessionSummary = {
   id: string;
   title: string;
@@ -202,24 +196,169 @@ function withLineNumbers(text: string, maxLines = 400): string {
   return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
 }
 
-/** Text / reasoning that should appear in the main chat bubble (OpenCode-style: intro often lives in reasoning). */
+function parseOpencodeTaskSessionId(part: OpencodeDetailedPart | undefined | null): string {
+  if (!part) return "";
+  const state = (part as any)?.state || {};
+  const metadata = state?.metadata || {};
+  const raw =
+    String(metadata?.sessionId || metadata?.sessionID || "").trim() ||
+    String((part as any)?.metadata?.sessionId || "").trim();
+  if (raw) return raw;
+  const output = typeof state?.output === "string" ? state.output : "";
+  if (!output) return "";
+  const m = output.match(/task_id:\s*(ses[^\s)]+)/i);
+  return (m?.[1] || "").trim();
+}
+
+/** Assistant reply text (exclude reasoning/tool traces). */
 function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
   const rows = Array.isArray(parts) ? parts : [];
   const chunks: string[] = [];
   for (const p of rows) {
     if (!p) continue;
     const t = String((p as any)?.type || "");
-    if (t !== "text" && t !== "reasoning") continue;
+    if (t !== "text") continue;
     const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
     if (text) chunks.push(text);
   }
-  return chunks.join("\n\n");
+  if (chunks.length > 0) return chunks.join("\n\n");
+  // Fallback: some providers may emit only reasoning.
+  const fallback: string[] = [];
+  for (const p of rows) {
+    if (!p) continue;
+    const t = String((p as any)?.type || "");
+    if (t !== "reasoning") continue;
+    const text = String((p as any)?.text ?? "").trim();
+    if (text) fallback.push(text);
+  }
+  return fallback.join("\n\n");
 }
 
-function isOpencodeDetailOnlyPart(p: OpencodeDetailedPart | undefined | null): boolean {
+function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
   if (!p) return false;
   const t = String((p as any)?.type || "");
-  return t !== "text" && t !== "reasoning";
+  if (t === "text") return !!String((p as any)?.text ?? "").trim();
+  if (t === "reasoning") return !!String((p as any)?.text ?? "").trim();
+  if (t === "step-start" || t === "step-finish" || t === "patch") return false;
+  if (t === "tool") {
+    const tool = String((p as any)?.tool || "");
+    if (tool === "todowrite") return false;
+    return true;
+  }
+  return false;
+}
+
+function isOpencodeContextTool(tool: string): boolean {
+  return tool === "read" || tool === "glob" || tool === "grep" || tool === "list";
+}
+
+function summarizeOpencodeContextToolCounts(parts: OpencodeDetailedPart[] | undefined | null): {
+  read: number;
+  search: number;
+  list: number;
+} {
+  const rows = Array.isArray(parts) ? parts : [];
+  let read = 0;
+  let search = 0;
+  let list = 0;
+  for (const p of rows) {
+    if (String((p as any)?.type || "") !== "tool") continue;
+    const tool = String((p as any)?.tool || "");
+    if (tool === "read") read += 1;
+    else if (tool === "glob" || tool === "grep") search += 1;
+    else if (tool === "list") list += 1;
+  }
+  return { read, search, list };
+}
+
+function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] | undefined | null): {
+  active: boolean;
+  mode: string;
+  detail: string;
+} {
+  const rows = Array.isArray(parts) ? parts : [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const p = rows[i] as any;
+    if (!p || String(p?.type || "") !== "tool") continue;
+    const st = String(p?.state?.status || "").trim().toLowerCase();
+    if (st !== "running" && st !== "pending") continue;
+    const title = String(p?.state?.title || "").trim();
+    const tool = String(p?.tool || "").trim();
+    const input = p?.state?.input || {};
+    const subtitle = String(input?.description || input?.filePath || input?.pattern || input?.path || "").trim();
+    const detail = [tool, title || subtitle].filter(Boolean).join(" · ");
+    const mode =
+      tool === "read" || tool === "list" || tool === "glob" || tool === "grep"
+        ? "读取"
+        : tool === "write" || tool === "edit" || tool === "apply_patch"
+          ? "写入"
+          : "处理中";
+    return { active: true, mode, detail };
+  }
+  return { active: false, mode: "", detail: "" };
+}
+
+function mergeOpencodeStreamText(existingRaw: unknown, incomingRaw: unknown): string {
+  const existing = String(existingRaw || "");
+  const incoming = String(incomingRaw || "");
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  if (incoming === existing) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  if (existing.startsWith(incoming)) return existing;
+  if (existing.endsWith(incoming)) return existing;
+  if (incoming.includes(existing)) return incoming;
+  return existing + incoming;
+}
+
+function buildOpencodeReplyMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
+  const rows = Array.isArray(parts) ? parts : [];
+  const out: string[] = [];
+  for (const p of rows) {
+    if (!p) continue;
+    if (String((p as any)?.type || "") !== "text") continue;
+    const text = String((p as any)?.text ?? "").trim();
+    if (text) out.push(text);
+  }
+  return out.join("\n\n");
+}
+
+type OpencodeAssistantRenderGroup =
+  | { kind: "context"; key: string; parts: OpencodeDetailedPart[] }
+  | { kind: "part"; key: string; part: OpencodeDetailedPart };
+
+function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | undefined | null): OpencodeAssistantRenderGroup[] {
+  const rows = Array.isArray(parts) ? parts : [];
+  const out: OpencodeAssistantRenderGroup[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const cur = rows[i];
+    const t = String((cur as any)?.type || "");
+    const tool = String((cur as any)?.tool || "");
+    if (t === "tool" && isOpencodeContextTool(tool)) {
+      const batch: OpencodeDetailedPart[] = [cur];
+      i += 1;
+      while (i < rows.length) {
+        const nxt = rows[i];
+        const nt = String((nxt as any)?.type || "");
+        const ntool = String((nxt as any)?.tool || "");
+        if (nt === "tool" && isOpencodeContextTool(ntool)) {
+          batch.push(nxt);
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      const firstId = String((batch[0] as any)?.id || "");
+      const lastId = String((batch[batch.length - 1] as any)?.id || "");
+      out.push({ kind: "context", key: `context:${firstId || i}:${lastId || i}`, parts: batch });
+      continue;
+    }
+    const pid = String((cur as any)?.id || "");
+    out.push({ kind: "part", key: `part:${pid || i}`, part: cur });
+    i += 1;
+  }
+  return out;
 }
 type OnboardingStep = {
   title: string;
@@ -419,82 +558,6 @@ function toDiffRows(patch: string): DiffRow[] {
     });
   }
   return rows;
-}
-
-function parseOpencodeList(raw: string): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const line of (raw || "").split("\n")) {
-    const cleaned = line
-      .trim()
-      .replace(/^[-*•]\s+/, "")
-      .replace(/^\d+[.)]\s+/, "");
-    if (!cleaned) continue;
-    if (cleaned.startsWith("(") && cleaned.endsWith(")")) continue;
-    if (cleaned.startsWith("Error:")) continue;
-    if (seen.has(cleaned)) continue;
-    seen.add(cleaned);
-    result.push(cleaned);
-  }
-  return result;
-}
-
-function parseOpencodeCatalog(raw: string): Record<string, string[]> {
-  const grouped: Record<string, string[]> = {};
-  for (const line of (raw || "").split("\n")) {
-    const cleaned = line.trim();
-    if (!cleaned || cleaned.startsWith("Error:")) continue;
-    const idx = cleaned.indexOf("/");
-    if (idx <= 0 || idx === cleaned.length - 1) continue;
-    const provider = cleaned.slice(0, idx).trim();
-    const model = cleaned.slice(idx + 1).trim();
-    if (!provider || !model) continue;
-    const list = grouped[provider] ?? [];
-    if (!list.includes(model)) list.push(model);
-    grouped[provider] = list;
-  }
-  return grouped;
-}
-
-function extractOpencodeText(raw: string): string {
-  // Keep formatting exactly as emitted (newlines/blank lines matter for Markdown).
-  const lines = (raw || "").split("\n");
-  const chunks: string[] = [];
-  let sawJson = false;
-  for (const line of lines) {
-    try {
-      const item = JSON.parse(line.trim()) as { type?: string; text?: string; part?: { text?: string } };
-      sawJson = true;
-      if (item?.type === "text" || item?.type === "reasoning") {
-        const text = item.part?.text ?? item.text ?? "";
-        if (text) chunks.push(text);
-      }
-    } catch {
-      // keep parsing others
-    }
-  }
-  if (chunks.length > 0) return chunks.join("");
-  // If this stream chunk is structured JSON (e.g. reasoning/tool/step events),
-  // do NOT leak it into the visible assistant text.
-  if (sawJson) return "";
-  return raw || "";
-}
-
-/** Single-chunk JSON from Rust (`{"type":"reasoning"|"text","text":"..."}`) or legacy multi-line text stream. */
-function extractOpencodeMainStreamDelta(raw: string): string {
-  const s = raw || "";
-  const t = s.trim();
-  if (t.startsWith("{")) {
-    try {
-      const one = JSON.parse(t) as { type?: string; text?: string; part?: { text?: string } };
-      if (one?.type === "text" || one?.type === "reasoning") {
-        return one.part?.text ?? one.text ?? "";
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  return extractOpencodeText(s);
 }
 
 function isPlainObject(input: unknown): input is Record<string, unknown> {
@@ -1252,20 +1315,15 @@ export function App() {
   const [opencodeTestBusy, setOpencodeTestBusy] = useState(false);
   const [opencodeTestResult, setOpencodeTestResult] = useState("");
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
-  const [opencodeRunBusy, setOpencodeRunBusy] = useState(false);
-  const [opencodeStreamingAssistantId, setOpencodeStreamingAssistantId] = useState("");
+  const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
+  const [opencodeStreamingAssistantIdBySession, setOpencodeStreamingAssistantIdBySession] = useState<Record<string, string>>({});
   const [opencodeSessions, setOpencodeSessions] = useState<OpencodeChatSession[]>([]);
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
   const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
   const [opencodeDebugLogs, setOpencodeDebugLogs] = useState<string[]>([]);
-  const [opencodeThinkingLines, setOpencodeThinkingLines] = useState<string[]>([]);
-  const [opencodeThinkingReadCount, setOpencodeThinkingReadCount] = useState(0);
-  const [opencodeThinkingSearchCount, setOpencodeThinkingSearchCount] = useState(0);
-  const [opencodeTraceEventsByServerMessageId, setOpencodeTraceEventsByServerMessageId] = useState<Record<string, string[]>>({});
   const [opencodeServerMessageIdByLocalId, setOpencodeServerMessageIdByLocalId] = useState<Record<string, string>>({});
-  const [opencodeExploreTaskByServerMessageId, setOpencodeExploreTaskByServerMessageId] = useState<Record<string, unknown>>({});
-  const [opencodeExpandedDetailMessageId, setOpencodeExpandedDetailMessageId] = useState("");
+  const [opencodeLivePartsByServerMessageId, setOpencodeLivePartsByServerMessageId] = useState<Record<string, OpencodeDetailedPart[]>>({});
   const [opencodeDetailsLoadingByMessageId, setOpencodeDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
   const [opencodeDetailsErrorByMessageId, setOpencodeDetailsErrorByMessageId] = useState<Record<string, string>>({});
   const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
@@ -1275,6 +1333,7 @@ export function App() {
   const opencodePrevCountRef = useRef(0);
   const opencodeLoadingOlderRef = useRef(false);
   const opencodePrevScrollHeightRef = useRef(0);
+  const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
   const [opencodeProviderConfig, setOpencodeProviderConfig] = useState<OpencodeProviderConfig>({
     provider: "",
     npm: "",
@@ -1344,6 +1403,8 @@ export function App() {
   ]);
   const opencodeMessages = activeOpencodeSession?.messages ?? [];
   const opencodeVisibleCount = activeOpencodeSession?.visibleCount ?? OPENCODE_RECENT_VISIBLE;
+  const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
+  const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
   const selectableProviders = useMemo(() => {
     const connected = new Set(opencodeConnectedProviders.filter(Boolean));
     const out = new Set<string>();
@@ -1466,41 +1527,6 @@ export function App() {
       if (next.length > 400) return next.slice(next.length - 400);
       return next;
     });
-  }
-
-  function resetOpencodeThinkingLogs() {
-    setOpencodeThinkingLines([]);
-    setOpencodeThinkingReadCount(0);
-    setOpencodeThinkingSearchCount(0);
-  }
-
-  function appendOpencodeThinkingLine(raw: string) {
-    const text = raw.trim();
-    if (!text) return;
-    setOpencodeThinkingLines((prev) => {
-      if (prev[prev.length - 1] === text) return prev;
-      const next = [...prev, text];
-      return next.length > 48 ? next.slice(next.length - 48) : next;
-    });
-    const lower = text.toLowerCase();
-    if (
-      lower.startsWith("read ") ||
-      lower.includes(" read ") ||
-      text.includes("读取") ||
-      lower.includes("glob ")
-    ) {
-      setOpencodeThinkingReadCount((n) => n + 1);
-    } else if (
-      lower.startsWith("find ") ||
-      lower.startsWith("search ") ||
-      lower.includes(" search") ||
-      lower.includes("find ") ||
-      lower.includes("grep") ||
-      text.includes("搜索") ||
-      text.includes("查找")
-    ) {
-      setOpencodeThinkingSearchCount((n) => n + 1);
-    }
   }
 
   function pushOpencodeSavedModel(model: string) {
@@ -1662,6 +1688,131 @@ export function App() {
       const el = opencodeThreadRef.current;
       if (!el) return;
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    });
+  }
+
+  async function openOpencodeChildSession(childSessionId: string, titleHint?: string) {
+    const id = childSessionId.trim();
+    if (!id) return;
+    if (!ensureRepoSelected()) return;
+    let summary: OpencodeSessionSummary | null = null;
+    try {
+      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit: 256 });
+      summary = (rows || []).find((s) => s.id === id) || null;
+    } catch {
+      // fallback to optimistic local shell below
+    }
+    setOpencodeSessions((prev) => {
+      const idx = prev.findIndex((s) => s.id === id);
+      if (idx >= 0) {
+        const next = [...prev];
+        const old = next[idx];
+        next[idx] = {
+          ...old,
+          title: summary?.title || old.title || titleHint || old.title,
+          updatedAt: summary?.updatedAt || Date.now(),
+          createdAt: summary?.createdAt || old.createdAt
+        };
+        return next;
+      }
+      const shell: OpencodeSessionSummary = summary || {
+        id,
+        title: titleHint?.trim() || `Task ${id.slice(0, 8)}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      const added = opencodeSessionFromSummary(shell, prev.length + 1);
+      return [added, ...prev];
+    });
+    setActiveOpencodeSessionId(id);
+    try {
+      await loadOpencodeSessionMessages(id);
+      appendOpencodeDebugLog(`session.child.opened ${id}`);
+    } catch (e) {
+      appendOpencodeDebugLog(`session.child.open.error ${id} ${String(e)}`);
+    }
+  }
+
+  function upsertOpencodeLivePart(serverMessageId: string, incomingPart: unknown) {
+    const mid = serverMessageId.trim();
+    if (!mid || !incomingPart || typeof incomingPart !== "object") return;
+    const part = incomingPart as OpencodeDetailedPart;
+    const pid = String((part as any)?.id || "").trim();
+    if (!pid) return;
+    setOpencodeLivePartsByServerMessageId((prev) => {
+      const current = prev[mid] || [];
+      const next = [...current];
+      const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
+      if (hit >= 0) {
+        const previous = next[hit] as any;
+        const base = { ...previous, ...(part as any) };
+        const ptype = String((part as any)?.type || (next[hit] as any)?.type || "");
+        let rewrote = false;
+        if (ptype === "text" || ptype === "reasoning") {
+          const prevText = String(previous?.text || "");
+          const incomingText = String((part as any)?.text || "");
+          rewrote =
+            ptype === "reasoning" &&
+            !!prevText.trim() &&
+            !!incomingText.trim() &&
+            !incomingText.startsWith(prevText) &&
+            !prevText.startsWith(incomingText);
+          if (rewrote) {
+            const snapshot = {
+              ...previous,
+              id: `${pid}:snap:${Date.now().toString(36)}`,
+              _snapshot: true
+            } as OpencodeDetailedPart;
+            next.splice(hit, 0, snapshot);
+          }
+          base.text = mergeOpencodeStreamText(prevText, incomingText);
+        }
+        next[rewrote ? hit + 1 : hit] = base as OpencodeDetailedPart;
+      } else {
+        const at = next.findIndex((p) => String((p as any)?.id || "").trim().localeCompare(pid) > 0);
+        if (at >= 0) next.splice(at, 0, part);
+        else next.push(part);
+      }
+      return { ...prev, [mid]: next };
+    });
+  }
+
+  function patchOpencodeLivePartDelta(serverMessageId: string, partId: string, field: string, delta: string) {
+    const mid = serverMessageId.trim();
+    const pid = partId.trim();
+    if (!mid || !pid || !field || !delta) return;
+    setOpencodeLivePartsByServerMessageId((prev) => {
+      const current = prev[mid] || [];
+      const next = [...current];
+      const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
+      const base =
+        hit >= 0
+          ? { ...(next[hit] as any) }
+          : {
+              id: pid,
+              messageID: mid,
+              type: field === "reasoning" ? "reasoning" : "text"
+            };
+      const old = String((base as any)[field] || "");
+      (base as any)[field] = mergeOpencodeStreamText(old, old + delta);
+      if (hit >= 0) next[hit] = base as OpencodeDetailedPart;
+      else next.push(base as OpencodeDetailedPart);
+      return { ...prev, [mid]: next };
+    });
+  }
+
+  function removeOpencodeLivePart(serverMessageId: string, partId: string) {
+    const mid = serverMessageId.trim();
+    const pid = partId.trim();
+    if (!mid || !pid) return;
+    setOpencodeLivePartsByServerMessageId((prev) => {
+      const current = prev[mid] || [];
+      const hit = current.find((p) => String((p as any)?.id || "").trim() === pid);
+      const hitType = String((hit as any)?.type || "");
+      if (hitType === "reasoning" || hitType === "text") return prev;
+      const next = current.filter((p) => String((p as any)?.id || "").trim() !== pid);
+      if (next.length === current.length) return prev;
+      return { ...prev, [mid]: next };
     });
   }
 
@@ -2364,15 +2515,15 @@ export function App() {
 
   async function runOpencodePrompt() {
     if (!ensureRepoSelected()) return;
-    if (opencodeRunBusy) return;
     const prompt = opencodePromptInput.trim();
     if (!prompt) return;
     const sessionId = ensureActiveOpencodeSession();
+    if (opencodeRunBusyBySession[sessionId]) return;
     const targetSession = opencodeSessions.find((s) => s.id === sessionId);
     if (!targetSession) return;
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
-    setOpencodeStreamingAssistantId(assistantId);
+    setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
     const scrollToBottom = () => {
       if (activeOpencodeSessionId !== sessionId) return;
       const el = opencodeThreadRef.current;
@@ -2401,8 +2552,7 @@ export function App() {
     });
     scrollToBottom();
     setOpencodePromptInput("");
-    setOpencodeRunBusy(true);
-    resetOpencodeThinkingLogs();
+    setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     const configuredModel = opencodeConfig?.configuredModel || "";
     const uiModel = (opencodeModelProvider && opencodeSelectedModel) ? `${opencodeModelProvider}/${opencodeSelectedModel}` : "";
     const rawModel = configuredModel || uiModel || "";
@@ -2421,11 +2571,16 @@ export function App() {
       ].join(" ")
     );
     let done = false;
-    /** Server-side assistant message id for this run; avoids stale React state in hydrate. */
-    let serverAssistantMessageId = "";
-    let unlisten: (() => void) | null = null;
+    /** Track run-local assistant cards by upstream server message id. */
+    let currentStreamingLocalAssistantId = assistantId;
+    const localAssistantIds: string[] = [assistantId];
+    const localAssistantByServerMessageId = new Map<string, string>();
+    const serverMessageByLocalAssistantId = new Map<string, string>();
+    let streamAbort: AbortController | null = null;
     let fallbackTimer: number | null = null;
-    const hydrateFinalAssistantText = async () => {
+    let textFlushTimer: number | null = null;
+    const bufferedAssistantDeltaByLocalId = new Map<string, string>();
+    const hydrateFinalAssistantText = async (localId: string, serverMessageId: string) => {
       try {
         const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
           repoPath,
@@ -2434,7 +2589,7 @@ export function App() {
           limit: 200
         });
         const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
-        const targetId = serverAssistantMessageId.trim();
+        const targetId = serverMessageId.trim();
         let hit: OpencodeDetailedMessage | null = null;
         if (targetId) {
           hit = rows.find((m) => String((m as any)?.info?.id || "") === targetId) ?? null;
@@ -2455,7 +2610,7 @@ export function App() {
         if (!mainMd.trim()) return;
         updateOpencodeSessionById(sessionId, (session) => ({
           ...session,
-          messages: session.messages.map((msg) => (msg.id === assistantId ? { ...msg, content: mainMd } : msg)),
+          messages: session.messages.map((msg) => (msg.id === localId ? { ...msg, content: mainMd } : msg)),
           updatedAt: Date.now()
         }));
       } catch (e) {
@@ -2464,24 +2619,46 @@ export function App() {
     };
     const finalize = () => {
       if (done) return;
+      if (textFlushTimer) {
+        window.clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
       done = true;
+      for (const [localId, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
+        if (!chunk) continue;
+        updateOpencodeSessionById(sessionId, (session) => ({
+          ...session,
+          messages: session.messages.map((msg) =>
+            msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
+          ),
+          updatedAt: Date.now()
+        }));
+      }
+      bufferedAssistantDeltaByLocalId.clear();
       if (fallbackTimer) {
         window.clearTimeout(fallbackTimer);
         fallbackTimer = null;
       }
-      if (unlisten) {
-        unlisten();
-        unlisten = null;
+      if (streamAbort) {
+        streamAbort.abort();
+        streamAbort = null;
       }
-      setOpencodeRunBusy(false);
-      setOpencodeStreamingAssistantId("");
+      setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
+      setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
+      delete opencodeRunAbortBySessionRef.current[sessionId];
       appendOpencodeDebugLog(`prompt.finalize session=${sessionId}`);
       void (async () => {
-        await hydrateFinalAssistantText();
+        for (const localId of localAssistantIds) {
+          const sid = (serverMessageByLocalAssistantId.get(localId) || "").trim();
+          if (sid) {
+            await hydrateFinalAssistantText(localId, sid);
+          }
+          await loadOpencodeMessageDetails(sessionId, localId, 80);
+        }
         updateOpencodeSessionById(sessionId, (session) => ({
           ...session,
           messages: session.messages.map((msg) =>
-            msg.id === assistantId && !(msg.content || "").trim() ? { ...msg, content: "(empty response)" } : msg
+            localAssistantIds.includes(msg.id) && !(msg.content || "").trim() ? { ...msg, content: "(empty response)" } : msg
           ),
           updatedAt: Date.now()
         }));
@@ -2510,109 +2687,301 @@ export function App() {
         ((opencodeModelProvider && opencodeSelectedModel)
           ? `${opencodeModelProvider}/${opencodeSelectedModel}`
           : "");
-      unlisten = await listen<OpencodeStreamEvent>("opencode-stream", (evt) => {
-        const payload = evt.payload;
-        if (!payload || payload.requestId !== requestId) return;
-        appendOpencodeDebugLog(`stream.event kind=${payload.kind} len=${(payload.text || "").length}`);
-        if (payload.kind === "debug") {
-          appendOpencodeDebugLog(payload.text || "");
-          return;
-        }
-        if (payload.kind === "explore_task") {
-          const raw = (payload.text || "").trim();
-          if (!raw) return;
-          try {
-            const obj = JSON.parse(raw) as { messageID?: string };
-            const serverMid = String(obj?.messageID || "").trim();
-            if (serverMid) {
-              setOpencodeExploreTaskByServerMessageId((prev) => ({ ...prev, [serverMid]: obj }));
-            }
-          } catch {
-            // ignore parse error
-          }
-          return;
-        }
-        if (payload.kind === "assistant_message_id") {
-          const serverMid = (payload.text || "").trim();
-          if (serverMid) {
-            serverAssistantMessageId = serverMid;
-            setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [assistantId]: serverMid }));
-            // If details are already expanded for this local message, refresh immediately.
-            if (opencodeExpandedDetailMessageId === assistantId) {
-              void loadOpencodeMessageDetails(sessionId, assistantId, 80);
-            }
-          }
-          return;
-        }
-        if (payload.kind === "trace_event") {
-          const raw = (payload.text || "").trim();
-          if (!raw) return;
-          try {
-            const obj = JSON.parse(raw) as { messageID?: string; text?: string };
-            const serverMid = String(obj?.messageID || "").trim();
-            const text = String(obj?.text || "").trim();
-            if (serverMid && text) {
-              setOpencodeTraceEventsByServerMessageId((prev) => {
-                const cur = prev[serverMid] || [];
-                const next = [...cur, text].slice(-50);
-                return { ...prev, [serverMid]: next };
-              });
-            }
-          } catch {
-            // ignore parse error
-          }
-          return;
-        }
-        if (payload.kind === "trace") {
-          appendOpencodeThinkingLine(payload.text || "");
-          return;
-        }
-        if (payload.kind === "delta") {
-          const piece = extractOpencodeMainStreamDelta(payload.text || "");
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: session.messages.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: (msg.content || "") + piece } : msg
-            ),
-            updatedAt: Date.now()
-          }));
-          scrollToBottom();
-          return;
-        }
-        if (payload.kind === "error") {
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: session.messages.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: `Run failed\n${payload.text || ""}` } : msg
-            ),
-            updatedAt: Date.now()
-          }));
-          scrollToBottom();
-          finalize();
-          return;
-        }
-        if (payload.kind === "done") {
-          finalize();
-        }
-      });
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const eventUrl = `${base}/global/event?directory=${qdir}`;
+      const promptUrl = `${base}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${qdir}`;
+      appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
 
-      // Never cut off an active stream early: `invoke` returns immediately while Rust keeps reading SSE.
-      // A short fallback was incorrectly calling `finalize()` + `unlisten()` while events were still in flight.
-      // Only bail out if we never receive `done` for an unusually long time (e.g. hung connection).
+      const roleByMessageId = new Map<string, string>();
+      let seenAssistantActivity = false;
+      let promptPosted = false;
+      streamAbort = new AbortController();
+      opencodeRunAbortBySessionRef.current[sessionId] = streamAbort;
+      const streamSignal = streamAbort.signal;
+      const bindServerToLocalAssistant = (messageID: string, localId: string) => {
+        const mid = messageID.trim();
+        const lid = localId.trim();
+        if (!mid || !lid) return;
+        localAssistantByServerMessageId.set(mid, lid);
+        serverMessageByLocalAssistantId.set(lid, mid);
+        setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [lid]: mid }));
+        setOpencodeLivePartsByServerMessageId((prev) => (prev[mid] ? prev : { ...prev, [mid]: [] }));
+      };
+      const ensureLocalAssistantForServerMessage = (messageID: string): string => {
+        const mid = messageID.trim();
+        if (!mid) return "";
+        const cached = localAssistantByServerMessageId.get(mid);
+        if (cached) return cached;
+        if (localAssistantByServerMessageId.size === 0) {
+          bindServerToLocalAssistant(mid, assistantId);
+          currentStreamingLocalAssistantId = assistantId;
+          return assistantId;
+        }
+        const localId = `assistant-${makeId()}`;
+        localAssistantIds.push(localId);
+        bindServerToLocalAssistant(mid, localId);
+        currentStreamingLocalAssistantId = localId;
+        setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: localId }));
+        updateOpencodeSessionById(sessionId, (session) => {
+          if (session.messages.some((m) => m.id === localId)) return session;
+          const nextMessages = [...session.messages, { id: localId, role: "assistant" as const, content: "" }];
+          return {
+            ...session,
+            messages: nextMessages,
+            visibleCount: Math.min(nextMessages.length, Math.max(OPENCODE_RECENT_VISIBLE, session.visibleCount + 1)),
+            updatedAt: Date.now()
+          };
+        });
+        scrollToBottom();
+        return localId;
+      };
+      const resolveLocalAssistantFromEvent = (messageID: string): string => {
+        const mid = messageID.trim();
+        if (!mid) return "";
+        const role = roleByMessageId.get(mid) || "";
+        if (role && role !== "assistant") return "";
+        return ensureLocalAssistantForServerMessage(mid);
+      };
+      const flushAssistantTextDelta = (targetLocalId?: string) => {
+        if (done) return;
+        const localId = (targetLocalId || "").trim();
+        if (!localId) {
+          for (const [lid, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
+            if (!chunk) continue;
+            updateOpencodeSessionById(sessionId, (session) => ({
+              ...session,
+              messages: session.messages.map((msg) =>
+                msg.id === lid ? { ...msg, content: (msg.content || "") + chunk } : msg
+              ),
+              updatedAt: Date.now()
+            }));
+          }
+          bufferedAssistantDeltaByLocalId.clear();
+          scrollToBottom();
+          return;
+        }
+        const chunk = bufferedAssistantDeltaByLocalId.get(localId) || "";
+        if (!chunk) return;
+        bufferedAssistantDeltaByLocalId.set(localId, "");
+        updateOpencodeSessionById(sessionId, (session) => ({
+          ...session,
+          messages: session.messages.map((msg) =>
+            msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
+          ),
+          updatedAt: Date.now()
+        }));
+        scrollToBottom();
+      };
+      const scheduleAssistantTextFlush = () => {
+        if (textFlushTimer || done) return;
+        textFlushTimer = window.setTimeout(() => {
+          textFlushTimer = null;
+          flushAssistantTextDelta();
+        }, 16);
+      };
+
+      const onRawEvent = (raw: string) => {
+        let evtObj: any;
+        try {
+          evtObj = JSON.parse(raw);
+        } catch {
+          return;
+        }
+        const wrapped = evtObj?.payload ? evtObj.payload : evtObj;
+        const typ = String(wrapped?.type || "");
+        const props = wrapped?.properties || {};
+
+        if (typ === "message.updated") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const info = props?.info || {};
+          const role = String(info?.role || "");
+          const mid = String(info?.id || "");
+          if (mid) roleByMessageId.set(mid, role);
+          if (role === "assistant" && mid) {
+            seenAssistantActivity = true;
+            const localId = ensureLocalAssistantForServerMessage(mid);
+            currentStreamingLocalAssistantId = localId || currentStreamingLocalAssistantId;
+          }
+          if (role === "assistant" && info?.error) {
+            const localId = mid ? ensureLocalAssistantForServerMessage(mid) : currentStreamingLocalAssistantId;
+            updateOpencodeSessionById(sessionId, (session) => ({
+              ...session,
+              messages: session.messages.map((msg) =>
+                msg.id === localId ? { ...msg, content: `Run failed\n${toDisplayJson(info.error, 1200)}` } : msg
+              ),
+              updatedAt: Date.now()
+            }));
+            scrollToBottom();
+          }
+          return;
+        }
+
+        if (typ === "message.part.delta") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const messageID = String(props?.messageID || "");
+          const localId = resolveLocalAssistantFromEvent(messageID);
+          if (!localId) return;
+          seenAssistantActivity = true;
+          const field = String(props?.field || "");
+          const delta = String(props?.delta || "");
+          const partID = String(props?.partID || "");
+          if (!delta) return;
+          if (field === "reasoning" || field === "text") {
+            patchOpencodeLivePartDelta(messageID, partID, field, delta);
+          }
+          if (field === "text") {
+            const cur = bufferedAssistantDeltaByLocalId.get(localId) || "";
+            bufferedAssistantDeltaByLocalId.set(localId, cur + delta);
+            scheduleAssistantTextFlush();
+          }
+          return;
+        }
+
+        if (typ === "message.part.updated") {
+          const part = props?.part || {};
+          const sid = String(part?.sessionID || props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const messageID = String(part?.messageID || "");
+          const localId = resolveLocalAssistantFromEvent(messageID);
+          if (!localId) return;
+          seenAssistantActivity = true;
+          upsertOpencodeLivePart(messageID, part);
+          const ptype = String(part?.type || "");
+          if (ptype === "text") flushAssistantTextDelta(localId);
+          return;
+        }
+
+        if (typ === "message.part.removed") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const messageID = String(props?.messageID || "");
+          const localId = resolveLocalAssistantFromEvent(messageID);
+          if (!localId) return;
+          const partID = String(props?.partID || "");
+          removeOpencodeLivePart(messageID, partID);
+          return;
+        }
+
+        if (typ === "session.error") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const err = toDisplayJson(props?.error, 1200);
+          updateOpencodeSessionById(sessionId, (session) => ({
+            ...session,
+            messages: session.messages.map((msg) =>
+              msg.id === currentStreamingLocalAssistantId ? { ...msg, content: `Run failed\n${err}` } : msg
+            ),
+            updatedAt: Date.now()
+          }));
+          scrollToBottom();
+          finalize();
+          return;
+        }
+
+        if (typ === "session.status") {
+          const sid = String(props?.sessionID || "");
+          const statusType = String(props?.status?.type || "");
+          if (sid === sessionId && statusType === "idle" && (seenAssistantActivity || promptPosted)) {
+            finalize();
+          }
+          return;
+        }
+
+        if (typ === "session.idle") {
+          const sid = String(props?.sessionID || "");
+          if (sid === sessionId && (seenAssistantActivity || promptPosted)) {
+            finalize();
+          }
+          return;
+        }
+      };
+
+      void (async () => {
+        try {
+          const resp = await fetch(eventUrl, {
+            method: "GET",
+            headers: { Accept: "text/event-stream" },
+            signal: streamSignal
+          });
+          if (!resp.ok || !resp.body) {
+            throw new Error(`SSE connect failed: HTTP ${resp.status}`);
+          }
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          const processFrame = (frame: string) => {
+            if (!frame.trim()) return;
+            const dataLines: string[] = [];
+            for (const rawLine of frame.split(/\r?\n/)) {
+              if (!rawLine || rawLine.startsWith(":")) continue;
+              if (!rawLine.startsWith("data:")) continue;
+              const payload = rawLine.slice(5).replace(/^\s/, "");
+              dataLines.push(payload);
+            }
+            if (dataLines.length <= 0) return;
+            onRawEvent(dataLines.join("\n"));
+          };
+          while (!done) {
+            const { value, done: rdDone } = await reader.read();
+            if (rdDone) break;
+            buf += decoder.decode(value, { stream: true });
+            // SSE frames are separated by blank lines and may include multi-line data fields.
+            while (true) {
+              const m = buf.match(/\r?\n\r?\n/);
+              if (!m || m.index == null) break;
+              const frame = buf.slice(0, m.index);
+              buf = buf.slice(m.index + m[0].length);
+              processFrame(frame);
+            }
+          }
+          processFrame(buf);
+        } catch (streamErr) {
+          if (done) return;
+          appendOpencodeDebugLog(`prompt.sse.error ${String(streamErr)}`);
+          updateOpencodeSessionById(sessionId, (session) => ({
+            ...session,
+            messages: session.messages.map((msg) =>
+              msg.id === assistantId ? { ...msg, content: `Run failed\n${String(streamErr)}` } : msg
+            ),
+            updatedAt: Date.now()
+          }));
+          scrollToBottom();
+          finalize();
+        }
+      })();
+
       fallbackTimer = window.setTimeout(() => {
         if (done) return;
         appendOpencodeDebugLog("prompt.safetyFinalize 600s without done");
         finalize();
       }, 600_000);
 
-      await invoke("run_opencode_prompt_stream", {
-        repoPath,
-        prompt,
-        model,
-        sessionId,
-        requestId
+      const promptBody: Record<string, unknown> = {
+        parts: [{ type: "text", text: prompt }]
+      };
+      const mr = parseModelRef(model);
+      if (mr) {
+        promptBody.model = {
+          providerID: mr.provider,
+          modelID: mr.model
+        };
+      }
+      const postResp = await fetch(promptUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(promptBody)
       });
-      appendOpencodeDebugLog(`prompt.invoke.ok request=${requestId}`);
+      if (!(postResp.status === 204 || postResp.ok)) {
+        const bodyText = await postResp.text().catch(() => "");
+        throw new Error(`prompt_async failed: HTTP ${postResp.status} ${bodyText}`);
+      }
+      promptPosted = true;
+      appendOpencodeDebugLog(`prompt.invoke.ok request=${requestId} directSSE`);
     } catch (e) {
       appendOpencodeDebugLog(`prompt.invoke.error ${String(e)}`);
       updateOpencodeSessionById(sessionId, (session) => ({
@@ -2624,6 +2993,33 @@ export function App() {
       }));
       scrollToBottom();
       finalize();
+    }
+  }
+
+  async function stopOpencodePrompt(sessionIdInput?: string) {
+    const sid = (sessionIdInput || activeOpencodeSessionId || "").trim();
+    if (!sid) return;
+    const ctl = opencodeRunAbortBySessionRef.current[sid];
+    if (ctl) {
+      try {
+        ctl.abort();
+      } catch {
+        // ignore
+      }
+      delete opencodeRunAbortBySessionRef.current[sid];
+    }
+    setOpencodeRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
+    setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+    try {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      appendOpencodeDebugLog(`prompt.abort session=${sid}`);
+    } catch (e) {
+      appendOpencodeDebugLog(`prompt.abort.error session=${sid} ${String(e)}`);
     }
   }
 
@@ -3175,10 +3571,19 @@ export function App() {
   }, [opencodeMessages.length, activeOpencodeSessionId]);
 
   useEffect(() => {
+    Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
+      try {
+        ctl.abort();
+      } catch {
+        // ignore
+      }
+    });
+    opencodeRunAbortBySessionRef.current = {};
     setOpencodeSessions([]);
     setActiveOpencodeSessionId("");
-    setOpencodeRunBusy(false);
-    setOpencodeStreamingAssistantId("");
+    setOpencodeRunBusyBySession({});
+    setOpencodeStreamingAssistantIdBySession({});
+    setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
     opencodePrevCountRef.current = 0;
   }, [selectedRepo?.id]);
@@ -3208,163 +3613,87 @@ export function App() {
       opencodeMessages.length <= opencodeVisibleCount
         ? opencodeMessages
         : opencodeMessages.slice(opencodeMessages.length - opencodeVisibleCount);
+    const streamingId = activeOpencodeStreamingAssistantId;
+    const running = activeOpencodeSessionBusy;
     // Only show the "Thinking" placeholder for the currently-streaming assistant message.
     // Any older empty assistant messages are treated as transient placeholders and hidden.
     return visible.filter((msg) => {
       if (msg.role !== "assistant") return true;
       if ((msg.content || "").trim()) return true;
-      return msg.id === opencodeStreamingAssistantId && opencodeRunBusy;
+      return msg.id === streamingId && running;
     });
-  }, [opencodeMessages, opencodeVisibleCount, opencodeStreamingAssistantId, opencodeRunBusy]);
+  }, [opencodeMessages, opencodeVisibleCount, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy]);
 
-  function renderOpencodeDetailedPart(part: OpencodeDetailedPart, idx: number) {
+  function renderOpencodeExecutionPart(part: OpencodeDetailedPart, keyHint: string) {
     const type = String(part?.type || "");
-    if (type === "text") {
-      const text = String((part as any).text || "");
-      if (!text.trim()) return null;
-      return (
-        <div key={`ocd-text-${idx}`} className="opencode-detail-part opencode-detail-text">
-          <MarkdownLite source={text} />
-        </div>
-      );
-    }
-    if (type === "reasoning") {
-      const text = String((part as any).text || "");
-      const meta = (part as any).metadata;
-      return (
-        <details key={`ocd-reason-${idx}`} className="opencode-detail-part opencode-detail-reasoning" open={false}>
-          <summary>
-            <strong>Reasoning</strong>
-            {meta ? <span className="small muted">（metadata）</span> : null}
-          </summary>
-          <pre className="opencode-detail-pre">{text || toDisplayJson(part)}</pre>
-        </details>
-      );
-    }
     if (type === "step-start" || type === "step-finish") {
-      const snapshot = (part as any).snapshot ? String((part as any).snapshot) : "";
-      const reason = (part as any).reason ? String((part as any).reason) : "";
-      return (
-        <div key={`ocd-step-${idx}`} className="opencode-detail-part opencode-detail-step">
-          <span className="chip">{type}</span>
-          {reason ? <span className="small muted">{reason}</span> : null}
-          {snapshot ? <code className="small muted">{snapshot.slice(0, 12)}</code> : null}
-        </div>
-      );
+      return null;
     }
-    if (type === "tool") {
-      const tool = String((part as any).tool || "");
-      const callID = String((part as any).callID || "");
-      const state = (part as any).state;
-      const status = state?.status ? String(state.status) : "";
-      const input = state?.input;
-      const output = state?.output;
-      const readParsed =
-        tool === "read" && typeof output === "string" ? parseReadToolOutput(output) : null;
-      return (
-        <details key={`ocd-tool-${idx}`} className="opencode-detail-part opencode-detail-tool" open={false}>
-          <summary>
-            <strong>{tool || "tool"}</strong>
-            {status ? <span className="small muted">{status}</span> : null}
-            {callID ? <code className="small muted">{callID}</code> : null}
-          </summary>
-          {readParsed ? (
-            <details className="opencode-detail-file" open={true}>
-              <summary>
-                <strong>文件</strong>
-                <code className="small muted">{readParsed.path}</code>
-                {readParsed.type ? <span className="small muted">{readParsed.type}</span> : null}
-              </summary>
-              <pre className="opencode-detail-pre opencode-detail-code">{withLineNumbers(readParsed.content)}</pre>
-            </details>
-          ) : null}
-          {input ? (
-            <details className="opencode-detail-sub" open={false}>
-              <summary>input</summary>
-              <pre className="opencode-detail-pre">{toDisplayJson(input)}</pre>
-            </details>
-          ) : null}
-          {output ? (
-            <details className="opencode-detail-sub" open={false}>
-              <summary>output</summary>
-              <pre className="opencode-detail-pre">{typeof output === "string" ? output : toDisplayJson(output, 20000)}</pre>
-            </details>
-          ) : null}
-          {!input && !output ? <pre className="opencode-detail-pre">{toDisplayJson(part)}</pre> : null}
-        </details>
-      );
-    }
-    if (type === "patch") {
-      const files = Array.isArray((part as any).files) ? ((part as any).files as unknown[]) : [];
-      const hash = (part as any).hash ? String((part as any).hash) : "";
-      return (
-        <details key={`ocd-patch-${idx}`} className="opencode-detail-part opencode-detail-patch" open={false}>
-          <summary>
-            <strong>patch</strong>
-            {hash ? <code className="small muted">{hash.slice(0, 12)}</code> : null}
-            {files.length ? <span className="small muted">{files.length} files</span> : null}
-          </summary>
-          {files.length ? (
-            <ul className="opencode-detail-files">
-              {files.map((f, j) => (
-                <li key={`ocd-patch-file-${idx}-${j}`}>
-                  <code>{String(f)}</code>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <pre className="opencode-detail-pre">{toDisplayJson(part)}</pre>
-          )}
-        </details>
-      );
-    }
+    if (type !== "tool") return null;
+    const tool = String((part as any).tool || "tool");
+    if (tool === "todowrite") return null;
+    const state = (part as any).state || {};
+    const status = String(state.status || "").trim();
+    const running = status.toLowerCase() === "running" || status.toLowerCase() === "pending";
+    const input = state.input;
+    const output = state.output;
+    const subtitle =
+      String(input?.description || input?.filePath || input?.pattern || input?.query || input?.url || "").trim();
+    const ioLabel = (() => {
+      if (!running) return "";
+      if (tool === "read" || tool === "list" || tool === "glob" || tool === "grep") return "读取";
+      if (tool === "write" || tool === "edit" || tool === "apply_patch") return "写入";
+      return "";
+    })();
+    const taskSessionId = tool === "task" ? parseOpencodeTaskSessionId(part) : "";
+    const taskSubagent = tool === "task" ? String(input?.subagent_type || "").trim() : "";
+    const taskTitleHint =
+      (tool === "task" ? String(input?.description || "").trim() : "") ||
+      (taskSubagent ? `@${taskSubagent}` : "") ||
+      "";
+    const contextTool = isOpencodeContextTool(tool);
+    const parsedRead = tool === "read" && typeof output === "string" ? parseReadToolOutput(output) : null;
+    const outputText = typeof output === "string" ? output : output ? toDisplayJson(output, 2200) : "";
+    const rawLines = outputText ? outputText.split("\n") : [];
+    const previewLines = rawLines.slice(0, 12);
+    const outputPreview = previewLines.join("\n") + (rawLines.length > 12 ? "\n..." : "");
+    const showOutput = !contextTool && !!outputPreview && (status === "error" || tool === "bash");
     return (
-      <details key={`ocd-unknown-${idx}`} className="opencode-detail-part opencode-detail-unknown" open={false}>
-        <summary>
-          <strong>{type || "part"}</strong>
-          <span className="small muted">raw</span>
-        </summary>
-        <pre className="opencode-detail-pre">{toDisplayJson(part, 20000)}</pre>
-      </details>
-    );
-  }
-
-  function renderOpencodeDetailedMessage(m: OpencodeDetailedMessage, idx: number) {
-    const info = (m?.info || {}) as Record<string, unknown>;
-    const role = String(info.role || "");
-    const agent = String(info.agent || "");
-    const providerID = String((info as any).providerID || (info as any).model?.providerID || "");
-    const modelID = String((info as any).modelID || (info as any).model?.modelID || "");
-    const created = (info as any).time?.created ? Number((info as any).time.created) : 0;
-    const completed = (info as any).time?.completed ? Number((info as any).time.completed) : 0;
-    const titleBits = [role, agent, providerID && modelID ? `${providerID}/${modelID}` : modelID || providerID].filter(Boolean);
-    const parts = Array.isArray(m?.parts) ? (m.parts as OpencodeDetailedPart[]) : [];
-    return (
-      <div key={`ocd-msg-${idx}`} className="opencode-detail-msg">
-        <div className="opencode-detail-msg-head">
-          <strong>{titleBits.join(" · ") || `message ${idx + 1}`}</strong>
-          {created ? <span className="small muted">{new Date(created).toLocaleString()}</span> : null}
-          {completed && completed !== created ? (
-            <span className="small muted">{`→ ${new Date(completed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`}</span>
+      <div key={`oce-tool-${keyHint}`} className="opencode-exec-item opencode-exec-tool">
+        <div className="opencode-exec-tool-head">
+          <span
+            className={
+              status === "error"
+                ? "opencode-exec-status opencode-exec-status-error"
+                : running
+                  ? "opencode-exec-status opencode-exec-status-running"
+                  : "opencode-exec-status"
+            }
+            aria-hidden="true"
+          />
+          <strong className={running ? "opencode-live-text" : ""}>{tool}</strong>
+          {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
+          {subtitle ? <span className="small muted">{subtitle}</span> : null}
+          {taskSessionId ? (
+            <button
+              type="button"
+              className="opencode-task-link"
+              onClick={() => void openOpencodeChildSession(taskSessionId, taskTitleHint)}
+              title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
+            >
+              {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
+            </button>
           ) : null}
         </div>
-        <div className="opencode-detail-msg-parts">
-          {parts.length === 0 ? <pre className="opencode-detail-pre">{toDisplayJson(m, 20000)}</pre> : parts.map(renderOpencodeDetailedPart)}
-        </div>
+        {parsedRead ? (
+          <pre className="opencode-tool-output">{withLineNumbers(parsedRead.content, 80)}</pre>
+        ) : null}
+        {!parsedRead && showOutput ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
       </div>
     );
   }
 
-  const opencodeExploreTaskByLocalMessageId = useMemo(() => {
-    const mapped: Record<string, unknown> = {};
-    for (const [localId, serverId] of Object.entries(opencodeServerMessageIdByLocalId)) {
-      const payload = opencodeExploreTaskByServerMessageId[serverId];
-      if (payload) mapped[localId] = payload;
-    }
-    return mapped;
-  }, [opencodeServerMessageIdByLocalId, opencodeExploreTaskByServerMessageId]);
-
-  // 主线正文由 OpenCode 的 SSE（经 Rust 转发为 `delta` 事件）流式更新；`/message` 仅在结束后 hydrate 对齐、或用户展开「执行细节」时拉取。
+  // 主线正文由 OpenCode 原始 SSE 流式更新；`/message` 仅在结束后 hydrate 对齐。
   const opencodeHiddenHistorySpacer = useMemo(() => {
     const hiddenCount = Math.max(0, opencodeMessages.length - opencodeVisibleCount);
     if (hiddenCount <= 0) return 0;
@@ -3886,176 +4215,127 @@ export function App() {
                     {opencodeMessages.length === 0 ? (
                       <div className="opencode-empty-state">
                         <strong>Start a focused coding session</strong>
-                        <p className="small muted">Describe the task in one sentence. Enter to run, Shift+Enter for newline.</p>
+                        <p className="small muted">Describe the task in one sentence.</p>
                       </div>
                     ) : (
-                      opencodeRenderedMessages.map((msg) => (
-                        <div
-                          key={msg.id}
-                          className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}
-                        >
-                          {msg.role === "assistant" &&
-                          (opencodeExploreTaskByLocalMessageId[msg.id] ||
-                            opencodeExpandedDetailMessageId === msg.id ||
-                            opencodeDetailsLoadingByMessageId[msg.id] ||
-                            (msg.id === opencodeStreamingAssistantId && opencodeRunBusy)) ? (
-                            <div className="opencode-msg-meta">
-                              {(opencodeExploreTaskByLocalMessageId[msg.id] || opencodeExpandedDetailMessageId === msg.id) ? (
-                                <button
-                                  className="opencode-detail-link"
-                                  onClick={() => {
-                                    const sid = activeOpencodeSession?.id || "";
-                                    if (!sid) return;
-                                    const next = opencodeExpandedDetailMessageId === msg.id ? "" : msg.id;
-                                    setOpencodeExpandedDetailMessageId(next);
-                                    if (next) void loadOpencodeMessageDetails(sid, msg.id, 80);
-                                  }}
-                                >
-                                  {opencodeExpandedDetailMessageId === msg.id ? "收起执行细节" : "查看执行细节"}
-                                </button>
-                              ) : null}
-                              {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
-                              {msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                                <span className="opencode-progress-inline" aria-label="running">
-                                  <span className="opencode-progress-bar" aria-hidden="true" />
-                                  <span className="small muted">
+                      opencodeRenderedMessages.map((msg) => {
+                        const isAssistant = msg.role === "assistant";
+                        const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;
+                        const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+                        const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
+                        const fetchedParts = Array.isArray(detail?.parts) ? (detail!.parts as OpencodeDetailedPart[]) : [];
+                        const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+                        const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
+                        const renderParts = detailParts.filter(isOpencodeRenderablePart);
+                        const timelineGroups = buildOpencodeAssistantRenderGroups(renderParts);
+                        const hasTimeline = timelineGroups.length > 0;
+                        const fallbackReply = (buildOpencodeReplyMarkdownFromParts(detailParts) || msg.content || "").trim();
+                        return (
+                          <div
+                            key={msg.id}
+                            className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}
+                          >
+                            {isAssistant && opencodeDetailsLoadingByMessageId[msg.id] && liveParts.length <= 0 ? (
+                              <div className="opencode-msg-meta">
+                                {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
+                              </div>
+                            ) : null}
+                            {isAssistant ? (
+                              hasTimeline ? (
+                                <div className="opencode-assistant-timeline">
                                   {(() => {
-                                    const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-                                    const lines = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
-                                    const last = lines.length ? lines[lines.length - 1] : (opencodeThinkingLines[opencodeThinkingLines.length - 1] || "");
-                                    return last ? `执行中 · ${last}` : "执行中 · 等待执行事件…";
+                                    const reasoningIndexes = timelineGroups
+                                      .map((item, groupIdx) =>
+                                        item.kind === "part" && String((item.part as any)?.type || "") === "reasoning" ? groupIdx : -1
+                                      )
+                                      .filter((groupIdx) => groupIdx >= 0);
+                                    const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
+                                    return timelineGroups.map((g, idx) => {
+                                      if (g.kind === "context") {
+                                        const c = summarizeOpencodeContextToolCounts(g.parts);
+                                        const progress = summarizeOpencodeContextProgress(g.parts);
+                                        return (
+                                          <div key={`${msg.id}:${g.key}`} className="opencode-exec-context">
+                                            <div className="opencode-exec-context-head">
+                                              <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
+                                                {isStreaming || progress.active ? "Gathering Context" : "Context"}
+                                              </strong>
+                                              <span className="small muted">
+                                                {progress.detail
+                                                  ? `${progress.mode} · ${progress.detail} · ${c.read} read · ${c.search} search · ${c.list} list`
+                                                  : `${c.read} read · ${c.search} search · ${c.list} list`}
+                                              </span>
+                                            </div>
+                                            <div className="opencode-exec-list">
+                                              {g.parts.map((p, pidx) => renderOpencodeExecutionPart(p, `${g.key}:${pidx}`))}
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+                                      const part = g.part;
+                                      const t = String((part as any)?.type || "");
+                                      if (t === "text") {
+                                        const text = String((part as any)?.text || "").trim();
+                                        if (!text) return null;
+                                        return (
+                                          <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
+                                            <MarkdownLite source={text} />
+                                            {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
+                                          </div>
+                                        );
+                                      }
+                                      if (t === "reasoning") {
+                                        const text = String((part as any)?.text || "").trim();
+                                        if (!text) return null;
+                                        const keepOpen = !isStreaming || idx === lastReasoningIndex;
+                                        return (
+                                          <details
+                                            key={`${msg.id}:${g.key}`}
+                                            className="opencode-think-card"
+                                            open={keepOpen}
+                                          >
+                                            <summary className="opencode-think-card-summary">
+                                              <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
+                                            </summary>
+                                            <div className="opencode-msg-body">
+                                              <MarkdownLite source={text} />
+                                            </div>
+                                          </details>
+                                        );
+                                      }
+                                      return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
+                                    });
                                   })()}
-                                  </span>
-                                </span>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                            <details className="opencode-msg-activity" open>
-                              <summary className="opencode-msg-activity-summary">
-                                <span className="opencode-msg-activity-title">活动</span>
-                                <span className="opencode-msg-activity-counts">
-                                  <span>
-                                    已探索 <strong>{opencodeThinkingReadCount}</strong> 次读取
-                                  </span>
-                                  <span className="sep">·</span>
-                                  <span>
-                                    <strong>{opencodeThinkingSearchCount}</strong> 次搜索
-                                  </span>
-                                </span>
-                              </summary>
-                              <div className="opencode-msg-activity-lines">
-                                {(() => {
-                                  const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-                                  const fromTrace = serverMid ? (opencodeTraceEventsByServerMessageId[serverMid] || []) : [];
-                                  const lines = fromTrace.length ? fromTrace : opencodeThinkingLines;
-                                  const tail = lines.length ? lines.slice(-16) : ["正在启动任务…"];
-                                  return tail.map((line, idx) => (
-                                    <div key={`oc-act-${idx}`} className="opencode-msg-activity-line">
-                                      {line}
-                                    </div>
-                                  ));
-                                })()}
-                              </div>
-                            </details>
-                          ) : null}
-                          {msg.role === "assistant" && msg.id === opencodeStreamingAssistantId && opencodeRunBusy ? (
-                            (msg.content || "").trim() ? (
-                              <div className="opencode-msg-body opencode-msg-body-streaming">
-                                <MarkdownLite source={msg.content} />
-                                <span className="opencode-stream-caret" aria-label="running" />
-                              </div>
-                            ) : (
-                              <div className="opencode-thinking-wrap">
-                                <div className="opencode-thinking">
-                                  <span />
-                                  <span />
-                                  <span />
-                                  <em>Thinking</em>
                                 </div>
-                              </div>
-                            )
-                          ) : msg.content.trim() ? (
-                            <div className="opencode-msg-body">
-                              <MarkdownLite source={msg.content} />
-                            </div>
-                          ) : (
-                            <div className="opencode-thinking-wrap">
-                              <div className="opencode-thinking">
-                                <span />
-                                <span />
-                                <span />
-                                <em>Thinking</em>
-                              </div>
-                            </div>
-                          )}
-                          {msg.role === "assistant" && opencodeExpandedDetailMessageId === msg.id ? (
-                            <div className="opencode-msg-details">
-                              {opencodeServerMessageIdByLocalId[msg.id] ? null : (
-                                <div className="small muted">等待服务端消息 ID（执行中会自动补齐）…</div>
-                              )}
-                              <div className="small muted opencode-detail-hint">
-                                下方仅展示工具、步骤等执行记录；对话正文（含模型开场/思考型旁白）在上方主线气泡。
-                              </div>
-                              {opencodeDetailsErrorByMessageId[msg.id] ? (
-                                <div className="small" style={{ color: "var(--danger)" }}>
-                                  {opencodeDetailsErrorByMessageId[msg.id]}
+                              ) : fallbackReply ? (
+                                <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
+                                  <MarkdownLite source={fallbackReply} />
+                                  {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
                                 </div>
-                              ) : null}
-                              {opencodeDetailsByMessageId[msg.id] ? (
-                                (() => {
-                                  const dparts = (opencodeDetailsByMessageId[msg.id]?.parts || []).filter(isOpencodeDetailOnlyPart);
-                                  if (!dparts.length) {
-                                    return (
-                                      <div className="small muted">暂无工具/步骤等执行记录（若仅有正文，已全部显示在上方主线）。</div>
-                                    );
-                                  }
-                                  return (
-                                    <div className="opencode-detail-msg-parts">
-                                      {dparts.map((part, dIdx) => renderOpencodeDetailedPart(part, dIdx))}
-                                    </div>
-                                  );
-                                })()
                               ) : (
-                                <div className="small muted">暂无细节（可能还在生成中）。</div>
-                              )}
-                              <div className="opencode-msg-details-actions">
-                                <button
-                                  className="chip"
-                                  disabled={!activeOpencodeSession?.id || !!opencodeDetailsLoadingByMessageId[msg.id]}
-                                  onClick={() => activeOpencodeSession?.id && void loadOpencodeMessageDetails(activeOpencodeSession.id, msg.id, 80)}
-                                >
-                                  刷新
-                                </button>
+                                <div className="opencode-thinking-wrap">
+                                  <div className="opencode-thinking">
+                                    <span />
+                                    <span />
+                                    <span />
+                                    <em>Thinking</em>
+                                  </div>
+                                </div>
+                              )
+                            ) : msg.content.trim() ? (
+                              <div className="opencode-msg-body">
+                                <MarkdownLite source={msg.content} />
                               </div>
-                            </div>
-                          ) : null}
-                          {/* 主气泡内不再渲染大段“执行记录”，避免打乱主线内容；需要时在“执行细节”里查看 */}
-                        </div>
-                      ))
+                            ) : null}
+                            {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
+                              <div className="small" style={{ color: "var(--danger)", marginTop: 8 }}>
+                                {opencodeDetailsErrorByMessageId[msg.id]}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })
                     )}
-                    {opencodeRunBusy ? (
-                      <details className="opencode-thinking-log opencode-thinking-log-floating" open={false}>
-                        <summary className="opencode-thinking-title">
-                          <span>正在探索</span>
-                          {opencodeThinkingReadCount > 0 || opencodeThinkingSearchCount > 0 ? (
-                            <strong>{` ${opencodeThinkingReadCount} 次读取, ${opencodeThinkingSearchCount} 次搜索`}</strong>
-                          ) : null}
-                          <span className="opencode-thinking-summary-tail">
-                            {opencodeThinkingLines.length > 0 ? opencodeThinkingLines[opencodeThinkingLines.length - 1] : "正在启动任务…"}
-                          </span>
-                        </summary>
-                        <div className="opencode-thinking-lines">
-                          {opencodeThinkingLines.length === 0 ? (
-                            <div>Waiting for tool activity...</div>
-                          ) : (
-                            opencodeThinkingLines.slice(-40).map((line, idx) => (
-                              <div key={`think-live-${idx}`} className="opencode-thinking-line">{line}</div>
-                            ))
-                          )}
-                        </div>
-                      </details>
-                    ) : null}
                   </div>
                   <div className="opencode-input-row">
                     <div className="opencode-composer">
@@ -4068,7 +4348,7 @@ export function App() {
                             value={opencodePromptInput}
                             onChange={(e) => setOpencodePromptInput(e.target.value)}
                             onKeyDown={(e) => {
-                              if (opencodeRunBusy) return;
+                              if (activeOpencodeSessionBusy) return;
                               if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 void runOpencodePrompt();
@@ -4076,14 +4356,13 @@ export function App() {
                             }}
                             rows={1}
                           />
-                          <div className="opencode-input-hint">Enter to send · Shift+Enter newline</div>
                         </div>
                         <button
-                          className="chip opencode-run-btn opencode-composer-send"
-                          disabled={opencodeRunBusy || !opencodePromptInput.trim()}
-                          onClick={() => void runOpencodePrompt()}
+                          className={activeOpencodeSessionBusy ? "chip opencode-run-btn opencode-composer-send opencode-stop-btn" : "chip opencode-run-btn opencode-composer-send"}
+                          disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
+                          onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
                         >
-                          {opencodeRunBusy ? "…" : "Run"}
+                          {activeOpencodeSessionBusy ? "Stop" : "Run"}
                         </button>
                       </div>
                       <div className="opencode-composer-toolbar">
@@ -4192,10 +4471,6 @@ export function App() {
                               </div>
                             </div>
                           ) : null}
-                        </div>
-                        <div className="opencode-composer-model-path small muted" title={activeOpencodeModel || ""}>
-                          <span>当前模型</span>
-                          <code>{activeOpencodeModel || "—"}</code>
                         </div>
                       </div>
                     </div>

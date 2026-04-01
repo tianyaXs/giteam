@@ -43,6 +43,7 @@ fn main() {
             commands::opencode::get_opencode_server_provider_state,
             commands::opencode::get_opencode_server_provider_auth,
             commands::opencode::get_opencode_server_config,
+            commands::opencode::get_opencode_service_base,
             commands::opencode::get_opencode_server_global_config,
             commands::opencode::patch_opencode_server_config,
             commands::opencode::set_opencode_server_current_model,
