@@ -2471,31 +2471,6 @@ button {
   min-width: 0;
 }
 
-.settings-provider-advanced {
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
-
-.settings-provider-note {
-  align-self: center;
-  padding: 0 4px;
-}
-
-.settings-model-manager {
-  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  border-radius: 10px;
-  padding: 10px;
-  display: grid;
-  gap: 10px;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  overflow: hidden;
-  max-height: 62vh;
-}
-
-.settings-model-empty {
-  display: grid;
-  gap: 8px;
-}
-
 .settings-model-head {
   display: flex;
   gap: 8px;
@@ -2521,8 +2496,7 @@ button {
   background: color-mix(in srgb, var(--bg-panel) 90%, transparent);
 }
 
-.settings-model-col,
-.settings-model-manager {
+.settings-model-col {
   min-width: 0;
 }
 
@@ -2532,14 +2506,274 @@ button {
   text-align: left;
 }
 
-.opencode-validate-log {
+.opencode-provider-picker-card {
+  width: min(840px, 92vw);
+}
+
+.opencode-provider-picker-title {
+  display: grid;
+  gap: 2px;
+}
+
+.opencode-provider-picker-title h3 {
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+}
+
+.opencode-provider-picker-title p {
+  margin: 0;
+}
+
+.opencode-provider-picker-toolbar .path-input {
+  margin: 0;
+}
+
+.opencode-provider-picker-grid {
+  grid-template-columns: minmax(230px, 0.95fr) minmax(260px, 1.05fr);
+  min-height: 240px;
+}
+
+.opencode-inline-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.opencode-inline-loading span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 82%, var(--bg-soft));
+  animation: opencode-provider-pulse 0.95s ease-in-out infinite;
+}
+
+.opencode-provider-row {
+  justify-content: space-between;
+  align-items: center;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.opencode-provider-row-main {
+  display: grid;
+  min-width: 0;
+}
+
+.opencode-provider-row-side {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.opencode-provider-row-main small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-provider-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.opencode-provider-state.connected {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 55%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.opencode-provider-divider {
+  margin: 2px 2px 0;
+  padding: 6px 8px 2px;
+  border-top: 1px dashed color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.opencode-provider-empty {
+  padding: 14px;
+}
+
+.opencode-provider-connect {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
   border-radius: 8px;
-  padding: 8px;
-  max-height: 160px;
-  overflow: auto;
-  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+}
+
+.opencode-provider-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.opencode-provider-panel-title {
+  display: grid;
+  min-width: 0;
+}
+
+.opencode-provider-panel-actions {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.opencode-provider-menu-trigger {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+}
+
+.opencode-provider-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 156px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 10px 26px color-mix(in srgb, #000 25%, transparent);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  z-index: 15;
+}
+
+.opencode-provider-menu-item {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.opencode-provider-menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-soft) 65%, transparent);
+}
+
+.opencode-provider-menu-item.danger {
+  color: var(--danger);
+}
+
+.opencode-provider-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.opencode-provider-connect-compact {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.opencode-provider-right-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.opencode-provider-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.opencode-provider-model-main {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 2px 0;
+  cursor: pointer;
+  display: grid;
+}
+
+.opencode-provider-model-main small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-soft) 65%, #ececec);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.1s ease;
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.opencode-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  background: #fff;
+  transition: left 0.16s ease, border-color 0.16s ease;
+}
+
+.opencode-switch.is-on {
+  border-color: color-mix(in srgb, #21191b 76%, transparent);
+  background: color-mix(in srgb, #21191b 88%, var(--bg-soft));
+}
+
+.opencode-switch.is-on::after {
+  left: 16px;
+  border-color: color-mix(in srgb, #21191b 46%, transparent);
+}
+
+.opencode-switch:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.opencode-switch:active {
+  transform: scale(0.96);
+}
+
+.opencode-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.opencode-provider-model-row:hover .opencode-provider-model-main span {
+  color: color-mix(in srgb, var(--text) 96%, var(--accent));
+}
+
+@keyframes opencode-provider-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .ui-busy-layer {

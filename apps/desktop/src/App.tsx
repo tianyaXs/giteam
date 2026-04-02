@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
@@ -119,6 +119,7 @@ type OpencodeServerProviderCatalog = {
   name: string;
   models: string[];
   modelNames?: Record<string, string>;
+  source?: string;
 };
 type OpencodeServerProviderState = {
   providers: OpencodeServerProviderCatalog[];
@@ -591,21 +592,6 @@ function applyOpencodeCatalog(
   return { providers, provider, models, model };
 }
 
-function defaultProviderBaseUrl(provider: string): string {
-  const p = provider.trim().toLowerCase();
-  if (p === "openai") return "https://api.openai.com/v1";
-  if (p === "anthropic") return "https://api.anthropic.com/v1";
-  if (p === "openrouter") return "https://openrouter.ai/api/v1";
-  if (p === "google") return "https://generativelanguage.googleapis.com/v1beta";
-  if (p === "xai") return "https://api.x.ai/v1";
-  if (p === "deepseek") return "https://api.deepseek.com/v1";
-  if (p === "mistral") return "https://api.mistral.ai/v1";
-  if (p === "groq") return "https://api.groq.com/openai/v1";
-  if (p === "azure") return "https://{resource}.openai.azure.com/openai";
-  if (p === "azure-cognitive-services") return "https://{resource}.cognitiveservices.azure.com/openai";
-  return "";
-}
-
 function normalizeProviderId(input: string): string {
   return (input || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -654,11 +640,6 @@ type ProviderPreset = {
   apiKeyHint: string;
 };
 
-type ProviderOptionField = {
-  key: keyof OpencodeProviderConfig;
-  placeholder: string;
-};
-
 const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "opencode", name: "OpenCode", defaultBaseUrl: "", apiKeyHint: "OPENCODE_API_KEY" },
   { id: "openai", name: "OpenAI", defaultBaseUrl: "https://api.openai.com/v1", apiKeyHint: "OPENAI_API_KEY" },
@@ -683,31 +664,10 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "gitlab", name: "GitLab Duo", defaultBaseUrl: "", apiKeyHint: "GITLAB_TOKEN / gitlab auth" }
 ];
 
-function providerOptionFields(provider: string): ProviderOptionField[] {
-  const p = provider.trim().toLowerCase();
-  if (p === "amazon-bedrock") {
-    return [
-      { key: "region", placeholder: "region (e.g. us-east-1)" },
-      { key: "profile", placeholder: "profile (optional)" },
-      { key: "endpoint", placeholder: "endpoint (optional)" }
-    ];
-  }
-  if (p === "google-vertex" || p === "google-vertex-anthropic") {
-    return [
-      { key: "project", placeholder: "project (required for vertex)" },
-      { key: "location", placeholder: "location (e.g. us-central1/global)" }
-    ];
-  }
-  if (p === "azure") {
-    return [{ key: "resourceName", placeholder: "resourceName (optional)" }];
-  }
-  if (p === "azure-cognitive-services") {
-    return [{ key: "resourceName", placeholder: "resourceName (AZURE_COGNITIVE_SERVICES_RESOURCE_NAME)" }];
-  }
-  if (p === "github-copilot") {
-    return [{ key: "enterpriseUrl", placeholder: "enterpriseUrl (GitHub Enterprise optional)" }];
-  }
-  return [];
+function isPresetProviderId(providerId: string): boolean {
+  const pid = (providerId || "").trim();
+  if (!pid) return false;
+  return PROVIDER_PRESETS.some((p) => p.id === pid);
 }
 
 function renderInlineMarkdown(text: string): ReactNode[] {
@@ -1282,10 +1242,13 @@ export function App() {
   const [opencodeConnectedProviders, setOpencodeConnectedProviders] = useState<string[]>([]);
   const [opencodeConfiguredProviders, setOpencodeConfiguredProviders] = useState<string[]>([]);
   const [opencodeProviderNames, setOpencodeProviderNames] = useState<Record<string, string>>({});
+  const [opencodeProviderSourceById, setOpencodeProviderSourceById] = useState<Record<string, string>>({});
   const [opencodeModelsByProvider, setOpencodeModelsByProvider] = useState<Record<string, string[]>>({});
   const [opencodeModelNamesByProvider, setOpencodeModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
   const [opencodeConfiguredModelsByProvider, setOpencodeConfiguredModelsByProvider] = useState<Record<string, string[]>>({});
   const [opencodeConfiguredModelNamesByProvider, setOpencodeConfiguredModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
+  const [opencodeGlobalConfigProviderMap, setOpencodeGlobalConfigProviderMap] = useState<Record<string, OpencodeServerConfigProvider>>({});
+  const [opencodeDisabledProviders, setOpencodeDisabledProviders] = useState<string[]>([]);
   const [opencodeCatalogLoading, setOpencodeCatalogLoading] = useState(false);
   const [opencodeModelProvider, setOpencodeModelProvider] = useState("");
   const [opencodeSelectedModel, setOpencodeSelectedModel] = useState("");
@@ -1300,20 +1263,17 @@ export function App() {
   const [opencodeConnectProviderId, setOpencodeConnectProviderId] = useState("");
   const [opencodeConnectProviderName, setOpencodeConnectProviderName] = useState("");
   const [opencodeConnectApiKey, setOpencodeConnectApiKey] = useState("");
+  const [showOpencodeAuthDialogFor, setShowOpencodeAuthDialogFor] = useState("");
+  const [opencodeProviderActionMenuFor, setOpencodeProviderActionMenuFor] = useState("");
   const [opencodeConnectBusy, setOpencodeConnectBusy] = useState(false);
+  const [opencodeDisconnectingProvider, setOpencodeDisconnectingProvider] = useState("");
   const [opencodeProviderAuthCache, setOpencodeProviderAuthCache] = useState<Record<string, OpencodeProviderAuthMethod[]>>({});
   const [opencodeHiddenModels, setOpencodeHiddenModels] = useState<Set<string>>(() => new Set());
   const [opencodeDraftModel, setOpencodeDraftModel] = useState("");
   const [opencodeSessionModel, setOpencodeSessionModel] = useState<Record<string, string>>({});
-  const [opencodeCustomProviderDraft, setOpencodeCustomProviderDraft] = useState("");
   const [opencodeConfig, setOpencodeConfig] = useState<OpencodeModelConfig | null>(null);
   const [opencodeConfigBusy, setOpencodeConfigBusy] = useState(false);
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
-  const [showModelManager, setShowModelManager] = useState(false);
-  const [modelManagerSearch, setModelManagerSearch] = useState("");
-  const [showProviderAdvanced, setShowProviderAdvanced] = useState(false);
-  const [opencodeTestBusy, setOpencodeTestBusy] = useState(false);
-  const [opencodeTestResult, setOpencodeTestResult] = useState("");
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
   const [opencodeStreamingAssistantIdBySession, setOpencodeStreamingAssistantIdBySession] = useState<Record<string, string>>({});
@@ -1405,37 +1365,6 @@ export function App() {
   const opencodeVisibleCount = activeOpencodeSession?.visibleCount ?? OPENCODE_RECENT_VISIBLE;
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
-  const selectableProviders = useMemo(() => {
-    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const out = new Set<string>();
-    for (const id of opencodeConfiguredProviders) {
-      if (id && connected.has(id)) out.add(id);
-    }
-    const cur = opencodeModelProvider.trim();
-    if (cur && connected.has(cur)) out.add(cur);
-    else if (cur && !PROVIDER_PRESETS.some((p) => p.id === cur)) out.add(cur);
-    return Array.from(out).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  }, [opencodeConfiguredProviders, opencodeConnectedProviders, opencodeModelProvider]);
-  const visibleModels = useMemo(() => {
-    const connKey = resolveProviderAliasWithNames(opencodeModelProvider, opencodeModelsByProvider, opencodeProviderNames);
-    if (connKey && !opencodeConnectedProviders.includes(connKey)) return [];
-    const cfgKey = resolveProviderAliasWithNames(
-      opencodeModelProvider,
-      opencodeConfiguredModelsByProvider,
-      opencodeProviderNames
-    );
-    const pool = cfgKey ? (opencodeConfiguredModelsByProvider[cfgKey] ?? []) : [];
-    const q = modelManagerSearch.trim().toLowerCase();
-    if (!q) return pool;
-    return pool.filter((m) => m.toLowerCase().includes(q));
-  }, [
-    modelManagerSearch,
-    opencodeModelProvider,
-    opencodeConfiguredModelsByProvider,
-    opencodeProviderNames,
-    opencodeConnectedProviders,
-    opencodeModelsByProvider
-  ]);
   const opencodeSavedModelCandidates = useMemo(() => {
     const q = opencodeModelPickerSearch.trim().toLowerCase();
     if (!q) return opencodeSavedModels;
@@ -1484,15 +1413,63 @@ export function App() {
     // Provider list for enable/disable should be "all known providers":
     // - presets (static list)
     // - plus any providers discovered from server /provider (custom ones)
+    // - plus providers defined in /global/config (including currently disabled ones),
+    //   so users can reconnect by entering API key.
     const presetIds = PROVIDER_PRESETS.map((p) => p.id).filter(Boolean);
-    const merged = Array.from(new Set([...presetIds, ...opencodeProviders].filter(Boolean)));
-    merged.sort((a, b) => a.localeCompare(b));
-    if (!q) return merged;
-    return merged.filter((id) => {
+    const disabled = new Set((opencodeDisabledProviders || []).filter(Boolean));
+    const configProviderIds = Object.keys(opencodeGlobalConfigProviderMap || {})
+      .filter(Boolean)
+      // Disabled preset providers stay visible for reconnection.
+      // Disabled custom providers are hidden; they can be re-added via "Custom".
+      .filter((id) => !disabled.has(id) || isPresetProviderId(id));
+    const merged = Array.from(new Set([...presetIds, ...opencodeProviders, ...configProviderIds].filter(Boolean)));
+    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
+    const byPriority = (arr: string[]) =>
+      [...arr].sort((a, b) => {
+        const ca = connected.has(a) ? 1 : 0;
+        const cb = connected.has(b) ? 1 : 0;
+        if (ca !== cb) return cb - ca;
+        return a.localeCompare(b);
+      });
+    if (!q) return byPriority(merged);
+    const filtered = merged.filter((id) => {
       const name = opencodeProviderNames[id] || "";
       return id.toLowerCase().includes(q) || name.toLowerCase().includes(q);
     });
-  }, [opencodeProviders, opencodeProviderNames, opencodeProviderPickerSearch]);
+    return byPriority(filtered);
+  }, [
+    opencodeProviders,
+    opencodeProviderNames,
+    opencodeProviderPickerSearch,
+    opencodeConnectedProviders,
+    opencodeGlobalConfigProviderMap,
+    opencodeDisabledProviders
+  ]);
+
+  function getOpencodeProviderSource(providerId: string): string {
+    const pid = (providerId || "").trim();
+    if (!pid) return "";
+    return (opencodeProviderSourceById[pid] || "").trim().toLowerCase();
+  }
+
+  function isOpencodeConfigCustomProvider(providerId: string): boolean {
+    const pid = (providerId || "").trim();
+    if (!pid) return false;
+    const provider = opencodeGlobalConfigProviderMap[pid];
+    if (!provider) return false;
+    if ((provider.npm || "").trim() !== "@ai-sdk/openai-compatible") return false;
+    const models = provider.models || {};
+    return Object.keys(models).filter(Boolean).length > 0;
+  }
+
+  function getOpencodeProviderTag(providerId: string): string {
+    const source = getOpencodeProviderSource(providerId);
+    if (source === "env") return "env";
+    if (source === "api") return "api";
+    if (source === "config") return isOpencodeConfigCustomProvider(providerId) ? "custom" : "config";
+    if (source === "custom") return "custom";
+    return isPresetProviderId(providerId) ? "preset" : "other";
+  }
   const onboardingSteps: OnboardingStep[] = [
     {
       title: "Step 1 · Import Project",
@@ -2036,11 +2013,13 @@ export function App() {
     const rows = state?.providers || [];
     const connected = (state?.connected || []).filter(Boolean);
     const names: Record<string, string> = {};
+    const sources: Record<string, string> = {};
     const catalog: Record<string, string[]> = {};
     const modelNamesCatalog: Record<string, Record<string, string>> = {};
     for (const row of rows) {
       if (!row?.id) continue;
       names[row.id] = row.name || row.id;
+      if (row.source) sources[row.id] = row.source;
       catalog[row.id] = Array.from(new Set((row.models || []).filter(Boolean))).sort((a, b) => a.localeCompare(b));
       modelNamesCatalog[row.id] = row.modelNames || {};
     }
@@ -2058,6 +2037,7 @@ export function App() {
       opencodeSelectedModel
     );
     setOpencodeProviderNames((prev) => ({ ...prev, ...names }));
+    setOpencodeProviderSourceById((prev) => ({ ...prev, ...sources }));
     setOpencodeModelsByProvider(catalog);
     setOpencodeModelNamesByProvider(modelNamesCatalog);
     setOpencodeProviders(Object.keys(catalog).sort((a, b) => a.localeCompare(b)));
@@ -2076,6 +2056,9 @@ export function App() {
       setOpencodeModelsByProvider((prev) => ({ ...prev, [entry.id]: models }));
       setOpencodeModelNamesByProvider((prev) => ({ ...prev, [entry.id]: entry.modelNames || {} }));
       setOpencodeProviderNames((prev) => ({ ...prev, [entry.id]: prev[entry.id] || entry.name || entry.id }));
+      if (entry.source) {
+        setOpencodeProviderSourceById((prev) => ({ ...prev, [entry.id]: entry.source || "" }));
+      }
       ensureProviderExists(entry.id);
     }
     return models;
@@ -2096,32 +2079,22 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!showModelManager) return;
-    const provider = resolveProviderAliasWithNames(
-      opencodeModelProvider.trim(),
-      opencodeModelsByProvider,
-      opencodeProviderNames
-    );
-    if (!provider) return;
-    if (provider !== opencodeModelProvider) {
-      setOpencodeModelProvider(provider);
-      return;
-    }
-    if (opencodeModelsByProvider[provider]) return;
-    void fetchOpencodeModels(provider);
-  }, [showModelManager, opencodeModelProvider, opencodeModelsByProvider, opencodeProviderNames]);
-
-  useEffect(() => {
     if (!showOpencodeProviderPicker) return;
     // Reset filters so the modal shows the full provider list by default.
     setOpencodeProviderPickerSearch("");
     setOpencodeProviderPickerModelSearch("");
+    setOpencodeProviderActionMenuFor("");
+    setShowOpencodeAuthDialogFor("");
     appendOpencodeDebugLog(
       `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${opencodeProviders.length} configuredProviders=${opencodeConfiguredProviders.length} connectedProviders=${opencodeConnectedProviders.length}`
     );
     // Ensure provider/model display names are fresh when opening the picker.
     void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
   }, [showOpencodeProviderPicker]);
+
+  useEffect(() => {
+    setOpencodeProviderActionMenuFor("");
+  }, [opencodeProviderPickerProvider]);
 
   async function loadOpencodeModelConfig() {
     if (!ensureRepoSelected()) return;
@@ -2172,6 +2145,14 @@ export function App() {
         for (const p of rows) {
           if (!p?.id) continue;
           if (p.name && !next[p.id]) next[p.id] = p.name;
+        }
+        return next;
+      });
+      setOpencodeProviderSourceById(() => {
+        const next: Record<string, string> = {};
+        for (const p of rows) {
+          if (!p?.id) continue;
+          if (p.source) next[p.id] = p.source;
         }
         return next;
       });
@@ -2227,7 +2208,9 @@ export function App() {
       // Use /global/config for "configured providers/models", but keep /config.model as the current model source of truth.
       const globalCfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath });
       const providerMap = globalCfg?.provider || {};
+      setOpencodeGlobalConfigProviderMap(providerMap);
       const disabled = new Set((globalCfg?.disabled_providers || []).filter(Boolean));
+      setOpencodeDisabledProviders(Array.from(disabled).sort((a, b) => a.localeCompare(b)));
       const configuredProviders = Object.keys(providerMap).filter((id) => id && !disabled.has(id));
 
       // Build "configured models" catalog from /config.provider.*.models (OpenCode UI behavior)
@@ -2235,8 +2218,8 @@ export function App() {
       const modelsByProvider: Record<string, string[]> = {};
       const modelNamesByProvider: Record<string, Record<string, string>> = {};
       for (const [pid, p] of Object.entries(providerMap)) {
+        if (pid) names[pid] = p?.name || pid;
         if (!pid || disabled.has(pid)) continue;
-        names[pid] = p?.name || pid;
         const modelEntries = p?.models || {};
         const models = Object.keys(modelEntries).filter(Boolean).sort((a, b) => a.localeCompare(b));
         if (models.length > 0) modelsByProvider[pid] = models;
@@ -2292,224 +2275,62 @@ export function App() {
   }
 
 
-  async function openProviderConfig() {
-    if (!ensureRepoSelected()) return;
-    const provider = opencodeModelProvider.trim();
-    if (!provider) {
-      setMessage("Select provider first");
-      return;
-    }
-    setOpencodeProviderConfigBusy(true);
-    try {
-      const cfg = await invoke<OpencodeProviderConfig>("get_opencode_provider_config", {
-        repoPath,
-        provider
-      });
-      setOpencodeProviderConfig({
-        provider: cfg.provider,
-        npm: cfg.npm || (cfg.provider && !PROVIDER_PRESETS.some((p) => p.id === cfg.provider) ? "@ai-sdk/openai-compatible" : ""),
-        name: cfg.name || "",
-        baseUrl: cfg.baseUrl || defaultProviderBaseUrl(cfg.provider),
-        apiKey: cfg.apiKey,
-        headers: {},
-        endpoint: cfg.endpoint || "",
-        region: cfg.region || "",
-        profile: cfg.profile || "",
-        project: cfg.project || "",
-        location: cfg.location || "",
-        resourceName: cfg.resourceName || "",
-        enterpriseUrl: cfg.enterpriseUrl || "",
-        timeout: cfg.timeout || "",
-        chunkTimeout: cfg.chunkTimeout || ""
-      });
-    } catch (e) {
-      setError(String(e));
-      setMessage("Load provider config failed");
-    } finally {
-      setOpencodeProviderConfigBusy(false);
-    }
-  }
-
   function ensureProviderExists(provider: string) {
     if (!provider) return;
     setOpencodeProviders((prev) => (prev.includes(provider) ? prev : [...prev, provider].sort((a, b) => a.localeCompare(b))));
   }
 
-  function selectProvider(provider: string) {
-    if (!provider) return;
-    ensureProviderExists(provider);
-    setOpencodeModelProvider(provider);
-    const cfgResolved = resolveProviderAliasWithNames(provider, opencodeConfiguredModelsByProvider, opencodeProviderNames);
-    const candidates = cfgResolved ? (opencodeConfiguredModelsByProvider[cfgResolved] ?? []) : [];
-    setOpencodeSelectedModel((prev) => (prev && candidates.includes(prev) ? prev : ""));
-    const presetBase = defaultProviderBaseUrl(provider);
-    const isPreset = PROVIDER_PRESETS.some((p) => p.id === provider);
-    setOpencodeProviderConfig((prev) => ({
-      ...prev,
-      provider,
-      npm: prev.npm || (!isPreset ? "@ai-sdk/openai-compatible" : ""),
-      name: prev.name || "",
-      baseUrl: prev.baseUrl || presetBase
-    }));
-  }
-
-  function addCustomProvider() {
-    const next = opencodeCustomProviderDraft.trim();
-    if (!next) return;
-    setOpencodeProviderNames((prev) => ({ ...prev, [next]: prev[next] || next }));
-    setOpencodeCustomProviderDraft("");
-    selectProvider(next);
-    setOpencodeProviderConfig((prev) => ({
-      ...prev,
-      provider: next,
-      npm: prev.npm || "@ai-sdk/openai-compatible"
-    }));
-    void openProviderConfig();
-  }
-
-  async function saveOpencodeConfiguration() {
+  async function disconnectOpencodeProvider(providerId: string) {
+    const pid = providerId.trim();
+    if (!pid) return;
     if (!ensureRepoSelected()) return;
-    const providerToSave = opencodeModelProvider.trim();
-    const modelToSave = opencodeSelectedModel.trim();
-    if (!providerToSave || !modelToSave) {
-      setMessage("Select provider and model first");
+    if (getOpencodeProviderSource(pid) === "env") {
+      setMessage("Environment provider cannot be disconnected");
       return;
     }
-    setOpencodeConfigBusy(true);
-    setOpencodeProviderConfigBusy(true);
+    setOpencodeDisconnectingProvider(pid);
+    setError("");
     try {
-      const cfg = await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-        repoPath,
-        provider: providerToSave,
-        npm: opencodeProviderConfig.npm,
-        name: opencodeProviderConfig.name,
-        baseUrl: opencodeProviderConfig.baseUrl,
-        apiKey: opencodeProviderConfig.apiKey,
-        headers: opencodeProviderConfig.headers || {},
-        endpoint: opencodeProviderConfig.endpoint,
-        region: opencodeProviderConfig.region,
-        profile: opencodeProviderConfig.profile,
-        project: opencodeProviderConfig.project,
-        location: opencodeProviderConfig.location,
-        resourceName: opencodeProviderConfig.resourceName,
-        enterpriseUrl: opencodeProviderConfig.enterpriseUrl,
-        timeout: opencodeProviderConfig.timeout,
-        chunkTimeout: opencodeProviderConfig.chunkTimeout,
-        modelId: modelToSave,
-        modelName: modelToSave
-      });
-      setOpencodeProviderConfig(cfg);
-      ensureProviderExists(providerToSave);
-      setOpencodeModelProvider(providerToSave);
+      await invoke<boolean>("disconnect_opencode_server_provider", { repoPath, providerId: pid });
 
-      const full = modelToSave.includes("/")
-        ? modelToSave
-        : `${providerToSave}/${modelToSave}`;
-      const mcfg = await invoke<OpencodeModelConfig>("set_opencode_model_config", {
-        repoPath,
-        model: full
-      });
-      setOpencodeConfig(mcfg);
-      pushOpencodeSavedModel(full);
-      // Keep connected-provider state and model catalogs in sync after saving auth/config.
-      await refreshOpencodeCatalog();
-      setMessage(`Saved configuration: ${full}`);
+      // Verify on server immediately after command; if still connected, do an explicit fallback sequence.
+      const afterState = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath }).catch(() => null);
+      const afterCfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath }).catch(() => null);
+      const stillConnected = !!afterState?.connected?.includes(pid);
+
+      if (stillConnected) {
+        await invoke<boolean>("delete_opencode_server_auth", { repoPath, providerId: pid }).catch(() => false);
+        const disabled = Array.isArray(afterCfg?.disabled_providers)
+          ? afterCfg!.disabled_providers!.filter((x) => String(x || "").trim())
+          : [];
+        const nextDisabled = Array.from(new Set([...disabled, pid]));
+        await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
+          repoPath,
+          patch: {
+            disabled_providers: nextDisabled
+          }
+        });
+
+        const finalState = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath }).catch(() => null);
+        const finalConnected = !!finalState?.connected?.includes(pid);
+        if (finalConnected) {
+          throw new Error(`Provider still connected after fallback: ${pid}`);
+        }
+      }
+
+      if (showOpencodeAuthDialogFor === pid) {
+        setShowOpencodeAuthDialogFor("");
+      }
+      if (opencodeProviderActionMenuFor === pid) {
+        setOpencodeProviderActionMenuFor("");
+      }
+      await refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+      setMessage(`Disconnected provider: ${pid}`);
     } catch (e) {
       setError(String(e));
-      setMessage("Save configuration failed");
+      setMessage("Disconnect provider failed");
     } finally {
-      setOpencodeConfigBusy(false);
-      setOpencodeProviderConfigBusy(false);
-    }
-  }
-
-  async function validateOpencodeModel() {
-    if (!ensureRepoSelected()) return;
-    const model = opencodeSelectedModel?.trim();
-    const provider = opencodeModelProvider?.trim();
-    if (!model || !provider) {
-      setMessage("Select provider and model first");
-      return;
-    }
-    setOpencodeTestBusy(true);
-    setOpencodeTestResult("");
-    try {
-      const full = model.includes("/") ? model : `${provider}/${model}`;
-      // Ensure latest form values are persisted before validation, otherwise opencode run
-      // may still use stale provider/model config from opencode.json.
-      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-        repoPath,
-        provider,
-        npm: opencodeProviderConfig.npm,
-        name: opencodeProviderConfig.name,
-        baseUrl: opencodeProviderConfig.baseUrl,
-        apiKey: opencodeProviderConfig.apiKey,
-        headers: opencodeProviderConfig.headers || {},
-        endpoint: opencodeProviderConfig.endpoint,
-        region: opencodeProviderConfig.region,
-        profile: opencodeProviderConfig.profile,
-        project: opencodeProviderConfig.project,
-        location: opencodeProviderConfig.location,
-        resourceName: opencodeProviderConfig.resourceName,
-        enterpriseUrl: opencodeProviderConfig.enterpriseUrl,
-        timeout: opencodeProviderConfig.timeout,
-        chunkTimeout: opencodeProviderConfig.chunkTimeout,
-        modelId: model,
-        modelName: model
-      });
-      const modelCfg = await invoke<OpencodeModelConfig>("set_opencode_model_config", {
-        repoPath,
-        model: full
-      });
-      const providerCfg = await invoke<OpencodeProviderConfig>("get_opencode_provider_config", {
-        repoPath,
-        provider
-      });
-      const out = await invoke<string>("test_opencode_model", {
-        repoPath,
-        model: full,
-        message: "Reply with OK only."
-      });
-      const normalized = (out || "").trim();
-      if (!normalized) {
-        setOpencodeTestResult("Validation failed: empty response");
-      } else {
-        const lines = normalized.split("\n").map((s) => s.trim()).filter(Boolean);
-        const firstJson = lines.find((line) => line.startsWith("{") && line.endsWith("}")) || "";
-        if (firstJson) {
-          try {
-            const parsed = JSON.parse(firstJson) as { type?: string; error?: { data?: { message?: string } } };
-            if (parsed.type === "error") {
-              const msg = parsed.error?.data?.message || firstJson;
-              const snapshot = [
-                `provider=${providerCfg.provider}`,
-                `npm=${providerCfg.npm || "(empty)"}`,
-                `baseURL=${providerCfg.baseUrl || "(empty)"}`,
-                `apiKeyLen=${(providerCfg.apiKey || "").length}`,
-                `model=${full}`,
-                `configPath=${modelCfg.configPath}`
-              ].join("\n");
-              setOpencodeTestResult(`Validation failed\n${msg}\n\n[config snapshot]\n${snapshot}`);
-              return;
-            }
-          } catch {
-            // keep original output fallback
-          }
-        }
-        const snapshot = [
-          `provider=${providerCfg.provider}`,
-          `npm=${providerCfg.npm || "(empty)"}`,
-          `baseURL=${providerCfg.baseUrl || "(empty)"}`,
-          `apiKeyLen=${(providerCfg.apiKey || "").length}`,
-          `model=${full}`,
-          `configPath=${modelCfg.configPath}`
-        ].join("\n");
-        setOpencodeTestResult(`Validation OK\n${normalized.slice(0, 1200)}\n\n[config snapshot]\n${snapshot}`);
-      }
-    } catch (e) {
-      setOpencodeTestResult(`Validation failed\n${String(e)}`);
-    } finally {
-      setOpencodeTestBusy(false);
+      setOpencodeDisconnectingProvider("");
     }
   }
 
@@ -2553,9 +2374,25 @@ export function App() {
     scrollToBottom();
     setOpencodePromptInput("");
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
-    const configuredModel = opencodeConfig?.configuredModel || "";
-    const uiModel = (opencodeModelProvider && opencodeSelectedModel) ? `${opencodeModelProvider}/${opencodeSelectedModel}` : "";
-    const rawModel = configuredModel || uiModel || "";
+    const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
+    const activeModel = normalizeModelRef(activeOpencodeModel || "");
+    const draftModel = normalizeModelRef(opencodeDraftModel || "");
+    const configuredModel = normalizeModelRef(opencodeConfig?.configuredModel || "");
+    const uiModel = normalizeModelRef(
+      (opencodeModelProvider && opencodeSelectedModel) ? `${opencodeModelProvider}/${opencodeSelectedModel}` : ""
+    );
+    const rawModel = sessionModel || activeModel || draftModel || uiModel || configuredModel || "";
+    const modelSource = sessionModel
+      ? "session.selection"
+      : activeModel
+        ? "active.selection"
+        : draftModel
+          ? "draft.selection"
+          : uiModel
+            ? "ui.picker"
+            : configuredModel
+              ? "config.model"
+              : "none";
     const parsed = rawModel ? parseModelRef(rawModel) : null;
     const resolvedProvider = parsed
       ? (resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider)
@@ -2567,7 +2404,7 @@ export function App() {
         `chars=${prompt.length}`,
         `model.raw=${rawModel || "(empty)"}`,
         `model.hint=${modelHint || "(empty)"}`,
-        `source=${configuredModel ? "config.model" : (uiModel ? "ui.picker" : "none")}`
+        `source=${modelSource}`
       ].join(" ")
     );
     let done = false;
@@ -2683,10 +2520,15 @@ export function App() {
         appendOpencodeDebugLog(`prompt.serverModel.refresh.warn ${String(e)}`);
       }
       const model =
+        sessionModel ||
+        activeModel ||
+        draftModel ||
+        uiModel ||
         serverModel ||
-        ((opencodeModelProvider && opencodeSelectedModel)
-          ? `${opencodeModelProvider}/${opencodeSelectedModel}`
-          : "");
+        "";
+      if (serverModel && model && serverModel !== model) {
+        appendOpencodeDebugLog(`prompt.model.override local=${model} server=${serverModel} (kept local)`);
+      }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
       const eventUrl = `${base}/global/event?directory=${qdir}`;
@@ -3519,12 +3361,6 @@ export function App() {
     void loadOpencodeModelConfig();
     void refreshOpencodeConfiguredModels();
   }, [showSettings, runtimeStatus.opencode.installed, selectedRepo?.id]);
-
-  useEffect(() => {
-    if (!showSettings || !runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (!opencodeModelProvider) return;
-    void openProviderConfig();
-  }, [showSettings, runtimeStatus.opencode.installed, selectedRepo?.id, opencodeModelProvider]);
 
   useEffect(() => {
     if (!activeOpencodeModel) return;
@@ -4656,214 +4492,17 @@ export function App() {
                       <button
                         className="chip"
                         onClick={() => {
-                          setShowModelManager((v) => !v);
-                          if (!showModelManager) {
-                            setModelManagerSearch("");
-                            void refreshOpencodeCatalog();
-                            void loadOpencodeModelConfig();
-                          }
+                          void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+                          setOpencodeProviderPickerProvider(
+                            parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
+                          );
+                          setShowOpencodeProviderPicker(true);
                         }}
                       >
-                        {showModelManager ? "Close manager" : "Open manager"}
+                        Open manager
                       </button>
-                      <span className="small muted">
-                        {opencodeConfig?.configuredModel || "Pending configuration"}
-                      </span>
                     </div>
                   </div>
-
-                  {showModelManager ? (
-                    <div className="settings-model-manager">
-                      <div className="settings-model-head">
-                        <input
-                          className="path-input"
-                          placeholder="Search model..."
-                          value={modelManagerSearch}
-                          onChange={(e) => setModelManagerSearch(e.target.value)}
-                        />
-                        <input
-                          className="path-input"
-                          placeholder="custom provider id"
-                          value={opencodeCustomProviderDraft}
-                          onChange={(e) => setOpencodeCustomProviderDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              addCustomProvider();
-                            }
-                          }}
-                        />
-                        <button className="chip" onClick={addCustomProvider}>Add provider</button>
-                        <button className="chip" disabled={opencodeCatalogLoading} onClick={() => void refreshOpencodeCatalog()}>
-                          {opencodeCatalogLoading ? "Loading..." : "Refresh"}
-                        </button>
-                      </div>
-                      <div className="settings-model-lists">
-                        <div className="settings-model-col">
-                          <button
-                            className={PROVIDER_PRESETS.some((p) => p.id === opencodeModelProvider) ? "file-item" : "file-item selected"}
-                            onClick={() => {
-                              setModelManagerSearch("");
-                              const customId = opencodeCustomProviderDraft.trim() || "myprovider";
-                              setOpencodeCustomProviderDraft(customId);
-                              selectProvider(customId);
-                            }}
-                          >
-                            + Custom OpenAI-compatible
-                          </button>
-                          {selectableProviders.map((provider) => (
-                            <button
-                              key={`settings-provider-${provider}`}
-                              className={opencodeModelProvider === provider ? "file-item selected" : "file-item"}
-                              onClick={() => {
-                                setModelManagerSearch("");
-                                selectProvider(provider);
-                                if (!opencodeModelsByProvider[provider]) {
-                                  void fetchOpencodeModels(provider);
-                                }
-                                void openProviderConfig();
-                              }}
-                            >
-                              {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="settings-model-col">
-                          {visibleModels.map((m) => (
-                            <button
-                              key={`settings-model-${m}`}
-                              className={opencodeSelectedModel === m ? "file-item selected" : "file-item"}
-                              onClick={() => setOpencodeSelectedModel(m)}
-                              title={`${opencodeModelProvider}/${m}`}
-                            >
-                              {(() => {
-                                const provider = resolveProviderAliasWithNames(
-                                  opencodeModelProvider,
-                                  opencodeModelsByProvider,
-                                  opencodeProviderNames
-                                ) || opencodeModelProvider;
-                                const name =
-                                  (provider ? (opencodeModelNamesByProvider[provider]?.[m] || opencodeConfiguredModelNamesByProvider[provider]?.[m]) : "") ||
-                                  "";
-                                return (
-                                  <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
-                                    <span>{name || m}</span>
-                                    {name ? <span className="small muted">{m}</span> : null}
-                                  </span>
-                                );
-                              })()}
-                            </button>
-                          ))}
-                          {visibleModels.length === 0 ? (
-                            <div className="small muted">该供应商在服务端配置中暂无可用模型。请在 OpenCode 中添加模型，或于下方手动填写 model id。</div>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="settings-provider-form">
-                        <input
-                          className="path-input"
-                          placeholder="provider display name (optional)"
-                          value={opencodeProviderConfig.name}
-                          onChange={(e) =>
-                            setOpencodeProviderConfig((prev) => ({ ...prev, name: e.target.value }))
-                          }
-                        />
-                        <input
-                          className="path-input"
-                          placeholder="@ai-sdk/openai-compatible"
-                          value={opencodeProviderConfig.npm}
-                          onChange={(e) =>
-                            setOpencodeProviderConfig((prev) => ({ ...prev, npm: e.target.value }))
-                          }
-                        />
-                        <input
-                          className="path-input"
-                          placeholder={PROVIDER_PRESETS.find((p) => p.id === opencodeModelProvider)?.apiKeyHint || "apiKey"}
-                          value={opencodeProviderConfig.apiKey}
-                          onChange={(e) =>
-                            setOpencodeProviderConfig((prev) => ({ ...prev, apiKey: e.target.value }))
-                          }
-                        />
-                        <input
-                          className="path-input"
-                          placeholder="model id (required)"
-                          value={opencodeSelectedModel}
-                          onChange={(e) => setOpencodeSelectedModel(e.target.value)}
-                        />
-                        <input
-                          className="path-input"
-                          placeholder={defaultProviderBaseUrl(opencodeModelProvider) || "baseURL"}
-                          value={opencodeProviderConfig.baseUrl}
-                          onChange={(e) =>
-                            setOpencodeProviderConfig((prev) => ({ ...prev, baseUrl: e.target.value }))
-                          }
-                        />
-                        <div className="toolbar">
-                          <button
-                            className="chip"
-                            disabled={opencodeProviderConfigBusy || opencodeConfigBusy || !opencodeSelectedModel}
-                            onClick={() => void saveOpencodeConfiguration()}
-                          >
-                            {opencodeProviderConfigBusy || opencodeConfigBusy ? "Saving..." : "Save configuration"}
-                          </button>
-                          <button
-                            className="chip"
-                            disabled={opencodeTestBusy || !opencodeSelectedModel}
-                            onClick={() => void validateOpencodeModel()}
-                          >
-                            {opencodeTestBusy ? "Validating..." : "Validate"}
-                          </button>
-                        </div>
-                      </div>
-                      {providerOptionFields(opencodeModelProvider).length > 0 ? (
-                        <div className="settings-provider-form settings-provider-advanced">
-                          {providerOptionFields(opencodeModelProvider).map((f) => (
-                            <input
-                              key={`opt-${f.key}`}
-                              className="path-input"
-                              placeholder={f.placeholder}
-                              value={String(opencodeProviderConfig[f.key] ?? "")}
-                              onChange={(e) =>
-                                setOpencodeProviderConfig((prev) => ({ ...prev, [f.key]: e.target.value }))
-                              }
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                      <div className="toolbar">
-                        <button className="chip" onClick={() => setShowProviderAdvanced((v) => !v)}>
-                          {showProviderAdvanced ? "Hide advanced" : "Show advanced"}
-                        </button>
-                      </div>
-                      {showProviderAdvanced ? (
-                        <div className="settings-provider-form settings-provider-advanced">
-                          <input
-                            className="path-input"
-                            placeholder="timeout ms (optional)"
-                            value={opencodeProviderConfig.timeout}
-                            onChange={(e) =>
-                              setOpencodeProviderConfig((prev) => ({ ...prev, timeout: e.target.value }))
-                            }
-                          />
-                          <input
-                            className="path-input"
-                            placeholder="chunkTimeout ms (optional)"
-                            value={opencodeProviderConfig.chunkTimeout}
-                            onChange={(e) =>
-                              setOpencodeProviderConfig((prev) => ({ ...prev, chunkTimeout: e.target.value }))
-                            }
-                          />
-                          <div className="small muted settings-provider-note">
-                            {PROVIDER_PRESETS.find((p) => p.id === opencodeModelProvider)?.name || opencodeModelProvider}
-                          </div>
-                          <div className="small muted settings-provider-note">
-                            {PROVIDER_PRESETS.find((p) => p.id === opencodeModelProvider)?.apiKeyHint || ""}
-                          </div>
-                        </div>
-                      ) : null}
-                      {opencodeTestResult ? <pre className="opencode-validate-log">{opencodeTestResult}</pre> : null}
-                    </div>
-                  ) : null}
                 </>
               ) : null}
               {runtimeStatus.opencode.installed ? null : (
@@ -4885,13 +4524,26 @@ export function App() {
 
       {showOpencodeProviderPicker ? (
         <div className="modal-mask" onClick={() => setShowOpencodeProviderPicker(false)}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card settings-card opencode-provider-picker-card" onClick={(e) => e.stopPropagation()}>
             <div className="env-setup-head">
-              <h3>{`连接提供商（目录 ${opencodeProviders.length} + 预置 ${PROVIDER_PRESETS.length}）`}</h3>
-              <button className="chip" onClick={() => setShowOpencodeProviderPicker(false)}>Close</button>
+              <div className="opencode-provider-picker-title">
+                <h3>Provider & Model Manager</h3>
+                <p className="small muted">
+                  目录来源 `/provider`，可用模型来源 `/global/config`。
+                </p>
+              </div>
+              <div className="toolbar">
+                <span className="small muted">{`Connected ${opencodeConnectedProviders.length}/${opencodeProviderPickerCandidates.length}`}</span>
+                {opencodeCatalogLoading ? (
+                  <span className="opencode-inline-loading" aria-live="polite">
+                    <span />
+                    读取中
+                  </span>
+                ) : null}
+                <button className="chip" onClick={() => setShowOpencodeProviderPicker(false)}>Close</button>
+              </div>
             </div>
-            <p className="small muted">供应商与可选模型以服务端 `/global/config`（及禁用列表）为准；连接状态仍来自 OpenCode `/provider`。</p>
-            <div className="settings-model-head">
+            <div className="settings-model-head opencode-provider-picker-toolbar">
               <input
                 className="path-input"
                 placeholder="搜索提供商..."
@@ -4915,41 +4567,62 @@ export function App() {
                 ＋ 自定义
               </button>
               <button className="chip" disabled={opencodeCatalogLoading} onClick={() => void refreshOpencodeCatalog()}>
-                {opencodeCatalogLoading ? "Loading..." : "Refresh"}
+                {opencodeCatalogLoading ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-            <div className="settings-model-lists">
-              <div className="settings-model-col" style={{ maxHeight: 520 }}>
+            <div className="settings-model-lists opencode-provider-picker-grid">
+              <div className="settings-model-col" style={{ maxHeight: 420 }}>
                 {opencodeProviderPickerCandidates.length === 0 ? (
                   <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>
                 ) : null}
-                {opencodeProviderPickerCandidates.map((provider) => {
+                {opencodeProviderPickerCandidates.map((provider, idx) => {
                   const connected = opencodeConnectedProviders.includes(provider);
+                  const tag = getOpencodeProviderTag(provider);
+                  const prev = idx > 0 ? opencodeProviderPickerCandidates[idx - 1] : "";
+                  const prevConnected = prev ? opencodeConnectedProviders.includes(prev) : connected;
+                  const shouldSplit = idx > 0 && prevConnected && !connected;
+                  const modelCount = (opencodeModelsByProvider[provider] || []).length;
                   return (
-                    <button
-                      key={`provider-pick-${provider}`}
-                      className={opencodeProviderPickerProvider === provider ? "file-item selected" : "file-item"}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setOpencodeProviderPickerProvider(provider);
-                        if (!connected) {
-                          // Show inline connect UI on the right column (matches OpenCode "connect" UX).
-                          setOpencodeConnectProviderId(provider);
-                          setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
-                          setOpencodeConnectApiKey("");
-                          return;
-                        }
-                      }}
-                      title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
-                    >
-                      {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                      {!connected ? <span className="small muted" style={{ marginLeft: 8 }}>(未连接)</span> : null}
-                    </button>
+                    <Fragment key={`provider-pick-wrap-${provider}`}>
+                      {shouldSplit ? (
+                        <div className="opencode-provider-divider small muted">
+                          未连接
+                        </div>
+                      ) : null}
+                      <button
+                        key={`provider-pick-${provider}`}
+                        className={opencodeProviderPickerProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setOpencodeProviderPickerProvider(provider);
+                          if (!connected) {
+                            // Show inline connect UI on the right column (matches OpenCode "connect" UX).
+                            setOpencodeConnectProviderId(provider);
+                            setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
+                            setOpencodeConnectApiKey("");
+                            return;
+                          }
+                          setShowOpencodeAuthDialogFor("");
+                        }}
+                        title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
+                      >
+                        <span className="opencode-provider-row-main">
+                          {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
+                          <small>{`${provider} · ${tag}`}</small>
+                        </span>
+                        <span className="opencode-provider-row-side">
+                          <small className="small muted">{modelCount} models</small>
+                          <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
+                            {connected ? "已连接" : "未连接"}
+                          </span>
+                        </span>
+                      </button>
+                    </Fragment>
                   );
                 })}
               </div>
-              <div className="settings-model-col" style={{ maxHeight: 520 }}>
+              <div className="settings-model-col" style={{ maxHeight: 420 }}>
                 {(() => {
                   const resolved = resolveProviderAliasWithNames(
                     opencodeProviderPickerProvider,
@@ -4964,96 +4637,179 @@ export function App() {
                   const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
                   const cfgPid = (cfgResolved || pid) || "";
                   const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
-                  // Right column should show the full /provider directory model list.
-                  const pool = pid ? (opencodeModelsByProvider[pid] ?? []) : [];
+                  // Prefer explicitly configured models for this provider.
+                  // This avoids selecting inherited/default catalog models that the user
+                  // did not configure for custom OpenAI-compatible endpoints.
+                  const configuredPool = cfgPid ? (opencodeConfiguredModelsByProvider[cfgPid] ?? []) : [];
+                  const pool = configuredPool.length > 0 ? configuredPool : (pid ? (opencodeModelsByProvider[pid] ?? []) : []);
                   const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
                   const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
                   if (!opencodeProviderPickerProvider) {
-                    return <div className="small muted" style={{ padding: 12 }}>先从左侧选择一个提供商。</div>;
+                    return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
                   }
-                  if (!connected) {
-                    const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                    return (
-                      <div style={{ padding: 12 }}>
-                        <div className="small muted" style={{ marginBottom: 8 }}>
-                          {pretty} 未连接。请先输入 API Key 连接（写入 OpenCode `auth.json`），再选择模型。
-                        </div>
-                        <input
-                          className="path-input"
-                          placeholder="API 密钥"
-                          value={opencodeConnectProviderId === pid ? opencodeConnectApiKey : ""}
-                          onChange={(e) => {
-                            setOpencodeConnectProviderId(pid);
-                            setOpencodeConnectProviderName(pretty);
-                            setOpencodeConnectApiKey(e.target.value);
-                          }}
-                        />
-                        <div className="toolbar" style={{ marginTop: 10 }}>
-                          <button
-                            className="chip"
-                            disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                            onClick={async () => {
-                              if (!ensureRepoSelected()) return;
-                              const authPid = pid.trim();
-                              const key = opencodeConnectApiKey.trim();
-                              if (!authPid || !key) return;
-                              setOpencodeConnectBusy(true);
-                              setError("");
-                              try {
-                                await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                                await refreshOpencodeCatalog();
-                                if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                                  await fetchOpencodeModels(authPid);
-                                }
-                                setOpencodeProviderPickerProvider(authPid);
-                                setMessage(`已连接: ${authPid}`);
-                              } catch (e) {
-                                setError(String(e));
-                                setMessage("连接失败");
-                              } finally {
-                                setOpencodeConnectBusy(false);
+                  const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+                  const tag = getOpencodeProviderTag(pid);
+                  const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+                  const showAuthEditor = !connected;
+                  const menuOpen = opencodeProviderActionMenuFor === pid;
+                  const openAuthEditor = () => {
+                    setOpencodeConnectProviderId(pid);
+                    setOpencodeConnectProviderName(pretty);
+                    setOpencodeConnectApiKey("");
+                    setShowOpencodeAuthDialogFor(pid);
+                    setOpencodeProviderActionMenuFor("");
+                  };
+                  const authHint = connected
+                    ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
+                    : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
+                  const authBlock = showAuthEditor ? (
+                    <div className="opencode-provider-connect">
+                      <div className="small muted" style={{ marginBottom: 8 }}>{authHint}</div>
+                      <input
+                        className="path-input"
+                        placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
+                        value={keyValue}
+                        onChange={(e) => {
+                          setOpencodeConnectProviderId(pid);
+                          setOpencodeConnectProviderName(pretty);
+                          setOpencodeConnectApiKey(e.target.value);
+                        }}
+                      />
+                      <div className="toolbar" style={{ marginTop: 10 }}>
+                        <button
+                          className="chip"
+                          disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                          onClick={async () => {
+                            if (!ensureRepoSelected()) return;
+                            const authPid = pid.trim();
+                            const key = opencodeConnectApiKey.trim();
+                            if (!authPid || !key) return;
+                            setOpencodeConnectBusy(true);
+                            setError("");
+                            try {
+                              await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+                              await refreshOpencodeCatalog();
+                              if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                                await fetchOpencodeModels(authPid);
                               }
-                            }}
-                          >
-                            {opencodeConnectBusy ? "Connecting..." : "提交"}
-                          </button>
-                        </div>
+                              setOpencodeProviderPickerProvider(authPid);
+                              setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
+                              setOpencodeConnectApiKey("");
+                            } catch (e) {
+                              setError(String(e));
+                              setMessage(connected ? "更新密钥失败" : "连接失败");
+                            } finally {
+                              setOpencodeConnectBusy(false);
+                            }
+                          }}
+                        >
+                          {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="opencode-provider-connect-compact">
+                      <div className="small muted">
+                        {`${pretty}（${tag}）已连接。`}
+                      </div>
+                      <span className="small muted">通过右上角菜单操作</span>
+                    </div>
+                  );
+                  const providerHeader = (
+                    <div className="opencode-provider-panel-head">
+                      <div className="opencode-provider-panel-title">
+                        <strong>{pretty}</strong>
+                        <small className="small muted">{`${pid} · ${tag}`}</small>
+                      </div>
+                      <div className="opencode-provider-panel-actions">
+                        <button
+                          type="button"
+                          className="chip opencode-provider-menu-trigger"
+                          title="更多操作"
+                          onClick={() => setOpencodeProviderActionMenuFor((prev) => (prev === pid ? "" : pid))}
+                        >
+                          ...
+                        </button>
+                        {menuOpen ? (
+                          <div className="opencode-provider-menu">
+                            <button
+                              type="button"
+                              className="opencode-provider-menu-item"
+                              onClick={openAuthEditor}
+                            >
+                              更新 API Key
+                            </button>
+                            {getOpencodeProviderSource(pid) !== "env" ? (
+                              <button
+                                type="button"
+                                className="opencode-provider-menu-item danger"
+                                disabled={opencodeDisconnectingProvider === pid}
+                                onClick={async () => {
+                                  setOpencodeProviderActionMenuFor("");
+                                  await disconnectOpencodeProvider(pid);
+                                }}
+                              >
+                                {opencodeDisconnectingProvider === pid ? "处理中..." : "断开连接"}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                  if (!connected) {
+                    return (
+                      <div className="opencode-provider-right-panel">
+                        {providerHeader}
+                        {authBlock}
                       </div>
                     );
                   }
                   if (filtered.length === 0) {
-                    return <div className="small muted" style={{ padding: 12 }}>没有可用模型（或搜索无结果）。</div>;
+                    return (
+                      <div className="opencode-provider-right-panel">
+                        {providerHeader}
+                        {authBlock}
+                        <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>
+                      </div>
+                    );
                   }
-                  return filtered.map((mid) => {
-                    const ref = `${cfgPid}/${mid}`;
-                    const refNorm = normalizeModelRef(ref);
-                    const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
+                  return (
+                    <div className="opencode-provider-right-panel">
+                      {providerHeader}
+                      {authBlock}
+                      {filtered.map((mid) => {
+                        const ref = `${cfgPid}/${mid}`;
+                        const refNorm = normalizeModelRef(ref);
+                        const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
                     const enabled = configured && !!refNorm && !opencodeHiddenModels.has(refNorm);
                     const modelDisplay =
                       opencodeModelNamesByProvider[pid]?.[mid] ||
                       opencodeConfiguredModelNamesByProvider[cfgPid]?.[mid] ||
                       mid;
-                    return (
-                      <div
-                        key={`provider-model-pick-${refNorm || ref}`}
+                        return (
+                          <div
+                            key={`provider-model-pick-${refNorm || ref}`}
                         className={
-                          normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected" : "file-item"
+                          normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"
                         }
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
                       >
                         <button
-                          className="chip"
-                          style={{ flex: 1, textAlign: "left", padding: "4px 8px" }}
+                          className="opencode-provider-model-main"
                           onClick={() => {
                             if (!refNorm) return;
                             void applyOpencodeModel(refNorm);
                           }}
                           title={refNorm || ref}
                         >
-                          {modelDisplay}
+                          <span>{modelDisplay}</span>
+                          {modelDisplay !== mid ? <small>{mid}</small> : null}
                         </button>
                         <button
-                          className={enabled ? "chip active" : "chip"}
+                          type="button"
+                          className={enabled ? "opencode-switch is-on" : "opencode-switch"}
+                          aria-pressed={enabled}
+                          aria-label={enabled ? "隐藏模型" : "启用模型"}
                           onClick={async () => {
                             if (!refNorm) return;
                             if (enabled) {
@@ -5092,15 +4848,81 @@ export function App() {
                             // Avoid forcing current-model selection when just enabling a catalog entry.
                             await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
                           }}
-                        >
-                          {enabled ? "关闭" : "开启"}
-                        </button>
-                      </div>
-                    );
-                  });
+                          />
+                        </div>
+                      );
+                      })}
+                    </div>
+                  );
                 })()}
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showOpencodeAuthDialogFor ? (
+        <div className="modal-mask" onClick={() => setShowOpencodeAuthDialogFor("")}>
+          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+            {(() => {
+              const pid = showOpencodeAuthDialogFor.trim();
+              const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+              const tag = getOpencodeProviderTag(pid);
+              const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+              return (
+                <>
+                  <div className="env-setup-head">
+                    <h3>{`更新 API Key · ${pretty}`}</h3>
+                    <button className="chip" onClick={() => setShowOpencodeAuthDialogFor("")}>Close</button>
+                  </div>
+                  <p className="small muted">{`${tag} provider`}</p>
+                  <div className="settings-provider-form" style={{ marginTop: 8 }}>
+                    <input
+                      className="path-input"
+                      placeholder="输入新的 API 密钥"
+                      value={keyValue}
+                      onChange={(e) => {
+                        setOpencodeConnectProviderId(pid);
+                        setOpencodeConnectProviderName(pretty);
+                        setOpencodeConnectApiKey(e.target.value);
+                      }}
+                    />
+                  </div>
+                  <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
+                    <button
+                      className="chip"
+                      disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                      onClick={async () => {
+                        if (!ensureRepoSelected()) return;
+                        const authPid = pid.trim();
+                        const key = opencodeConnectApiKey.trim();
+                        if (!authPid || !key) return;
+                        setOpencodeConnectBusy(true);
+                        setError("");
+                        try {
+                          await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+                          await refreshOpencodeCatalog();
+                          if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                            await fetchOpencodeModels(authPid);
+                          }
+                          setOpencodeProviderPickerProvider(authPid);
+                          setMessage(`已更新密钥: ${authPid}`);
+                          setOpencodeConnectApiKey("");
+                          setShowOpencodeAuthDialogFor("");
+                        } catch (e) {
+                          setError(String(e));
+                          setMessage("更新密钥失败");
+                        } finally {
+                          setOpencodeConnectBusy(false);
+                        }
+                      }}
+                    >
+                      {opencodeConnectBusy ? "Saving..." : "更新 API Key"}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       ) : null}
@@ -5159,36 +4981,30 @@ export function App() {
                       const full = `${pid}/${mid}`;
                       // OpenCode web flow:
                       // 1) PUT /auth/:id with {type:"api", key:"..."} when apiKey provided
-                      // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers), and clear disabled_providers.
+                      // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers),
+                      //    and only re-enable current provider from disabled_providers.
                       const key = opencodeProviderConfig.apiKey?.trim() || "";
-                      if (key) {
-                        await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: pid, key });
-                      }
-                      const afterProviderPatch = await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
+                      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
                         repoPath,
-                        patch: {
-                          provider: {
-                            [pid]: {
-                              npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
-                              name: opencodeProviderConfig.name || pid,
-                              options: {
-                                baseURL: opencodeProviderConfig.baseUrl,
-                                ...(opencodeProviderConfig.headers && Object.keys(opencodeProviderConfig.headers).length
-                                  ? { headers: opencodeProviderConfig.headers }
-                                  : {})
-                              },
-                              models: {
-                                [mid]: { name: mid }
-                              }
-                            }
-                          },
-                          disabled_providers: []
-                        }
+                        provider: pid,
+                        npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
+                        name: opencodeProviderConfig.name || pid,
+                        baseUrl: opencodeProviderConfig.baseUrl,
+                        apiKey: key,
+                        headers: opencodeProviderConfig.headers || {},
+                        endpoint: opencodeProviderConfig.endpoint || "",
+                        region: opencodeProviderConfig.region || "",
+                        profile: opencodeProviderConfig.profile || "",
+                        project: opencodeProviderConfig.project || "",
+                        location: opencodeProviderConfig.location || "",
+                        resourceName: opencodeProviderConfig.resourceName || "",
+                        enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
+                        timeout: opencodeProviderConfig.timeout || "",
+                        chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
+                        modelId: mid,
+                        modelName: mid
                       });
-                      const afterModelPatch = await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
-                        repoPath,
-                        patch: { model: full }
-                      });
+                      await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
                       const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
                       const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
                       const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
@@ -5196,8 +5012,6 @@ export function App() {
                         appendOpencodeDebugLog(
                           `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
                         );
-                        appendOpencodeDebugLog(`custom.save.patch.provider=${JSON.stringify(afterProviderPatch).slice(0, 800)}`);
-                        appendOpencodeDebugLog(`custom.save.patch.model=${JSON.stringify(afterModelPatch).slice(0, 800)}`);
                         appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
                         throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
                       }

@@ -48,6 +48,8 @@ fn main() {
             commands::opencode::patch_opencode_server_config,
             commands::opencode::set_opencode_server_current_model,
             commands::opencode::put_opencode_server_auth,
+            commands::opencode::delete_opencode_server_auth,
+            commands::opencode::disconnect_opencode_server_provider,
             commands::opencode::set_opencode_model_config,
             commands::opencode::get_opencode_provider_config,
             commands::opencode::set_opencode_provider_config,

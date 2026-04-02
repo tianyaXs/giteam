@@ -82,6 +82,7 @@ pub struct OpencodeServerProviderCatalog {
     pub models: Vec<String>,
     #[serde(rename = "modelNames")]
     pub model_names: HashMap<String, String>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -140,6 +141,9 @@ fn merge_server_provider_catalog(
                     b.model_names.insert(mid.clone(), display.to_string());
                 }
             }
+            if b.source.as_deref().unwrap_or("").trim().is_empty() {
+                b.source = e.source.clone();
+            }
             b.models.sort();
             b.models.dedup();
         }
@@ -171,23 +175,6 @@ pub struct OpencodeSessionMessage {
     pub id: String,
     pub role: String,
     pub content: String,
-}
-
-fn project_config_path(repo_path: &str) -> String {
-    Path::new(repo_path)
-        .join("opencode.json")
-        .to_string_lossy()
-        .to_string()
-}
-
-fn read_project_config_json(repo_path: &str) -> Result<Value, String> {
-    let path = project_config_path(repo_path);
-    let p = Path::new(&path);
-    if !p.exists() {
-        return Ok(Value::Object(Map::new()));
-    }
-    let raw = fs::read_to_string(p).map_err(|e| format!("read opencode config failed: {e}"))?;
-    serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse opencode config failed: {e}"))
 }
 
 fn extract_config_provider_catalog(root: &Value) -> Vec<OpencodeConfigProviderCatalog> {
@@ -556,6 +543,60 @@ fn merge_json(base: &mut Value, overlay: Value) {
     }
 }
 
+fn pick_global_config_file(config_dir: &str) -> PathBuf {
+    let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
+    for name in candidates {
+        let p = Path::new(config_dir).join(name);
+        if p.exists() {
+            return p;
+        }
+    }
+    Path::new(config_dir).join("opencode.jsonc")
+}
+
+fn cleanup_provider_in_json_file(
+    file: &Path,
+    provider_id: &str,
+    provider_node: &Map<String, Value>,
+    selected_model: Option<&str>,
+) -> Result<(), String> {
+    let raw = fs::read_to_string(file).unwrap_or_else(|_| "{}".to_string());
+    let mut root: Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| format!("config root is not object: {}", file.display()))?;
+    if !obj.contains_key("provider") || !obj.get("provider").map(|v| v.is_object()).unwrap_or(false) {
+        obj.insert("provider".to_string(), Value::Object(Map::new()));
+    }
+    if let Some(pobj) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
+        pobj.insert(provider_id.to_string(), Value::Object(provider_node.clone()));
+    }
+    let disabled = obj
+        .get("disabled_providers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty() && s != provider_id)
+        .collect::<Vec<_>>();
+    obj.insert(
+        "disabled_providers".to_string(),
+        Value::Array(disabled.into_iter().map(Value::String).collect()),
+    );
+    if let Some(mid) = selected_model {
+        let m = mid.trim();
+        if !m.is_empty() {
+            obj.insert("model".to_string(), Value::String(format!("{provider_id}/{m}")));
+        }
+    }
+    let out = serde_json::to_string_pretty(&root).map_err(|e| format!("serialize {} failed: {e}", file.display()))?;
+    fs::write(file, out).map_err(|e| format!("write {} failed: {e}", file.display()))
+}
+
 fn run_config_get(repo_path: &str, base: &str) -> Result<Value, String> {
     // Align with OpenCode web flow:
     // - /global/config stores provider/model catalogs
@@ -585,11 +626,18 @@ fn run_config_patch(repo_path: &str, base: &str, patch: &Value) -> Result<Value,
     // - model selection typically lives under /config
     //
     // We still support both endpoints and fall back as needed.
-    let body = serde_json::to_string(patch).map_err(|e| format!("serialize config patch failed: {e}"))?;
-
-    let wants_global_first = patch.get("provider").is_some() || patch.get("disabled_providers").is_some();
+    let wants_global_first =
+        patch.get("provider").is_some() || patch.get("disabled_providers").is_some() || patch.get("model").is_some();
 
     let try_patch = |url: String| -> Result<Value, String> {
+        // OpenCode /config and /global/config PATCH both validate full Config.Info.
+        // Merge patch into current config and submit the full object.
+        let mut merged = run_curl_json(repo_path, "GET", url.as_str(), None, 20)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        merge_json(&mut merged, patch.clone());
+        let body = serde_json::to_string(&merged).map_err(|e| format!("serialize merged config failed: {e}"))?;
         let raw = run_curl_json(repo_path, "PATCH", url.as_str(), Some(body.as_str()), 20)?;
         serde_json::from_str(&raw).map_err(|e| format!("parse patch response failed: {e}"))
     };
@@ -1494,36 +1542,31 @@ pub fn get_opencode_session_messages_detailed(
 
 #[tauri::command]
 pub fn get_opencode_model_config(repo_path: &str) -> Result<OpencodeModelConfig, String> {
-    let path = project_config_path(repo_path);
-    let p = Path::new(&path);
-    if !p.exists() {
-        return Ok(OpencodeModelConfig {
-            config_path: path,
-            configured_model: String::new(),
-            exists: false,
-        });
-    }
-
-    let raw = fs::read_to_string(p).map_err(|e| format!("read opencode config failed: {e}"))?;
-    let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse opencode config failed: {e}"))?;
-    let configured_model = json
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    Ok(OpencodeModelConfig {
-        config_path: path,
-        configured_model,
-        exists: true,
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
+        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let configured_model = json
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(OpencodeModelConfig {
+            config_path: "server:/global/config".to_string(),
+            configured_model,
+            exists: true,
+        })
     })
 }
 
 #[tauri::command]
 pub fn get_opencode_config_provider_catalog(repo_path: &str) -> Result<Vec<OpencodeConfigProviderCatalog>, String> {
     command_runner::validate_repo_path(repo_path)?;
-    let root = read_project_config_json(repo_path)?;
-    Ok(extract_config_provider_catalog(&root))
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
+        let root: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        Ok(extract_config_provider_catalog(&root))
+    })
 }
 
 fn parse_server_provider_models(provider: &Value) -> (Vec<String>, HashMap<String, String>) {
@@ -1622,7 +1665,18 @@ fn parse_server_providers_from_json(root: &Value) -> Vec<OpencodeServerProviderC
             .trim()
             .to_string();
         let (models, model_names) = parse_server_provider_models(&p);
-        out.push(OpencodeServerProviderCatalog { id, name, models, model_names });
+        let source = p
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        out.push(OpencodeServerProviderCatalog {
+            id,
+            name,
+            models,
+            model_names,
+            source,
+        });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
@@ -1765,6 +1819,22 @@ pub fn put_opencode_server_auth(repo_path: &str, provider_id: &str, key: &str) -
             Some(body.as_str()),
             15,
         )?;
+        // Re-enable provider if it was previously disabled by "disconnect".
+        if let Ok(global_raw) = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15) {
+            if let Ok(global_json) = serde_json::from_str::<Value>(&global_raw) {
+                let disabled = global_json
+                    .get("disabled_providers")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty() && s != pid)
+                    .collect::<Vec<_>>();
+                let patch = serde_json::json!({ "disabled_providers": disabled });
+                let _ = run_config_patch(repo_path, base, &patch);
+            }
+        }
         // Match OpenCode web behavior: dispose global state so auth/provider
         // changes are immediately reflected by /provider and /config views.
         let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
@@ -1773,203 +1843,217 @@ pub fn put_opencode_server_auth(repo_path: &str, provider_id: &str, key: &str) -
 }
 
 #[tauri::command]
+pub fn delete_opencode_server_auth(repo_path: &str, provider_id: &str) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let pid = provider_id.trim();
+    if pid.is_empty() {
+        return Err("provider_id must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        let _ = run_curl_json(
+            repo_path,
+            "DELETE",
+            format!("{base}/auth/{pid}").as_str(),
+            None,
+            15,
+        )?;
+        // Keep provider/auth state consistent for subsequent /provider reads.
+        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        Ok(true)
+    })
+}
+
+#[tauri::command]
+pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let pid = provider_id.trim();
+    if pid.is_empty() {
+        return Err("provider_id must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        // Inspect latest provider state from server.
+        let state_raw = run_curl_json(repo_path, "GET", format!("{base}/provider").as_str(), None, 15)?;
+        let state_json: Value =
+            serde_json::from_str(&state_raw).map_err(|e| format!("parse /provider failed: {e}"))?;
+        let mut source = String::new();
+        if let Some(all) = state_json.get("all").and_then(|v| v.as_array()) {
+            for item in all {
+                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if id == pid {
+                    source = item
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_lowercase();
+                    break;
+                }
+            }
+        }
+
+        // Always try removing auth first (ignore missing-auth errors).
+        let _ = run_curl_json(
+            repo_path,
+            "DELETE",
+            format!("{base}/auth/{}", urlencoding::encode(pid)).as_str(),
+            None,
+            15,
+        );
+
+        // For config providers, disconnect also disables provider in global config.
+        let global_raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
+        let mut global_json: Value =
+            serde_json::from_str(&global_raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let has_provider_cfg = global_json
+            .get("provider")
+            .and_then(|v| v.as_object())
+            .map(|m| m.contains_key(pid))
+            .unwrap_or(false);
+        if source == "config" || has_provider_cfg {
+            let mut disabled = global_json
+                .get("disabled_providers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            if !disabled.iter().any(|x| x == pid) {
+                disabled.push(pid.to_string());
+            }
+            disabled.sort();
+            disabled.dedup();
+            if let Some(obj) = global_json.as_object_mut() {
+                obj.insert(
+                    "disabled_providers".to_string(),
+                    Value::Array(disabled.into_iter().map(Value::String).collect()),
+                );
+            }
+            let body =
+                serde_json::to_string(&global_json).map_err(|e| format!("serialize global config failed: {e}"))?;
+            let _ = run_curl_json(
+                repo_path,
+                "PATCH",
+                format!("{base}/global/config").as_str(),
+                Some(body.as_str()),
+                20,
+            )?;
+        }
+
+        // Dispose for immediate consistency in provider listing.
+        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        Ok(true)
+    })
+}
+
+#[tauri::command]
 pub fn set_opencode_model_config(repo_path: &str, model: &str) -> Result<OpencodeModelConfig, String> {
+    command_runner::validate_repo_path(repo_path)?;
     if model.trim().is_empty() {
         return Err("model must not be empty".to_string());
     }
-
-    let path = project_config_path(repo_path);
-    let p = Path::new(&path);
-    let mut root = if p.exists() {
-        let raw = fs::read_to_string(p).map_err(|e| format!("read opencode config failed: {e}"))?;
-        serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| Value::Object(Map::new()))
-    } else {
-        Value::Object(Map::new())
-    };
-
-    if !root.is_object() {
-        root = Value::Object(Map::new());
-    }
-
-    if let Some(obj) = root.as_object_mut() {
-        if !obj.contains_key("$schema") {
-            obj.insert(
-                "$schema".to_string(),
-                Value::String("https://opencode.ai/config.json".to_string()),
-            );
-        }
-        let model_full = model.trim().to_string();
-        obj.insert("model".to_string(), Value::String(model_full.clone()));
-
-        if let Some((provider_id, model_id)) = parse_model_ref(model_full.as_str()) {
-            let provider_root = obj
-                .entry("provider".to_string())
-                .or_insert_with(|| Value::Object(Map::new()));
-            if !provider_root.is_object() {
-                *provider_root = Value::Object(Map::new());
-            }
-            if let Some(provider_map) = provider_root.as_object_mut() {
-                let provider_node = provider_map
-                    .entry(provider_id)
-                    .or_insert_with(|| Value::Object(Map::new()));
-                if !provider_node.is_object() {
-                    *provider_node = Value::Object(Map::new());
-                }
-                if let Some(provider_obj) = provider_node.as_object_mut() {
-                    // For custom providers, default to OpenAI-compatible SDK when npm is absent.
-                    if !provider_obj.contains_key("npm") {
-                        provider_obj.insert(
-                            "npm".to_string(),
-                            Value::String("@ai-sdk/openai-compatible".to_string()),
-                        );
-                    }
-                    let models_node = provider_obj
-                        .entry("models".to_string())
-                        .or_insert_with(|| Value::Object(Map::new()));
-                    if !models_node.is_object() {
-                        *models_node = Value::Object(Map::new());
-                    }
-                    if let Some(models_obj) = models_node.as_object_mut() {
-                        models_obj.entry(model_id).or_insert_with(|| Value::Object(Map::new()));
-                    }
-                }
-            }
-        }
-    }
-
-    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("serialize config failed: {e}"))?;
-    fs::write(p, text).map_err(|e| format!("write opencode config failed: {e}"))?;
-    release_managed_service(repo_path);
-
-    Ok(OpencodeModelConfig {
-        config_path: path,
-        configured_model: model.trim().to_string(),
-        exists: true,
+    let model_full = model.trim().to_string();
+    with_service_base(repo_path, |base| {
+        let body = serde_json::to_string(&serde_json::json!({ "model": model_full }))
+            .map_err(|e| format!("serialize config patch failed: {e}"))?;
+        let _ = run_curl_json(
+            repo_path,
+            "PATCH",
+            format!("{base}/global/config").as_str(),
+            Some(body.as_str()),
+            20,
+        )?;
+        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        Ok(OpencodeModelConfig {
+            config_path: "server:/global/config".to_string(),
+            configured_model: model.trim().to_string(),
+            exists: true,
+        })
     })
 }
 
 #[tauri::command]
 pub fn get_opencode_provider_config(repo_path: &str, provider: &str) -> Result<OpencodeProviderConfig, String> {
+    command_runner::validate_repo_path(repo_path)?;
     if provider.trim().is_empty() {
         return Err("provider must not be empty".to_string());
     }
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
+        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let pnode = json
+            .get("provider")
+            .and_then(|v| v.get(provider.trim()))
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let options = pnode.get("options").cloned().unwrap_or_else(|| Value::Object(Map::new()));
 
-    let path = project_config_path(repo_path);
-    let p = Path::new(&path);
-    if !p.exists() {
-        return Ok(OpencodeProviderConfig {
+        Ok(OpencodeProviderConfig {
             provider: provider.trim().to_string(),
-            npm: String::new(),
-            name: String::new(),
-            base_url: String::new(),
-            api_key: String::new(),
-            endpoint: String::new(),
-            region: String::new(),
-            profile: String::new(),
-            project: String::new(),
-            location: String::new(),
-            resource_name: String::new(),
-            enterprise_url: String::new(),
-            timeout: String::new(),
-            chunk_timeout: String::new(),
-        });
-    }
-
-    let raw = fs::read_to_string(p).map_err(|e| format!("read opencode config failed: {e}"))?;
-    let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse opencode config failed: {e}"))?;
-    let node = json
-        .get("provider")
-        .and_then(|v| v.get(provider.trim()))
-        .and_then(|v| v.get("options"));
-
-    Ok(OpencodeProviderConfig {
-        provider: provider.trim().to_string(),
-        npm: json
-            .get("provider")
-            .and_then(|v| v.get(provider.trim()))
-            .and_then(|v| v.get("npm"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        name: json
-            .get("provider")
-            .and_then(|v| v.get(provider.trim()))
-            .and_then(|v| v.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        base_url: node
-            .and_then(|v| v.get("baseURL"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        api_key: {
-            let key_in_config = node
-                .and_then(|v| v.get("apiKey"))
+            npm: pnode.get("npm").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            name: pnode.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            base_url: options
+                .get("baseURL")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .to_string();
-            if key_in_config.trim().is_empty() {
-                get_opencode_auth_api_key(provider)
-            } else {
-                key_in_config
-            }
-        },
-        endpoint: node
-            .and_then(|v| v.get("endpoint"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        region: node
-            .and_then(|v| v.get("region"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        profile: node
-            .and_then(|v| v.get("profile"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        project: node
-            .and_then(|v| v.get("project"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        location: node
-            .and_then(|v| v.get("location"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        resource_name: node
-            .and_then(|v| v.get("resourceName"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        enterprise_url: node
-            .and_then(|v| v.get("enterpriseUrl"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        timeout: node
-            .and_then(|v| v.get("timeout"))
-            .map(|v| {
-                if v.is_number() {
-                    v.to_string()
+                .to_string(),
+            api_key: {
+                let key_in_config = options
+                    .get("apiKey")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if key_in_config.trim().is_empty() {
+                    get_opencode_auth_api_key(provider)
                 } else {
-                    v.as_str().unwrap_or("").to_string()
+                    key_in_config
                 }
-            })
-            .unwrap_or_default(),
-        chunk_timeout: node
-            .and_then(|v| v.get("chunkTimeout"))
-            .map(|v| {
-                if v.is_number() {
-                    v.to_string()
-                } else {
-                    v.as_str().unwrap_or("").to_string()
-                }
-            })
-            .unwrap_or_default(),
+            },
+            endpoint: options
+                .get("endpoint")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            region: options
+                .get("region")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            profile: options
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            project: options
+                .get("project")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            location: options
+                .get("location")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            resource_name: options
+                .get("resourceName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            enterprise_url: options
+                .get("enterpriseUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            timeout: options
+                .get("timeout")
+                .map(|v| if v.is_number() { v.to_string() } else { v.as_str().unwrap_or("").to_string() })
+                .unwrap_or_default(),
+            chunk_timeout: options
+                .get("chunkTimeout")
+                .map(|v| if v.is_number() { v.to_string() } else { v.as_str().unwrap_or("").to_string() })
+                .unwrap_or_default(),
+        })
     })
 }
 
@@ -1994,51 +2078,10 @@ pub fn set_opencode_provider_config(
     model_id: Option<String>,
     model_name: Option<String>,
 ) -> Result<OpencodeProviderConfig, String> {
+    command_runner::validate_repo_path(repo_path)?;
     if provider.trim().is_empty() {
         return Err("provider must not be empty".to_string());
     }
-
-    let path = project_config_path(repo_path);
-    let p = Path::new(&path);
-    let mut root = if p.exists() {
-        let raw = fs::read_to_string(p).map_err(|e| format!("read opencode config failed: {e}"))?;
-        serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| Value::Object(Map::new()))
-    } else {
-        Value::Object(Map::new())
-    };
-    if !root.is_object() {
-        root = Value::Object(Map::new());
-    }
-
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| "invalid root config object".to_string())?;
-    if !obj.contains_key("$schema") {
-        obj.insert(
-            "$schema".to_string(),
-            Value::String("https://opencode.ai/config.json".to_string()),
-        );
-    }
-
-    let provider_obj = obj
-        .entry("provider".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !provider_obj.is_object() {
-        *provider_obj = Value::Object(Map::new());
-    }
-    let providers = provider_obj
-        .as_object_mut()
-        .ok_or_else(|| "invalid provider config object".to_string())?;
-
-    let pnode = providers
-        .entry(provider.trim().to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !pnode.is_object() {
-        *pnode = Value::Object(Map::new());
-    }
-    let pobj = pnode
-        .as_object_mut()
-        .ok_or_else(|| "invalid provider entry".to_string())?;
 
     let npm_v = npm.unwrap_or_default().trim().to_string();
     let name_v = name.unwrap_or_default().trim().to_string();
@@ -2057,189 +2100,169 @@ pub fn set_opencode_provider_config(
     let chunk_timeout_v = chunk_timeout.unwrap_or_default().trim().to_string();
     let model_id_v = model_id.unwrap_or_default().trim().to_string();
     let model_name_v = model_name.unwrap_or_default().trim().to_string();
-
-    if npm_v.is_empty() {
-        pobj.remove("npm");
-    } else {
-        pobj.insert("npm".to_string(), Value::String(npm_v.clone()));
-    }
-    if name_v.is_empty() {
-        pobj.remove("name");
-    } else {
-        pobj.insert("name".to_string(), Value::String(name_v.clone()));
-    }
-
-    let options_node = pobj
-        .entry("options".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !options_node.is_object() {
-        *options_node = Value::Object(Map::new());
-    }
-    let options = options_node
-        .as_object_mut()
-        .ok_or_else(|| "invalid provider options".to_string())?;
-
-    if base.is_empty() {
-        options.remove("baseURL");
-    } else {
-        options.insert("baseURL".to_string(), Value::String(base.clone()));
-    }
-
-    // Match OpenCode behavior:
-    // - apiKey is NOT stored in opencode.json options; it is stored in auth store (auth.json) or env list.
-    // - optional custom headers are stored under options.headers.
-    options.remove("apiKey");
-
-    // Merge user-provided headers into options.headers (string map only).
-    if let Some(h) = headers {
-        let mut header_obj: Map<String, Value> = Map::new();
-        for (k, v) in h {
-            let kk = k.trim().to_string();
-            if kk.is_empty() {
-                continue;
-            }
-            let vv = v.as_str().unwrap_or("").trim().to_string();
-            if vv.is_empty() {
-                continue;
-            }
-            header_obj.insert(kk, Value::String(vv));
+    with_service_base(repo_path, |base_ep| {
+        let mut options = Map::new();
+        if !base.is_empty() {
+            options.insert("baseURL".to_string(), Value::String(base.clone()));
         }
-        if !header_obj.is_empty() {
-            let headers_node = options
-                .entry("headers".to_string())
-                .or_insert_with(|| Value::Object(Map::new()));
-            if !headers_node.is_object() {
-                *headers_node = Value::Object(Map::new());
+        if let Some(h) = headers.clone() {
+            let mut header_obj: Map<String, Value> = Map::new();
+            for (k, v) in h {
+                let kk = k.trim().to_string();
+                let vv = v.as_str().unwrap_or("").trim().to_string();
+                if !kk.is_empty() && !vv.is_empty() {
+                    header_obj.insert(kk, Value::String(vv));
+                }
             }
-            if let Some(headers_obj) = headers_node.as_object_mut() {
-                for (k, v) in header_obj {
-                    headers_obj.insert(k, v);
+            if !header_obj.is_empty() {
+                options.insert("headers".to_string(), Value::Object(header_obj));
+            }
+        }
+        if !endpoint_v.is_empty() {
+            options.insert("endpoint".to_string(), Value::String(endpoint_v.clone()));
+        }
+        if !region_v.is_empty() {
+            options.insert("region".to_string(), Value::String(region_v.clone()));
+        }
+        if !profile_v.is_empty() {
+            options.insert("profile".to_string(), Value::String(profile_v.clone()));
+        }
+        if !project_v.is_empty() {
+            options.insert("project".to_string(), Value::String(project_v.clone()));
+        }
+        if !location_v.is_empty() {
+            options.insert("location".to_string(), Value::String(location_v.clone()));
+        }
+        if !resource_name_v.is_empty() {
+            options.insert("resourceName".to_string(), Value::String(resource_name_v.clone()));
+        }
+        if !enterprise_url_v.is_empty() {
+            options.insert("enterpriseUrl".to_string(), Value::String(enterprise_url_v.clone()));
+        }
+        if !timeout_v.is_empty() {
+            if let Ok(n) = timeout_v.parse::<i64>() {
+                options.insert("timeout".to_string(), Value::Number(n.into()));
+            } else {
+                options.insert("timeout".to_string(), Value::String(timeout_v.clone()));
+            }
+        }
+        if !chunk_timeout_v.is_empty() {
+            if let Ok(n) = chunk_timeout_v.parse::<i64>() {
+                options.insert("chunkTimeout".to_string(), Value::Number(n.into()));
+            } else {
+                options.insert("chunkTimeout".to_string(), Value::String(chunk_timeout_v.clone()));
+            }
+        }
+
+        let mut provider_node = Map::new();
+        if !npm_v.is_empty() {
+            provider_node.insert("npm".to_string(), Value::String(npm_v.clone()));
+        }
+        if !name_v.is_empty() {
+            provider_node.insert("name".to_string(), Value::String(name_v.clone()));
+        }
+        if !options.is_empty() {
+            provider_node.insert("options".to_string(), Value::Object(options));
+        }
+        if !model_id_v.is_empty() {
+            let model_entry = if model_name_v.is_empty() {
+                Value::Object(Map::new())
+            } else {
+                serde_json::json!({ "name": model_name_v })
+            };
+            let mut models_patch = Map::new();
+            models_patch.insert(model_id_v.clone(), model_entry);
+            provider_node.insert(
+                "models".to_string(),
+                Value::Object(models_patch),
+            );
+        }
+        if let Some(env_name) = key_env.as_deref() {
+            provider_node.insert("env".to_string(), Value::Array(vec![Value::String(env_name.to_string())]));
+        }
+
+        let global_raw = run_curl_json(repo_path, "GET", format!("{base_ep}/global/config").as_str(), None, 15)?;
+        let mut global_json: Value =
+            serde_json::from_str(&global_raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+
+        // If caller does not provide a model id, keep existing models for this provider.
+        if model_id_v.is_empty() {
+            let existing_models = global_json
+                .get("provider")
+                .and_then(|v| v.get(provider.trim()))
+                .and_then(|v| v.get("models"))
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            if !existing_models.is_empty() {
+                provider_node.insert("models".to_string(), Value::Object(existing_models));
+            }
+        }
+
+        let filtered_disabled = global_json
+            .get("disabled_providers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .filter(|id| *id != provider.trim())
+                    .map(|id| Value::String(id.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // Replace target provider node in full global config to avoid stale model merge.
+        if !global_json.is_object() {
+            global_json = serde_json::json!({});
+        }
+        let obj = global_json.as_object_mut().ok_or_else(|| "global config is not an object".to_string())?;
+        if !obj.contains_key("provider") || !obj.get("provider").unwrap_or(&Value::Null).is_object() {
+            obj.insert("provider".to_string(), Value::Object(Map::new()));
+        }
+        if let Some(provider_obj) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
+            provider_obj.insert(provider.trim().to_string(), Value::Object(provider_node.clone()));
+        }
+        obj.insert("disabled_providers".to_string(), Value::Array(filtered_disabled));
+
+        let body = serde_json::to_string(&global_json).map_err(|e| format!("serialize config patch failed: {e}"))?;
+        let _ = run_curl_json(
+            repo_path,
+            "PATCH",
+            format!("{base_ep}/global/config").as_str(),
+            Some(body.as_str()),
+            20,
+        )?;
+
+        // Ensure provider models are actually replaced (not deep-merged) by
+        // normalizing both global and project config files on disk.
+        if let Ok(path_raw) = run_curl_json(repo_path, "GET", format!("{base_ep}/path").as_str(), None, 10) {
+            if let Ok(path_json) = serde_json::from_str::<Value>(&path_raw) {
+                if let Some(cfg_dir) = path_json.get("config").and_then(|v| v.as_str()) {
+                    let global_file = pick_global_config_file(cfg_dir);
+                    let _ = cleanup_provider_in_json_file(
+                        &global_file,
+                        provider.trim(),
+                        &provider_node,
+                        if model_id_v.is_empty() { None } else { Some(model_id_v.as_str()) },
+                    );
                 }
             }
         }
-    }
-    if endpoint_v.is_empty() {
-        options.remove("endpoint");
-    } else {
-        options.insert("endpoint".to_string(), Value::String(endpoint_v.clone()));
-    }
-    if region_v.is_empty() {
-        options.remove("region");
-    } else {
-        options.insert("region".to_string(), Value::String(region_v.clone()));
-    }
-    if profile_v.is_empty() {
-        options.remove("profile");
-    } else {
-        options.insert("profile".to_string(), Value::String(profile_v.clone()));
-    }
-    if project_v.is_empty() {
-        options.remove("project");
-    } else {
-        options.insert("project".to_string(), Value::String(project_v.clone()));
-    }
-    if location_v.is_empty() {
-        options.remove("location");
-    } else {
-        options.insert("location".to_string(), Value::String(location_v.clone()));
-    }
-    if resource_name_v.is_empty() {
-        options.remove("resourceName");
-    } else {
-        options.insert("resourceName".to_string(), Value::String(resource_name_v.clone()));
-    }
-    if enterprise_url_v.is_empty() {
-        options.remove("enterpriseUrl");
-    } else {
-        options.insert("enterpriseUrl".to_string(), Value::String(enterprise_url_v.clone()));
-    }
-    if timeout_v.is_empty() {
-        options.remove("timeout");
-    } else if let Ok(n) = timeout_v.parse::<i64>() {
-        options.insert("timeout".to_string(), Value::Number(n.into()));
-    } else {
-        options.insert("timeout".to_string(), Value::String(timeout_v.clone()));
-    }
-    if chunk_timeout_v.is_empty() {
-        options.remove("chunkTimeout");
-    } else if let Ok(n) = chunk_timeout_v.parse::<i64>() {
-        options.insert("chunkTimeout".to_string(), Value::Number(n.into()));
-    } else {
-        options.insert("chunkTimeout".to_string(), Value::String(chunk_timeout_v.clone()));
-    }
+        let project_file = Path::new(repo_path).join("config.json");
+        let _ = cleanup_provider_in_json_file(
+            &project_file,
+            provider.trim(),
+            &provider_node,
+            if model_id_v.is_empty() { None } else { Some(model_id_v.as_str()) },
+        );
 
-    if !model_id_v.is_empty() {
-        let models_node = pobj
-            .entry("models".to_string())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !models_node.is_object() {
-            *models_node = Value::Object(Map::new());
-        }
-        let models = models_node
-            .as_object_mut()
-            .ok_or_else(|| "invalid provider models".to_string())?;
-        let model_entry = if model_name_v.is_empty() {
-            Value::Object(Map::new())
+        if let Some(_) = key_env {
+            set_opencode_auth_api_key(provider, "")?;
         } else {
-            serde_json::json!({ "name": model_name_v })
-        };
-        models.insert(model_id_v, model_entry);
-    }
-
-    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("serialize config failed: {e}"))?;
-    fs::write(p, text).map_err(|e| format!("write opencode config failed: {e}"))?;
-
-    // Ensure provider is not disabled after configuration (OpenCode UI removes it).
-    if let Ok(mut root_json) = read_project_config_json(repo_path) {
-        if let Some(obj) = root_json.as_object_mut() {
-            if let Some(disabled) = obj.get_mut("disabled_providers").and_then(|v| v.as_array_mut()) {
-                disabled.retain(|x| x.as_str().unwrap_or("") != provider.trim());
-            }
-            let patch_text =
-                serde_json::to_string_pretty(&root_json).map_err(|e| format!("serialize config failed: {e}"))?;
-            fs::write(Path::new(&project_config_path(repo_path)), patch_text)
-                .map_err(|e| format!("write opencode config failed: {e}"))?;
+            set_opencode_auth_api_key(provider, key.as_str())?;
         }
-    }
-
-    // Persist key:
-    // - "{env:FOO}" => config.provider[provider].env = ["FOO"] (handled by caller via writing provider env in config)
-    // - "plain key" => auth store (auth.json)
-    if let Some(env_name) = key_env.as_deref() {
-        // store env array at provider root (not options)
-        // re-read and patch minimal to avoid overwriting prior edits
-        let mut root2 = read_project_config_json(repo_path)?;
-        if !root2.is_object() {
-            root2 = Value::Object(Map::new());
-        }
-        if let Some(obj2) = root2.as_object_mut() {
-            let provider_obj2 = obj2
-                .entry("provider".to_string())
-                .or_insert_with(|| Value::Object(Map::new()));
-            if !provider_obj2.is_object() {
-                *provider_obj2 = Value::Object(Map::new());
-            }
-            if let Some(pmap2) = provider_obj2.as_object_mut() {
-                let pnode2 = pmap2
-                    .entry(provider.trim().to_string())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                if !pnode2.is_object() {
-                    *pnode2 = Value::Object(Map::new());
-                }
-                if let Some(pobj2) = pnode2.as_object_mut() {
-                    pobj2.insert("env".to_string(), Value::Array(vec![Value::String(env_name.to_string())]));
-                }
-            }
-        }
-        let patch_text2 = serde_json::to_string_pretty(&root2).map_err(|e| format!("serialize config failed: {e}"))?;
-        fs::write(Path::new(&project_config_path(repo_path)), patch_text2)
-            .map_err(|e| format!("write opencode config failed: {e}"))?;
-        // Clear any stored key for this provider if env placeholder is used.
-        set_opencode_auth_api_key(provider, "")?;
-    } else {
-        set_opencode_auth_api_key(provider, key.as_str())?;
-    }
-    release_managed_service(repo_path);
+        let _ = run_curl_json(repo_path, "POST", format!("{base_ep}/global/dispose").as_str(), Some("{}"), 8);
+        Ok(())
+    })?;
 
     Ok(OpencodeProviderConfig {
         provider: provider.trim().to_string(),

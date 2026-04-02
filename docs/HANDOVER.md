@@ -1,5 +1,10 @@
 # Handover
 
+## Latest Update
+
+- 2026-04-01: OpenCode 流式渲染与交互改造交接文档
+  - `docs/worklog/2026-04-01-step-31-opencode-streaming-ui-handover.md`
+
 Date: 2026-03-25
 
 ## What is done
