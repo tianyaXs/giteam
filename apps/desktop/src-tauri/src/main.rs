@@ -1,7 +1,13 @@
 mod commands;
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .setup(|_app| {
+            std::thread::spawn(|| {
+                commands::opencode::warmup_managed_opencode_service();
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::entire::run_entire_status_detailed,
             commands::entire::run_entire_explain_commit,
@@ -44,6 +50,8 @@ fn main() {
             commands::opencode::get_opencode_server_provider_auth,
             commands::opencode::get_opencode_server_config,
             commands::opencode::get_opencode_service_base,
+            commands::opencode::get_opencode_service_settings,
+            commands::opencode::set_opencode_service_settings,
             commands::opencode::get_opencode_server_global_config,
             commands::opencode::patch_opencode_server_config,
             commands::opencode::set_opencode_server_current_model,
@@ -63,6 +71,12 @@ fn main() {
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run tauri app");
+        .build(tauri::generate_context!())
+        .expect("failed to build tauri app");
+
+    app.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            commands::opencode::shutdown_managed_opencode_service();
+        }
+    });
 }

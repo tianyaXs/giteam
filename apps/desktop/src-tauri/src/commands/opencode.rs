@@ -4,7 +4,6 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::net::TcpListener;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,16 +13,17 @@ use tauri::Emitter;
 use wait_timeout::ChildExt;
 
 const OPENCODE_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_OPENCODE_SERVICE_PORT: u16 = 4098;
 
 struct ManagedOpencodeService {
-    child: std::process::Child,
+    child: Option<std::process::Child>,
     base: String,
 }
 
-static OPENCODE_SERVICE_POOL: OnceLock<Mutex<HashMap<String, ManagedOpencodeService>>> = OnceLock::new();
+static OPENCODE_SERVICE_POOL: OnceLock<Mutex<Option<ManagedOpencodeService>>> = OnceLock::new();
 
-fn service_pool() -> &'static Mutex<HashMap<String, ManagedOpencodeService>> {
-    OPENCODE_SERVICE_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+fn service_pool() -> &'static Mutex<Option<ManagedOpencodeService>> {
+    OPENCODE_SERVICE_POOL.get_or_init(|| Mutex::new(None))
 }
 
 fn run_opencode(args: &[&str], repo_path: &str) -> Result<String, String> {
@@ -90,6 +90,12 @@ pub struct OpencodeServerProviderCatalog {
 pub struct OpencodeServerProviderState {
     pub providers: Vec<OpencodeServerProviderCatalog>,
     pub connected: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeServiceSettings {
+    pub port: u16,
 }
 
 fn normalize_provider_key(input: &str) -> String {
@@ -222,6 +228,75 @@ fn opencode_auth_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn opencode_service_settings_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("giteam")
+                        .join("opencode-service.json"),
+                );
+            }
+        }
+    }
+
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg_config_home.trim();
+        if !p.is_empty() {
+            return Some(PathBuf::from(p).join("giteam").join("opencode-service.json"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let h = home.trim();
+        if !h.is_empty() {
+            return Some(PathBuf::from(h).join(".config").join("giteam").join("opencode-service.json"));
+        }
+    }
+    None
+}
+
+fn default_opencode_service_settings() -> OpencodeServiceSettings {
+    OpencodeServiceSettings {
+        port: DEFAULT_OPENCODE_SERVICE_PORT,
+    }
+}
+
+fn read_opencode_service_settings() -> OpencodeServiceSettings {
+    let Some(path) = opencode_service_settings_path() else {
+        return default_opencode_service_settings();
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(v) => v,
+        Err(_) => return default_opencode_service_settings(),
+    };
+    let mut cfg = match serde_json::from_str::<OpencodeServiceSettings>(&raw) {
+        Ok(v) => v,
+        Err(_) => return default_opencode_service_settings(),
+    };
+    if cfg.port == 0 {
+        cfg.port = DEFAULT_OPENCODE_SERVICE_PORT;
+    }
+    cfg
+}
+
+fn write_opencode_service_settings(settings: &OpencodeServiceSettings) -> Result<(), String> {
+    let Some(path) = opencode_service_settings_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create service settings dir failed: {e}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(settings).map_err(|e| format!("serialize service settings failed: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("write service settings failed: {e}"))?;
+    Ok(())
 }
 
 fn read_opencode_auth_map() -> Map<String, Value> {
@@ -486,17 +561,6 @@ fn parse_model_ref(model: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model_id.to_string()))
 }
 
-fn pick_free_port() -> Result<u16, String> {
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind free port failed: {e}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("read free port failed: {e}"))?
-        .port();
-    drop(listener);
-    Ok(port)
-}
-
 fn run_curl_json(
     repo_path: &str,
     method: &str,
@@ -541,60 +605,6 @@ fn merge_json(base: &mut Value, overlay: Value) {
             *base_slot = overlay_v;
         }
     }
-}
-
-fn pick_global_config_file(config_dir: &str) -> PathBuf {
-    let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
-    for name in candidates {
-        let p = Path::new(config_dir).join(name);
-        if p.exists() {
-            return p;
-        }
-    }
-    Path::new(config_dir).join("opencode.jsonc")
-}
-
-fn cleanup_provider_in_json_file(
-    file: &Path,
-    provider_id: &str,
-    provider_node: &Map<String, Value>,
-    selected_model: Option<&str>,
-) -> Result<(), String> {
-    let raw = fs::read_to_string(file).unwrap_or_else(|_| "{}".to_string());
-    let mut root: Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| format!("config root is not object: {}", file.display()))?;
-    if !obj.contains_key("provider") || !obj.get("provider").map(|v| v.is_object()).unwrap_or(false) {
-        obj.insert("provider".to_string(), Value::Object(Map::new()));
-    }
-    if let Some(pobj) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
-        pobj.insert(provider_id.to_string(), Value::Object(provider_node.clone()));
-    }
-    let disabled = obj
-        .get("disabled_providers")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty() && s != provider_id)
-        .collect::<Vec<_>>();
-    obj.insert(
-        "disabled_providers".to_string(),
-        Value::Array(disabled.into_iter().map(Value::String).collect()),
-    );
-    if let Some(mid) = selected_model {
-        let m = mid.trim();
-        if !m.is_empty() {
-            obj.insert("model".to_string(), Value::String(format!("{provider_id}/{m}")));
-        }
-    }
-    let out = serde_json::to_string_pretty(&root).map_err(|e| format!("serialize {} failed: {e}", file.display()))?;
-    fs::write(file, out).map_err(|e| format!("write {} failed: {e}", file.display()))
 }
 
 fn run_config_get(repo_path: &str, base: &str) -> Result<Value, String> {
@@ -662,16 +672,24 @@ fn run_config_patch(repo_path: &str, base: &str, patch: &Value) -> Result<Value,
     try_patch(format!("{base}/config"))
 }
 
-fn start_opencode_service(repo_path: &str) -> Result<(std::process::Child, String), String> {
-    let port = pick_free_port()?;
-    let base = format!("http://127.0.0.1:{port}");
+fn service_is_ready(repo_path: &str, base: &str) -> bool {
+    let ready_url = format!("{base}/project/current");
+    run_curl_json(repo_path, "GET", ready_url.as_str(), None, 3).is_ok()
+}
+
+fn start_opencode_service(repo_path: &str, settings: &OpencodeServiceSettings) -> Result<(Option<std::process::Child>, String), String> {
+    let base = format!("http://127.0.0.1:{}", settings.port);
+    if service_is_ready(repo_path, &base) {
+        // A healthy service is already listening on the configured endpoint.
+        return Ok((None, base));
+    }
     let mut serve = Command::new("opencode");
     serve
         .arg("serve")
         .arg("--hostname")
         .arg("127.0.0.1")
         .arg("--port")
-        .arg(port.to_string())
+        .arg(settings.port.to_string())
         .arg("--print-logs")
         .current_dir(repo_path)
         .env("PATH", build_stream_path_env())
@@ -686,10 +704,9 @@ fn start_opencode_service(repo_path: &str) -> Result<(std::process::Child, Strin
         .map_err(|e| format!("failed to start `opencode serve`: {e}"))?;
 
     let wait_deadline = Instant::now() + Duration::from_secs(12);
-    let ready_url = format!("{base}/project/current");
     let mut ready = false;
     while Instant::now() < wait_deadline {
-        if run_curl_json(repo_path, "GET", ready_url.as_str(), None, 3).is_ok() {
+        if service_is_ready(repo_path, &base) {
             ready = true;
             break;
         }
@@ -698,61 +715,75 @@ fn start_opencode_service(repo_path: &str) -> Result<(std::process::Child, Strin
     if !ready {
         return Err("opencode service did not become ready".to_string());
     }
-    Ok((child, base))
+    Ok((Some(child), base))
 }
 
-fn release_managed_service(repo_path: &str) {
+fn release_managed_service() {
     if let Ok(mut pool) = service_pool().lock() {
-        if let Some(mut svc) = pool.remove(repo_path) {
-            let _ = svc.child.kill();
-            let _ = svc.child.wait_timeout(Duration::from_secs(1));
+        if let Some(mut svc) = pool.take() {
+            if let Some(mut child) = svc.child.take() {
+                let _ = child.kill();
+                let _ = child.wait_timeout(Duration::from_secs(1));
+            }
         }
     }
 }
 
-fn ensure_managed_service(repo_path: &str) -> Result<String, String> {
-    if let Ok(mut pool) = service_pool().lock() {
-        if let Some(svc) = pool.get_mut(repo_path) {
-            match svc.child.try_wait() {
-                Ok(Some(_)) | Err(_) => {
-                    let _ = svc.child.kill();
-                    let _ = svc.child.wait_timeout(Duration::from_secs(1));
-                    pool.remove(repo_path);
+pub fn shutdown_managed_opencode_service() {
+    release_managed_service();
+}
+
+pub fn warmup_managed_opencode_service() {
+    let repo = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let _ = ensure_managed_service_local(repo.as_str());
+}
+
+fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {
+    let settings = read_opencode_service_settings();
+    let expected_base = format!("http://127.0.0.1:{}", settings.port);
+    if let Ok(mut guard) = service_pool().lock() {
+        if let Some(svc) = guard.as_mut() {
+            if svc.base == expected_base {
+                let child_ok = if let Some(child) = svc.child.as_mut() {
+                    matches!(child.try_wait(), Ok(None))
+                } else {
+                    true
+                };
+                if child_ok && service_is_ready(repo_path, &svc.base) {
+                    return Ok(svc.base.clone());
                 }
-                Ok(None) => {
-                    let ready_url = format!("{}/project/current", svc.base);
-                    if run_curl_json(repo_path, "GET", ready_url.as_str(), None, 3).is_ok() {
-                        return Ok(svc.base.clone());
-                    }
-                    let _ = svc.child.kill();
-                    let _ = svc.child.wait_timeout(Duration::from_secs(1));
-                    pool.remove(repo_path);
+            }
+            if let Some(mut stale) = guard.take() {
+                if let Some(mut child) = stale.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait_timeout(Duration::from_secs(1));
                 }
             }
         }
     }
 
-    let (child, base) = start_opencode_service(repo_path)?;
+    let (child, base) = start_opencode_service(repo_path, &settings)?;
     let mut pool = service_pool()
         .lock()
         .map_err(|_| "opencode service lock poisoned".to_string())?;
-    pool.insert(
-        repo_path.to_string(),
-        ManagedOpencodeService {
-            child,
-            base: base.clone(),
-        },
-    );
+    *pool = Some(ManagedOpencodeService {
+        child,
+        base: base.clone(),
+    });
     Ok(base)
 }
 
 fn with_service_base<T, F: FnMut(&str) -> Result<T, String>>(repo_path: &str, mut task: F) -> Result<T, String> {
-    let base = ensure_managed_service(repo_path)?;
+    let base = ensure_managed_service_local(repo_path)?;
     match task(base.as_str()) {
         Ok(v) => Ok(v),
         Err(first_err) => {
-            release_managed_service(repo_path);
-            let retry_base = ensure_managed_service(repo_path)?;
+            release_managed_service();
+            let retry_base = ensure_managed_service_local(repo_path)?;
             task(retry_base.as_str()).map_err(|retry_err| format!("{first_err}\nretry failed: {retry_err}"))
         }
     }
@@ -1763,7 +1794,35 @@ pub fn get_opencode_server_config(repo_path: &str) -> Result<Value, String> {
 #[tauri::command]
 pub fn get_opencode_service_base(repo_path: &str) -> Result<String, String> {
     command_runner::validate_repo_path(repo_path)?;
-    ensure_managed_service(repo_path)
+    ensure_managed_service_local(repo_path)
+}
+
+#[tauri::command]
+pub fn get_opencode_service_settings() -> Result<OpencodeServiceSettings, String> {
+    Ok(read_opencode_service_settings())
+}
+
+#[tauri::command]
+pub fn set_opencode_service_settings(
+    settings: OpencodeServiceSettings,
+    repo_path: Option<String>,
+) -> Result<OpencodeServiceSettings, String> {
+    if settings.port == 0 {
+        return Err("service port must be between 1 and 65535".to_string());
+    }
+    let next = OpencodeServiceSettings {
+        port: settings.port,
+    };
+    write_opencode_service_settings(&next)?;
+    release_managed_service();
+    if let Some(repo) = repo_path {
+        let rp = repo.trim().to_string();
+        if !rp.is_empty() {
+            command_runner::validate_repo_path(rp.as_str())?;
+            let _ = ensure_managed_service_local(rp.as_str())?;
+        }
+    }
+    Ok(next)
 }
 
 #[tauri::command]
@@ -2231,29 +2290,6 @@ pub fn set_opencode_provider_config(
             Some(body.as_str()),
             20,
         )?;
-
-        // Ensure provider models are actually replaced (not deep-merged) by
-        // normalizing both global and project config files on disk.
-        if let Ok(path_raw) = run_curl_json(repo_path, "GET", format!("{base_ep}/path").as_str(), None, 10) {
-            if let Ok(path_json) = serde_json::from_str::<Value>(&path_raw) {
-                if let Some(cfg_dir) = path_json.get("config").and_then(|v| v.as_str()) {
-                    let global_file = pick_global_config_file(cfg_dir);
-                    let _ = cleanup_provider_in_json_file(
-                        &global_file,
-                        provider.trim(),
-                        &provider_node,
-                        if model_id_v.is_empty() { None } else { Some(model_id_v.as_str()) },
-                    );
-                }
-            }
-        }
-        let project_file = Path::new(repo_path).join("config.json");
-        let _ = cleanup_provider_in_json_file(
-            &project_file,
-            provider.trim(),
-            &provider_node,
-            if model_id_v.is_empty() { None } else { Some(model_id_v.as_str()) },
-        );
 
         if let Some(_) = key_env {
             set_opencode_auth_api_key(provider, "")?;

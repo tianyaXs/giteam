@@ -82,7 +82,7 @@ body {
 }
 
 .wb-panel-right {
-  grid-template-columns: 56px var(--wb-sidebar-width, 320px) 8px 1fr 360px;
+  grid-template-columns: 56px var(--wb-sidebar-width, 320px) 8px minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
   grid-template-rows: 1fr 26px;
   grid-template-areas:
     "activity sidebar split editor panel"
@@ -545,7 +545,7 @@ body {
 
 .wb-editor-content {
   grid-template-rows: 1fr;
-  grid-template-columns: 1fr 8px var(--wb-right-width, 340px);
+  grid-template-columns: minmax(0, 1fr) 8px minmax(340px, var(--wb-right-width, 420px));
   align-items: stretch;
 }
 
@@ -776,7 +776,14 @@ body {
 }
 
 .opencode-rail-toggle {
-  padding: 4px 8px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
 }
 
 .opencode-session-tabs {
@@ -2507,7 +2514,8 @@ button {
 }
 
 .opencode-provider-picker-card {
-  width: min(840px, 92vw);
+  width: min(980px, 94vw);
+  min-width: min(980px, 94vw);
 }
 
 .opencode-provider-picker-title {
@@ -2530,6 +2538,137 @@ button {
 .opencode-provider-picker-grid {
   grid-template-columns: minmax(230px, 0.95fr) minmax(260px, 1.05fr);
   min-height: 240px;
+}
+
+@media (max-width: 960px) {
+  .opencode-provider-picker-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1320px) {
+  .wb {
+    grid-template-columns: 52px minmax(250px, var(--wb-sidebar-width, 300px)) 8px minmax(0, 1fr);
+  }
+
+  .wb-editor-content {
+    grid-template-columns: minmax(0, 1fr) 8px minmax(320px, min(44vw, var(--wb-right-width, 420px)));
+    gap: 8px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .wb {
+    grid-template-columns: 48px minmax(220px, var(--wb-sidebar-width, 260px)) 8px minmax(0, 1fr);
+  }
+
+  .wb-editor-inner {
+    padding: 10px 8px;
+  }
+
+  .wb-editor-content {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(260px, 1fr) minmax(320px, 0.95fr);
+  }
+
+  .wb-col-splitter {
+    display: none;
+  }
+
+  .wb-col-right {
+    min-height: 320px;
+  }
+
+  .opencode-msg {
+    max-width: 96%;
+  }
+
+  .opencode-msg-user {
+    margin-left: 12px;
+  }
+
+  .opencode-msg-assistant {
+    margin-right: 12px;
+  }
+}
+
+@media (max-width: 900px) {
+  .wb {
+    grid-template-columns: 44px minmax(200px, var(--wb-sidebar-width, 220px)) 8px minmax(0, 1fr);
+  }
+
+  .opencode-shell {
+    position: relative;
+    grid-template-columns: 1fr;
+  }
+
+  .opencode-session-rail {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 40;
+    background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
+    box-shadow: 10px 0 20px rgba(0, 0, 0, 0.18);
+  }
+
+  .opencode-session-rail.open {
+    width: min(72vw, 248px);
+  }
+
+  .opencode-headline {
+    min-height: 40px;
+    padding: 6px 8px;
+  }
+
+  .opencode-session-tabs {
+    min-height: 38px;
+    padding: 5px 6px;
+  }
+
+  .opencode-input-row {
+    padding: 10px 8px;
+  }
+
+  .opencode-composer-body {
+    gap: 6px;
+    padding: 9px 8px 7px;
+  }
+
+  .opencode-composer-toolbar {
+    gap: 6px;
+    padding: 6px 8px 7px;
+    flex-wrap: wrap;
+  }
+
+  .opencode-composer-send {
+    min-width: 64px;
+  }
+}
+
+@media (max-width: 760px) {
+  .wb {
+    grid-template-columns: 40px minmax(180px, 44vw) 8px minmax(0, 1fr);
+  }
+
+  .wb-editor-inner {
+    padding: 8px 6px;
+  }
+
+  .opencode-thread {
+    padding: 8px 8px 6px;
+  }
+
+  .opencode-msg {
+    max-width: 100%;
+    padding: 8px 10px;
+  }
+
+  .opencode-msg-user,
+  .opencode-msg-assistant {
+    margin-left: 0;
+    margin-right: 0;
+  }
 }
 
 .opencode-inline-loading {

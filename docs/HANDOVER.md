@@ -60,3 +60,5 @@ Date: 2026-03-25
 1. Add DB migration tracking and schema versioning
 2. Enrich commit rows with review status badges and filter controls
 3. Run full Tauri runtime UX validation in local GUI session
+- 2026-04-03: OpenCode 服务固定端口与接口冒烟验证
+  - `docs/worklog/2026-04-03-step-32-opencode-service-4098-and-api-smoke.md`

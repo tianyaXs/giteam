@@ -142,6 +142,9 @@ type OpencodeServerConfig = {
   disabled_providers?: string[];
   model?: string;
 } & Record<string, unknown>;
+type OpencodeServiceSettings = {
+  port: number;
+};
 
 type OpencodeAuthPayload = { type: "api"; key: string };
 type OpencodeProviderAuthMethod = { type: string; label?: string };
@@ -1192,7 +1195,7 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
-  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 340, 300, 680));
+  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 420, 360, 760));
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right";
     startX: number;
@@ -1273,6 +1276,11 @@ export function App() {
   const [opencodeSessionModel, setOpencodeSessionModel] = useState<Record<string, string>>({});
   const [opencodeConfig, setOpencodeConfig] = useState<OpencodeModelConfig | null>(null);
   const [opencodeConfigBusy, setOpencodeConfigBusy] = useState(false);
+  const [opencodeServiceSettings, setOpencodeServiceSettings] = useState<OpencodeServiceSettings>({
+    port: 4098
+  });
+  const [opencodeServiceSettingsSavedPort, setOpencodeServiceSettingsSavedPort] = useState(4098);
+  const [opencodeServiceSettingsBusy, setOpencodeServiceSettingsBusy] = useState(false);
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -1289,6 +1297,7 @@ export function App() {
   const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const opencodeModelPickerRef = useRef<HTMLDivElement | null>(null);
   const opencodePrevCountRef = useRef(0);
   const opencodeLoadingOlderRef = useRef(false);
@@ -1827,7 +1836,7 @@ export function App() {
       if (draggingSplit.kind === "sidebar") {
         setSidebarWidth(clamp(draggingSplit.startWidth + delta, 240, 520));
       } else {
-        setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 300, 680));
+        setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 360, 760));
       }
     };
     const onUp = () => setDraggingSplit(null);
@@ -2112,6 +2121,56 @@ export function App() {
       setError(String(e));
       setMessage("Load model config failed");
     }
+  }
+
+  async function loadOpencodeServiceSettings() {
+    try {
+      const cfg = await invoke<OpencodeServiceSettings>("get_opencode_service_settings");
+      const port = Number(cfg.port) > 0 ? Number(cfg.port) : 4098;
+      setOpencodeServiceSettings({ port });
+      setOpencodeServiceSettingsSavedPort(port);
+    } catch (e) {
+      appendOpencodeDebugLog(`service.settings.load error ${String(e)}`);
+    }
+  }
+
+  async function saveOpencodeServiceSettingsIfNeeded() {
+    const port = Number(opencodeServiceSettings.port);
+    if (port === opencodeServiceSettingsSavedPort) return true;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setError("Service port must be between 1 and 65535");
+      return false;
+    }
+    setOpencodeServiceSettingsBusy(true);
+    try {
+      const next = await invoke<OpencodeServiceSettings>("set_opencode_service_settings", {
+        settings: { port },
+        repoPath: repoPath || null
+      });
+      const savedPort = Number(next.port) > 0 ? Number(next.port) : port;
+      setOpencodeServiceSettings({ port: savedPort });
+      setOpencodeServiceSettingsSavedPort(savedPort);
+      appendOpencodeDebugLog(`service.settings saved port=${savedPort}`);
+      setMessage("OpenCode service restarted");
+      if (selectedRepo) {
+        void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+        void refreshOpencodeSessions().catch((e) => setError(String(e)));
+      }
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setOpencodeServiceSettingsBusy(false);
+    }
+  }
+
+  async function closeSettingsModal() {
+    if (runtimeStatus.opencode.installed) {
+      const ok = await saveOpencodeServiceSettingsIfNeeded();
+      if (!ok) return;
+    }
+    setShowSettings(false);
   }
 
   async function refreshOpencodeConfiguredModels() {
@@ -3225,6 +3284,21 @@ export function App() {
   }, [rightPaneWidth]);
 
   useEffect(() => {
+    const collapseIfNarrow = () => {
+      const paneWidth = opencodeRightPaneRef.current?.clientWidth || 0;
+      if (window.innerWidth <= 900 || paneWidth <= 620) setShowOpencodeSessionRail(false);
+    };
+    const observer = new ResizeObserver(() => collapseIfNarrow());
+    if (opencodeRightPaneRef.current) observer.observe(opencodeRightPaneRef.current);
+    window.addEventListener("resize", collapseIfNarrow);
+    collapseIfNarrow();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", collapseIfNarrow);
+    };
+  }, []);
+
+  useEffect(() => {
     const hasCheckedBefore = window.localStorage.getItem(RUNTIME_FIRST_CHECK_KEY) === "1";
     if (hasCheckedBefore) return;
 
@@ -3280,6 +3354,11 @@ export function App() {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
     void refreshOpencodeConfiguredModels();
   }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!runtimeStatus.opencode.installed) return;
+    void loadOpencodeServiceSettings();
+  }, [runtimeStatus.opencode.installed]);
 
   useEffect(() => {
     setOpencodeSavedModels([]);
@@ -3977,7 +4056,7 @@ export function App() {
           onMouseDown={(e) => beginSplitDrag("right", e.clientX)}
         />
 
-        <div className="wb-col wb-col-right">
+        <div className="wb-col wb-col-right" ref={opencodeRightPaneRef}>
           {runtimeStatus.opencode.installed ? (
             <div className={`panel opencode-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
               <div className="opencode-shell">
@@ -4001,11 +4080,21 @@ export function App() {
                 </aside>
                 <div className="opencode-main">
                   <div className="opencode-headline">
-                    <button className="chip opencode-rail-toggle" onClick={() => setShowOpencodeSessionRail((v) => !v)}>
-                      {showOpencodeSessionRail ? "Hide sessions" : "Show sessions"}
+                    <button
+                      className="chip opencode-rail-toggle"
+                      title={showOpencodeSessionRail ? "隐藏会话列表" : "显示会话列表"}
+                      aria-label={showOpencodeSessionRail ? "隐藏会话列表" : "显示会话列表"}
+                      onClick={() => setShowOpencodeSessionRail((v) => !v)}
+                    >
+                      ≡
                     </button>
-                    <button className="chip opencode-rail-toggle" onClick={() => setShowOpencodeDebugLog((v) => !v)}>
-                      {showOpencodeDebugLog ? "Hide logs" : "Show logs"}
+                    <button
+                      className="chip opencode-rail-toggle"
+                      title={showOpencodeDebugLog ? "隐藏日志" : "显示日志"}
+                      aria-label={showOpencodeDebugLog ? "隐藏日志" : "显示日志"}
+                      onClick={() => setShowOpencodeDebugLog((v) => !v)}
+                    >
+                      ⌘
                     </button>
                     <p className="small muted opencode-path">{selectedRepo?.path || "No repository selected"}</p>
                   </div>
@@ -4261,7 +4350,6 @@ export function App() {
                                     setOpencodeProviderPickerSearch("");
                                     setOpencodeProviderPickerProvider(opencodeModelProvider);
                                     setOpencodeProviderPickerModelSearch("");
-                                    void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
                                     setShowOpencodeModelPicker(false);
                                   }}
                                 >
@@ -4429,7 +4517,7 @@ export function App() {
       ) : null}
 
       {showSettings ? (
-        <div className="modal-mask" onClick={() => setShowSettings(false)}>
+        <div className="modal-mask" onClick={() => void closeSettingsModal()}>
           <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
             <h3>Settings</h3>
             <p className="small muted">Theme and layout preferences</p>
@@ -4485,6 +4573,38 @@ export function App() {
               </div>
 
               {runtimeStatus.opencode.installed ? (
+                <div className="settings-row">
+                  <div className="settings-label">OpenCode API</div>
+                  <div className="settings-provider-form">
+                    <input
+                      className="path-input"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      placeholder="Service port"
+                      value={String(opencodeServiceSettings.port)}
+                      onChange={(e) => {
+                        const next = Number(e.target.value || "0");
+                        setOpencodeServiceSettings((prev) => ({
+                          ...prev,
+                          port: next
+                        }));
+                      }}
+                    />
+                    <div className="toolbar" style={{ justifyContent: "flex-end" }}>
+                      <span className="small muted">
+                        {opencodeServiceSettingsBusy
+                          ? "Saving..."
+                          : opencodeServiceSettings.port !== opencodeServiceSettingsSavedPort
+                            ? "Will save on close"
+                            : ""}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {runtimeStatus.opencode.installed ? (
                 <>
                   <div className="settings-row">
                     <div className="settings-label">Model management</div>
@@ -4492,7 +4612,6 @@ export function App() {
                       <button
                         className="chip"
                         onClick={() => {
-                          void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
                           setOpencodeProviderPickerProvider(
                             parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
                           );
@@ -4514,7 +4633,7 @@ export function App() {
             </div>
 
             <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-              <button className="chip" onClick={() => setShowSettings(false)}>
+              <button className="chip" onClick={() => void closeSettingsModal()}>
                 Close
               </button>
             </div>
@@ -4528,12 +4647,8 @@ export function App() {
             <div className="env-setup-head">
               <div className="opencode-provider-picker-title">
                 <h3>Provider & Model Manager</h3>
-                <p className="small muted">
-                  目录来源 `/provider`，可用模型来源 `/global/config`。
-                </p>
               </div>
               <div className="toolbar">
-                <span className="small muted">{`Connected ${opencodeConnectedProviders.length}/${opencodeProviderPickerCandidates.length}`}</span>
                 {opencodeCatalogLoading ? (
                   <span className="opencode-inline-loading" aria-live="polite">
                     <span />
@@ -4559,12 +4674,14 @@ export function App() {
               />
               <button
                 className="chip"
+                title="新增自定义提供商"
+                aria-label="新增自定义提供商"
                 onClick={() => {
                   setShowOpencodeProviderPicker(false);
                   setShowOpencodeCustomProvider(true);
                 }}
               >
-                ＋ 自定义
+                ＋
               </button>
               <button className="chip" disabled={opencodeCatalogLoading} onClick={() => void refreshOpencodeCatalog()}>
                 {opencodeCatalogLoading ? "Refreshing..." : "Refresh"}
