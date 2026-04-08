@@ -16,8 +16,7 @@ import {
   Vibration,
   View
 } from 'react-native';
-import { scanFromURLAsync, useCameraPermissions } from 'expo-camera';
-import { Camera as LegacyCamera, CameraType } from 'expo-camera/legacy';
+import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import EventSource from 'react-native-sse';
@@ -27,8 +26,10 @@ import {
   abortSession,
   buildStreamUrl,
   getClientRepositories,
+  getCurrentProject,
   getMessages,
   getOpencodeConfig,
+  getProjects,
   getSessions,
   health,
   pairAuth,
@@ -38,12 +39,6 @@ import { parseConversation } from './src/messageParser';
 import type { MobileChatMessage, MobileTimelineItem } from './src/types';
 
 const PREF_KEY = 'giteam.mobile.v3';
-
-const SUGGESTIONS = [
-  '请先检查当前会话上下文，再继续回答',
-  '把这个任务拆成 3 个步骤并开始执行',
-  '帮我总结刚刚执行结果和下一步行动'
-];
 
 const INITIAL_SESSION_LIMIT = 80;
 const SESSION_LIMIT_STEP = 120;
@@ -101,6 +96,8 @@ type RenderBoundaryProps = {
 type RenderBoundaryState = {
   error: string;
 };
+
+const CameraViewCompat: any = CameraView;
 
 const DEFAULT_PREFS: Prefs = {
   serverUrl: '',
@@ -291,6 +288,32 @@ function projectNameFromPath(worktree: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : text;
 }
 
+function buildProjectQuestionPool(projectName: string): string[] {
+  const name = projectName || '当前项目';
+  return [
+    `请先概览 ${name} 的目录结构，并说明每个模块职责`,
+    `这个项目如何本地运行？请给我最短启动步骤`,
+    `帮我找出 ${name} 的核心业务流程入口`,
+    `请总结 ${name} 使用的技术栈和关键依赖`,
+    `定位这个项目里与接口请求最相关的代码位置`,
+    `如果要在 ${name} 新增功能，建议从哪里改起`,
+    `请检查 ${name} 当前最可能的风险点或待办项`,
+    `帮我生成一份 ${name} 的新人上手说明`,
+    `请把 ${name} 的主要数据流转路径梳理一下`
+  ];
+}
+
+function pickRandomQuestions(pool: string[], count: number): string[] {
+  const arr = [...pool];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = arr[i];
+    arr[i] = arr[j];
+    arr[j] = t;
+  }
+  return arr.slice(0, Math.max(0, Math.min(count, arr.length)));
+}
+
 function formatClock(ts?: number): string {
   if (!ts || !Number.isFinite(ts)) return '';
   const d = new Date(ts);
@@ -358,14 +381,13 @@ export default function App() {
   const [sessionId, setSessionId] = useState('');
   const [model, setModel] = useState('');
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
-  const [modelCatalogBusy, setModelCatalogBusy] = useState(false);
   const [modelCatalogStatus, setModelCatalogStatus] = useState('');
   const [projects, setProjects] = useState<ProjectOption[]>([]);
-  const [projectCatalogBusy, setProjectCatalogBusy] = useState(false);
-  const [projectPathInput, setProjectPathInput] = useState('');
+  const [sessionSearch, setSessionSearch] = useState('');
   const [connLogs, setConnLogs] = useState<ConnLogItem[]>([]);
 
   const [pairPayloadInput, setPairPayloadInput] = useState('');
+  const [authMode, setAuthMode] = useState<'scan' | 'paste' | ''>('');
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [scannerReady, setScannerReady] = useState(false);
@@ -373,11 +395,13 @@ export default function App() {
   const [lastScanAt, setLastScanAt] = useState(0);
 
   const [prompt, setPrompt] = useState('');
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [messages, setMessages] = useState<MobileChatMessage[]>([]);
   const [timeline, setTimeline] = useState<MobileTimelineItem[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [thinkingPulse, setThinkingPulse] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [sessionLimits, setSessionLimits] = useState<Record<string, number>>({});
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
@@ -387,17 +411,40 @@ export default function App() {
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
   const messageScrollRef = useRef<ScrollView | null>(null);
+  const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
   const allowAutoScrollRef = useRef(true);
+  const projectsRef = useRef<ProjectOption[]>([]);
+  const sessionsRef = useRef<SessionItem[]>([]);
+  const modelOptionsRef = useRef<ModelOption[]>([]);
   const drawerAnim = useRef(new Animated.Value(0)).current;
+  const leftDrawerPulse = useRef(new Animated.Value(1)).current;
+  const rightDrawerPulse = useRef(new Animated.Value(1)).current;
+  const workspaceAnim = useRef(new Animated.Value(0)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
   const statusText = toText(status);
+  const filteredSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter((s) => {
+      const title = toText(s.title).toLowerCase();
+      const preview = toText(s.preview).toLowerCase();
+      return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
+    });
+  }, [sessions, sessionSearch]);
   const connLogText = useMemo(
     () => connLogs.map((row) => `[${formatClock(row.ts)}] ${toText(row.message)}`).join('\n'),
     [connLogs]
   );
+  const workspacePanelHeight = useMemo(() => {
+    const count = Math.max(1, projects.length);
+    const headerAndPadding = 88;
+    const rowHeight = 50;
+    const desired = headerAndPadding + count * rowHeight;
+    return Math.max(180, Math.min(420, desired));
+  }, [projects.length]);
 
   function pushConnLog(message: string, level: 'info' | 'error' = 'info') {
     const text = toText(message).trim();
@@ -436,6 +483,8 @@ export default function App() {
       sessionIdRef.current = prefs.sessionId;
       setModel(prefs.model || '');
       setLoaded(true);
+      const pname = projectNameFromPath(toText(prefs.repoPath));
+      setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     });
     return () => {
       alive = false;
@@ -462,6 +511,18 @@ export default function App() {
     const timer = setInterval(() => setThinkingPulse((v) => !v), 480);
     return () => clearInterval(timer);
   }, [streaming]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    modelOptionsRef.current = modelOptions;
+  }, [modelOptions]);
 
   useEffect(() => {
     if (!loaded || !authed || !sessionId || !repoPath) return;
@@ -510,45 +571,105 @@ export default function App() {
     }
   }
 
-  function openDrawer() {
-    setDrawerOpen(true);
+  function triggerPulse(anim: Animated.Value) {
+    anim.setValue(0.72);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 260,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true
+    }).start();
+  }
+
+  function openDrawer(side: 'left' | 'right') {
+    if (drawerSide === side) return;
+    setWorkspacePickerOpen(false);
+    setDrawerSide(side);
+    drawerAnim.setValue(0);
     Animated.timing(drawerAnim, {
       toValue: 1,
-      duration: 240,
+      duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true
     }).start();
+    if (side === 'left') {
+      void refreshSessionsFromServer();
+    } else {
+      void refreshModelCatalog();
+    }
   }
 
   function closeDrawer() {
     Animated.timing(drawerAnim, {
       toValue: 0,
-      duration: 200,
+      duration: 180,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true
-    }).start(() => setDrawerOpen(false));
+    }).start(() => setDrawerSide(''));
+  }
+
+  function openWorkspacePicker() {
+    if (workspacePickerOpen) return;
+    setDrawerSide('');
+    setWorkspacePickerOpen(true);
+    pushConnLog(`workspace picker opening projects=${projectsRef.current.length}`);
+    workspaceAnim.setValue(0);
+    Animated.timing(workspaceAnim, {
+      toValue: 1,
+      duration: 210,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+    void refreshProjectsCatalog();
+  }
+
+  function closeWorkspacePicker() {
+    Animated.timing(workspaceAnim, {
+      toValue: 0,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start(() => setWorkspacePickerOpen(false));
   }
 
   const swipeResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
+        onStartShouldSetPanResponderCapture: () => false,
         onMoveShouldSetPanResponder: (_evt, g) => {
+          if (workspacePickerOpen) return false;
           if (Math.abs(g.dx) < 14 || Math.abs(g.dx) < Math.abs(g.dy)) return false;
-          if (!drawerOpen) return g.dx > 0;
-          return g.dx < 0;
+          if (!drawerSide) return Math.abs(g.dx) > 40;
+          if (drawerSide === 'left') return g.dx < 0;
+          return g.dx > 0;
+        },
+        onMoveShouldSetPanResponderCapture: (_evt, g) => {
+          if (workspacePickerOpen) return false;
+          if (Math.abs(g.dx) < 12 || Math.abs(g.dx) < Math.abs(g.dy) * 1.15) return false;
+          if (!drawerSide) return Math.abs(g.dx) > 32;
+          if (drawerSide === 'left') return g.dx < -24;
+          return g.dx > 24;
         },
         onPanResponderRelease: (_evt, g) => {
-          if (!drawerOpen && g.dx > 56) {
-            openDrawer();
+          if (!drawerSide && g.dx > 56) {
+            openDrawer('left');
             return;
           }
-          if (drawerOpen && g.dx < -56) {
+          if (!drawerSide && g.dx < -56) {
+            openDrawer('right');
+            return;
+          }
+          if (drawerSide === 'left' && g.dx < -56) {
+            closeDrawer();
+            return;
+          }
+          if (drawerSide === 'right' && g.dx > 56) {
             closeDrawer();
           }
         }
       }),
-    [drawerOpen]
+    [drawerSide, workspacePickerOpen]
   );
 
   function upsertSession(nextSessionId: string, nextMessages: MobileChatMessage[]) {
@@ -563,7 +684,7 @@ export default function App() {
 
   async function refreshSessionsFromServer(targetRepoPath?: string) {
     const repo = toText(targetRepoPath || repoPath).trim();
-    if (!authed || !repo) return;
+    if (!authed || !repo) return [] as SessionItem[];
     try {
       pushConnLog(`GET sessions repo=${repo}`);
       const rows = await getSessions({
@@ -573,22 +694,33 @@ export default function App() {
         limit: 200
       });
       pushConnLog(`GET sessions ok count=${rows.length}`);
+      const prevIds = new Set(sessionsRef.current.map((x) => x.id));
+      const hasNew = rows.some((x) => !prevIds.has(x.id));
+      const nextSessions = rows.map((s) => ({
+        id: s.id,
+        title: s.title || '新会话',
+        preview: '',
+        updatedAt: Number(s.updatedAt || 0) || Date.now()
+      }));
       setSessions((prev) => {
         const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
-        return rows.map((s) => ({
+        return nextSessions.map((s) => ({
           id: s.id,
-          title: s.title || '新会话',
+          title: s.title,
           preview: previewMap.get(s.id) || '',
-          updatedAt: Number(s.updatedAt || 0) || Date.now()
+          updatedAt: s.updatedAt
         }));
       });
+      if (hasNew) triggerPulse(leftDrawerPulse);
+      return nextSessions;
     } catch (e) {
       pushConnLog(`GET sessions error ${String(e)}`, 'error');
       setStatus((prev) => (prev.includes('sessions failed') ? prev : `会话同步失败: ${String(e)}`));
+      return [] as SessionItem[];
     }
   }
 
-  async function refreshMessages(targetSessionId: string, opts?: { limit?: number; loadingOlder?: boolean }) {
+  async function refreshMessages(targetSessionId: string, opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean }) {
     if (!authed || !repoPath || !targetSessionId) return;
     const requestedLimit = Math.max(
       20,
@@ -624,13 +756,18 @@ export default function App() {
         [targetSessionId]: raw.length >= requestedLimit && requestedLimit < SESSION_LIMIT_MAX
       }));
       // Ignore stale async responses from non-active sessions.
-      if (sessionIdRef.current && targetSessionId !== sessionIdRef.current) {
-        upsertSession(targetSessionId, next.chatMessages);
+      if (targetSessionId !== sessionIdRef.current) {
         return;
       }
       setMessages(next.chatMessages);
       setTimeline(next.timeline);
       upsertSession(targetSessionId, next.chatMessages);
+      if (opts?.jumpToLatest) {
+        forceScrollToLatestUntilRef.current = Date.now() + 800;
+        requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
+        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
+        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
+      }
       if (!next.writing) {
         setStreaming(false);
         setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
@@ -663,11 +800,12 @@ export default function App() {
   async function refreshModelCatalog(targetRepoPath?: string) {
     const repo = toText(targetRepoPath || repoPath).trim();
     if (!authed || !repo || !serverUrl) return;
-    setModelCatalogBusy(true);
     try {
       pushConnLog(`GET config repo=${repo}`);
       const cfg = await getOpencodeConfig({ baseUrl: serverUrl, token, repoPath: repo });
       const options = extractModelOptionsFromConfig(cfg);
+      const prevIds = new Set(modelOptionsRef.current.map((x) => x.id));
+      const hasNew = options.some((x) => !prevIds.has(x.id));
       setModelOptions(options);
       if (options.length > 0) {
         setModelCatalogStatus(`已加载 ${options.length} 个可用模型`);
@@ -683,11 +821,10 @@ export default function App() {
         });
       }
       pushConnLog(`GET config ok models=${options.length}`);
+      if (hasNew) triggerPulse(rightDrawerPulse);
     } catch (e) {
       pushConnLog(`GET config error ${String(e)}`, 'error');
       setModelCatalogStatus(`模型列表读取失败: ${String(e)}`);
-    } finally {
-      setModelCatalogBusy(false);
     }
   }
 
@@ -695,29 +832,96 @@ export default function App() {
     const base = toText(opts?.baseUrl || serverUrl).trim();
     const tk = toText(opts?.token || token).trim();
     if (!base || !tk) return;
-    setProjectCatalogBusy(true);
     try {
       pushConnLog('GET repository list');
       const rows = await getClientRepositories({ baseUrl: base, token: tk });
-      const nextProjects = rows.map((x) => ({
+      let nextProjects = rows.map((x) => ({
         id: x.id || x.path,
         worktree: x.path,
         name: toText(x.name) || projectNameFromPath(x.path)
       }));
+      if (nextProjects.length === 0) {
+        pushConnLog('GET repository list empty, fallback to opencode project APIs');
+        const [current, all] = await Promise.all([
+          getCurrentProject({ baseUrl: base, token: tk }).catch(() => null),
+          getProjects({ baseUrl: base, token: tk }).catch(() => [])
+        ]);
+        const merged = new Map<string, ProjectOption>();
+        if (current?.worktree) {
+          merged.set(current.worktree, {
+            id: current.id || current.worktree,
+            worktree: current.worktree,
+            name: projectNameFromPath(current.worktree)
+          });
+        }
+        for (const p of all) {
+          if (!p.worktree) continue;
+          merged.set(p.worktree, {
+            id: p.id || p.worktree,
+            worktree: p.worktree,
+            name: projectNameFromPath(p.worktree)
+          });
+        }
+        nextProjects = [...merged.values()];
+      }
+      const prevIds = new Set(projectsRef.current.map((x) => x.id));
+      const hasNew = nextProjects.some((x) => !prevIds.has(x.id));
       setProjects(nextProjects);
+      const currentRepo = toText(repoPath).trim();
       let nextRepo = toText(opts?.preferredRepoPath).trim();
       if (nextRepo && !nextProjects.some((p) => p.worktree === nextRepo)) {
         nextRepo = '';
       }
-      if (!nextRepo && nextProjects.length > 0) nextRepo = nextProjects[0].worktree;
-      if (nextRepo) {
+      // Keep current workspace stable on refresh; only fall back to first when current is empty.
+      if (!nextRepo && currentRepo && nextProjects.some((p) => p.worktree === currentRepo)) {
+        nextRepo = currentRepo;
+      }
+      if (!nextRepo && !currentRepo && nextProjects.length > 0) {
+        nextRepo = nextProjects[0].worktree;
+      }
+      if (nextRepo && nextRepo !== currentRepo) {
         setRepoPath(nextRepo);
       }
       pushConnLog(`GET repository list ok count=${nextProjects.length}`);
+      if (nextProjects.length === 0) {
+        setStatus('未获取到可用工作空间，请检查桌面端仓库列表');
+      }
+      if (hasNew) triggerPulse(leftDrawerPulse);
     } catch (e) {
       pushConnLog(`GET repository list error ${String(e)}`, 'error');
-    } finally {
-      setProjectCatalogBusy(false);
+      try {
+        pushConnLog('GET repository list fallback(after error) to opencode project APIs');
+        const [current, all] = await Promise.all([
+          getCurrentProject({ baseUrl: base, token: tk }).catch(() => null),
+          getProjects({ baseUrl: base, token: tk }).catch(() => [])
+        ]);
+        const merged = new Map<string, ProjectOption>();
+        if (current?.worktree) {
+          merged.set(current.worktree, {
+            id: current.id || current.worktree,
+            worktree: current.worktree,
+            name: projectNameFromPath(current.worktree)
+          });
+        }
+        for (const p of all) {
+          if (!p.worktree) continue;
+          merged.set(p.worktree, {
+            id: p.id || p.worktree,
+            worktree: p.worktree,
+            name: projectNameFromPath(p.worktree)
+          });
+        }
+        const fallbackProjects = [...merged.values()];
+        if (fallbackProjects.length > 0) {
+          setProjects(fallbackProjects);
+          if (!toText(repoPath).trim()) {
+            setRepoPath(fallbackProjects[0].worktree);
+          }
+          pushConnLog(`fallback project APIs ok count=${fallbackProjects.length}`);
+        }
+      } catch (fallbackErr) {
+        pushConnLog(`fallback project APIs error ${String(fallbackErr)}`, 'error');
+      }
     }
   }
 
@@ -734,11 +938,18 @@ export default function App() {
     setSessions([]);
     setSessionLimits({});
     setSessionHasMore({});
+    const pname = projectNameFromPath(next);
+    setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     allowAutoScrollRef.current = false;
     setStatus(`已切换项目: ${projectNameFromPath(next)}`);
     await refreshModelCatalog(next);
-    await refreshSessionsFromServer(next);
-    setProjectPathInput(next);
+    const nextSessions = await refreshSessionsFromServer(next);
+    if (nextSessions.length > 0) {
+      const latest = nextSessions[0];
+      setActiveSession(latest.id);
+      await refreshMessages(latest.id, { limit: INITIAL_SESSION_LIMIT, jumpToLatest: true });
+      allowAutoScrollRef.current = false;
+    }
   }
 
   function startStream(targetSessionId: string) {
@@ -888,8 +1099,13 @@ export default function App() {
       setPairPayloadInput('');
     } catch (e) {
       Vibration.vibrate(220);
-      pushConnLog(`pair flow error ${String(e)}`, 'error');
-      setStatus(String(e));
+      const errText = toText(e);
+      pushConnLog(`pair flow error ${errText}`, 'error');
+      if (/expired|invalid|pair|code|HTTP 400|HTTP 401|HTTP 403|HTTP 404|验证码|已失效|过期/i.test(errText)) {
+        setStatus('二维码已过期，请在桌面端刷新二维码后重新扫码');
+      } else {
+        setStatus(errText);
+      }
       setScannerLocked(false);
     } finally {
       setBusy(false);
@@ -1077,6 +1293,8 @@ export default function App() {
     allowAutoScrollRef.current = true;
     setMessages([]);
     setTimeline([]);
+    const pname = projectNameFromPath(repoPath);
+    setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     setStatus('新会话已创建');
   }
 
@@ -1117,10 +1335,10 @@ export default function App() {
           </Text>
           <Text style={styles.scannerHintText}>如果实时扫描无反应，可点“相册识别”作为兜底。</Text>
           <View style={styles.scannerFrame}>
-            <LegacyCamera
+            <CameraViewCompat
               style={StyleSheet.absoluteFill}
-              type={CameraType.back}
-              barCodeScannerSettings={{ barCodeTypes: ['qr'] as any }}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ['qr'] as any }}
               onCameraReady={() => {
                 setScannerReady(true);
                 pushConnLog('camera ready');
@@ -1130,7 +1348,7 @@ export default function App() {
                 pushConnLog(msg, 'error');
                 setStatus(msg);
               }}
-              onBarCodeScanned={onBarcodeScanned}
+              onBarcodeScanned={onBarcodeScanned}
             />
           </View>
           <View style={styles.row}>
@@ -1165,33 +1383,65 @@ export default function App() {
           <View style={styles.brandRow}>
             <Text style={styles.authTitle}>Giteam</Text>
           </View>
-          <Text style={styles.authSub}>扫码即可完成授权并开始对话</Text>
+          <Text style={styles.authSub}>请选择一种授权方式</Text>
 
-          <Pressable style={styles.scanHeroBtn} onPress={onOpenScanner}>
-            <Text style={styles.scanHeroBtnText}>扫码连接</Text>
-          </Pressable>
+          {authMode === '' ? (
+            <View style={styles.authModeList}>
+              <Pressable
+                style={styles.authModeCard}
+                onPress={() => {
+                  setAuthMode('scan');
+                  void onOpenScanner();
+                }}
+              >
+                <Text style={styles.authModeTitle}>扫码授权</Text>
+                <Text style={styles.authModeDesc}>推荐，直接扫描桌面端二维码完成授权</Text>
+              </Pressable>
+              <Pressable style={styles.authModeCard} onPress={() => setAuthMode('paste')}>
+                <Text style={styles.authModeTitle}>粘贴授权</Text>
+                <Text style={styles.authModeDesc}>无法扫码时，手动粘贴 payload 授权</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
-          <View style={styles.authHintBox}>
-            <Text style={styles.authHint}>1. 打开桌面端设置</Text>
-            <Text style={styles.authHint}>2. 展示 Mobile Control 二维码</Text>
-            <Text style={styles.authHint}>3. 使用手机扫码完成授权</Text>
-          </View>
+          {authMode === 'scan' ? (
+            <>
+              <Pressable style={styles.scanHeroBtn} onPress={onOpenScanner}>
+                <Text style={styles.scanHeroBtnText}>进入扫码页</Text>
+              </Pressable>
+              <View style={styles.authHintBox}>
+                <Text style={styles.authHint}>1. 打开桌面端设置</Text>
+                <Text style={styles.authHint}>2. 展示 Mobile Control 二维码</Text>
+                <Text style={styles.authHint}>3. 使用手机扫码完成授权</Text>
+              </View>
+              <Pressable style={styles.authModeBackBtn} onPress={() => setAuthMode('')}>
+                <Text style={styles.authModeBackTxt}>切换授权方式</Text>
+              </Pressable>
+            </>
+          ) : null}
 
-          <View style={styles.fallbackCard}>
-            <Text style={styles.fallbackTitle}>无法扫码？粘贴 payload</Text>
-            <TextInput
-              style={styles.fallbackInput}
-              value={pairPayloadInput}
-              onChangeText={setPairPayloadInput}
-              autoCapitalize="none"
-              multiline
-              placeholder='{"baseUrl":"http://192.168.1.23:4100","pairCode":"123456"}'
-              placeholderTextColor="#96a0ad"
-            />
-            <Pressable style={styles.fallbackBtn} onPress={() => void applyPayloadAndPair(pairPayloadInput)}>
-              <Text style={styles.fallbackBtnText}>应用并授权</Text>
-            </Pressable>
-          </View>
+          {authMode === 'paste' ? (
+            <>
+              <View style={styles.fallbackCard}>
+                <Text style={styles.fallbackTitle}>粘贴 payload 授权</Text>
+                <TextInput
+                  style={styles.fallbackInput}
+                  value={pairPayloadInput}
+                  onChangeText={setPairPayloadInput}
+                  autoCapitalize="none"
+                  multiline
+                  placeholder='{"baseUrl":"http://192.168.1.23:4100","pairCode":"123456"}'
+                  placeholderTextColor="#96a0ad"
+                />
+                <Pressable style={styles.fallbackBtn} onPress={() => void applyPayloadAndPair(pairPayloadInput)}>
+                  <Text style={styles.fallbackBtnText}>应用并授权</Text>
+                </Pressable>
+              </View>
+              <Pressable style={styles.authModeBackBtn} onPress={() => setAuthMode('')}>
+                <Text style={styles.authModeBackTxt}>切换授权方式</Text>
+              </Pressable>
+            </>
+          ) : null}
 
           <View style={styles.authStatusBox}>
             {busy ? <ActivityIndicator color="#54657c" /> : null}
@@ -1228,17 +1478,20 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.chatSafe} {...(Platform.OS === 'web' ? {} : swipeResponder.panHandlers)}>
+    <SafeAreaView style={styles.chatSafe} {...swipeResponder.panHandlers}>
       <RenderBoundary name="chat-screen">
         <StatusBar barStyle="dark-content" />
 
       <View style={styles.topBar}>
-        <Pressable style={styles.iconBtn} onPress={openDrawer}>
+        <Pressable style={styles.iconBtn} onPress={() => openDrawer('left')}>
           <Text style={styles.iconTxt}>≡</Text>
         </Pressable>
-        <View style={styles.topBrand}>
+        <Pressable style={styles.topBrand} onPress={workspacePickerOpen ? closeWorkspacePicker : openWorkspacePicker}>
           <Text style={styles.topTitle}>Giteam</Text>
-        </View>
+          <Text numberOfLines={1} style={styles.topWorkspaceText}>
+            {(repoPath ? projectNameFromPath(repoPath) : '选择工作空间') + ' ▾'}
+          </Text>
+        </Pressable>
         <View style={styles.topRightGroup}>
           <Pressable style={styles.iconBtn} onPress={onNewSession}>
             <Text style={styles.iconTxt}>＋</Text>
@@ -1248,11 +1501,52 @@ export default function App() {
           </Pressable>
         </View>
       </View>
+      {workspacePickerOpen ? (
+        <View style={styles.workspaceMask}>
+          <Pressable style={styles.workspaceBackdrop} onPress={closeWorkspacePicker} />
+          <Animated.View
+            style={[
+              styles.workspacePanel,
+              {
+                height: workspacePanelHeight,
+                opacity: workspaceAnim,
+                transform: [{ translateY: workspaceAnim.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }]
+              }
+            ]}
+          >
+            <Text style={styles.workspaceTitle}>工作空间（{projects.length}）</Text>
+            <ScrollView style={styles.workspaceList} contentContainerStyle={styles.workspaceListContent}>
+              {projects.map((p) => {
+                const active = repoPath.trim() === p.worktree.trim();
+                return (
+                  <Pressable
+                    key={p.id}
+                    style={active ? styles.workspaceListItemActive : styles.workspaceListItem}
+                    onPress={() => {
+                      closeWorkspacePicker();
+                      void onSwitchProject(p.worktree);
+                    }}
+                  >
+                    <View style={active ? styles.workspaceFolderIconActive : styles.workspaceFolderIcon}>
+                      <View style={active ? styles.workspaceFolderTabActive : styles.workspaceFolderTab} />
+                      <View style={active ? styles.workspaceFolderBodyAccentActive : styles.workspaceFolderBodyAccent} />
+                    </View>
+                    <View style={styles.workspaceItemTextWrap}>
+                      <Text numberOfLines={1} style={active ? styles.workspaceItemTitleActive : styles.workspaceItemTitle}>
+                        {toText(p.name)}
+                      </Text>
+                      <Text numberOfLines={1} style={styles.workspaceItemPath}>{toText(p.worktree)}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+              {projects.length === 0 ? <Text style={styles.drawerEmpty}>暂无可切换工作空间</Text> : null}
+            </ScrollView>
+          </Animated.View>
+        </View>
+      ) : null}
       <View style={styles.chatStatusBar}>
         <Text selectable style={styles.chatStatusText}>{statusText}</Text>
-        <Pressable style={styles.chatStatusCopyBtn} onPress={() => void copyText(statusText, '状态已复制')}>
-          <Text style={styles.chatStatusCopyTxt}>复制</Text>
-        </Pressable>
       </View>
 
       <View style={styles.chatBodyWrap}>
@@ -1261,7 +1555,7 @@ export default function App() {
             <Text style={styles.blankTitle}>Giteam</Text>
             <Text style={styles.blankSub}>为你答疑、办事、创作，随时找我聊天</Text>
             <View style={styles.suggestList}>
-              {SUGGESTIONS.map((s) => (
+              {suggestions.map((s) => (
                 <Pressable key={s} style={styles.suggestChip} onPress={() => void onSendPrompt(s)}>
                   <Text style={styles.suggestText}>{s}</Text>
                 </Pressable>
@@ -1282,6 +1576,10 @@ export default function App() {
             }
             onContentSizeChange={() => {
               if (suppressAutoScrollRef.current) return;
+              if (Date.now() < forceScrollToLatestUntilRef.current) {
+                requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
+                return;
+              }
               if (!allowAutoScrollRef.current) return;
               requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
             }}
@@ -1292,53 +1590,7 @@ export default function App() {
               </View>
             ) : null}
             {timeline.map((item, idx) => {
-              if (item.kind === 'context') {
-                const ctx = item.context;
-                return (
-                  <View key={ctx.id} style={styles.contextWrap}>
-                    <View style={styles.contextCard}>
-                      <Text style={styles.contextTitle}>{ctx.title}</Text>
-                      <Text style={styles.contextSummary}>{toText(ctx.summary)}</Text>
-                      <View style={styles.contextTools}>
-                        {ctx.tools.map((event) => {
-                          const running = event.status === 'running' || event.status === 'pending';
-                          return (
-                            <View key={event.id} style={styles.contextToolRow}>
-                              <View style={[styles.eventDot, running ? styles.eventDotRun : null]} />
-                              <Text style={styles.contextToolTitle}>{toText(event.title)}</Text>
-                              {event.mode ? <Text style={styles.eventMode}>{toText(event.mode)}</Text> : null}
-                              {event.detail ? <Text numberOfLines={1} style={styles.contextToolDetail}>{toText(event.detail)}</Text> : null}
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  </View>
-                );
-              }
-              if (item.kind === 'event') {
-                const event = item.event;
-                const running = event.status === 'running' || event.status === 'pending';
-                return (
-                  <View key={event.id} style={styles.eventWrap}>
-                    <View style={styles.eventCard}>
-                      <View style={styles.eventHead}>
-                        <View style={[styles.eventDot, running ? styles.eventDotRun : null]} />
-                        <Text style={styles.eventTitle}>{toText(event.title)}</Text>
-                        {event.mode ? <Text style={styles.eventMode}>{toText(event.mode)}</Text> : null}
-                        <Text style={styles.eventTime}>{formatClock(event.createdAt)}</Text>
-                      </View>
-                      {event.detail ? <Text style={styles.eventDetail}>{toText(event.detail)}</Text> : null}
-                      {event.taskSessionId ? (
-                        <Text style={styles.eventMeta}>
-                          {event.taskSubagent ? `@${toText(event.taskSubagent)} · ` : ''}task: {toText(event.taskSessionId)}
-                        </Text>
-                      ) : null}
-                      {event.output ? <Text style={styles.eventOutput}>{toText(event.output)}</Text> : null}
-                    </View>
-                  </View>
-                );
-              }
+              if (item.kind === 'context' || item.kind === 'event') return null;
               if (item.kind === 'think') {
                 const keepOpen = !streaming || idx === lastThinkIndex;
                 return (
@@ -1401,112 +1653,8 @@ export default function App() {
         </View>
       </View>
 
-        {drawerOpen ? (
+        {drawerSide ? (
         <View style={styles.drawerMask}>
-          <Animated.View
-            style={[
-              styles.drawerPanel,
-              { transform: [{ translateX: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [-320, 0] }) }] }
-            ]}
-          >
-            <View style={styles.drawerHead}>
-              <Text style={styles.drawerTitle}>会话</Text>
-              <Pressable style={styles.drawerNewBtn} onPress={() => { onNewSession(); closeDrawer(); }}>
-                <Text style={styles.drawerNewTxt}>新建对话</Text>
-              </Pressable>
-            </View>
-            <View style={styles.drawerProjectWrap}>
-              <View style={styles.drawerModelHead}>
-                <Text style={styles.drawerModelLabel}>项目</Text>
-                <Pressable style={styles.drawerModelRefreshBtn} onPress={() => void refreshProjectsCatalog()} disabled={projectCatalogBusy}>
-                  <Text style={styles.drawerModelRefreshTxt}>{projectCatalogBusy ? '加载中…' : '刷新'}</Text>
-                </Pressable>
-              </View>
-              <Text numberOfLines={1} style={styles.drawerProjectCurrent}>
-                当前: {repoPath ? `${projectNameFromPath(repoPath)} (${repoPath})` : '未选择'}
-              </Text>
-              {projects.length > 0 ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.drawerModelChipRow}>
-                  {projects.map((p) => {
-                    const active = repoPath.trim() === p.worktree.trim();
-                    return (
-                      <Pressable key={p.id} style={active ? styles.drawerModelChipActive : styles.drawerModelChip} onPress={() => void onSwitchProject(p.worktree)}>
-                        <Text style={active ? styles.drawerModelChipTextActive : styles.drawerModelChipText}>{toText(p.name)}</Text>
-                        <Text style={active ? styles.drawerModelChipSubActive : styles.drawerModelChipSub}>{toText(p.worktree)}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-              ) : (
-                <Text style={styles.drawerProjectCurrent}>暂无可切换项目</Text>
-              )}
-              <View style={styles.drawerProjectInputRow}>
-                <TextInput
-                  style={styles.drawerProjectInput}
-                  value={projectPathInput}
-                  onChangeText={setProjectPathInput}
-                  autoCapitalize="none"
-                  placeholder="/path/to/project"
-                  placeholderTextColor="#9ca7b5"
-                />
-                <Pressable
-                  style={styles.drawerProjectSwitchBtn}
-                  onPress={() => void onSwitchProject(projectPathInput)}
-                  disabled={!projectPathInput.trim()}
-                >
-                  <Text style={styles.drawerProjectSwitchBtnText}>切换</Text>
-                </Pressable>
-              </View>
-            </View>
-            <View style={styles.drawerModelWrap}>
-              <View style={styles.drawerModelHead}>
-                <Text style={styles.drawerModelLabel}>模型</Text>
-                <Pressable style={styles.drawerModelRefreshBtn} onPress={() => void refreshModelCatalog()} disabled={modelCatalogBusy}>
-                  <Text style={styles.drawerModelRefreshTxt}>{modelCatalogBusy ? '加载中…' : '刷新'}</Text>
-                </Pressable>
-              </View>
-              <TextInput
-                style={styles.drawerModelInput}
-                value={toText(model)}
-                onChangeText={setModel}
-                autoCapitalize="none"
-                placeholder="provider/model"
-                placeholderTextColor="#9ca7b5"
-              />
-              <Text numberOfLines={2} style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '从列表选择，或手动输入 provider/model')}</Text>
-              {modelOptions.length > 0 ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.drawerModelChipRow}>
-                  {modelOptions.map((opt) => {
-                    const active = model.trim() === opt.id;
-                    return (
-                      <Pressable key={opt.id} style={active ? styles.drawerModelChipActive : styles.drawerModelChip} onPress={() => setModel(opt.id)}>
-                        <Text style={active ? styles.drawerModelChipTextActive : styles.drawerModelChipText}>{toText(opt.label)}</Text>
-                        <Text style={active ? styles.drawerModelChipSubActive : styles.drawerModelChipSub}>{toText(opt.provider)}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-              ) : null}
-            </View>
-            <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
-              {sessions.map((s) => (
-                <Pressable
-                  key={s.id}
-                  style={s.id === sessionId ? styles.drawerItemActive : styles.drawerItem}
-                  onPress={() => {
-                    stopStream();
-                    setActiveSession(s.id);
-                    void refreshMessages(s.id, { limit: INITIAL_SESSION_LIMIT });
-                    closeDrawer();
-                  }}
-                >
-                  <Text style={styles.drawerItemTitle}>{toText(s.title || '新会话')}</Text>
-                  <Text style={styles.drawerItemPreview}>{toText(s.preview || '...')}</Text>
-                </Pressable>
-              ))}
-              {sessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无会话</Text> : null}
-            </ScrollView>
-          </Animated.View>
           <Animated.View
             style={[
               styles.drawerBackdrop,
@@ -1515,6 +1663,95 @@ export default function App() {
           >
             <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
           </Animated.View>
+          {drawerSide === 'left' ? (
+            <Animated.View
+              style={[
+                styles.drawerPanelLeft,
+                { transform: [{ translateX: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [-320, 0] }) }] }
+              ]}
+            >
+              <View style={styles.drawerHead}>
+                <Text style={styles.drawerTitle}>会话</Text>
+                <View style={styles.drawerMetaRow}>
+                  <Text style={styles.drawerMetaChip}>会话 {sessions.length}</Text>
+                </View>
+                <Pressable style={styles.drawerNewBtn} onPress={() => { onNewSession(); closeDrawer(); }}>
+                  <Text style={styles.drawerNewTxt}>新建对话</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
+                <TextInput
+                  style={styles.drawerSessionSearch}
+                  value={sessionSearch}
+                  onChangeText={setSessionSearch}
+                  autoCapitalize="none"
+                  placeholder="搜索会话"
+                  placeholderTextColor="#9ca7b5"
+                />
+                <Animated.View style={{ opacity: leftDrawerPulse }}>
+                  {filteredSessions.map((s, idx) => {
+                    const preview = toText(s.preview).trim();
+                    return (
+                      <Pressable
+                        key={s.id}
+                        style={[
+                          s.id === sessionId ? styles.drawerItemActive : styles.drawerItem,
+                          idx < filteredSessions.length - 1 ? styles.drawerItemGap : null
+                        ]}
+                        onPress={() => {
+                          stopStream();
+                          setActiveSession(s.id);
+                          void refreshMessages(s.id, { limit: INITIAL_SESSION_LIMIT, jumpToLatest: true });
+                          closeDrawer();
+                        }}
+                      >
+                        <View style={styles.drawerItemHead}>
+                          <Text numberOfLines={1} style={styles.drawerItemTitle}>{toText(s.title || '新会话')}</Text>
+                          <Text style={styles.drawerItemTime}>{formatClock(s.updatedAt)}</Text>
+                        </View>
+                        {preview ? <Text numberOfLines={1} style={styles.drawerItemPreview}>{preview}</Text> : null}
+                      </Pressable>
+                    );
+                  })}
+                </Animated.View>
+                {filteredSessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无匹配会话</Text> : null}
+              </ScrollView>
+            </Animated.View>
+          ) : null}
+          {drawerSide === 'right' ? (
+            <Animated.View
+              style={[
+                styles.drawerPanelRight,
+                { transform: [{ translateX: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [320, 0] }) }] }
+              ]}
+            >
+              <View style={styles.drawerHead}>
+                <Text style={styles.drawerTitle}>模型</Text>
+                <Text style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '请选择可用模型')}</Text>
+              </View>
+              <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
+                <Animated.View style={{ opacity: rightDrawerPulse }}>
+                  {modelOptions.map((opt, idx) => {
+                    const active = model.trim() === opt.id;
+                    return (
+                      <Pressable
+                        key={opt.id}
+                        style={[
+                          active ? styles.drawerModelListItemActive : styles.drawerModelListItem,
+                          idx < modelOptions.length - 1 ? styles.drawerItemGap : null
+                        ]}
+                        onPress={() => setModel(opt.id)}
+                      >
+                        <Text style={active ? styles.drawerModelListTitleActive : styles.drawerModelListTitle}>{toText(opt.label)}</Text>
+                        <Text style={active ? styles.drawerModelListSubActive : styles.drawerModelListSub}>{toText(opt.id)}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </Animated.View>
+                {modelOptions.length === 0 ? <Text style={styles.drawerEmpty}>暂无可用模型</Text> : null}
+              </ScrollView>
+            </Animated.View>
+          ) : null}
         </View>
         ) : null}
       </RenderBoundary>
@@ -1536,6 +1773,28 @@ const styles = StyleSheet.create({
   brandRow: { marginTop: 12, flexDirection: 'row', alignItems: 'center' },
   authTitle: { fontSize: 32, fontWeight: '700', color: '#1f2630' },
   authSub: { color: '#6f7c8f', fontSize: 16 },
+  authModeList: { gap: 10 },
+  authModeCard: {
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderWidth: 1,
+    borderColor: '#dde5ef',
+    backgroundColor: '#ffffff',
+    gap: 4
+  },
+  authModeTitle: { color: '#2b3442', fontSize: 15, fontWeight: '700' },
+  authModeDesc: { color: '#6d7b8f', fontSize: 12, lineHeight: 18 },
+  authModeBackBtn: {
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d9e1ec',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f7fafc'
+  },
+  authModeBackTxt: { color: '#4f5f74', fontWeight: '600', fontSize: 12 },
   scanHeroBtn: {
     height: 52,
     borderRadius: 14,
@@ -1644,9 +1903,124 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between'
   },
-  topBrand: { flexDirection: 'row', alignItems: 'center' },
+  topBrand: { flexDirection: 'column', alignItems: 'center', gap: 1, maxWidth: '60%' },
   topTitle: { fontSize: 20, color: '#202734', fontWeight: '700' },
+  topWorkspaceText: { fontSize: 11, color: '#7a8798' },
   topRightGroup: { flexDirection: 'row', gap: 6 },
+  workspaceMask: {
+    position: 'absolute',
+    top: 58,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 5,
+    elevation: 5
+  },
+  workspaceBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.12)'
+  },
+  workspacePanel: {
+    marginTop: 8,
+    marginHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#d7e1ee',
+    backgroundColor: '#fbfcfe',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    zIndex: 6,
+    elevation: 8
+  },
+  workspaceTitle: { color: '#2a3442', fontSize: 14, fontWeight: '700', marginBottom: 10 },
+  workspaceList: { flex: 1 },
+  workspaceListContent: { paddingBottom: 8, gap: 8 },
+  workspaceListItem: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e1e7f0',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  workspaceListItemActive: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#bfd5f4',
+    backgroundColor: '#eaf2fc',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  workspaceFolderIcon: {
+    width: 24,
+    height: 17,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#9fb6d8',
+    backgroundColor: '#dce8f8',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  workspaceFolderIconActive: {
+    width: 24,
+    height: 17,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#7ea3d7',
+    backgroundColor: '#cfe1f8',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  workspaceFolderTab: {
+    position: 'absolute',
+    top: -4,
+    left: 3,
+    width: 10,
+    height: 4,
+    borderTopLeftRadius: 3,
+    borderTopRightRadius: 3,
+    backgroundColor: '#c9daf3',
+    borderWidth: 1,
+    borderColor: '#9fb6d8'
+  },
+  workspaceFolderTabActive: {
+    position: 'absolute',
+    top: -4,
+    left: 3,
+    width: 10,
+    height: 4,
+    borderTopLeftRadius: 3,
+    borderTopRightRadius: 3,
+    backgroundColor: '#bad0ee',
+    borderWidth: 1,
+    borderColor: '#84a9da'
+  },
+  workspaceFolderBodyAccent: {
+    position: 'absolute',
+    bottom: 3,
+    width: 14,
+    height: 2,
+    borderRadius: 2,
+    backgroundColor: '#b7cae5'
+  },
+  workspaceFolderBodyAccentActive: {
+    position: 'absolute',
+    bottom: 3,
+    width: 14,
+    height: 2,
+    borderRadius: 2,
+    backgroundColor: '#7fa3d5'
+  },
+  workspaceItemTextWrap: { flex: 1, gap: 1 },
+  workspaceItemTitle: { color: '#2f3d51', fontSize: 13, fontWeight: '600' },
+  workspaceItemTitleActive: { color: '#1f4e86', fontSize: 13, fontWeight: '700' },
+  workspaceItemPath: { color: '#7a8798', fontSize: 11 },
   chatStatusBar: {
     paddingHorizontal: 16,
     paddingTop: 4,
@@ -1849,140 +2223,134 @@ const styles = StyleSheet.create({
     top: 0,
     right: 0,
     bottom: 0,
-    left: 0,
-    flexDirection: 'row'
+    left: 0
   },
-  drawerBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.2)' },
-  drawerPanel: {
-    width: '76%',
-    maxWidth: 340,
-    backgroundColor: '#fbfcfe',
+  drawerBackdrop: { ...StyleSheet.absoluteFillObject, zIndex: 1, backgroundColor: 'rgba(15,23,42,0.2)' },
+  drawerPanelLeft: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 2,
+    width: '82%',
+    maxWidth: 384,
+    backgroundColor: '#fbfdff',
     borderRightWidth: 1,
-    borderColor: '#e6eaf1',
-    paddingTop: 44,
-    paddingHorizontal: 14,
-    paddingBottom: 12
+    borderColor: '#dde6f2',
+    paddingTop: 54,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 8, height: 0 },
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    elevation: 8
+  },
+  drawerPanelRight: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    zIndex: 2,
+    width: '82%',
+    maxWidth: 384,
+    backgroundColor: '#fbfdff',
+    borderLeftWidth: 1,
+    borderColor: '#dde6f2',
+    paddingTop: 54,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: -8, height: 0 },
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    elevation: 8
   },
   drawerHead: { gap: 10, marginBottom: 12 },
-  drawerProjectWrap: {
-    gap: 8,
-    marginBottom: 10,
+  drawerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  drawerMetaChip: {
+    borderRadius: 999,
+    backgroundColor: '#f3f7fd',
+    borderWidth: 1,
+    borderColor: '#d5e1f0',
+    color: '#5a6b82',
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    overflow: 'hidden'
+  },
+  drawerModelStatus: { color: '#6a788d', fontSize: 12, lineHeight: 19 },
+  drawerModelListItem: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#d7e2ef',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 6
+  },
+  drawerModelListItemActive: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#bad2f3',
+    backgroundColor: '#ecf4ff',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 6
+  },
+  drawerModelListTitle: { color: '#27384e', fontSize: 14, fontWeight: '600' },
+  drawerModelListTitleActive: { color: '#204b82', fontSize: 14, fontWeight: '700' },
+  drawerModelListSub: { color: '#74839a', fontSize: 12 },
+  drawerModelListSubActive: { color: '#4a6891', fontSize: 12 },
+  drawerTitle: { color: '#1f2734', fontWeight: '700', fontSize: 24, letterSpacing: 0.2 },
+  drawerNewBtn: {
+    borderRadius: 16,
+    backgroundColor: '#edf2f8',
+    borderWidth: 1,
+    borderColor: '#d9e1ed',
+    paddingVertical: 13,
+    alignItems: 'center'
+  },
+  drawerNewTxt: { color: '#2d3848', fontWeight: '700', fontSize: 13 },
+  drawerScroll: { flex: 1 },
+  drawerList: { paddingBottom: 42, paddingTop: 4 },
+  drawerItemGap: { marginBottom: 8 },
+  drawerSessionSearch: {
+    height: 42,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e4eaf2',
+    borderColor: '#d4ddea',
     backgroundColor: '#ffffff',
-    padding: 10
-  },
-  drawerProjectCurrent: { color: '#6a788d', fontSize: 12 },
-  drawerProjectInputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  drawerProjectInput: {
-    flex: 1,
-    height: 34,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#dbe2eb',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 10,
+    paddingHorizontal: 14,
+    marginBottom: 10,
     color: '#243247',
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
   },
-  drawerProjectSwitchBtn: {
-    height: 34,
-    minWidth: 52,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#d4deec',
-    backgroundColor: '#eef3fa',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10
-  },
-  drawerProjectSwitchBtnText: { color: '#314359', fontSize: 12, fontWeight: '600' },
-  drawerModelWrap: {
-    gap: 8,
-    marginBottom: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e4eaf2',
-    backgroundColor: '#ffffff',
-    padding: 10
-  },
-  drawerModelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  drawerModelLabel: { color: '#4a5a70', fontSize: 12, fontWeight: '600' },
-  drawerModelInput: {
-    height: 38,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#dbe2eb',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 10,
-    color: '#243247'
-  },
-  drawerModelRefreshBtn: {
-    height: 26,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#dbe2eb',
-    backgroundColor: '#f8fafc',
-    paddingHorizontal: 9,
-    justifyContent: 'center'
-  },
-  drawerModelRefreshTxt: { color: '#314359', fontSize: 12, fontWeight: '600' },
-  drawerModelStatus: { color: '#6a788d', fontSize: 12 },
-  drawerModelChipRow: { gap: 8, paddingTop: 2, paddingBottom: 2 },
-  drawerModelChip: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#dbe2eb',
-    backgroundColor: '#ffffff',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    minWidth: 96,
-    gap: 2
-  },
-  drawerModelChipActive: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#c5d9f8',
-    backgroundColor: '#eaf1fb',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    minWidth: 96,
-    gap: 2
-  },
-  drawerModelChipText: { color: '#28384e', fontSize: 12, fontWeight: '600' },
-  drawerModelChipTextActive: { color: '#1f3659', fontSize: 12, fontWeight: '700' },
-  drawerModelChipSub: { color: '#74839a', fontSize: 11 },
-  drawerModelChipSubActive: { color: '#446895', fontSize: 11 },
-  drawerTitle: { color: '#1f2734', fontWeight: '700', fontSize: 28 },
-  drawerNewBtn: {
-    borderRadius: 12,
-    backgroundColor: '#eceff3',
-    paddingVertical: 10,
-    alignItems: 'center'
-  },
-  drawerNewTxt: { color: '#2d3848', fontWeight: '600' },
-  drawerScroll: { flex: 1 },
-  drawerList: { gap: 8, paddingBottom: 30 },
   drawerItem: {
-    borderRadius: 10,
+    borderRadius: 16,
     backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#e4e8ee',
-    padding: 10,
-    gap: 4
+    borderColor: '#dbe5f0',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 6,
+    minHeight: 72
   },
   drawerItemActive: {
-    borderRadius: 10,
-    backgroundColor: '#eaf1fb',
+    borderRadius: 16,
+    backgroundColor: '#eef5ff',
     borderWidth: 1,
-    borderColor: '#cddff8',
-    padding: 10,
-    gap: 4
+    borderColor: '#bfd3f1',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 6,
+    minHeight: 72
   },
-  drawerItemTitle: { color: '#202834', fontWeight: '600' },
-  drawerItemPreview: { color: '#66758a', fontSize: 12 },
-  drawerEmpty: { color: '#7d8897', marginTop: 10 },
+  drawerItemHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  drawerItemTitle: { color: '#202834', fontWeight: '700', fontSize: 14 },
+  drawerItemTime: { color: '#8392a8', fontSize: 11 },
+  drawerItemPreview: { color: '#66758a', fontSize: 12, lineHeight: 18 },
+  drawerEmpty: { color: '#7d8897', marginTop: 14, fontSize: 12 },
 
   row: { flexDirection: 'row', gap: 8 },
   boundaryWrap: {
