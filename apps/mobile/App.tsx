@@ -388,6 +388,7 @@ export default function App() {
 
   const [pairPayloadInput, setPairPayloadInput] = useState('');
   const [authMode, setAuthMode] = useState<'scan' | 'paste' | ''>('');
+  const [showAuthDebug, setShowAuthDebug] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [scannerReady, setScannerReady] = useState(false);
@@ -421,6 +422,7 @@ export default function App() {
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
   const workspaceAnim = useRef(new Animated.Value(0)).current;
+  const authModeAnim = useRef(new Animated.Value(1)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
@@ -454,6 +456,23 @@ export default function App() {
     const tag = level === 'error' ? 'error' : 'log';
     // eslint-disable-next-line no-console
     console[tag](`[mobile-conn] ${new Date(row.ts).toISOString()} ${row.message}`);
+  }
+
+  function switchAuthMode(next: 'scan' | 'paste' | '') {
+    Animated.timing(authModeAnim, {
+      toValue: 0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true
+    }).start(() => {
+      setAuthMode(next);
+      Animated.timing(authModeAnim, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start();
+    });
   }
 
   async function copyText(raw: string, okMsg: string) {
@@ -1380,97 +1399,113 @@ export default function App() {
         <RenderBoundary name="auth-screen">
           <StatusBar barStyle="dark-content" />
           <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainer}>
-          <View style={styles.brandRow}>
-            <Text style={styles.authTitle}>Giteam</Text>
-          </View>
-          <Text style={styles.authSub}>请选择一种授权方式</Text>
+            <View style={styles.brandRow}>
+              <Text style={styles.authTitle}>Giteam</Text>
+            </View>
+            <Text style={styles.authSub}>连接桌面端，开始对话</Text>
 
-          {authMode === '' ? (
-            <View style={styles.authModeList}>
-              <Pressable
-                style={styles.authModeCard}
-                onPress={() => {
-                  setAuthMode('scan');
-                  void onOpenScanner();
-                }}
-              >
-                <Text style={styles.authModeTitle}>扫码授权</Text>
-                <Text style={styles.authModeDesc}>推荐，直接扫描桌面端二维码完成授权</Text>
-              </Pressable>
-              <Pressable style={styles.authModeCard} onPress={() => setAuthMode('paste')}>
-                <Text style={styles.authModeTitle}>粘贴授权</Text>
-                <Text style={styles.authModeDesc}>无法扫码时，手动粘贴 payload 授权</Text>
+            <Animated.View
+              style={[
+                styles.authPane,
+                {
+                  opacity: authModeAnim,
+                  transform: [{ translateY: authModeAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }]
+                }
+              ]}
+            >
+              {authMode === '' ? (
+                <View style={styles.authModeList}>
+                  <Pressable
+                    style={styles.authModeCard}
+                    onPress={() => {
+                      switchAuthMode('scan');
+                      setTimeout(() => void onOpenScanner(), 120);
+                    }}
+                  >
+                    <Text style={styles.authModeTitle}>扫码授权</Text>
+                    <Text style={styles.authModeDesc}>推荐，扫描桌面端二维码一键连接</Text>
+                  </Pressable>
+                  <Pressable style={styles.authModeCard} onPress={() => switchAuthMode('paste')}>
+                    <Text style={styles.authModeTitle}>粘贴授权</Text>
+                    <Text style={styles.authModeDesc}>无法扫码时，粘贴 payload 手动连接</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {authMode === 'scan' ? (
+                <>
+                  <Pressable style={styles.scanHeroBtn} onPress={onOpenScanner}>
+                    <Text style={styles.scanHeroBtnText}>打开扫码</Text>
+                  </Pressable>
+                  <View style={styles.authHintBox}>
+                    <Text style={styles.authHint}>1. 在桌面端打开设置页</Text>
+                    <Text style={styles.authHint}>2. 展示 Mobile Control 二维码</Text>
+                    <Text style={styles.authHint}>3. 手机扫码完成授权</Text>
+                  </View>
+                  <Pressable style={styles.authModeBackBtn} onPress={() => switchAuthMode('')}>
+                    <Text style={styles.authModeBackTxt}>返回授权方式</Text>
+                  </Pressable>
+                </>
+              ) : null}
+
+              {authMode === 'paste' ? (
+                <>
+                  <View style={styles.fallbackCard}>
+                    <Text style={styles.fallbackTitle}>粘贴 payload 授权</Text>
+                    <TextInput
+                      style={styles.fallbackInput}
+                      value={pairPayloadInput}
+                      onChangeText={setPairPayloadInput}
+                      autoCapitalize="none"
+                      multiline
+                      placeholder='{"baseUrl":"http://192.168.1.23:4100","pairCode":"123456"}'
+                      placeholderTextColor="#96a0ad"
+                    />
+                    <Pressable style={styles.fallbackBtn} onPress={() => void applyPayloadAndPair(pairPayloadInput)}>
+                      <Text style={styles.fallbackBtnText}>应用并授权</Text>
+                    </Pressable>
+                  </View>
+                  <Pressable style={styles.authModeBackBtn} onPress={() => switchAuthMode('')}>
+                    <Text style={styles.authModeBackTxt}>返回授权方式</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </Animated.View>
+
+            <View style={styles.authStatusMini}>
+              {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
+              <Text numberOfLines={2} style={styles.authStatusMiniText}>{statusText}</Text>
+            </View>
+
+            <View style={styles.authDebugDock}>
+              <Pressable style={styles.authDebugToggle} onPress={() => setShowAuthDebug((v) => !v)}>
+                <Text style={styles.authDebugToggleTxt}>{showAuthDebug ? '隐藏诊断' : '诊断'}</Text>
               </Pressable>
             </View>
-          ) : null}
 
-          {authMode === 'scan' ? (
-            <>
-              <Pressable style={styles.scanHeroBtn} onPress={onOpenScanner}>
-                <Text style={styles.scanHeroBtnText}>进入扫码页</Text>
-              </Pressable>
-              <View style={styles.authHintBox}>
-                <Text style={styles.authHint}>1. 打开桌面端设置</Text>
-                <Text style={styles.authHint}>2. 展示 Mobile Control 二维码</Text>
-                <Text style={styles.authHint}>3. 使用手机扫码完成授权</Text>
+            {showAuthDebug ? (
+              <View style={styles.connLogBoxCompact}>
+                <View style={styles.connLogHead}>
+                  <Text style={styles.connLogTitle}>诊断日志</Text>
+                  <View style={styles.connLogActions}>
+                    <Pressable style={styles.connLogCopyBtn} onPress={() => void copyText(connLogText, '日志已复制')}>
+                      <Text style={styles.connLogCopyBtnText}>复制</Text>
+                    </Pressable>
+                    <Pressable style={styles.connLogClearBtn} onPress={() => setConnLogs([])}>
+                      <Text style={styles.connLogClearBtnText}>清空</Text>
+                    </Pressable>
+                  </View>
+                </View>
+                <ScrollView style={styles.connLogScroll} contentContainerStyle={styles.connLogList}>
+                  {connLogs.length === 0 ? <Text style={styles.connLogEmpty}>暂无日志</Text> : null}
+                  {connLogs.map((row) => (
+                    <Text selectable key={`${row.ts}-${row.message}`} style={row.level === 'error' ? styles.connLogRowErr : styles.connLogRow}>
+                      [{formatClock(row.ts)}] {toText(row.message)}
+                    </Text>
+                  ))}
+                </ScrollView>
               </View>
-              <Pressable style={styles.authModeBackBtn} onPress={() => setAuthMode('')}>
-                <Text style={styles.authModeBackTxt}>切换授权方式</Text>
-              </Pressable>
-            </>
-          ) : null}
-
-          {authMode === 'paste' ? (
-            <>
-              <View style={styles.fallbackCard}>
-                <Text style={styles.fallbackTitle}>粘贴 payload 授权</Text>
-                <TextInput
-                  style={styles.fallbackInput}
-                  value={pairPayloadInput}
-                  onChangeText={setPairPayloadInput}
-                  autoCapitalize="none"
-                  multiline
-                  placeholder='{"baseUrl":"http://192.168.1.23:4100","pairCode":"123456"}'
-                  placeholderTextColor="#96a0ad"
-                />
-                <Pressable style={styles.fallbackBtn} onPress={() => void applyPayloadAndPair(pairPayloadInput)}>
-                  <Text style={styles.fallbackBtnText}>应用并授权</Text>
-                </Pressable>
-              </View>
-              <Pressable style={styles.authModeBackBtn} onPress={() => setAuthMode('')}>
-                <Text style={styles.authModeBackTxt}>切换授权方式</Text>
-              </Pressable>
-            </>
-          ) : null}
-
-          <View style={styles.authStatusBox}>
-            {busy ? <ActivityIndicator color="#54657c" /> : null}
-            <Text selectable style={styles.authStatusText}>{statusText}</Text>
-            <Pressable style={styles.connLogCopyBtn} onPress={() => void copyText(statusText, '状态已复制')}>
-              <Text style={styles.connLogCopyBtnText}>复制状态</Text>
-            </Pressable>
-          </View>
-          <View style={styles.connLogBox}>
-            <View style={styles.connLogHead}>
-              <Text style={styles.connLogTitle}>连接诊断日志</Text>
-              <View style={styles.connLogActions}>
-                <Pressable style={styles.connLogCopyBtn} onPress={() => void copyText(connLogText, '日志已复制')}>
-                  <Text style={styles.connLogCopyBtnText}>复制</Text>
-                </Pressable>
-                <Pressable style={styles.connLogClearBtn} onPress={() => setConnLogs([])}>
-                  <Text style={styles.connLogClearBtnText}>清空</Text>
-                </Pressable>
-              </View>
-            </View>
-            <ScrollView style={styles.connLogScroll} contentContainerStyle={styles.connLogList}>
-              {connLogs.length === 0 ? <Text style={styles.connLogEmpty}>暂无日志</Text> : null}
-              {connLogs.map((row) => (
-                <Text selectable key={`${row.ts}-${row.message}`} style={row.level === 'error' ? styles.connLogRowErr : styles.connLogRow}>
-                  [{formatClock(row.ts)}] {toText(row.message)}
-                </Text>
-              ))}
-            </ScrollView>
-          </View>
+            ) : null}
           </ScrollView>
         </RenderBoundary>
       </SafeAreaView>
@@ -1545,10 +1580,6 @@ export default function App() {
           </Animated.View>
         </View>
       ) : null}
-      <View style={styles.chatStatusBar}>
-        <Text selectable style={styles.chatStatusText}>{statusText}</Text>
-      </View>
-
       <View style={styles.chatBodyWrap}>
         {timeline.length === 0 ? (
           <View style={styles.blankWrap}>
@@ -1769,10 +1800,11 @@ const styles = StyleSheet.create({
   subtitle: { color: '#6f7c8f', fontSize: 14 },
 
   authScroll: { flex: 1 },
-  authContainer: { padding: 20, gap: 14, paddingBottom: 40 },
-  brandRow: { marginTop: 12, flexDirection: 'row', alignItems: 'center' },
+  authContainer: { padding: 20, gap: 12, paddingBottom: 28 },
+  brandRow: { marginTop: 8, flexDirection: 'row', alignItems: 'center' },
   authTitle: { fontSize: 32, fontWeight: '700', color: '#1f2630' },
-  authSub: { color: '#6f7c8f', fontSize: 16 },
+  authSub: { color: '#6f7c8f', fontSize: 14 },
+  authPane: { gap: 10 },
   authModeList: { gap: 10 },
   authModeCard: {
     borderRadius: 14,
@@ -1839,6 +1871,37 @@ const styles = StyleSheet.create({
     backgroundColor: '#1f2937'
   },
   fallbackBtnText: { color: '#fff', fontWeight: '600' },
+  authStatusMini: {
+    minHeight: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e3e8ef',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  authStatusMiniText: { color: '#64748b', fontSize: 12, lineHeight: 18, flex: 1 },
+  authDebugDock: { alignItems: 'flex-end' },
+  authDebugToggle: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  authDebugToggleTxt: { color: '#64748b', fontSize: 11, fontWeight: '600' },
+  connLogBoxCompact: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e5eb',
+    backgroundColor: '#ffffff',
+    padding: 10,
+    gap: 8
+  },
   authStatusBox: {
     minHeight: 44,
     borderRadius: 12,
