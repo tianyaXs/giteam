@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CONTROL_SERVER_HOST: &str = "0.0.0.0";
 const DEFAULT_CONTROL_SERVER_PORT: u16 = 4100;
-const DEFAULT_PAIR_TTL_SECS: u64 = 120;
+const DEFAULT_PAIR_TTL_MODE: &str = "24h";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +24,8 @@ pub struct ControlServerSettings {
     pub port: u16,
     #[serde(default)]
     pub public_base_url: String,
+    #[serde(default = "default_pair_code_ttl_mode")]
+    pub pair_code_ttl_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,8 @@ pub struct ControlAccessInfo {
     pub pair_code: String,
     pub expires_at: u64,
     pub local_urls: Vec<String>,
+    pub pair_code_ttl_mode: String,
+    pub no_auth: bool,
 }
 
 #[derive(Debug)]
@@ -109,7 +113,7 @@ fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
 fn pair_state_cell() -> &'static Mutex<PairState> {
     CONTROL_PAIR_STATE.get_or_init(|| Mutex::new(PairState {
         code: generate_pair_code(),
-        expires_at: now_unix_secs() + DEFAULT_PAIR_TTL_SECS,
+        expires_at: now_unix_secs() + 24 * 60 * 60,
     }))
 }
 
@@ -130,7 +134,12 @@ fn default_control_server_settings() -> ControlServerSettings {
         host: DEFAULT_CONTROL_SERVER_HOST.to_string(),
         port: DEFAULT_CONTROL_SERVER_PORT,
         public_base_url: String::new(),
+        pair_code_ttl_mode: default_pair_code_ttl_mode(),
     }
+}
+
+fn default_pair_code_ttl_mode() -> String {
+    DEFAULT_PAIR_TTL_MODE.to_string()
 }
 
 fn control_server_settings_path() -> Option<PathBuf> {
@@ -243,6 +252,7 @@ fn read_control_server_settings() -> ControlServerSettings {
         cfg.port = DEFAULT_CONTROL_SERVER_PORT;
     }
     cfg.public_base_url = cfg.public_base_url.trim().trim_end_matches('/').to_string();
+    cfg.pair_code_ttl_mode = normalize_pair_code_ttl_mode(cfg.pair_code_ttl_mode.as_str());
     cfg
 }
 
@@ -257,6 +267,26 @@ fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(),
         serde_json::to_string_pretty(settings).map_err(|e| format!("serialize control settings failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write control settings failed: {e}"))?;
     Ok(())
+}
+
+fn normalize_pair_code_ttl_mode(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => "none".to_string(),
+        "24h" => "24h".to_string(),
+        "7d" => "7d".to_string(),
+        "forever" => "forever".to_string(),
+        _ => DEFAULT_PAIR_TTL_MODE.to_string(),
+    }
+}
+
+fn pair_mode_ttl_secs(mode: &str) -> Option<u64> {
+    match normalize_pair_code_ttl_mode(mode).as_str() {
+        "24h" => Some(24 * 60 * 60),
+        "7d" => Some(7 * 24 * 60 * 60),
+        "forever" => None,
+        "none" => None,
+        _ => Some(24 * 60 * 60),
+    }
 }
 
 fn generate_pair_code() -> String {
@@ -276,42 +306,83 @@ fn generate_token() -> String {
     format!("gtm_{:032x}", n ^ (pid << 17))
 }
 
+fn is_no_auth_mode() -> bool {
+    let settings = read_control_server_settings();
+    normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none"
+}
+
+fn sync_pair_state_for_mode(state: &mut PairState, mode: &str, now: u64, force_new_code: bool) {
+    let normalized = normalize_pair_code_ttl_mode(mode);
+    match normalized.as_str() {
+        "none" => {
+            state.code.clear();
+            state.expires_at = now;
+        }
+        "forever" => {
+            if force_new_code || state.code.trim().is_empty() {
+                state.code = generate_pair_code();
+            }
+            state.expires_at = u64::MAX;
+        }
+        _ => {
+            let ttl = pair_mode_ttl_secs(normalized.as_str()).unwrap_or(24 * 60 * 60);
+            if force_new_code || state.code.trim().is_empty() || now >= state.expires_at {
+                state.code = generate_pair_code();
+                state.expires_at = now.saturating_add(ttl);
+            }
+        }
+    }
+}
+
 fn refresh_pair_code() -> ControlPairCodeInfo {
+    let settings = read_control_server_settings();
+    let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
+    let now = now_unix_secs();
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
-    state.code = generate_pair_code();
-    state.expires_at = now_unix_secs() + DEFAULT_PAIR_TTL_SECS;
+    sync_pair_state_for_mode(&mut state, mode.as_str(), now, true);
     ControlPairCodeInfo {
         code: state.code.clone(),
         expires_at: state.expires_at,
-        ttl_seconds: DEFAULT_PAIR_TTL_SECS,
+        ttl_seconds: if mode == "forever" {
+            u64::MAX
+        } else {
+            state.expires_at.saturating_sub(now)
+        },
     }
 }
 
 fn current_pair_code() -> ControlPairCodeInfo {
+    let settings = read_control_server_settings();
+    let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
     let now = now_unix_secs();
-    if state.code.trim().is_empty() || now >= state.expires_at {
-        state.code = generate_pair_code();
-        state.expires_at = now + DEFAULT_PAIR_TTL_SECS;
-    }
+    sync_pair_state_for_mode(&mut state, mode.as_str(), now, false);
     ControlPairCodeInfo {
         code: state.code.clone(),
         expires_at: state.expires_at,
-        ttl_seconds: state.expires_at.saturating_sub(now),
+        ttl_seconds: if mode == "forever" {
+            u64::MAX
+        } else {
+            state.expires_at.saturating_sub(now)
+        },
     }
 }
 
-fn verify_pair_code(code: &str) -> bool {
-    let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
+fn verify_pair_code(code: &str) -> Result<(), String> {
+    let settings = read_control_server_settings();
+    let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
+    if mode == "none" {
+        return Err("pair code auth disabled (no-auth mode)".to_string());
+    }
+    let state = pair_state_cell().lock().expect("pair state lock poisoned");
     let now = now_unix_secs();
-    if now >= state.expires_at {
-        return false;
+    if mode != "forever" && now >= state.expires_at {
+        return Err("pair code expired".to_string());
     }
     if state.code.trim() != code.trim() {
-        return false;
+        return Err("invalid pair code".to_string());
     }
-    state.expires_at = now;
-    true
+    Ok(())
 }
 
 fn candidate_client_db_paths() -> Vec<PathBuf> {
@@ -598,6 +669,9 @@ fn extract_bearer(req: &HttpRequest) -> String {
 }
 
 fn ensure_authorized(req: &HttpRequest) -> Result<(), String> {
+    if is_no_auth_mode() {
+        return Ok(());
+    }
     let token = extract_bearer(req);
     if token.is_empty() {
         return Err("missing bearer token".to_string());
@@ -942,6 +1016,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
 
     if req.method == "GET" && req.path == "/api/v1/health" {
         let settings = read_control_server_settings();
+        let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
         return (
             200,
             serde_json::json!({
@@ -950,6 +1025,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                     "enabled": settings.enabled,
                     "host": settings.host,
                     "port": settings.port
+                },
+                "auth": {
+                    "pairCodeTtlMode": mode,
+                    "noAuth": mode == "none"
                 },
                 "opencodeServiceBase": format!("http://127.0.0.1:{}", opencode::get_opencode_service_settings().map(|s| s.port).unwrap_or(4098)),
             }),
@@ -983,8 +1062,8 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             Ok(v) => v,
             Err(e) => return (400, serde_json::json!({ "error": format!("invalid payload: {e}") })),
         };
-        if !verify_pair_code(payload.code.as_str()) {
-            return (401, serde_json::json!({ "error": "invalid or expired pair code" }));
+        if let Err(reason) = verify_pair_code(payload.code.as_str()) {
+            return (401, serde_json::json!({ "error": reason }));
         }
         let token = current_bearer_token();
         return (200, serde_json::json!({ "token": token, "tokenType": "Bearer" }));
@@ -1282,7 +1361,13 @@ pub fn set_control_server_settings(settings: ControlServerSettings) -> Result<Co
         return Err("control server port must be between 1 and 65535".to_string());
     }
     next.public_base_url = next.public_base_url.trim().trim_end_matches('/').to_string();
+    next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
     write_control_server_settings(&next)?;
+    {
+        let now = now_unix_secs();
+        let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
+        sync_pair_state_for_mode(&mut state, next.pair_code_ttl_mode.as_str(), now, false);
+    }
     start_control_server();
     Ok(next)
 }
@@ -1290,6 +1375,11 @@ pub fn set_control_server_settings(settings: ControlServerSettings) -> Result<Co
 #[tauri::command]
 pub fn get_control_pair_code() -> Result<ControlPairCodeInfo, String> {
     Ok(current_pair_code())
+}
+
+#[tauri::command]
+pub fn refresh_control_pair_code() -> Result<ControlPairCodeInfo, String> {
+    Ok(refresh_pair_code())
 }
 
 #[tauri::command]
@@ -1318,5 +1408,7 @@ pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
         pair_code: pair.code,
         expires_at: pair.expires_at,
         local_urls: urls,
+        pair_code_ttl_mode: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()),
+        no_auth: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none",
     })
 }

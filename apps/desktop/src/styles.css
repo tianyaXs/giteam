@@ -2478,8 +2478,64 @@ button {
   min-width: 0;
 }
 
+.settings-config-btn-wrap {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+}
+
 .settings-mobile-control {
-  grid-template-columns: minmax(120px, 160px) minmax(140px, 220px) minmax(220px, 1fr);
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.mobile-control-top {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mobile-control-divider {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.mobile-control-section-title {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mobile-control-config {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) minmax(220px, 1fr) minmax(180px, 220px);
+  gap: 10px;
+}
+
+.mobile-control-auth-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(180px, 260px);
+  gap: 10px;
+}
+
+.mobile-control-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mobile-control-status {
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  width: 100%;
 }
 
 .mobile-qr-card {
@@ -2604,6 +2660,14 @@ button {
   }
 
   .settings-mobile-control {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-control-config {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-control-auth-row {
     grid-template-columns: 1fr;
   }
 

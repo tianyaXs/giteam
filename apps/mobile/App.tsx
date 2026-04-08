@@ -32,6 +32,7 @@ import {
   getProjects,
   getSessions,
   health,
+  NO_AUTH_TOKEN,
   pairAuth,
   sendPrompt
 } from './src/api/controlApi';
@@ -83,6 +84,7 @@ type PairPayload = {
   baseUrl?: string;
   pairCode?: string;
   code?: string;
+  authMode?: string;
   repoPath?: string;
   repoPaths?: string[];
   currentRepoPath?: string;
@@ -386,8 +388,6 @@ export default function App() {
   const [sessionSearch, setSessionSearch] = useState('');
   const [connLogs, setConnLogs] = useState<ConnLogItem[]>([]);
 
-  const [pairPayloadInput, setPairPayloadInput] = useState('');
-  const [authMode, setAuthMode] = useState<'scan' | 'paste' | ''>('');
   const [showAuthDebug, setShowAuthDebug] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
@@ -422,7 +422,6 @@ export default function App() {
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
   const workspaceAnim = useRef(new Animated.Value(0)).current;
-  const authModeAnim = useRef(new Animated.Value(1)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
@@ -456,23 +455,6 @@ export default function App() {
     const tag = level === 'error' ? 'error' : 'log';
     // eslint-disable-next-line no-console
     console[tag](`[mobile-conn] ${new Date(row.ts).toISOString()} ${row.message}`);
-  }
-
-  function switchAuthMode(next: 'scan' | 'paste' | '') {
-    Animated.timing(authModeAnim, {
-      toValue: 0,
-      duration: 120,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true
-    }).start(() => {
-      setAuthMode(next);
-      Animated.timing(authModeAnim, {
-        toValue: 1,
-        duration: 180,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true
-      }).start();
-    });
   }
 
   async function copyText(raw: string, okMsg: string) {
@@ -982,9 +964,9 @@ export default function App() {
       intervalMs: 700
     });
 
-    const es = new EventSource(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    } as any);
+    const headers: Record<string, string> = {};
+    if (token && token !== NO_AUTH_TOKEN) headers.Authorization = `Bearer ${token}`;
+    const es = new EventSource(url, { headers } as any);
     pushConnLog(`SSE connect ${url}`);
     let lastSyncAt = 0;
     const syncFromServer = () => {
@@ -1067,6 +1049,67 @@ export default function App() {
     return -1;
   }, [timeline]);
 
+  async function connectWithAddressAndCode(
+    inputBaseUrl: string,
+    inputCode: string,
+    opts?: { preferredRepoPath?: string; payloadRepoPaths?: string[] }
+  ) {
+    const nextUrl = normalizeBaseUrlForClient(toText(inputBaseUrl).trim());
+    const nextCode = toText(inputCode).trim();
+    const mode = opts?.payloadRepoPaths ? 'payload' : 'manual';
+    if (!nextUrl) {
+      setStatus('请输入服务地址');
+      return;
+    }
+    setBusy(true);
+    try {
+      pushConnLog(`auth connect mode=${mode} url=${nextUrl} code=${nextCode ? 'yes' : 'no'}`);
+      const ping = await health(nextUrl);
+      pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
+      const serverNoAuth = Boolean((ping as any)?.auth?.noAuth);
+      if (!serverNoAuth && !nextCode) {
+        setStatus('认证失败：当前服务端需要验证码');
+        pushConnLog('auth failed: pair code required by server', 'error');
+        return;
+      }
+      let nextToken = NO_AUTH_TOKEN;
+      if (!serverNoAuth && nextCode) {
+        const res = await pairAuth(nextUrl, nextCode);
+        nextToken = toText(res.token).trim();
+      }
+      setServerUrl(nextUrl);
+      setPairCode(nextCode);
+      setToken(nextToken);
+      setRepoPath('');
+      if (opts?.payloadRepoPaths && opts.payloadRepoPaths.length > 0) {
+        const fromPayload = toProjectOptionsFromPaths(opts.payloadRepoPaths);
+        setProjects(fromPayload);
+        const preferred = toText(opts.preferredRepoPath).trim() || fromPayload[0].worktree;
+        if (preferred) setRepoPath(preferred);
+        pushConnLog(`project list from payload count=${fromPayload.length}`);
+      } else {
+        await refreshProjectsCatalog({ baseUrl: nextUrl, token: nextToken, preferredRepoPath: opts?.preferredRepoPath });
+      }
+      Vibration.vibrate([0, 60, 40, 80]);
+      setStatus('认证成功，开始新会话');
+      setScannerOpen(false);
+    } catch (e) {
+      Vibration.vibrate(220);
+      const errText = toText(e);
+      pushConnLog(`auth connect error ${errText}`, 'error');
+      if (!nextCode && /missing bearer token|invalid bearer token|401/i.test(errText)) {
+        setStatus('服务端当前需要验证码，请输入验证码后重试');
+      } else if (/pair code|expired|invalid|验证码|过期/i.test(errText)) {
+        setStatus('验证码无效或已过期，请检查后重试');
+      } else {
+        setStatus(errText);
+      }
+      setScannerLocked(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function applyPayloadAndPair(raw: string) {
     pushConnLog(`pair payload input len=${raw.trim().length}`);
     setStatus('二维码已识别，正在校验...');
@@ -1079,62 +1122,25 @@ export default function App() {
       return;
     }
     const nextUrl = normalizeBaseUrlForClient(String(payload.baseUrl || '').trim());
-    const nextCode = String(payload.pairCode || payload.code || '').trim();
+    const mode = String(payload.authMode || '').trim().toLowerCase();
+    const nextCode = mode === 'none' ? '' : String(payload.pairCode || payload.code || '').trim();
     const nextRepo = String(payload.repoPath || '').trim();
     const nextRepoPaths = getRepoPathsFromPairPayload(payload);
-
-    if (!nextUrl || !nextCode) {
-      pushConnLog(`pair payload missing fields baseUrl=${nextUrl ? 'yes' : 'no'} code=${nextCode ? 'yes' : 'no'}`, 'error');
-      Vibration.vibrate(180);
-      setStatus('二维码缺少地址或验证码');
+    if (!nextUrl) {
+      setStatus('二维码缺少服务地址');
       setScannerLocked(false);
       return;
     }
-
-    setBusy(true);
-    try {
-      pushConnLog(`health check ${nextUrl}/api/v1/health`);
-      const ping = await health(nextUrl);
-      pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
-      setServerUrl(nextUrl);
-      setPairCode(nextCode);
-      pushConnLog(`pair auth start code=${nextCode}`);
-      const res = await pairAuth(nextUrl, nextCode);
-      setToken(res.token);
-      setRepoPath('');
-      if (nextRepoPaths.length > 0) {
-        const fromPayload = toProjectOptionsFromPaths(nextRepoPaths);
-        setProjects(fromPayload);
-        const preferred = toText(payload.currentRepoPath).trim() || nextRepo || fromPayload[0].worktree;
-        if (preferred) setRepoPath(preferred);
-        pushConnLog(`project list from payload count=${fromPayload.length}`);
-      } else {
-        await refreshProjectsCatalog({ baseUrl: nextUrl, token: res.token, preferredRepoPath: nextRepo });
-      }
-      Vibration.vibrate([0, 60, 40, 80]);
-      pushConnLog('pair auth ok');
-      setStatus('授权成功，开始新会话');
-      setScannerOpen(false);
-      setPairPayloadInput('');
-    } catch (e) {
-      Vibration.vibrate(220);
-      const errText = toText(e);
-      pushConnLog(`pair flow error ${errText}`, 'error');
-      if (/expired|invalid|pair|code|HTTP 400|HTTP 401|HTTP 403|HTTP 404|验证码|已失效|过期/i.test(errText)) {
-        setStatus('二维码已过期，请在桌面端刷新二维码后重新扫码');
-      } else {
-        setStatus(errText);
-      }
-      setScannerLocked(false);
-    } finally {
-      setBusy(false);
-    }
+    await connectWithAddressAndCode(nextUrl, nextCode, {
+      preferredRepoPath: nextRepo,
+      payloadRepoPaths: nextRepoPaths
+    });
   }
 
   async function onOpenScanner() {
     if (Platform.OS === 'web') {
       pushConnLog('open scanner on web blocked');
-      setStatus('Web 端请粘贴二维码 payload');
+      setStatus('Web 端暂不支持扫码，请在手机端使用扫码连接');
       return;
     }
     if (!cameraPermission?.granted) {
@@ -1221,6 +1227,10 @@ export default function App() {
       return;
     }
     void applyPayloadAndPair(data);
+  }
+
+  async function onAuthSubmit() {
+    await connectWithAddressAndCode(serverUrl, pairCode);
   }
 
   async function onSendPrompt(customPrompt?: string) {
@@ -1320,6 +1330,7 @@ export default function App() {
   function onResetAuth() {
     stopStream();
     setToken('');
+    setPairCode('');
     setRepoPath('');
     setProjects([]);
     setActiveSession('');
@@ -1394,92 +1405,65 @@ export default function App() {
   }
 
   if (!authed) {
+    const showAuthNotice = busy || (statusText && statusText.trim() && statusText.trim() !== '准备就绪');
     return (
       <SafeAreaView style={styles.safe}>
         <RenderBoundary name="auth-screen">
           <StatusBar barStyle="dark-content" />
-          <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainer}>
-            <View style={styles.brandRow}>
-              <Text style={styles.authTitle}>Giteam</Text>
-            </View>
-            <Text style={styles.authSub}>连接桌面端，开始对话</Text>
+          <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
+            <View style={styles.authPageFrame}>
+              <View style={styles.authFormWrap}>
+                <Text style={styles.authInlineBrand}>Giteam</Text>
+                <Text style={styles.authSub}>连接远程客户端</Text>
 
-            <Animated.View
-              style={[
-                styles.authPane,
-                {
-                  opacity: authModeAnim,
-                  transform: [{ translateY: authModeAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }]
-                }
-              ]}
-            >
-              {authMode === '' ? (
-                <View style={styles.authModeList}>
-                  <Pressable
-                    style={styles.authModeCard}
-                    onPress={() => {
-                      switchAuthMode('scan');
-                      setTimeout(() => void onOpenScanner(), 120);
-                    }}
-                  >
-                    <Text style={styles.authModeTitle}>扫码授权</Text>
-                    <Text style={styles.authModeDesc}>推荐，扫描桌面端二维码一键连接</Text>
-                  </Pressable>
-                  <Pressable style={styles.authModeCard} onPress={() => switchAuthMode('paste')}>
-                    <Text style={styles.authModeTitle}>粘贴授权</Text>
-                    <Text style={styles.authModeDesc}>无法扫码时，粘贴 payload 手动连接</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-
-              {authMode === 'scan' ? (
-                <>
-                  <Pressable style={styles.scanHeroBtn} onPress={onOpenScanner}>
-                    <Text style={styles.scanHeroBtnText}>打开扫码</Text>
-                  </Pressable>
-                  <View style={styles.authHintBox}>
-                    <Text style={styles.authHint}>1. 在桌面端打开设置页</Text>
-                    <Text style={styles.authHint}>2. 展示 Mobile Control 二维码</Text>
-                    <Text style={styles.authHint}>3. 手机扫码完成授权</Text>
-                  </View>
-                  <Pressable style={styles.authModeBackBtn} onPress={() => switchAuthMode('')}>
-                    <Text style={styles.authModeBackTxt}>返回授权方式</Text>
-                  </Pressable>
-                </>
-              ) : null}
-
-              {authMode === 'paste' ? (
-                <>
-                  <View style={styles.fallbackCard}>
-                    <Text style={styles.fallbackTitle}>粘贴 payload 授权</Text>
+                <View style={styles.authFieldGroup}>
+                  <Text style={styles.authFieldLabel}>服务地址</Text>
+                  <View style={styles.authUrlRow}>
                     <TextInput
-                      style={styles.fallbackInput}
-                      value={pairPayloadInput}
-                      onChangeText={setPairPayloadInput}
+                      style={styles.authInputUrl}
+                      value={serverUrl}
+                      onChangeText={setServerUrl}
                       autoCapitalize="none"
-                      multiline
-                      placeholder='{"baseUrl":"http://192.168.1.23:4100","pairCode":"123456"}'
-                      placeholderTextColor="#96a0ad"
+                      placeholder="http://192.168.50.228:4100"
+                      placeholderTextColor="#9aa6b6"
                     />
-                    <Pressable style={styles.fallbackBtn} onPress={() => void applyPayloadAndPair(pairPayloadInput)}>
-                      <Text style={styles.fallbackBtnText}>应用并授权</Text>
+                    <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
+                      <Text style={styles.authScanInlineTxt}>▣</Text>
                     </Pressable>
                   </View>
-                  <Pressable style={styles.authModeBackBtn} onPress={() => switchAuthMode('')}>
-                    <Text style={styles.authModeBackTxt}>返回授权方式</Text>
-                  </Pressable>
-                </>
-              ) : null}
-            </Animated.View>
+                </View>
 
-            <View style={styles.authStatusMini}>
-              {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
-              <Text numberOfLines={2} style={styles.authStatusMiniText}>{statusText}</Text>
+                <View style={styles.authFieldGroup}>
+                  <Text style={styles.authFieldLabel}>验证码（选填）</Text>
+                  <TextInput
+                    style={styles.authInput}
+                    value={pairCode}
+                    onChangeText={setPairCode}
+                    autoCapitalize="none"
+                    keyboardType="number-pad"
+                    placeholder="输入验证码，免授权模式可留空"
+                    placeholderTextColor="#9aa6b6"
+                  />
+                </View>
+
+                <View style={styles.authActionRow}>
+                  <Pressable style={styles.authConnectBtn} onPress={() => void onAuthSubmit()} disabled={busy}>
+                    <Text style={styles.authConnectBtnText}>认证</Text>
+                  </Pressable>
+                </View>
+
+                {showAuthNotice ? (
+                  <View style={styles.authNoticeRow}>
+                    {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
+                    <Text numberOfLines={2} style={styles.authNoticeText}>{statusText}</Text>
+                  </View>
+                ) : null}
+              </View>
             </View>
 
-            <View style={styles.authDebugDock}>
-              <Pressable style={styles.authDebugToggle} onPress={() => setShowAuthDebug((v) => !v)}>
-                <Text style={styles.authDebugToggleTxt}>{showAuthDebug ? '隐藏诊断' : '诊断'}</Text>
+            <View style={styles.authDebugFabWrap} pointerEvents="box-none">
+              <Pressable style={styles.authDebugFab} onPress={() => setShowAuthDebug((v) => !v)}>
+                <Text style={styles.authDebugFabTxt}>{showAuthDebug ? '收起诊断' : '诊断'}</Text>
               </Pressable>
             </View>
 
@@ -1801,9 +1785,104 @@ const styles = StyleSheet.create({
 
   authScroll: { flex: 1 },
   authContainer: { padding: 20, gap: 12, paddingBottom: 28 },
-  brandRow: { marginTop: 8, flexDirection: 'row', alignItems: 'center' },
+  authContainerCenter: {
+    flexGrow: 1,
+    width: '100%',
+    minHeight: '100%',
+    paddingHorizontal: 0,
+    paddingVertical: 0
+  },
+  authPageFrame: {
+    flex: 1,
+    minHeight: 520,
+    width: '100%',
+    paddingHorizontal: 26,
+    justifyContent: 'center'
+  },
+  authInlineBrand: {
+    alignSelf: 'center',
+    fontSize: 34,
+    fontWeight: '700',
+    color: '#1f2630',
+    letterSpacing: 0.3,
+    marginTop: -44,
+    marginBottom: 10
+  },
+  brandRow: { flexDirection: 'row', alignItems: 'center' },
   authTitle: { fontSize: 32, fontWeight: '700', color: '#1f2630' },
-  authSub: { color: '#6f7c8f', fontSize: 14 },
+  authSub: { color: '#5f7087', fontSize: 18, marginBottom: 8, fontWeight: '600' },
+  authFormWrap: {
+    width: '100%',
+    gap: 16,
+    marginTop: -28
+  },
+  authFieldGroup: { gap: 6 },
+  authFieldLabel: { color: '#6a7c94', fontSize: 12, fontWeight: '600', paddingLeft: 2 },
+  authInput: {
+    minHeight: 48,
+    borderBottomWidth: 1,
+    borderColor: '#d9e2ee',
+    backgroundColor: 'transparent',
+    paddingHorizontal: 2,
+    paddingVertical: 8,
+    color: '#2f3948'
+  },
+  authUrlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderColor: '#d9e2ee'
+  },
+  authInputUrl: {
+    flex: 1,
+    minHeight: 48,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 2,
+    paddingVertical: 8,
+    color: '#2f3948'
+  },
+  authScanInlineBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d0d9e6',
+    backgroundColor: '#f3f7fc',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  authScanInlineTxt: { color: '#3f5167', fontSize: 14, fontWeight: '700' },
+  authActionRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  authConnectBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1f2937'
+  },
+  authConnectBtnText: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
+  authNoticeRow: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  authNoticeText: { color: '#64748b', fontSize: 12, lineHeight: 18, flex: 1 },
+  authDebugFabWrap: {
+    position: 'absolute',
+    right: 14,
+    bottom: 18
+  },
+  authDebugFab: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: '#f0f4fa',
+    borderWidth: 1,
+    borderColor: '#d9e2ee'
+  },
+  authDebugFabTxt: { color: '#66798f', fontSize: 11, fontWeight: '700' },
   authPane: { gap: 10 },
   authModeList: { gap: 10 },
   authModeCard: {

@@ -78,6 +78,7 @@ fn main() {
             commands::control::get_control_server_settings,
             commands::control::set_control_server_settings,
             commands::control::get_control_pair_code,
+            commands::control::refresh_control_pair_code,
             commands::control::get_control_access_info
         ])
         .build(tauri::generate_context!())

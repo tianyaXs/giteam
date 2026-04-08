@@ -150,6 +150,7 @@ type ControlServerSettings = {
   host: string;
   port: number;
   publicBaseUrl: string;
+  pairCodeTtlMode: "none" | "24h" | "7d" | "forever";
 };
 type ControlPairCodeInfo = {
   code: string;
@@ -164,6 +165,8 @@ type ControlAccessInfo = {
   pairCode: string;
   expiresAt: number;
   localUrls: string[];
+  pairCodeTtlMode?: string;
+  noAuth?: boolean;
 };
 
 type OpencodeAuthPayload = { type: "api"; key: string };
@@ -198,6 +201,12 @@ type OpencodeDetailedMessage = {
   info?: Record<string, unknown>;
   parts?: OpencodeDetailedPart[];
 };
+
+function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
+  const v = String(raw || "").trim().toLowerCase();
+  if (v === "none" || v === "24h" || v === "7d" || v === "forever") return v;
+  return "24h";
+}
 
 function parseReadToolOutput(raw: string): { path: string; type: string; content: string } | null {
   const src = raw || "";
@@ -1210,6 +1219,8 @@ export function App() {
   const [theme, toggleTheme] = useTheme();
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
+  const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
+  const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showGraphPopover, setShowGraphPopover] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -1305,13 +1316,15 @@ export function App() {
     enabled: true,
     host: "0.0.0.0",
     port: 4100,
-    publicBaseUrl: ""
+    publicBaseUrl: "",
+    pairCodeTtlMode: "24h"
   });
   const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>({
     enabled: true,
     host: "0.0.0.0",
     port: 4100,
-    publicBaseUrl: ""
+    publicBaseUrl: "",
+    pairCodeTtlMode: "24h"
   });
   const [controlServerSettingsBusy, setControlServerSettingsBusy] = useState(false);
   const [controlPairCodeInfo, setControlPairCodeInfo] = useState<ControlPairCodeInfo | null>(null);
@@ -2176,7 +2189,8 @@ export function App() {
         enabled: Boolean(cfg.enabled),
         host: (cfg.host || "0.0.0.0").trim() || "0.0.0.0",
         port: Number(cfg.port) > 0 ? Number(cfg.port) : 4100,
-        publicBaseUrl: String(cfg.publicBaseUrl || "").trim().replace(/\/+$/, "")
+        publicBaseUrl: String(cfg.publicBaseUrl || "").trim().replace(/\/+$/, ""),
+        pairCodeTtlMode: normalizeControlPairMode((cfg as any).pairCodeTtlMode)
       };
       setControlServerSettings(next);
       setControlServerSettingsSaved(next);
@@ -2188,6 +2202,15 @@ export function App() {
   async function loadControlPairCode() {
     try {
       const info = await invoke<ControlPairCodeInfo>("get_control_pair_code");
+      setControlPairCodeInfo(info);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function forceRefreshControlPairCode() {
+    try {
+      const info = await invoke<ControlPairCodeInfo>("refresh_control_pair_code");
       setControlPairCodeInfo(info);
     } catch (e) {
       setError(String(e));
@@ -2234,63 +2257,77 @@ export function App() {
     }
   }
 
-  async function closeSettingsModal() {
-    if (runtimeStatus.opencode.installed) {
-      const ok = await saveOpencodeServiceSettingsIfNeeded();
-      if (!ok) return;
-    }
+  async function saveControlServerSettingsIfNeeded() {
     const changed =
       controlServerSettings.enabled !== controlServerSettingsSaved.enabled ||
       Number(controlServerSettings.port) !== Number(controlServerSettingsSaved.port) ||
+      controlServerSettings.pairCodeTtlMode !== controlServerSettingsSaved.pairCodeTtlMode ||
       String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "") !==
         String(controlServerSettingsSaved.publicBaseUrl || "").trim().replace(/\/+$/, "");
-    if (changed) {
-      const port = Number(controlServerSettings.port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        setError("Control server port must be between 1 and 65535");
-        return;
-      }
-      let publicBaseUrl = String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "");
-      if (publicBaseUrl && !/^https?:\/\//i.test(publicBaseUrl)) {
-        publicBaseUrl = `http://${publicBaseUrl}`;
-      }
-      if (publicBaseUrl) {
-        try {
-          const parsed = new URL(publicBaseUrl);
-          publicBaseUrl = `${parsed.protocol}//${parsed.host}`;
-        } catch {
-          setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
-          return;
-        }
-      }
-      setControlServerSettingsBusy(true);
+    if (!changed) return true;
+    const port = Number(controlServerSettings.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setError("Control server port must be between 1 and 65535");
+      return false;
+    }
+    let publicBaseUrl = String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "");
+    if (publicBaseUrl && !/^https?:\/\//i.test(publicBaseUrl)) {
+      publicBaseUrl = `http://${publicBaseUrl}`;
+    }
+    if (publicBaseUrl) {
       try {
-        const saved = await invoke<ControlServerSettings>("set_control_server_settings", {
-          settings: {
-            enabled: controlServerSettings.enabled,
-            host: controlServerSettings.host,
-            port,
-            publicBaseUrl
-          }
-        });
-        const normalized = {
-          enabled: Boolean(saved.enabled),
-          host: (saved.host || controlServerSettings.host).trim() || controlServerSettings.host,
-          port: Number(saved.port) > 0 ? Number(saved.port) : port,
-          publicBaseUrl: String(saved.publicBaseUrl || "").trim().replace(/\/+$/, "")
-        };
-        setControlServerSettings(normalized);
-        setControlServerSettingsSaved(normalized);
-        void loadControlPairCode();
-        void loadControlAccessInfo();
-      } catch (e) {
-        setError(String(e));
-        return;
-      } finally {
-        setControlServerSettingsBusy(false);
+        const parsed = new URL(publicBaseUrl);
+        publicBaseUrl = `${parsed.protocol}//${parsed.host}`;
+      } catch {
+        setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
+        return false;
       }
     }
+    setControlServerSettingsBusy(true);
+    try {
+      const saved = await invoke<ControlServerSettings>("set_control_server_settings", {
+        settings: {
+          enabled: controlServerSettings.enabled,
+          host: controlServerSettings.host,
+          port,
+          publicBaseUrl,
+          pairCodeTtlMode: normalizeControlPairMode(controlServerSettings.pairCodeTtlMode)
+        }
+      });
+      const normalized = {
+        enabled: Boolean(saved.enabled),
+        host: (saved.host || controlServerSettings.host).trim() || controlServerSettings.host,
+        port: Number(saved.port) > 0 ? Number(saved.port) : port,
+        publicBaseUrl: String(saved.publicBaseUrl || "").trim().replace(/\/+$/, ""),
+        pairCodeTtlMode: normalizeControlPairMode((saved as any).pairCodeTtlMode)
+      };
+      setControlServerSettings(normalized);
+      setControlServerSettingsSaved(normalized);
+      void loadControlPairCode();
+      void loadControlAccessInfo();
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setControlServerSettingsBusy(false);
+    }
+  }
+
+  async function closeSettingsModal() {
+    setShowMobileControlDialog(false);
+    setShowOpencodeApiDialog(false);
     setShowSettings(false);
+  }
+
+  async function closeMobileControlDialog() {
+    const ok = await saveControlServerSettingsIfNeeded();
+    if (ok) setShowMobileControlDialog(false);
+  }
+
+  async function closeOpencodeApiDialog() {
+    const ok = await saveOpencodeServiceSettingsIfNeeded();
+    if (ok) setShowOpencodeApiDialog(false);
   }
 
   async function refreshOpencodeConfiguredModels() {
@@ -4570,10 +4607,14 @@ export function App() {
     return (lan || urls[0] || "").trim();
   })();
   const controlPairCode = (controlAccessInfo?.pairCode || controlPairCodeInfo?.code || "").trim();
+  const controlAuthNoAuth =
+    Boolean(controlAccessInfo?.noAuth) ||
+    normalizeControlPairMode(controlAccessInfo?.pairCodeTtlMode || controlServerSettings.pairCodeTtlMode) === "none";
   const controlPairPayload = controlBaseUrl
     ? JSON.stringify({
         baseUrl: controlBaseUrl,
-        pairCode: controlPairCode
+        authMode: controlAuthNoAuth ? "none" : "pair_code",
+        ...(controlAuthNoAuth ? {} : { pairCode: controlPairCode })
       })
     : "";
   const controlPairQrUrl = controlPairPayload
@@ -4681,30 +4722,6 @@ export function App() {
               </div>
 
               <div className="settings-row">
-                <div className="settings-label">Panel placement</div>
-                <div className="toolbar">
-                  <button
-                    className={panelPlacement === "bottom" ? "chip active" : "chip"}
-                    onClick={() => setPanelPlacement("bottom")}
-                  >
-                    Bottom
-                  </button>
-                  <button
-                    className={panelPlacement === "right" ? "chip active" : "chip"}
-                    onClick={() => setPanelPlacement("right")}
-                  >
-                    Right
-                  </button>
-                  <button
-                    className={panelPlacement === "hidden" ? "chip active" : "chip"}
-                    onClick={() => setPanelPlacement("hidden")}
-                  >
-                    Hidden
-                  </button>
-                </div>
-              </div>
-
-              <div className="settings-row">
                 <div className="settings-label">Plugins</div>
                 <div className="toolbar">
                   <button
@@ -4722,115 +4739,20 @@ export function App() {
 
               <div className="settings-row">
                 <div className="settings-label">Mobile Control API</div>
-                <div className="settings-provider-form settings-mobile-control">
-                  <label className="small muted" style={{ display: "inline-flex", alignItems: "center", gap: 8, alignSelf: "center" }}>
-                    <input
-                      type="checkbox"
-                      checked={controlServerSettings.enabled}
-                      onChange={(e) =>
-                        setControlServerSettings((prev) => ({
-                          ...prev,
-                          enabled: e.target.checked
-                        }))
-                      }
-                    />
-                    Enable
-                  </label>
-                  <input
-                    className="path-input"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="Port"
-                    value={String(controlServerSettings.port)}
-                    onChange={(e) =>
-                      setControlServerSettings((prev) => ({
-                        ...prev,
-                        port: Number(e.target.value || "0")
-                      }))
-                    }
-                  />
-                  <input
-                    className="path-input"
-                    placeholder="Public URL（默认自动取局域网 IPv4）"
-                    value={controlServerSettings.publicBaseUrl}
-                    onChange={(e) =>
-                      setControlServerSettings((prev) => ({
-                        ...prev,
-                        publicBaseUrl: e.target.value
-                      }))
-                    }
-                  />
-                  <div className="toolbar" style={{ justifyContent: "space-between", width: "100%", gridColumn: "1 / -1" }}>
-                    <span className="small muted">Pair code: {controlPairCode || "------"}</span>
-                    <button className="chip" onClick={() => { void loadControlPairCode(); void loadControlAccessInfo(); }}>
-                      Refresh code
-                    </button>
-                  </div>
-                  <div className="mobile-qr-card">
-                    <div className="mobile-qr-visual">
-                      {controlPairQrUrl ? <img src={controlPairQrUrl} alt="Mobile pair QR code" /> : <div className="small muted">QR unavailable</div>}
-                    </div>
-                    <div className="mobile-qr-meta">
-                      <div className="small muted">Scan on mobile, then use the pair code.</div>
-                      <div className="mobile-qr-code">{controlPairCode || "------"}</div>
-                      <div className="mobile-qr-url">{controlBaseUrl || "Waiting for local address..."}</div>
-                      <div className="toolbar">
-                        <button
-                          className="chip"
-                          disabled={!controlPairPayload}
-                          onClick={() => {
-                            void navigator.clipboard.writeText(controlPairPayload);
-                            setMessage("Pair payload copied");
-                          }}
-                        >
-                          Copy payload
-                        </button>
-                        <button
-                          className="chip"
-                          disabled={!controlBaseUrl}
-                          onClick={() => {
-                            void navigator.clipboard.writeText(controlBaseUrl);
-                            setMessage("Control server URL copied");
-                          }}
-                        >
-                          Copy URL
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
+                <div className="settings-config-btn-wrap">
+                  <button className="chip" onClick={() => setShowMobileControlDialog(true)}>
+                    Configure
+                  </button>
                 </div>
               </div>
 
               {runtimeStatus.opencode.installed ? (
                 <div className="settings-row">
                   <div className="settings-label">OpenCode API</div>
-                  <div className="settings-provider-form">
-                    <input
-                      className="path-input"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      placeholder="Service port"
-                      value={String(opencodeServiceSettings.port)}
-                      onChange={(e) => {
-                        const next = Number(e.target.value || "0");
-                        setOpencodeServiceSettings((prev) => ({
-                          ...prev,
-                          port: next
-                        }));
-                      }}
-                    />
-                    <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-                      <span className="small muted">
-                        {opencodeServiceSettingsBusy
-                          ? "Saving..."
-                          : opencodeServiceSettings.port !== opencodeServiceSettingsSavedPort
-                            ? "Will save on close"
-                            : ""}
-                      </span>
-                    </div>
+                  <div className="settings-config-btn-wrap">
+                    <button className="chip" onClick={() => setShowOpencodeApiDialog(true)}>
+                      Configure
+                    </button>
                   </div>
                 </div>
               ) : null}
@@ -4867,6 +4789,171 @@ export function App() {
               <button className="chip" onClick={() => void closeSettingsModal()}>
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showMobileControlDialog ? (
+        <div className="modal-mask" onClick={() => void closeMobileControlDialog()}>
+          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
+            <div className="env-setup-head">
+              <h3>Mobile Control API</h3>
+            </div>
+            <div className="settings-provider-form settings-mobile-control">
+              <div className="mobile-control-section-title">Connection</div>
+              <div className="mobile-control-config">
+                <div className="mobile-control-field">
+                  <div className="small muted">Port</div>
+                  <input
+                    className="path-input"
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder="Port"
+                    value={String(controlServerSettings.port)}
+                    onChange={(e) =>
+                      setControlServerSettings((prev) => ({
+                        ...prev,
+                        port: Number(e.target.value || "0")
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mobile-control-field">
+                  <div className="small muted">Public URL (optional)</div>
+                  <input
+                    className="path-input"
+                    placeholder="Public URL（默认自动取局域网 IPv4）"
+                    value={controlServerSettings.publicBaseUrl}
+                    onChange={(e) =>
+                      setControlServerSettings((prev) => ({
+                        ...prev,
+                        publicBaseUrl: e.target.value
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className="mobile-control-section-title">Authentication</div>
+              <div className="mobile-control-auth-row">
+                <div className="mobile-control-field">
+                  <div className="small muted">Pair Code Validity</div>
+                  <select
+                    className="path-input"
+                    value={controlServerSettings.pairCodeTtlMode}
+                    onChange={(e) =>
+                      setControlServerSettings((prev) => ({
+                        ...prev,
+                        pairCodeTtlMode: normalizeControlPairMode(e.target.value)
+                      }))
+                    }
+                  >
+                    <option value="none">No Auth (no pair code)</option>
+                    <option value="24h">Pair code valid for 24 hours</option>
+                    <option value="7d">Pair code valid for 7 days</option>
+                    <option value="forever">Pair code valid indefinitely</option>
+                  </select>
+                </div>
+                <div className="mobile-control-field">
+                  <div className="small muted">Service Toggle</div>
+                  <label className="small muted" style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={controlServerSettings.enabled}
+                      onChange={(e) =>
+                        setControlServerSettings((prev) => ({
+                          ...prev,
+                          enabled: e.target.checked
+                        }))
+                      }
+                    />
+                    Enable
+                  </label>
+                </div>
+                <div className="mobile-control-field">
+                  <div className="small muted">Actions</div>
+                  <div className="toolbar" style={{ justifyContent: "flex-start", minHeight: 36 }}>
+                    <button className="chip" onClick={() => { void forceRefreshControlPairCode(); void loadControlAccessInfo(); }}>
+                      Refresh code
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="toolbar mobile-control-status">
+                <span className="small muted">
+                  {controlAuthNoAuth ? "Current mode: No Auth" : `Pair code: ${controlPairCode || "------"}`}
+                </span>
+              </div>
+              <div className="mobile-control-divider" />
+              <div className="mobile-control-section-title">QR Connection</div>
+              <div className="mobile-qr-card">
+                <div className="mobile-qr-visual">
+                  {controlPairQrUrl ? <img src={controlPairQrUrl} alt="Mobile pair QR code" /> : <div className="small muted">QR unavailable</div>}
+                </div>
+                <div className="mobile-qr-meta">
+                  <div className="small muted">
+                    {controlAuthNoAuth
+                      ? "Scan to connect directly (No Auth mode)"
+                      : "Scan, then connect on mobile with pair code (manual or auto-filled)"}
+                  </div>
+                  <div className="mobile-qr-code">{controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
+                  <div className="mobile-qr-url">{controlBaseUrl || "Waiting for local address..."}</div>
+                  <div className="toolbar">
+                    <button
+                      className="chip"
+                      disabled={!controlPairPayload}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(controlPairPayload);
+                        setMessage("Pair payload copied");
+                      }}
+                    >
+                      Copy payload
+                    </button>
+                    <button
+                      className="chip"
+                      disabled={!controlBaseUrl}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(controlBaseUrl);
+                        setMessage("Control server URL copied");
+                      }}
+                    >
+                      Copy URL
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showOpencodeApiDialog ? (
+        <div className="modal-mask" onClick={() => void closeOpencodeApiDialog()}>
+          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+            <div className="env-setup-head">
+              <h3>OpenCode API</h3>
+            </div>
+            <div className="settings-provider-form">
+              <div className="mobile-control-field">
+                <div className="small muted">Service port</div>
+                <input
+                  className="path-input"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  placeholder="Service port"
+                  value={String(opencodeServiceSettings.port)}
+                  onChange={(e) => {
+                    const next = Number(e.target.value || "0");
+                    setOpencodeServiceSettings((prev) => ({
+                      ...prev,
+                      port: next
+                    }));
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>

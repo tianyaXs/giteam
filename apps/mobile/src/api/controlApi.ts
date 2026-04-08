@@ -1,4 +1,5 @@
 import type { HealthResponse, PairAuthResponse, PromptResponse } from '../types';
+export const NO_AUTH_TOKEN = '__NO_AUTH__';
 
 function normalizeBaseUrl(input: string): string {
   const raw = input.trim().replace(/\/$/, '');
@@ -8,6 +9,12 @@ function normalizeBaseUrl(input: string): string {
 }
 
 const REQUEST_TIMEOUT_MS = 12000;
+
+function authHeaders(token: string): Record<string, string> {
+  const tk = String(token || '').trim();
+  if (!tk || tk === NO_AUTH_TOKEN) return {};
+  return { Authorization: `Bearer ${tk}` };
+}
 
 function describeNetworkError(err: unknown): string {
   const name = (err as any)?.name ? String((err as any).name) : '';
@@ -77,7 +84,7 @@ export async function sendPrompt(args: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${args.token}`
+      ...authHeaders(args.token)
     },
     body: JSON.stringify({
       repoPath: args.repoPath,
@@ -107,9 +114,7 @@ export async function getMessages(args: {
   }
   const url = `${baseUrl}/api/v1/opencode/messages?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('messages', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
@@ -131,9 +136,7 @@ export async function getSessions(args: {
   }
   const url = `${baseUrl}/api/v1/opencode/session?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('sessions', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
@@ -159,9 +162,7 @@ export async function getOpencodeConfig(args: {
   });
   const url = `${baseUrl}/api/v1/opencode/config?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('config', 'GET', url, result.status, result.ok, result.text);
   return JSON.parse(raw);
@@ -182,9 +183,7 @@ export async function getCurrentProject(args: {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/opencode/project/current`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('project.current', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
@@ -206,9 +205,7 @@ export async function getProjects(args: {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/opencode/project`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('project.list', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
@@ -231,9 +228,7 @@ export async function getClientRepositories(args: {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/repository/list`;
   const result = await fetchTextWithTrace(url, {
-    headers: {
-      Authorization: `Bearer ${args.token}`
-    }
+    headers: authHeaders(args.token)
   });
   const raw = ensureOk('repository.list', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
@@ -260,7 +255,7 @@ export async function abortSession(args: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${args.token}`
+      ...authHeaders(args.token)
     },
     body: JSON.stringify({
       repoPath: args.repoPath,
