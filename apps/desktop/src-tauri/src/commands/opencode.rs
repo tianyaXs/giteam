@@ -1446,6 +1446,24 @@ pub fn list_opencode_sessions(repo_path: &str, limit: Option<u32>) -> Result<Vec
 }
 
 #[tauri::command]
+pub fn get_opencode_current_project(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(repo_path, "GET", format!("{base}/project/current").as_str(), None, 10)?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse current project failed: {e}"))
+    })
+}
+
+#[tauri::command]
+pub fn list_opencode_projects(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(repo_path, "GET", format!("{base}/project").as_str(), None, 10)?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse project list failed: {e}"))
+    })
+}
+
+#[tauri::command]
 pub fn create_opencode_session(repo_path: &str, title: Option<String>) -> Result<OpencodeSessionSummary, String> {
     command_runner::validate_repo_path(repo_path)?;
     let body = if let Some(t) = title.as_deref() {
@@ -1568,6 +1586,74 @@ pub fn get_opencode_session_messages_detailed(
         }
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
         serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse session messages failed: {e}"))
+    })
+}
+
+#[tauri::command]
+pub fn post_opencode_session_prompt_async(
+    repo_path: &str,
+    session_id: &str,
+    prompt: &str,
+    model: Option<String>,
+) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    let text = prompt.trim();
+    if text.is_empty() {
+        return Err("prompt must not be empty".to_string());
+    }
+    let mut body = serde_json::json!({
+        "parts": [{ "type": "text", "text": text }]
+    });
+    if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        if let Some(obj) = body.as_object_mut() {
+            if let Some((provider_id, model_id)) = parse_model_ref(m) {
+                obj.insert(
+                    "model".to_string(),
+                    serde_json::json!({
+                        "providerID": provider_id,
+                        "modelID": model_id
+                    }),
+                );
+            } else {
+                return Err("model must be in format provider/model".to_string());
+            }
+        }
+    }
+    with_service_base(repo_path, |base| {
+        let raw = serde_json::to_string(&body).map_err(|e| format!("serialize prompt_async body failed: {e}"))?;
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/session/{sid}/prompt_async").as_str(),
+            Some(raw.as_str()),
+            45,
+        )?;
+        Ok(true)
+    })
+}
+
+#[tauri::command]
+pub fn abort_opencode_session(
+    repo_path: &str,
+    session_id: &str,
+    directory: Option<String>,
+) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/session/{sid}/abort");
+        if let Some(d) = directory.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some("{}"), 12)?;
+        Ok(true)
     })
 }
 

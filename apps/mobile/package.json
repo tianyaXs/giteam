@@ -1,0 +1,36 @@
+{
+  "name": "giteam-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "web:debug": "expo start --web --host lan --port 19007 --clear",
+    "eas:whoami": "eas whoami",
+    "eas:apk": "eas build -p android --profile preview",
+    "eas:apk:non-interactive": "eas build -p android --profile preview --non-interactive"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~3.2.3",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@ronradtke/react-native-markdown-display": "^8.1.0",
+    "expo": "~51.0.28",
+    "expo-camera": "~15.0.16",
+    "expo-clipboard": "~6.0.3",
+    "expo-image-picker": "~15.1.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-native": "0.74.5",
+    "react-native-safe-area-context": "4.10.5",
+    "react-native-sse": "^1.2.1",
+    "react-native-web": "~0.19.10"
+  },
+  "devDependencies": {
+    "@types/react": "~18.2.79",
+    "eas-cli": "^18.5.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "giteam",
+    "slug": "giteam-mobile",
+    "version": "0.1.0",
+    "icon": "../../apps/desktop/src-tauri/icons/icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "io.giteam.mobile",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "foregroundImage": "../../apps/desktop/src-tauri/icons/icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "ios": {
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "用于连接同一局域网内的 Giteam Desktop 控制服务。",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "8ffa54af-2a88-4355-be06-5dd32ee1959c"
+      }
+    },
+    "owner": "tianya_888"
+  }
+}

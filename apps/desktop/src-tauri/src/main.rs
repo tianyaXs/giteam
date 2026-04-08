@@ -6,6 +6,9 @@ fn main() {
             std::thread::spawn(|| {
                 commands::opencode::warmup_managed_opencode_service();
             });
+            std::thread::spawn(|| {
+                commands::control::start_control_server();
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,6 +41,8 @@ fn main() {
             commands::opencode::test_opencode_model,
             commands::opencode::run_opencode_prompt,
             commands::opencode::run_opencode_prompt_stream,
+            commands::opencode::post_opencode_session_prompt_async,
+            commands::opencode::abort_opencode_session,
             commands::opencode::list_opencode_sessions,
             commands::opencode::create_opencode_session,
             commands::opencode::delete_opencode_session,
@@ -69,13 +74,18 @@ fn main() {
             commands::db::db_list_repositories,
             commands::db::db_remove_repository,
             commands::db::pick_repository_folder,
-            commands::ui::set_window_theme
+            commands::ui::set_window_theme,
+            commands::control::get_control_server_settings,
+            commands::control::set_control_server_settings,
+            commands::control::get_control_pair_code,
+            commands::control::get_control_access_info
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri app");
 
     app.run(|_app_handle, event| {
         if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            commands::control::stop_control_server();
             commands::opencode::shutdown_managed_opencode_service();
         }
     });

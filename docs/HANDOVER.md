@@ -2,6 +2,8 @@
 
 ## Latest Update
 
+- 2026-04-07: Mobile Control 局域网可达、扫码/流式状态修复与本地 APK 构建记录
+  - `docs/worklog/2026-04-07-step-36-mobile-control-lan-sync-and-local-apk.md`
 - 2026-04-01: OpenCode 流式渲染与交互改造交接文档
   - `docs/worklog/2026-04-01-step-31-opencode-streaming-ui-handover.md`
 
@@ -62,3 +64,7 @@ Date: 2026-03-25
 3. Run full Tauri runtime UX validation in local GUI session
 - 2026-04-03: OpenCode 服务固定端口与接口冒烟验证
   - `docs/worklog/2026-04-03-step-32-opencode-service-4098-and-api-smoke.md`
+- 2026-04-03: Mobile App React MVP
+  - `docs/worklog/2026-04-03-step-33-mobile-react-mvp.md`
+- 2026-04-03: Mobile Debug UI + QR
+  - `docs/worklog/2026-04-03-step-34-mobile-debug-ui-and-qr.md`
