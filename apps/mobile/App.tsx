@@ -36,18 +36,40 @@ import {
   pairAuth,
   sendPrompt
 } from './src/api/controlApi';
+import {
+  buildHostOrder,
+  clampRadarPoint,
+  inferDiscoveryPrefixes,
+  inferSeedLastSegment,
+  pickRadarPoint,
+  probeHealthFast,
+  resolvePortFromSeed
+} from './src/discovery';
+import type { DiscoveredDevice } from './src/discovery';
 import { parseConversation } from './src/messageParser';
 import type { MobileChatMessage, MobileTimelineItem } from './src/types';
 
 const PREF_KEY = 'giteam.mobile.v3';
+const DISCOVER_CACHE_KEY = 'giteam.mobile.discover-cache.v1';
 
 const INITIAL_SESSION_LIMIT = 8;
 const OLDER_SESSION_LIMIT = 4;
 const AUTO_LOAD_TOP_THRESHOLD = 560;
+const DISCOVER_OFFLINE_AFTER_MS = 45000;
+const DISCOVER_OFFLINE_MISS_THRESHOLD = 3;
+const DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP = 120;
+const DISCOVER_SWEEP_HARDSTOP_MS = 2600;
+const DISCOVER_WORKER_LIMIT = 18;
+const DISCOVER_POST_PROCESS_CHUNK = 18;
+type DiscoverCacheDevice = DiscoveredDevice & {
+  lastSeen: number;
+  offline: boolean;
+};
 
 type Prefs = {
   serverUrl: string;
   serverUrlTouched: boolean;
+  preferHttps: boolean;
   pairCode: string;
   repoPath: string;
   repoPaths: string[];
@@ -99,6 +121,7 @@ const CameraViewCompat: any = CameraView;
 const DEFAULT_PREFS: Prefs = {
   serverUrl: '',
   serverUrlTouched: false,
+  preferHttps: false,
   pairCode: '',
   repoPath: '',
   repoPaths: [],
@@ -198,6 +221,7 @@ async function loadPrefs(): Promise<Prefs> {
       return {
         serverUrl: touched ? toText(merged.serverUrl) : '',
         serverUrlTouched: touched,
+        preferHttps: Boolean((merged as any).preferHttps),
         pairCode: toText(merged.pairCode),
         repoPath: toText(merged.repoPath),
         repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
@@ -213,6 +237,7 @@ async function loadPrefs(): Promise<Prefs> {
     return {
       serverUrl: touched ? toText(merged.serverUrl) : '',
       serverUrlTouched: touched,
+      preferHttps: Boolean((merged as any).preferHttps),
       pairCode: toText(merged.pairCode),
       repoPath: toText(merged.repoPath),
       repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
@@ -238,6 +263,48 @@ async function savePrefs(next: Prefs): Promise<void> {
   }
 }
 
+async function loadDiscoverCache(): Promise<DiscoverCacheDevice[]> {
+  try {
+    const parse = (raw: string | null): DiscoverCacheDevice[] => {
+      if (!raw) return [];
+      const rows = JSON.parse(raw);
+      if (!Array.isArray(rows)) return [];
+      return rows
+        .map((r: any) => ({
+          id: toText(r?.id),
+          baseUrl: toText(r?.baseUrl),
+          host: toText(r?.host),
+          port: Number(r?.port || 0) || 4100,
+          noAuth: Boolean(r?.noAuth),
+          x: Number(r?.x || 0),
+          y: Number(r?.y || 0),
+          lastSeen: Number(r?.lastSeen || 0) || Date.now(),
+          offline: Boolean(r?.offline)
+        }))
+        .filter((r) => r.id && r.host);
+    };
+    if (Platform.OS === 'web') {
+      return parse(window.localStorage.getItem(DISCOVER_CACHE_KEY));
+    }
+    return parse(await AsyncStorage.getItem(DISCOVER_CACHE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+async function saveDiscoverCache(rows: DiscoverCacheDevice[]): Promise<void> {
+  try {
+    const payload = JSON.stringify(rows.slice(0, 120));
+    if (Platform.OS === 'web') {
+      window.localStorage.setItem(DISCOVER_CACHE_KEY, payload);
+      return;
+    }
+    await AsyncStorage.setItem(DISCOVER_CACHE_KEY, payload);
+  } catch {
+    // ignore
+  }
+}
+
 function parsePairPayload(input: string): PairPayload | null {
   const text = input.trim();
   if (!text) return null;
@@ -257,11 +324,12 @@ function parsePairPayload(input: string): PairPayload | null {
   }
 }
 
-function normalizeBaseUrlForClient(rawBaseUrl: string): string {
+function normalizeBaseUrlForClient(rawBaseUrl: string, opts?: { defaultScheme?: 'http' | 'https' }): string {
   const raw = rawBaseUrl.trim();
   if (!raw) return '';
   try {
-    const parsed = new URL(raw.startsWith('http://') || raw.startsWith('https://') ? raw : `http://${raw}`);
+    const scheme = opts?.defaultScheme === 'https' ? 'https' : 'http';
+    const parsed = new URL(raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${scheme}://${raw}`);
     const host = parsed.hostname;
     const reservedBenchmark = /^198\.(1[89])\./.test(host);
     const needsWebHostReplace =
@@ -414,6 +482,26 @@ function pickRandomAuthAsciiBrand(): string {
   return AUTH_ASCII_BRANDS[idx] || AUTH_ASCII_BRANDS[0] || '';
 }
 
+function isSameDiscoverRenderList(prev: DiscoverCacheDevice[], next: DiscoverCacheDevice[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (
+      a.id !== b.id ||
+      a.offline !== b.offline ||
+      a.x !== b.x ||
+      a.y !== b.y ||
+      a.baseUrl !== b.baseUrl ||
+      a.noAuth !== b.noAuth
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -424,6 +512,7 @@ export default function App() {
 
   const [serverUrl, setServerUrl] = useState('');
   const [serverUrlTouched, setServerUrlTouched] = useState(false);
+  const [preferHttps, setPreferHttps] = useState(false);
   const [pairCode, setPairCode] = useState('');
   const [repoPath, setRepoPath] = useState('');
   const [token, setToken] = useState('');
@@ -438,6 +527,14 @@ export default function App() {
   const [scannerReady, setScannerReady] = useState(false);
   const [scanHitCount, setScanHitCount] = useState(0);
   const [lastScanAt, setLastScanAt] = useState(0);
+  const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [discoverStageReady, setDiscoverStageReady] = useState(false);
+  const [discoverDevices, setDiscoverDevices] = useState<DiscoverCacheDevice[]>([]);
+  const [hoveredDeviceId, setHoveredDeviceId] = useState('');
+  const [selectedDiscoverId, setSelectedDiscoverId] = useState('');
+  const [connectingDiscoverId, setConnectingDiscoverId] = useState('');
+  const [discoverOrbitDeg, setDiscoverOrbitDeg] = useState(0);
+  const [radarBox, setRadarBox] = useState({ width: 260, height: 260 });
 
   const [prompt, setPrompt] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -461,12 +558,31 @@ export default function App() {
   const allowAutoScrollRef = useRef(true);
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
+  const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
   const inflightMessageReqRef = useRef<Record<string, Promise<void>>>({});
   const topAutoLoadLockRef = useRef(false);
   const topAutoLoadAtRef = useRef(0);
   const messageScrollYRef = useRef(0);
+  const discoverRunRef = useRef(0);
+  const discoverAbortRef = useRef<AbortController | null>(null);
+  const discoveringRef = useRef(false);
+  const selectedDiscoverIdRef = useRef('');
+  const discoverPointRef = useRef<Record<string, { x: number; y: number }>>({});
+  const discoverOrbitRef = useRef<Record<string, { phase: number; radius: number }>>({});
+  const discoverCacheRef = useRef<Record<string, DiscoverCacheDevice>>({});
+  const discoverMissRef = useRef<Record<string, number>>({});
+  const discoverSweepOffsetRef = useRef(0);
+  const discoverPriorityDoneRef = useRef<Set<string>>(new Set());
+  const discoverDragAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const radarBoxRef = useRef({ width: 260, height: 260 });
+  const discoverRevealRef = useRef<Record<string, Animated.Value>>({});
+  const discoverRevealFallback = useRef(new Animated.Value(1)).current;
+  const radarPulse = useRef(new Animated.Value(0)).current;
+  const deviceBob = useRef(new Animated.Value(0)).current;
+  const connectProgressAnim = useRef(new Animated.Value(0)).current;
+  const discoverCardAnim = useRef(new Animated.Value(0)).current;
   const drawerAnim = useRef(new Animated.Value(0)).current;
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
@@ -510,6 +626,10 @@ export default function App() {
     () => toText(authAsciiRender || authAsciiBrand).replace(/ /g, '\u00A0'),
     [authAsciiRender, authAsciiBrand]
   );
+  const selectedDiscoverDevice = useMemo(
+    () => discoverDevices.find((d) => d.id === selectedDiscoverId) || null,
+    [discoverDevices, selectedDiscoverId]
+  );
 
   function pushConnLog(message: string, level: 'info' | 'error' = 'info') {
     const text = toText(message).trim();
@@ -533,6 +653,7 @@ export default function App() {
       if (!alive) return;
       setServerUrl(prefs.serverUrl);
       setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
+      setPreferHttps(Boolean((prefs as any).preferHttps));
       setPairCode(prefs.pairCode);
       setRepoPath(prefs.repoPath);
       setProjects(toProjectOptionsFromPaths(prefs.repoPaths || []));
@@ -552,10 +673,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    loadDiscoverCache().then((rows) => {
+      if (!alive) return;
+      const map: Record<string, DiscoverCacheDevice> = {};
+      rows.forEach((d) => {
+        map[d.id] = d;
+        discoverPointRef.current[d.id] = { x: d.x, y: d.y };
+        discoverMissRef.current[d.id] = 0;
+      });
+      discoverCacheRef.current = map;
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!loaded) return;
     void savePrefs({
       serverUrl: serverUrlTouched ? serverUrl : '',
       serverUrlTouched,
+      preferHttps,
       pairCode,
       repoPath,
       repoPaths: projects.map((p) => p.worktree),
@@ -563,7 +702,7 @@ export default function App() {
       sessionId,
       model
     });
-  }, [loaded, serverUrl, serverUrlTouched, pairCode, repoPath, projects, token, sessionId, model]);
+  }, [loaded, serverUrl, serverUrlTouched, preferHttps, pairCode, repoPath, projects, token, sessionId, model]);
 
   function onChangeServerUrl(value: string) {
     setServerUrlTouched(true);
@@ -575,6 +714,154 @@ export default function App() {
     const timer = setInterval(() => setThinkingPulse((v) => !v), 480);
     return () => clearInterval(timer);
   }, [streaming]);
+
+  useEffect(() => {
+    if (!discoverOpen) return;
+    radarPulse.setValue(0);
+    deviceBob.setValue(0);
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(radarPulse, {
+          toValue: 1,
+          duration: 1900,
+          easing: Easing.linear,
+          useNativeDriver: true
+        }),
+        Animated.timing(radarPulse, {
+          toValue: 0,
+          duration: 0,
+          easing: Easing.linear,
+          useNativeDriver: true
+        })
+      ])
+    );
+    const bob = Animated.loop(
+      Animated.sequence([
+        Animated.timing(deviceBob, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        }),
+        Animated.timing(deviceBob, {
+          toValue: 0,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        })
+      ])
+    );
+    pulse.start();
+    bob.start();
+    return () => {
+      pulse.stop();
+      bob.stop();
+    };
+  }, [discoverOpen, deviceBob, radarPulse]);
+
+  useEffect(() => {
+    if (!discoverOpen) return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const deg = (((Date.now() - started) / 1000) * 14) % 360;
+      setDiscoverOrbitDeg(deg);
+    }, 48);
+    return () => clearInterval(timer);
+  }, [discoverOpen]);
+
+  useEffect(() => {
+    if (!discoverOpen || !discoverStageReady) return;
+    let closed = false;
+    const loop = async () => {
+      while (!closed) {
+        if (!discoveringRef.current) {
+          await startDiscover();
+        }
+        if (closed) return;
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+      }
+    };
+    void loop();
+    return () => {
+      closed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discoverOpen, discoverStageReady, serverUrl, preferHttps, radarBox.width, radarBox.height]);
+
+  useEffect(() => {
+    const nextIds = new Set(discoverDevices.map((d) => d.id));
+    for (const id of Object.keys(discoverRevealRef.current)) {
+      if (!nextIds.has(id)) delete discoverRevealRef.current[id];
+    }
+    discoverDevices.forEach((d, idx) => {
+      if (discoverRevealRef.current[d.id]) return;
+      const v = new Animated.Value(0);
+      discoverRevealRef.current[d.id] = v;
+      Animated.timing(v, {
+        toValue: 1,
+        duration: 420,
+        delay: Math.min(360, idx * 70),
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start();
+    });
+  }, [discoverDevices]);
+
+  useEffect(() => {
+    if (!selectedDiscoverId) return;
+    if (discoverDevices.some((d) => d.id === selectedDiscoverId)) return;
+    setSelectedDiscoverId('');
+  }, [discoverDevices, selectedDiscoverId]);
+
+  useEffect(() => {
+    if (!selectedDiscoverId) {
+      discoverCardAnim.setValue(0);
+      setConnectingDiscoverId('');
+      connectProgressAnim.setValue(0);
+      return;
+    }
+    setConnectingDiscoverId('');
+    connectProgressAnim.setValue(0);
+    discoverCardAnim.setValue(0);
+    Animated.timing(discoverCardAnim, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+  }, [selectedDiscoverId, connectProgressAnim, discoverCardAnim]);
+
+  const discoverPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => !!selectedDiscoverIdRef.current,
+        onMoveShouldSetPanResponder: (_evt, g) =>
+          !!selectedDiscoverIdRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
+        onPanResponderGrant: () => {
+          const sid = toText(selectedDiscoverIdRef.current).trim();
+          if (!sid) return;
+          const row = discoverDevicesRef.current.find((x) => x.id === sid);
+          if (!row) return;
+          discoverDragAnchorRef.current = { x: row.x, y: row.y };
+        },
+        onPanResponderMove: (_evt, g) => {
+          const sid = toText(selectedDiscoverIdRef.current).trim();
+          const anchor = discoverDragAnchorRef.current;
+          if (!sid || !anchor) return;
+          const box = radarBoxRef.current;
+          const point = clampRadarPoint({ x: anchor.x + g.dx, y: anchor.y + g.dy }, box.width, box.height, 34);
+          discoverPointRef.current[sid] = point;
+          setDiscoverDevices((prev) => prev.map((d) => (d.id === sid ? { ...d, x: point.x, y: point.y } : d)));
+        },
+        onPanResponderRelease: () => {
+          discoverDragAnchorRef.current = null;
+        },
+        onPanResponderTerminate: () => {
+          discoverDragAnchorRef.current = null;
+        }
+      }),
+    []
+  );
 
   useEffect(() => {
     if (authed) return;
@@ -600,6 +887,18 @@ export default function App() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    discoverDevicesRef.current = discoverDevices;
+  }, [discoverDevices]);
+
+  useEffect(() => {
+    selectedDiscoverIdRef.current = selectedDiscoverId;
+  }, [selectedDiscoverId]);
+
+  useEffect(() => {
+    radarBoxRef.current = radarBox;
+  }, [radarBox]);
 
   useEffect(() => {
     modelOptionsRef.current = modelOptions;
@@ -1205,7 +1504,9 @@ export default function App() {
     inputCode: string,
     opts?: { preferredRepoPath?: string; payloadRepoPaths?: string[] }
   ) {
-    const nextUrl = normalizeBaseUrlForClient(toText(inputBaseUrl).trim());
+    const nextUrl = normalizeBaseUrlForClient(toText(inputBaseUrl).trim(), {
+      defaultScheme: opts?.payloadRepoPaths ? undefined : (preferHttps ? 'https' : 'http')
+    });
     const nextCode = toText(inputCode).trim();
     const mode = opts?.payloadRepoPaths ? 'payload' : 'manual';
     if (!nextUrl) {
@@ -1244,6 +1545,7 @@ export default function App() {
       Vibration.vibrate([0, 60, 40, 80]);
       setStatus('认证成功，开始新会话');
       setScannerOpen(false);
+      setDiscoverOpen(false);
     } catch (e) {
       Vibration.vibrate(220);
       const errText = toText(e);
@@ -1272,7 +1574,9 @@ export default function App() {
       setScannerLocked(false);
       return;
     }
-    const nextUrl = normalizeBaseUrlForClient(String(payload.baseUrl || '').trim());
+    const nextUrl = normalizeBaseUrlForClient(String(payload.baseUrl || '').trim(), {
+      defaultScheme: preferHttps ? 'https' : 'http'
+    });
     const mode = String(payload.authMode || '').trim().toLowerCase();
     const nextCode = mode === 'none' ? '' : String(payload.pairCode || payload.code || '').trim();
     const nextRepo = String(payload.repoPath || '').trim();
@@ -1286,6 +1590,219 @@ export default function App() {
       preferredRepoPath: nextRepo,
       payloadRepoPaths: nextRepoPaths
     });
+  }
+
+  async function startDiscover() {
+    discoverAbortRef.current?.abort();
+    const abortCtrl = new AbortController();
+    discoverAbortRef.current = abortCtrl;
+    const runId = Date.now();
+    discoverRunRef.current = runId;
+    discoveringRef.current = true;
+    const hardStopAt = Date.now() + DISCOVER_SWEEP_HARDSTOP_MS;
+    const prefixes = inferDiscoveryPrefixes(serverUrl);
+    const port = resolvePortFromSeed(serverUrl, 4100);
+    const seedLast = inferSeedLastSegment(serverUrl);
+    const hostOrder = buildHostOrder(seedLast);
+    const hosts: string[] = [];
+    for (const pre of prefixes) {
+      for (const i of hostOrder) hosts.push(`${pre}.${i}`);
+    }
+    if (hosts.length === 0) {
+      discoveringRef.current = false;
+      return;
+    }
+    const hostSet = new Set(hosts);
+    const cachedHosts = Object.values(discoverCacheRef.current)
+      .filter((d) => d.port === port && hostSet.has(d.host) && !discoverPriorityDoneRef.current.has(d.host))
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .map((d) => d.host);
+    const cachedHostSet = new Set(cachedHosts);
+    const keepaliveHosts = Object.values(discoverCacheRef.current)
+      .filter((d) => d.port === port && hostSet.has(d.host) && !cachedHostSet.has(d.host))
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .slice(0, DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP)
+      .map((d) => d.host);
+    const keepaliveHostSet = new Set(keepaliveHosts);
+    const allCachedHostSet = new Set(
+      Object.values(discoverCacheRef.current)
+        .filter((d) => d.port === port && hostSet.has(d.host))
+        .map((d) => d.host)
+    );
+    const offset = discoverSweepOffsetRef.current % hosts.length;
+    const rotatedHosts = offset > 0 ? [...hosts.slice(offset), ...hosts.slice(0, offset)] : hosts;
+    const queueHosts = [
+      ...cachedHosts,
+      ...keepaliveHosts,
+      ...rotatedHosts.filter((h) => !allCachedHostSet.has(h) && !cachedHostSet.has(h) && !keepaliveHostSet.has(h))
+    ];
+    for (const h of cachedHosts) discoverPriorityDoneRef.current.add(h);
+    let cursor = 0;
+    const workers = Math.min(DISCOVER_WORKER_LIMIT, queueHosts.length);
+    const found = new Map<string, { host: string; port: number; noAuth: boolean; baseUrl: string }>();
+    const runWorker = async () => {
+      while (cursor < queueHosts.length && discoverRunRef.current === runId && Date.now() < hardStopAt) {
+        const idx = cursor++;
+        const host = queueHosts[idx];
+        let healthInfo: any | null = null;
+        let baseUrl = '';
+        const candidate = `http://${host}:${port}`;
+        healthInfo = await probeHealthFast(candidate, 760, abortCtrl.signal);
+        if (healthInfo) {
+          baseUrl = candidate;
+        }
+        if (!healthInfo || !baseUrl) continue;
+        const key = `${host}:${port}`;
+        if (found.has(key)) continue;
+        found.set(key, {
+          host,
+          port,
+          noAuth: Boolean(healthInfo?.auth?.noAuth),
+          baseUrl
+        });
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: workers }, () => runWorker()));
+      if (discoverRunRef.current !== runId) return;
+      discoverSweepOffsetRef.current = (offset + Math.max(1, cursor)) % hosts.length;
+      const rows = [...found.values()].sort((a, b) => a.host.localeCompare(b.host, 'en'));
+      const now = Date.now();
+      const foundIds = new Set<string>();
+      for (let i = 0; i < rows.length; i += 1) {
+        if (i > 0 && i % DISCOVER_POST_PROCESS_CHUNK === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (discoverRunRef.current !== runId) return;
+        }
+        const r = rows[i];
+        const id = `${r.host}:${r.port}`;
+        foundIds.add(id);
+        const prev = discoverCacheRef.current[id];
+        const point =
+          discoverPointRef.current[id] ||
+          (prev ? { x: prev.x, y: prev.y } : clampRadarPoint(pickRadarPoint(radarBox.width, radarBox.height, Object.keys(discoverCacheRef.current).length + 1), radarBox.width, radarBox.height, 34));
+        discoverPointRef.current[id] = point;
+        if (!discoverOrbitRef.current[id]) {
+          discoverOrbitRef.current[id] = { phase: Math.random() * 360, radius: 10 + Math.random() * 12 };
+        }
+        discoverCacheRef.current[id] = {
+          id,
+          baseUrl: r.baseUrl,
+          host: r.host,
+          port: r.port,
+          noAuth: r.noAuth,
+          x: point.x,
+          y: point.y,
+          lastSeen: now,
+          offline: false
+        };
+        discoverMissRef.current[id] = 0;
+      }
+      const cacheEntries = Object.entries(discoverCacheRef.current);
+      for (let i = 0; i < cacheEntries.length; i += 1) {
+        if (i > 0 && i % DISCOVER_POST_PROCESS_CHUNK === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (discoverRunRef.current !== runId) return;
+        }
+        const [id, d] = cacheEntries[i];
+        if (foundIds.has(id)) continue;
+        const miss = (discoverMissRef.current[id] || 0) + 1;
+        discoverMissRef.current[id] = miss;
+        const stale = now - (Number(d.lastSeen || 0) || 0) > DISCOVER_OFFLINE_AFTER_MS;
+        const shouldOffline = stale && miss >= DISCOVER_OFFLINE_MISS_THRESHOLD;
+        if (d.offline !== shouldOffline) discoverCacheRef.current[id] = { ...d, offline: shouldOffline };
+      }
+      const next = Object.values(discoverCacheRef.current)
+        .sort((a, b) => {
+          if (a.offline !== b.offline) return a.offline ? 1 : -1;
+          return a.host.localeCompare(b.host, 'en');
+        })
+        .slice(0, 120);
+      setDiscoverDevices((prev) => (isSameDiscoverRenderList(prev, next) ? prev : next));
+      setTimeout(() => {
+        void saveDiscoverCache(next);
+      }, 80);
+    } finally {
+      if (discoverAbortRef.current === abortCtrl) {
+        discoverAbortRef.current = null;
+      }
+      if (discoverRunRef.current === runId) {
+        discoveringRef.current = false;
+      }
+    }
+  }
+
+  function onOpenDiscover() {
+    setHoveredDeviceId('');
+    setSelectedDiscoverId('');
+    discoverPriorityDoneRef.current = new Set();
+    setDiscoverStageReady(false);
+    const cached = Object.values(discoverCacheRef.current)
+      .sort((a, b) => {
+        if (a.offline !== b.offline) return a.offline ? 1 : -1;
+        return a.host.localeCompare(b.host, 'en');
+      })
+      .slice(0, 120);
+    if (cached.length > 0) {
+      setDiscoverDevices(cached);
+    }
+    discoverSweepOffsetRef.current = 0;
+    setDiscoverOpen(true);
+  }
+
+  function onCloseDiscover() {
+    discoverAbortRef.current?.abort();
+    discoverAbortRef.current = null;
+    discoverRunRef.current = 0;
+    discoverPointRef.current = {};
+    discoverOrbitRef.current = {};
+    discoverSweepOffsetRef.current = 0;
+    discoverPriorityDoneRef.current = new Set();
+    discoverMissRef.current = {};
+    discoverDragAnchorRef.current = null;
+    discoverRevealRef.current = {};
+    setHoveredDeviceId('');
+    setSelectedDiscoverId('');
+    setDiscoverStageReady(false);
+    discoveringRef.current = false;
+    setDiscoverOpen(false);
+  }
+
+  async function onConnectDiscoveredDevice(item: DiscoveredDevice) {
+    const hostWithPort = (() => {
+      try {
+        const u = new URL(item.baseUrl);
+        return u.host || `${item.host}:${item.port}`;
+      } catch {
+        return `${item.host}:${item.port}`;
+      }
+    })();
+    setServerUrlTouched(true);
+    setServerUrl(hostWithPort);
+    setPreferHttps(item.baseUrl.startsWith('https://'));
+    await connectWithAddressAndCode(item.baseUrl, pairCode);
+  }
+
+  async function onConnectSelectedDiscover() {
+    const item = selectedDiscoverDevice;
+    if (!item) return;
+    if (connectingDiscoverId === item.id) return;
+    setConnectingDiscoverId(item.id);
+    connectProgressAnim.setValue(0);
+    await new Promise<void>((resolve) => {
+      Animated.timing(connectProgressAnim, {
+        toValue: 1,
+        duration: 620,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false
+      }).start(() => resolve());
+    });
+    try {
+      await onConnectDiscoveredDevice(item);
+    } finally {
+      setConnectingDiscoverId('');
+      connectProgressAnim.setValue(0);
+    }
   }
 
   async function onOpenScanner() {
@@ -1522,6 +2039,202 @@ export default function App() {
     );
   }
 
+  if (discoverOpen) {
+    const waveDiameter = Math.max(180, Math.min(radarBox.width, radarBox.height) * 1.25);
+    const wave1Scale = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1.22] });
+    const wave1Opacity = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.36, 0] });
+    const wave2Scale = radarPulse.interpolate({ inputRange: [0, 0.48, 1], outputRange: [0.2, 0.2, 1.38] });
+    const wave2Opacity = radarPulse.interpolate({ inputRange: [0, 0.48, 1], outputRange: [0, 0.24, 0] });
+    const wave3Scale = radarPulse.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.2, 0.2, 1.52] });
+    const wave3Opacity = radarPulse.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0, 0.16, 0] });
+    const centerFloatY = radarPulse.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, -5, 0] });
+    const centerRippleScale = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 2.35] });
+    const centerRippleOpacity = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.34, 0] });
+    const centerRippleScale2 = radarPulse.interpolate({ inputRange: [0, 0.42, 1], outputRange: [0.2, 0.2, 2.1] });
+    const centerRippleOpacity2 = radarPulse.interpolate({ inputRange: [0, 0.42, 1], outputRange: [0, 0.24, 0] });
+    const connectProgressWidth = connectProgressAnim.interpolate({ inputRange: [0, 1], outputRange: ['12%', '100%'] });
+    return (
+      <SafeAreaView style={styles.discoverSafe}>
+        <View style={styles.discoverWrap}>
+          <Text style={styles.discoverTitle}>发现设备</Text>
+          <View
+            style={styles.senseStage}
+            {...discoverPanResponder.panHandlers}
+            onLayout={(e) => {
+              const { width, height } = e.nativeEvent.layout;
+              setRadarBox((prev) => {
+                if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
+                return { width, height };
+              });
+              setDiscoverStageReady(true);
+            }}
+          >
+            <Pressable style={styles.senseTapBlank} onPress={() => setSelectedDiscoverId('')} />
+            <Animated.View
+              style={[
+                styles.senseWave,
+                {
+                  width: waveDiameter,
+                  height: waveDiameter,
+                  marginLeft: -waveDiameter / 2,
+                  marginTop: -waveDiameter / 2,
+                  opacity: wave1Opacity,
+                  transform: [{ scale: wave1Scale }]
+                }
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.senseWave,
+                {
+                  width: waveDiameter,
+                  height: waveDiameter,
+                  marginLeft: -waveDiameter / 2,
+                  marginTop: -waveDiameter / 2,
+                  opacity: wave2Opacity,
+                  transform: [{ scale: wave2Scale }]
+                }
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.senseWaveSoft,
+                {
+                  width: waveDiameter,
+                  height: waveDiameter,
+                  marginLeft: -waveDiameter / 2,
+                  marginTop: -waveDiameter / 2,
+                  opacity: wave3Opacity,
+                  transform: [{ scale: wave3Scale }]
+                }
+              ]}
+            />
+            <Animated.View style={[styles.senseCenterRipple, { opacity: centerRippleOpacity, transform: [{ scale: centerRippleScale }] }]} />
+            <Animated.View style={[styles.senseCenterRippleSoft, { opacity: centerRippleOpacity2, transform: [{ scale: centerRippleScale2 }] }]} />
+            <Animated.View style={[styles.senseCenterFloat, { transform: [{ translateY: centerFloatY }] }]}>
+              <View style={styles.senseCenterPhone}>
+                <View style={styles.senseCenterPhoneNotch} />
+              </View>
+            </Animated.View>
+            {(discoverStageReady ? discoverDevices : []).map((d) => {
+              const reveal = discoverRevealRef.current[d.id] || discoverRevealFallback;
+              const orbit = discoverOrbitRef.current[d.id] || { phase: 0, radius: 0 };
+              const orbitRad = ((discoverOrbitDeg + orbit.phase) * Math.PI) / 180;
+              const withOrbit = {
+                x: d.x + Math.cos(orbitRad) * orbit.radius,
+                y: d.y + Math.sin(orbitRad) * orbit.radius * 0.82
+              };
+              const shown = clampRadarPoint(withOrbit, radarBox.width, radarBox.height, 34);
+              return (
+                <Pressable
+                  key={d.id}
+                  style={[
+                    styles.senseDevice,
+                    {
+                      left: shown.x - 19,
+                      top: shown.y - 19,
+                      transform: [
+                        {
+                          translateY: deviceBob.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0, -2.4]
+                          })
+                        }
+                      ]
+                    }
+                  ]}
+                  onPress={() => setSelectedDiscoverId(d.id)}
+                  onHoverIn={() => setHoveredDeviceId(d.id)}
+                  onHoverOut={() => setHoveredDeviceId((prev) => (prev === d.id ? '' : prev))}
+                >
+                  <Animated.View
+                    style={{
+                      opacity: reveal,
+                      transform: [
+                        {
+                          scale: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] })
+                        }
+                      ]
+                    }}
+                  >
+                    <View
+                      style={
+                        d.offline
+                          ? hoveredDeviceId === d.id
+                            ? styles.senseDeviceIconOfflineHover
+                            : styles.senseDeviceIconOffline
+                          : hoveredDeviceId === d.id
+                            ? styles.senseDeviceIconHover
+                            : styles.senseDeviceIcon
+                      }
+                    >
+                      <View style={styles.senseDeviceScreen} />
+                      <Text style={styles.senseDeviceGlyph}>&gt;_</Text>
+                    </View>
+                  </Animated.View>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.discoverFooterSlot}>
+            {selectedDiscoverDevice ? (
+              <Animated.View
+                style={[
+                  styles.discoverDeviceCard,
+                  {
+                    opacity: discoverCardAnim,
+                    transform: [
+                      { translateY: discoverCardAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) },
+                      { scale: discoverCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.985, 1] }) }
+                    ]
+                  }
+                ]}
+              >
+                <Text style={styles.discoverDeviceCardTag}>TERMINAL LINK</Text>
+                <Text numberOfLines={1} style={styles.discoverDeviceCardTitle}>
+                  {`${selectedDiscoverDevice.host}:${selectedDiscoverDevice.port}`}
+                </Text>
+                <Text style={styles.discoverDeviceCardSub}>
+                  {selectedDiscoverDevice.offline
+                    ? '设备状态: 离线（历史记录）'
+                    : selectedDiscoverDevice.noAuth
+                      ? '认证模式: noAuth'
+                      : '认证模式: pairCode'}
+                </Text>
+                {connectingDiscoverId === selectedDiscoverDevice.id ? (
+                  <>
+                    <View style={styles.discoverDeviceProgressTrack}>
+                      <Animated.View style={[styles.discoverDeviceProgressBar, { width: connectProgressWidth }]} />
+                    </View>
+                    <Text style={styles.discoverDeviceProgressText}>正在建立连接通道...</Text>
+                  </>
+                ) : null}
+                <View style={styles.discoverDeviceCardActions}>
+                  <Pressable
+                    style={selectedDiscoverDevice.offline ? styles.discoverCardConnectBtnOffline : styles.discoverCardConnectBtn}
+                    onPress={() => void onConnectSelectedDiscover()}
+                    disabled={connectingDiscoverId === selectedDiscoverDevice.id || selectedDiscoverDevice.offline}
+                  >
+                    <Text style={styles.discoverCardConnectText}>
+                      {selectedDiscoverDevice.offline
+                        ? '离线'
+                        : connectingDiscoverId === selectedDiscoverDevice.id
+                          ? '连接中...'
+                          : '连接'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </Animated.View>
+            ) : null}
+            <Pressable style={styles.discoverCloseBtn} onPress={onCloseDiscover}>
+              <Text style={styles.discoverCloseTxt}>×</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (scannerOpen) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -1604,11 +2317,16 @@ export default function App() {
                       value={serverUrl}
                       onChangeText={onChangeServerUrl}
                       autoCapitalize="none"
-                      placeholder="输入服务地址"
+                      placeholder="输入 IP:端口（如 192.168.1.8:4100）"
                       placeholderTextColor="#9aa6b6"
                     />
                     <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
-                      <Text style={styles.authScanInlineTxt}>▣</Text>
+                      <View style={styles.authScanIconFrame}>
+                        <View style={styles.authScanIconLt} />
+                        <View style={styles.authScanIconRt} />
+                        <View style={styles.authScanIconLb} />
+                        <View style={styles.authScanIconRb} />
+                      </View>
                     </Pressable>
                   </View>
                 </View>
@@ -1624,6 +2342,15 @@ export default function App() {
                     placeholder="输入验证码，免授权模式可留空"
                     placeholderTextColor="#9aa6b6"
                   />
+                </View>
+                <View style={styles.authTinyRowBottom}>
+                  <Pressable style={styles.authTinyCheckWrap} onPress={() => setPreferHttps((v) => !v)}>
+                    <View style={preferHttps ? styles.authTinyCheckOn : styles.authTinyCheckOff} />
+                    <Text style={styles.authTinyText}>使用 HTTPS 连接</Text>
+                  </Pressable>
+                  <Pressable style={styles.authTinyLinkBtn} onPress={onOpenDiscover} disabled={busy}>
+                    <Text style={styles.authTinyLinkText}>发现设备</Text>
+                  </Pressable>
                 </View>
 
                 <View style={styles.authActionRow}>
@@ -1994,6 +2721,29 @@ const styles = StyleSheet.create({
   },
   authFieldGroup: { gap: 6 },
   authFieldLabel: { color: '#6a7c94', fontSize: 12, fontWeight: '600', paddingLeft: 2 },
+  authSchemeRow: { flexDirection: 'row', gap: 8, marginBottom: 2 },
+  authSchemeChip: {
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#d8e1ec',
+    backgroundColor: '#f7fafd',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  authSchemeChipActive: {
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: '#1f2937',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  authSchemeChipText: { color: '#5f7087', fontSize: 12, fontWeight: '700' },
+  authSchemeChipTextActive: { color: '#f9fbff', fontSize: 12, fontWeight: '700' },
   authInput: {
     minHeight: 48,
     borderBottomWidth: 1,
@@ -2018,16 +2768,106 @@ const styles = StyleSheet.create({
     color: '#2f3948'
   },
   authScanInlineBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#d0d9e6',
-    backgroundColor: '#f3f7fc',
+    borderColor: '#cbd7e5',
+    backgroundColor: '#f5f8fc',
     alignItems: 'center',
     justifyContent: 'center'
   },
-  authScanInlineTxt: { color: '#3f5167', fontSize: 14, fontWeight: '700' },
+  authScanInlineTxt: { color: '#3f5167', fontSize: 12, fontWeight: '700' },
+  authScanIconFrame: {
+    width: 16,
+    height: 16,
+    position: 'relative'
+  },
+  authScanIconLt: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 6,
+    height: 6,
+    borderLeftWidth: 1.8,
+    borderTopWidth: 1.8,
+    borderColor: '#41556f'
+  },
+  authScanIconRt: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    width: 6,
+    height: 6,
+    borderRightWidth: 1.8,
+    borderTopWidth: 1.8,
+    borderColor: '#41556f'
+  },
+  authScanIconLb: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    width: 6,
+    height: 6,
+    borderLeftWidth: 1.8,
+    borderBottomWidth: 1.8,
+    borderColor: '#41556f'
+  },
+  authScanIconRb: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 6,
+    height: 6,
+    borderRightWidth: 1.8,
+    borderBottomWidth: 1.8,
+    borderColor: '#41556f'
+  },
+  authTinyRow: {
+    marginTop: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  authTinyRowBottom: {
+    marginTop: 18,
+    marginBottom: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  authTinyCheckWrap: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  authTinyCheckOn: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: '#3f5878',
+    backgroundColor: '#3f5878'
+  },
+  authTinyCheckOff: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: '#98aac1',
+    backgroundColor: '#ffffff'
+  },
+  authTinyText: { color: '#677b93', fontSize: 11 },
+  authTinyLinkBtn: { paddingVertical: 2, paddingHorizontal: 2 },
+  authTinyLinkText: { color: '#4f6f98', fontSize: 11, textDecorationLine: 'underline' },
+  authQuickRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  authQuickBtn: {
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d2dde9',
+    backgroundColor: '#f6f9fd',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12
+  },
+  authQuickBtnText: { color: '#41546c', fontSize: 12, fontWeight: '700' },
   authActionRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   authConnectBtn: {
     flex: 1,
@@ -2604,6 +3444,551 @@ const styles = StyleSheet.create({
   drawerItemTime: { color: '#8392a8', fontSize: 11 },
   drawerItemPreview: { color: '#66758a', fontSize: 12, lineHeight: 18 },
   drawerEmpty: { color: '#7d8897', marginTop: 14, fontSize: 12 },
+
+  discoverWrap: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 24,
+    paddingBottom: 20,
+    justifyContent: 'flex-start'
+  },
+  discoverSafe: { flex: 1, backgroundColor: '#f2f6fb' },
+  discoverTitle: { color: '#2b394b', fontSize: 15, fontWeight: '600', textAlign: 'center', opacity: 0.9 },
+  senseStage: {
+    flex: 1,
+    alignSelf: 'stretch',
+    position: 'relative',
+    overflow: 'hidden',
+    justifyContent: 'center'
+  },
+  senseTapBlank: {
+    ...StyleSheet.absoluteFillObject
+  },
+  senseWave: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(37,64,92,0.18)'
+  },
+  senseWaveSoft: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(37,64,92,0.1)'
+  },
+  senseCenterFloat: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -10,
+    marginTop: -15,
+    width: 20,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  senseCenterRipple: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -42,
+    marginTop: -42,
+    width: 84,
+    height: 84,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.58)'
+  },
+  senseCenterRippleSoft: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -42,
+    marginTop: -42,
+    width: 84,
+    height: 84,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(30,41,59,0.4)'
+  },
+  senseCenterPhone: {
+    width: 18,
+    height: 28,
+    borderRadius: 5,
+    borderWidth: 1.3,
+    borderColor: '#111827',
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    paddingTop: 3
+  },
+  senseCenterPhoneNotch: {
+    width: 6,
+    height: 1.6,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1'
+  },
+  senseDevice: {
+    position: 'absolute',
+    width: 38,
+    height: 56,
+    alignItems: 'center',
+    zIndex: 4
+  },
+  senseDeviceIcon: {
+    marginTop: 8,
+    width: 22,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#0b1220',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 2
+  },
+  senseDeviceIconHover: {
+    marginTop: 7,
+    width: 24,
+    height: 26,
+    borderRadius: 7,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#020617',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 2,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.32,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 }
+  },
+  senseDeviceIconOffline: {
+    marginTop: 8,
+    width: 22,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: '#6b7280',
+    borderWidth: 1,
+    borderColor: '#4b5563',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 2
+  },
+  senseDeviceIconOfflineHover: {
+    marginTop: 7,
+    width: 24,
+    height: 26,
+    borderRadius: 7,
+    backgroundColor: '#64748b',
+    borderWidth: 1,
+    borderColor: '#475569',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 2
+  },
+  senseDeviceScreen: {
+    width: 14,
+    height: 2,
+    borderRadius: 2,
+    backgroundColor: '#475569',
+    marginBottom: 2
+  },
+  senseDeviceGlyph: {
+    color: '#e2e8f0',
+    fontSize: 8,
+    fontWeight: '700',
+    lineHeight: 9
+  },
+  discoverFooterSlot: {
+    height: 162,
+    width: '100%',
+    justifyContent: 'flex-end',
+    position: 'relative'
+  },
+  discoverDeviceCard: {
+    position: 'absolute',
+    left: '8%',
+    right: '8%',
+    bottom: 0,
+    width: '84%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1f2d3e',
+    backgroundColor: '#0b1220',
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    gap: 4
+  },
+  discoverDeviceCardTag: {
+    color: '#7dd3fc',
+    fontSize: 9,
+    letterSpacing: 1.1,
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
+  },
+  discoverDeviceCardTitle: {
+    color: '#e2e8f0',
+    fontSize: 10,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
+  },
+  discoverDeviceCardSub: {
+    color: '#8aa0bb',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
+  },
+  discoverDeviceProgressTrack: {
+    marginTop: 2,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#132238',
+    overflow: 'hidden'
+  },
+  discoverDeviceProgressBar: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#38bdf8'
+  },
+  discoverDeviceProgressText: {
+    color: '#7590ad',
+    fontSize: 8.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
+  },
+  discoverDeviceCardActions: { flexDirection: 'row', marginTop: 2 },
+  discoverCardConnectBtn: {
+    width: 108,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#111b2d',
+    borderWidth: 1,
+    borderColor: '#2a3f5e',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto'
+  },
+  discoverCardConnectBtnOffline: {
+    width: 108,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#374151',
+    borderWidth: 1,
+    borderColor: '#4b5563',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto'
+  },
+  discoverCardConnectText: {
+    color: '#dbeafe',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
+  },
+  radarStage: {
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 336,
+    aspectRatio: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#20364f',
+    backgroundColor: '#06101c',
+    overflow: 'hidden',
+    position: 'relative'
+  },
+  radarBandOuter: {
+    position: 'absolute',
+    left: '-8%',
+    top: '-8%',
+    width: '116%',
+    height: '116%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,160,255,0.06)'
+  },
+  radarBandMid: {
+    position: 'absolute',
+    left: '12%',
+    top: '12%',
+    width: '76%',
+    height: '76%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,190,255,0.08)'
+  },
+  radarBandInner: {
+    position: 'absolute',
+    left: '30%',
+    top: '30%',
+    width: '40%',
+    height: '40%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,220,255,0.1)'
+  },
+  radarNebulaA: {
+    position: 'absolute',
+    left: '15%',
+    top: '18%',
+    width: '38%',
+    height: '38%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(90,70,255,0.09)'
+  },
+  radarNebulaB: {
+    position: 'absolute',
+    right: '14%',
+    bottom: '16%',
+    width: '32%',
+    height: '32%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,240,180,0.08)'
+  },
+  radarRingOuter: {
+    position: 'absolute',
+    left: '8%',
+    top: '8%',
+    width: '84%',
+    height: '84%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(75,145,220,0.34)'
+  },
+  radarRingMid: {
+    position: 'absolute',
+    left: '22%',
+    top: '22%',
+    width: '56%',
+    height: '56%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(85,160,235,0.3)'
+  },
+  radarRingInner: {
+    position: 'absolute',
+    left: '36%',
+    top: '36%',
+    width: '28%',
+    height: '28%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(95,175,245,0.26)'
+  },
+  radarWave: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(0,236,255,0.62)'
+  },
+  radarWaveSoft: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(96,200,255,0.35)'
+  },
+  radarCoreGlow: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -36,
+    marginTop: -36,
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,228,255,0.16)'
+  },
+  radarCenterFloat: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    marginLeft: -24,
+    marginTop: -24,
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  radarCenterOrb: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: 'rgba(17,39,63,0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(111,189,255,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#36d7ff',
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 }
+  },
+  radarCenterPhone: {
+    width: 14,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1.4,
+    borderColor: '#94dcff',
+    backgroundColor: 'rgba(84,146,205,0.22)',
+    alignItems: 'center',
+    paddingTop: 2
+  },
+  radarCenterPhoneNotch: {
+    width: 6,
+    height: 1.8,
+    borderRadius: 2,
+    backgroundColor: 'rgba(180,226,255,0.86)'
+  },
+  radarBlip: {
+    position: 'absolute',
+    width: 40,
+    height: 58,
+    alignItems: 'center',
+    zIndex: 4
+  },
+  radarPlanetHalo: {
+    position: 'absolute',
+    top: 2,
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    backgroundColor: 'rgba(68,193,255,0.22)'
+  },
+  radarPlanetHaloHover: {
+    position: 'absolute',
+    top: 0,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: 'rgba(85,208,255,0.35)'
+  },
+  radarPlanetCore: {
+    marginTop: 9,
+    width: 14,
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: '#53c5ff',
+    borderWidth: 1.5,
+    borderColor: 'rgba(231,248,255,0.96)',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start'
+  },
+  radarPlanetCoreHover: {
+    marginTop: 8,
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    backgroundColor: '#6ed3ff',
+    borderWidth: 1.5,
+    borderColor: '#f4f9ff',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+    shadowColor: '#63d6ff',
+    shadowOpacity: 0.58,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 }
+  },
+  radarPlanetHighlight: {
+    marginTop: 2,
+    marginLeft: 2,
+    width: 5,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.72)'
+  },
+  radarPlanetShade: {
+    position: 'absolute',
+    right: 1.5,
+    bottom: 1.5,
+    width: 4.5,
+    height: 4.5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(5,33,76,0.4)'
+  },
+  radarPlanetSparkA: {
+    position: 'absolute',
+    top: 6,
+    right: 2,
+    width: 3.5,
+    height: 1.5,
+    borderRadius: 2,
+    backgroundColor: 'rgba(142,228,255,0.92)',
+    transform: [{ rotate: '28deg' }]
+  },
+  radarPlanetSparkB: {
+    position: 'absolute',
+    top: 3,
+    right: 5,
+    width: 2,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(190,240,255,0.95)'
+  },
+  radarPlanetElectric: {
+    position: 'absolute',
+    top: -2,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    borderWidth: 1.2,
+    borderColor: 'rgba(92,217,255,0.88)',
+    shadowColor: '#6de4ff',
+    shadowOpacity: 0.55,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 0 }
+  },
+  radarBlipText: { marginTop: 5, fontSize: 9, color: 'rgba(170,217,255,0.4)', maxWidth: 52, textAlign: 'center' },
+  radarBlipTextOn: { marginTop: 5, fontSize: 9, color: 'rgba(195,235,255,0.92)', maxWidth: 52, textAlign: 'center' },
+  radarVignette: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(114,181,244,0.16)'
+  },
+  discoverHintText: {
+    color: '#667b95',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 12
+  },
+  discoverCloseBtn: {
+    alignSelf: 'center',
+    width: 46,
+    height: 46,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cfdaea',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f6f9fe'
+  },
+  discoverCloseTxt: {
+    color: '#60748d',
+    fontSize: 26,
+    lineHeight: 26,
+    marginTop: -1
+  },
+  discoverList: { flex: 1 },
+  discoverListContent: { gap: 8, paddingBottom: 8 },
+  discoverItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#dfe7f2',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  discoverItemDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#5383ba' },
+  discoverItemTextWrap: { flex: 1 },
+  discoverItemTitle: { color: '#2b3748', fontSize: 13, fontWeight: '700' },
+  discoverItemSub: { color: '#6a7d94', fontSize: 11 },
 
   row: { flexDirection: 'row', gap: 8 },
   boundaryWrap: {
