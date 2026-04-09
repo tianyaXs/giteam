@@ -3,10 +3,11 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
+  LayoutChangeEvent,
   PanResponder,
   Platform,
   Pressable,
-  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -21,7 +22,6 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import EventSource from 'react-native-sse';
 import Markdown from '@ronradtke/react-native-markdown-display';
-import * as Clipboard from 'expo-clipboard';
 import {
   abortSession,
   buildStreamUrl,
@@ -41,12 +41,13 @@ import type { MobileChatMessage, MobileTimelineItem } from './src/types';
 
 const PREF_KEY = 'giteam.mobile.v3';
 
-const INITIAL_SESSION_LIMIT = 80;
-const SESSION_LIMIT_STEP = 120;
-const SESSION_LIMIT_MAX = 2000;
+const INITIAL_SESSION_LIMIT = 8;
+const OLDER_SESSION_LIMIT = 4;
+const AUTO_LOAD_TOP_THRESHOLD = 560;
 
 type Prefs = {
   serverUrl: string;
+  serverUrlTouched: boolean;
   pairCode: string;
   repoPath: string;
   repoPaths: string[];
@@ -74,12 +75,6 @@ type ProjectOption = {
   name: string;
 };
 
-type ConnLogItem = {
-  ts: number;
-  level: 'info' | 'error';
-  message: string;
-};
-
 type PairPayload = {
   baseUrl?: string;
   pairCode?: string;
@@ -103,6 +98,7 @@ const CameraViewCompat: any = CameraView;
 
 const DEFAULT_PREFS: Prefs = {
   serverUrl: '',
+  serverUrlTouched: false,
   pairCode: '',
   repoPath: '',
   repoPaths: [],
@@ -198,8 +194,10 @@ async function loadPrefs(): Promise<Prefs> {
       const raw = window.localStorage.getItem(PREF_KEY);
       if (!raw) return DEFAULT_PREFS;
       const merged = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) };
+      const touched = Boolean((merged as any).serverUrlTouched);
       return {
-        serverUrl: toText(merged.serverUrl),
+        serverUrl: touched ? toText(merged.serverUrl) : '',
+        serverUrlTouched: touched,
         pairCode: toText(merged.pairCode),
         repoPath: toText(merged.repoPath),
         repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
@@ -211,8 +209,10 @@ async function loadPrefs(): Promise<Prefs> {
     const raw = await AsyncStorage.getItem(PREF_KEY);
     if (!raw) return DEFAULT_PREFS;
     const merged = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) };
+    const touched = Boolean((merged as any).serverUrlTouched);
     return {
-      serverUrl: toText(merged.serverUrl),
+      serverUrl: touched ? toText(merged.serverUrl) : '',
+      serverUrlTouched: touched,
       pairCode: toText(merged.pairCode),
       repoPath: toText(merged.repoPath),
       repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
@@ -371,12 +371,59 @@ function getRepoPathsFromPairPayload(payload: PairPayload): string[] {
   return fromList.length > 0 ? [fromList[0]] : [];
 }
 
+const AUTH_ASCII_BRANDS = [
+  ` ██████  ██ ████████ ███████  █████  ███    ███ 
+██       ██    ██    ██      ██   ██ ████  ████ 
+██   ███ ██    ██    █████   ███████ ██ ████ ██ 
+██    ██ ██    ██    ██      ██   ██ ██  ██  ██ 
+ ██████  ██    ██    ███████ ██   ██ ██      ██ `,
+  `   _____ _____ _______ ______          __  __ 
+  / ____|_   _|__   __|  ____|   /\\   |  \\/  |
+ | |  __  | |    | |  | |__     /  \\  | \\  / |
+ | | |_ | | |    | |  |  __|   / /\\ \\ | |\\/| |
+ | |__| |_| |_   | |  | |____ / ____ \\| |  | |
+  \\_____|_____|  |_|  |______/_/    \\_\\_|  |_|`,
+  `                                     
+ _____ _____ _____ _____ _____ _____ 
+|   __|     |_   _|   __|  _  |     |
+|  |  |-   -| | | |   __|     | | | |
+|_____|_____| |_| |_____|__|__|_|_|_|`,
+  `   _________________________    __  ___
+  / ____/  _/_  __/ ____/   |  /  |/  /
+ / / __ / /  / / / __/ / /| | / /|_/ / 
+/ /_/ // /  / / / /___/ ___ |/ /  / /  
+\\____/___/ /_/ /_____/_/  |_/_/  /_/`,
+  String.raw` ________  ___  _________  _______   ________  _____ ______      
+|\   ____\|\  \|\___   ___\\  ___ \ |\   __  \|\   _ \  _   \    
+\ \  \___|\ \  \|___ \  \_\ \   __/|\ \  \|\  \ \  \\\__\ \  \   
+ \ \  \  __\ \  \   \ \  \ \ \  \_|/_\ \   __  \ \  \\|__| \  \  
+  \ \  \|\  \ \  \   \ \  \ \ \  \_|\ \ \  \ \  \ \  \    \ \  \ 
+   \ \_______\ \__\   \ \__\ \ \_______\ \__\ \__\ \__\    \ \__\
+    \|_______|\|__|    \|__|  \|_______|\|__|\|__|\|__|     \|__|`,
+  String.raw` ____    ______  ______  ____    ______              
+/\  _\` /\__  _\/\__  _\/\  _\` /\  _  \  /'\_/\`    
+\ \ \L\_\/_/\ \/\/_/\ \/\ \ \L\_\ \ \L\ \/\      \   
+ \ \ \L_L  \ \ \   \ \ \ \ \  _\L\ \  __ \ \ \__\ \  
+  \ \ \/, \ \_\ \__ \ \ \ \ \ \L\ \ \ \/\ \ \ \_/\ \ 
+   \ \____/ /\_____\ \ \_\ \ \____/\ \_\ \_\ \_\\ \_\
+    \/___/  \/_____/  \/_/  \/___/  \/_/\/_/\/_/ \/_/`
+];
+
+function pickRandomAuthAsciiBrand(): string {
+  const idx = Math.floor(Math.random() * AUTH_ASCII_BRANDS.length);
+  return AUTH_ASCII_BRANDS[idx] || AUTH_ASCII_BRANDS[0] || '';
+}
+
 export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('准备就绪');
+  const [authAsciiBrand, setAuthAsciiBrand] = useState(() => pickRandomAuthAsciiBrand());
+  const [authAsciiRender, setAuthAsciiRender] = useState('');
+  const [authAsciiBox, setAuthAsciiBox] = useState({ width: 0, height: 94 });
 
   const [serverUrl, setServerUrl] = useState('');
+  const [serverUrlTouched, setServerUrlTouched] = useState(false);
   const [pairCode, setPairCode] = useState('');
   const [repoPath, setRepoPath] = useState('');
   const [token, setToken] = useState('');
@@ -386,9 +433,6 @@ export default function App() {
   const [modelCatalogStatus, setModelCatalogStatus] = useState('');
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [sessionSearch, setSessionSearch] = useState('');
-  const [connLogs, setConnLogs] = useState<ConnLogItem[]>([]);
-
-  const [showAuthDebug, setShowAuthDebug] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [scannerReady, setScannerReady] = useState(false);
@@ -404,20 +448,25 @@ export default function App() {
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
-  const [sessionLimits, setSessionLimits] = useState<Record<string, number>>({});
+  const [sessionNextCursor, setSessionNextCursor] = useState<Record<string, string>>({});
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
-  const messageScrollRef = useRef<ScrollView | null>(null);
+  const messageScrollRef = useRef<FlatList<MobileTimelineItem> | null>(null);
   const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
   const allowAutoScrollRef = useRef(true);
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
+  const sessionRawMapRef = useRef<Record<string, any[]>>({});
+  const inflightMessageReqRef = useRef<Record<string, Promise<void>>>({});
+  const topAutoLoadLockRef = useRef(false);
+  const topAutoLoadAtRef = useRef(0);
+  const messageScrollYRef = useRef(0);
   const drawerAnim = useRef(new Animated.Value(0)).current;
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
@@ -435,10 +484,6 @@ export default function App() {
       return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
     });
   }, [sessions, sessionSearch]);
-  const connLogText = useMemo(
-    () => connLogs.map((row) => `[${formatClock(row.ts)}] ${toText(row.message)}`).join('\n'),
-    [connLogs]
-  );
   const workspacePanelHeight = useMemo(() => {
     const count = Math.max(1, projects.length);
     const headerAndPadding = 88;
@@ -446,29 +491,40 @@ export default function App() {
     const desired = headerAndPadding + count * rowHeight;
     return Math.max(180, Math.min(420, desired));
   }, [projects.length]);
+  const authAsciiTextStyle = useMemo(() => {
+    const raw = toText(authAsciiBrand);
+    const lines = raw.split('\n');
+    const lineCount = Math.max(1, lines.length);
+    const maxChars = Math.max(1, ...lines.map((line) => line.length));
+    const boxWidth = Math.max(1, authAsciiBox.width - 4);
+    const boxHeight = Math.max(1, authAsciiBox.height);
+    const baseFont = 10;
+    const minFont = 6;
+    const widthByFont = boxWidth / (maxChars * 0.6);
+    const heightByFont = boxHeight / (lineCount * 1.2);
+    const fontSize = Math.max(minFont, Math.min(baseFont, widthByFont, heightByFont));
+    const lineHeight = Math.max(fontSize + 1, Math.round(fontSize * 1.2));
+    return { fontSize, lineHeight };
+  }, [authAsciiBrand, authAsciiBox.height, authAsciiBox.width]);
+  const authAsciiDisplay = useMemo(
+    () => toText(authAsciiRender || authAsciiBrand).replace(/ /g, '\u00A0'),
+    [authAsciiRender, authAsciiBrand]
+  );
 
   function pushConnLog(message: string, level: 'info' | 'error' = 'info') {
     const text = toText(message).trim();
     if (!text) return;
-    const row: ConnLogItem = { ts: Date.now(), level, message: text };
-    setConnLogs((prev) => [...prev.slice(-79), row]);
     const tag = level === 'error' ? 'error' : 'log';
     // eslint-disable-next-line no-console
-    console[tag](`[mobile-conn] ${new Date(row.ts).toISOString()} ${row.message}`);
+    console[tag](`[mobile-conn] ${new Date().toISOString()} ${text}`);
   }
 
-  async function copyText(raw: string, okMsg: string) {
-    const text = toText(raw);
-    if (!text.trim()) return;
-    try {
-      await Clipboard.setStringAsync(text);
-      setStatus(okMsg);
-      pushConnLog(okMsg);
-    } catch (e) {
-      const msg = `复制失败: ${String(e)}`;
-      setStatus(msg);
-      pushConnLog(msg, 'error');
-    }
+  function onAuthAsciiSlotLayout(e: LayoutChangeEvent) {
+    const { width, height } = e.nativeEvent.layout;
+    setAuthAsciiBox((prev) => {
+      if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
+      return { width, height };
+    });
   }
 
   useEffect(() => {
@@ -476,6 +532,7 @@ export default function App() {
     loadPrefs().then((prefs) => {
       if (!alive) return;
       setServerUrl(prefs.serverUrl);
+      setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
       setPairCode(prefs.pairCode);
       setRepoPath(prefs.repoPath);
       setProjects(toProjectOptionsFromPaths(prefs.repoPaths || []));
@@ -497,7 +554,8 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     void savePrefs({
-      serverUrl,
+      serverUrl: serverUrlTouched ? serverUrl : '',
+      serverUrlTouched,
       pairCode,
       repoPath,
       repoPaths: projects.map((p) => p.worktree),
@@ -505,13 +563,35 @@ export default function App() {
       sessionId,
       model
     });
-  }, [loaded, serverUrl, pairCode, repoPath, projects, token, sessionId, model]);
+  }, [loaded, serverUrl, serverUrlTouched, pairCode, repoPath, projects, token, sessionId, model]);
+
+  function onChangeServerUrl(value: string) {
+    setServerUrlTouched(true);
+    setServerUrl(value);
+  }
 
   useEffect(() => {
     if (!streaming) return;
     const timer = setInterval(() => setThinkingPulse((v) => !v), 480);
     return () => clearInterval(timer);
   }, [streaming]);
+
+  useEffect(() => {
+    if (authed) return;
+    const text = toText(authAsciiBrand);
+    if (!text) {
+      setAuthAsciiRender('');
+      return;
+    }
+    setAuthAsciiRender('');
+    let i = 0;
+    const timer = setInterval(() => {
+      i += 1;
+      setAuthAsciiRender(text.slice(0, i));
+      if (i >= text.length) clearInterval(timer);
+    }, 8);
+    return () => clearInterval(timer);
+  }, [authed, authAsciiBrand]);
 
   useEffect(() => {
     projectsRef.current = projects;
@@ -565,11 +645,7 @@ export default function App() {
     setSessionId(sid);
     // Switching session should not auto-scroll with animation.
     allowAutoScrollRef.current = false;
-    if (sid) {
-      // Always reset message window when switching sessions:
-      // load recent messages first, then expand history via pull-to-refresh.
-      setSessionLimits((prev) => ({ ...prev, [sid]: INITIAL_SESSION_LIMIT }));
-    }
+    if (!sid) return;
   }
 
   function triggerPulse(anim: Animated.Value) {
@@ -647,11 +723,14 @@ export default function App() {
         },
         onMoveShouldSetPanResponderCapture: (_evt, g) => {
           if (workspacePickerOpen) return false;
-          if (Math.abs(g.dx) < 12 || Math.abs(g.dx) < Math.abs(g.dy) * 1.15) return false;
+          // Keep vertical pull gesture for message list refresh; only capture clear horizontal swipes.
+          if (Math.abs(g.dx) < 18 || Math.abs(g.dx) < Math.abs(g.dy) * 1.8) return false;
           if (!drawerSide) return Math.abs(g.dx) > 32;
           if (drawerSide === 'left') return g.dx < -24;
           return g.dx > 24;
         },
+        onPanResponderTerminationRequest: () => true,
+        onShouldBlockNativeResponder: () => false,
         onPanResponderRelease: (_evt, g) => {
           if (!drawerSide && g.dx > 56) {
             openDrawer('left');
@@ -721,64 +800,117 @@ export default function App() {
     }
   }
 
-  async function refreshMessages(targetSessionId: string, opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean }) {
+  function rowCreatedAt(row: any): number {
+    const t = Number(row?.info?.time?.created || 0);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function rowId(row: any): string {
+    return toText(row?.info?.id).trim();
+  }
+
+  function mergeMessageRows(prev: any[], incoming: any[]): any[] {
+    const byId = new Map<string, any>();
+    for (const row of prev) {
+      const id = rowId(row);
+      if (!id) continue;
+      byId.set(id, row);
+    }
+    for (const row of incoming) {
+      const id = rowId(row);
+      if (!id) continue;
+      byId.set(id, row);
+    }
+    return [...byId.values()].sort((a, b) => {
+      const ta = rowCreatedAt(a);
+      const tb = rowCreatedAt(b);
+      if (ta !== tb) return ta - tb;
+      return rowId(a).localeCompare(rowId(b));
+    });
+  }
+
+  async function refreshMessages(
+    targetSessionId: string,
+    opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean; before?: string }
+  ) {
     if (!authed || !repoPath || !targetSessionId) return;
-    const requestedLimit = Math.max(
-      20,
-      Math.min(SESSION_LIMIT_MAX, Number(opts?.limit || sessionLimits[targetSessionId] || INITIAL_SESSION_LIMIT))
-    );
-    try {
-      pushConnLog(`GET messages sid=${targetSessionId} limit=${requestedLimit}`);
-      let raw: any[] = [];
+    const requestedLimit = Math.max(8, Number(opts?.limit || INITIAL_SESSION_LIMIT));
+    const before = toText(opts?.before).trim();
+    const reqKey = `${targetSessionId}|${requestedLimit}|${before || '-'}`;
+    const existing = inflightMessageReqRef.current[reqKey];
+    if (existing) {
+      await existing;
+      return;
+    }
+    const run = (async () => {
       try {
-        raw = await getMessages({
-          baseUrl: serverUrl,
-          token,
-          repoPath,
-          sessionId: targetSessionId,
-          limit: requestedLimit
-        });
-      } catch (e1) {
-        const fallbackLimit = Math.min(160, requestedLimit);
-        pushConnLog(`GET messages retry sid=${targetSessionId} limit=${fallbackLimit} cause=${String(e1)}`, 'error');
-        raw = await getMessages({
-          baseUrl: serverUrl,
-          token,
-          repoPath,
-          sessionId: targetSessionId,
-          limit: fallbackLimit
-        });
+        pushConnLog(`GET messages sid=${targetSessionId} limit=${requestedLimit}${before ? ' before=cursor' : ''}`);
+        let res: { items: any[]; nextCursor: string };
+        try {
+          res = await getMessages({
+            baseUrl: serverUrl,
+            token,
+            repoPath,
+            sessionId: targetSessionId,
+            limit: requestedLimit,
+            before: before || undefined
+          });
+        } catch (e1) {
+          const fallbackLimit = Math.min(160, requestedLimit);
+          pushConnLog(
+            `GET messages retry sid=${targetSessionId} limit=${fallbackLimit}${before ? ' before=cursor' : ''} cause=${String(e1)}`,
+            'error'
+          );
+          res = await getMessages({
+            baseUrl: serverUrl,
+            token,
+            repoPath,
+            sessionId: targetSessionId,
+            limit: fallbackLimit,
+            before: before || undefined
+          });
+        }
+
+        const incoming = Array.isArray(res.items) ? res.items : [];
+        if (targetSessionId !== sessionIdRef.current) {
+          return;
+        }
+        const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
+        const merged = mergeMessageRows(prevRaw, incoming);
+        sessionRawMapRef.current[targetSessionId] = merged;
+        const next = parseConversation(merged);
+        const nextCursor = toText(res.nextCursor).trim();
+        pushConnLog(`GET messages ok sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} next=${nextCursor ? 1 : 0}`);
+        setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: nextCursor }));
+        setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor }));
+        setMessages(next.chatMessages);
+        setTimeline(next.timeline);
+        upsertSession(targetSessionId, next.chatMessages);
+        if (opts?.jumpToLatest) {
+          forceScrollToLatestUntilRef.current = Date.now() + 800;
+          requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
+          setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
+          setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
+        }
+        if (!next.writing) {
+          setStreaming(false);
+          setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
+        }
+      } catch (e) {
+        pushConnLog(`GET messages error ${String(e)}`, 'error');
+        setStatus(String(e));
+      } finally {
+        if (opts?.loadingOlder) {
+          setLoadingOlder(false);
+        }
       }
-      const next = parseConversation(raw);
-      pushConnLog(`GET messages ok sid=${targetSessionId} rows=${raw.length}`);
-      setSessionLimits((prev) => ({ ...prev, [targetSessionId]: requestedLimit }));
-      setSessionHasMore((prev) => ({
-        ...prev,
-        [targetSessionId]: raw.length >= requestedLimit && requestedLimit < SESSION_LIMIT_MAX
-      }));
-      // Ignore stale async responses from non-active sessions.
-      if (targetSessionId !== sessionIdRef.current) {
-        return;
-      }
-      setMessages(next.chatMessages);
-      setTimeline(next.timeline);
-      upsertSession(targetSessionId, next.chatMessages);
-      if (opts?.jumpToLatest) {
-        forceScrollToLatestUntilRef.current = Date.now() + 800;
-        requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
-        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
-        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
-      }
-      if (!next.writing) {
-        setStreaming(false);
-        setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
-      }
-    } catch (e) {
-      pushConnLog(`GET messages error ${String(e)}`, 'error');
-      setStatus(String(e));
+    })();
+    inflightMessageReqRef.current[reqKey] = run;
+    try {
+      await run;
     } finally {
-      if (opts?.loadingOlder) {
-        setLoadingOlder(false);
+      if (inflightMessageReqRef.current[reqKey] === run) {
+        delete inflightMessageReqRef.current[reqKey];
       }
     }
   }
@@ -786,16 +918,35 @@ export default function App() {
   async function onLoadOlderMessages() {
     const sid = toText(sessionId).trim();
     if (!sid || loadingOlder) return;
-    const current = Number(sessionLimits[sid] || INITIAL_SESSION_LIMIT);
-    const nextLimit = Math.min(SESSION_LIMIT_MAX, current + SESSION_LIMIT_STEP);
-    if (nextLimit <= current) return;
+    const cursor = toText(sessionNextCursor[sid]).trim();
+    if (!cursor) {
+      return;
+    }
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
-    setStatus(`加载更早历史消息... (${nextLimit})`);
-    await refreshMessages(sid, { limit: nextLimit, loadingOlder: true });
+    await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, loadingOlder: true });
     setTimeout(() => {
       suppressAutoScrollRef.current = false;
     }, 300);
+  }
+
+  function onMessageListScroll(y: number) {
+    messageScrollYRef.current = y;
+    const sid = toText(sessionIdRef.current).trim();
+    if (!sid || loadingOlder || !sessionHasMore[sid]) return;
+    if (y > AUTO_LOAD_TOP_THRESHOLD) {
+      topAutoLoadLockRef.current = false;
+      return;
+    }
+    const now = Date.now();
+    if (topAutoLoadLockRef.current && now - topAutoLoadAtRef.current < 520) return;
+    topAutoLoadLockRef.current = true;
+    topAutoLoadAtRef.current = now;
+    void onLoadOlderMessages().finally(() => {
+      setTimeout(() => {
+        topAutoLoadLockRef.current = false;
+      }, 360);
+    });
   }
 
   async function refreshModelCatalog(targetRepoPath?: string) {
@@ -937,8 +1088,9 @@ export default function App() {
     setMessages([]);
     setTimeline([]);
     setSessions([]);
-    setSessionLimits({});
+    setSessionNextCursor({});
     setSessionHasMore({});
+    sessionRawMapRef.current = {};
     const pname = projectNameFromPath(next);
     setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     allowAutoScrollRef.current = false;
@@ -1013,7 +1165,6 @@ export default function App() {
     });
     es.addEventListener('heartbeat' as any, () => {
       pushConnLog('SSE heartbeat');
-      syncFromServer();
     });
     es.addEventListener('end' as any, () => {
       pushConnLog('SSE end');
@@ -1318,10 +1469,26 @@ export default function App() {
 
   function onNewSession() {
     stopStream();
+    const oldSid = toText(sessionIdRef.current).trim();
     setActiveSession('');
     allowAutoScrollRef.current = true;
     setMessages([]);
     setTimeline([]);
+    setSessionNextCursor((prev) => {
+      const next = { ...prev };
+      if (oldSid) delete next[oldSid];
+      return next;
+    });
+    setSessionHasMore((prev) => {
+      const next = { ...prev };
+      if (oldSid) delete next[oldSid];
+      return next;
+    });
+    if (oldSid) {
+      const nextRaw = { ...sessionRawMapRef.current };
+      delete nextRaw[oldSid];
+      sessionRawMapRef.current = nextRaw;
+    }
     const pname = projectNameFromPath(repoPath);
     setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     setStatus('新会话已创建');
@@ -1336,6 +1503,10 @@ export default function App() {
     setActiveSession('');
     setMessages([]);
     setTimeline([]);
+    setSessionNextCursor({});
+    setSessionHasMore({});
+    sessionRawMapRef.current = {};
+    setAuthAsciiBrand(pickRandomAuthAsciiBrand());
     setStatus('已退出授权');
     pushConnLog('reset auth');
   }
@@ -1413,7 +1584,16 @@ export default function App() {
           <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
             <View style={styles.authPageFrame}>
               <View style={styles.authFormWrap}>
-                <Text style={styles.authInlineBrand}>Giteam</Text>
+                <View style={styles.authAsciiSlot} onLayout={onAuthAsciiSlotLayout}>
+                  <Text
+                    allowFontScaling={false}
+                    maxFontSizeMultiplier={1}
+                    textBreakStrategy="simple"
+                    style={[styles.authAsciiBrand, authAsciiTextStyle]}
+                  >
+                    {authAsciiDisplay}
+                  </Text>
+                </View>
                 <Text style={styles.authSub}>连接远程客户端</Text>
 
                 <View style={styles.authFieldGroup}>
@@ -1422,9 +1602,9 @@ export default function App() {
                     <TextInput
                       style={styles.authInputUrl}
                       value={serverUrl}
-                      onChangeText={setServerUrl}
+                      onChangeText={onChangeServerUrl}
                       autoCapitalize="none"
-                      placeholder="http://192.168.50.228:4100"
+                      placeholder="输入服务地址"
                       placeholderTextColor="#9aa6b6"
                     />
                     <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
@@ -1461,35 +1641,6 @@ export default function App() {
               </View>
             </View>
 
-            <View style={styles.authDebugFabWrap} pointerEvents="box-none">
-              <Pressable style={styles.authDebugFab} onPress={() => setShowAuthDebug((v) => !v)}>
-                <Text style={styles.authDebugFabTxt}>{showAuthDebug ? '收起诊断' : '诊断'}</Text>
-              </Pressable>
-            </View>
-
-            {showAuthDebug ? (
-              <View style={styles.connLogBoxCompact}>
-                <View style={styles.connLogHead}>
-                  <Text style={styles.connLogTitle}>诊断日志</Text>
-                  <View style={styles.connLogActions}>
-                    <Pressable style={styles.connLogCopyBtn} onPress={() => void copyText(connLogText, '日志已复制')}>
-                      <Text style={styles.connLogCopyBtnText}>复制</Text>
-                    </Pressable>
-                    <Pressable style={styles.connLogClearBtn} onPress={() => setConnLogs([])}>
-                      <Text style={styles.connLogClearBtnText}>清空</Text>
-                    </Pressable>
-                  </View>
-                </View>
-                <ScrollView style={styles.connLogScroll} contentContainerStyle={styles.connLogList}>
-                  {connLogs.length === 0 ? <Text style={styles.connLogEmpty}>暂无日志</Text> : null}
-                  {connLogs.map((row) => (
-                    <Text selectable key={`${row.ts}-${row.message}`} style={row.level === 'error' ? styles.connLogRowErr : styles.connLogRow}>
-                      [{formatClock(row.ts)}] {toText(row.message)}
-                    </Text>
-                  ))}
-                </ScrollView>
-              </View>
-            ) : null}
           </ScrollView>
         </RenderBoundary>
       </SafeAreaView>
@@ -1578,18 +1729,25 @@ export default function App() {
             </View>
           </View>
         ) : (
-          <ScrollView
+          <FlatList
             ref={messageScrollRef}
             style={styles.msgScroll}
-            contentContainerStyle={styles.msgList}
-            refreshControl={
-              <RefreshControl
-                refreshing={loadingOlder}
-                onRefresh={() => void onLoadOlderMessages()}
-                tintColor="#8fa3be"
-              />
-            }
-            onContentSizeChange={() => {
+            contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
+            data={timeline}
+            initialNumToRender={6}
+            maxToRenderPerBatch={6}
+            windowSize={5}
+            removeClippedSubviews={Platform.OS !== 'web'}
+            alwaysBounceVertical
+            bounces
+            overScrollMode="always"
+            scrollEventThrottle={16}
+            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+            onScroll={(evt) => {
+              const y = Number(evt.nativeEvent.contentOffset?.y || 0);
+              onMessageListScroll(y);
+            }}
+            onContentSizeChange={(_w, h) => {
               if (suppressAutoScrollRef.current) return;
               if (Date.now() < forceScrollToLatestUntilRef.current) {
                 requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
@@ -1598,13 +1756,13 @@ export default function App() {
               if (!allowAutoScrollRef.current) return;
               requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
             }}
-          >
-            {sessionId && sessionHasMore[sessionId] ? (
-              <View style={styles.historyHintWrap}>
-                <Text style={styles.historyHintText}>下拉加载更早历史消息</Text>
-              </View>
-            ) : null}
-            {timeline.map((item, idx) => {
+            keyExtractor={(item, idx) => {
+              if (item.kind === 'chat') return `chat:${item.message.id}:${idx}`;
+              if (item.kind === 'think') return `think:${item.card.id}:${idx}`;
+              if (item.kind === 'event') return `event:${item.event.id}:${idx}`;
+              return `context:${item.context.id}:${idx}`;
+            }}
+            renderItem={({ item, index: idx }) => {
               if (item.kind === 'context' || item.kind === 'event') return null;
               if (item.kind === 'think') {
                 const keepOpen = !streaming || idx === lastThinkIndex;
@@ -1629,20 +1787,29 @@ export default function App() {
                   </View>
                 </View>
               );
-            })}
-            {showThinkingPlaceholder ? (
-              <View style={styles.thinkingWrap}>
-                <View style={styles.thinkingCard}>
-                  <View style={styles.thinkingDots}>
-                    <View style={[styles.thinkingDot, thinkingPulse ? styles.thinkingDotOn : null]} />
-                    <View style={[styles.thinkingDot, !thinkingPulse ? styles.thinkingDotOn : null]} />
-                    <View style={styles.thinkingDot} />
-                  </View>
-                  <Text style={styles.thinkingLabel}>Thinking</Text>
+            }}
+            ListHeaderComponent={
+              loadingOlder ? (
+                <View style={styles.historyHintWrap}>
+                  <ActivityIndicator size="small" color="#8fa3be" />
                 </View>
-              </View>
-            ) : null}
-          </ScrollView>
+              ) : null
+            }
+            ListFooterComponent={
+              showThinkingPlaceholder ? (
+                <View style={styles.thinkingWrap}>
+                  <View style={styles.thinkingCard}>
+                    <View style={styles.thinkingDots}>
+                      <View style={[styles.thinkingDot, thinkingPulse ? styles.thinkingDotOn : null]} />
+                      <View style={[styles.thinkingDot, !thinkingPulse ? styles.thinkingDotOn : null]} />
+                      <View style={styles.thinkingDot} />
+                    </View>
+                    <Text style={styles.thinkingLabel}>Thinking</Text>
+                  </View>
+                </View>
+              ) : null
+            }
+          />
         )}
       </View>
 
@@ -1799,21 +1966,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 26,
     justifyContent: 'center'
   },
-  authInlineBrand: {
+  authAsciiSlot: {
+    alignSelf: 'stretch',
+    height: 94,
+    justifyContent: 'center'
+  },
+  authAsciiBrand: {
     alignSelf: 'center',
-    fontSize: 34,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: Platform.OS === 'ios' ? '600' : '400',
     color: '#1f2630',
-    letterSpacing: 0.3,
-    marginTop: -44,
+    lineHeight: 12,
+    letterSpacing: 0,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    includeFontPadding: false,
+    marginTop: 0,
+    transform: [{ translateY: -92 }],
     marginBottom: 10
   },
   brandRow: { flexDirection: 'row', alignItems: 'center' },
   authTitle: { fontSize: 32, fontWeight: '700', color: '#1f2630' },
-  authSub: { color: '#5f7087', fontSize: 18, marginBottom: 8, fontWeight: '600' },
+  authSub: { color: '#5f7087', fontSize: 18, marginBottom: 2, fontWeight: '600' },
   authFormWrap: {
     width: '100%',
-    gap: 16,
+    gap: 8,
     marginTop: -28
   },
   authFieldGroup: { gap: 6 },
@@ -1869,20 +2045,6 @@ const styles = StyleSheet.create({
     gap: 8
   },
   authNoticeText: { color: '#64748b', fontSize: 12, lineHeight: 18, flex: 1 },
-  authDebugFabWrap: {
-    position: 'absolute',
-    right: 14,
-    bottom: 18
-  },
-  authDebugFab: {
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    backgroundColor: '#f0f4fa',
-    borderWidth: 1,
-    borderColor: '#d9e2ee'
-  },
-  authDebugFabTxt: { color: '#66798f', fontSize: 11, fontWeight: '700' },
   authPane: { gap: 10 },
   authModeList: { gap: 10 },
   authModeCard: {
@@ -1963,24 +2125,6 @@ const styles = StyleSheet.create({
     gap: 8
   },
   authStatusMiniText: { color: '#64748b', fontSize: 12, lineHeight: 18, flex: 1 },
-  authDebugDock: { alignItems: 'flex-end' },
-  authDebugToggle: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    backgroundColor: '#f1f5f9',
-    borderWidth: 1,
-    borderColor: '#e2e8f0'
-  },
-  authDebugToggleTxt: { color: '#64748b', fontSize: 11, fontWeight: '600' },
-  connLogBoxCompact: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e0e5eb',
-    backgroundColor: '#ffffff',
-    padding: 10,
-    gap: 8
-  },
   authStatusBox: {
     minHeight: 44,
     borderRadius: 12,
@@ -1993,39 +2137,6 @@ const styles = StyleSheet.create({
     gap: 8
   },
   authStatusText: { color: '#5f6b7c', flex: 1 },
-  connLogActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  connLogCopyBtn: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#d9e1ec',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    backgroundColor: '#f8fafc'
-  },
-  connLogCopyBtnText: { color: '#44566f', fontSize: 12, fontWeight: '600' },
-  connLogBox: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e0e5eb',
-    backgroundColor: '#ffffff',
-    padding: 10,
-    gap: 8
-  },
-  connLogHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  connLogTitle: { color: '#344458', fontWeight: '700', fontSize: 13 },
-  connLogClearBtn: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#d9e1ec',
-    paddingHorizontal: 8,
-    paddingVertical: 4
-  },
-  connLogClearBtnText: { color: '#516176', fontSize: 12, fontWeight: '600' },
-  connLogScroll: { maxHeight: 160 },
-  connLogList: { gap: 4 },
-  connLogEmpty: { color: '#8895a7', fontSize: 12 },
-  connLogRow: { color: '#4f5f74', fontSize: 12, lineHeight: 16 },
-  connLogRowErr: { color: '#9a3b3b', fontSize: 12, lineHeight: 16 },
 
   scannerWrap: { flex: 1, padding: 14, gap: 10 },
   scannerHintText: { color: '#5a6a80', fontSize: 13 },

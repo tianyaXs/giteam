@@ -2,6 +2,8 @@
 
 ## Latest Update
 
+- 2026-04-08: Mobile 鉴权页收敛、字符画渲染稳定化与双端打包交接
+  - `docs/worklog/2026-04-08-step-37-mobile-auth-polish-and-packaging.md`
 - 2026-04-07: Mobile Control 局域网可达、扫码/流式状态修复与本地 APK 构建记录
   - `docs/worklog/2026-04-07-step-36-mobile-control-lan-sync-and-local-apk.md`
 - 2026-04-01: OpenCode 流式渲染与交互改造交接文档

@@ -1223,15 +1223,29 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             return (400, serde_json::json!({ "error": "repoPath and sessionId are required" }));
         }
         let limit = req.query.get("limit").and_then(|v| v.parse::<u32>().ok());
-        return match opencode::get_opencode_session_messages_detailed(repo.as_str(), sid.as_str(), None, limit) {
-            Ok(v) => {
-                let stats = analyze_session_loop_stats(&v);
-                if is_size_limit_compaction_loop(stats) {
+        let before = req.query.get("before").cloned();
+        return match opencode::get_opencode_session_messages_detailed_page(
+            repo.as_str(),
+            sid.as_str(),
+            None,
+            before,
+            limit,
+        ) {
+            Ok((items, next_cursor)) => {
+                let stats = analyze_session_loop_stats(&items);
+                let final_items = if is_size_limit_compaction_loop(stats) {
                     let _ = opencode::abort_opencode_session(repo.as_str(), sid.as_str(), None);
-                    (200, push_loop_notice_message(v, sid.as_str(), stats))
+                    push_loop_notice_message(items, sid.as_str(), stats)
                 } else {
-                    (200, v)
-                }
+                    items
+                };
+                (
+                    200,
+                    serde_json::json!({
+                        "items": final_items,
+                        "nextCursor": next_cursor
+                    }),
+                )
             }
             Err(e) => (500, serde_json::json!({ "error": e })),
         };

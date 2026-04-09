@@ -103,7 +103,8 @@ export async function getMessages(args: {
   repoPath: string;
   sessionId: string;
   limit?: number;
-}): Promise<any[]> {
+  before?: string;
+}): Promise<{ items: any[]; nextCursor: string }> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const params = new URLSearchParams({
     repoPath: args.repoPath,
@@ -112,13 +113,19 @@ export async function getMessages(args: {
   if (typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0) {
     params.set('limit', String(Math.floor(args.limit)));
   }
+  if (typeof args.before === 'string' && args.before.trim()) {
+    params.set('before', args.before.trim());
+  }
   const url = `${baseUrl}/api/v1/opencode/messages?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {
     headers: authHeaders(args.token)
   });
   const raw = ensureOk('messages', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed : [];
+  if (Array.isArray(parsed)) return { items: parsed, nextCursor: '' };
+  const items = Array.isArray(parsed?.items) ? parsed.items : [];
+  const nextCursor = String(parsed?.nextCursor || '').trim();
+  return { items, nextCursor };
 }
 
 export async function getSessions(args: {

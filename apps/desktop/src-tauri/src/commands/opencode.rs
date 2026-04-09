@@ -1,4 +1,6 @@
 use super::command_runner;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -1586,6 +1588,67 @@ pub fn get_opencode_session_messages_detailed(
         }
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
         serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse session messages failed: {e}"))
+    })
+}
+
+pub fn get_opencode_session_messages_detailed_page(
+    repo_path: &str,
+    session_id: &str,
+    directory: Option<String>,
+    before: Option<String>,
+    limit: Option<u32>,
+) -> Result<(Value, Option<String>), String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    let safe_limit = limit.unwrap_or(80).clamp(1, 400);
+    let request_limit = safe_limit.saturating_add(1);
+
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/session/{sid}/message");
+        let mut qs: Vec<String> = vec![format!("limit={request_limit}")];
+        if let Some(dir) = &directory {
+            let d = dir.trim();
+            if !d.is_empty() {
+                qs.push(format!("directory={}", urlencoding::encode(d)));
+            }
+        }
+        if let Some(cur) = before.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            qs.push(format!("before={}", urlencoding::encode(cur)));
+        }
+        url.push('?');
+        url.push_str(qs.join("&").as_str());
+
+        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
+        let mut arr = serde_json::from_str::<Vec<Value>>(&raw).map_err(|e| format!("parse session messages failed: {e}"))?;
+        let mut next_cursor = None::<String>;
+        if arr.len() > safe_limit as usize {
+            arr.remove(0);
+            if let Some(oldest) = arr.first() {
+                let id = oldest
+                    .get("info")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let created = oldest
+                    .get("info")
+                    .and_then(|v| v.get("time"))
+                    .and_then(|v| v.get("created"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if !id.is_empty() && created > 0 {
+                    let payload = serde_json::json!({ "id": id, "time": created });
+                    if let Ok(raw_cursor) = serde_json::to_vec(&payload) {
+                        next_cursor = Some(URL_SAFE_NO_PAD.encode(raw_cursor));
+                    }
+                }
+            }
+        }
+        Ok((Value::Array(arr), next_cursor))
     })
 }
 

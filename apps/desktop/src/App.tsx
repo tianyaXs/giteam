@@ -4902,16 +4902,6 @@ export function App() {
                   <div className="toolbar">
                     <button
                       className="chip"
-                      disabled={!controlPairPayload}
-                      onClick={() => {
-                        void navigator.clipboard.writeText(controlPairPayload);
-                        setMessage("Pair payload copied");
-                      }}
-                    >
-                      Copy payload
-                    </button>
-                    <button
-                      className="chip"
                       disabled={!controlBaseUrl}
                       onClick={() => {
                         void navigator.clipboard.writeText(controlBaseUrl);
