@@ -121,10 +121,12 @@ export async function getMessages(args: {
     headers: authHeaders(args.token)
   });
   const raw = ensureOk('messages', 'GET', url, result.status, result.ok, result.text);
+  // 服务端历史/兼容：可能直接返回数组（无 nextCursor），也可能返回 { items, nextCursor }
+  // 另外某些实现会返回 nextCursor: null，需要归一化成 ''，避免上层误判。
   const parsed = JSON.parse(raw);
   if (Array.isArray(parsed)) return { items: parsed, nextCursor: '' };
   const items = Array.isArray(parsed?.items) ? parsed.items : [];
-  const nextCursor = String(parsed?.nextCursor || '').trim();
+  const nextCursor = parsed?.nextCursor == null ? '' : String(parsed?.nextCursor || '').trim();
   return { items, nextCursor };
 }
 

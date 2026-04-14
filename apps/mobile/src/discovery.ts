@@ -54,11 +54,20 @@ export function inferDiscoveryPrefixes(seed: string): string[] {
   })();
   const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
   if (m) out.push(`${m[1]}.${m[2]}.${m[3]}`);
-  const defaults = ['192.168.1', '192.168.50', '10.0.0'];
+  // 常见局域网/热点网段前缀（不依赖本机获取 IP）
+  const defaults = [
+    '192.168.0',
+    '192.168.1',
+    '192.168.50',
+    '10.0.0',
+    // iOS/Android 热点常见网段（部分机型会分配到 172.20.10.x）
+    '172.20.10'
+  ];
   for (const p of defaults) {
     if (!out.includes(p)) out.push(p);
   }
-  return out.slice(0, 2);
+  // 控制扫描规模，避免长时间扫描导致内存/线程压力过大
+  return out.slice(0, 3);
 }
 
 export function inferSeedLastSegment(seed: string): number {

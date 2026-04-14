@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   FlatList,
+  InteractionManager,
   LayoutChangeEvent,
   PanResponder,
   Platform,
@@ -18,10 +19,22 @@ import {
   View
 } from 'react-native';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
+import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Network from 'expo-network';
 import EventSource from 'react-native-sse';
 import Markdown from '@ronradtke/react-native-markdown-display';
+import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
+import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
+import { ScannerScreen } from './src/screens/ScannerScreen';
+import { toText } from './src/lib/text';
+import { formatClock } from './src/lib/time';
+import { normalizeBaseUrlForClient } from './src/lib/url';
+import { DEFAULT_PREFS, loadPrefs, savePrefs } from './src/storage/prefs';
+import type { Prefs } from './src/storage/prefs';
+import { loadDiscoverCache, saveDiscoverCache } from './src/storage/discoverCache';
+import type { DiscoverCacheDevice } from './src/storage/discoverCache';
+import { loadPairCodeMap, savePairCodeMap } from './src/storage/pairCodeMap';
 import {
   abortSession,
   buildStreamUrl,
@@ -49,34 +62,22 @@ import type { DiscoveredDevice } from './src/discovery';
 import { parseConversation } from './src/messageParser';
 import type { MobileChatMessage, MobileTimelineItem } from './src/types';
 
-const PREF_KEY = 'giteam.mobile.v3';
-const DISCOVER_CACHE_KEY = 'giteam.mobile.discover-cache.v1';
+// keys + storage moved to src/storage/*
 
-const INITIAL_SESSION_LIMIT = 8;
-const OLDER_SESSION_LIMIT = 4;
-const AUTO_LOAD_TOP_THRESHOLD = 560;
+const INITIAL_SESSION_LIMIT = 2;
+const OLDER_SESSION_LIMIT = 2;
+const INITIAL_SESSION_PREFETCH_LIMIT = 2;
+const AUTO_PREFETCH_TOP_TRIGGER = 360;
+const AUTO_LOAD_TOP_TRIGGER = 260;
+const AUTO_LOAD_TOP_RESET = 520;
 const DISCOVER_OFFLINE_AFTER_MS = 45000;
 const DISCOVER_OFFLINE_MISS_THRESHOLD = 3;
-const DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP = 120;
-const DISCOVER_SWEEP_HARDSTOP_MS = 2600;
-const DISCOVER_WORKER_LIMIT = 18;
-const DISCOVER_POST_PROCESS_CHUNK = 18;
-type DiscoverCacheDevice = DiscoveredDevice & {
-  lastSeen: number;
-  offline: boolean;
-};
-
-type Prefs = {
-  serverUrl: string;
-  serverUrlTouched: boolean;
-  preferHttps: boolean;
-  pairCode: string;
-  repoPath: string;
-  repoPaths: string[];
-  token: string;
-  sessionId: string;
-  model: string;
-};
+const DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP = 48;
+const DISCOVER_SWEEP_HARDSTOP_MS = 2200;
+const DISCOVER_WORKER_LIMIT = 8;
+const DISCOVER_POST_PROCESS_CHUNK = 12;
+const DISCOVER_LOG_LIMIT = 220;
+// DiscoverCacheDevice type lives in src/storage/discoverCache
 
 type SessionItem = {
   id: string;
@@ -118,17 +119,7 @@ type RenderBoundaryState = {
 
 const CameraViewCompat: any = CameraView;
 
-const DEFAULT_PREFS: Prefs = {
-  serverUrl: '',
-  serverUrlTouched: false,
-  preferHttps: false,
-  pairCode: '',
-  repoPath: '',
-  repoPaths: [],
-  token: '',
-  sessionId: '',
-  model: ''
-};
+// DEFAULT_PREFS moved to src/storage/prefs
 
 class RenderBoundary extends React.Component<RenderBoundaryProps, RenderBoundaryState> {
   constructor(props: RenderBoundaryProps) {
@@ -157,15 +148,7 @@ class RenderBoundary extends React.Component<RenderBoundaryProps, RenderBoundary
   }
 }
 
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value == null) return '';
-  try {
-    return String(value);
-  } catch {
-    return '';
-  }
-}
+// toText moved to src/lib/text
 
 function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): React.ReactNode {
   const src = toText(text);
@@ -211,99 +194,7 @@ function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): Re
   );
 }
 
-async function loadPrefs(): Promise<Prefs> {
-  try {
-    if (Platform.OS === 'web') {
-      const raw = window.localStorage.getItem(PREF_KEY);
-      if (!raw) return DEFAULT_PREFS;
-      const merged = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) };
-      const touched = Boolean((merged as any).serverUrlTouched);
-      return {
-        serverUrl: touched ? toText(merged.serverUrl) : '',
-        serverUrlTouched: touched,
-        preferHttps: Boolean((merged as any).preferHttps),
-        pairCode: toText(merged.pairCode),
-        repoPath: toText(merged.repoPath),
-        repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
-        token: toText(merged.token),
-        sessionId: toText(merged.sessionId),
-        model: toText(merged.model)
-      };
-    }
-    const raw = await AsyncStorage.getItem(PREF_KEY);
-    if (!raw) return DEFAULT_PREFS;
-    const merged = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) };
-    const touched = Boolean((merged as any).serverUrlTouched);
-    return {
-      serverUrl: touched ? toText(merged.serverUrl) : '',
-      serverUrlTouched: touched,
-      preferHttps: Boolean((merged as any).preferHttps),
-      pairCode: toText(merged.pairCode),
-      repoPath: toText(merged.repoPath),
-      repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
-      token: toText(merged.token),
-      sessionId: toText(merged.sessionId),
-      model: toText(merged.model)
-    };
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
-
-async function savePrefs(next: Prefs): Promise<void> {
-  try {
-    const raw = JSON.stringify(next);
-    if (Platform.OS === 'web') {
-      window.localStorage.setItem(PREF_KEY, raw);
-      return;
-    }
-    await AsyncStorage.setItem(PREF_KEY, raw);
-  } catch {
-    // ignore
-  }
-}
-
-async function loadDiscoverCache(): Promise<DiscoverCacheDevice[]> {
-  try {
-    const parse = (raw: string | null): DiscoverCacheDevice[] => {
-      if (!raw) return [];
-      const rows = JSON.parse(raw);
-      if (!Array.isArray(rows)) return [];
-      return rows
-        .map((r: any) => ({
-          id: toText(r?.id),
-          baseUrl: toText(r?.baseUrl),
-          host: toText(r?.host),
-          port: Number(r?.port || 0) || 4100,
-          noAuth: Boolean(r?.noAuth),
-          x: Number(r?.x || 0),
-          y: Number(r?.y || 0),
-          lastSeen: Number(r?.lastSeen || 0) || Date.now(),
-          offline: Boolean(r?.offline)
-        }))
-        .filter((r) => r.id && r.host);
-    };
-    if (Platform.OS === 'web') {
-      return parse(window.localStorage.getItem(DISCOVER_CACHE_KEY));
-    }
-    return parse(await AsyncStorage.getItem(DISCOVER_CACHE_KEY));
-  } catch {
-    return [];
-  }
-}
-
-async function saveDiscoverCache(rows: DiscoverCacheDevice[]): Promise<void> {
-  try {
-    const payload = JSON.stringify(rows.slice(0, 120));
-    if (Platform.OS === 'web') {
-      window.localStorage.setItem(DISCOVER_CACHE_KEY, payload);
-      return;
-    }
-    await AsyncStorage.setItem(DISCOVER_CACHE_KEY, payload);
-  } catch {
-    // ignore
-  }
-}
+// prefs + discover cache moved to src/storage/*
 
 function parsePairPayload(input: string): PairPayload | null {
   const text = input.trim();
@@ -324,25 +215,7 @@ function parsePairPayload(input: string): PairPayload | null {
   }
 }
 
-function normalizeBaseUrlForClient(rawBaseUrl: string, opts?: { defaultScheme?: 'http' | 'https' }): string {
-  const raw = rawBaseUrl.trim();
-  if (!raw) return '';
-  try {
-    const scheme = opts?.defaultScheme === 'https' ? 'https' : 'http';
-    const parsed = new URL(raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${scheme}://${raw}`);
-    const host = parsed.hostname;
-    const reservedBenchmark = /^198\.(1[89])\./.test(host);
-    const needsWebHostReplace =
-      Platform.OS === 'web' &&
-      (host === '0.0.0.0' || host === '127.0.0.1' || host === 'localhost' || reservedBenchmark);
-    if (needsWebHostReplace && typeof window !== 'undefined') {
-      parsed.hostname = window.location.hostname;
-    }
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return raw;
-  }
-}
+// normalizeBaseUrlForClient moved to src/lib/url
 
 function summarizePreview(messages: MobileChatMessage[]): string {
   const assistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.text.trim());
@@ -384,14 +257,7 @@ function pickRandomQuestions(pool: string[], count: number): string[] {
   return arr.slice(0, Math.max(0, Math.min(count, arr.length)));
 }
 
-function formatClock(ts?: number): string {
-  if (!ts || !Number.isFinite(ts)) return '';
-  const d = new Date(ts);
-  const hh = `${d.getHours()}`.padStart(2, '0');
-  const mm = `${d.getMinutes()}`.padStart(2, '0');
-  const ss = `${d.getSeconds()}`.padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
+// formatClock moved to src/lib/time
 
 function extractModelOptionsFromConfig(raw: any): ModelOption[] {
   const out = new Map<string, ModelOption>();
@@ -530,11 +396,16 @@ export default function App() {
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discoverStageReady, setDiscoverStageReady] = useState(false);
   const [discoverDevices, setDiscoverDevices] = useState<DiscoverCacheDevice[]>([]);
+  const [discoveringUi, setDiscoveringUi] = useState(false);
+  const [pairPromptOpen, setPairPromptOpen] = useState(false);
+  const [pairPromptDevice, setPairPromptDevice] = useState<DiscoveredDevice | null>(null);
+  const [pairPromptValue, setPairPromptValue] = useState('');
   const [hoveredDeviceId, setHoveredDeviceId] = useState('');
   const [selectedDiscoverId, setSelectedDiscoverId] = useState('');
   const [connectingDiscoverId, setConnectingDiscoverId] = useState('');
   const [discoverOrbitDeg, setDiscoverOrbitDeg] = useState(0);
   const [radarBox, setRadarBox] = useState({ width: 260, height: 260 });
+  const [discoverLogs, setDiscoverLogs] = useState<Array<{ ts: number; level: 'info' | 'error'; msg: string }>>([]);
 
   const [prompt, setPrompt] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -553,6 +424,7 @@ export default function App() {
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
   const messageScrollRef = useRef<FlatList<MobileTimelineItem> | null>(null);
+  const topVisibleStableKeyRef = useRef<string>('');
   const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
   const allowAutoScrollRef = useRef(true);
@@ -561,24 +433,35 @@ export default function App() {
   const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
+  const sessionVisibleCountRef = useRef<Record<string, number>>({});
+  const sessionChatCountRef = useRef<Record<string, number>>({});
   const inflightMessageReqRef = useRef<Record<string, Promise<void>>>({});
-  const topAutoLoadLockRef = useRef(false);
-  const topAutoLoadAtRef = useRef(0);
+  const prefetchingOlderRef = useRef(false);
+  const prefetchedCursorRef = useRef<Record<string, string>>({});
   const messageScrollYRef = useRef(0);
+  const messageViewportHRef = useRef(0);
+  const autoFillLoadingRef = useRef(false);
+  const messageUserScrollingRef = useRef(false);
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
   const discoveringRef = useRef(false);
-  const selectedDiscoverIdRef = useRef('');
+  // const selectedDiscoverIdRef = useRef(''); // 拖拽交互已移除
   const discoverPointRef = useRef<Record<string, { x: number; y: number }>>({});
   const discoverOrbitRef = useRef<Record<string, { phase: number; radius: number }>>({});
   const discoverCacheRef = useRef<Record<string, DiscoverCacheDevice>>({});
   const discoverMissRef = useRef<Record<string, number>>({});
   const discoverSweepOffsetRef = useRef(0);
   const discoverPriorityDoneRef = useRef<Set<string>>(new Set());
-  const discoverDragAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const radarBoxRef = useRef({ width: 260, height: 260 });
   const discoverRevealRef = useRef<Record<string, Animated.Value>>({});
   const discoverRevealFallback = useRef(new Animated.Value(1)).current;
+  const discoverSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const discoverPendingSaveRef = useRef<DiscoverCacheDevice[] | null>(null);
+  const pairCodeMapRef = useRef<Record<string, string>>({});
+  // 发现页设备的布局参数（与屏幕尺寸解耦，避免尺寸变化/重渲染导致“乱跳”）
+  const discoverLayoutRef = useRef<Record<string, { angle0: number; omega: number; radiusF: number; driftX: number; driftY: number }>>({});
+  const discoverDriftRef = useRef<Record<string, Animated.Value>>({});
+  const [discoverOrbitTick, setDiscoverOrbitTick] = useState(0);
   const radarPulse = useRef(new Animated.Value(0)).current;
   const deviceBob = useRef(new Animated.Value(0)).current;
   const connectProgressAnim = useRef(new Animated.Value(0)).current;
@@ -590,6 +473,55 @@ export default function App() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
+
+  const localIpv4PrefixRef = useRef<{ prefix: string; ip: string; at: number } | null>(null);
+
+  async function getLocalIpv4Prefix(): Promise<{ prefix: string; ip: string } | null> {
+    try {
+      const cached = localIpv4PrefixRef.current;
+      const now = Date.now();
+      if (cached && now - cached.at < 15000) {
+        return { prefix: cached.prefix, ip: cached.ip };
+      }
+      const ip = String(await Network.getIpAddressAsync()).trim();
+      const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+      if (!m) return null;
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      const c = Number(m[3]);
+      const d = Number(m[4]);
+      if (![a, b, c, d].every((n) => Number.isFinite(n) && n >= 0 && n <= 255)) return null;
+      // 仅考虑常见私网 IPv4，避免蜂窝网/异常地址误扫
+      const isPrivate =
+        a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+      if (!isPrivate) return null;
+      const prefix = `${a}.${b}.${c}`;
+      localIpv4PrefixRef.current = { prefix, ip, at: now };
+      return { prefix, ip };
+    } catch {
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    const g: any = globalThis as any;
+    const ErrorUtilsAny = g?.ErrorUtils as any;
+    if (!ErrorUtilsAny?.setGlobalHandler) return;
+    const prev = ErrorUtilsAny.getGlobalHandler ? ErrorUtilsAny.getGlobalHandler() : null;
+    ErrorUtilsAny.setGlobalHandler((err: any, isFatal?: boolean) => {
+      try {
+        const fatalText = isFatal ? 'FATAL' : 'NON-FATAL';
+        pushDiscoverLog(`全局异常捕获(${fatalText})：${toText(err?.message || err)}`, 'error');
+      } catch {
+        // ignore
+      }
+      if (typeof prev === 'function') prev(err, isFatal);
+    });
+    return () => {
+      // 还原 handler（避免热重载/多次挂载重复包装）
+      if (typeof prev === 'function') ErrorUtilsAny.setGlobalHandler(prev);
+    };
+  }, []);
   const statusText = toText(status);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
@@ -639,6 +571,79 @@ export default function App() {
     console[tag](`[mobile-conn] ${new Date().toISOString()} ${text}`);
   }
 
+  function pushDiscoverLog(message: string, level: 'info' | 'error' = 'info') {
+    const msg = toText(message).trim();
+    if (!msg) return;
+    const row = { ts: Date.now(), level, msg };
+    setDiscoverLogs((prev) => {
+      const next = prev.length >= DISCOVER_LOG_LIMIT ? [...prev.slice(prev.length - (DISCOVER_LOG_LIMIT - 1)), row] : [...prev, row];
+      return next;
+    });
+    pushConnLog(`[discover] ${msg}`, level);
+  }
+
+  function deviceKeyOf(d: { host: string; port: number } | null | undefined): string {
+    if (!d) return '';
+    const host = toText((d as any).host).trim();
+    const port = Number((d as any).port || 0) || 0;
+    return host && port ? `${host}:${port}` : '';
+  }
+
+  // pair code map storage moved to src/storage/pairCodeMap
+
+  function scheduleDiscoverCacheSave(rows: DiscoverCacheDevice[], signal?: AbortSignal) {
+    discoverPendingSaveRef.current = rows;
+    if (discoverSaveTimerRef.current) {
+      clearTimeout(discoverSaveTimerRef.current);
+      discoverSaveTimerRef.current = null;
+    }
+    discoverSaveTimerRef.current = setTimeout(() => {
+      discoverSaveTimerRef.current = null;
+      const pending = discoverPendingSaveRef.current;
+      discoverPendingSaveRef.current = null;
+      if (!pending) return;
+      if (signal?.aborted) return;
+      void Promise.resolve(InteractionManager.runAfterInteractions(() => saveDiscoverCache(pending))).catch(() => {
+        if (signal?.aborted) return;
+        void saveDiscoverCache(pending);
+      });
+    }, 450);
+  }
+
+  function ensureDiscoverLayout(id: string, idx: number) {
+    if (discoverLayoutRef.current[id]) return discoverLayoutRef.current[id];
+    // 以 idx 为种子生成稳定参数：靠近视觉中心的安全圆环内分布
+    const angle0 = ((idx * 137) % 360) * (Math.PI / 180);
+    // 每台设备一个很小的角速度（无规则缓慢旋转）
+    const omega = (((idx * 29) % 21) - 10) / 1800; // rad/ms 约 -0.0055..0.0055
+    // 半径范围落在“波纹圈”区域里（更集中）
+    const radiusF = 0.16 + (((idx * 19) % 12) / 100); // 0.16 ~ 0.28
+    const driftX = ((idx % 3) - 1) * (2 + (idx % 4)); // -6..6 px
+    const driftY = (((idx + 1) % 3) - 1) * (2 + ((idx + 2) % 4)); // -6..6 px
+    const row = { angle0, omega, radiusF, driftX, driftY };
+    discoverLayoutRef.current[id] = row;
+
+    if (!discoverDriftRef.current[id]) {
+      const v = new Animated.Value(0);
+      discoverDriftRef.current[id] = v;
+      const duration = 4200 + ((idx * 317) % 2200);
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(v, { toValue: 1, duration, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration, easing: Easing.inOut(Easing.quad), useNativeDriver: true })
+        ])
+      ).start();
+    }
+    return row;
+  }
+
+  useEffect(() => {
+    if (!discoverOpen) return;
+    // 轻量 tick：驱动“绕中心旋转”的位置更新
+    const timer = setInterval(() => setDiscoverOrbitTick((v) => (v + 1) % 1000000), 90);
+    return () => clearInterval(timer);
+  }, [discoverOpen]);
+
   function onAuthAsciiSlotLayout(e: LayoutChangeEvent) {
     const { width, height } = e.nativeEvent.layout;
     setAuthAsciiBox((prev) => {
@@ -664,6 +669,10 @@ export default function App() {
       setLoaded(true);
       const pname = projectNameFromPath(toText(prefs.repoPath));
       setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
+    });
+    loadPairCodeMap().then((m) => {
+      if (!alive) return;
+      pairCodeMapRef.current = m || {};
     });
     return () => {
       alive = false;
@@ -719,21 +728,15 @@ export default function App() {
     if (!discoverOpen) return;
     radarPulse.setValue(0);
     deviceBob.setValue(0);
+    // 平滑扫描：避免“瞬间归零”造成的波纹突变
     const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(radarPulse, {
-          toValue: 1,
-          duration: 1900,
-          easing: Easing.linear,
-          useNativeDriver: true
-        }),
-        Animated.timing(radarPulse, {
-          toValue: 0,
-          duration: 0,
-          easing: Easing.linear,
-          useNativeDriver: true
-        })
-      ])
+      Animated.timing(radarPulse, {
+        toValue: 1,
+        duration: 2600,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true
+      }),
+      { resetBeforeIteration: true }
     );
     const bob = Animated.loop(
       Animated.sequence([
@@ -765,7 +768,7 @@ export default function App() {
     const timer = setInterval(() => {
       const deg = (((Date.now() - started) / 1000) * 14) % 360;
       setDiscoverOrbitDeg(deg);
-    }, 48);
+    }, 72);
     return () => clearInterval(timer);
   }, [discoverOpen]);
 
@@ -789,23 +792,33 @@ export default function App() {
   }, [discoverOpen, discoverStageReady, serverUrl, preferHttps, radarBox.width, radarBox.height]);
 
   useEffect(() => {
+    if (!discoverOpen) return;
     const nextIds = new Set(discoverDevices.map((d) => d.id));
     for (const id of Object.keys(discoverRevealRef.current)) {
       if (!nextIds.has(id)) delete discoverRevealRef.current[id];
     }
     discoverDevices.forEach((d, idx) => {
-      if (discoverRevealRef.current[d.id]) return;
+      const existing = discoverRevealRef.current[d.id];
+      if (existing) {
+        // 避免扫描刷新时重复触发入场动画导致顿挫
+        return;
+      }
       const v = new Animated.Value(0);
       discoverRevealRef.current[d.id] = v;
+      const hadCache = Boolean(discoverCacheRef.current[d.id]);
+      if (hadCache) {
+        v.setValue(1);
+        return;
+      }
       Animated.timing(v, {
         toValue: 1,
-        duration: 420,
-        delay: Math.min(360, idx * 70),
+        duration: 240,
+        delay: Math.min(120, idx * 40),
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true
       }).start();
     });
-  }, [discoverDevices]);
+  }, [discoverDevices, discoverOpen]);
 
   useEffect(() => {
     if (!selectedDiscoverId) return;
@@ -831,37 +844,7 @@ export default function App() {
     }).start();
   }, [selectedDiscoverId, connectProgressAnim, discoverCardAnim]);
 
-  const discoverPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => !!selectedDiscoverIdRef.current,
-        onMoveShouldSetPanResponder: (_evt, g) =>
-          !!selectedDiscoverIdRef.current && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onPanResponderGrant: () => {
-          const sid = toText(selectedDiscoverIdRef.current).trim();
-          if (!sid) return;
-          const row = discoverDevicesRef.current.find((x) => x.id === sid);
-          if (!row) return;
-          discoverDragAnchorRef.current = { x: row.x, y: row.y };
-        },
-        onPanResponderMove: (_evt, g) => {
-          const sid = toText(selectedDiscoverIdRef.current).trim();
-          const anchor = discoverDragAnchorRef.current;
-          if (!sid || !anchor) return;
-          const box = radarBoxRef.current;
-          const point = clampRadarPoint({ x: anchor.x + g.dx, y: anchor.y + g.dy }, box.width, box.height, 34);
-          discoverPointRef.current[sid] = point;
-          setDiscoverDevices((prev) => prev.map((d) => (d.id === sid ? { ...d, x: point.x, y: point.y } : d)));
-        },
-        onPanResponderRelease: () => {
-          discoverDragAnchorRef.current = null;
-        },
-        onPanResponderTerminate: () => {
-          discoverDragAnchorRef.current = null;
-        }
-      }),
-    []
-  );
+  // 去掉拖拽：保持“扫描 + 轻动态感”的简单交互模型
 
   useEffect(() => {
     if (authed) return;
@@ -892,9 +875,7 @@ export default function App() {
     discoverDevicesRef.current = discoverDevices;
   }, [discoverDevices]);
 
-  useEffect(() => {
-    selectedDiscoverIdRef.current = selectedDiscoverId;
-  }, [selectedDiscoverId]);
+  // selectedDiscoverIdRef 仅用于拖拽交互（已移除）
 
   useEffect(() => {
     radarBoxRef.current = radarBox;
@@ -1128,14 +1109,51 @@ export default function App() {
     });
   }
 
+  function timelineStableKey(item: MobileTimelineItem): string {
+    if (item.kind === 'chat') return `chat:${toText(item.message.id).trim()}`;
+    if (item.kind === 'think') return `think:${toText(item.card.id).trim()}`;
+    if (item.kind === 'event') return `event:${toText(item.event.id).trim()}`;
+    return `context:${toText(item.context.id).trim()}`;
+  }
+
+  function renderSessionVisibleWindow(targetSessionId: string, visibleCount: number) {
+    const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
+    const full = parseConversation(merged);
+    const allChats = Array.isArray(full.chatMessages) ? full.chatMessages : [];
+    const totalChats = allChats.length;
+    const cappedVisible = Math.max(0, Math.min(Math.floor(visibleCount), totalChats));
+    sessionVisibleCountRef.current[targetSessionId] = cappedVisible;
+    sessionChatCountRef.current[targetSessionId] = totalChats;
+    const visibleChats = allChats.slice(Math.max(0, totalChats - cappedVisible));
+    const visibleTimeline: MobileTimelineItem[] = visibleChats.map((m) => ({
+      kind: 'chat',
+      createdAt: Number(m.createdAt || 0),
+      message: m
+    }));
+    setMessages(visibleChats);
+    setTimeline(visibleTimeline);
+    upsertSession(targetSessionId, visibleChats);
+    return {
+      mergedCount: merged.length,
+      visibleCount: cappedVisible,
+      timelineCount: visibleTimeline.length,
+      chatCount: visibleChats.length,
+      totalChatCount: totalChats,
+      writing: full.writing
+    };
+  }
+
   async function refreshMessages(
     targetSessionId: string,
-    opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean; before?: string }
+    opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean; prefetchOnly?: boolean; before?: string; anchorStableKey?: string }
   ) {
     if (!authed || !repoPath || !targetSessionId) return;
-    const requestedLimit = Math.max(8, Number(opts?.limit || INITIAL_SESSION_LIMIT));
+    const requestedLimit = Math.max(2, Number(opts?.limit || INITIAL_SESSION_LIMIT));
+    // 为了拿到服务端分页游标/nextCursor，首屏请求不要跟渲染窗口一样小（例如 2）。
+    // 渲染仍由 renderSessionVisibleWindow 控制（requestedLimit），网络请求用更合理的 fetchLimit。
+    const fetchLimit = opts?.loadingOlder || opts?.prefetchOnly ? requestedLimit : Math.max(requestedLimit, 40);
     const before = toText(opts?.before).trim();
-    const reqKey = `${targetSessionId}|${requestedLimit}|${before || '-'}`;
+    const reqKey = `${targetSessionId}|${fetchLimit}|${before || '-'}`;
     const existing = inflightMessageReqRef.current[reqKey];
     if (existing) {
       await existing;
@@ -1143,7 +1161,9 @@ export default function App() {
     }
     const run = (async () => {
       try {
-        pushConnLog(`GET messages sid=${targetSessionId} limit=${requestedLimit}${before ? ' before=cursor' : ''}`);
+        pushConnLog(
+          `GET messages sid=${targetSessionId} limit=${fetchLimit}${before ? ' before=cursor' : ''}${fetchLimit !== requestedLimit ? ` (render=${requestedLimit})` : ''}`
+        );
         let res: { items: any[]; nextCursor: string };
         try {
           res = await getMessages({
@@ -1151,11 +1171,11 @@ export default function App() {
             token,
             repoPath,
             sessionId: targetSessionId,
-            limit: requestedLimit,
+            limit: fetchLimit,
             before: before || undefined
           });
         } catch (e1) {
-          const fallbackLimit = Math.min(160, requestedLimit);
+          const fallbackLimit = Math.min(160, fetchLimit);
           pushConnLog(
             `GET messages retry sid=${targetSessionId} limit=${fallbackLimit}${before ? ' before=cursor' : ''} cause=${String(e1)}`,
             'error'
@@ -1177,21 +1197,43 @@ export default function App() {
         const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
         const merged = mergeMessageRows(prevRaw, incoming);
         sessionRawMapRef.current[targetSessionId] = merged;
-        const next = parseConversation(merged);
+        const prevVisible = Math.max(0, Number(sessionVisibleCountRef.current[targetSessionId] || 0));
+        let nextVisible = prevVisible > 0 ? prevVisible : requestedLimit;
+        const userAtTop = Number(messageScrollYRef.current || 0) <= AUTO_LOAD_TOP_TRIGGER + 12;
+        if (opts?.jumpToLatest) {
+          nextVisible = requestedLimit;
+        } else if (opts?.loadingOlder) {
+          nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
+        } else if (opts?.prefetchOnly) {
+          // 预取完成时若用户就在顶部，直接展开一页，避免“只有两条导致拖不动”。
+          if (userAtTop) {
+            nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
+          } else {
+            nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT));
+          }
+        } else {
+          nextVisible = Math.min(merged.length, nextVisible);
+        }
+        // 兜底：凡是基于 before 游标拉到新历史（merged 变大），至少展开一页可见区，
+        // 避免出现“预取成功但 visible 不变”的卡死体验。
+        if (before && merged.length > prevRaw.length && nextVisible <= prevVisible) {
+          nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
+        }
+        const rendered = renderSessionVisibleWindow(targetSessionId, nextVisible);
         const nextCursor = toText(res.nextCursor).trim();
-        pushConnLog(`GET messages ok sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} next=${nextCursor ? 1 : 0}`);
+        pushConnLog(
+          `GET messages ok sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} visible=${rendered.visibleCount} timeline=${rendered.timelineCount} chat=${rendered.chatCount} next=${nextCursor ? 1 : 0}`
+        );
         setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: nextCursor }));
-        setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor }));
-        setMessages(next.chatMessages);
-        setTimeline(next.timeline);
-        upsertSession(targetSessionId, next.chatMessages);
+        const hiddenInCache = rendered.totalChatCount > rendered.visibleCount;
+        setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
         if (opts?.jumpToLatest) {
           forceScrollToLatestUntilRef.current = Date.now() + 800;
           requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
           setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
           setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
         }
-        if (!next.writing) {
+        if (!rendered.writing) {
           setStreaming(false);
           setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
         }
@@ -1214,38 +1256,78 @@ export default function App() {
     }
   }
 
+  async function maybePrefetchOlderMessages() {
+    const sid = toText(sessionId).trim();
+    if (!sid || loadingOlder || prefetchingOlderRef.current || !sessionHasMore[sid]) return;
+    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
+    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
+    if (cached > visible + OLDER_SESSION_LIMIT) return;
+    const cursor = toText(sessionNextCursor[sid]).trim();
+    if (!cursor) return;
+    prefetchingOlderRef.current = true;
+    try {
+      if (prefetchedCursorRef.current[sid] === cursor) return;
+      await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, prefetchOnly: true });
+      prefetchedCursorRef.current[sid] = cursor;
+    } finally {
+      prefetchingOlderRef.current = false;
+    }
+  }
+
   async function onLoadOlderMessages() {
     const sid = toText(sessionId).trim();
     if (!sid || loadingOlder) return;
-    const cursor = toText(sessionNextCursor[sid]).trim();
-    if (!cursor) {
+    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
+    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
+    if (cached > visible) {
+      renderSessionVisibleWindow(sid, Math.min(cached, visible + OLDER_SESSION_LIMIT));
+      void maybePrefetchOlderMessages();
       return;
     }
+    const anchorStableKey = toText(topVisibleStableKeyRef.current).trim();
+    const cursor = toText(sessionNextCursor[sid]).trim();
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
-    await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, loadingOlder: true });
+    if (cursor) {
+      await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, loadingOlder: true, anchorStableKey });
+    } else {
+      setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
+      setLoadingOlder(false);
+      suppressAutoScrollRef.current = false;
+      return;
+    }
     setTimeout(() => {
       suppressAutoScrollRef.current = false;
-    }, 300);
+    }, 120);
+  }
+
+  async function ensureScrollableHistoryArea() {
+    const sid = toText(sessionIdRef.current).trim();
+    if (!sid || loadingOlder || autoFillLoadingRef.current) return;
+    if (!sessionHasMore[sid]) return;
+    autoFillLoadingRef.current = true;
+    try {
+      await onLoadOlderMessages();
+    } finally {
+      autoFillLoadingRef.current = false;
+    }
   }
 
   function onMessageListScroll(y: number) {
     messageScrollYRef.current = y;
     const sid = toText(sessionIdRef.current).trim();
-    if (!sid || loadingOlder || !sessionHasMore[sid]) return;
-    if (y > AUTO_LOAD_TOP_THRESHOLD) {
-      topAutoLoadLockRef.current = false;
-      return;
+    if (!sid || loadingOlder) return;
+    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
+    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
+    const canExpandFromCache = cached > visible;
+    if (!sessionHasMore[sid] && !canExpandFromCache) return;
+    // 接近顶部先预取，避免到顶等待网络。
+    if (y <= AUTO_PREFETCH_TOP_TRIGGER) {
+      void maybePrefetchOlderMessages();
     }
-    const now = Date.now();
-    if (topAutoLoadLockRef.current && now - topAutoLoadAtRef.current < 520) return;
-    topAutoLoadLockRef.current = true;
-    topAutoLoadAtRef.current = now;
-    void onLoadOlderMessages().finally(() => {
-      setTimeout(() => {
-        topAutoLoadLockRef.current = false;
-      }, 360);
-    });
+    if (y > AUTO_LOAD_TOP_RESET) return;
+    if (y > AUTO_LOAD_TOP_TRIGGER) return;
+    void onLoadOlderMessages();
   }
 
   async function refreshModelCatalog(targetRepoPath?: string) {
@@ -1520,8 +1602,9 @@ export default function App() {
       pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
       const serverNoAuth = Boolean((ping as any)?.auth?.noAuth);
       if (!serverNoAuth && !nextCode) {
-        setStatus('认证失败：当前服务端需要验证码');
-        pushConnLog('auth failed: pair code required by server', 'error');
+        // 缺少验证码是可恢复的用户输入问题，不应当作为 error 日志刷屏
+        setStatus('该设备需要验证码，请输入验证码后重试');
+        pushConnLog('pair code required by server (need user input)', 'info');
         return;
       }
       let nextToken = NO_AUTH_TOKEN;
@@ -1552,6 +1635,8 @@ export default function App() {
       pushConnLog(`auth connect error ${errText}`, 'error');
       if (!nextCode && /missing bearer token|invalid bearer token|401/i.test(errText)) {
         setStatus('服务端当前需要验证码，请输入验证码后重试');
+      } else if (/pair code required|required by server|需要验证码/i.test(errText)) {
+        setStatus('该设备需要验证码，请在首页输入验证码后重试');
       } else if (/pair code|expired|invalid|验证码|过期/i.test(errText)) {
         setStatus('验证码无效或已过期，请检查后重试');
       } else {
@@ -1599,16 +1684,45 @@ export default function App() {
     const runId = Date.now();
     discoverRunRef.current = runId;
     discoveringRef.current = true;
+    setDiscoveringUi(true);
     const hardStopAt = Date.now() + DISCOVER_SWEEP_HARDSTOP_MS;
-    const prefixes = inferDiscoveryPrefixes(serverUrl);
+    const local = await getLocalIpv4Prefix();
+    // 只扫描手机当前 IPv4 的前三段网段；不再扫描其它默认前缀
+    const pickPrefixFromText = (seed: string): string => {
+      const text = String(seed || '').trim();
+      if (!text) return '';
+      try {
+        const withScheme = text.startsWith('http://') || text.startsWith('https://') ? text : `http://${text}`;
+        const host = new URL(withScheme).hostname;
+        const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
+        return m ? `${m[1]}.${m[2]}.${m[3]}` : '';
+      } catch {
+        const host = text.split('/')[0]?.split(':')[0] || '';
+        const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
+        return m ? `${m[1]}.${m[2]}.${m[3]}` : '';
+      }
+    };
+    const prefixFromSeed = pickPrefixFromText(serverUrl);
+    const prefixFromCache = (() => {
+      const rows = Object.values(discoverCacheRef.current || {});
+      if (rows.length === 0) return '';
+      const best = rows.slice().sort((a, b) => (Number(b.lastSeen || 0) || 0) - (Number(a.lastSeen || 0) || 0))[0];
+      return best?.host ? pickPrefixFromText(best.host) : '';
+    })();
+    const chosenPrefix = local?.prefix || prefixFromSeed || prefixFromCache || inferDiscoveryPrefixes(serverUrl)[0] || '';
+    const prefixes = chosenPrefix ? [chosenPrefix] : [];
     const port = resolvePortFromSeed(serverUrl, 4100);
     const seedLast = inferSeedLastSegment(serverUrl);
     const hostOrder = buildHostOrder(seedLast);
+    pushDiscoverLog(
+      `开始扫描 localIp=${local?.ip || 'n/a'} prefixes=${prefixes.join(',')} port=${port} seedLast=${seedLast} workers<=${DISCOVER_WORKER_LIMIT}`
+    );
     const hosts: string[] = [];
     for (const pre of prefixes) {
       for (const i of hostOrder) hosts.push(`${pre}.${i}`);
     }
     if (hosts.length === 0) {
+      pushDiscoverLog('扫描队列为空（未推断出网段前缀）', 'error');
       discoveringRef.current = false;
       return;
     }
@@ -1642,12 +1756,18 @@ export default function App() {
     const found = new Map<string, { host: string; port: number; noAuth: boolean; baseUrl: string }>();
     const runWorker = async () => {
       while (cursor < queueHosts.length && discoverRunRef.current === runId && Date.now() < hardStopAt) {
+        if (abortCtrl.signal.aborted) return;
         const idx = cursor++;
         const host = queueHosts[idx];
         let healthInfo: any | null = null;
         let baseUrl = '';
         const candidate = `http://${host}:${port}`;
-        healthInfo = await probeHealthFast(candidate, 760, abortCtrl.signal);
+        try {
+          healthInfo = await probeHealthFast(candidate, 760, abortCtrl.signal);
+        } catch (e) {
+          pushDiscoverLog(`probe 异常 host=${host} err=${toText(e)}`, 'error');
+          healthInfo = null;
+        }
         if (healthInfo) {
           baseUrl = candidate;
         }
@@ -1660,19 +1780,25 @@ export default function App() {
           noAuth: Boolean(healthInfo?.auth?.noAuth),
           baseUrl
         });
+        pushDiscoverLog(`命中 ${key} noAuth=${Boolean(healthInfo?.auth?.noAuth)}`);
       }
     };
     try {
       await Promise.all(Array.from({ length: workers }, () => runWorker()));
-      if (discoverRunRef.current !== runId) return;
+      if (discoverRunRef.current !== runId || abortCtrl.signal.aborted) return;
       discoverSweepOffsetRef.current = (offset + Math.max(1, cursor)) % hosts.length;
       const rows = [...found.values()].sort((a, b) => a.host.localeCompare(b.host, 'en'));
       const now = Date.now();
       const foundIds = new Set<string>();
+      if (rows.length === 0) {
+        pushDiscoverLog(`本轮未发现设备（已探测 ${Math.min(cursor, queueHosts.length)}/${queueHosts.length} host，超时=${Date.now() >= hardStopAt ? '是' : '否'}）`);
+      } else {
+        pushDiscoverLog(`本轮发现 ${rows.length} 台设备`);
+      }
       for (let i = 0; i < rows.length; i += 1) {
         if (i > 0 && i % DISCOVER_POST_PROCESS_CHUNK === 0) {
           await new Promise((resolve) => setTimeout(resolve, 0));
-          if (discoverRunRef.current !== runId) return;
+          if (discoverRunRef.current !== runId || abortCtrl.signal.aborted) return;
         }
         const r = rows[i];
         const id = `${r.host}:${r.port}`;
@@ -1698,36 +1824,65 @@ export default function App() {
         };
         discoverMissRef.current[id] = 0;
       }
-      const cacheEntries = Object.entries(discoverCacheRef.current);
-      for (let i = 0; i < cacheEntries.length; i += 1) {
-        if (i > 0 && i % DISCOVER_POST_PROCESS_CHUNK === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          if (discoverRunRef.current !== runId) return;
-        }
-        const [id, d] = cacheEntries[i];
-        if (foundIds.has(id)) continue;
-        const miss = (discoverMissRef.current[id] || 0) + 1;
-        discoverMissRef.current[id] = miss;
-        const stale = now - (Number(d.lastSeen || 0) || 0) > DISCOVER_OFFLINE_AFTER_MS;
-        const shouldOffline = stale && miss >= DISCOVER_OFFLINE_MISS_THRESHOLD;
-        if (d.offline !== shouldOffline) discoverCacheRef.current[id] = { ...d, offline: shouldOffline };
+
+      // 性能优化：如果本轮发现了设备，优先只渲染“本轮发现列表”，
+      // 避免把大量历史缓存设备也参与排序/渲染导致卡顿。
+      if (!abortCtrl.signal.aborted && rows.length > 0) {
+        const nextFoundOnly = rows
+          .map((r) => discoverCacheRef.current[`${r.host}:${r.port}`])
+          .filter(Boolean)
+          .sort((a, b) => a.host.localeCompare(b.host, 'en'));
+        setDiscoverDevices((prev) => (isSameDiscoverRenderList(prev, nextFoundOnly) ? prev : nextFoundOnly));
+        scheduleDiscoverCacheSave(nextFoundOnly, abortCtrl.signal);
       }
-      const next = Object.values(discoverCacheRef.current)
-        .sort((a, b) => {
-          if (a.offline !== b.offline) return a.offline ? 1 : -1;
-          return a.host.localeCompare(b.host, 'en');
+
+      // 把“离线标记”放到交互空闲后再做，避免扫描结束瞬间卡顿
+      const snapshotRunId = runId;
+      const snapshotFoundIds = new Set(foundIds);
+      void Promise.resolve(
+        InteractionManager.runAfterInteractions(() => {
+          if (discoverRunRef.current !== snapshotRunId || abortCtrl.signal.aborted) return;
+          const cacheEntries = Object.entries(discoverCacheRef.current);
+          const now2 = Date.now();
+          for (let i = 0; i < cacheEntries.length; i += 1) {
+            const [id, d] = cacheEntries[i];
+            if (snapshotFoundIds.has(id)) continue;
+            const miss = (discoverMissRef.current[id] || 0) + 1;
+            discoverMissRef.current[id] = miss;
+            const stale = now2 - (Number(d.lastSeen || 0) || 0) > DISCOVER_OFFLINE_AFTER_MS;
+            const shouldOffline = stale && miss >= DISCOVER_OFFLINE_MISS_THRESHOLD;
+            if (d.offline !== shouldOffline) discoverCacheRef.current[id] = { ...d, offline: shouldOffline };
+          }
         })
-        .slice(0, 120);
-      setDiscoverDevices((prev) => (isSameDiscoverRenderList(prev, next) ? prev : next));
-      setTimeout(() => {
-        void saveDiscoverCache(next);
-      }, 80);
+      ).catch(() => {
+        // ignore
+      });
+      // 如果本轮没发现设备，再回落到展示历史缓存（含离线标记）
+      if (rows.length === 0) {
+        const next = Object.values(discoverCacheRef.current)
+          .sort((a, b) => {
+            if (a.offline !== b.offline) return a.offline ? 1 : -1;
+            return a.host.localeCompare(b.host, 'en');
+          })
+          .slice(0, 120);
+        if (abortCtrl.signal.aborted) return;
+        setDiscoverDevices((prev) => (isSameDiscoverRenderList(prev, next) ? prev : next));
+        scheduleDiscoverCacheSave(next, abortCtrl.signal);
+      }
+    } catch (e) {
+      pushDiscoverLog(`扫描流程异常：${toText(e)}`, 'error');
     } finally {
       if (discoverAbortRef.current === abortCtrl) {
         discoverAbortRef.current = null;
       }
       if (discoverRunRef.current === runId) {
         discoveringRef.current = false;
+      }
+      if (discoverRunRef.current === runId) {
+        setDiscoveringUi(false);
+      } else {
+        // 如果被下一轮覆盖，也需要尽快关掉“扫描中”提示
+        setDiscoveringUi(false);
       }
     }
   }
@@ -1737,6 +1892,8 @@ export default function App() {
     setSelectedDiscoverId('');
     discoverPriorityDoneRef.current = new Set();
     setDiscoverStageReady(false);
+    setDiscoverLogs([]);
+    pushDiscoverLog('打开发现设备界面');
     const cached = Object.values(discoverCacheRef.current)
       .sort((a, b) => {
         if (a.offline !== b.offline) return a.offline ? 1 : -1;
@@ -1751,6 +1908,11 @@ export default function App() {
   }
 
   function onCloseDiscover() {
+    if (discoverSaveTimerRef.current) {
+      clearTimeout(discoverSaveTimerRef.current);
+      discoverSaveTimerRef.current = null;
+    }
+    discoverPendingSaveRef.current = null;
     discoverAbortRef.current?.abort();
     discoverAbortRef.current = null;
     discoverRunRef.current = 0;
@@ -1759,16 +1921,26 @@ export default function App() {
     discoverSweepOffsetRef.current = 0;
     discoverPriorityDoneRef.current = new Set();
     discoverMissRef.current = {};
-    discoverDragAnchorRef.current = null;
     discoverRevealRef.current = {};
+    discoverLayoutRef.current = {};
+    discoverDriftRef.current = {};
     setHoveredDeviceId('');
     setSelectedDiscoverId('');
     setDiscoverStageReady(false);
     discoveringRef.current = false;
+    pushDiscoverLog('关闭发现设备界面');
     setDiscoverOpen(false);
   }
 
-  async function onConnectDiscoveredDevice(item: DiscoveredDevice) {
+  function openPairPrompt(item: DiscoveredDevice) {
+    setPairPromptDevice(item);
+    const key = deviceKeyOf(item);
+    const cached = key ? toText(pairCodeMapRef.current[key]).trim() : '';
+    setPairPromptValue(cached || '');
+    setPairPromptOpen(true);
+  }
+
+  async function onConnectDiscoveredDevice(item: DiscoveredDevice, codeOverride?: string) {
     const hostWithPort = (() => {
       try {
         const u = new URL(item.baseUrl);
@@ -1780,7 +1952,10 @@ export default function App() {
     setServerUrlTouched(true);
     setServerUrl(hostWithPort);
     setPreferHttps(item.baseUrl.startsWith('https://'));
-    await connectWithAddressAndCode(item.baseUrl, pairCode);
+    const key = deviceKeyOf(item);
+    const cached = key ? toText(pairCodeMapRef.current[key]).trim() : '';
+    const code = (codeOverride ?? cached ?? pairCode).trim();
+    await connectWithAddressAndCode(item.baseUrl, code);
   }
 
   async function onConnectSelectedDiscover() {
@@ -1794,7 +1969,7 @@ export default function App() {
         toValue: 1,
         duration: 620,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: false
+        useNativeDriver: true
       }).start(() => resolve());
     });
     try {
@@ -2040,251 +2215,101 @@ export default function App() {
   }
 
   if (discoverOpen) {
-    const waveDiameter = Math.max(180, Math.min(radarBox.width, radarBox.height) * 1.25);
-    const wave1Scale = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1.22] });
-    const wave1Opacity = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.36, 0] });
-    const wave2Scale = radarPulse.interpolate({ inputRange: [0, 0.48, 1], outputRange: [0.2, 0.2, 1.38] });
-    const wave2Opacity = radarPulse.interpolate({ inputRange: [0, 0.48, 1], outputRange: [0, 0.24, 0] });
-    const wave3Scale = radarPulse.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.2, 0.2, 1.52] });
-    const wave3Opacity = radarPulse.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0, 0.16, 0] });
-    const centerFloatY = radarPulse.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, -5, 0] });
-    const centerRippleScale = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 2.35] });
-    const centerRippleOpacity = radarPulse.interpolate({ inputRange: [0, 1], outputRange: [0.34, 0] });
-    const centerRippleScale2 = radarPulse.interpolate({ inputRange: [0, 0.42, 1], outputRange: [0.2, 0.2, 2.1] });
-    const centerRippleOpacity2 = radarPulse.interpolate({ inputRange: [0, 0.42, 1], outputRange: [0, 0.24, 0] });
-    const connectProgressWidth = connectProgressAnim.interpolate({ inputRange: [0, 1], outputRange: ['12%', '100%'] });
+    const connectProgressScaleX = connectProgressAnim.interpolate({ inputRange: [0, 1], outputRange: [0.12, 1] });
+    const deviceRows: DiscoverListRow[] = discoverDevices.map((d) => ({
+      id: d.id,
+      host: d.host,
+      port: d.port,
+      noAuth: d.noAuth,
+      offline: d.offline
+    }));
     return (
-      <SafeAreaView style={styles.discoverSafe}>
-        <View style={styles.discoverWrap}>
-          <Text style={styles.discoverTitle}>发现设备</Text>
-          <View
-            style={styles.senseStage}
-            {...discoverPanResponder.panHandlers}
-            onLayout={(e) => {
-              const { width, height } = e.nativeEvent.layout;
-              setRadarBox((prev) => {
-                if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
-                return { width, height };
-              });
-              setDiscoverStageReady(true);
-            }}
-          >
-            <Pressable style={styles.senseTapBlank} onPress={() => setSelectedDiscoverId('')} />
-            <Animated.View
-              style={[
-                styles.senseWave,
-                {
-                  width: waveDiameter,
-                  height: waveDiameter,
-                  marginLeft: -waveDiameter / 2,
-                  marginTop: -waveDiameter / 2,
-                  opacity: wave1Opacity,
-                  transform: [{ scale: wave1Scale }]
-                }
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.senseWave,
-                {
-                  width: waveDiameter,
-                  height: waveDiameter,
-                  marginLeft: -waveDiameter / 2,
-                  marginTop: -waveDiameter / 2,
-                  opacity: wave2Opacity,
-                  transform: [{ scale: wave2Scale }]
-                }
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.senseWaveSoft,
-                {
-                  width: waveDiameter,
-                  height: waveDiameter,
-                  marginLeft: -waveDiameter / 2,
-                  marginTop: -waveDiameter / 2,
-                  opacity: wave3Opacity,
-                  transform: [{ scale: wave3Scale }]
-                }
-              ]}
-            />
-            <Animated.View style={[styles.senseCenterRipple, { opacity: centerRippleOpacity, transform: [{ scale: centerRippleScale }] }]} />
-            <Animated.View style={[styles.senseCenterRippleSoft, { opacity: centerRippleOpacity2, transform: [{ scale: centerRippleScale2 }] }]} />
-            <Animated.View style={[styles.senseCenterFloat, { transform: [{ translateY: centerFloatY }] }]}>
-              <View style={styles.senseCenterPhone}>
-                <View style={styles.senseCenterPhoneNotch} />
-              </View>
-            </Animated.View>
-            {(discoverStageReady ? discoverDevices : []).map((d) => {
-              const reveal = discoverRevealRef.current[d.id] || discoverRevealFallback;
-              const orbit = discoverOrbitRef.current[d.id] || { phase: 0, radius: 0 };
-              const orbitRad = ((discoverOrbitDeg + orbit.phase) * Math.PI) / 180;
-              const withOrbit = {
-                x: d.x + Math.cos(orbitRad) * orbit.radius,
-                y: d.y + Math.sin(orbitRad) * orbit.radius * 0.82
-              };
-              const shown = clampRadarPoint(withOrbit, radarBox.width, radarBox.height, 34);
-              return (
-                <Pressable
-                  key={d.id}
-                  style={[
-                    styles.senseDevice,
-                    {
-                      left: shown.x - 19,
-                      top: shown.y - 19,
-                      transform: [
-                        {
-                          translateY: deviceBob.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0, -2.4]
-                          })
-                        }
-                      ]
-                    }
-                  ]}
-                  onPress={() => setSelectedDiscoverId(d.id)}
-                  onHoverIn={() => setHoveredDeviceId(d.id)}
-                  onHoverOut={() => setHoveredDeviceId((prev) => (prev === d.id ? '' : prev))}
-                >
-                  <Animated.View
-                    style={{
-                      opacity: reveal,
-                      transform: [
-                        {
-                          scale: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] })
-                        }
-                      ]
-                    }}
-                  >
-                    <View
-                      style={
-                        d.offline
-                          ? hoveredDeviceId === d.id
-                            ? styles.senseDeviceIconOfflineHover
-                            : styles.senseDeviceIconOffline
-                          : hoveredDeviceId === d.id
-                            ? styles.senseDeviceIconHover
-                            : styles.senseDeviceIcon
-                      }
-                    >
-                      <View style={styles.senseDeviceScreen} />
-                      <Text style={styles.senseDeviceGlyph}>&gt;_</Text>
-                    </View>
-                  </Animated.View>
-                </Pressable>
-              );
-            })}
-          </View>
-          <View style={styles.discoverFooterSlot}>
-            {selectedDiscoverDevice ? (
-              <Animated.View
-                style={[
-                  styles.discoverDeviceCard,
-                  {
-                    opacity: discoverCardAnim,
-                    transform: [
-                      { translateY: discoverCardAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) },
-                      { scale: discoverCardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.985, 1] }) }
-                    ]
-                  }
-                ]}
-              >
-                <Text style={styles.discoverDeviceCardTag}>TERMINAL LINK</Text>
-                <Text numberOfLines={1} style={styles.discoverDeviceCardTitle}>
-                  {`${selectedDiscoverDevice.host}:${selectedDiscoverDevice.port}`}
-                </Text>
-                <Text style={styles.discoverDeviceCardSub}>
-                  {selectedDiscoverDevice.offline
-                    ? '设备状态: 离线（历史记录）'
-                    : selectedDiscoverDevice.noAuth
-                      ? '认证模式: noAuth'
-                      : '认证模式: pairCode'}
-                </Text>
-                {connectingDiscoverId === selectedDiscoverDevice.id ? (
-                  <>
-                    <View style={styles.discoverDeviceProgressTrack}>
-                      <Animated.View style={[styles.discoverDeviceProgressBar, { width: connectProgressWidth }]} />
-                    </View>
-                    <Text style={styles.discoverDeviceProgressText}>正在建立连接通道...</Text>
-                  </>
-                ) : null}
-                <View style={styles.discoverDeviceCardActions}>
-                  <Pressable
-                    style={selectedDiscoverDevice.offline ? styles.discoverCardConnectBtnOffline : styles.discoverCardConnectBtn}
-                    onPress={() => void onConnectSelectedDiscover()}
-                    disabled={connectingDiscoverId === selectedDiscoverDevice.id || selectedDiscoverDevice.offline}
-                  >
-                    <Text style={styles.discoverCardConnectText}>
-                      {selectedDiscoverDevice.offline
-                        ? '离线'
-                        : connectingDiscoverId === selectedDiscoverDevice.id
-                          ? '连接中...'
-                          : '连接'}
-                    </Text>
-                  </Pressable>
-                </View>
-              </Animated.View>
-            ) : null}
-            <Pressable style={styles.discoverCloseBtn} onPress={onCloseDiscover}>
-              <Text style={styles.discoverCloseTxt}>×</Text>
-            </Pressable>
-          </View>
-        </View>
-      </SafeAreaView>
+      <RenderBoundary name="discover-screen">
+        <DiscoverListScreen
+          styles={styles}
+          title="发现设备"
+          discoveringUi={discoveringUi}
+          devices={deviceRows}
+          connectingDiscoverId={connectingDiscoverId}
+          connectProgressScaleX={connectProgressScaleX}
+          pairPromptOpen={pairPromptOpen && !!pairPromptDevice}
+          pairPromptHostPort={pairPromptDevice ? `${pairPromptDevice.host}:${pairPromptDevice.port}` : ''}
+          pairPromptValue={pairPromptValue}
+          onBack={onCloseDiscover}
+          onRescan={() => void startDiscover()}
+          onConnectPress={(item) => {
+            if (item.offline) return;
+            if (!item.noAuth) {
+              const key = `${item.host}:${item.port}`;
+              const cached = toText(pairCodeMapRef.current[key]).trim();
+              if (!cached) {
+                const found = discoverDevices.find((d) => d.id === item.id) || null;
+                if (found) openPairPrompt(found);
+                return;
+              }
+            }
+            const found = discoverDevices.find((d) => d.id === item.id) || null;
+            if (found) void onConnectDiscoveredDevice(found);
+          }}
+          onPairPromptChange={setPairPromptValue}
+          onPairPromptCancel={() => {
+            setPairPromptOpen(false);
+            setPairPromptDevice(null);
+          }}
+          onPairPromptConfirm={() => {
+            const code = pairPromptValue.trim();
+            if (!code) {
+              setStatus('请输入验证码');
+              return;
+            }
+            const dev = pairPromptDevice;
+            const key = deviceKeyOf(dev);
+            if (key) {
+              const next = { ...(pairCodeMapRef.current || {}) };
+              next[key] = code;
+              pairCodeMapRef.current = next;
+              void savePairCodeMap(next);
+            }
+            setPairPromptOpen(false);
+            setPairPromptDevice(null);
+            if (dev) void onConnectDiscoveredDevice(dev, code);
+          }}
+        />
+      </RenderBoundary>
     );
   }
 
   if (scannerOpen) {
     return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.scannerWrap}>
-          <Text style={styles.title}>扫码连接桌面端</Text>
-          <Text style={styles.subtitle}>扫描设置页中的二维码即可授权</Text>
-          <Text style={styles.scannerHintText}>
-            {scannerReady ? (scannerLocked ? '已识别，处理中...' : '识别器已就绪，请将二维码放入框内') : '正在初始化相机...'}
-          </Text>
-          <Text style={styles.scannerHintText}>
-            识别回调次数: {scanHitCount} {lastScanAt ? `· 最近: ${formatClock(lastScanAt)}` : ''}
-          </Text>
-          <Text style={styles.scannerHintText}>如果实时扫描无反应，可点“相册识别”作为兜底。</Text>
-          <View style={styles.scannerFrame}>
-            <CameraViewCompat
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] as any }}
-              onCameraReady={() => {
-                setScannerReady(true);
-                pushConnLog('camera ready');
-              }}
-              onMountError={(e: any) => {
-                const msg = `camera mount error: ${toText(e?.message || e)}`;
-                pushConnLog(msg, 'error');
-                setStatus(msg);
-              }}
-              onBarcodeScanned={onBarcodeScanned}
-            />
-          </View>
-          <View style={styles.row}>
-            <Pressable style={styles.btnSoft} onPress={() => setScannerOpen(false)}>
-              <Text style={styles.btnSoftText}>取消</Text>
-            </Pressable>
-            <Pressable style={styles.btnSoft} onPress={() => void onPickQrFromAlbum()}>
-              <Text style={styles.btnSoftText}>相册识别</Text>
-            </Pressable>
-            <Pressable
-              style={styles.btnSoft}
-              onPress={() => {
-                setScannerLocked(false);
-                setStatus('请继续扫码');
-              }}
-            >
-              <Text style={styles.btnSoftText}>重新扫描</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.scannerStatusText}>{toText(status)}</Text>
-        </View>
-      </SafeAreaView>
+      <ScannerScreen
+        styles={styles}
+        title="扫码连接桌面端"
+        subtitle="扫描设置页中的二维码即可授权"
+        hint1={scannerReady ? (scannerLocked ? '已识别，处理中...' : '识别器已就绪，请将二维码放入框内') : '正在初始化相机...'}
+        hint2={`识别回调次数: ${scanHitCount} ${lastScanAt ? `· 最近: ${formatClock(lastScanAt)}` : ''}`}
+        hint3="如果实时扫描无反应，可点“相册识别”作为兜底。"
+        statusText={toText(status)}
+        onCancel={() => setScannerOpen(false)}
+        onPickFromAlbum={() => void onPickQrFromAlbum()}
+        onRescan={() => {
+          setScannerLocked(false);
+          setStatus('请继续扫码');
+        }}
+        CameraViewCompat={CameraViewCompat}
+        onCameraReady={() => {
+          setScannerReady(true);
+          pushConnLog('camera ready');
+        }}
+        onMountError={(e: any) => {
+          const msg = `camera mount error: ${toText(e?.message || e)}`;
+          pushConnLog(msg, 'error');
+          setStatus(msg);
+        }}
+        onBarcodeScanned={onBarcodeScanned}
+        scannerReady={scannerReady}
+        scannerLocked={scannerLocked}
+        scanHitCountText=""
+      />
     );
   }
 
@@ -2460,6 +2485,14 @@ export default function App() {
             ref={messageScrollRef}
             style={styles.msgScroll}
             contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
+            onLayout={(evt) => {
+              messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
+              if (messageViewportHRef.current > 0) {
+                setTimeout(() => {
+                  void ensureScrollableHistoryArea();
+                }, 0);
+              }
+            }}
             data={timeline}
             initialNumToRender={6}
             maxToRenderPerBatch={6}
@@ -2470,12 +2503,55 @@ export default function App() {
             overScrollMode="always"
             scrollEventThrottle={16}
             maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+            onScrollBeginDrag={() => {
+              // 用户手势优先：立即取消会话切换后的“强制回到底部”窗口。
+              forceScrollToLatestUntilRef.current = 0;
+              allowAutoScrollRef.current = false;
+              messageUserScrollingRef.current = true;
+              if (Number(messageScrollYRef.current || 0) <= AUTO_LOAD_TOP_TRIGGER + 12) {
+                void onLoadOlderMessages();
+              }
+            }}
+            onScrollEndDrag={() => {
+              messageUserScrollingRef.current = false;
+            }}
+            onMomentumScrollBegin={() => {
+              messageUserScrollingRef.current = true;
+            }}
+            onMomentumScrollEnd={() => {
+              messageUserScrollingRef.current = false;
+            }}
             onScroll={(evt) => {
               const y = Number(evt.nativeEvent.contentOffset?.y || 0);
+              // 只有用户“接近底部”时，才允许新消息自动滚到最新。
+              // 否则用户在看历史消息时，刷新/新消息会把视图强行拉到底部。
+              const layoutH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
+              const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
+              const distToBottom = contentH - (y + layoutH);
+              const nearBottom = distToBottom < 120; // px threshold
+              // 用户上滑看历史时，禁止自动回底；仅在用户非滚动态再更新自动回底开关。
+              if (!messageUserScrollingRef.current) {
+                allowAutoScrollRef.current = nearBottom;
+              } else if (!nearBottom) {
+                allowAutoScrollRef.current = false;
+              }
               onMessageListScroll(y);
             }}
+            onViewableItemsChanged={({ viewableItems }) => {
+              const v = viewableItems?.[0];
+              const it = (v as any)?.item as MobileTimelineItem | undefined;
+              if (!it) return;
+              topVisibleStableKeyRef.current = timelineStableKey(it);
+            }}
             onContentSizeChange={(_w, h) => {
+              const contentH = Number(h || 0);
+              const viewportH = Number(messageViewportHRef.current || 0);
+              if (viewportH > 0 && contentH < viewportH * 1.08) {
+                void ensureScrollableHistoryArea();
+              }
               if (suppressAutoScrollRef.current) return;
+              if (loadingOlder) return;
+              if (messageUserScrollingRef.current) return;
               if (Date.now() < forceScrollToLatestUntilRef.current) {
                 requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
                 return;
@@ -2483,14 +2559,52 @@ export default function App() {
               if (!allowAutoScrollRef.current) return;
               requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
             }}
-            keyExtractor={(item, idx) => {
-              if (item.kind === 'chat') return `chat:${item.message.id}:${idx}`;
-              if (item.kind === 'think') return `think:${item.card.id}:${idx}`;
-              if (item.kind === 'event') return `event:${item.event.id}:${idx}`;
-              return `context:${item.context.id}:${idx}`;
+            keyExtractor={(item) => {
+              return timelineStableKey(item);
             }}
             renderItem={({ item, index: idx }) => {
-              if (item.kind === 'context' || item.kind === 'event') return null;
+              if (item.kind === 'context') {
+                const tools = Array.isArray(item.context.tools) ? item.context.tools : [];
+                return (
+                  <View key={item.context.id} style={styles.contextWrap}>
+                    <View style={styles.contextCard}>
+                      <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
+                      <Text style={styles.contextSummary}>{toText(item.context.summary || `tools: ${tools.length}`)}</Text>
+                      {tools.length > 0 ? (
+                        <View style={styles.contextTools}>
+                          {tools.slice(0, 3).map((t) => (
+                            <View key={t.id} style={styles.contextToolRow}>
+                              <Text style={styles.contextToolTitle}>{toText(t.title || 'tool')}</Text>
+                              <Text numberOfLines={1} style={styles.contextToolDetail}>
+                                {toText(t.detail || t.mode || t.status || '执行完成')}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              }
+              if (item.kind === 'event') {
+                const st = toText(item.event.status).toLowerCase();
+                const dotStyle = st === 'running' || st === 'pending' ? styles.eventDotRun : styles.eventDot;
+                const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
+                return (
+                  <View key={item.event.id} style={styles.eventWrap}>
+                    <View style={styles.eventCard}>
+                      <View style={styles.eventHead}>
+                        <View style={dotStyle} />
+                        <Text style={styles.eventTitle}>{toText(item.event.title || 'Event')}</Text>
+                        {toText(item.event.mode) ? <Text style={styles.eventMode}>{toText(item.event.mode)}</Text> : null}
+                        <Text style={styles.eventTime}>{formatClock(item.event.createdAt)}</Text>
+                      </View>
+                      <Text style={styles.eventDetail}>{detail}</Text>
+                      {toText(item.event.output) ? <Text style={styles.eventOutput}>{toText(item.event.output)}</Text> : null}
+                    </View>
+                  </View>
+                );
+              }
               if (item.kind === 'think') {
                 const keepOpen = !streaming || idx === lastThinkIndex;
                 return (
@@ -2515,13 +2629,7 @@ export default function App() {
                 </View>
               );
             }}
-            ListHeaderComponent={
-              loadingOlder ? (
-                <View style={styles.historyHintWrap}>
-                  <ActivityIndicator size="small" color="#8fa3be" />
-                </View>
-              ) : null
-            }
+            ListHeaderComponent={null}
             ListFooterComponent={
               showThinkingPlaceholder ? (
                 <View style={styles.thinkingWrap}>
@@ -3454,6 +3562,89 @@ const styles = StyleSheet.create({
   },
   discoverSafe: { flex: 1, backgroundColor: '#f2f6fb' },
   discoverTitle: { color: '#2b394b', fontSize: 15, fontWeight: '600', textAlign: 'center', opacity: 0.9 },
+  discoverTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 },
+  discoverTitleSideLeft: { minWidth: 88, flexDirection: 'row', justifyContent: 'flex-start' },
+  discoverTitleSideRight: { minWidth: 88 },
+  discoverBackBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#e7eef8',
+    borderWidth: 1,
+    borderColor: '#d2deee'
+  },
+  discoverBackIcon: { color: '#1f2a3a', fontSize: 24, fontWeight: '800', lineHeight: 24, marginTop: -2 },
+  discoverListWrap: { flex: 1, paddingHorizontal: 16, paddingTop: 18, paddingBottom: 16 },
+  discoverListMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6, marginBottom: 12 },
+  discoverListMetaText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
+  discoverRescanBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: '#111827' },
+  discoverRescanTxt: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
+  discoverList: { flex: 1 },
+  discoverListContent: { paddingBottom: 24, gap: 10 },
+  discoverListEmpty: { color: '#94a3b8', fontSize: 12, marginTop: 10 },
+  discoverListItem: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.35)',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4
+  },
+  discoverListItemMain: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, paddingRight: 10 },
+  discoverListItemText: { flex: 1 },
+  discoverListItemTitle: { color: '#111827', fontSize: 13, fontWeight: '700' },
+  discoverListItemSub: { color: '#64748b', fontSize: 12, marginTop: 2 },
+  discoverListConnectBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: '#111827' },
+  discoverListConnectTxt: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
+  discoverListConnectBtnOff: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: '#e2e8f0' },
+  discoverListConnectTxtOff: { color: '#64748b', fontSize: 13, fontWeight: '700' },
+  discoverConnectProgressRow: { marginTop: 10, gap: 6 },
+
+  pairPromptMask: { ...StyleSheet.absoluteFillObject, zIndex: 50 },
+  pairPromptBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.32)' },
+  pairPromptCard: {
+    position: 'absolute',
+    left: '7%',
+    right: '7%',
+    top: '32%',
+    borderRadius: 18,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.35)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8
+  },
+  pairPromptTitle: { color: '#111827', fontSize: 14, fontWeight: '800' },
+  pairPromptSub: { color: '#64748b', fontSize: 12 },
+  pairPromptInput: {
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d4ddea',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 12,
+    color: '#111827',
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
+  },
+  pairPromptActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 2 },
+  pairPromptBtnGhost: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: '#eef2f7' },
+  pairPromptBtnGhostTxt: { color: '#334155', fontSize: 13, fontWeight: '700' },
+  pairPromptBtnPrimary: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: '#111827' },
+  pairPromptBtnPrimaryTxt: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
   senseStage: {
     flex: 1,
     alignSelf: 'stretch',
@@ -3470,7 +3661,7 @@ const styles = StyleSheet.create({
     top: '50%',
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(37,64,92,0.18)'
+    borderColor: 'rgba(8,80,140,0.38)'
   },
   senseWaveSoft: {
     position: 'absolute',
@@ -3478,7 +3669,7 @@ const styles = StyleSheet.create({
     top: '50%',
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(37,64,92,0.1)'
+    borderColor: 'rgba(8,80,140,0.24)'
   },
   senseCenterFloat: {
     position: 'absolute',
@@ -3533,75 +3724,75 @@ const styles = StyleSheet.create({
   },
   senseDevice: {
     position: 'absolute',
-    width: 38,
-    height: 56,
+    width: 56,
+    height: 76,
     alignItems: 'center',
     zIndex: 4
   },
   senseDeviceIcon: {
-    marginTop: 8,
-    width: 22,
-    height: 24,
-    borderRadius: 6,
-    backgroundColor: '#111827',
+    marginTop: 12,
+    width: 36,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#0f172a',
     borderWidth: 1,
     borderColor: '#0b1220',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 2
+    paddingTop: 3
   },
   senseDeviceIconHover: {
-    marginTop: 7,
-    width: 24,
-    height: 26,
-    borderRadius: 7,
-    backgroundColor: '#0f172a',
+    marginTop: 11,
+    width: 38,
+    height: 40,
+    borderRadius: 13,
+    backgroundColor: '#0b1220',
     borderWidth: 1,
     borderColor: '#020617',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 2,
+    paddingTop: 3,
     shadowColor: '#0f172a',
     shadowOpacity: 0.32,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 }
   },
   senseDeviceIconOffline: {
-    marginTop: 8,
-    width: 22,
-    height: 24,
-    borderRadius: 6,
+    marginTop: 12,
+    width: 36,
+    height: 38,
+    borderRadius: 12,
     backgroundColor: '#6b7280',
     borderWidth: 1,
     borderColor: '#4b5563',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 2
+    paddingTop: 3
   },
   senseDeviceIconOfflineHover: {
-    marginTop: 7,
-    width: 24,
-    height: 26,
-    borderRadius: 7,
+    marginTop: 11,
+    width: 38,
+    height: 40,
+    borderRadius: 13,
     backgroundColor: '#64748b',
     borderWidth: 1,
     borderColor: '#475569',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 2
+    paddingTop: 3
   },
   senseDeviceScreen: {
-    width: 14,
-    height: 2,
+    width: 22,
+    height: 2.8,
     borderRadius: 2,
     backgroundColor: '#475569',
     marginBottom: 2
   },
   senseDeviceGlyph: {
     color: '#e2e8f0',
-    fontSize: 8,
+    fontSize: 10,
     fontWeight: '700',
-    lineHeight: 9
+    lineHeight: 11
   },
   discoverFooterSlot: {
     height: 162,
@@ -3611,83 +3802,57 @@ const styles = StyleSheet.create({
   },
   discoverDeviceCard: {
     position: 'absolute',
-    left: '8%',
-    right: '8%',
-    bottom: 0,
-    width: '84%',
-    borderRadius: 12,
+    left: '6%',
+    right: '6%',
+    bottom: 14,
+    width: '88%',
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#1f2d3e',
-    backgroundColor: '#0b1220',
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-    gap: 4
+    borderColor: 'rgba(148,163,184,0.35)',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6
   },
-  discoverDeviceCardTag: {
-    color: '#7dd3fc',
-    fontSize: 9,
-    letterSpacing: 1.1,
-    fontWeight: '700',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
-  },
-  discoverDeviceCardTitle: {
-    color: '#e2e8f0',
-    fontSize: 10,
-    fontWeight: '600',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
-  },
-  discoverDeviceCardSub: {
-    color: '#8aa0bb',
-    fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
-  },
-  discoverDeviceProgressTrack: {
-    marginTop: 2,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: '#132238',
-    overflow: 'hidden'
-  },
+  discoverCardHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  discoverDotOnline: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#22c55e' },
+  discoverDotOffline: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#94a3b8' },
+  discoverDeviceCardTitle: { color: '#111827', fontSize: 13, fontWeight: '700' },
+  discoverDeviceCardSub: { color: '#64748b', fontSize: 12 },
+  discoverDeviceProgressTrack: { marginTop: 2, height: 6, borderRadius: 999, backgroundColor: '#eef2f7', overflow: 'hidden' },
   discoverDeviceProgressBar: {
-    height: 4,
+    height: 6,
+    width: '100%',
     borderRadius: 999,
-    backgroundColor: '#38bdf8'
+    backgroundColor: '#3b82f6',
+    alignSelf: 'stretch'
   },
-  discoverDeviceProgressText: {
-    color: '#7590ad',
-    fontSize: 8.5,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
-  },
+  discoverDeviceProgressText: { color: '#475569', fontSize: 12, fontWeight: '600' },
   discoverDeviceCardActions: { flexDirection: 'row', marginTop: 2 },
   discoverCardConnectBtn: {
-    width: 108,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: '#111b2d',
-    borderWidth: 1,
-    borderColor: '#2a3f5e',
+    minWidth: 112,
+    height: 34,
+    borderRadius: 14,
+    backgroundColor: '#111827',
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 'auto'
   },
   discoverCardConnectBtnOffline: {
-    width: 108,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: '#374151',
-    borderWidth: 1,
-    borderColor: '#4b5563',
+    minWidth: 112,
+    height: 34,
+    borderRadius: 14,
+    backgroundColor: '#e2e8f0',
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 'auto'
   },
-  discoverCardConnectText: {
-    color: '#dbeafe',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'
-  },
+  discoverCardConnectText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   radarStage: {
     alignSelf: 'center',
     width: '100%',
@@ -3972,23 +4137,7 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     marginTop: -1
   },
-  discoverList: { flex: 1 },
-  discoverListContent: { gap: 8, paddingBottom: 8 },
-  discoverItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 9,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#dfe7f2',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 10
-  },
-  discoverItemDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#5383ba' },
-  discoverItemTextWrap: { flex: 1 },
-  discoverItemTitle: { color: '#2b3748', fontSize: 13, fontWeight: '700' },
-  discoverItemSub: { color: '#6a7d94', fontSize: 11 },
+  // 旧的发现页列表样式已弃用（当前使用 discoverListWrap / discoverListItem 等）
 
   row: { flexDirection: 'row', gap: 8 },
   boundaryWrap: {
