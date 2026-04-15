@@ -81,6 +81,14 @@ export type MobileTimelineItem =
       context: MobileContextCard;
     };
 
+export type MobileRenderedTurn = {
+  id: string;
+  createdAt: number;
+  userMessage?: MobileChatMessage;
+  items: MobileTimelineItem[];
+  signature: string;
+};
+
 export type ParsedConversation = {
   chatMessages: MobileChatMessage[];
   timeline: MobileTimelineItem[];

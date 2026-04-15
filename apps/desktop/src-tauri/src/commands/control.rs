@@ -1,10 +1,10 @@
 use super::opencode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -532,6 +532,23 @@ fn parse_query(q: &str) -> HashMap<String, String> {
     out
 }
 
+fn read_stream_chunk(stream: &mut TcpStream, tmp: &mut [u8], label: &str) -> Result<usize, String> {
+    let mut attempts = 0u8;
+    loop {
+        match stream.read(tmp) {
+            Ok(n) => return Ok(n),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                attempts = attempts.saturating_add(1);
+                if attempts >= 6 {
+                    return Err(format!("{label} failed after retry: {e}"));
+                }
+                thread::sleep(Duration::from_millis(12 * attempts as u64));
+            }
+            Err(e) => return Err(format!("{label} failed: {e}")),
+        }
+    }
+}
+
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -540,7 +557,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 1024];
     let header_end = loop {
-        let n = stream.read(&mut tmp).map_err(|e| format!("read request failed: {e}"))?;
+        let n = read_stream_chunk(stream, &mut tmp, "read request")?;
         if n == 0 {
             return Err("connection closed".to_string());
         }
@@ -587,7 +604,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
 
     let mut body = buf[header_end..].to_vec();
     while body.len() < content_len {
-        let n = stream.read(&mut tmp).map_err(|e| format!("read body failed: {e}"))?;
+        let n = read_stream_chunk(stream, &mut tmp, "read body")?;
         if n == 0 {
             break;
         }
@@ -608,6 +625,29 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     })
 }
 
+fn write_stream_all(stream: &mut TcpStream, bytes: &[u8], label: &str) -> Result<(), String> {
+    let mut written = 0usize;
+    let mut attempts = 0u8;
+    while written < bytes.len() {
+        match stream.write(&bytes[written..]) {
+            Ok(0) => return Err(format!("{label} failed: connection closed while writing")),
+            Ok(n) => {
+                written += n;
+                attempts = 0;
+            }
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                attempts = attempts.saturating_add(1);
+                if attempts >= 12 {
+                    return Err(format!("{label} failed after retry: {e}"));
+                }
+                thread::sleep(Duration::from_millis(12 * attempts as u64));
+            }
+            Err(e) => return Err(format!("{label} failed: {e}")),
+        }
+    }
+    Ok(())
+}
+
 fn write_http_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
@@ -626,10 +666,10 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<
         reason,
         payload.len()
     );
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|_| stream.write_all(&payload))
-        .map_err(|e| format!("write response failed: {e}"))
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    write_stream_all(stream, head.as_bytes(), "write response headers")?;
+    write_stream_all(stream, &payload, "write response body")?;
+    stream.flush().map_err(|e| format!("write response failed: {e}"))
 }
 
 fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), String> {
@@ -638,21 +678,22 @@ fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), Stri
         "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,Accept,Cache-Control,Pragma,Last-Event-ID,X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n\r\n",
         status, reason
     );
-    stream.write_all(head.as_bytes()).map_err(|e| format!("write response failed: {e}"))
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    write_stream_all(stream, head.as_bytes(), "write response headers")?;
+    stream.flush().map_err(|e| format!("write response failed: {e}"))
 }
 
 fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,Accept,Cache-Control,Pragma,Last-Event-ID,X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
-    stream.write_all(head.as_bytes()).map_err(|e| format!("write sse headers failed: {e}"))
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    write_stream_all(stream, head.as_bytes(), "write sse headers")
 }
 
 fn write_sse_event(stream: &mut TcpStream, event: &str, payload: &Value) -> Result<(), String> {
     let body = serde_json::to_string(payload).map_err(|e| format!("encode sse payload failed: {e}"))?;
     let chunk = format!("event: {event}\ndata: {body}\n\n");
-    stream
-        .write_all(chunk.as_bytes())
-        .and_then(|_| stream.flush())
-        .map_err(|e| format!("write sse event failed: {e}"))
+    write_stream_all(stream, chunk.as_bytes(), "write sse event")?;
+    stream.flush().map_err(|e| format!("write sse event failed: {e}"))
 }
 
 fn extract_bearer(req: &HttpRequest) -> String {
@@ -828,6 +869,203 @@ fn push_loop_notice_message(mut v: Value, session_id: &str, stats: SessionLoopSt
         ]
     });
     arr.push(synthetic);
+    v
+}
+
+fn compact_mobile_tool_metadata(metadata: Option<&Map<String, Value>>) -> Option<Value> {
+    let Some(metadata) = metadata else {
+        return None;
+    };
+    let mut out = Map::new();
+    if let Some(v) = metadata.get("sessionId").cloned() {
+        out.insert("sessionId".to_string(), v);
+    }
+    if let Some(v) = metadata.get("sessionID").cloned() {
+        out.insert("sessionID".to_string(), v);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Object(out))
+    }
+}
+
+fn compact_mobile_tool_input(input: Option<&Map<String, Value>>) -> Option<Value> {
+    let Some(input) = input else {
+        return None;
+    };
+    let mut out = Map::new();
+    for key in ["description", "filePath", "pattern", "query", "url", "path", "subagent_type"] {
+        if let Some(v) = input.get(key).cloned() {
+            out.insert(key.to_string(), v);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Object(out))
+    }
+}
+
+fn compact_mobile_tool_output(value: Option<&Value>) -> Option<Value> {
+    let Some(value) = value else {
+        return None;
+    };
+    const MAX_OUTPUT_CHARS: usize = 4096;
+    match value {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() <= MAX_OUTPUT_CHARS {
+                Some(Value::String(trimmed.to_string()))
+            } else {
+                Some(Value::String(format!(
+                    "{}...",
+                    trimmed.chars().take(MAX_OUTPUT_CHARS).collect::<String>()
+                )))
+            }
+        }
+        other => {
+            let text = serde_json::to_string(other).unwrap_or_default();
+            if text.is_empty() {
+                None
+            } else if text.chars().count() <= MAX_OUTPUT_CHARS {
+                Some(Value::String(text))
+            } else {
+                Some(Value::String(format!(
+                    "{}...",
+                    text.chars().take(MAX_OUTPUT_CHARS).collect::<String>()
+                )))
+            }
+        }
+    }
+}
+
+fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for part in parts {
+        let Some(part_obj) = part.as_object() else {
+            continue;
+        };
+        let part_type = part_obj.get("type").and_then(|v| v.as_str()).unwrap_or("").trim();
+        match part_type {
+            "text" => {
+                let text = part_obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let mut node = Map::new();
+                node.insert("type".to_string(), Value::String("text".to_string()));
+                if let Some(id) = part_obj.get("id").cloned() {
+                    node.insert("id".to_string(), id);
+                }
+                node.insert("text".to_string(), Value::String(text.to_string()));
+                if let Some(synthetic) = part_obj.get("synthetic").cloned() {
+                    node.insert("synthetic".to_string(), synthetic);
+                }
+                out.push(Value::Object(node));
+            }
+            "reasoning" if role == "assistant" => {
+                let text = part_obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let mut node = Map::new();
+                node.insert("type".to_string(), Value::String("reasoning".to_string()));
+                if let Some(id) = part_obj.get("id").cloned() {
+                    node.insert("id".to_string(), id);
+                }
+                node.insert("text".to_string(), Value::String(text.to_string()));
+                out.push(Value::Object(node));
+            }
+            "tool" if role == "assistant" => {
+                let tool = part_obj.get("tool").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if tool.is_empty() {
+                    continue;
+                }
+                let mut node = Map::new();
+                node.insert("type".to_string(), Value::String("tool".to_string()));
+                node.insert("tool".to_string(), Value::String(tool.to_string()));
+                if let Some(id) = part_obj.get("id").cloned() {
+                    node.insert("id".to_string(), id);
+                }
+                if let Some(metadata) = compact_mobile_tool_metadata(part_obj.get("metadata").and_then(|v| v.as_object())) {
+                    node.insert("metadata".to_string(), metadata);
+                }
+                if let Some(state) = part_obj.get("state").and_then(|v| v.as_object()) {
+                    let mut compact_state = Map::new();
+                    if let Some(v) = state.get("status").cloned() {
+                        compact_state.insert("status".to_string(), v);
+                    }
+                    if let Some(v) = state.get("title").cloned() {
+                        compact_state.insert("title".to_string(), v);
+                    }
+                    if let Some(input) = compact_mobile_tool_input(state.get("input").and_then(|v| v.as_object())) {
+                        compact_state.insert("input".to_string(), input);
+                    }
+                    if let Some(output) = compact_mobile_tool_output(state.get("output")) {
+                        compact_state.insert("output".to_string(), output);
+                    }
+                    if let Some(metadata) =
+                        compact_mobile_tool_metadata(state.get("metadata").and_then(|v| v.as_object()))
+                    {
+                        compact_state.insert("metadata".to_string(), metadata);
+                    }
+                    if !compact_state.is_empty() {
+                        node.insert("state".to_string(), Value::Object(compact_state));
+                    }
+                }
+                out.push(Value::Object(node));
+            }
+            "compaction" if role == "user" => {
+                let mut node = Map::new();
+                node.insert("type".to_string(), Value::String("compaction".to_string()));
+                node.insert(
+                    "auto".to_string(),
+                    Value::Bool(part_obj.get("auto").and_then(|v| v.as_bool()).unwrap_or(false)),
+                );
+                out.push(Value::Object(node));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn compact_mobile_message_payload(mut v: Value) -> Value {
+    let Some(arr) = v.as_array_mut() else {
+        return v;
+    };
+    for item in arr.iter_mut() {
+        let Some(item_obj) = item.as_object_mut() else {
+            continue;
+        };
+        let role = item_obj
+            .get("info")
+            .and_then(|v| v.get("role"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let Some(info) = item_obj.get_mut("info").and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        // `info.system` often contains the full agent/system prompt and can be huge.
+        // Mobile rendering does not use it, but forwarding it through the lightweight
+        // desktop HTTP server makes older history pages much larger and prone to truncation.
+        info.remove("system");
+        // Keep summary only when it's a boolean flag used by loop detection semantics.
+        if !matches!(info.get("summary"), Some(Value::Bool(_))) {
+            info.remove("summary");
+        }
+        if let Some(parts) = item_obj.get("parts").and_then(|v| v.as_array()) {
+            item_obj.insert(
+                "parts".to_string(),
+                Value::Array(compact_mobile_message_parts(role.as_str(), parts)),
+            );
+        }
+    }
     v
 }
 
@@ -1239,10 +1477,11 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 } else {
                     items
                 };
+                let compact_items = compact_mobile_message_payload(final_items);
                 (
                     200,
                     serde_json::json!({
-                        "items": final_items,
+                        "items": compact_items,
                         "nextCursor": next_cursor
                     }),
                 )
@@ -1270,6 +1509,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
 }
 
 fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
+    // TcpListener is set to non-blocking; some platforms may yield accepted streams
+    // that behave non-blocking and return EAGAIN ("Resource temporarily unavailable")
+    // during reads. This breaks HTTP parsing and causes spurious 400 errors.
+    let _ = stream.set_nonblocking(false);
     let response = match read_http_request(&mut stream) {
         Ok(req) => {
             if req.method == "GET" && req.path == "/api/v1/opencode/stream" {
@@ -1281,9 +1524,13 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
         Err(e) => (400, serde_json::json!({ "error": e })),
     };
     if response.0 == 204 {
-        let _ = write_http_no_content(&mut stream, 204);
+        if let Err(e) = write_http_no_content(&mut stream, 204) {
+            eprintln!("[control] write 204 failed: {}", e);
+        }
     } else {
-        let _ = write_http_json(&mut stream, response.0, &response.1);
+        if let Err(e) = write_http_json(&mut stream, response.0, &response.1) {
+            eprintln!("[control] write {} failed: {}", response.0, e);
+        }
     }
 }
 

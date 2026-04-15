@@ -9,6 +9,7 @@ import {
   PanResponder,
   Platform,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -50,6 +51,15 @@ import {
   sendPrompt
 } from './src/api/controlApi';
 import {
+  computeVisibleTurnCount,
+  fetchWithRetry
+} from './src/features/messages/history';
+import {
+  buildTurnWindow,
+  inspectTurnWindow,
+  mergeMessageRows
+} from './src/features/messages/turns';
+import {
   buildHostOrder,
   clampRadarPoint,
   inferDiscoveryPrefixes,
@@ -59,17 +69,14 @@ import {
   resolvePortFromSeed
 } from './src/discovery';
 import type { DiscoveredDevice } from './src/discovery';
-import { parseConversation } from './src/messageParser';
-import type { MobileChatMessage, MobileTimelineItem } from './src/types';
+import type { MobileChatMessage, MobileRenderedTurn } from './src/types';
 
 // keys + storage moved to src/storage/*
 
 const INITIAL_SESSION_LIMIT = 2;
 const OLDER_SESSION_LIMIT = 2;
-const INITIAL_SESSION_PREFETCH_LIMIT = 2;
-const AUTO_PREFETCH_TOP_TRIGGER = 360;
-const AUTO_LOAD_TOP_TRIGGER = 260;
-const AUTO_LOAD_TOP_RESET = 520;
+const INITIAL_MESSAGE_FETCH_LIMIT = 8;
+const OLDER_MESSAGE_FETCH_LIMIT = 8;
 const DISCOVER_OFFLINE_AFTER_MS = 45000;
 const DISCOVER_OFFLINE_MISS_THRESHOLD = 3;
 const DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP = 48;
@@ -83,8 +90,23 @@ type SessionItem = {
   id: string;
   title: string;
   preview: string;
+  /** 用于排序：优先服务端 updatedAt，缺失时用 createdAt，避免每次刷新用 Date.now() 导致顺序乱跳 */
   updatedAt: number;
+  createdAt?: number;
 };
+
+/** 会话列表稳定排序：时间降序，相同时间用 id 字典序（避免服务端/合并顺序不稳定） */
+function stableSortSessionItems(items: SessionItem[]): SessionItem[] {
+  return [...items].sort((a, b) => {
+    const ua = Number(a.updatedAt) || 0;
+    const ub = Number(b.updatedAt) || 0;
+    if (ub !== ua) return ub - ua;
+    const ca = Number(a.createdAt || 0) || 0;
+    const cb = Number(b.createdAt || 0) || 0;
+    if (cb !== ca) return cb - ca;
+    return a.id.localeCompare(b.id);
+  });
+}
 
 type ModelOption = {
   id: string;
@@ -96,6 +118,14 @@ type ProjectOption = {
   id: string;
   worktree: string;
   name: string;
+};
+
+type RefreshMessagesResult = {
+  nextCursor: string;
+  incomingCount: number;
+  mergedCount: number;
+  prevMergedCount: number;
+  totalTurnCount: number;
 };
 
 type PairPayload = {
@@ -194,6 +224,98 @@ function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): Re
   );
 }
 
+const MobileTurnCell = React.memo(function MobileTurnCell(props: {
+  turn: MobileRenderedTurn;
+  streaming: boolean;
+  isLastTurn: boolean;
+}) {
+  const { turn, streaming, isLastTurn } = props;
+  return (
+    <View style={styles.turnWrap}>
+      {turn.userMessage ? (
+        <View style={styles.bubbleUserWrap}>
+          <View style={styles.bubbleUser}>
+            <Text style={styles.bubbleUserText}>{toText(turn.userMessage.text || '...')}</Text>
+          </View>
+        </View>
+      ) : null}
+      {turn.items.map((item) => {
+        if (item.kind === 'chat') {
+          const m = item.message;
+          if (m.role === 'user') return null;
+          return (
+            <View key={m.id} style={styles.bubbleAssistantWrap}>
+              <View style={styles.bubbleAssistant}>
+                <View>{renderMarkdown(toText(m.text || '...'), 'assistant')}</View>
+              </View>
+            </View>
+          );
+        }
+        if (item.kind === 'context') {
+          const tools = Array.isArray(item.context.tools) ? item.context.tools : [];
+          return (
+            <View key={item.context.id} style={styles.contextWrap}>
+              <View style={styles.contextCard}>
+                <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
+                <Text style={styles.contextSummary}>{toText(item.context.summary || `tools: ${tools.length}`)}</Text>
+                {tools.length > 0 ? (
+                  <View style={styles.contextTools}>
+                    {tools.slice(0, 3).map((t) => (
+                      <View key={t.id} style={styles.contextToolRow}>
+                        <Text style={styles.contextToolTitle}>{toText(t.title || 'tool')}</Text>
+                        <Text numberOfLines={1} style={styles.contextToolDetail}>
+                          {toText(t.detail || t.mode || t.status || '执行完成')}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          );
+        }
+        if (item.kind === 'event') {
+          const st = toText(item.event.status).toLowerCase();
+          const dotStyle = st === 'running' || st === 'pending' ? styles.eventDotRun : styles.eventDot;
+          const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
+          return (
+            <View key={item.event.id} style={styles.eventWrap}>
+              <View style={styles.eventCard}>
+                <View style={styles.eventHead}>
+                  <View style={dotStyle} />
+                  <Text style={styles.eventTitle}>{toText(item.event.title || 'Event')}</Text>
+                  {toText(item.event.mode) ? <Text style={styles.eventMode}>{toText(item.event.mode)}</Text> : null}
+                  <Text style={styles.eventTime}>{formatClock(item.event.createdAt)}</Text>
+                </View>
+                <Text style={styles.eventDetail}>{detail}</Text>
+                {toText(item.event.output) ? <Text style={styles.eventOutput}>{toText(item.event.output)}</Text> : null}
+              </View>
+            </View>
+          );
+        }
+        const keepOpen = !streaming || isLastTurn;
+        return (
+          <View key={item.card.id} style={styles.thinkWrap}>
+            <View style={styles.thinkCard}>
+              <Text style={styles.thinkTitle}>{item.card.title}</Text>
+              {keepOpen ? (
+                <View>{renderMarkdown(toText(item.card.text), 'think')}</View>
+              ) : (
+                <Text style={styles.thinkCollapsed}>{toText(item.card.text)}</Text>
+              )}
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}, (prev, next) => (
+  prev.turn.id === next.turn.id
+  && prev.turn.signature === next.turn.signature
+  && prev.streaming === next.streaming
+  && prev.isLastTurn === next.isLastTurn
+));
+
 // prefs + discover cache moved to src/storage/*
 
 function parsePairPayload(input: string): PairPayload | null {
@@ -222,6 +344,11 @@ function summarizePreview(messages: MobileChatMessage[]): string {
   if (assistant) return assistant.text.slice(0, 42);
   const user = [...messages].reverse().find((m) => m.role === 'user' && m.text.trim());
   return user ? user.text.slice(0, 42) : '新会话';
+}
+
+function formatRetryDelay(ms: number): string {
+  const sec = Math.max(1, Math.ceil(ms / 1000));
+  return `${sec}s 后重试`;
 }
 
 function projectNameFromPath(worktree: string): string {
@@ -410,7 +537,7 @@ export default function App() {
   const [prompt, setPrompt] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [messages, setMessages] = useState<MobileChatMessage[]>([]);
-  const [timeline, setTimeline] = useState<MobileTimelineItem[]>([]);
+  const [renderedTurns, setRenderedTurns] = useState<MobileRenderedTurn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [thinkingPulse, setThinkingPulse] = useState(false);
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
@@ -418,12 +545,13 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [sessionNextCursor, setSessionNextCursor] = useState<Record<string, string>>({});
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
+  const [sessionHistoryRetryHint, setSessionHistoryRetryHint] = useState<Record<string, string>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
-  const messageScrollRef = useRef<FlatList<MobileTimelineItem> | null>(null);
+  const messageScrollRef = useRef<FlatList<MobileRenderedTurn> | null>(null);
   const topVisibleStableKeyRef = useRef<string>('');
   const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
@@ -433,14 +561,13 @@ export default function App() {
   const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
-  const sessionVisibleCountRef = useRef<Record<string, number>>({});
-  const sessionChatCountRef = useRef<Record<string, number>>({});
-  const inflightMessageReqRef = useRef<Record<string, Promise<void>>>({});
-  const prefetchingOlderRef = useRef(false);
-  const prefetchedCursorRef = useRef<Record<string, string>>({});
+  const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
+  const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
+  const inflightMessageReqRef = useRef<Record<string, Promise<RefreshMessagesResult | undefined>>>({});
+  const inflightSessionSyncRef = useRef<Record<string, Promise<any>>>({});
+  const olderCursorBackoffRef = useRef<Record<string, { cursor: string; retryAt: number; failures: number }>>({});
   const messageScrollYRef = useRef(0);
   const messageViewportHRef = useRef(0);
-  const autoFillLoadingRef = useRef(false);
   const messageUserScrollingRef = useRef(false);
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
@@ -887,7 +1014,11 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded || !authed || !sessionId || !repoPath) return;
-    void refreshMessages(sessionId);
+    void syncSessionMessages(sessionId, {
+      limit: INITIAL_SESSION_LIMIT,
+      fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
+      jumpToLatest: true
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, authed, sessionId, repoPath]);
 
@@ -1037,8 +1168,17 @@ export default function App() {
     const title = nextMessages.find((m) => m.role === 'user' && m.text.trim())?.text.slice(0, 24) || '新会话';
     const preview = summarizePreview(nextMessages);
     setSessions((prev) => {
-      const filtered = prev.filter((s) => s.id !== nextSessionId);
-      return [{ id: nextSessionId, title, preview, updatedAt: Date.now() }, ...filtered].slice(0, 50);
+      const prevEntry = prev.find((s) => s.id === nextSessionId);
+      const nextRow: SessionItem = {
+        id: nextSessionId,
+        title,
+        preview,
+        // 仅同步预览/标题，不改变排序时间戳，避免每次拉消息列表顺序跳动
+        updatedAt: prevEntry?.updatedAt ?? Date.now(),
+        createdAt: prevEntry?.createdAt
+      };
+      const base = prevEntry ? prev.map((s) => (s.id === nextSessionId ? nextRow : s)) : [nextRow, ...prev];
+      return stableSortSessionItems(base).slice(0, 50);
     });
   }
 
@@ -1056,19 +1196,27 @@ export default function App() {
       pushConnLog(`GET sessions ok count=${rows.length}`);
       const prevIds = new Set(sessionsRef.current.map((x) => x.id));
       const hasNew = rows.some((x) => !prevIds.has(x.id));
-      const nextSessions = rows.map((s) => ({
-        id: s.id,
-        title: s.title || '新会话',
-        preview: '',
-        updatedAt: Number(s.updatedAt || 0) || Date.now()
-      }));
+      const nextSessions = stableSortSessionItems(
+        rows.map((s) => {
+          const createdAt = Number(s.createdAt || 0) || 0;
+          const updatedAt = Number(s.updatedAt || 0) || createdAt;
+          return {
+            id: s.id,
+            title: s.title || '新会话',
+            preview: '',
+            updatedAt,
+            createdAt
+          };
+        })
+      );
       setSessions((prev) => {
         const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
         return nextSessions.map((s) => ({
           id: s.id,
           title: s.title,
           preview: previewMap.get(s.id) || '',
-          updatedAt: s.updatedAt
+          updatedAt: s.updatedAt,
+          createdAt: s.createdAt
         }));
       });
       if (hasNew) triggerPulse(leftDrawerPulse);
@@ -1080,115 +1228,104 @@ export default function App() {
     }
   }
 
-  function rowCreatedAt(row: any): number {
-    const t = Number(row?.info?.time?.created || 0);
-    return Number.isFinite(t) ? t : 0;
+  function applyTurnWindow(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) {
+    const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
+    const rendered = buildTurnWindow(merged, visibleTurnCount);
+    sessionVisibleTurnCountRef.current[targetSessionId] = rendered.visibleTurnCount;
+    sessionTotalTurnCountRef.current[targetSessionId] = rendered.totalTurnCount;
+    setMessages(rendered.chatMessages);
+    setRenderedTurns(rendered.renderedTurns);
+    upsertSession(targetSessionId, rendered.chatMessages);
+    const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
+    const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
+    setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
+    return rendered;
   }
 
-  function rowId(row: any): string {
-    return toText(row?.info?.id).trim();
+  function getOlderCursorBackoff(sessionKey: string, cursor: string): { retryAt: number; failures: number } | null {
+    const current = olderCursorBackoffRef.current[sessionKey];
+    if (!current) return null;
+    if (current.cursor !== cursor) return null;
+    if (current.retryAt <= Date.now()) return null;
+    return { retryAt: current.retryAt, failures: current.failures };
   }
 
-  function mergeMessageRows(prev: any[], incoming: any[]): any[] {
-    const byId = new Map<string, any>();
-    for (const row of prev) {
-      const id = rowId(row);
-      if (!id) continue;
-      byId.set(id, row);
-    }
-    for (const row of incoming) {
-      const id = rowId(row);
-      if (!id) continue;
-      byId.set(id, row);
-    }
-    return [...byId.values()].sort((a, b) => {
-      const ta = rowCreatedAt(a);
-      const tb = rowCreatedAt(b);
-      if (ta !== tb) return ta - tb;
-      return rowId(a).localeCompare(rowId(b));
+  function clearOlderCursorBackoff(sessionKey: string, cursor?: string) {
+    const current = olderCursorBackoffRef.current[sessionKey];
+    if (!current) return;
+    if (cursor && current.cursor !== cursor) return;
+    delete olderCursorBackoffRef.current[sessionKey];
+    setSessionHistoryRetryHint((prev) => {
+      if (!(sessionKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionKey];
+      return next;
     });
   }
 
-  function timelineStableKey(item: MobileTimelineItem): string {
-    if (item.kind === 'chat') return `chat:${toText(item.message.id).trim()}`;
-    if (item.kind === 'think') return `think:${toText(item.card.id).trim()}`;
-    if (item.kind === 'event') return `event:${toText(item.event.id).trim()}`;
-    return `context:${toText(item.context.id).trim()}`;
-  }
-
-  function renderSessionVisibleWindow(targetSessionId: string, visibleCount: number) {
-    const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
-    const full = parseConversation(merged);
-    const allChats = Array.isArray(full.chatMessages) ? full.chatMessages : [];
-    const totalChats = allChats.length;
-    const cappedVisible = Math.max(0, Math.min(Math.floor(visibleCount), totalChats));
-    sessionVisibleCountRef.current[targetSessionId] = cappedVisible;
-    sessionChatCountRef.current[targetSessionId] = totalChats;
-    const visibleChats = allChats.slice(Math.max(0, totalChats - cappedVisible));
-    const visibleTimeline: MobileTimelineItem[] = visibleChats.map((m) => ({
-      kind: 'chat',
-      createdAt: Number(m.createdAt || 0),
-      message: m
-    }));
-    setMessages(visibleChats);
-    setTimeline(visibleTimeline);
-    upsertSession(targetSessionId, visibleChats);
-    return {
-      mergedCount: merged.length,
-      visibleCount: cappedVisible,
-      timelineCount: visibleTimeline.length,
-      chatCount: visibleChats.length,
-      totalChatCount: totalChats,
-      writing: full.writing
+  function markOlderCursorFailure(sessionKey: string, cursor: string, error: unknown) {
+    if (!cursor) return;
+    const current = olderCursorBackoffRef.current[sessionKey];
+    const failures = current && current.cursor === cursor ? current.failures + 1 : 1;
+    const delayMs = Math.min(15000, 3000 * Math.max(1, failures));
+    olderCursorBackoffRef.current[sessionKey] = {
+      cursor,
+      failures,
+      retryAt: Date.now() + delayMs
     };
+    setSessionHistoryRetryHint((prev) => ({
+      ...prev,
+      [sessionKey]: `历史加载失败，${formatRetryDelay(delayMs)}`
+    }));
+    pushConnLog(
+      `GET messages backoff sid=${sessionKey} failures=${failures} delay=${delayMs} cursor=1 cause=${String(error)}`,
+      'error'
+    );
   }
 
   async function refreshMessages(
     targetSessionId: string,
-    opts?: { limit?: number; loadingOlder?: boolean; jumpToLatest?: boolean; prefetchOnly?: boolean; before?: string; anchorStableKey?: string }
-  ) {
+    opts?: {
+      limit?: number;
+      fetchLimit?: number;
+      before?: string;
+      reason?: string;
+    }
+  ): Promise<RefreshMessagesResult | undefined> {
     if (!authed || !repoPath || !targetSessionId) return;
     const requestedLimit = Math.max(2, Number(opts?.limit || INITIAL_SESSION_LIMIT));
-    // 为了拿到服务端分页游标/nextCursor，首屏请求不要跟渲染窗口一样小（例如 2）。
-    // 渲染仍由 renderSessionVisibleWindow 控制（requestedLimit），网络请求用更合理的 fetchLimit。
-    const fetchLimit = opts?.loadingOlder || opts?.prefetchOnly ? requestedLimit : Math.max(requestedLimit, 40);
+    const fetchLimit = Math.max(requestedLimit, Number(opts?.fetchLimit || 0));
     const before = toText(opts?.before).trim();
     const reqKey = `${targetSessionId}|${fetchLimit}|${before || '-'}`;
     const existing = inflightMessageReqRef.current[reqKey];
     if (existing) {
       await existing;
-      return;
+      return undefined;
     }
     const run = (async () => {
       try {
         pushConnLog(
-          `GET messages sid=${targetSessionId} limit=${fetchLimit}${before ? ' before=cursor' : ''}${fetchLimit !== requestedLimit ? ` (render=${requestedLimit})` : ''}`
+          `GET messages sid=${targetSessionId} limit=${fetchLimit}${before ? ' before=cursor' : ''}${opts?.reason ? ` reason=${opts.reason}` : ''}`
         );
-        let res: { items: any[]; nextCursor: string };
-        try {
-          res = await getMessages({
-            baseUrl: serverUrl,
-            token,
-            repoPath,
-            sessionId: targetSessionId,
-            limit: fetchLimit,
-            before: before || undefined
-          });
-        } catch (e1) {
-          const fallbackLimit = Math.min(160, fetchLimit);
-          pushConnLog(
-            `GET messages retry sid=${targetSessionId} limit=${fallbackLimit}${before ? ' before=cursor' : ''} cause=${String(e1)}`,
-            'error'
-          );
-          res = await getMessages({
-            baseUrl: serverUrl,
-            token,
-            repoPath,
-            sessionId: targetSessionId,
-            limit: fallbackLimit,
-            before: before || undefined
-          });
-        }
+        const res = await fetchWithRetry({
+          fetchLimit,
+          hasBeforeCursor: !!before,
+          fetchPage: (limit) =>
+            getMessages({
+              baseUrl: serverUrl,
+              token,
+              repoPath,
+              sessionId: targetSessionId,
+              limit,
+              before: before || undefined
+            }),
+          onRetry: ({ limit, error }) => {
+            pushConnLog(
+              `GET messages retry sid=${targetSessionId} limit=${limit}${before ? ' before=cursor' : ''} cause=${String(error)}`,
+              'error'
+            );
+          }
+        });
 
         const incoming = Array.isArray(res.items) ? res.items : [];
         if (targetSessionId !== sessionIdRef.current) {
@@ -1197,58 +1334,34 @@ export default function App() {
         const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
         const merged = mergeMessageRows(prevRaw, incoming);
         sessionRawMapRef.current[targetSessionId] = merged;
-        const prevVisible = Math.max(0, Number(sessionVisibleCountRef.current[targetSessionId] || 0));
-        let nextVisible = prevVisible > 0 ? prevVisible : requestedLimit;
-        const userAtTop = Number(messageScrollYRef.current || 0) <= AUTO_LOAD_TOP_TRIGGER + 12;
-        if (opts?.jumpToLatest) {
-          nextVisible = requestedLimit;
-        } else if (opts?.loadingOlder) {
-          nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
-        } else if (opts?.prefetchOnly) {
-          // 预取完成时若用户就在顶部，直接展开一页，避免“只有两条导致拖不动”。
-          if (userAtTop) {
-            nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
-          } else {
-            nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT));
-          }
-        } else {
-          nextVisible = Math.min(merged.length, nextVisible);
-        }
-        // 兜底：凡是基于 before 游标拉到新历史（merged 变大），至少展开一页可见区，
-        // 避免出现“预取成功但 visible 不变”的卡死体验。
-        if (before && merged.length > prevRaw.length && nextVisible <= prevVisible) {
-          nextVisible = Math.min(merged.length, Math.max(prevVisible, INITIAL_SESSION_LIMIT) + OLDER_SESSION_LIMIT);
-        }
-        const rendered = renderSessionVisibleWindow(targetSessionId, nextVisible);
+        const turnInfo = inspectTurnWindow(merged);
         const nextCursor = toText(res.nextCursor).trim();
         pushConnLog(
-          `GET messages ok sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} visible=${rendered.visibleCount} timeline=${rendered.timelineCount} chat=${rendered.chatCount} next=${nextCursor ? 1 : 0}`
+          `GET messages ok sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} turns=${turnInfo.totalTurnCount} next=${nextCursor ? 1 : 0}`
         );
+        if (before) {
+          clearOlderCursorBackoff(targetSessionId, before);
+        }
         setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: nextCursor }));
-        const hiddenInCache = rendered.totalChatCount > rendered.visibleCount;
-        setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
-        if (opts?.jumpToLatest) {
-          forceScrollToLatestUntilRef.current = Date.now() + 800;
-          requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
-          setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
-          setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
-        }
-        if (!rendered.writing) {
-          setStreaming(false);
-          setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
-        }
+        return {
+          nextCursor,
+          incomingCount: incoming.length,
+          mergedCount: merged.length,
+          prevMergedCount: prevRaw.length,
+          totalTurnCount: turnInfo.totalTurnCount
+        };
       } catch (e) {
+        if (before && opts?.reason === 'loadingOlder') {
+          markOlderCursorFailure(targetSessionId, before, e);
+        }
         pushConnLog(`GET messages error ${String(e)}`, 'error');
         setStatus(String(e));
-      } finally {
-        if (opts?.loadingOlder) {
-          setLoadingOlder(false);
-        }
+        return undefined;
       }
     })();
     inflightMessageReqRef.current[reqKey] = run;
     try {
-      await run;
+      return await run;
     } finally {
       if (inflightMessageReqRef.current[reqKey] === run) {
         delete inflightMessageReqRef.current[reqKey];
@@ -1256,40 +1369,106 @@ export default function App() {
     }
   }
 
-  async function maybePrefetchOlderMessages() {
-    const sid = toText(sessionId).trim();
-    if (!sid || loadingOlder || prefetchingOlderRef.current || !sessionHasMore[sid]) return;
-    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
-    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
-    if (cached > visible + OLDER_SESSION_LIMIT) return;
-    const cursor = toText(sessionNextCursor[sid]).trim();
-    if (!cursor) return;
-    prefetchingOlderRef.current = true;
+  async function syncSessionMessages(
+    targetSessionId: string,
+    opts?: {
+      limit?: number;
+      fetchLimit?: number;
+      loadingOlder?: boolean;
+      jumpToLatest?: boolean;
+      before?: string;
+      anchorStableKey?: string;
+      forceVisibleCount?: number;
+    }
+  ) {
+    const before = toText(opts?.before).trim();
+    const mode = opts?.jumpToLatest ? 'jumpToLatest' : opts?.loadingOlder ? 'loadingOlder' : 'default';
+    const syncKey = `${targetSessionId}|${mode}|${before || '-'}`;
+    const existing = inflightSessionSyncRef.current[syncKey];
+    if (existing) {
+      return await existing;
+    }
+
+    const run = (async () => {
+    const requestedVisibleTurnCount = Math.max(1, Number(opts?.limit || INITIAL_SESSION_LIMIT));
+    const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
+
     try {
-      if (prefetchedCursorRef.current[sid] === cursor) return;
-      await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, prefetchOnly: true });
-      prefetchedCursorRef.current[sid] = cursor;
+      const res = await refreshMessages(targetSessionId, {
+        limit: requestedVisibleTurnCount,
+        fetchLimit: opts?.fetchLimit,
+        before,
+        reason: mode
+      });
+      if (!res || targetSessionId !== sessionIdRef.current) return undefined;
+
+      const nextVisibleTurnCount = computeVisibleTurnCount({
+        prevVisibleTurnCount,
+        totalTurnCount: res.totalTurnCount,
+        requestedVisibleTurnCount,
+        initialTurnLimit: INITIAL_SESSION_LIMIT,
+        olderTurnLimit: OLDER_SESSION_LIMIT,
+        mode,
+        forceVisibleTurnCount: opts?.forceVisibleCount,
+        userAtTop: false,
+        hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
+      });
+      const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
+
+      if (opts?.jumpToLatest) {
+        forceScrollToLatestUntilRef.current = Date.now() + 800;
+        requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
+        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
+        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
+      }
+      if (!rendered.writing) {
+        setStreaming(false);
+        setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
+      }
+      return rendered;
     } finally {
-      prefetchingOlderRef.current = false;
+      if (opts?.loadingOlder) {
+        setLoadingOlder(false);
+      }
+    }
+    })();
+    inflightSessionSyncRef.current[syncKey] = run;
+    try {
+      return await run;
+    } finally {
+      if (inflightSessionSyncRef.current[syncKey] === run) {
+        delete inflightSessionSyncRef.current[syncKey];
+      }
     }
   }
 
   async function onLoadOlderMessages() {
     const sid = toText(sessionId).trim();
     if (!sid || loadingOlder) return;
-    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
-    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
+    const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
+    const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
     if (cached > visible) {
-      renderSessionVisibleWindow(sid, Math.min(cached, visible + OLDER_SESSION_LIMIT));
-      void maybePrefetchOlderMessages();
+      applyTurnWindow(sid, Math.min(cached, visible + OLDER_SESSION_LIMIT));
       return;
     }
-    const anchorStableKey = toText(topVisibleStableKeyRef.current).trim();
     const cursor = toText(sessionNextCursor[sid]).trim();
+    const backoff = cursor ? getOlderCursorBackoff(sid, cursor) : null;
+    if (backoff) {
+      setSessionHistoryRetryHint((prev) => ({
+        ...prev,
+        [sid]: `历史加载失败，${formatRetryDelay(backoff.retryAt - Date.now())}`
+      }));
+      return;
+    }
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
     if (cursor) {
-      await refreshMessages(sid, { limit: OLDER_SESSION_LIMIT, before: cursor, loadingOlder: true, anchorStableKey });
+      await syncSessionMessages(sid, {
+        limit: OLDER_SESSION_LIMIT,
+        fetchLimit: OLDER_MESSAGE_FETCH_LIMIT,
+        before: cursor,
+        loadingOlder: true
+      });
     } else {
       setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
       setLoadingOlder(false);
@@ -1301,33 +1480,8 @@ export default function App() {
     }, 120);
   }
 
-  async function ensureScrollableHistoryArea() {
-    const sid = toText(sessionIdRef.current).trim();
-    if (!sid || loadingOlder || autoFillLoadingRef.current) return;
-    if (!sessionHasMore[sid]) return;
-    autoFillLoadingRef.current = true;
-    try {
-      await onLoadOlderMessages();
-    } finally {
-      autoFillLoadingRef.current = false;
-    }
-  }
-
   function onMessageListScroll(y: number) {
     messageScrollYRef.current = y;
-    const sid = toText(sessionIdRef.current).trim();
-    if (!sid || loadingOlder) return;
-    const cached = Math.max(0, Number(sessionChatCountRef.current[sid] || 0));
-    const visible = Math.max(0, Number(sessionVisibleCountRef.current[sid] || 0));
-    const canExpandFromCache = cached > visible;
-    if (!sessionHasMore[sid] && !canExpandFromCache) return;
-    // 接近顶部先预取，避免到顶等待网络。
-    if (y <= AUTO_PREFETCH_TOP_TRIGGER) {
-      void maybePrefetchOlderMessages();
-    }
-    if (y > AUTO_LOAD_TOP_RESET) return;
-    if (y > AUTO_LOAD_TOP_TRIGGER) return;
-    void onLoadOlderMessages();
   }
 
   async function refreshModelCatalog(targetRepoPath?: string) {
@@ -1356,8 +1510,8 @@ export default function App() {
       pushConnLog(`GET config ok models=${options.length}`);
       if (hasNew) triggerPulse(rightDrawerPulse);
     } catch (e) {
-      pushConnLog(`GET config error ${String(e)}`, 'error');
-      setModelCatalogStatus(`模型列表读取失败: ${String(e)}`);
+      pushConnLog(`GET config warn ${String(e)}`, 'info');
+      setModelCatalogStatus('模型列表暂不可用，不影响会话收发');
     }
   }
 
@@ -1467,11 +1621,15 @@ export default function App() {
     setRepoPath(next);
     setActiveSession('');
     setMessages([]);
-    setTimeline([]);
+    setRenderedTurns([]);
     setSessions([]);
     setSessionNextCursor({});
     setSessionHasMore({});
+    setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
+    sessionVisibleTurnCountRef.current = {};
+    sessionTotalTurnCountRef.current = {};
+    olderCursorBackoffRef.current = {};
     const pname = projectNameFromPath(next);
     setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     allowAutoScrollRef.current = false;
@@ -1481,7 +1639,6 @@ export default function App() {
     if (nextSessions.length > 0) {
       const latest = nextSessions[0];
       setActiveSession(latest.id);
-      await refreshMessages(latest.id, { limit: INITIAL_SESSION_LIMIT, jumpToLatest: true });
       allowAutoScrollRef.current = false;
     }
   }
@@ -1507,7 +1664,7 @@ export default function App() {
       const now = Date.now();
       if (now - lastSyncAt < 700) return;
       lastSyncAt = now;
-      void refreshMessages(targetSessionId);
+      void syncSessionMessages(targetSessionId, { limit: INITIAL_SESSION_LIMIT });
     };
 
     es.addEventListener('open', () => {
@@ -1574,17 +1731,10 @@ export default function App() {
     return true;
   }, [messages, streaming]);
 
-  const lastThinkIndex = useMemo(() => {
-    for (let i = timeline.length - 1; i >= 0; i -= 1) {
-      if (timeline[i].kind === 'think') return i;
-    }
-    return -1;
-  }, [timeline]);
-
   async function connectWithAddressAndCode(
     inputBaseUrl: string,
     inputCode: string,
-    opts?: { preferredRepoPath?: string; payloadRepoPaths?: string[] }
+    opts?: { preferredRepoPath?: string; payloadRepoPaths?: string[]; discoveredDevice?: DiscoveredDevice }
   ) {
     const nextUrl = normalizeBaseUrlForClient(toText(inputBaseUrl).trim(), {
       defaultScheme: opts?.payloadRepoPaths ? undefined : (preferHttps ? 'https' : 'http')
@@ -1633,11 +1783,18 @@ export default function App() {
       Vibration.vibrate(220);
       const errText = toText(e);
       pushConnLog(`auth connect error ${errText}`, 'error');
-      if (!nextCode && /missing bearer token|invalid bearer token|401/i.test(errText)) {
+      const pairCodeRequired = /pair code required|required by server|需要验证码/i.test(errText);
+      const pairCodeRejected = /pair code|expired|invalid|验证码|过期/i.test(errText);
+      if (opts?.discoveredDevice && (pairCodeRequired || pairCodeRejected)) {
+        reopenPairPromptForDevice(
+          opts.discoveredDevice,
+          pairCodeRejected ? '历史验证码已失效，请重新输入验证码' : '该设备需要验证码，请输入验证码后连接'
+        );
+      } else if (!nextCode && /missing bearer token|invalid bearer token|401/i.test(errText)) {
         setStatus('服务端当前需要验证码，请输入验证码后重试');
-      } else if (/pair code required|required by server|需要验证码/i.test(errText)) {
+      } else if (pairCodeRequired) {
         setStatus('该设备需要验证码，请在首页输入验证码后重试');
-      } else if (/pair code|expired|invalid|验证码|过期/i.test(errText)) {
+      } else if (pairCodeRejected) {
         setStatus('验证码无效或已过期，请检查后重试');
       } else {
         setStatus(errText);
@@ -1940,6 +2097,24 @@ export default function App() {
     setPairPromptOpen(true);
   }
 
+  function clearPairCodeForDevice(item: { host: string; port: number } | null | undefined) {
+    const key = deviceKeyOf(item);
+    if (!key) return;
+    if (!(key in (pairCodeMapRef.current || {}))) return;
+    const next = { ...(pairCodeMapRef.current || {}) };
+    delete next[key];
+    pairCodeMapRef.current = next;
+    void savePairCodeMap(next);
+  }
+
+  function reopenPairPromptForDevice(item: DiscoveredDevice, statusText: string) {
+    clearPairCodeForDevice(item);
+    setPairPromptDevice(item);
+    setPairPromptValue('');
+    setPairPromptOpen(true);
+    setStatus(statusText);
+  }
+
   async function onConnectDiscoveredDevice(item: DiscoveredDevice, codeOverride?: string) {
     const hostWithPort = (() => {
       try {
@@ -1955,7 +2130,7 @@ export default function App() {
     const key = deviceKeyOf(item);
     const cached = key ? toText(pairCodeMapRef.current[key]).trim() : '';
     const code = (codeOverride ?? cached ?? pairCode).trim();
-    await connectWithAddressAndCode(item.baseUrl, code);
+    await connectWithAddressAndCode(item.baseUrl, code, { discoveredDevice: item });
   }
 
   async function onConnectSelectedDiscover() {
@@ -2107,7 +2282,11 @@ export default function App() {
       });
       setActiveSession(res.sessionId);
       setPrompt('');
-      await refreshMessages(res.sessionId);
+      await syncSessionMessages(res.sessionId, {
+        limit: INITIAL_SESSION_LIMIT,
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
+        jumpToLatest: true
+      });
       await refreshSessionsFromServer();
       startStream(res.sessionId);
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);
@@ -2149,7 +2328,7 @@ export default function App() {
         sessionId
       });
       setStatus('已请求中断');
-      await refreshMessages(sessionId);
+      await syncSessionMessages(sessionId, { limit: INITIAL_SESSION_LIMIT });
       pushConnLog('POST abort ok');
     } catch (e) {
       pushConnLog(`POST abort error ${String(e)}`, 'error');
@@ -2165,7 +2344,13 @@ export default function App() {
     setActiveSession('');
     allowAutoScrollRef.current = true;
     setMessages([]);
-    setTimeline([]);
+    setRenderedTurns([]);
+    setSessionHistoryRetryHint((prev) => {
+      if (!oldSid || !(oldSid in prev)) return prev;
+      const next = { ...prev };
+      delete next[oldSid];
+      return next;
+    });
     setSessionNextCursor((prev) => {
       const next = { ...prev };
       if (oldSid) delete next[oldSid];
@@ -2194,10 +2379,14 @@ export default function App() {
     setProjects([]);
     setActiveSession('');
     setMessages([]);
-    setTimeline([]);
+    setRenderedTurns([]);
     setSessionNextCursor({});
     setSessionHasMore({});
+    setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
+    sessionVisibleTurnCountRef.current = {};
+    sessionTotalTurnCountRef.current = {};
+    olderCursorBackoffRef.current = {};
     setAuthAsciiBrand(pickRandomAuthAsciiBrand());
     setStatus('已退出授权');
     pushConnLog('reset auth');
@@ -2468,7 +2657,7 @@ export default function App() {
         </View>
       ) : null}
       <View style={styles.chatBodyWrap}>
-        {timeline.length === 0 ? (
+        {renderedTurns.length === 0 ? (
           <View style={styles.blankWrap}>
             <Text style={styles.blankTitle}>Giteam</Text>
             <Text style={styles.blankSub}>为你答疑、办事、创作，随时找我聊天</Text>
@@ -2487,16 +2676,11 @@ export default function App() {
             contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
             onLayout={(evt) => {
               messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
-              if (messageViewportHRef.current > 0) {
-                setTimeout(() => {
-                  void ensureScrollableHistoryArea();
-                }, 0);
-              }
             }}
-            data={timeline}
-            initialNumToRender={6}
-            maxToRenderPerBatch={6}
-            windowSize={5}
+            data={renderedTurns}
+            initialNumToRender={3}
+            maxToRenderPerBatch={3}
+            windowSize={4}
             removeClippedSubviews={Platform.OS !== 'web'}
             alwaysBounceVertical
             bounces
@@ -2508,9 +2692,6 @@ export default function App() {
               forceScrollToLatestUntilRef.current = 0;
               allowAutoScrollRef.current = false;
               messageUserScrollingRef.current = true;
-              if (Number(messageScrollYRef.current || 0) <= AUTO_LOAD_TOP_TRIGGER + 12) {
-                void onLoadOlderMessages();
-              }
             }}
             onScrollEndDrag={() => {
               messageUserScrollingRef.current = false;
@@ -2521,6 +2702,23 @@ export default function App() {
             onMomentumScrollEnd={() => {
               messageUserScrollingRef.current = false;
             }}
+            refreshControl={
+              sessionId ? (
+                <RefreshControl
+                  refreshing={loadingOlder}
+                  onRefresh={() => {
+                    if (!sessionHasMore[sessionId]) return;
+                    void onLoadOlderMessages();
+                  }}
+                  enabled={!!sessionHasMore[sessionId]}
+                  tintColor="#607287"
+                  colors={['#607287']}
+                  progressViewOffset={28}
+                  title={sessionHasMore[sessionId] ? '下拉加载更多消息' : '没有更多消息'}
+                  titleColor="#607287"
+                />
+              ) : undefined
+            }
             onScroll={(evt) => {
               const y = Number(evt.nativeEvent.contentOffset?.y || 0);
               // 只有用户“接近底部”时，才允许新消息自动滚到最新。
@@ -2539,16 +2737,11 @@ export default function App() {
             }}
             onViewableItemsChanged={({ viewableItems }) => {
               const v = viewableItems?.[0];
-              const it = (v as any)?.item as MobileTimelineItem | undefined;
+              const it = (v as any)?.item as MobileRenderedTurn | undefined;
               if (!it) return;
-              topVisibleStableKeyRef.current = timelineStableKey(it);
+              topVisibleStableKeyRef.current = it.id;
             }}
             onContentSizeChange={(_w, h) => {
-              const contentH = Number(h || 0);
-              const viewportH = Number(messageViewportHRef.current || 0);
-              if (viewportH > 0 && contentH < viewportH * 1.08) {
-                void ensureScrollableHistoryArea();
-              }
               if (suppressAutoScrollRef.current) return;
               if (loadingOlder) return;
               if (messageUserScrollingRef.current) return;
@@ -2559,77 +2752,19 @@ export default function App() {
               if (!allowAutoScrollRef.current) return;
               requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
             }}
-            keyExtractor={(item) => {
-              return timelineStableKey(item);
-            }}
-            renderItem={({ item, index: idx }) => {
-              if (item.kind === 'context') {
-                const tools = Array.isArray(item.context.tools) ? item.context.tools : [];
-                return (
-                  <View key={item.context.id} style={styles.contextWrap}>
-                    <View style={styles.contextCard}>
-                      <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
-                      <Text style={styles.contextSummary}>{toText(item.context.summary || `tools: ${tools.length}`)}</Text>
-                      {tools.length > 0 ? (
-                        <View style={styles.contextTools}>
-                          {tools.slice(0, 3).map((t) => (
-                            <View key={t.id} style={styles.contextToolRow}>
-                              <Text style={styles.contextToolTitle}>{toText(t.title || 'tool')}</Text>
-                              <Text numberOfLines={1} style={styles.contextToolDetail}>
-                                {toText(t.detail || t.mode || t.status || '执行完成')}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                );
-              }
-              if (item.kind === 'event') {
-                const st = toText(item.event.status).toLowerCase();
-                const dotStyle = st === 'running' || st === 'pending' ? styles.eventDotRun : styles.eventDot;
-                const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
-                return (
-                  <View key={item.event.id} style={styles.eventWrap}>
-                    <View style={styles.eventCard}>
-                      <View style={styles.eventHead}>
-                        <View style={dotStyle} />
-                        <Text style={styles.eventTitle}>{toText(item.event.title || 'Event')}</Text>
-                        {toText(item.event.mode) ? <Text style={styles.eventMode}>{toText(item.event.mode)}</Text> : null}
-                        <Text style={styles.eventTime}>{formatClock(item.event.createdAt)}</Text>
-                      </View>
-                      <Text style={styles.eventDetail}>{detail}</Text>
-                      {toText(item.event.output) ? <Text style={styles.eventOutput}>{toText(item.event.output)}</Text> : null}
-                    </View>
-                  </View>
-                );
-              }
-              if (item.kind === 'think') {
-                const keepOpen = !streaming || idx === lastThinkIndex;
-                return (
-                  <View key={item.card.id} style={styles.thinkWrap}>
-                    <View style={styles.thinkCard}>
-                      <Text style={styles.thinkTitle}>{item.card.title}</Text>
-                      {keepOpen ? (
-                        <View>{renderMarkdown(toText(item.card.text), 'think')}</View>
-                      ) : (
-                        <Text style={styles.thinkCollapsed}>{toText(item.card.text)}</Text>
-                      )}
-                    </View>
-                  </View>
-                );
-              }
-              const m = item.message;
-              return (
-                <View key={m.id} style={m.role === 'user' ? styles.bubbleUserWrap : styles.bubbleAssistantWrap}>
-                  <View style={m.role === 'user' ? styles.bubbleUser : styles.bubbleAssistant}>
-                    <View>{renderMarkdown(toText(m.text || '...'), m.role === 'user' ? 'user' : 'assistant')}</View>
-                  </View>
+            keyExtractor={(item) => item.id}
+            renderItem={({ item, index }) => (
+              <MobileTurnCell turn={item} streaming={streaming} isLastTurn={index === renderedTurns.length - 1} />
+            )}
+            ListHeaderComponent={
+              sessionId ? (
+                <View style={styles.loadEarlierWrap}>
+                  {toText(sessionHistoryRetryHint[sessionId]).trim() ? (
+                    <Text style={styles.loadEarlierHint}>{toText(sessionHistoryRetryHint[sessionId])}</Text>
+                  ) : null}
                 </View>
-              );
-            }}
-            ListHeaderComponent={null}
+              ) : null
+            }
             ListFooterComponent={
               showThinkingPlaceholder ? (
                 <View style={styles.thinkingWrap}>
@@ -2718,7 +2853,6 @@ export default function App() {
                         onPress={() => {
                           stopStream();
                           setActiveSession(s.id);
-                          void refreshMessages(s.id, { limit: INITIAL_SESSION_LIMIT, jumpToLatest: true });
                           closeDrawer();
                         }}
                       >
@@ -3273,10 +3407,13 @@ const styles = StyleSheet.create({
 
   msgScroll: { flex: 1 },
   msgList: { gap: 10, paddingTop: 8, paddingBottom: 120 },
+  turnWrap: { width: '100%', alignSelf: 'stretch', gap: 10 },
+  loadEarlierWrap: { alignItems: 'center', paddingTop: 2, paddingBottom: 4 },
+  loadEarlierHint: { marginTop: 6, color: '#8b6c45', fontSize: 11 },
   historyHintWrap: { alignItems: 'center', paddingTop: 4, paddingBottom: 2 },
   historyHintText: { color: '#7c8aa0', fontSize: 12 },
-  thinkWrap: { alignItems: 'flex-start' },
-  contextWrap: { alignItems: 'flex-start' },
+  thinkWrap: { width: '100%', alignItems: 'flex-start' },
+  contextWrap: { width: '100%', alignItems: 'flex-start' },
   contextCard: {
     maxWidth: '96%',
     borderRadius: 12,
@@ -3293,7 +3430,7 @@ const styles = StyleSheet.create({
   contextToolRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   contextToolTitle: { color: '#2d3a4d', fontSize: 12, fontWeight: '600' },
   contextToolDetail: { color: '#73839a', fontSize: 11, flex: 1 },
-  eventWrap: { alignItems: 'flex-start' },
+  eventWrap: { width: '100%', alignItems: 'flex-start' },
   eventCard: {
     maxWidth: '96%',
     borderRadius: 12,
@@ -3351,10 +3488,12 @@ const styles = StyleSheet.create({
   thinkingDot: { width: 6, height: 6, borderRadius: 999, backgroundColor: '#c7d0de' },
   thinkingDotOn: { backgroundColor: '#6b7f98' },
   thinkingLabel: { color: '#667a94', fontSize: 12, fontWeight: '500' },
-  bubbleUserWrap: { alignItems: 'flex-end' },
-  bubbleAssistantWrap: { alignItems: 'flex-start' },
+  bubbleUserWrap: { width: '100%', alignItems: 'flex-end' },
+  bubbleAssistantWrap: { width: '100%', alignItems: 'flex-start' },
   bubbleUser: {
     maxWidth: '84%',
+    alignSelf: 'flex-end',
+    flexShrink: 1,
     borderRadius: 14,
     paddingVertical: 9,
     paddingHorizontal: 12,
@@ -3362,6 +3501,8 @@ const styles = StyleSheet.create({
   },
   bubbleAssistant: {
     maxWidth: '84%',
+    alignSelf: 'flex-start',
+    flexShrink: 1,
     borderRadius: 14,
     paddingVertical: 9,
     paddingHorizontal: 12,
@@ -3369,7 +3510,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e6e9ee'
   },
-  bubbleUserText: { color: '#f5f7fb', lineHeight: 20 },
+  bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },
   bubbleAssistantText: { color: '#2f3948', lineHeight: 20 },
 
   inputDock: {

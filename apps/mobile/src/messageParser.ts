@@ -274,10 +274,11 @@ export function parseConversation(raw: unknown): ParsedConversation {
   const seenSig = new Set<string>();
   for (const item of ordered) {
     let sig: string = item.kind;
-    if (item.kind === 'chat') sig = `${sig}:${item.message.role}:${item.message.id}:${item.message.text}`;
-    if (item.kind === 'think') sig = `${sig}:${item.card.id}:${item.card.text}`;
-    if (item.kind === 'event') sig = `${sig}:${item.event.id}:${item.event.title}:${item.event.detail}:${item.event.output || ''}`;
-    if (item.kind === 'context') sig = `${sig}:${item.context.id}:${item.context.summary}`;
+    // 仅用稳定 id 去重：长正文拼进 key 会导致超长会话下 Set/字符串成本极高、主线程卡顿。
+    if (item.kind === 'chat') sig = `${sig}:${item.message.role}:${item.message.id}`;
+    if (item.kind === 'think') sig = `${sig}:${item.card.id}`;
+    if (item.kind === 'event') sig = `${sig}:${item.event.id}`;
+    if (item.kind === 'context') sig = `${sig}:${item.context.id}`;
     if (seenSig.has(sig)) continue;
     seenSig.add(sig);
     timeline.push(item);

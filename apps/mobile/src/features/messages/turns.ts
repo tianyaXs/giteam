@@ -1,0 +1,152 @@
+import { parseConversation } from '../../messageParser';
+import type { MobileChatMessage, MobileRenderedTurn, MobileTimelineItem } from '../../types';
+
+export type RawMessageRow = Record<string, any>;
+
+export type TurnWindowResult = {
+  mergedCount: number;
+  visibleTurnCount: number;
+  totalTurnCount: number;
+  timeline: MobileTimelineItem[];
+  renderedTurns: MobileRenderedTurn[];
+  chatMessages: MobileChatMessage[];
+  writing: boolean;
+  hasUserTurn: boolean;
+};
+
+function toText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function rowCreatedAt(row: RawMessageRow): number {
+  const t = Number(row?.info?.time?.created || 0);
+  return Number.isFinite(t) ? t : 0;
+}
+
+export function rowId(row: RawMessageRow): string {
+  return toText(row?.info?.id);
+}
+
+export function mergeMessageRows(prev: RawMessageRow[], incoming: RawMessageRow[]): RawMessageRow[] {
+  const byId = new Map<string, RawMessageRow>();
+  for (const row of prev) {
+    const id = rowId(row);
+    if (!id) continue;
+    byId.set(id, row);
+  }
+  for (const row of incoming) {
+    const id = rowId(row);
+    if (!id) continue;
+    byId.set(id, row);
+  }
+  return [...byId.values()].sort((a, b) => {
+    const ta = rowCreatedAt(a);
+    const tb = rowCreatedAt(b);
+    if (ta !== tb) return ta - tb;
+    return rowId(a).localeCompare(rowId(b));
+  });
+}
+
+export function inspectTurnWindow(raw: RawMessageRow[]) {
+  const parsed = parseConversation(raw);
+  const timeline = Array.isArray(parsed.timeline) ? parsed.timeline : [];
+  const renderedTurns = buildRenderedTurns(timeline);
+  return {
+    hasUserTurn: renderedTurns.some((turn) => !!turn.userMessage),
+    totalTurnCount: renderedTurns.length
+  };
+}
+
+function timelineStableKey(item: MobileTimelineItem): string {
+  if (item.kind === 'chat') return `chat:${toText(item.message.id)}`;
+  if (item.kind === 'think') return `think:${toText(item.card.id)}`;
+  if (item.kind === 'event') return `event:${toText(item.event.id)}`;
+  return `context:${toText(item.context.id)}`;
+}
+
+function itemSignature(item: MobileTimelineItem): string {
+  if (item.kind === 'chat') return `${timelineStableKey(item)}:${item.message.role}:${toText(item.message.text).length}`;
+  if (item.kind === 'think') return `${timelineStableKey(item)}:${item.card.finished ? 1 : 0}:${toText(item.card.text).length}`;
+  if (item.kind === 'event') {
+    return `${timelineStableKey(item)}:${toText(item.event.status)}:${toText(item.event.detail).length}:${toText(item.event.output).length}`;
+  }
+  const tools = Array.isArray(item.context.tools) ? item.context.tools.map((tool) => tool.id).join(',') : '';
+  return `${timelineStableKey(item)}:${toText(item.context.summary).length}:${tools}`;
+}
+
+export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRenderedTurn[] {
+  const out: MobileRenderedTurn[] = [];
+  let current: { id: string; createdAt: number; userMessage?: MobileChatMessage; items: MobileTimelineItem[] } | null = null;
+
+  const flush = () => {
+    if (!current || current.items.length === 0) return;
+    out.push({
+      id: current.id,
+      createdAt: current.createdAt,
+      userMessage: current.userMessage,
+      items: current.items,
+      signature: current.items.map(itemSignature).join('|')
+    });
+  };
+
+  for (const item of timeline) {
+    if (item.kind === 'chat' && item.message.role === 'user') {
+      flush();
+      current = {
+        id: `turn:${toText(item.message.id) || String(item.createdAt)}`,
+        createdAt: item.createdAt,
+        userMessage: item.message,
+        items: [item]
+      };
+      continue;
+    }
+
+    if (!current) {
+      current = {
+        id: `turn:fallback:${timelineStableKey(item)}`,
+        createdAt: item.createdAt,
+        items: [item]
+      };
+      continue;
+    }
+
+    current.items.push(item);
+  }
+
+  flush();
+  return out;
+}
+
+export function buildTurnWindow(raw: RawMessageRow[], visibleTurnCount: number): TurnWindowResult {
+  const parsed = parseConversation(raw);
+  const fullTimeline = Array.isArray(parsed.timeline) ? parsed.timeline : [];
+  const fullRenderedTurns = buildRenderedTurns(fullTimeline);
+  const totalTurnCount = fullRenderedTurns.length;
+  const safeVisibleTurns = totalTurnCount > 0 ? Math.max(1, Math.min(Math.floor(visibleTurnCount || 0), totalTurnCount)) : 0;
+  const visibleRenderedTurns =
+    totalTurnCount > safeVisibleTurns ? fullRenderedTurns.slice(totalTurnCount - safeVisibleTurns) : fullRenderedTurns;
+  const visibleIds = new Set(visibleRenderedTurns.map((turn) => turn.id));
+  const itemTurnMap = new Map<MobileTimelineItem, string>();
+  for (const turn of fullRenderedTurns) {
+    for (const item of turn.items) {
+      itemTurnMap.set(item, turn.id);
+    }
+  }
+  const timeline = fullTimeline.filter((item) => {
+    const ownerId = itemTurnMap.get(item);
+    return ownerId ? visibleIds.has(ownerId) : false;
+  });
+  const chatMessages = timeline
+    .filter((item): item is Extract<MobileTimelineItem, { kind: 'chat' }> => item.kind === 'chat')
+    .map((item) => item.message);
+  return {
+    mergedCount: raw.length,
+    visibleTurnCount: totalTurnCount > 0 ? safeVisibleTurns : 0,
+    totalTurnCount,
+    timeline,
+    renderedTurns: visibleRenderedTurns,
+    chatMessages,
+    writing: parsed.writing,
+    hasUserTurn: fullRenderedTurns.some((turn) => !!turn.userMessage)
+  };
+}

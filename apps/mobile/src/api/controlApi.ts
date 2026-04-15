@@ -9,6 +9,8 @@ function normalizeBaseUrl(input: string): string {
 }
 
 const REQUEST_TIMEOUT_MS = 12000;
+/** 长会话单页 JSON 较大，12s 易误判为失败 */
+const MESSAGES_REQUEST_TIMEOUT_MS = 90000;
 
 function authHeaders(token: string): Record<string, string> {
   const tk = String(token || '').trim();
@@ -16,20 +18,25 @@ function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${tk}` };
 }
 
-function describeNetworkError(err: unknown): string {
+function describeNetworkError(err: unknown, timeoutMs?: number): string {
   const name = (err as any)?.name ? String((err as any).name) : '';
   const message = (err as any)?.message ? String((err as any).message) : String(err || 'unknown error');
-  if (name === 'AbortError') return `timeout after ${REQUEST_TIMEOUT_MS}ms`;
+  if (name === 'AbortError') return `timeout after ${timeoutMs ?? REQUEST_TIMEOUT_MS}ms`;
   if (/Network request failed/i.test(message)) {
     return `${message} (possible: LAN unreachable / HTTP cleartext blocked / firewall / wrong IP)`;
   }
   return `${name ? `${name}: ` : ''}${message}`;
 }
 
-async function fetchTextWithTrace(url: string, init?: RequestInit): Promise<{ status: number; ok: boolean; text: string }> {
+async function fetchTextWithTrace(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<{ status: number; ok: boolean; text: string }> {
   const method = String(init?.method || 'GET').toUpperCase();
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timeout = ctrl ? setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS) : null;
+  const ms = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : REQUEST_TIMEOUT_MS;
+  const timeout = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
   try {
     const res = await fetch(url, {
       ...(init || {}),
@@ -38,7 +45,7 @@ async function fetchTextWithTrace(url: string, init?: RequestInit): Promise<{ st
     const text = await res.text();
     return { status: res.status, ok: res.ok, text };
   } catch (e) {
-    throw new Error(`[${method}] ${url} -> ${describeNetworkError(e)}`);
+    throw new Error(`[${method}] ${url} -> ${describeNetworkError(e, ms)}`);
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -117,9 +124,13 @@ export async function getMessages(args: {
     params.set('before', args.before.trim());
   }
   const url = `${baseUrl}/api/v1/opencode/messages?${params.toString()}`;
-  const result = await fetchTextWithTrace(url, {
-    headers: authHeaders(args.token)
-  });
+  const result = await fetchTextWithTrace(
+    url,
+    {
+      headers: authHeaders(args.token)
+    },
+    MESSAGES_REQUEST_TIMEOUT_MS
+  );
   const raw = ensureOk('messages', 'GET', url, result.status, result.ok, result.text);
   // 服务端历史/兼容：可能直接返回数组（无 nextCursor），也可能返回 { items, nextCursor }
   // 另外某些实现会返回 nextCursor: null，需要归一化成 ''，避免上层误判。
