@@ -7,7 +7,7 @@ fn main() {
                 commands::opencode::warmup_managed_opencode_service();
             });
             std::thread::spawn(|| {
-                commands::control::start_control_server();
+                commands::giteam_cli::start_managed_mobile_service();
             });
             Ok(())
         })
@@ -75,19 +75,16 @@ fn main() {
             commands::db::db_remove_repository,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
-            commands::control::get_control_server_settings,
-            commands::control::set_control_server_settings,
-            commands::control::get_control_pair_code,
-            commands::control::refresh_control_pair_code,
-            commands::control::get_control_access_info
+            commands::giteam_cli::giteam_cli_get_settings,
+            commands::giteam_cli::giteam_cli_get_mobile_service_status,
+            commands::giteam_cli::giteam_cli_start_mobile_service_background,
+            commands::giteam_cli::giteam_cli_set_settings,
+            commands::giteam_cli::giteam_cli_get_pair_code,
+            commands::giteam_cli::giteam_cli_refresh_pair_code,
+            commands::giteam_cli::giteam_cli_get_access_info
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri app");
 
-    app.run(|_app_handle, event| {
-        if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-            commands::control::stop_control_server();
-            commands::opencode::shutdown_managed_opencode_service();
-        }
-    });
+    app.run(|_app_handle, _event| {});
 }

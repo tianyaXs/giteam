@@ -1,0 +1,36 @@
+{
+  "name": "giteam-darwin-x64",
+  "version": "0.1.6",
+  "description": "Prebuilt darwin/x64 binary for giteam",
+  "author": "giteam Contributors",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tianyaXs/giteam.git"
+  },
+  "homepage": "https://github.com/tianyaXs/giteam#readme",
+  "bugs": {
+    "url": "https://github.com/tianyaXs/giteam/issues"
+  },
+  "keywords": [
+    "giteam",
+    "cli",
+    "tauri",
+    "opencode",
+    "lan"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/giteam",
+    "README.md",
+    "package.json"
+  ]
+}

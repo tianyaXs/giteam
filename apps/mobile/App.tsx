@@ -2269,6 +2269,26 @@ export default function App() {
     // Sending in current session should keep view pinned to latest output.
     allowAutoScrollRef.current = true;
     try {
+      // Optimistic UI: show the user bubble immediately to avoid "flash then suddenly appear".
+      const optimisticAt = Date.now();
+      const optimisticId = `local:${optimisticAt}`;
+      setRenderedTurns((prev) => {
+        const next = [...prev];
+        next.push({
+          id: `turn:chat:${optimisticId}`,
+          createdAt: optimisticAt,
+          userMessage: { id: optimisticId, role: 'user', text: payloadPrompt, createdAt: optimisticAt },
+          items: [],
+          signature: `optimistic:${payloadPrompt.length}`
+        });
+        return next;
+      });
+      setMessages((prev) => {
+        const next = [...prev];
+        next.push({ id: optimisticId, role: 'user', text: payloadPrompt, createdAt: optimisticAt });
+        return next;
+      });
+
       const normalizedModel = model.trim();
       const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
       pushConnLog(`POST prompt sid=${sessionId || '(new)'} model=${requestModel || '(default)'}`);
@@ -2282,13 +2302,14 @@ export default function App() {
       });
       setActiveSession(res.sessionId);
       setPrompt('');
-      await syncSessionMessages(res.sessionId, {
+      startStream(res.sessionId);
+      // Do not block UI on message refresh. Fetch in background.
+      void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
         fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
         jumpToLatest: true
       });
-      await refreshSessionsFromServer();
-      startStream(res.sessionId);
+      void refreshSessionsFromServer();
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);
       setStatus('已发送');
     } catch (e) {
@@ -2314,21 +2335,22 @@ export default function App() {
   }
 
   async function onAbort() {
-    if (!authed || !sessionId) {
+    const sid = toText(sessionIdRef.current).trim();
+    if (!authed || !sid) {
       setStatus('没有可中断的会话');
       return;
     }
     setBusy(true);
     try {
-      pushConnLog(`POST abort sid=${sessionId}`);
+      pushConnLog(`POST abort sid=${sid}`);
       await abortSession({
         baseUrl: serverUrl,
         token,
         repoPath,
-        sessionId
+        sessionId: sid
       });
       setStatus('已请求中断');
-      await syncSessionMessages(sessionId, { limit: INITIAL_SESSION_LIMIT });
+      await syncSessionMessages(sid, { limit: INITIAL_SESSION_LIMIT });
       pushConnLog('POST abort ok');
     } catch (e) {
       pushConnLog(`POST abort error ${String(e)}`, 'error');
@@ -2796,7 +2818,7 @@ export default function App() {
           <Pressable
             style={streaming || busy ? styles.actionBtnStop : styles.actionBtnSend}
             onPress={streaming || busy ? onAbort : () => void onSendPrompt()}
-            disabled={streaming || busy ? !sessionId : !prompt.trim()}
+            disabled={streaming || busy ? !toText(sessionIdRef.current).trim() : !prompt.trim()}
           >
             <Text style={streaming || busy ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
               {streaming || busy ? '■' : '→'}

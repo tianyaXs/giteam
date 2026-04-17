@@ -77,6 +77,7 @@ function itemSignature(item: MobileTimelineItem): string {
 export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRenderedTurn[] {
   const out: MobileRenderedTurn[] = [];
   let current: { id: string; createdAt: number; userMessage?: MobileChatMessage; items: MobileTimelineItem[] } | null = null;
+  let seq = 0;
 
   const flush = () => {
     if (!current || current.items.length === 0) return;
@@ -92,8 +93,12 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
   for (const item of timeline) {
     if (item.kind === 'chat' && item.message.role === 'user') {
       flush();
+      seq += 1;
+      const stable = timelineStableKey(item);
+      const fallback = `turn:seq:${seq}:${item.createdAt || 0}`;
       current = {
-        id: `turn:${toText(item.message.id) || String(item.createdAt)}`,
+        // IMPORTANT: turn.id must be unique & stable, otherwise FlatList cells can overlap.
+        id: stable && !stable.endsWith(':') ? `turn:${stable}` : fallback,
         createdAt: item.createdAt,
         userMessage: item.message,
         items: [item]
@@ -102,8 +107,9 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
     }
 
     if (!current) {
+      seq += 1;
       current = {
-        id: `turn:fallback:${timelineStableKey(item)}`,
+        id: `turn:fallback:${timelineStableKey(item) || `seq:${seq}:${item.createdAt || 0}`}`,
         createdAt: item.createdAt,
         items: [item]
       };

@@ -1,0 +1,52 @@
+name: NPM Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'cli-v*.*.*'
+
+jobs:
+  publish-platform:
+    name: Publish ${{ matrix.platform.key }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - key: darwin-arm64
+            runner: macos-14
+          - key: darwin-x64
+            runner: macos-13
+          - key: linux-arm64
+            runner: ubuntu-24.04-arm
+          - key: linux-x64
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish platform package
+        working-directory: apps/cli
+        run: node ./scripts/publish-packages.js --platform ${{ matrix.platform.key }} --no-root
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-root:
+    name: Publish root package
+    needs: publish-platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish root package
+        working-directory: apps/cli
+        run: node ./scripts/publish-packages.js --root-only --skip-build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

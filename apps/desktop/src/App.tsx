@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CSSProperties, ReactNode } from "react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
@@ -38,6 +38,29 @@ import type {
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state: { error: string | null } = { error: null };
+  static getDerivedStateFromError(err: unknown) {
+    return { error: String(err) };
+  }
+  componentDidCatch(err: unknown) {
+    // Keep it visible; Tauri devtools isn't always open.
+    // eslint-disable-next-line no-console
+    console.error("[ui] fatal render error", err);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 16, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+          <div style={{ marginBottom: 8, fontWeight: 600 }}>UI crashed</div>
+          <pre style={{ whiteSpace: "pre-wrap", margin: 0, color: "var(--danger)" }}>{this.state.error}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 type DiffRowKind = "meta" | "add" | "del" | "ctx";
 type DiffRow = { kind: DiffRowKind; left: string; right: string };
 type StatusSession = { title: string; quote?: string; meta?: string };
@@ -61,6 +84,8 @@ type RuntimeDependencyStatus = {
   installed: boolean;
   path?: string;
   version?: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
   installHint: string;
 };
 type RuntimeRequirementsStatus = {
@@ -69,6 +94,7 @@ type RuntimeRequirementsStatus = {
   git: RuntimeDependencyStatus;
   entire: RuntimeDependencyStatus;
   opencode: RuntimeDependencyStatus;
+  giteam: RuntimeDependencyStatus;
 };
 type RuntimeActionJobStatus = {
   jobId: string;
@@ -167,6 +193,12 @@ type ControlAccessInfo = {
   localUrls: string[];
   pairCodeTtlMode?: string;
   noAuth?: boolean;
+};
+type GiteamMobileServiceStatus = {
+  cliInstalled: boolean;
+  enabled: boolean;
+  port: number;
+  running: boolean;
 };
 
 type OpencodeAuthPayload = { type: "api"; key: string };
@@ -410,12 +442,14 @@ const OPENCODE_PAGE_SIZE = 24;
 const OPENCODE_RECENT_VISIBLE = 2;
 const OPENCODE_SESSION_TITLE_MAX = 42;
 
-const EMPTY_DEP = (name: "git" | "entire" | "opencode", installHint: string): RuntimeDependencyStatus => ({
+const EMPTY_DEP = (name: "git" | "entire" | "opencode" | "giteam", installHint: string): RuntimeDependencyStatus => ({
   name,
   checked: false,
   installed: false,
   path: undefined,
   version: undefined,
+  latestVersion: undefined,
+  updateAvailable: false,
   installHint
 });
 
@@ -424,7 +458,8 @@ const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
   homebrewInstalled: false,
   git: EMPTY_DEP("git", "brew install git"),
   entire: EMPTY_DEP("entire", "brew tap entireio/tap && brew install entireio/tap/entire"),
-  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode")
+  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode"),
+  giteam: EMPTY_DEP("giteam", "npm install -g giteam")
 };
 
 function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
@@ -437,7 +472,8 @@ function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
       homebrewInstalled: Boolean(parsed.homebrewInstalled),
       git: parsed.git ? { ...DEFAULT_RUNTIME_STATUS.git, ...parsed.git } : DEFAULT_RUNTIME_STATUS.git,
       entire: parsed.entire ? { ...DEFAULT_RUNTIME_STATUS.entire, ...parsed.entire } : DEFAULT_RUNTIME_STATUS.entire,
-      opencode: parsed.opencode ? { ...DEFAULT_RUNTIME_STATUS.opencode, ...parsed.opencode } : DEFAULT_RUNTIME_STATUS.opencode
+      opencode: parsed.opencode ? { ...DEFAULT_RUNTIME_STATUS.opencode, ...parsed.opencode } : DEFAULT_RUNTIME_STATUS.opencode,
+      giteam: parsed.giteam ? { ...DEFAULT_RUNTIME_STATUS.giteam, ...parsed.giteam } : DEFAULT_RUNTIME_STATUS.giteam
     };
   } catch {
     return DEFAULT_RUNTIME_STATUS;
@@ -1260,16 +1296,17 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
-  const [checkingDeps, setCheckingDeps] = useState<Record<"git" | "entire" | "opencode", boolean>>({
+  const [checkingDeps, setCheckingDeps] = useState<Record<"git" | "entire" | "opencode" | "giteam", boolean>>({
     git: false,
     entire: false,
-    opencode: false
+    opencode: false,
+    giteam: false
   });
   const [installingDep, setInstallingDep] = useState("");
   const [installingElapsed, setInstallingElapsed] = useState(0);
   const [runtimeJobId, setRuntimeJobId] = useState("");
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
-  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | "opencode" | null>(null);
+  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | "opencode" | "giteam" | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(() => loadCachedRuntimeStatus());
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [opencodeProviders, setOpencodeProviders] = useState<string[]>([]);
@@ -1313,14 +1350,14 @@ export function App() {
   const [opencodeServiceSettingsSavedPort, setOpencodeServiceSettingsSavedPort] = useState(4098);
   const [opencodeServiceSettingsBusy, setOpencodeServiceSettingsBusy] = useState(false);
   const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>({
-    enabled: true,
+    enabled: false,
     host: "0.0.0.0",
     port: 4100,
     publicBaseUrl: "",
     pairCodeTtlMode: "24h"
   });
   const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>({
-    enabled: true,
+    enabled: false,
     host: "0.0.0.0",
     port: 4100,
     publicBaseUrl: "",
@@ -1329,6 +1366,41 @@ export function App() {
   const [controlServerSettingsBusy, setControlServerSettingsBusy] = useState(false);
   const [controlPairCodeInfo, setControlPairCodeInfo] = useState<ControlPairCodeInfo | null>(null);
   const [controlAccessInfo, setControlAccessInfo] = useState<ControlAccessInfo | null>(null);
+  const [controlSettingsLoaded, setControlSettingsLoaded] = useState(false);
+  const mobileServiceStatusRef = useRef<GiteamMobileServiceStatus | null>(null);
+  const [mobileStatusChangeToast, setMobileStatusChangeToast] = useState<{ visible: boolean; message: string }>({ visible: false, message: "" });
+  const [mobileServiceStatus, setMobileServiceStatus] = useState<GiteamMobileServiceStatus | null>(null);
+  const [mobileServiceStatusError, setMobileServiceStatusError] = useState("");
+
+  useEffect(() => {
+    mobileServiceStatusRef.current = mobileServiceStatus;
+  }, [mobileServiceStatus]);
+
+  useEffect(() => {
+    if (!runtimeStatus.giteam.installed) return;
+    const prevRunningRef = { current: false };
+    const interval = window.setInterval(() => {
+      const st = mobileServiceStatusRef.current;
+      if (!st) return;
+      if (prevRunningRef.current && !st.running) {
+        setMobileStatusChangeToast({ visible: true, message: "Disconnected" });
+      }
+      if (!prevRunningRef.current && st.running) {
+        setMobileStatusChangeToast({ visible: true, message: "Connected" });
+      }
+      prevRunningRef.current = st.running;
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [runtimeStatus.giteam.installed]);
+
+  useEffect(() => {
+    if (!mobileStatusChangeToast.visible) return;
+    const t = window.setTimeout(() => {
+      setMobileStatusChangeToast((prev) => ({ ...prev, visible: false }));
+    }, 4000);
+    return () => window.clearTimeout(t);
+  }, [mobileStatusChangeToast.visible]);
+
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -1351,6 +1423,7 @@ export function App() {
   const opencodeLoadingOlderRef = useRef(false);
   const opencodePrevScrollHeightRef = useRef(0);
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
+  const controlMobilePollTokenRef = useRef(0);
   const [opencodeProviderConfig, setOpencodeProviderConfig] = useState<OpencodeProviderConfig>({
     provider: "",
     npm: "",
@@ -2009,9 +2082,9 @@ export function App() {
 
   async function refreshRuntimeRequirements(): Promise<RuntimeRequirementsStatus> {
     setRuntimeChecking(true);
-    setCheckingDeps({ git: true, entire: true, opencode: true });
+    setCheckingDeps({ git: true, entire: true, opencode: true, giteam: true });
     try {
-      const deps: Array<"git" | "entire" | "opencode"> = ["git", "entire", "opencode"];
+      const deps: Array<"git" | "entire" | "opencode" | "giteam"> = ["git", "entire", "opencode", "giteam"];
       await Promise.all(
         deps.map(async (dep) => {
           try {
@@ -2039,7 +2112,7 @@ export function App() {
     }
   }
 
-  async function runDependencyAction(name: "git" | "entire" | "opencode", action: "install" | "uninstall") {
+  async function runDependencyAction(name: "git" | "entire" | "opencode" | "giteam", action: "install" | "uninstall") {
     flushSync(() => {
       setShowEnvSetup(true);
       setInstallingDep(name);
@@ -2184,7 +2257,8 @@ export function App() {
 
   async function loadControlServerSettings() {
     try {
-      const cfg = await invoke<ControlServerSettings>("get_control_server_settings");
+      setControlSettingsLoaded(false);
+      const cfg = await invoke<ControlServerSettings>("giteam_cli_get_settings");
       const next: ControlServerSettings = {
         enabled: Boolean(cfg.enabled),
         host: (cfg.host || "0.0.0.0").trim() || "0.0.0.0",
@@ -2194,35 +2268,98 @@ export function App() {
       };
       setControlServerSettings(next);
       setControlServerSettingsSaved(next);
+      if (!next.enabled) {
+        setControlPairCodeInfo(null);
+        setControlAccessInfo(null);
+      }
     } catch (e) {
       setError(String(e));
+    } finally {
+      setControlSettingsLoaded(true);
     }
   }
 
   async function loadControlPairCode() {
     try {
-      const info = await invoke<ControlPairCodeInfo>("get_control_pair_code");
+      const info = await invoke<ControlPairCodeInfo>("giteam_cli_get_pair_code");
       setControlPairCodeInfo(info);
     } catch (e) {
-      setError(String(e));
+      const msg = String(e || "");
+      if (!/starting/i.test(msg)) setError(msg);
     }
   }
 
   async function forceRefreshControlPairCode() {
     try {
-      const info = await invoke<ControlPairCodeInfo>("refresh_control_pair_code");
+      const info = await invoke<ControlPairCodeInfo>("giteam_cli_refresh_pair_code");
       setControlPairCodeInfo(info);
     } catch (e) {
-      setError(String(e));
+      const msg = String(e || "");
+      if (!/starting/i.test(msg)) setError(msg);
     }
+  }
+
+  function openMobileControlDialog() {
+    if (!runtimeStatus.giteam.installed) {
+      setError("");
+      setMessage("Install giteam plugin first. Mobile Control API is provided by giteam CLI.");
+      setShowEnvSetup(true);
+      return;
+    }
+    setControlPairCodeInfo(null);
+    setControlAccessInfo(null);
+    setControlSettingsLoaded(false);
+    setShowMobileControlDialog(true);
   }
 
   async function loadControlAccessInfo() {
     try {
-      const info = await invoke<ControlAccessInfo>("get_control_access_info");
+      const info = await invoke<ControlAccessInfo>("giteam_cli_get_access_info");
       setControlAccessInfo(info);
     } catch (e) {
+      const msg = String(e || "");
+      if (!/starting/i.test(msg)) setError(msg);
+    }
+  }
+
+  async function toggleControlServiceEnabled(enabled: boolean) {
+    const draft: ControlServerSettings = {
+      ...controlServerSettings,
+      enabled
+    };
+    setControlServerSettings(draft);
+    setControlServerSettingsBusy(true);
+    setError("");
+    try {
+      const saved = await invoke<ControlServerSettings>("giteam_cli_set_settings", {
+        settings: {
+          enabled: draft.enabled,
+          host: draft.host,
+          port: draft.port,
+          publicBaseUrl: draft.publicBaseUrl,
+          pairCodeTtlMode: normalizeControlPairMode(draft.pairCodeTtlMode)
+        }
+      });
+      const normalized = {
+        enabled: Boolean(saved.enabled),
+        host: (saved.host || draft.host).trim() || draft.host,
+        port: Number(saved.port) > 0 ? Number(saved.port) : draft.port,
+        publicBaseUrl: String(saved.publicBaseUrl || "").trim().replace(/\/+$/, ""),
+        pairCodeTtlMode: normalizeControlPairMode((saved as any).pairCodeTtlMode)
+      };
+      setControlServerSettings(normalized);
+      setControlServerSettingsSaved(normalized);
+      if (normalized.enabled) {
+        await Promise.all([loadControlPairCode(), loadControlAccessInfo()]);
+      } else {
+        setControlPairCodeInfo(null);
+        setControlAccessInfo(null);
+      }
+    } catch (e) {
+      setControlServerSettings((prev) => ({ ...prev, enabled: controlServerSettingsSaved.enabled }));
       setError(String(e));
+    } finally {
+      setControlServerSettingsBusy(false);
     }
   }
 
@@ -2285,7 +2422,7 @@ export function App() {
     }
     setControlServerSettingsBusy(true);
     try {
-      const saved = await invoke<ControlServerSettings>("set_control_server_settings", {
+      const saved = await invoke<ControlServerSettings>("giteam_cli_set_settings", {
         settings: {
           enabled: controlServerSettings.enabled,
           host: controlServerSettings.host,
@@ -3599,11 +3736,90 @@ export function App() {
   }, [showSettings, runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
-    if (!showSettings) return;
-    void loadControlServerSettings();
-    void loadControlPairCode();
-    void loadControlAccessInfo();
-  }, [showSettings]);
+    if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
+    // Load settings after the dialog paints to avoid blocking navigation.
+    window.setTimeout(() => {
+      void loadControlServerSettings();
+    }, 0);
+  }, [showMobileControlDialog, runtimeStatus.giteam.installed]);
+
+  useEffect(() => {
+    if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
+    if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
+
+    const token = ++controlMobilePollTokenRef.current;
+    void invoke("giteam_cli_start_mobile_service_background").catch(() => {
+      // ignore
+    });
+
+    const poll = async (attempt: number) => {
+      if (controlMobilePollTokenRef.current !== token) return;
+      try {
+        const st = await invoke<GiteamMobileServiceStatus>("giteam_cli_get_mobile_service_status");
+        if (controlMobilePollTokenRef.current !== token) return;
+        if (!st?.running) {
+          window.setTimeout(() => void poll(attempt + 1), Math.min(800, 200 + attempt * 50));
+          return;
+        }
+      } catch {
+        window.setTimeout(() => void poll(attempt + 1), Math.min(800, 200 + attempt * 50));
+        return;
+      }
+
+      await Promise.all([loadControlPairCode(), loadControlAccessInfo()]);
+    };
+
+    void poll(0);
+    return () => {
+      if (controlMobilePollTokenRef.current === token) controlMobilePollTokenRef.current++;
+    };
+  }, [
+    showMobileControlDialog,
+    runtimeStatus.giteam.installed,
+    controlSettingsLoaded,
+    controlServerSettings.enabled
+  ]);
+
+  useEffect(() => {
+    if (runtimeStatus.giteam.installed) return;
+    setShowMobileControlDialog(false);
+  }, [runtimeStatus.giteam.installed]);
+
+  useEffect(() => {
+    if (!runtimeStatus.giteam.installed) {
+      setMobileServiceStatus(null);
+      setMobileServiceStatusError("");
+      return;
+    }
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const st = await invoke<GiteamMobileServiceStatus>("giteam_cli_get_mobile_service_status");
+        if (stopped) return;
+        setMobileServiceStatus(st);
+        setMobileServiceStatusError("");
+      } catch (e) {
+        if (stopped) return;
+        setMobileServiceStatusError(String(e || "status error"));
+      }
+    };
+    void poll();
+    const t = window.setInterval(() => void poll(), 1500);
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+  }, [runtimeStatus.giteam.installed]);
+
+  useEffect(() => {
+    if (!overlayBusy) return;
+    const t = window.setTimeout(() => {
+      setOverlayBusy(false);
+      setBusy(false);
+      setMessage("操作超时（已自动解除加载遮罩）");
+    }, 15000);
+    return () => window.clearTimeout(t);
+  }, [overlayBusy]);
 
   useEffect(() => {
     if (!activeOpencodeModel) return;
@@ -4620,11 +4836,22 @@ export function App() {
   const controlPairQrUrl = controlPairPayload
     ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=0&data=${encodeURIComponent(controlPairPayload)}`
     : "";
+  const controlServiceEnabled = controlServerSettings.enabled;
+  const mobileStatus = mobileServiceStatus;
+  const mobileDot = (() => {
+    if (!runtimeStatus.giteam.installed) return { color: "var(--muted)", label: "Mobile service: plugin not installed" };
+    if (!mobileStatus) return { color: "var(--muted)", label: "Mobile service: unknown" };
+    if (!mobileStatus.enabled) return { color: "var(--muted)", label: "Mobile service: off" };
+    if (mobileStatus.running) return { color: "var(--success)", label: "Mobile service: running" };
+    if (mobileServiceStatusError) return { color: "var(--danger)", label: `Mobile service: error (${mobileServiceStatusError})` };
+    return { color: "color-mix(in srgb, var(--accent) 30%, orange)", label: "Mobile service: starting" };
+  })();
 
   const panel = <div className="wb-panel-inner" />;
 
   return (
-    <>
+    <AppErrorBoundary>
+      <>
       <Workbench
         activityBar={activityBar}
         sideBar={sideBar}
@@ -4647,7 +4874,23 @@ export function App() {
                 ⎇
               </button>
             </div>
-            <div className="wb-status-group" />
+            <div className="wb-status-group">
+              <button
+                className="wb-status-btn"
+                title={mobileDot.label}
+                onClick={() => {
+                  if (!runtimeStatus.giteam.installed) {
+                    setShowSettings(true);
+                    setShowEnvSetup(true);
+                    return;
+                  }
+                  setShowMobileControlDialog(true);
+                }}
+              >
+                <span className="gt-status-dot" style={{ background: mobileDot.color }} aria-hidden="true" />
+                <span className="gt-status-text">Mobile</span>
+              </button>
+            </div>
           </div>
         }
         panelPlacement={panelPlacement}
@@ -4661,7 +4904,28 @@ export function App() {
             <div className="ui-busy-track" aria-hidden="true">
               <span className="ui-busy-bar" />
             </div>
+            <div className="toolbar" style={{ justifyContent: "center" }}>
+              <button
+                className="chip"
+                onClick={() => {
+                  setOverlayBusy(false);
+                  setBusy(false);
+                  setMessage("");
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
+        </div>
+      ) : null}
+
+      {mobileStatusChangeToast.visible ? (
+        <div className="mobile-status-toast" role="status" aria-live="polite">
+          <span className={`mobile-status-toast-icon ${mobileStatusChangeToast.message === "Disconnected" ? "disconnected" : "connected"}`}>
+            {mobileStatusChangeToast.message === "Disconnected" ? "✕" : "✓"}
+          </span>
+          <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
         </div>
       ) : null}
 
@@ -4728,7 +4992,9 @@ export function App() {
                     className="chip"
                     onClick={() => {
                       setShowEnvSetup(true);
-                      const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode].some((d) => !d.checked);
+                      const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
+                        (d) => !d.checked
+                      );
                       if (unchecked) void refreshRuntimeRequirements();
                     }}
                   >
@@ -4740,11 +5006,22 @@ export function App() {
               <div className="settings-row">
                 <div className="settings-label">Mobile Control API</div>
                 <div className="settings-config-btn-wrap">
-                  <button className="chip" onClick={() => setShowMobileControlDialog(true)}>
+                  <button
+                    className="chip"
+                    disabled={!runtimeStatus.giteam.installed}
+                    title={runtimeStatus.giteam.installed ? "Configure Mobile Control API" : "Install giteam plugin first"}
+                    onClick={openMobileControlDialog}
+                  >
                     Configure
                   </button>
                 </div>
               </div>
+              {runtimeStatus.giteam.installed ? null : (
+                <div className="settings-row">
+                  <div className="settings-label">Mobile Control API</div>
+                  <div className="small muted">Install giteam plugin first. This feature is provided by giteam CLI.</div>
+                </div>
+              )}
 
               {runtimeStatus.opencode.installed ? (
                 <div className="settings-row">
@@ -4794,11 +5071,23 @@ export function App() {
         </div>
       ) : null}
 
-      {showMobileControlDialog ? (
+      {showMobileControlDialog && runtimeStatus.giteam.installed ? (
         <div className="modal-mask" onClick={() => void closeMobileControlDialog()}>
           <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
             <div className="env-setup-head">
               <h3>Mobile Control API</h3>
+              <div className="mobile-control-head-right">
+                <span className="small muted">Service</span>
+                <button
+                  type="button"
+                  className={controlServerSettings.enabled ? "gt-switch on" : "gt-switch"}
+                  disabled={controlServerSettingsBusy}
+                  onClick={() => void toggleControlServiceEnabled(!controlServerSettings.enabled)}
+                  title={controlServerSettings.enabled ? "Disable service" : "Enable service"}
+                >
+                  <span className="gt-switch-thumb" aria-hidden="true" />
+                </button>
+              </div>
             </div>
             <div className="settings-provider-form settings-mobile-control">
               <div className="mobile-control-section-title">Connection</div>
@@ -4810,6 +5099,7 @@ export function App() {
                     type="number"
                     min={1}
                     max={65535}
+                    disabled={!controlServiceEnabled}
                     placeholder="Port"
                     value={String(controlServerSettings.port)}
                     onChange={(e) =>
@@ -4824,6 +5114,7 @@ export function App() {
                   <div className="small muted">Public URL (optional)</div>
                   <input
                     className="path-input"
+                    disabled={!controlServiceEnabled}
                     placeholder="Public URL（默认自动取局域网 IPv4）"
                     value={controlServerSettings.publicBaseUrl}
                     onChange={(e) =>
@@ -4841,6 +5132,7 @@ export function App() {
                   <div className="small muted">Pair Code Validity</div>
                   <select
                     className="path-input"
+                    disabled={!controlServiceEnabled}
                     value={controlServerSettings.pairCodeTtlMode}
                     onChange={(e) =>
                       setControlServerSettings((prev) => ({
@@ -4856,25 +5148,16 @@ export function App() {
                   </select>
                 </div>
                 <div className="mobile-control-field">
-                  <div className="small muted">Service Toggle</div>
-                  <label className="small muted" style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 36 }}>
-                    <input
-                      type="checkbox"
-                      checked={controlServerSettings.enabled}
-                      onChange={(e) =>
-                        setControlServerSettings((prev) => ({
-                          ...prev,
-                          enabled: e.target.checked
-                        }))
-                      }
-                    />
-                    Enable
-                  </label>
-                </div>
-                <div className="mobile-control-field">
                   <div className="small muted">Actions</div>
                   <div className="toolbar" style={{ justifyContent: "flex-start", minHeight: 36 }}>
-                    <button className="chip" onClick={() => { void forceRefreshControlPairCode(); void loadControlAccessInfo(); }}>
+                    <button
+                      className="chip"
+                      disabled={!controlServiceEnabled || controlServerSettingsBusy}
+                      onClick={() => {
+                        void forceRefreshControlPairCode();
+                        void loadControlAccessInfo();
+                      }}
+                    >
                       Refresh code
                     </button>
                   </div>
@@ -4882,27 +5165,37 @@ export function App() {
               </div>
               <div className="toolbar mobile-control-status">
                 <span className="small muted">
-                  {controlAuthNoAuth ? "Current mode: No Auth" : `Pair code: ${controlPairCode || "------"}`}
+                  {!controlServiceEnabled
+                    ? "Service is disabled"
+                    : controlAuthNoAuth
+                      ? "Current mode: No Auth"
+                      : `Pair code: ${controlPairCode || "------"}`}
                 </span>
               </div>
               <div className="mobile-control-divider" />
               <div className="mobile-control-section-title">QR Connection</div>
               <div className="mobile-qr-card">
                 <div className="mobile-qr-visual">
-                  {controlPairQrUrl ? <img src={controlPairQrUrl} alt="Mobile pair QR code" /> : <div className="small muted">QR unavailable</div>}
+                  {controlServiceEnabled && controlPairQrUrl ? (
+                    <img src={controlPairQrUrl} alt="Mobile pair QR code" />
+                  ) : (
+                    <div className="small muted">{controlServiceEnabled ? "QR unavailable" : "Service disabled"}</div>
+                  )}
                 </div>
                 <div className="mobile-qr-meta">
                   <div className="small muted">
-                    {controlAuthNoAuth
+                    {!controlServiceEnabled
+                      ? "Enable the service to generate a QR code for mobile pairing."
+                      : controlAuthNoAuth
                       ? "Scan to connect directly (No Auth mode)"
                       : "Scan, then connect on mobile with pair code (manual or auto-filled)"}
                   </div>
-                  <div className="mobile-qr-code">{controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
-                  <div className="mobile-qr-url">{controlBaseUrl || "Waiting for local address..."}</div>
+                  <div className="mobile-qr-code">{!controlServiceEnabled ? "Disabled" : controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
+                  <div className="mobile-qr-url">{controlServiceEnabled ? controlBaseUrl || "Waiting for local address..." : "Service disabled"}</div>
                   <div className="toolbar">
                     <button
                       className="chip"
-                      disabled={!controlBaseUrl}
+                      disabled={!controlServiceEnabled || !controlBaseUrl}
                       onClick={() => {
                         void navigator.clipboard.writeText(controlBaseUrl);
                         setMessage("Control server URL copied");
@@ -5480,21 +5773,27 @@ export function App() {
                 <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
               </button>
             </div>
-            <p className="small muted">Manage git, Entire CLI, and OpenCode plugin runtime.</p>
+            <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
 
             <div className="env-check-list">
-              {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode]
+              {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam]
                 .filter((d): d is RuntimeDependencyStatus => Boolean(d))
                 .map((dep) => (
                   <div className="env-check-row" key={dep.name}>
                     <div>
                       <strong>{dep.name}</strong>{" "}
-                      <span className={checkingDeps[dep.name as "git" | "entire" | "opencode"] ? "muted" : (dep.installed ? "env-ok" : "env-missing")}>
-                        {checkingDeps[dep.name as "git" | "entire" | "opencode"]
+                      <span
+                        className={
+                          checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? "muted" : dep.installed ? "env-ok" : "env-missing"
+                        }
+                      >
+                        {checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]
                           ? "Checking..."
                           : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
                       </span>
-                      {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode"] ? <div className="small muted">{dep.version}</div> : null}
+                      {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? (
+                        <div className="small muted">{dep.version}</div>
+                      ) : null}
                       {dep.path ? <div className="small muted">{dep.path}</div> : null}
                       {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
                     </div>
@@ -5502,8 +5801,8 @@ export function App() {
                       {!dep.installed ? (
                         <button
                           className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode"]}
-                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode", "install")}
+                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
+                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "install")}
                         >
                           {installingDep === dep.name ? (
                             <>
@@ -5517,8 +5816,8 @@ export function App() {
                       ) : (
                         <button
                           className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode"]}
-                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode", "uninstall")}
+                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
+                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "uninstall")}
                         >
                           {installingDep === dep.name ? (
                             <>
@@ -5535,7 +5834,9 @@ export function App() {
                       <div className="env-inline-status">
                         <button
                           className="env-progress-button"
-                          onClick={() => setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode")))}
+                          onClick={() =>
+                            setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode" | "giteam")))
+                          }
                           title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
                         >
                           <span className="env-progress-track-inline" aria-hidden="true">
@@ -5669,6 +5970,7 @@ export function App() {
         </div>
       ) : null}
 
-    </>
+      </>
+    </AppErrorBoundary>
   );
 }

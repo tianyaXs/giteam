@@ -216,6 +216,65 @@ body {
   border-color: color-mix(in srgb, var(--line) 70%, transparent);
 }
 
+.gt-status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-right: 6px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+  vertical-align: -1px;
+}
+
+.gt-status-text {
+  display: inline-block;
+  min-width: 44px;
+  text-align: left;
+}
+
+.mobile-control-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gt-switch {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 85%, transparent);
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.gt-switch:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.gt-switch.on {
+  background: color-mix(in srgb, var(--success) 70%, var(--bg-soft));
+  border-color: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+
+.gt-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--text);
+  transition: transform 140ms ease;
+}
+
+.gt-switch.on .gt-switch-thumb {
+  transform: translateX(20px);
+}
+
 .wb-graph-popover {
   position: fixed;
   left: 58px;
@@ -3643,6 +3702,50 @@ pre {
 .wb-reading-scroll>pre {
   max-height: none;
   min-height: 100%;
+}
+
+.mobile-status-toast {
+  position: fixed;
+  bottom: 36px;
+  right: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  animation: toast-slide-in 200ms ease-out;
+}
+
+.mobile-status-toast-icon {
+  color: var(--text);
+}
+
+.mobile-status-toast-icon.connected {
+  color: var(--success, #2da44e);
+}
+
+.mobile-status-toast-icon.disconnected {
+  color: var(--muted, #8b949e);
+}
+
+.mobile-status-toast-msg {
+  color: var(--text);
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 1400px) {

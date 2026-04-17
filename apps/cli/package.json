@@ -1,0 +1,67 @@
+{
+  "name": "giteam",
+  "version": "0.1.6",
+  "description": "giteam terminal control service",
+  "author": "giteam Contributors",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tianyaXs/giteam.git"
+  },
+  "homepage": "https://github.com/tianyaXs/giteam#readme",
+  "bugs": {
+    "url": "https://github.com/tianyaXs/giteam/issues"
+  },
+  "keywords": [
+    "giteam",
+    "cli",
+    "tauri",
+    "opencode",
+    "lan"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "README.md",
+    "bin/**/*",
+    "scripts/**/*",
+    "npm-src/**/*"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "giteam": "bin/giteam.js"
+  },
+  "optionalDependencies": {
+    "giteam-darwin-arm64": "0.1.6",
+    "giteam-darwin-x64": "0.1.6",
+    "giteam-linux-arm64": "0.1.6",
+    "giteam-linux-x64": "0.1.6"
+  },
+  "scripts": {
+    "start": "node ./bin/giteam.js serve",
+    "serve": "cargo run -- serve",
+    "status": "cargo run -- status",
+    "pair-code": "cargo run -- pair-code",
+    "config": "cargo run -- config get",
+    "doctor": "cargo run -- doctor",
+    "build": "cargo build --release",
+    "prepare:rust": "node ./scripts/sync-rust-sources.js",
+    "prepare:platforms": "node ./scripts/sync-platform-packages.js",
+    "postinstall": "node ./scripts/postinstall.js",
+    "prepack": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js",
+    "build:platform": "node ./scripts/build-platform-package.js",
+    "pack:platform": "node ./scripts/build-platform-package.js --pack",
+    "publish:check": "node ./scripts/publish-packages.js --dry-run",
+    "publish:check:local": "node ./scripts/publish-packages.js --dry-run --platform darwin-arm64 --no-root",
+    "publish:root:check": "node ./scripts/publish-packages.js --dry-run --root-only --skip-build",
+    "prepublish:verify": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js && cargo check",
+    "publish:npm": "node ./scripts/publish-packages.js",
+    "prepublishOnly": "npm run prepublish:verify"
+  },
+  "dependencies": {
+    "giteam": "^0.1.6"
+  }
+}
