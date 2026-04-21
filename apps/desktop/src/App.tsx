@@ -503,6 +503,7 @@ const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
 const OPENCODE_PAGE_SIZE = 24;
+const OPENCODE_SESSION_PAGE_SIZE = 3;
 const OPENCODE_RECENT_VISIBLE = 2;
 const OPENCODE_SESSION_TITLE_MAX = 42;
 
@@ -658,6 +659,16 @@ function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?:
     visibleCount: OPENCODE_RECENT_VISIBLE,
     loaded: false
   };
+}
+
+function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
+  return [...rows].sort((a, b) => {
+    const byCreated = (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
+    if (byCreated !== 0) return byCreated;
+    const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+    if (byUpdated !== 0) return byUpdated;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
 }
 
 function firstLetter(name: string): string {
@@ -1475,11 +1486,14 @@ export function App() {
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
-  const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_PAGE_SIZE);
+  const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
   const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
   const [opencodeStreamingAssistantIdBySession, setOpencodeStreamingAssistantIdBySession] = useState<Record<string, string>>({});
   const [opencodeSessions, setOpencodeSessions] = useState<OpencodeChatSession[]>([]);
+  const [sidebarOpencodeSessionsByRepo, setSidebarOpencodeSessionsByRepo] = useState<Record<string, OpencodeChatSession[]>>({});
+  const [sidebarOpencodeSessionFetchLimitByRepo, setSidebarOpencodeSessionFetchLimitByRepo] = useState<Record<string, number>>({});
+  const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
   const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
@@ -1496,6 +1510,10 @@ export function App() {
   const opencodePrevCountRef = useRef(0);
   const opencodeLoadingOlderRef = useRef(false);
   const opencodePrevScrollHeightRef = useRef(0);
+  const opencodePrevActiveSessionIdRef = useRef("");
+  const opencodeSessionsRepoIdRef = useRef("");
+  const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
+  const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
   const controlMobilePollTokenRef = useRef(0);
   const [opencodeProviderConfig, setOpencodeProviderConfig] = useState<OpencodeProviderConfig>({
@@ -1586,11 +1604,42 @@ export function App() {
   const opencodeVisibleCount = activeOpencodeSession?.visibleCount ?? OPENCODE_RECENT_VISIBLE;
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
-  const visibleOpencodeSessions = useMemo(
-    () => opencodeSessions.slice(0, Math.max(OPENCODE_PAGE_SIZE, opencodeSessionFetchLimit)),
-    [opencodeSessions, opencodeSessionFetchLimit]
-  );
-  const hasMoreOpencodeSessions = opencodeSessions.length >= opencodeSessionFetchLimit;
+  function getRepoSessionFetchLimit(repoId: string): number {
+    const id = repoId.trim();
+    if (!id) return OPENCODE_SESSION_PAGE_SIZE;
+    if (id === selectedRepo?.id) return sidebarOpencodeSessionFetchLimitByRepo[id] ?? opencodeSessionFetchLimit;
+    return sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE;
+  }
+
+  function getRepoSessionsForSidebar(repoId: string): OpencodeChatSession[] {
+    const id = repoId.trim();
+    if (!id) return [];
+    return sidebarOpencodeSessionsByRepo[id] ?? [];
+  }
+
+  function getVisibleRepoSessions(repoId: string): OpencodeChatSession[] {
+    const sessions = getRepoSessionsForSidebar(repoId);
+    const limit = getRepoSessionFetchLimit(repoId);
+    return sessions.slice(0, Math.max(OPENCODE_SESSION_PAGE_SIZE, limit));
+  }
+
+  function hasMoreRepoSessions(repoId: string): boolean {
+    const sessions = getRepoSessionsForSidebar(repoId);
+    const limit = getRepoSessionFetchLimit(repoId);
+    return sessions.length >= limit;
+  }
+
+  function isRepoSessionsLoading(repoId: string): boolean {
+    return Boolean(sidebarOpencodeSessionLoadingByRepo[repoId.trim()]);
+  }
+
+  function toggleRepoSessions(repo: RepositoryEntry) {
+    const expanded = expandedProjectIds.includes(repo.id);
+    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
+    if (!expanded && runtimeStatus.opencode.installed) {
+      void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+    }
+  }
   const opencodeSavedModelCandidates = useMemo(() => {
     const q = opencodeModelPickerSearch.trim().toLowerCase();
     if (!q) return opencodeSavedModels;
@@ -1794,27 +1843,69 @@ export function App() {
     setOpencodeSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
   }
 
+  async function refreshSidebarRepoSessions(repo: RepositoryEntry, limitArg?: number) {
+    if (!runtimeStatus.opencode.installed) return;
+    const repoId = repo.id.trim();
+    const repoPathArg = repo.path.trim();
+    if (!repoId || !repoPathArg) return;
+    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? getRepoSessionFetchLimit(repoId));
+    const requestSeq = (sidebarOpencodeSessionRequestSeqRef.current[repoId] || 0) + 1;
+    sidebarOpencodeSessionRequestSeqRef.current[repoId] = requestSeq;
+    setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
+    try {
+      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit });
+      if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
+      const mapped = sortOpencodeSessionSummaries(rows || []).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+      setSidebarOpencodeSessionsByRepo((prev) => ({ ...prev, [repoId]: mapped }));
+      setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
+    } finally {
+      if (sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
+        setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: false }));
+      }
+    }
+  }
+
+  async function loadMoreSidebarRepoSessions(repo: RepositoryEntry) {
+    const repoId = repo.id.trim();
+    if (!repoId) return;
+    const nextLimit = getRepoSessionFetchLimit(repoId) + OPENCODE_SESSION_PAGE_SIZE;
+    await refreshSidebarRepoSessions(repo, nextLimit);
+    if (repoId === selectedRepo?.id) {
+      setOpencodeSessionFetchLimit(nextLimit);
+      await refreshOpencodeSessions(nextLimit);
+    }
+  }
+
   async function refreshOpencodeSessions(limitArg?: number) {
     if (!ensureRepoSelected()) return;
-    const limit = Math.max(OPENCODE_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
+    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
     appendOpencodeDebugLog("session.list requested");
     const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit });
     if (!rows || rows.length === 0) {
       appendOpencodeDebugLog("session.list empty");
+      opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
       setOpencodeSessions([]);
       setActiveOpencodeSessionId("");
       setDraftOpencodeSession(true);
       return;
     }
     appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
-    const mapped = rows.map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    const mapped = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
     setOpencodeSessions(mapped);
-    setActiveOpencodeSessionId((prev) => (prev && mapped.some((x) => x.id === prev) ? prev : mapped[0].id));
+    const pending = pendingSidebarSessionSelectionRef.current;
+    const pendingMatches = pending && pending.repoId === (selectedRepo?.id || "") ? mapped.some((x) => x.id === pending.sessionId) : false;
+    if (pendingMatches && pending) {
+      setActiveOpencodeSessionId(pending.sessionId);
+      pendingSidebarSessionSelectionRef.current = null;
+    } else {
+      setActiveOpencodeSessionId((prev) => (prev && mapped.some((x) => x.id === prev) ? prev : mapped[0].id));
+    }
     setDraftOpencodeSession(false);
   }
 
   async function loadMoreOpencodeSessions() {
-    const nextLimit = opencodeSessionFetchLimit + OPENCODE_PAGE_SIZE;
+    const nextLimit = opencodeSessionFetchLimit + OPENCODE_SESSION_PAGE_SIZE;
     setOpencodeSessionFetchLimit(nextLimit);
     await refreshOpencodeSessions(nextLimit);
   }
@@ -3818,7 +3909,7 @@ export function App() {
     if (!selectedRepo) return;
     setError("");
     setMessage(`已选择仓库: ${selectedRepo.name}`);
-    setOpencodeSessionFetchLimit(OPENCODE_PAGE_SIZE);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
     void Promise.all([refreshStatus(), refreshBranchesAndCommits(), refreshReviewData(), refreshWorktreeData(), refreshGitUserIdentity()]).catch((e) => {
       setError(String(e));
       setMessage("仓库数据加载失败");
@@ -3851,7 +3942,7 @@ export function App() {
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    void refreshOpencodeSessions(OPENCODE_PAGE_SIZE).catch((e) => setError(String(e)));
+    void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch((e) => setError(String(e)));
   }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
@@ -4096,6 +4187,7 @@ export function App() {
     setOpencodeStreamingAssistantIdBySession({});
     setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
+    opencodeSessionsRepoIdRef.current = "";
     opencodePrevCountRef.current = 0;
     setTerminalEntries([]);
     setTerminalInput("git status -sb");
@@ -4107,20 +4199,25 @@ export function App() {
   }, [opencodePromptInput]);
 
   useEffect(() => {
-    opencodePrevCountRef.current = opencodeMessages.length;
-    opencodeLoadingOlderRef.current = false;
-    opencodePrevScrollHeightRef.current = 0;
     const sid = activeOpencodeSessionId;
+    const sessionChanged = opencodePrevActiveSessionIdRef.current !== sid;
+    if (sessionChanged) {
+      opencodePrevActiveSessionIdRef.current = sid;
+      opencodePrevCountRef.current = opencodeMessages.length;
+      opencodeLoadingOlderRef.current = false;
+      opencodePrevScrollHeightRef.current = 0;
+    }
     const session = opencodeSessions.find((s) => s.id === sid);
     if (session && !session.loaded && runtimeStatus.opencode.installed && selectedRepo) {
       void loadOpencodeSessionMessages(sid).catch((e) => setError(String(e)));
     }
+    if (!sessionChanged) return;
     requestAnimationFrame(() => {
       const el = opencodeThreadRef.current;
       if (!el) return;
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     });
-  }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [activeOpencodeSessionId, opencodeMessages.length, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   const opencodeRenderedMessages = useMemo(() => {
     const visible =
@@ -4230,6 +4327,7 @@ export function App() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     if (!opencodeHasHiddenHistory) return;
+    if (opencodeLoadingOlderRef.current) return;
     opencodeLoadingOlderRef.current = true;
     opencodePrevScrollHeightRef.current = el.scrollHeight;
     updateActiveOpencodeSession((session) => ({
@@ -4322,8 +4420,10 @@ export function App() {
       <div className="gt-project-stack">
         {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地 Git 仓库。</div> : null}
         {repos.map((repo) => {
-          const active = selectedRepo?.id === repo.id;
           const expanded = expandedProjectIds.includes(repo.id);
+          const repoSessions = getVisibleRepoSessions(repo.id);
+          const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
+          const repoSessionsLoading = isRepoSessionsLoading(repo.id);
           return (
             <div key={repo.id} className="gt-tree-group">
               <div
@@ -4336,44 +4436,52 @@ export function App() {
                 }}
               >
                 <button
-                  className="gt-tree-toggle"
-                  aria-label={expanded ? "收起项目" : "展开项目"}
-                  onClick={() => {
-                    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
-                  }}
-                >
-                  {expanded ? "▾" : "▸"}
-                </button>
-                <button
-                  className={active ? "gt-tree-label active" : "gt-tree-label"}
+                  className="gt-tree-label"
                   onClick={() => {
                     if (busy) return;
-                    setSelectedRepo(repo);
-                    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
+                    toggleRepoSessions(repo);
                   }}
                 >
                   {repo.name}
+                  <span className={expanded ? "gt-tree-chevron is-open" : "gt-tree-chevron"} aria-hidden="true" />
+                </button>
+                <button
+                  className="gt-tree-toggle"
+                  aria-label={expanded ? "收起项目" : "展开项目"}
+                  onClick={() => toggleRepoSessions(repo)}
+                >
+                  <span className="gt-tree-toggle-hit" aria-hidden="true" />
                 </button>
               </div>
 
               {expanded ? (
                 <div className="gt-tree-children">
-                  {draftOpencodeSession ? (
+                  {draftOpencodeSession && repo.id === selectedRepo?.id ? (
                     <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
                       <span className="gt-session-title">New Session</span>
                       <span className="gt-session-meta">待输入，发送第一条消息后创建</span>
                     </button>
                   ) : null}
                   {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-                  {runtimeStatus.opencode.installed && visibleOpencodeSessions.length === 0 ? (
+                  {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
+                    <div className="gt-tree-loading" aria-hidden="true">
+                      <span className="gt-tree-loading-row" />
+                      <span className="gt-tree-loading-row" />
+                      <span className="gt-tree-loading-row short" />
+                    </div>
+                  ) : null}
+                  {runtimeStatus.opencode.installed && !repoSessionsLoading && repoSessions.length === 0 ? (
                     <div className="gt-empty-hint gt-tree-empty">当前项目还没有会话。</div>
                   ) : null}
                   {runtimeStatus.opencode.installed
-                    ? visibleOpencodeSessions.map((session) => (
+                    ? repoSessions.map((session) => (
                         <button
                           key={`left-session-${session.id}`}
                           className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
                           onClick={() => {
+                            pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
+                            setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+                            setSelectedRepo(repo);
                             setDraftOpencodeSession(false);
                             setActiveOpencodeSessionId(session.id);
                           }}
@@ -4387,9 +4495,10 @@ export function App() {
                         </button>
                       ))
                     : null}
-                  {runtimeStatus.opencode.installed && hasMoreOpencodeSessions ? (
-                    <button className="gt-load-more-btn" onClick={() => void loadMoreOpencodeSessions()}>
-                      加载更多会话
+                  {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
+                    <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
+                      <span className="gt-load-more-icon" aria-hidden="true">…</span>
+                      <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
                     </button>
                   ) : null}
                 </div>
@@ -4566,7 +4675,7 @@ export function App() {
               <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
                 <button
                   type="button"
-                  className="chip opencode-model-trigger opencode-composer-model"
+                  className="opencode-model-trigger opencode-composer-model"
                   onClick={() => {
                     const next = !showOpencodeModelPicker;
                     if (next) {
@@ -4637,7 +4746,7 @@ export function App() {
                 ) : null}
               </div>
               <button
-                className={activeOpencodeSessionBusy ? "chip opencode-run-btn opencode-composer-send opencode-stop-btn" : "chip opencode-run-btn opencode-composer-send"}
+                className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
                 disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
                 onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
                 aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
@@ -5027,8 +5136,8 @@ export function App() {
               <div className="settings-row">
                 <div className="settings-label">Theme</div>
                 <div className="toolbar">
-                  <button className="chip" onClick={toggleTheme} title="Toggle theme">
-                    {theme === "dark" ? "Dark" : "Light"}
+                  <button className="chip" onClick={toggleTheme} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
+                    {theme === "dark" ? "Light" : "Dark"}
                   </button>
                 </div>
               </div>
