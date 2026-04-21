@@ -11,9 +11,13 @@ import {
   getCommitChangedFiles,
   getCommitFilePatch,
   getCommitGraph,
+  getGitUserIdentity,
+  getGitWorktreeFilePatch,
+  getGitWorktreeOverview,
   getLocalBranches,
   gitPull,
-  gitPush
+  gitPush,
+  runRepoTerminalCommand
 } from "./lib/gitAdapter";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
@@ -30,6 +34,8 @@ import type {
   GitBranchSummary,
   GitCommitSummary,
   GitGraphNode,
+  GitUserIdentity,
+  GitWorktreeOverview,
   RepositoryEntry,
   ReviewAction,
   ReviewActionType,
@@ -38,6 +44,38 @@ import type {
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
+type RightPaneTab = "worktree" | "changes" | "terminal";
+
+function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
+  const dividerX = props.side === "left" ? 9 : 15;
+  const hiddenPanelX = props.side === "left" ? 4 : 12;
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d={`M${dividerX} 6.5V17.5`} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      {props.collapsed ? <rect x={hiddenPanelX} y="6.5" width="5" height="11" rx="1.5" fill="currentColor" opacity="0.16" /> : null}
+    </svg>
+  );
+}
+
+function SendIcon(props: { busy: boolean }) {
+  return props.busy ? (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" /></svg>
+  ) : (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /><path d="M7.5 10.5L12 5L16.5 10.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  );
+}
+
+function RightPaneTabIcon(props: { tab: RightPaneTab; active: boolean }) {
+  const stroke = props.active ? "currentColor" : "currentColor";
+  if (props.tab === "worktree") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5H11L12.8 9.5H19V17.5H5V7.5Z" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinejoin="round" /><path d="M5 9.5H19" fill="none" stroke={stroke} strokeWidth="1.6" /></svg>;
+  }
+  if (props.tab === "changes") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 12H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 17H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="5" cy="7" r="1.2" fill="currentColor" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="5" cy="17" r="1.2" fill="currentColor" /></svg>;
+  }
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5H19.5V18.5H4.5V5.5Z" fill="none" stroke={stroke} strokeWidth="1.6" /><path d="M8 10L10.6 12L8 14" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M13 14H16" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" /></svg>;
+}
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -232,6 +270,32 @@ type OpencodeDetailedPart = Record<string, unknown> & { type?: string };
 type OpencodeDetailedMessage = {
   info?: Record<string, unknown>;
   parts?: OpencodeDetailedPart[];
+};
+
+type TerminalEntry = {
+  id: string;
+  command: string;
+  output: string;
+  createdAt: number;
+  ok: boolean;
+};
+
+const EMPTY_WORKTREE: GitWorktreeOverview = {
+  branch: "",
+  tracking: "",
+  ahead: 0,
+  behind: 0,
+  clean: true,
+  stagedCount: 0,
+  unstagedCount: 0,
+  untrackedCount: 0,
+  entries: [],
+  raw: ""
+};
+
+const EMPTY_GIT_IDENTITY: GitUserIdentity = {
+  name: "",
+  email: ""
 };
 
 function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
@@ -1263,6 +1327,9 @@ export function App() {
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 420, 360, 760));
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right";
     startX: number;
@@ -1285,6 +1352,10 @@ export function App() {
   const [changedFiles, setChangedFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState("");
   const [selectedFilePatch, setSelectedFilePatch] = useState("");
+  const [worktreeOverview, setWorktreeOverview] = useState<GitWorktreeOverview>(EMPTY_WORKTREE);
+  const [gitUserIdentity, setGitUserIdentity] = useState<GitUserIdentity>(EMPTY_GIT_IDENTITY);
+  const [selectedWorktreeFile, setSelectedWorktreeFile] = useState("");
+  const [selectedWorktreePatch, setSelectedWorktreePatch] = useState("");
   const [selectedExplain, setSelectedExplain] = useState("");
   const [agentContextError, setAgentContextError] = useState("");
   const [statusText, setStatusText] = useState("");
@@ -1293,6 +1364,7 @@ export function App() {
   const [actions, setActions] = useState<ReviewAction[]>([]);
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
@@ -1403,6 +1475,8 @@ export function App() {
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
+  const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_PAGE_SIZE);
+  const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
   const [opencodeStreamingAssistantIdBySession, setOpencodeStreamingAssistantIdBySession] = useState<Record<string, string>>({});
   const [opencodeSessions, setOpencodeSessions] = useState<OpencodeChatSession[]>([]);
@@ -1443,6 +1517,23 @@ export function App() {
   });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
+  const [terminalInput, setTerminalInput] = useState("git status -sb");
+  const [terminalBusy, setTerminalBusy] = useState(false);
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
+
+  useEffect(() => {
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        const win = getCurrentWindow() as unknown as { setTitleBarStyle?: (style: string) => Promise<void> | void };
+        if (typeof win.setTitleBarStyle === "function") {
+          return win.setTitleBarStyle("Overlay");
+        }
+        return undefined;
+      })
+      .catch(() => {
+        /* noop */
+      });
+  }, []);
 
   const repoPath = selectedRepo?.path ?? "";
   const selectedParsed = selectedExplain ? parseExplainCommit(selectedExplain) : undefined;
@@ -1495,6 +1586,11 @@ export function App() {
   const opencodeVisibleCount = activeOpencodeSession?.visibleCount ?? OPENCODE_RECENT_VISIBLE;
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
+  const visibleOpencodeSessions = useMemo(
+    () => opencodeSessions.slice(0, Math.max(OPENCODE_PAGE_SIZE, opencodeSessionFetchLimit)),
+    [opencodeSessions, opencodeSessionFetchLimit]
+  );
+  const hasMoreOpencodeSessions = opencodeSessions.length >= opencodeSessionFetchLimit;
   const opencodeSavedModelCandidates = useMemo(() => {
     const q = opencodeModelPickerSearch.trim().toLowerCase();
     if (!q) return opencodeSavedModels;
@@ -1679,6 +1775,7 @@ export function App() {
   }
 
   function ensureActiveOpencodeSession(): string {
+    if (draftOpencodeSession) return "";
     const current = activeOpencodeSessionId;
     if (opencodeSessions.some((s) => s.id === current)) return current;
     const first = opencodeSessions[0];
@@ -1697,23 +1794,29 @@ export function App() {
     setOpencodeSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
   }
 
-  async function refreshOpencodeSessions() {
+  async function refreshOpencodeSessions(limitArg?: number) {
     if (!ensureRepoSelected()) return;
+    const limit = Math.max(OPENCODE_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
     appendOpencodeDebugLog("session.list requested");
-    const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit: 64 });
+    const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit });
     if (!rows || rows.length === 0) {
-      appendOpencodeDebugLog("session.list empty, creating first session");
-      const created = await invoke<OpencodeSessionSummary>("create_opencode_session", { repoPath });
-      const next = [opencodeSessionFromSummary(created, 1)];
-      setOpencodeSessions(next);
-      setActiveOpencodeSessionId(created.id);
-      appendOpencodeDebugLog(`session.created ${created.id}`);
+      appendOpencodeDebugLog("session.list empty");
+      setOpencodeSessions([]);
+      setActiveOpencodeSessionId("");
+      setDraftOpencodeSession(true);
       return;
     }
     appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
     const mapped = rows.map((s, i) => opencodeSessionFromSummary(s, i + 1));
     setOpencodeSessions(mapped);
     setActiveOpencodeSessionId((prev) => (prev && mapped.some((x) => x.id === prev) ? prev : mapped[0].id));
+    setDraftOpencodeSession(false);
+  }
+
+  async function loadMoreOpencodeSessions() {
+    const nextLimit = opencodeSessionFetchLimit + OPENCODE_PAGE_SIZE;
+    setOpencodeSessionFetchLimit(nextLimit);
+    await refreshOpencodeSessions(nextLimit);
   }
 
   async function loadOpencodeSessionMessages(sessionId: string) {
@@ -1777,8 +1880,8 @@ export function App() {
     }
   }
 
-  async function createAndSwitchOpencodeSession(seedPrompt?: string) {
-    if (!ensureRepoSelected()) return;
+  async function createPersistedOpencodeSession(seedPrompt?: string): Promise<string> {
+    if (!ensureRepoSelected()) return "";
     appendOpencodeDebugLog("session.create requested");
     const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
       repoPath,
@@ -1786,8 +1889,12 @@ export function App() {
     });
     const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
     next.loaded = true;
-    setOpencodeSessions((prev) => [next, ...prev]);
+    setOpencodeSessions((prev) => {
+      const exists = prev.some((session) => session.id === created.id);
+      return exists ? prev : [next, ...prev];
+    });
     setActiveOpencodeSessionId(created.id);
+    setDraftOpencodeSession(false);
     setOpencodePromptInput("");
     opencodePrevCountRef.current = 0;
     appendOpencodeDebugLog(`session.created ${created.id}`);
@@ -1795,6 +1902,17 @@ export function App() {
       const el = opencodeThreadRef.current;
       if (!el) return;
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    });
+    return created.id;
+  }
+
+  async function createAndSwitchOpencodeSession(seedPrompt?: string) {
+    if (!ensureRepoSelected()) return;
+    setDraftOpencodeSession(true);
+    setActiveOpencodeSessionId("");
+    setOpencodePromptInput(seedPrompt?.trim() || "");
+    requestAnimationFrame(() => {
+      opencodeInputRef.current?.focus();
     });
   }
 
@@ -1832,6 +1950,7 @@ export function App() {
       return [added, ...prev];
     });
     setActiveOpencodeSessionId(id);
+    setDraftOpencodeSession(false);
     try {
       await loadOpencodeSessionMessages(id);
       appendOpencodeDebugLog(`session.child.opened ${id}`);
@@ -1936,6 +2055,10 @@ export function App() {
     setOpencodeSessions(next);
     if (activeOpencodeSessionId === id && fallback) {
       setActiveOpencodeSessionId(fallback.id);
+      setDraftOpencodeSession(false);
+    } else if (next.length === 0) {
+      setActiveOpencodeSessionId("");
+      setDraftOpencodeSession(true);
     }
     try {
       await invoke<boolean>("delete_opencode_session", { repoPath, sessionId: id });
@@ -2691,10 +2814,12 @@ export function App() {
     if (!ensureRepoSelected()) return;
     const prompt = opencodePromptInput.trim();
     if (!prompt) return;
-    const sessionId = ensureActiveOpencodeSession();
+    let sessionId = ensureActiveOpencodeSession();
+    if (!sessionId || draftOpencodeSession) {
+      sessionId = await createPersistedOpencodeSession(prompt);
+    }
+    if (!sessionId) return;
     if (opencodeRunBusyBySession[sessionId]) return;
-    const targetSession = opencodeSessions.find((s) => s.id === sessionId);
-    if (!targetSession) return;
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
@@ -3290,6 +3415,87 @@ export function App() {
     setActions(actionRows);
   }
 
+  async function refreshWorktreeData(preferredFile?: string) {
+    if (!ensureRepoSelected()) return;
+    try {
+      const overview = await getGitWorktreeOverview(repoPath);
+      setWorktreeOverview(overview);
+      const target = preferredFile && overview.entries.some((entry) => entry.path === preferredFile)
+        ? preferredFile
+        : overview.entries[0]?.path || "";
+      setSelectedWorktreeFile(target);
+      if (!target) {
+        setSelectedWorktreePatch(overview.clean ? "Working tree is clean." : "No patch available.");
+        return;
+      }
+      const patch = await getGitWorktreeFilePatch(repoPath, target);
+      setSelectedWorktreePatch(patch);
+    } catch (e) {
+      setError(String(e));
+      setWorktreeOverview(EMPTY_WORKTREE);
+      setSelectedWorktreeFile("");
+      setSelectedWorktreePatch("");
+    }
+  }
+
+  async function refreshGitUserIdentity() {
+    if (!ensureRepoSelected()) return;
+    try {
+      const identity = await getGitUserIdentity(repoPath);
+      setGitUserIdentity(identity);
+    } catch {
+      setGitUserIdentity(EMPTY_GIT_IDENTITY);
+    }
+  }
+
+  async function refreshSelectedWorktreePatch(filePath: string) {
+    if (!ensureRepoSelected() || !filePath) return;
+    setSelectedWorktreeFile(filePath);
+    try {
+      const patch = await getGitWorktreeFilePatch(repoPath, filePath);
+      setSelectedWorktreePatch(patch);
+    } catch (e) {
+      setError(String(e));
+      setSelectedWorktreePatch("");
+    }
+  }
+
+  async function runTerminalCommand(command?: string) {
+    if (!ensureRepoSelected()) return;
+    const script = (command ?? terminalInput).trim();
+    if (!script) return;
+    setTerminalBusy(true);
+    try {
+      const output = await runRepoTerminalCommand(repoPath, script);
+      setTerminalEntries((prev) => [
+        {
+          id: `term-${makeId()}`,
+          command: script,
+          output: output.trim() || "(no output)",
+          createdAt: Date.now(),
+          ok: true
+        },
+        ...prev
+      ].slice(0, 40));
+      setTerminalInput(script);
+    } catch (e) {
+      const msg = String(e);
+      setTerminalEntries((prev) => [
+        {
+          id: `term-${makeId()}`,
+          command: script,
+          output: msg,
+          createdAt: Date.now(),
+          ok: false
+        },
+        ...prev
+      ].slice(0, 40));
+      setError(msg);
+    } finally {
+      setTerminalBusy(false);
+    }
+  }
+
   async function refreshCommitContext(commitSha: string) {
     if (!ensureRepoSelected() || !commitSha) return;
     setError("");
@@ -3461,6 +3667,7 @@ export function App() {
         setCommits(rows);
         setSelectedCommit(rows[0]?.sha ?? "");
       }
+      await refreshWorktreeData(selectedWorktreeFile);
       setMessage("刷新完成");
     } catch (e) {
       setError(String(e));
@@ -3480,7 +3687,7 @@ export function App() {
     try {
       const out = await gitPull(repoPath);
       setStatusText((prev) => [prev, `\n$ git pull --ff-only\n${out}`].filter(Boolean).join("\n"));
-      await refreshBranchesAndCommits();
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
       setMessage("拉取完成");
     } catch (e) {
       setError(String(e));
@@ -3500,6 +3707,7 @@ export function App() {
     try {
       const out = await gitPush(repoPath);
       setStatusText((prev) => [prev, `\n$ git push\n${out}`].filter(Boolean).join("\n"));
+      await refreshWorktreeData(selectedWorktreeFile);
       setMessage("推送完成");
     } catch (e) {
       setError(String(e));
@@ -3610,10 +3818,16 @@ export function App() {
     if (!selectedRepo) return;
     setError("");
     setMessage(`已选择仓库: ${selectedRepo.name}`);
-    void Promise.all([refreshStatus(), refreshBranchesAndCommits(), refreshReviewData()]).catch((e) => {
+    setOpencodeSessionFetchLimit(OPENCODE_PAGE_SIZE);
+    void Promise.all([refreshStatus(), refreshBranchesAndCommits(), refreshReviewData(), refreshWorktreeData(), refreshGitUserIdentity()]).catch((e) => {
       setError(String(e));
       setMessage("仓库数据加载失败");
     });
+  }, [selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!selectedRepo?.id) return;
+    setExpandedProjectIds((prev) => (prev.includes(selectedRepo.id) ? prev : [...prev, selectedRepo.id]));
   }, [selectedRepo?.id]);
 
   useEffect(() => {
@@ -3622,11 +3836,12 @@ export function App() {
   }, [selectedCommit]);
 
   useEffect(() => {
+    if (draftOpencodeSession) return;
     if (opencodeSessions.length === 0) return;
     if (!opencodeSessions.some((s) => s.id === activeOpencodeSessionId)) {
       setActiveOpencodeSessionId(opencodeSessions[0].id);
     }
-  }, [opencodeSessions, activeOpencodeSessionId]);
+  }, [opencodeSessions, activeOpencodeSessionId, draftOpencodeSession]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
@@ -3636,7 +3851,7 @@ export function App() {
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    void refreshOpencodeSessions().catch((e) => setError(String(e)));
+    void refreshOpencodeSessions(OPENCODE_PAGE_SIZE).catch((e) => setError(String(e)));
   }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
@@ -3876,11 +4091,15 @@ export function App() {
     opencodeRunAbortBySessionRef.current = {};
     setOpencodeSessions([]);
     setActiveOpencodeSessionId("");
+    setDraftOpencodeSession(false);
     setOpencodeRunBusyBySession({});
     setOpencodeStreamingAssistantIdBySession({});
     setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
     opencodePrevCountRef.current = 0;
+    setTerminalEntries([]);
+    setTerminalInput("git status -sb");
+    setGitUserIdentity(EMPTY_GIT_IDENTITY);
   }, [selectedRepo?.id]);
 
   useEffect(() => {
@@ -4089,725 +4308,553 @@ export function App() {
     return () => window.removeEventListener("contextmenu", onNativeContextMenu, { capture: true });
   }, [repos]);
 
-  const activityBar = (
-    <div
-      className="wb-activity-inner"
-      onContextMenuCapture={(e) => {
-        const target = e.target as HTMLElement | null;
-        const btn = target?.closest(".wb-repo-ico[data-repo-id]") as HTMLElement | null;
-        if (!btn) return;
-        const repoId = btn.dataset.repoId;
-        if (!repoId) return;
-        const repo = repos.find((r) => r.id === repoId);
-        if (!repo) return;
-        e.preventDefault();
-        e.stopPropagation();
-        openRepoContextMenu(e.clientX, e.clientY, repo);
-      }}
-    >
-      <div className="wb-activity-top">
-        <div className="wb-repo-icons" aria-label="Repositories">
-          {repos.map((r) => {
-            const active = selectedRepo?.id === r.id;
-            return (
-              <button
-                key={r.id}
-                className={active ? "wb-repo-ico active" : "wb-repo-ico"}
-                data-repo-id={r.id}
-                title={`${r.name}\n${r.path}`}
-                onClick={() => {
-                  if (busy) return;
-                  setSelectedRepo(r);
-                }}
-              >
-                {firstLetter(r.name)}
-              </button>
-            );
-          })}
-
-          <button
-            className="wb-repo-ico add"
-            title="导入项目"
-            onClick={() => void pickAndImportRepository()}
-            disabled={busy}
-          >
-            +
-          </button>
-        </div>
-      </div>
-      <div className="wb-activity-bottom">
-        <button
-          className="wb-act-btn"
-          title="Settings"
-          onClick={() => setShowSettings(true)}
-        >
-          <span className="wb-act-ico">⚙</span>
-        </button>
-      </div>
-    </div>
-  );
+  const activityBar = <div />;
 
   const sideBar = (
-    <div className="wb-sidebar-inner">
-      <div className="wb-sidebar-section">
-        <div className="wb-commits-head">
-          <div className="wb-sidebar-title">COMMITS</div>
-          <div className="wb-commits-toolbar">
-            <button className="scm-btn primary scm-icon-btn" onClick={() => void refreshScm()} disabled={busy} title="Refresh">
-              ⟳
-            </button>
-            <details className="scm-more">
-              <summary className="scm-btn scm-icon-btn" title="More">
-                ⋯
-              </summary>
-              <div className="scm-menu">
-                <button
-                  className="scm-menu-item"
-                  onClick={(e) => {
-                    const box = e.currentTarget.closest("details");
-                    if (box) box.removeAttribute("open");
-                    void pullLatest();
-                  }}
-                  disabled={busy}
-                  title="git pull --ff-only"
-                >
-                  Pull
-                </button>
-                <button
-                  className="scm-menu-item"
-                  onClick={(e) => {
-                    const box = e.currentTarget.closest("details");
-                    if (box) box.removeAttribute("open");
-                    void pushCurrent();
-                  }}
-                  disabled={busy}
-                  title="git push"
-                >
-                  Push
-                </button>
-              </div>
-            </details>
-          </div>
-        </div>
-        <div className="wb-commits-pane">
-          <div className="commit-list wb-commits-list">
-            {commits.map((c) => (
-              <button
-                key={c.sha}
-                className={selectedCommit === c.sha ? "commit-item selected" : "commit-item"}
-                onClick={() => {
-                  if (busy) return;
-                  setSelectedCommit(c.sha);
-                }}
+    <div className="wb-sidebar-inner gt-sidebar-inner">
+      <div className="gt-sidebar-top">
+        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSession()} disabled={!selectedRepo || !runtimeStatus.opencode.installed}>
+          <span>＋</span>
+          <span>New Session</span>
+        </button>
+      </div>
+
+      <div className="gt-project-stack">
+        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地 Git 仓库。</div> : null}
+        {repos.map((repo) => {
+          const active = selectedRepo?.id === repo.id;
+          const expanded = expandedProjectIds.includes(repo.id);
+          return (
+            <div key={repo.id} className="gt-tree-group">
+              <div
+                className="gt-tree-row"
+                title={repo.path}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const x = Math.min(e.clientX, window.innerWidth - 168);
-                  const y = Math.min(e.clientY, window.innerHeight - 60);
-                  setCommitContextMenu({ x: Math.max(8, x), y: Math.max(8, y), sha: c.sha });
+                  openRepoContextMenu(e.clientX, e.clientY, repo);
                 }}
               >
-                <p>{c.subject}</p>
-                <p className="small muted">{c.author}</p>
-              </button>
-            ))}
+                <button
+                  className="gt-tree-toggle"
+                  aria-label={expanded ? "收起项目" : "展开项目"}
+                  onClick={() => {
+                    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
+                  }}
+                >
+                  {expanded ? "▾" : "▸"}
+                </button>
+                <button
+                  className={active ? "gt-tree-label active" : "gt-tree-label"}
+                  onClick={() => {
+                    if (busy) return;
+                    setSelectedRepo(repo);
+                    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
+                  }}
+                >
+                  {repo.name}
+                </button>
+              </div>
+
+              {expanded ? (
+                <div className="gt-tree-children">
+                  {draftOpencodeSession ? (
+                    <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
+                      <span className="gt-session-title">New Session</span>
+                      <span className="gt-session-meta">待输入，发送第一条消息后创建</span>
+                    </button>
+                  ) : null}
+                  {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
+                  {runtimeStatus.opencode.installed && visibleOpencodeSessions.length === 0 ? (
+                    <div className="gt-empty-hint gt-tree-empty">当前项目还没有会话。</div>
+                  ) : null}
+                  {runtimeStatus.opencode.installed
+                    ? visibleOpencodeSessions.map((session) => (
+                        <button
+                          key={`left-session-${session.id}`}
+                          className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                          onClick={() => {
+                            setDraftOpencodeSession(false);
+                            setActiveOpencodeSessionId(session.id);
+                          }}
+                        >
+                          <span className="gt-session-title">{session.title}</span>
+                          <span className="gt-session-meta">
+                            {new Date(session.updatedAt).toLocaleDateString([], { month: "2-digit", day: "2-digit" })}
+                            {" · "}
+                            {new Date(session.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </button>
+                      ))
+                    : null}
+                  {runtimeStatus.opencode.installed && hasMoreOpencodeSessions ? (
+                    <button className="gt-load-more-btn" onClick={() => void loadMoreOpencodeSessions()}>
+                      加载更多会话
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="gt-sidebar-footer">
+        <button className="gt-open-workspace-btn" onClick={() => void pickAndImportRepository()} disabled={busy}>
+          <span>⊕</span>
+          <span>Open Workspace</span>
+        </button>
+
+        <div className="gt-user-row">
+          <div className="gt-user-main">
+            <span className="gt-user-avatar">{firstLetter(gitUserIdentity.name || gitUserIdentity.email || selectedRepo?.name || "g")}</span>
+            <span className="gt-user-meta">
+              <strong>{gitUserIdentity.name || "Git User"}</strong>
+              <small>{gitUserIdentity.email || "No git email configured"}</small>
+            </span>
           </div>
+          <button className="gt-user-settings" title="Settings" onClick={() => setShowSettings(true)}>⚙</button>
         </div>
       </div>
     </div>
   );
 
-  const editor = (
-    <div className="wb-editor-inner">
-      <div className="wb-editor-header">
-        <div className="wb-breadcrumbs">
-          <strong>{selectedRepo?.name ?? "No Project"}</strong>
-          <span className="muted">/</span>
-          <span className="muted">{selectedBranch || "—"}</span>
-        </div>
-      </div>
-
-      <div
-        className="wb-editor-content"
-        style={{ "--wb-right-width": `${rightPaneWidth}px` } as CSSProperties}
-      >
-        <div className="wb-col wb-col-center">
-          <div className="panel">
-            <div className="wb-editor-reading-head">
-              <div className="tab-row wb-reading-tabs">
-                <button
-                  className={detailTab === "context" ? "tab active" : "tab"}
-                  onClick={() => setDetailTab("context")}
-                >
-                  Agent Context
-                </button>
-                <button className={detailTab === "diff" ? "tab active" : "tab"} onClick={() => setDetailTab("diff")}>
-                  Diff
-                </button>
-                <button
-                  className={detailTab === "findings" ? "tab active" : "tab"}
-                  onClick={() => setDetailTab("findings")}
-                >
-                  Findings
-                </button>
-                <button className="chip" onClick={() => void runSelectedReview()} disabled={busy || !selectedCommit}>
-                  Review
-                </button>
-              </div>
-              {selectedFile ? <div className="wb-reading-sub muted">{selectedFile}</div> : null}
-            </div>
-
-            <div className="wb-reading-body">
-              {detailTab === "diff" ? (
-                <div className="diff-view">
-                  <div className="diff-files-strip">
-                    {changedFiles.length === 0 ? (
-                      <span className="small muted">No changed files</span>
-                    ) : (
-                      changedFiles.map((f) => (
-                        <button
-                          key={f}
-                          className={selectedFile === f ? "file-item selected" : "file-item"}
-                          onClick={() => {
-                            setSelectedFile(f);
-                            void refreshFilePatch(f);
-                          }}
-                        >
-                          <span className="file-dot" />
-                          <span>{f}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                  <div className="diff-header">
-                    <span>Old</span>
-                    <span>New</span>
-                  </div>
-                  <div className="diff-body">
-                    {diffRows.length === 0 ? <div className="diff-empty">选择文件后显示差异对比</div> : null}
-                    {diffRows.map((r, i) => (
-                      <div key={`${i}-${r.kind}`} className={`diff-row ${r.kind}`}>
-                        <div className="cell old">{r.left}</div>
-                        <div className="cell new">{r.right}</div>
+  const centerPane = runtimeStatus.opencode.installed ? (
+    <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
+      <div className={opencodeMessages.length === 0 ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
+        <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll}>
+          <div className="gt-chat-stream">
+            {opencodeHasHiddenHistory ? (
+              <button className="opencode-load-more" onClick={loadOlderOpencodeHistory}>
+                Load earlier messages
+              </button>
+            ) : null}
+            {opencodeHiddenHistorySpacer > 0 ? (
+              <div className="opencode-history-spacer" aria-hidden="true" style={{ height: `${opencodeHiddenHistorySpacer}px` }} />
+            ) : null}
+            {opencodeMessages.length === 0 ? null : (
+              opencodeRenderedMessages.map((msg) => {
+                const isAssistant = msg.role === "assistant";
+                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;
+                const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+                const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
+                const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
+                const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+                const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
+                const renderParts = detailParts.filter(isOpencodeRenderablePart);
+                const timelineGroups = buildOpencodeAssistantRenderGroups(renderParts);
+                const hasTimeline = timelineGroups.length > 0;
+                const fallbackReply = (buildOpencodeReplyMarkdownFromParts(detailParts) || msg.content || "").trim();
+                return (
+                  <div key={msg.id} className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}>
+                    {isAssistant && opencodeDetailsLoadingByMessageId[msg.id] && liveParts.length <= 0 ? (
+                      <div className="opencode-msg-meta">
+                        {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              ) : detailTab === "context" ? (
-                <div className="wb-context wb-reading-scroll">
-                  <div className="context-section-card">
-                    <div className="context-section-head">
-                      <strong>Project Status</strong>
-                      <span className="small muted">entire status --detailed</span>
-                    </div>
-                    {statusText ? (
-                      <div className="status-structured">
-                        <div className="status-pill-row">
-                          {parsedStatus.headline ? <span className="status-pill">{parsedStatus.headline}</span> : null}
-                          {parsedStatus.project ? <span className="status-pill">{parsedStatus.project}</span> : null}
+                    ) : null}
+                    {isAssistant ? (
+                      hasTimeline ? (
+                        <div className="opencode-assistant-timeline">
+                          {(() => {
+                            const reasoningIndexes = timelineGroups
+                              .map((item, groupIdx) => item.kind === "part" && String((item.part as { type?: string }).type || "") === "reasoning" ? groupIdx : -1)
+                              .filter((groupIdx) => groupIdx >= 0);
+                            const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
+                            return timelineGroups.map((g, idx) => {
+                              if (g.kind === "context") {
+                                const c = summarizeOpencodeContextToolCounts(g.parts);
+                                const progress = summarizeOpencodeContextProgress(g.parts);
+                                return (
+                                  <div key={`${msg.id}:${g.key}`} className="opencode-exec-context">
+                                    <div className="opencode-exec-context-head">
+                                      <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
+                                        {isStreaming || progress.active ? "Gathering Context" : "Context"}
+                                      </strong>
+                                      <span className="small muted">
+                                        {progress.detail
+                                          ? `${progress.mode} · ${progress.detail} · ${c.read} read · ${c.search} search · ${c.list} list`
+                                          : `${c.read} read · ${c.search} search · ${c.list} list`}
+                                      </span>
+                                    </div>
+                                    <div className="opencode-exec-list">
+                                      {g.parts.map((p, pidx) => renderOpencodeExecutionPart(p, `${g.key}:${pidx}`))}
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              const part = g.part;
+                              const t = String((part as { type?: string }).type || "");
+                              if (t === "text") {
+                                const text = String((part as { text?: string }).text || "").trim();
+                                if (!text) return null;
+                                return (
+                                  <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
+                                    <MarkdownLite source={text} />
+                                    {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
+                                  </div>
+                                );
+                              }
+                              if (t === "reasoning") {
+                                const text = String((part as { text?: string }).text || "").trim();
+                                if (!text) return null;
+                                const keepOpen = !isStreaming || idx === lastReasoningIndex;
+                                return (
+                                  <details key={`${msg.id}:${g.key}`} className="opencode-think-card" open={keepOpen}>
+                                    <summary className="opencode-think-card-summary">
+                                      <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
+                                    </summary>
+                                    <div className="opencode-msg-body">
+                                      <MarkdownLite source={text} />
+                                    </div>
+                                  </details>
+                                );
+                              }
+                              return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
+                            });
+                          })()}
                         </div>
-                        {parsedStatus.sessions.length > 0 ? (
-                          <div className="status-session-list">
-                            {parsedStatus.sessions.map((s, idx) => (
-                              <div key={`${s.title}-${idx}`} className="status-session-card">
-                                <div className="status-session-title">{s.title}</div>
-                                {s.quote ? <p className="small muted">"{s.quote}"</p> : null}
-                                {s.meta ? <p className="small muted">{s.meta}</p> : null}
-                              </div>
-                            ))}
+                      ) : fallbackReply ? (
+                        <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
+                          <MarkdownLite source={fallbackReply} />
+                          {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
+                        </div>
+                      ) : (
+                        <div className="opencode-thinking-wrap">
+                          <div className="opencode-thinking">
+                            <span />
+                            <span />
+                            <span />
+                            <em>Thinking</em>
                           </div>
-                        ) : (
-                          <pre className="status-embedded-pre">{statusText}</pre>
-                        )}
-                      </div>
-                    ) : (
-                      <pre className="status-embedded-pre">No status output yet.</pre>
-                    )}
-                  </div>
-
-                  <div className="context-section-card">
-                    <div className="context-section-head">
-                      <strong>Agent Context</strong>
-                      <span className="small muted">entire explain --commit --no-pager</span>
-                    </div>
-                    {selectedParsed ? (
-                      <p className="small muted">
-                        checkpoint={selectedParsed.checkpointId ?? "none"} · session={selectedParsed.sessionId ?? "none"} ·
-                        tokens={selectedParsed.tokens ?? "n/a"}
-                      </p>
-                    ) : null}
-                    <div className="agent-meta-grid">
-                      {parsedAgentContext.checkpoint ? <span className="meta-chip">Checkpoint: {parsedAgentContext.checkpoint}</span> : null}
-                      {parsedAgentContext.session ? <span className="meta-chip">Session: {parsedAgentContext.session}</span> : null}
-                      {parsedAgentContext.created ? <span className="meta-chip">Created: {parsedAgentContext.created}</span> : null}
-                      {parsedAgentContext.author ? <span className="meta-chip">Author: {parsedAgentContext.author}</span> : null}
-                    </div>
-                    {parsedAgentContext.commits ? (
-                      <div className="context-block">
-                        <div className="context-block-title">Commits</div>
-                        <p className="small">{parsedAgentContext.commits}</p>
-                      </div>
-                    ) : null}
-                    {parsedAgentContext.intent ? (
-                      <div className="context-block">
-                        <div className="context-block-title">Intent</div>
-                        <MarkdownLite source={parsedAgentContext.intent} />
-                      </div>
-                    ) : null}
-                    {(parsedAgentContext.filesRaw || parsedAgentContext.files.length > 0) ? (
-                      <div className="context-block">
-                        <div className="context-block-title">Files</div>
-                        <MarkdownLite
-                          source={
-                            parsedAgentContext.files.length > 0
-                              ? parsedAgentContext.files.map((f) => `- \`${f}\``).join("\n")
-                              : (parsedAgentContext.filesRaw ?? "")
-                          }
-                        />
-                      </div>
-                    ) : null}
-                    {parsedAgentContext.transcript.length > 0 ? (
-                      <div className="context-block">
-                        <div className="context-block-title">Transcript</div>
-                        <div className="transcript-list">
-                          {parsedAgentContext.transcript.map((m, idx) => (
-                            <div key={`${m.role}-${idx}`} className={m.role === "User" ? "transcript-msg user" : "transcript-msg assistant"}>
-                              <div className="transcript-role">{m.role}</div>
-                              <MarkdownLite source={m.content} />
-                            </div>
-                          ))}
                         </div>
+                      )
+                    ) : msg.content.trim() ? (
+                      <div className="opencode-msg-body">
+                        <MarkdownLite source={msg.content} />
                       </div>
                     ) : null}
-                    <div className="context-actions">
-                      <button className="chip" onClick={() => void loadFullAgentContext()} disabled={busy || !selectedCommit}>
-                        Load full context
+                    {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
+                      <div className="small" style={{ color: "var(--danger)", marginTop: 8 }}>{opencodeDetailsErrorByMessageId[msg.id]}</div>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+        <div className="opencode-input-row">
+          <div className="gt-chat-composer-wrap">
+          <div className="opencode-composer">
+            <div className="opencode-composer-body opencode-composer-body-inline">
+              <div className="opencode-input-shell opencode-composer-editor">
+                <textarea
+                  ref={opencodeInputRef}
+                  className="opencode-input"
+                  placeholder="Ask OpenCode to code, inspect, or fix..."
+                  value={opencodePromptInput}
+                  onChange={(e) => setOpencodePromptInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (activeOpencodeSessionBusy) return;
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void runOpencodePrompt();
+                    }
+                  }}
+                  rows={1}
+                />
+              </div>
+              <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
+                <button
+                  type="button"
+                  className="chip opencode-model-trigger opencode-composer-model"
+                  onClick={() => {
+                    const next = !showOpencodeModelPicker;
+                    if (next) {
+                      setOpencodeConfiguredProviders([]);
+                      setOpencodeConfiguredModelsByProvider({});
+                      setOpencodeConfiguredModelNamesByProvider({});
+                      void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
+                    }
+                    setShowOpencodeModelPicker(next);
+                  }}
+                >
+                  {(() => {
+                    if (!activeOpencodeModel) return "Auto";
+                    const parsed = parseModelRef(activeOpencodeModel);
+                    const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
+                    const mid = parsed?.model || "";
+                    const name = (provider ? (opencodeModelNamesByProvider[provider]?.[mid] || opencodeConfiguredModelNamesByProvider[provider]?.[mid]) : "") || "";
+                    return name || activeOpencodeModel || "Auto";
+                  })()}
+                  <span className="opencode-model-caret">▾</span>
+                </button>
+                {showOpencodeModelPicker ? (
+                  <div className="opencode-model-picker">
+                    <div className="opencode-model-picker-head">
+                      <input className="path-input opencode-model-search" placeholder="搜索已配置模型..." value={opencodeModelPickerSearch} onChange={(e) => setOpencodeModelPickerSearch(e.target.value)} />
+                      <button type="button" className="chip opencode-picker-config-btn" title="自定义提供商" onClick={() => {
+                        setShowOpencodeCustomProvider(true);
+                        setShowOpencodeModelPicker(false);
+                      }}>
+                        ＋
+                      </button>
+                      <button type="button" className="chip opencode-picker-config-btn" title="选择/连接提供商" onClick={() => {
+                        setShowOpencodeProviderPicker(true);
+                        setOpencodeProviderPickerSearch("");
+                        setOpencodeProviderPickerProvider(opencodeModelProvider);
+                        setOpencodeProviderPickerModelSearch("");
+                        setShowOpencodeModelPicker(false);
+                      }}>
+                        ⚙
                       </button>
                     </div>
-                    {agentContextError ? (
-                      <div className="context-error-card">
-                        <div className="context-block-title">Agent Context Unavailable</div>
-                        <p className="small">
-                          Failed to load via <code>entire explain</code>. Check that <code>entire</code> is installed and
-                          available in PATH for the packaged app.
-                        </p>
-                        <pre>{agentContextError}</pre>
-                      </div>
-                    ) : null}
-                    {!parsedAgentContext.transcript.length && !parsedAgentContext.intent ? <MarkdownLite source={selectedExplain} /> : null}
+                    <div className="opencode-model-list-col">
+                      {opencodeConfiguredModelCandidates.length === 0 ? (
+                        <div className="small muted">暂无已配置模型。点击“＋”添加自定义提供商，或点“⚙”连接厂商。</div>
+                      ) : (
+                        opencodeConfiguredModelCandidates.map((m) => (
+                          <button type="button" key={`saved-model-${m}`} className={m === activeOpencodeModel ? "file-item selected" : "file-item"} onClick={() => {
+                            void applyOpencodeModel(m);
+                            setShowOpencodeModelPicker(false);
+                          }} title={m}>
+                            {(() => {
+                              const parsed = parseModelRef(m);
+                              const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
+                              const mid = parsed?.model || "";
+                              const name = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") || "";
+                              return (
+                                <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
+                                  <span>{name || m}</span>
+                                  {name ? <span className="small muted">{m}</span> : null}
+                                </span>
+                              );
+                            })()}
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
+                ) : null}
+              </div>
+              <button
+                className={activeOpencodeSessionBusy ? "chip opencode-run-btn opencode-composer-send opencode-stop-btn" : "chip opencode-run-btn opencode-composer-send"}
+                disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
+                onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
+                aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
+              >
+                <SendIcon busy={activeOpencodeSessionBusy} />
+              </button>
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+        {showOpencodeDebugLog ? (
+          <div className="opencode-debug-panel">
+            <div className="opencode-debug-head">
+              <strong>OpenCode Debug Log</strong>
+              <button className="chip" onClick={() => setOpencodeDebugLogs([])}>Clear</button>
+            </div>
+            <pre className="opencode-debug-log">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
+          </div>
+        ) : null}
+      </div>
+  ) : (
+    <div className="panel opencode-panel opencode-empty-panel gt-chat-disabled">
+      <div className="opencode-hero">
+        <div className="opencode-hero-title">OpenCode Agent</div>
+        <p className="small muted">Install `opencode` from Plugins to enable the coding area.</p>
+      </div>
+    </div>
+  );
+
+  const rightPane = (
+    <div className="gt-right-pane" ref={opencodeRightPaneRef}>
+      <div className="gt-right-panel">
+        {rightPaneTab === "worktree" ? (
+          <div className="gt-panel-stack">
+            <div className="gt-right-card">
+              <div className="gt-right-card-head">
+                <strong>Current Worktree</strong>
+                <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+              </div>
+              <div className="gt-stat-grid">
+                <div className="gt-stat-item"><span>Branch</span><strong>{worktreeOverview.branch || selectedBranch || "-"}</strong></div>
+                <div className="gt-stat-item"><span>Tracking</span><strong>{worktreeOverview.tracking || "-"}</strong></div>
+                <div className="gt-stat-item"><span>Ahead / Behind</span><strong>{worktreeOverview.ahead} / {worktreeOverview.behind}</strong></div>
+                <div className="gt-stat-item"><span>Status</span><strong>{worktreeOverview.clean ? "Clean" : "Dirty"}</strong></div>
+              </div>
+              <div className="status-pill-row">
+                <span className="status-pill">staged {worktreeOverview.stagedCount}</span>
+                <span className="status-pill">unstaged {worktreeOverview.unstagedCount}</span>
+                <span className="status-pill">untracked {worktreeOverview.untrackedCount}</span>
+              </div>
+              <pre className="gt-right-pre">{worktreeOverview.raw || "git status -sb"}</pre>
+            </div>
+
+            <div className="gt-right-card">
+              <div className="gt-right-card-head">
+                <strong>Branches</strong>
+                <button className="chip" onClick={() => void refreshBranchesAndCommits()} disabled={busy}>Refresh</button>
+              </div>
+              <div className="gt-branch-mini-list">
+                {branches.map((branch) => (
+                  <button key={branch.name} className={selectedBranch === branch.name ? "gt-branch-mini active" : "gt-branch-mini"} onClick={() => void chooseBranch(branch.name)}>
+                    <span className={branch.isCurrent ? "gt-branch-mini-dot current" : "gt-branch-mini-dot"} />
+                    <span>{branch.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="gt-right-card gt-right-card-fill">
+              <div className="gt-right-card-head">
+                <strong>Recent Graph</strong>
+                <button className="chip" onClick={() => setShowGraphPopover(true)}>Open Graph</button>
+              </div>
+              <div className="gt-commit-mini-list">
+                {commits.slice(0, 12).map((commit) => (
+                  <button key={commit.sha} className={selectedCommit === commit.sha ? "gt-commit-mini active" : "gt-commit-mini"} onClick={() => setSelectedCommit(commit.sha)}>
+                    <strong>{commit.subject}</strong>
+                    <span>{commit.sha.slice(0, 8)} · {commit.author}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {rightPaneTab === "changes" ? (
+          <div className="gt-panel-stack gt-panel-stack-split">
+            <div className="gt-right-card gt-right-card-files">
+              <div className="gt-right-card-head">
+                <strong>待提交文件</strong>
+                <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+              </div>
+              <div className="gt-worktree-file-list">
+                {worktreeOverview.entries.length === 0 ? <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div> : null}
+                {worktreeOverview.entries.map((entry) => (
+                  <button key={entry.path} className={selectedWorktreeFile === entry.path ? "gt-worktree-file active" : "gt-worktree-file"} onClick={() => void refreshSelectedWorktreePatch(entry.path)}>
+                    <span className="gt-worktree-file-top">
+                      <strong>{entry.path}</strong>
+                      <span className="small muted">{entry.indexStatus}{entry.worktreeStatus}</span>
+                    </span>
+                    <span className="gt-worktree-file-tags">
+                      {entry.staged ? <span className="meta-chip">staged</span> : null}
+                      {entry.unstaged ? <span className="meta-chip">unstaged</span> : null}
+                      {entry.untracked ? <span className="meta-chip">untracked</span> : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="gt-right-card gt-right-card-fill">
+              <div className="gt-right-card-head">
+                <strong>修改记录</strong>
+                <span className="small muted">{selectedWorktreeFile || "选择一个文件"}</span>
+              </div>
+              <pre className="gt-right-pre gt-right-pre-fill">{selectedWorktreePatch || "选择左侧文件后查看 patch。"}</pre>
+            </div>
+          </div>
+        ) : null}
+
+        {rightPaneTab === "terminal" ? (
+          <div className="gt-panel-stack gt-panel-stack-terminal">
+            <div className="gt-right-card">
+              <div className="gt-right-card-head">
+                <strong>Terminal</strong>
+                <div className="toolbar">
+                  <button className="chip" onClick={() => setTerminalEntries([])}>Clear</button>
+                  <button className="chip" onClick={() => void runTerminalCommand()} disabled={terminalBusy || !selectedRepo}>Run</button>
                 </div>
-              ) : (
-                <div className="wb-reading-scroll">
-                  {!selectedReview ? <p className="small muted">当前提交暂无 review</p> : null}
-                  {selectedReview?.findings.map((f) => {
-                    const act = latestAction(selectedReview.id, f.id);
-                    return (
-                      <div key={f.id} className="finding-item">
-                        <p>
-                          <strong>{f.severity.toUpperCase()}</strong> {f.file}
-                        </p>
-                        <p>{f.summary}</p>
-                        <div className="toolbar">
-                          <button className="chip" onClick={() => void markFinding(selectedReview.id, f.id, "accept")}>
-                            accept
-                          </button>
-                          <button className="chip" onClick={() => void markFinding(selectedReview.id, f.id, "dismiss")}>
-                            dismiss
-                          </button>
-                          <button className="chip" onClick={() => void markFinding(selectedReview.id, f.id, "todo")}>
-                            todo
-                          </button>
-                        </div>
-                        <p className="small muted">latest action: {act ? `${act.action} @ ${act.createdAt}` : "none"}</p>
-                      </div>
-                    );
-                  })}
+              </div>
+              <div className="gt-terminal-toolbar">
+                <button className="chip" onClick={() => { setTerminalInput("git status -sb"); void runTerminalCommand("git status -sb"); }} disabled={terminalBusy || !selectedRepo}>git status</button>
+                <button className="chip" onClick={() => { setTerminalInput("git branch --show-current"); void runTerminalCommand("git branch --show-current"); }} disabled={terminalBusy || !selectedRepo}>current branch</button>
+                <button className="chip" onClick={() => { setTerminalInput("git worktree list"); void runTerminalCommand("git worktree list"); }} disabled={terminalBusy || !selectedRepo}>worktrees</button>
+              </div>
+              <div className="gt-terminal-input-row">
+                <input className="path-input" value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} onKeyDown={(e) => {
+                  if (e.key === "Enter") void runTerminalCommand();
+                }} placeholder="输入命令，例如 git status -sb" />
+              </div>
+            </div>
+            <div className="gt-terminal-log">
+              {terminalEntries.length === 0 ? <div className="gt-empty-hint">运行命令后，这里会显示输出。</div> : null}
+              {terminalEntries.map((entry) => (
+                <div key={entry.id} className={entry.ok ? "gt-terminal-entry" : "gt-terminal-entry error"}>
+                  <div className="gt-terminal-entry-head">
+                    <strong>$ {entry.command}</strong>
+                    <span className="small muted">{new Date(entry.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                  </div>
+                  <pre className="gt-right-pre">{entry.output}</pre>
                 </div>
-              )}
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const centerColClass =
+    !leftDrawerOpen && !rightDrawerOpen
+      ? "wb-col wb-col-center gt-center-pane gt-center-pane-wide"
+      : !rightDrawerOpen
+        ? "wb-col wb-col-center gt-center-pane gt-center-pane-right-closed"
+        : !leftDrawerOpen
+          ? "wb-col wb-col-center gt-center-pane gt-center-pane-left-closed"
+          : "wb-col wb-col-center gt-center-pane";
+
+  const editorRailClass = rightDrawerOpen ? "wb-editor-rail is-right-open" : "wb-editor-rail is-right-closed";
+
+  const editor = (
+    <div className="wb-editor-inner gt-editor-shell">
+      <button className="gt-shell-toggle gt-shell-toggle-left" title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
+        <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
+      </button>
+      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={() => setRightDrawerOpen((v) => !v)}>
+        <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
+      </button>
+      <div
+        className={editorRailClass}
+        style={{
+          "--wb-right-width": `${rightPaneWidth}px`,
+          "--wb-right-current-width": rightDrawerOpen ? `${rightPaneWidth}px` : "0px",
+          "--wb-right-split-width": rightDrawerOpen ? "1px" : "0px"
+        } as CSSProperties}
+      >
+        <div className="wb-editor-rail__head-center wb-editor-header gt-editor-header" data-tauri-drag-region>
+          <div className="wb-breadcrumbs">
+            <strong>{activeOpencodeSession?.title || (draftOpencodeSession ? "New Session" : "会话摘要")}</strong>
+          </div>
+        </div>
+        <div
+          className={draggingSplit?.kind === "right" ? "wb-editor-rail__split active" : "wb-editor-rail__split"}
+          role="separator"
+          aria-orientation="vertical"
+          aria-hidden={!rightDrawerOpen}
+          onMouseDown={rightDrawerOpen ? (e) => beginSplitDrag("right", e.clientX) : undefined}
+        />
+        <div className="wb-editor-rail__head-right" data-tauri-drag-region aria-hidden={!rightDrawerOpen}>
+          <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
+            <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
+              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="Worktree" aria-label="Worktree">
+                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
+              </button>
+              <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
+                <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
+              </button>
+              <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
+                <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
+              </button>
             </div>
           </div>
         </div>
-
-        <div
-          className={draggingSplit?.kind === "right" ? "wb-col-splitter active" : "wb-col-splitter"}
-          role="separator"
-          aria-orientation="vertical"
-          onMouseDown={(e) => beginSplitDrag("right", e.clientX)}
-        />
-
-        <div className="wb-col wb-col-right" ref={opencodeRightPaneRef}>
-          {runtimeStatus.opencode.installed ? (
-            <div className={`panel opencode-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-              <div className="opencode-shell">
-                <aside className={showOpencodeSessionRail ? "opencode-session-rail open" : "opencode-session-rail"}>
-                  <div className="opencode-session-rail-head">
-                    <strong>Sessions</strong>
-                    <button className="chip" onClick={() => void createAndSwitchOpencodeSession()}>New</button>
-                  </div>
-                  <div className="opencode-session-list">
-                    {opencodeSessions.map((s) => (
-                      <button
-                        key={`rail-${s.id}`}
-                        className={s.id === activeOpencodeSession?.id ? "opencode-session-item active" : "opencode-session-item"}
-                        onClick={() => setActiveOpencodeSessionId(s.id)}
-                      >
-                        <span>{s.title}</span>
-                        <small>{new Date(s.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
-                      </button>
-                    ))}
-                  </div>
-                </aside>
-                <div className="opencode-main">
-                  <div className="opencode-headline">
-                    <button
-                      className="chip opencode-rail-toggle"
-                      title={showOpencodeSessionRail ? "隐藏会话列表" : "显示会话列表"}
-                      aria-label={showOpencodeSessionRail ? "隐藏会话列表" : "显示会话列表"}
-                      onClick={() => setShowOpencodeSessionRail((v) => !v)}
-                    >
-                      ≡
-                    </button>
-                    <button
-                      className="chip opencode-rail-toggle"
-                      title={showOpencodeDebugLog ? "隐藏日志" : "显示日志"}
-                      aria-label={showOpencodeDebugLog ? "隐藏日志" : "显示日志"}
-                      onClick={() => setShowOpencodeDebugLog((v) => !v)}
-                    >
-                      ⌘
-                    </button>
-                    <p className="small muted opencode-path">{selectedRepo?.path || "No repository selected"}</p>
-                  </div>
-                  <div className="opencode-session-tabs">
-                    <button className="opencode-session-tab new pinned" onClick={() => void createAndSwitchOpencodeSession()}>
-                      + New Session
-                    </button>
-                    {opencodeSessions.map((s) => (
-                      <div
-                        key={`tab-${s.id}`}
-                        className={s.id === activeOpencodeSession?.id ? "opencode-session-tab active" : "opencode-session-tab"}
-                        onClick={() => setActiveOpencodeSessionId(s.id)}
-                        role="button"
-                      >
-                        <span>{s.title}</span>
-                        <button
-                          className="opencode-tab-close"
-                          disabled={opencodeSessions.length <= 1}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void removeOpencodeSession(s.id);
-                          }}
-                          title="Close session"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll}>
-                    {opencodeHasHiddenHistory ? (
-                      <button className="opencode-load-more" onClick={loadOlderOpencodeHistory}>
-                        Load earlier messages
-                      </button>
-                    ) : null}
-                    {opencodeHiddenHistorySpacer > 0 ? (
-                      <div
-                        className="opencode-history-spacer"
-                        aria-hidden="true"
-                        style={{ height: `${opencodeHiddenHistorySpacer}px` }}
-                      />
-                    ) : null}
-                    {opencodeMessages.length === 0 ? (
-                      <div className="opencode-empty-state">
-                        <strong>Start a focused coding session</strong>
-                        <p className="small muted">Describe the task in one sentence.</p>
-                      </div>
-                    ) : (
-                      opencodeRenderedMessages.map((msg) => {
-                        const isAssistant = msg.role === "assistant";
-                        const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;
-                        const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-                        const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
-                        const fetchedParts = Array.isArray(detail?.parts) ? (detail!.parts as OpencodeDetailedPart[]) : [];
-                        const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
-                        const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
-                        const renderParts = detailParts.filter(isOpencodeRenderablePart);
-                        const timelineGroups = buildOpencodeAssistantRenderGroups(renderParts);
-                        const hasTimeline = timelineGroups.length > 0;
-                        const fallbackReply = (buildOpencodeReplyMarkdownFromParts(detailParts) || msg.content || "").trim();
-                        return (
-                          <div
-                            key={msg.id}
-                            className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}
-                          >
-                            {isAssistant && opencodeDetailsLoadingByMessageId[msg.id] && liveParts.length <= 0 ? (
-                              <div className="opencode-msg-meta">
-                                {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
-                              </div>
-                            ) : null}
-                            {isAssistant ? (
-                              hasTimeline ? (
-                                <div className="opencode-assistant-timeline">
-                                  {(() => {
-                                    const reasoningIndexes = timelineGroups
-                                      .map((item, groupIdx) =>
-                                        item.kind === "part" && String((item.part as any)?.type || "") === "reasoning" ? groupIdx : -1
-                                      )
-                                      .filter((groupIdx) => groupIdx >= 0);
-                                    const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
-                                    return timelineGroups.map((g, idx) => {
-                                      if (g.kind === "context") {
-                                        const c = summarizeOpencodeContextToolCounts(g.parts);
-                                        const progress = summarizeOpencodeContextProgress(g.parts);
-                                        return (
-                                          <div key={`${msg.id}:${g.key}`} className="opencode-exec-context">
-                                            <div className="opencode-exec-context-head">
-                                              <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
-                                                {isStreaming || progress.active ? "Gathering Context" : "Context"}
-                                              </strong>
-                                              <span className="small muted">
-                                                {progress.detail
-                                                  ? `${progress.mode} · ${progress.detail} · ${c.read} read · ${c.search} search · ${c.list} list`
-                                                  : `${c.read} read · ${c.search} search · ${c.list} list`}
-                                              </span>
-                                            </div>
-                                            <div className="opencode-exec-list">
-                                              {g.parts.map((p, pidx) => renderOpencodeExecutionPart(p, `${g.key}:${pidx}`))}
-                                            </div>
-                                          </div>
-                                        );
-                                      }
-                                      const part = g.part;
-                                      const t = String((part as any)?.type || "");
-                                      if (t === "text") {
-                                        const text = String((part as any)?.text || "").trim();
-                                        if (!text) return null;
-                                        return (
-                                          <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                                            <MarkdownLite source={text} />
-                                            {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                                          </div>
-                                        );
-                                      }
-                                      if (t === "reasoning") {
-                                        const text = String((part as any)?.text || "").trim();
-                                        if (!text) return null;
-                                        const keepOpen = !isStreaming || idx === lastReasoningIndex;
-                                        return (
-                                          <details
-                                            key={`${msg.id}:${g.key}`}
-                                            className="opencode-think-card"
-                                            open={keepOpen}
-                                          >
-                                            <summary className="opencode-think-card-summary">
-                                              <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
-                                            </summary>
-                                            <div className="opencode-msg-body">
-                                              <MarkdownLite source={text} />
-                                            </div>
-                                          </details>
-                                        );
-                                      }
-                                      return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
-                                    });
-                                  })()}
-                                </div>
-                              ) : fallbackReply ? (
-                                <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                                  <MarkdownLite source={fallbackReply} />
-                                  {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                                </div>
-                              ) : (
-                                <div className="opencode-thinking-wrap">
-                                  <div className="opencode-thinking">
-                                    <span />
-                                    <span />
-                                    <span />
-                                    <em>Thinking</em>
-                                  </div>
-                                </div>
-                              )
-                            ) : msg.content.trim() ? (
-                              <div className="opencode-msg-body">
-                                <MarkdownLite source={msg.content} />
-                              </div>
-                            ) : null}
-                            {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
-                              <div className="small" style={{ color: "var(--danger)", marginTop: 8 }}>
-                                {opencodeDetailsErrorByMessageId[msg.id]}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                  <div className="opencode-input-row">
-                    <div className="opencode-composer">
-                      <div className="opencode-composer-body">
-                        <div className="opencode-input-shell opencode-composer-editor">
-                          <textarea
-                            ref={opencodeInputRef}
-                            className="opencode-input"
-                            placeholder="Ask OpenCode to code, inspect, or fix..."
-                            value={opencodePromptInput}
-                            onChange={(e) => setOpencodePromptInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (activeOpencodeSessionBusy) return;
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                void runOpencodePrompt();
-                              }
-                            }}
-                            rows={1}
-                          />
-                        </div>
-                        <button
-                          className={activeOpencodeSessionBusy ? "chip opencode-run-btn opencode-composer-send opencode-stop-btn" : "chip opencode-run-btn opencode-composer-send"}
-                          disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
-                          onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
-                        >
-                          {activeOpencodeSessionBusy ? "Stop" : "Run"}
-                        </button>
-                      </div>
-                      <div className="opencode-composer-toolbar">
-                        <div className="opencode-model-picker-wrap" ref={opencodeModelPickerRef}>
-                          <button
-                            type="button"
-                            className="chip opencode-model-trigger opencode-composer-model"
-                            onClick={() => {
-                              const next = !showOpencodeModelPicker;
-                              if (next) {
-                                setOpencodeConfiguredProviders([]);
-                                setOpencodeConfiguredModelsByProvider({});
-                                setOpencodeConfiguredModelNamesByProvider({});
-                                void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-                              }
-                              setShowOpencodeModelPicker(next);
-                            }}
-                          >
-                            {(() => {
-                              if (!activeOpencodeModel) return "选择模型";
-                              const parsed = parseModelRef(activeOpencodeModel);
-                              const provider = resolveProviderAliasWithNames(
-                                parsed?.provider || "",
-                                opencodeModelsByProvider,
-                                opencodeProviderNames
-                              ) || (parsed?.provider || "");
-                              const mid = parsed?.model || "";
-                              const name =
-                                (provider ? (opencodeModelNamesByProvider[provider]?.[mid] || opencodeConfiguredModelNamesByProvider[provider]?.[mid]) : "") ||
-                                "";
-                              return name || activeOpencodeModel;
-                            })()}
-                          </button>
-                          {showOpencodeModelPicker ? (
-                            <div className="opencode-model-picker">
-                              <div className="opencode-model-picker-head">
-                                <input
-                                  className="path-input opencode-model-search"
-                                  placeholder="搜索已配置模型..."
-                                  value={opencodeModelPickerSearch}
-                                  onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
-                                />
-                                <button
-                                  type="button"
-                                  className="chip opencode-picker-config-btn"
-                                  title="自定义提供商"
-                                  onClick={() => {
-                                    setShowOpencodeCustomProvider(true);
-                                    setShowOpencodeModelPicker(false);
-                                  }}
-                                >
-                                  ＋
-                                </button>
-                                <button
-                                  type="button"
-                                  className="chip opencode-picker-config-btn"
-                                  title="选择/连接提供商"
-                                  onClick={() => {
-                                    setShowOpencodeProviderPicker(true);
-                                    setOpencodeProviderPickerSearch("");
-                                    setOpencodeProviderPickerProvider(opencodeModelProvider);
-                                    setOpencodeProviderPickerModelSearch("");
-                                    setShowOpencodeModelPicker(false);
-                                  }}
-                                >
-                                  ⚙
-                                </button>
-                              </div>
-                              <div className="opencode-model-list-col">
-                                {opencodeConfiguredModelCandidates.length === 0 ? (
-                                  <div className="small muted">暂无已配置模型。点击“＋”添加自定义提供商，或点“⚙”连接厂商。</div>
-                                ) : (
-                                  opencodeConfiguredModelCandidates.map((m) => (
-                                    <button
-                                      type="button"
-                                      key={`saved-model-${m}`}
-                                      className={m === activeOpencodeModel ? "file-item selected" : "file-item"}
-                                      onClick={() => {
-                                        void applyOpencodeModel(m);
-                                        setShowOpencodeModelPicker(false);
-                                      }}
-                                      title={m}
-                                    >
-                                      {(() => {
-                                        const parsed = parseModelRef(m);
-                                        const provider = resolveProviderAliasWithNames(
-                                          parsed?.provider || "",
-                                          opencodeModelsByProvider,
-                                          opencodeProviderNames
-                                        ) || (parsed?.provider || "");
-                                        const mid = parsed?.model || "";
-                                        const name =
-                                          (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") ||
-                                          "";
-                                        return (
-                                          <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
-                                            <span>{name || m}</span>
-                                            {name ? <span className="small muted">{m}</span> : null}
-                                          </span>
-                                        );
-                                      })()}
-                                    </button>
-                                  ))
-                                )}
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {showOpencodeDebugLog ? (
-                    <div className="opencode-debug-panel">
-                      <div className="opencode-debug-head">
-                        <strong>OpenCode Debug Log</strong>
-                        <button className="chip" onClick={() => setOpencodeDebugLogs([])}>Clear</button>
-                      </div>
-                      <pre className="opencode-debug-log">
-                        {opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}
-                      </pre>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="panel opencode-panel opencode-empty-panel">
-              <div className="opencode-hero">
-                <div className="opencode-hero-title">OpenCode Agent</div>
-                <p className="small muted">Install `opencode` from Plugins to enable the right-side toolkit.</p>
-              </div>
-              <div className="opencode-dock">
-                <div className="opencode-footer-row">
-                  <span>››</span>
-                  <button className="chip" disabled>Run</button>
-                </div>
-              </div>
-            </div>
-          )}
+        <div className="wb-editor-rail__body-center wb-editor-content gt-editor-rail-center">
+          <div className={centerColClass}>{centerPane}</div>
         </div>
+        <div className="wb-editor-rail__body-right wb-col wb-col-right" aria-hidden={!rightDrawerOpen}>{rightPane}</div>
       </div>
     </div>
   );
@@ -4858,6 +4905,7 @@ export function App() {
         editor={editor}
         panel={panel}
         sidebarWidth={sidebarWidth}
+        sidebarCollapsed={!leftDrawerOpen}
         sidebarResizing={draggingSplit?.kind === "sidebar"}
         onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
         statusBar={

@@ -18,6 +18,11 @@ export type HealthResponse = {
   };
 };
 
+export type SessionStatusInfo =
+  | { type: 'idle' }
+  | { type: 'busy' }
+  | { type: 'retry'; attempt: number; message: string; next: number };
+
 export type SseEvent = {
   event: string;
   data: string;
@@ -59,6 +64,20 @@ export type MobileContextCard = {
   tools: MobileEventCard[];
 };
 
+export type MobileErrorCard = {
+  id: string;
+  title: string;
+  text: string;
+  createdAt?: number;
+  code?: string;
+};
+
+export type MobileDividerCard = {
+  id: string;
+  label: string;
+  createdAt?: number;
+};
+
 export type MobileTimelineItem =
   | {
       kind: 'chat';
@@ -79,6 +98,16 @@ export type MobileTimelineItem =
       kind: 'context';
       createdAt: number;
       context: MobileContextCard;
+    }
+  | {
+      kind: 'divider';
+      createdAt: number;
+      divider: MobileDividerCard;
+    }
+  | {
+      kind: 'error';
+      createdAt: number;
+      error: MobileErrorCard;
     };
 
 export type MobileRenderedTurn = {
@@ -93,4 +122,5 @@ export type ParsedConversation = {
   chatMessages: MobileChatMessage[];
   timeline: MobileTimelineItem[];
   writing: boolean;
+  hasError: boolean;
 };

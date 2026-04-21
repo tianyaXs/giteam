@@ -176,6 +176,8 @@ enum ServiceCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Reconcile stale service registrations and old binaries")]
+    Reconcile,
     #[command(about = "Install the service into the OS service manager")]
     Install,
     #[command(about = "Remove the service from the OS service manager")]
@@ -1097,6 +1099,55 @@ fn service_disable() -> Result<(), String> {
         return Err(manager_unsupported_error(&manager));
     }
     print_service_manager_summary(&service_manager_status()?);
+    Ok(())
+}
+
+fn kill_processes_matching(pattern: &str) -> Result<(), String> {
+    let output = Command::new("pgrep")
+        .args(["-f", pattern])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("pgrep failed: {e}"))?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let current_pid = std::process::id();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        if pid == current_pid {
+            continue;
+        }
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+    Ok(())
+}
+
+fn service_reconcile() -> Result<(), String> {
+    let manager = service_manager_status()?;
+    if !manager.supported {
+        return Err(manager_unsupported_error(&manager));
+    }
+
+    let had_manager = manager.installed || manager.enabled || manager.loaded;
+    if had_manager {
+        let _ = service_uninstall();
+    }
+
+    kill_processes_matching("giteam-cli")?;
+
+    if matches!(manager.definition_matches_cli, Some(false)) || had_manager {
+        service_install()?;
+    }
+
+    let refreshed = service_manager_status()?;
+    println!("reconciled service manager state");
+    print_service_manager_summary(&refreshed);
     Ok(())
 }
 
@@ -2437,6 +2488,24 @@ fn fetch_health(port: u16) -> Option<Value> {
     http_json("GET", port, "/api/v1/health", None).ok()
 }
 
+fn fetch_access_info_from_service(port: u16) -> Option<control::ControlAccessInfo> {
+    http_json("GET", port, "/api/v1/admin/control/access-info", None)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+}
+
+fn fetch_pair_code_from_service(port: u16, refresh: bool) -> Option<control::ControlPairCodeInfo> {
+    let method = if refresh { "POST" } else { "GET" };
+    let path = if refresh {
+        "/api/v1/pair/request"
+    } else {
+        "/api/v1/pair/current"
+    };
+    http_json(method, port, path, if refresh { Some("{}") } else { None })
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+}
+
 fn service_running(port: u16) -> bool {
     fetch_health(port)
         .and_then(|v| v.get("ok").and_then(|x| x.as_bool()))
@@ -2484,6 +2553,30 @@ fn runtime_view() -> Result<RuntimeView, String> {
     })
 }
 
+fn resolved_control_access_info() -> Result<control::ControlAccessInfo, String> {
+    let settings = control::get_control_server_settings()?;
+    if service_running(settings.port) {
+        if let Some(info) = fetch_access_info_from_service(settings.port) {
+            return Ok(info);
+        }
+    }
+    control::get_control_access_info()
+}
+
+fn resolved_pair_code(refresh: bool) -> Result<control::ControlPairCodeInfo, String> {
+    let settings = control::get_control_server_settings()?;
+    if service_running(settings.port) {
+        if let Some(info) = fetch_pair_code_from_service(settings.port, refresh) {
+            return Ok(info);
+        }
+    }
+    if refresh {
+        control::refresh_control_pair_code()
+    } else {
+        control::get_control_pair_code()
+    }
+}
+
 fn mobile_banner() -> &'static str {
     include_str!("../字符画.txt")
 }
@@ -2496,7 +2589,7 @@ fn print_banner() {
 
 fn print_status(json: bool) -> Result<(), String> {
     let view = StatusView {
-        control: control::get_control_access_info()?,
+        control: resolved_control_access_info()?,
         runtime: runtime_view()?,
         manager: service_manager_status()?,
     };
@@ -2556,6 +2649,9 @@ fn print_status(json: bool) -> Result<(), String> {
     if let Some(note) = &view.manager.note {
         println!("service_note: {}", note);
     }
+    if matches!(view.manager.definition_matches_cli, Some(false)) {
+        println!("service_warning: managed service points to an older binary; run `giteam service reconcile`");
+    }
     if !view.control.no_auth {
         println!("pair_code: {}", view.control.pair_code);
         println!("expires_at: {}", view.control.expires_at);
@@ -2573,11 +2669,7 @@ fn print_status(json: bool) -> Result<(), String> {
 }
 
 fn print_pair_code(refresh: bool, json: bool) -> Result<(), String> {
-    let pair = if refresh {
-        control::refresh_control_pair_code()?
-    } else {
-        control::get_control_pair_code()?
-    };
+    let pair = resolved_pair_code(refresh)?;
     if json {
         return print_json(&pair);
     }
@@ -2920,6 +3012,7 @@ fn run_service_command(command: ServiceCommands) -> Result<(), String> {
         ServiceCommands::Logs { tail, follow } => show_logs(tail, follow),
         ServiceCommands::Status { json } => print_status(json),
         ServiceCommands::Doctor { json } => print_service_doctor(json),
+        ServiceCommands::Reconcile => service_reconcile(),
         ServiceCommands::Install => service_install(),
         ServiceCommands::Uninstall => service_uninstall(),
         ServiceCommands::Enable => service_enable(),

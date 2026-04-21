@@ -1,4 +1,4 @@
-import type { HealthResponse, PairAuthResponse, PromptResponse } from '../types';
+import type { HealthResponse, PairAuthResponse, PromptResponse, SessionStatusInfo } from '../types';
 export const NO_AUTH_TOKEN = '__NO_AUTH__';
 
 function normalizeBaseUrl(input: string): string {
@@ -169,6 +169,25 @@ export async function getSessions(args: {
       updatedAt: Number(x?.updatedAt || 0) || undefined
     }))
     .filter((x: any) => x.id);
+}
+
+export async function getSessionStatus(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<Record<string, SessionStatusInfo>> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({
+    repoPath: args.repoPath
+  });
+  const url = `${baseUrl}/api/v1/opencode/session/status?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, {
+    headers: authHeaders(args.token)
+  });
+  const raw = ensureOk('session.status', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return parsed as Record<string, SessionStatusInfo>;
 }
 
 export async function getOpencodeConfig(args: {

@@ -2,7 +2,7 @@ use super::opencode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
@@ -933,6 +933,93 @@ fn push_loop_notice_message(mut v: Value, session_id: &str, stats: SessionLoopSt
     v
 }
 
+fn mobile_message_role(item: &Value) -> &str {
+    item.get("info")
+        .and_then(|v| v.get("role"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+}
+
+fn mobile_message_id(item: &Value) -> &str {
+    item.get("info")
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+}
+
+fn mobile_message_parent_id(item: &Value) -> &str {
+    item.get("info")
+        .and_then(|v| v.get("parentID").or_else(|| v.get("parentId")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+}
+
+fn mobile_message_has_error(item: &Value) -> bool {
+    item.get("info")
+        .and_then(|v| v.get("error"))
+        .map(|v| !v.is_null())
+        .unwrap_or(false)
+}
+
+fn mobile_message_has_compaction_part(item: &Value) -> bool {
+    item.get("parts")
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts.iter().any(|part| {
+                part.get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    == "compaction"
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn mobile_message_is_completed_summary(item: &Value) -> bool {
+    if mobile_message_role(item) != "assistant" || mobile_message_has_error(item) {
+        return false;
+    }
+    let Some(info) = item.get("info") else {
+        return false;
+    };
+    let summary = info
+        .get("summary")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let finish = info.get("finish");
+    summary && finish.is_some() && !finish.is_some_and(|v| v.is_null())
+}
+
+fn filter_mobile_compacted_messages(v: Value) -> Value {
+    let Some(arr) = v.as_array() else {
+        return v;
+    };
+    let mut completed = HashSet::<String>::new();
+    let mut out = Vec::<Value>::new();
+    for item in arr.iter().rev() {
+        out.push(item.clone());
+        if mobile_message_role(item) == "user"
+            && !mobile_message_id(item).is_empty()
+            && completed.contains(mobile_message_id(item))
+            && mobile_message_has_compaction_part(item)
+        {
+            break;
+        }
+        if mobile_message_is_completed_summary(item) {
+            let parent_id = mobile_message_parent_id(item);
+            if !parent_id.is_empty() {
+                completed.insert(parent_id.to_string());
+            }
+        }
+    }
+    out.reverse();
+    Value::Array(out)
+}
+
 fn compact_mobile_tool_metadata(metadata: Option<&Map<String, Value>>) -> Option<Value> {
     let Some(metadata) = metadata else {
         return None;
@@ -1318,7 +1405,8 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
                     );
                     break;
                 }
-                let compact_v = compact_mobile_message_payload(v);
+                let filtered_v = filter_mobile_compacted_messages(v);
+                let compact_v = compact_mobile_message_payload(filtered_v);
                 let fp = serde_json::to_string(&compact_v).unwrap_or_default();
                 if fp != prev_fingerprint {
                     prev_fingerprint = fp;
@@ -1629,6 +1717,17 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "GET" && req.path == "/api/v1/opencode/session/status" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::get_opencode_session_status(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
     if req.method == "POST" && req.path == "/api/v1/opencode/prompt" {
         let raw = match parse_body_json(&req) {
             Ok(v) => v,
@@ -1721,7 +1820,8 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 } else {
                     items
                 };
-                let compact_items = compact_mobile_message_payload(final_items);
+                let filtered_items = filter_mobile_compacted_messages(final_items);
+                let compact_items = compact_mobile_message_payload(filtered_items);
                 (
                     200,
                     serde_json::json!({

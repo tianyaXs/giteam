@@ -11,6 +11,22 @@ function normalizeText(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
 
+function errorText(error: any): string {
+  if (!error) return '';
+  if (typeof error === 'string') return error.trim();
+  const name = normalizeText(error?.name);
+  const message = normalizeText(error?.message);
+  const code = normalizeText(error?.code) || normalizeText(error?.data?.code);
+  const fallback = (() => {
+    try {
+      return JSON.stringify(error).trim();
+    } catch {
+      return '';
+    }
+  })();
+  return [name, code, message].filter(Boolean).join(' · ') || fallback;
+}
+
 function createdAtOf(info: any, fallback: number): number {
   const t = Number(info?.time?.created || 0);
   if (Number.isFinite(t) && t > 0) return t;
@@ -26,6 +42,10 @@ function collectVisibleTexts(parts: any[]): string[] {
     .filter((p: any) => p?.synthetic !== true)
     .map((p: any) => normalizeText(p?.text))
     .filter(Boolean);
+}
+
+function hasCompactionPart(parts: any[]): boolean {
+  return parts.some((p: any) => normalizeText(p?.type) === 'compaction');
 }
 
 function toolMode(tool: string): string {
@@ -140,12 +160,13 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
 
 export function parseConversation(raw: unknown): ParsedConversation {
   if (!Array.isArray(raw)) {
-    return { chatMessages: [], timeline: [], writing: false };
+    return { chatMessages: [], timeline: [], writing: false, hasError: false };
   }
 
   const timelineRows: Array<{ order: number; item: MobileTimelineItem }> = [];
   let seq = 0;
   let writing = false;
+  let hasError = false;
   let hasAssistantRenderable = false;
   let sizeLimitSyntheticCount = 0;
 
@@ -161,8 +182,22 @@ export function parseConversation(raw: unknown): ParsedConversation {
     const finished = Boolean(info?.finish || info?.time?.completed);
 
     if (role === 'user') {
-      const hasAutoCompactionPart = parts.some((p: any) => normalizeText(p?.type) === 'compaction' && p?.auto === true);
-      if (hasAutoCompactionPart) continue;
+      writing = false;
+      if (hasCompactionPart(parts)) {
+        timelineRows.push({
+          order: seq++,
+          item: {
+            kind: 'divider',
+            createdAt,
+            divider: {
+              id: `divider:${id}`,
+              label: '会话已压缩',
+              createdAt
+            }
+          }
+        });
+        continue;
+      }
       for (const p of parts) {
         if (normalizeText(p?.type) !== 'text') continue;
         if (p?.synthetic !== true) continue;
@@ -181,6 +216,27 @@ export function parseConversation(raw: unknown): ParsedConversation {
     }
 
     if (role !== 'assistant') continue;
+    const errText = errorText(info?.error);
+    const errCode = normalizeText(info?.error?.code) || normalizeText(info?.error?.data?.code);
+    const hasAssistantError = !!errText;
+    if (hasAssistantError) {
+      timelineRows.push({
+        order: seq++,
+        item: {
+          kind: 'error',
+          createdAt,
+          error: {
+            id: `error:${id}`,
+            title: 'Run failed',
+            text: errText,
+            code: errCode,
+            createdAt
+          }
+        }
+      });
+      hasAssistantRenderable = true;
+      hasError = true;
+    }
     const renderParts = parts.filter(isRenderablePart);
     let pidx = 0;
     while (pidx < renderParts.length) {
@@ -263,7 +319,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
       pidx += 1;
     }
 
-    if (!finished) writing = true;
+    writing = !finished && !hasAssistantError;
   }
 
   const ordered: MobileTimelineItem[] = timelineRows
@@ -278,6 +334,8 @@ export function parseConversation(raw: unknown): ParsedConversation {
     if (item.kind === 'chat') sig = `${sig}:${item.message.role}:${item.message.id}`;
     if (item.kind === 'think') sig = `${sig}:${item.card.id}`;
     if (item.kind === 'event') sig = `${sig}:${item.event.id}`;
+    if (item.kind === 'divider') sig = `${sig}:${item.divider.id}`;
+    if (item.kind === 'error') sig = `${sig}:${item.error.id}`;
     if (item.kind === 'context') sig = `${sig}:${item.context.id}`;
     if (seenSig.has(sig)) continue;
     seenSig.add(sig);
@@ -301,7 +359,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     const chatMessages = stable
       .filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat')
       .map((t) => t.message);
-    return { chatMessages, timeline: stable, writing: false };
+    return { chatMessages, timeline: stable, writing: false, hasError: true };
   }
 
   const rawChat = timeline
@@ -344,5 +402,5 @@ export function parseConversation(raw: unknown): ParsedConversation {
     });
   }
 
-  return { chatMessages, timeline, writing };
+  return { chatMessages, timeline, writing, hasError };
 }

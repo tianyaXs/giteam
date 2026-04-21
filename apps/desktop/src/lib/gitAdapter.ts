@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { GitBranchSummary, GitCommitSummary, GitGraphNode } from "./types";
+import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitUserIdentity, GitWorktreeOverview } from "./types";
 
 export async function getHeadCommit(repoPath: string): Promise<string> {
   return invoke<string>("run_git_head_commit", { repoPath });
@@ -47,4 +47,20 @@ export async function getCommitFilePatch(
   filePath: string
 ): Promise<string> {
   return invoke<string>("run_git_commit_file_patch", { repoPath, commitSha, filePath });
+}
+
+export async function getGitWorktreeOverview(repoPath: string): Promise<GitWorktreeOverview> {
+  return invoke<GitWorktreeOverview>("run_git_worktree_overview", { repoPath });
+}
+
+export async function getGitWorktreeFilePatch(repoPath: string, filePath: string): Promise<string> {
+  return invoke<string>("run_git_worktree_file_patch", { repoPath, filePath });
+}
+
+export async function runRepoTerminalCommand(repoPath: string, command: string): Promise<string> {
+  return invoke<string>("run_repo_terminal_command", { repoPath, command });
+}
+
+export async function getGitUserIdentity(repoPath: string): Promise<GitUserIdentity> {
+  return invoke<GitUserIdentity>("run_git_user_identity", { repoPath });
 }

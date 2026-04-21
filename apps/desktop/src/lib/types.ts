@@ -30,6 +30,33 @@ export type GitGraphNode = {
   isConnector: boolean;
 };
 
+export type GitWorktreeEntry = {
+  path: string;
+  indexStatus: string;
+  worktreeStatus: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+};
+
+export type GitWorktreeOverview = {
+  branch: string;
+  tracking: string;
+  ahead: number;
+  behind: number;
+  clean: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  entries: GitWorktreeEntry[];
+  raw: string;
+};
+
+export type GitUserIdentity = {
+  name: string;
+  email: string;
+};
+
 export type RepositoryEntry = {
   id: string;
   path: string;

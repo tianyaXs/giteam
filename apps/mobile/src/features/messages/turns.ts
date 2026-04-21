@@ -11,6 +11,7 @@ export type TurnWindowResult = {
   renderedTurns: MobileRenderedTurn[];
   chatMessages: MobileChatMessage[];
   writing: boolean;
+  hasError: boolean;
   hasUserTurn: boolean;
 };
 
@@ -61,6 +62,8 @@ function timelineStableKey(item: MobileTimelineItem): string {
   if (item.kind === 'chat') return `chat:${toText(item.message.id)}`;
   if (item.kind === 'think') return `think:${toText(item.card.id)}`;
   if (item.kind === 'event') return `event:${toText(item.event.id)}`;
+  if (item.kind === 'divider') return `divider:${toText(item.divider.id)}`;
+  if (item.kind === 'error') return `error:${toText(item.error.id)}`;
   return `context:${toText(item.context.id)}`;
 }
 
@@ -70,6 +73,8 @@ function itemSignature(item: MobileTimelineItem): string {
   if (item.kind === 'event') {
     return `${timelineStableKey(item)}:${toText(item.event.status)}:${toText(item.event.detail).length}:${toText(item.event.output).length}`;
   }
+  if (item.kind === 'divider') return `${timelineStableKey(item)}:${toText(item.divider.label)}`;
+  if (item.kind === 'error') return `${timelineStableKey(item)}:${toText(item.error.code)}:${toText(item.error.text).length}`;
   const tools = Array.isArray(item.context.tools) ? item.context.tools.map((tool) => tool.id).join(',') : '';
   return `${timelineStableKey(item)}:${toText(item.context.summary).length}:${tools}`;
 }
@@ -86,7 +91,12 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
       createdAt: current.createdAt,
       userMessage: current.userMessage,
       items: current.items,
-      signature: current.items.map(itemSignature).join('|')
+      signature: [
+        current.userMessage
+          ? `user:${toText(current.userMessage.id)}:${toText(current.userMessage.text).length}`
+          : 'user:none',
+        ...current.items.map(itemSignature)
+      ].join('|')
     });
   };
 
@@ -153,6 +163,7 @@ export function buildTurnWindow(raw: RawMessageRow[], visibleTurnCount: number):
     renderedTurns: visibleRenderedTurns,
     chatMessages,
     writing: parsed.writing,
+    hasError: parsed.hasError,
     hasUserTurn: fullRenderedTurns.some((turn) => !!turn.userMessage)
   };
 }

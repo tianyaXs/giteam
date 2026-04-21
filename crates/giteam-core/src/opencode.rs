@@ -34,7 +34,12 @@ fn service_pool() -> &'static Mutex<Option<ManagedOpencodeService>> {
 }
 
 fn run_opencode(args: &[&str], repo_path: &str) -> Result<String, String> {
-    command_runner::run_and_capture_in_dir_with_timeout("opencode", args, repo_path, OPENCODE_TIMEOUT_SECS)
+    command_runner::run_and_capture_in_dir_with_timeout(
+        "opencode",
+        args,
+        repo_path,
+        OPENCODE_TIMEOUT_SECS,
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -207,8 +212,12 @@ fn extract_config_provider_catalog(root: &Value) -> Vec<OpencodeConfigProviderCa
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let models_obj = pobj.and_then(|o| o.get("models")).and_then(|v| v.as_object());
-        let mut models: Vec<String> = models_obj.map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        let models_obj = pobj
+            .and_then(|o| o.get("models"))
+            .and_then(|v| v.as_object());
+        let mut models: Vec<String> = models_obj
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
         models.sort();
         out.push(OpencodeConfigProviderCatalog {
             id: pid.clone(),
@@ -231,7 +240,13 @@ fn opencode_auth_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            return Some(PathBuf::from(h).join(".local").join("share").join("opencode").join("auth.json"));
+            return Some(
+                PathBuf::from(h)
+                    .join(".local")
+                    .join("share")
+                    .join("opencode")
+                    .join("auth.json"),
+            );
         }
     }
     None
@@ -257,13 +272,22 @@ fn opencode_service_settings_path() -> Option<PathBuf> {
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
-            return Some(PathBuf::from(p).join("giteam").join("opencode-service.json"));
+            return Some(
+                PathBuf::from(p)
+                    .join("giteam")
+                    .join("opencode-service.json"),
+            );
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            return Some(PathBuf::from(h).join(".config").join("giteam").join("opencode-service.json"));
+            return Some(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join("opencode-service.json"),
+            );
         }
     }
     None
@@ -298,10 +322,11 @@ fn write_opencode_service_settings(settings: &OpencodeServiceSettings) -> Result
         return Ok(());
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create service settings dir failed: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create service settings dir failed: {e}"))?;
     }
-    let text =
-        serde_json::to_string_pretty(settings).map_err(|e| format!("serialize service settings failed: {e}"))?;
+    let text = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("serialize service settings failed: {e}"))?;
     fs::write(&path, text).map_err(|e| format!("write service settings failed: {e}"))?;
     Ok(())
 }
@@ -327,7 +352,8 @@ fn write_opencode_auth_map(map: &Map<String, Value>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create auth dir failed: {e}"))?;
     }
-    let text = serde_json::to_string_pretty(map).map_err(|e| format!("serialize auth config failed: {e}"))?;
+    let text = serde_json::to_string_pretty(map)
+        .map_err(|e| format!("serialize auth config failed: {e}"))?;
     fs::write(&path, text).map_err(|e| format!("write auth config failed: {e}"))?;
     Ok(())
 }
@@ -409,7 +435,12 @@ fn opencode_models_cache_path() -> Option<PathBuf> {
         if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
             candidates.push(PathBuf::from(xdg).join("opencode").join("models.json"));
         }
-        candidates.push(home.join("Library").join("Caches").join("opencode").join("models.json"));
+        candidates.push(
+            home.join("Library")
+                .join("Caches")
+                .join("opencode")
+                .join("models.json"),
+        );
         candidates.push(home.join(".cache").join("opencode").join("models.json"));
     }
 
@@ -421,7 +452,12 @@ fn opencode_models_cache_path() -> Option<PathBuf> {
         if let Ok(entries) = fs::read_dir(root_path) {
             for entry in entries.flatten() {
                 let hp = entry.path();
-                candidates.push(hp.join("Library").join("Caches").join("opencode").join("models.json"));
+                candidates.push(
+                    hp.join("Library")
+                        .join("Caches")
+                        .join("opencode")
+                        .join("models.json"),
+                );
                 candidates.push(hp.join(".cache").join("opencode").join("models.json"));
             }
         }
@@ -447,7 +483,8 @@ fn opencode_models_cache_path() -> Option<PathBuf> {
 }
 
 fn parse_models_dev_catalog(raw: &str) -> Result<Vec<OpencodeCatalogProvider>, String> {
-    let value: Value = serde_json::from_str(raw).map_err(|e| format!("parse models.dev catalog failed: {e}"))?;
+    let value: Value =
+        serde_json::from_str(raw).map_err(|e| format!("parse models.dev catalog failed: {e}"))?;
     let obj = value
         .as_object()
         .ok_or_else(|| "invalid models.dev catalog format".to_string())?;
@@ -621,12 +658,24 @@ fn run_config_get(repo_path: &str, base: &str) -> Result<Value, String> {
     // - /global/config stores provider/model catalogs
     // - /config may store per-project overrides (e.g. selected model)
     // Return a merged view so provider catalogs from global config are visible.
-    let global_cfg = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-    let local_cfg = run_curl_json(repo_path, "GET", format!("{base}/config").as_str(), None, 15)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let global_cfg = run_curl_json(
+        repo_path,
+        "GET",
+        format!("{base}/global/config").as_str(),
+        None,
+        15,
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let local_cfg = run_curl_json(
+        repo_path,
+        "GET",
+        format!("{base}/config").as_str(),
+        None,
+        15,
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
 
     match (global_cfg, local_cfg) {
         (Some(mut g), Some(l)) => {
@@ -645,8 +694,9 @@ fn run_config_patch(repo_path: &str, base: &str, patch: &Value) -> Result<Value,
     // - model selection typically lives under /config
     //
     // We still support both endpoints and fall back as needed.
-    let wants_global_first =
-        patch.get("provider").is_some() || patch.get("disabled_providers").is_some() || patch.get("model").is_some();
+    let wants_global_first = patch.get("provider").is_some()
+        || patch.get("disabled_providers").is_some()
+        || patch.get("model").is_some();
 
     let try_patch = |url: String| -> Result<Value, String> {
         // OpenCode /config and /global/config PATCH both validate full Config.Info.
@@ -656,7 +706,8 @@ fn run_config_patch(repo_path: &str, base: &str, patch: &Value) -> Result<Value,
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             .unwrap_or_else(|| serde_json::json!({}));
         merge_json(&mut merged, patch.clone());
-        let body = serde_json::to_string(&merged).map_err(|e| format!("serialize merged config failed: {e}"))?;
+        let body = serde_json::to_string(&merged)
+            .map_err(|e| format!("serialize merged config failed: {e}"))?;
         let raw = run_curl_json(repo_path, "PATCH", url.as_str(), Some(body.as_str()), 20)?;
         serde_json::from_str(&raw).map_err(|e| format!("parse patch response failed: {e}"))
     };
@@ -686,7 +737,10 @@ fn service_is_ready(repo_path: &str, base: &str) -> bool {
     run_curl_json(repo_path, "GET", ready_url.as_str(), None, 3).is_ok()
 }
 
-fn start_opencode_service(repo_path: &str, settings: &OpencodeServiceSettings) -> Result<(Option<std::process::Child>, String), String> {
+fn start_opencode_service(
+    repo_path: &str,
+    settings: &OpencodeServiceSettings,
+) -> Result<(Option<std::process::Child>, String), String> {
     let base = format!("http://127.0.0.1:{}", settings.port);
     if service_is_ready(repo_path, &base) {
         // A healthy service is already listening on the configured endpoint.
@@ -786,20 +840,29 @@ fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {
     Ok(base)
 }
 
-fn with_service_base<T, F: FnMut(&str) -> Result<T, String>>(repo_path: &str, mut task: F) -> Result<T, String> {
+fn with_service_base<T, F: FnMut(&str) -> Result<T, String>>(
+    repo_path: &str,
+    mut task: F,
+) -> Result<T, String> {
     let base = ensure_managed_service_local(repo_path)?;
     match task(base.as_str()) {
         Ok(v) => Ok(v),
         Err(first_err) => {
             release_managed_service();
             let retry_base = ensure_managed_service_local(repo_path)?;
-            task(retry_base.as_str()).map_err(|retry_err| format!("{first_err}\nretry failed: {retry_err}"))
+            task(retry_base.as_str())
+                .map_err(|retry_err| format!("{first_err}\nretry failed: {retry_err}"))
         }
     }
 }
 
 fn parse_session_summary(v: &Value) -> Option<OpencodeSessionSummary> {
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if id.is_empty() {
         return None;
     }
@@ -909,7 +972,6 @@ fn stream_prompt_via_opencode_service(
 ) -> Result<(), String> {
     let mut stream_child: Option<std::process::Child> = None;
     let run = with_service_base(repo_path, |base| {
-
         let session_id = if let Some(id) = session_id {
             let sid = id.trim();
             if sid.is_empty() {
@@ -995,11 +1057,22 @@ fn stream_prompt_via_opencode_service(
         }
 
         let prompt_url = format!("{base}/session/{session_id}/prompt_async");
-        let prompt_raw =
-            serde_json::to_string(&prompt_body).map_err(|e| format!("serialize prompt body failed: {e}"))?;
-        let post_res = run_curl_json(repo_path, "POST", prompt_url.as_str(), Some(prompt_raw.as_str()), 12);
+        let prompt_raw = serde_json::to_string(&prompt_body)
+            .map_err(|e| format!("serialize prompt body failed: {e}"))?;
+        let post_res = run_curl_json(
+            repo_path,
+            "POST",
+            prompt_url.as_str(),
+            Some(prompt_raw.as_str()),
+            12,
+        );
         if let Err(post_err) = post_res {
-            emit_stream_event(app, request_id, "debug", format!("prompt_async failed: {post_err}"));
+            emit_stream_event(
+                app,
+                request_id,
+                "debug",
+                format!("prompt_async failed: {post_err}"),
+            );
             return Err(post_err);
         }
 
@@ -1085,10 +1158,20 @@ fn stream_prompt_via_opencode_service(
                     .unwrap_or("");
                 if sid == session_id {
                     if seen_activity {
-                        emit_stream_event(app, request_id, "debug", "session.idle -> complete".to_string());
+                        emit_stream_event(
+                            app,
+                            request_id,
+                            "debug",
+                            "session.idle -> complete".to_string(),
+                        );
                         return Ok(());
                     }
-                    emit_stream_event(app, request_id, "debug", "session.idle (no assistant activity yet)".to_string());
+                    emit_stream_event(
+                        app,
+                        request_id,
+                        "debug",
+                        "session.idle (no assistant activity yet)".to_string(),
+                    );
                     continue;
                 }
             }
@@ -1107,10 +1190,20 @@ fn stream_prompt_via_opencode_service(
                         .unwrap_or("");
                     if status_typ == "idle" {
                         if seen_activity {
-                            emit_stream_event(app, request_id, "debug", "session.status idle -> complete".to_string());
+                            emit_stream_event(
+                                app,
+                                request_id,
+                                "debug",
+                                "session.status idle -> complete".to_string(),
+                            );
                             return Ok(());
                         }
-                        emit_stream_event(app, request_id, "debug", "session.status idle (no assistant activity yet)".to_string());
+                        emit_stream_event(
+                            app,
+                            request_id,
+                            "debug",
+                            "session.status idle (no assistant activity yet)".to_string(),
+                        );
                         continue;
                     }
                 }
@@ -1125,7 +1218,9 @@ fn stream_prompt_via_opencode_service(
                 if sid != session_id {
                     continue;
                 }
-                let info = props.and_then(|p| p.get("info")).and_then(|v| v.as_object());
+                let info = props
+                    .and_then(|p| p.get("info"))
+                    .and_then(|v| v.as_object());
                 let role = info
                     .and_then(|i| i.get("role"))
                     .and_then(|v| v.as_str())
@@ -1152,7 +1247,8 @@ fn stream_prompt_via_opencode_service(
                     if let Some(delta) = pending_delta.remove(&reasoning_key) {
                         if !delta.is_empty() {
                             emit_stream_event(app, request_id, "trace", delta.clone());
-                            let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                            let payload =
+                                serde_json::json!({"type":"reasoning","text": delta}).to_string();
                             emit_stream_event(app, request_id, "delta", payload);
                             got_reasoning_field_delta = true;
                         }
@@ -1177,7 +1273,8 @@ fn stream_prompt_via_opencode_service(
                             let key = format!("{mid}:{part_id}");
                             reasoning_part_text.insert(key.clone(), full.clone());
                             if !got_reasoning_field_delta {
-                                let payload = serde_json::json!({"type":"reasoning","text": full}).to_string();
+                                let payload = serde_json::json!({"type":"reasoning","text": full})
+                                    .to_string();
                                 emit_stream_event(app, request_id, "delta", payload);
                                 got_reasoning_field_delta = true;
                             }
@@ -1217,7 +1314,8 @@ fn stream_prompt_via_opencode_service(
                             Some("assistant") => {
                                 seen_activity = true;
                                 emit_stream_event(app, request_id, "trace", delta.to_string());
-                                let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                                let payload = serde_json::json!({"type":"reasoning","text": delta})
+                                    .to_string();
                                 emit_stream_event(app, request_id, "delta", payload);
                                 got_reasoning_field_delta = true;
                             }
@@ -1273,10 +1371,7 @@ fn stream_prompt_via_opencode_service(
                     continue;
                 }
                 seen_activity = true;
-                let part_type = part_obj
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let part_type = part_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let part_id = part_obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
                 if part_type == "tool" {
@@ -1289,7 +1384,11 @@ fn stream_prompt_via_opencode_service(
                         .and_then(|v| v.get("status"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    if status == "pending" || status == "running" || status == "completed" || status == "error" {
+                    if status == "pending"
+                        || status == "running"
+                        || status == "completed"
+                        || status == "error"
+                    {
                         let key = format!("tool:{message_id}:{part_id}:{status}");
                         if !trace_seen.contains(key.as_str()) {
                             trace_seen.insert(key);
@@ -1311,7 +1410,12 @@ fn stream_prompt_via_opencode_service(
                                         "status": status,
                                         "input": input,
                                     });
-                                    emit_stream_event(app, request_id, "explore_task", payload.to_string());
+                                    emit_stream_event(
+                                        app,
+                                        request_id,
+                                        "explore_task",
+                                        payload.to_string(),
+                                    );
                                 }
                             }
                             let human = if status == "error" {
@@ -1329,12 +1433,21 @@ fn stream_prompt_via_opencode_service(
                                 "tool": tool,
                                 "text": human,
                             });
-                            emit_stream_event(app, request_id, "trace_event", structured.to_string());
+                            emit_stream_event(
+                                app,
+                                request_id,
+                                "trace_event",
+                                structured.to_string(),
+                            );
                             emit_stream_event(app, request_id, "trace", human);
                         }
                     }
                 } else if part_type == "step-start" || part_type == "step-finish" {
-                    let status = if part_type == "step-start" { "start" } else { "finish" };
+                    let status = if part_type == "step-start" {
+                        "start"
+                    } else {
+                        "finish"
+                    };
                     let key = format!("step:{message_id}:{part_id}:{status}");
                     if !trace_seen.contains(key.as_str()) {
                         trace_seen.insert(key);
@@ -1344,7 +1457,11 @@ fn stream_prompt_via_opencode_service(
                             .unwrap_or("step")
                             .trim()
                             .to_string();
-                        let action = if part_type == "step-start" { "Step" } else { "Done" };
+                        let action = if part_type == "step-start" {
+                            "Step"
+                        } else {
+                            "Done"
+                        };
                         let human = format!("{action} {title}");
                         let structured = serde_json::json!({
                             "messageID": message_id,
@@ -1407,7 +1524,10 @@ fn stream_prompt_via_opencode_service(
                             continue;
                         }
                     }
-                    let prev = reasoning_part_text.get(key.as_str()).cloned().unwrap_or_default();
+                    let prev = reasoning_part_text
+                        .get(key.as_str())
+                        .cloned()
+                        .unwrap_or_default();
                     let delta = if full.starts_with(prev.as_str()) {
                         full.get(prev.len()..).unwrap_or("").to_string()
                     } else {
@@ -1415,7 +1535,8 @@ fn stream_prompt_via_opencode_service(
                     };
                     reasoning_part_text.insert(key, full);
                     if !delta.is_empty() {
-                        let payload = serde_json::json!({"type":"reasoning","text": delta}).to_string();
+                        let payload =
+                            serde_json::json!({"type":"reasoning","text": delta}).to_string();
                         emit_stream_event(app, request_id, "delta", payload);
                     }
                 }
@@ -1436,7 +1557,10 @@ fn stream_prompt_via_opencode_service(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn list_opencode_sessions(repo_path: &str, limit: Option<u32>) -> Result<Vec<OpencodeSessionSummary>, String> {
+pub fn list_opencode_sessions(
+    repo_path: &str,
+    limit: Option<u32>,
+) -> Result<Vec<OpencodeSessionSummary>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
         let mut url = format!("{base}/session");
@@ -1446,11 +1570,13 @@ pub fn list_opencode_sessions(repo_path: &str, limit: Option<u32>) -> Result<Vec
             }
         }
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 10)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse session list failed: {e}"))?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse session list failed: {e}"))?;
         let arr = json
             .as_array()
             .ok_or_else(|| "invalid session list response".to_string())?;
-        let mut out: Vec<OpencodeSessionSummary> = arr.iter().filter_map(parse_session_summary).collect();
+        let mut out: Vec<OpencodeSessionSummary> =
+            arr.iter().filter_map(parse_session_summary).collect();
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     })
@@ -1460,8 +1586,15 @@ pub fn list_opencode_sessions(repo_path: &str, limit: Option<u32>) -> Result<Vec
 pub fn get_opencode_current_project(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/project/current").as_str(), None, 10)?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse current project failed: {e}"))
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/project/current").as_str(),
+            None,
+            10,
+        )?;
+        serde_json::from_str::<Value>(&raw)
+            .map_err(|e| format!("parse current project failed: {e}"))
     })
 }
 
@@ -1469,13 +1602,22 @@ pub fn get_opencode_current_project(repo_path: &str) -> Result<Value, String> {
 pub fn list_opencode_projects(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/project").as_str(), None, 10)?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/project").as_str(),
+            None,
+            10,
+        )?;
         serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse project list failed: {e}"))
     })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn create_opencode_session(repo_path: &str, title: Option<String>) -> Result<OpencodeSessionSummary, String> {
+pub fn create_opencode_session(
+    repo_path: &str,
+    title: Option<String>,
+) -> Result<OpencodeSessionSummary, String> {
     command_runner::validate_repo_path(repo_path)?;
     let body = if let Some(t) = title.as_deref() {
         let tt = t.trim();
@@ -1488,8 +1630,15 @@ pub fn create_opencode_session(repo_path: &str, title: Option<String>) -> Result
         "{}".to_string()
     };
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "POST", format!("{base}/session").as_str(), Some(body.as_str()), 10)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse session create failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/session").as_str(),
+            Some(body.as_str()),
+            10,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse session create failed: {e}"))?;
         parse_session_summary(&json).ok_or_else(|| "invalid session create response".to_string())
     })
 }
@@ -1532,7 +1681,8 @@ pub fn get_opencode_session_messages(
             }
         }
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse session messages failed: {e}"))?;
+        let json: Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("parse session messages failed: {e}"))?;
         let arr = json
             .as_array()
             .ok_or_else(|| "invalid session messages response".to_string())?;
@@ -1596,7 +1746,8 @@ pub fn get_opencode_session_messages_detailed(
             url.push_str(qs.join("&").as_str());
         }
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse session messages failed: {e}"))
+        serde_json::from_str::<Value>(&raw)
+            .map_err(|e| format!("parse session messages failed: {e}"))
     })
 }
 
@@ -1631,7 +1782,8 @@ pub fn get_opencode_session_messages_detailed_page(
         url.push_str(qs.join("&").as_str());
 
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 15)?;
-        let mut arr = serde_json::from_str::<Vec<Value>>(&raw).map_err(|e| format!("parse session messages failed: {e}"))?;
+        let mut arr = serde_json::from_str::<Vec<Value>>(&raw)
+            .map_err(|e| format!("parse session messages failed: {e}"))?;
         let mut next_cursor = None::<String>;
         if arr.len() > safe_limit as usize {
             arr.remove(0);
@@ -1658,6 +1810,21 @@ pub fn get_opencode_session_messages_detailed_page(
             }
         }
         Ok((Value::Array(arr), next_cursor))
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn get_opencode_session_status(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/session/status").as_str(),
+            None,
+            10,
+        )?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse session status failed: {e}"))
     })
 }
 
@@ -1696,7 +1863,8 @@ pub fn post_opencode_session_prompt_async(
         }
     }
     with_service_base(repo_path, |base| {
-        let raw = serde_json::to_string(&body).map_err(|e| format!("serialize prompt_async body failed: {e}"))?;
+        let raw = serde_json::to_string(&body)
+            .map_err(|e| format!("serialize prompt_async body failed: {e}"))?;
         let _ = run_curl_json(
             repo_path,
             "POST",
@@ -1721,7 +1889,11 @@ pub fn abort_opencode_session(
     }
     with_service_base(repo_path, |base| {
         let mut url = format!("{base}/session/{sid}/abort");
-        if let Some(d) = directory.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        if let Some(d) = directory
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
             url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
         }
         let _ = run_curl_json(repo_path, "POST", url.as_str(), Some("{}"), 12)?;
@@ -1733,8 +1905,15 @@ pub fn abort_opencode_session(
 pub fn get_opencode_model_config(repo_path: &str) -> Result<OpencodeModelConfig, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
         let configured_model = json
             .get("model")
             .and_then(|v| v.as_str())
@@ -1749,11 +1928,20 @@ pub fn get_opencode_model_config(repo_path: &str) -> Result<OpencodeModelConfig,
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn get_opencode_config_provider_catalog(repo_path: &str) -> Result<Vec<OpencodeConfigProviderCatalog>, String> {
+pub fn get_opencode_config_provider_catalog(
+    repo_path: &str,
+) -> Result<Vec<OpencodeConfigProviderCatalog>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
-        let root: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let root: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
         Ok(extract_config_provider_catalog(&root))
     })
 }
@@ -1843,7 +2031,12 @@ fn parse_server_providers_from_json(root: &Value) -> Vec<OpencodeServerProviderC
         .cloned()
         .unwrap_or_default();
     for p in providers {
-        let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let id = p
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if id.is_empty() {
             continue;
         }
@@ -1872,29 +2065,54 @@ fn parse_server_providers_from_json(root: &Value) -> Vec<OpencodeServerProviderC
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn get_opencode_server_provider_catalog(repo_path: &str) -> Result<Vec<OpencodeServerProviderCatalog>, String> {
+pub fn get_opencode_server_provider_catalog(
+    repo_path: &str,
+) -> Result<Vec<OpencodeServerProviderCatalog>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
         // Source of truth for provider + model catalog is /provider.
-        let prov_raw = run_curl_json(repo_path, "GET", format!("{base}/provider").as_str(), None, 12)?;
-        let prov_json: Value = serde_json::from_str(&prov_raw).map_err(|e| format!("parse /provider failed: {e}"))?;
+        let prov_raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/provider").as_str(),
+            None,
+            12,
+        )?;
+        let prov_json: Value =
+            serde_json::from_str(&prov_raw).map_err(|e| format!("parse /provider failed: {e}"))?;
         let parsed = parse_server_providers_from_json(&prov_json);
         if !parsed.is_empty() {
             return Ok(parsed);
         }
         // Fallback to /config/providers only when /provider returns empty in unexpected environments.
-        let cfg_raw = run_curl_json(repo_path, "GET", format!("{base}/config/providers").as_str(), None, 12)?;
-        let cfg_json: Value = serde_json::from_str(&cfg_raw).map_err(|e| format!("parse /config/providers failed: {e}"))?;
+        let cfg_raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/config/providers").as_str(),
+            None,
+            12,
+        )?;
+        let cfg_json: Value = serde_json::from_str(&cfg_raw)
+            .map_err(|e| format!("parse /config/providers failed: {e}"))?;
         Ok(parse_server_providers_from_json(&cfg_json))
     })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn get_opencode_server_provider_state(repo_path: &str) -> Result<OpencodeServerProviderState, String> {
+pub fn get_opencode_server_provider_state(
+    repo_path: &str,
+) -> Result<OpencodeServerProviderState, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/provider").as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /provider failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/provider").as_str(),
+            None,
+            15,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /provider failed: {e}"))?;
         let connected: Vec<String> = json
             .get("connected")
             .and_then(|v| v.as_array())
@@ -1920,14 +2138,23 @@ pub fn get_opencode_server_provider_state(repo_path: &str) -> Result<OpencodeSer
             })
         });
         if needs_names {
-            if let Ok(cfg_raw) = run_curl_json(repo_path, "GET", format!("{base}/config/providers").as_str(), None, 12) {
+            if let Ok(cfg_raw) = run_curl_json(
+                repo_path,
+                "GET",
+                format!("{base}/config/providers").as_str(),
+                None,
+                12,
+            ) {
                 if let Ok(cfg_json) = serde_json::from_str::<Value>(&cfg_raw) {
                     let extra = parse_server_providers_from_json(&cfg_json);
                     providers = merge_server_provider_catalog(providers, extra);
                 }
             }
         }
-        Ok(OpencodeServerProviderState { providers, connected })
+        Ok(OpencodeServerProviderState {
+            providers,
+            connected,
+        })
     })
 }
 
@@ -1935,8 +2162,15 @@ pub fn get_opencode_server_provider_state(repo_path: &str) -> Result<OpencodeSer
 pub fn get_opencode_server_provider_auth(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/provider/auth").as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /provider/auth failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/provider/auth").as_str(),
+            None,
+            15,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /provider/auth failed: {e}"))?;
         Ok(json)
     })
 }
@@ -1944,9 +2178,7 @@ pub fn get_opencode_server_provider_auth(repo_path: &str) -> Result<Value, Strin
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_opencode_server_config(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
-    with_service_base(repo_path, |base| {
-        run_config_get(repo_path, base)
-    })
+    with_service_base(repo_path, |base| run_config_get(repo_path, base))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -1987,8 +2219,15 @@ pub fn set_opencode_service_settings(
 pub fn get_opencode_server_global_config(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
         Ok(json)
     })
 }
@@ -1996,9 +2235,7 @@ pub fn get_opencode_server_global_config(repo_path: &str) -> Result<Value, Strin
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn patch_opencode_server_config(repo_path: &str, patch: Value) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
-    with_service_base(repo_path, |base| {
-        run_config_patch(repo_path, base, &patch)
-    })
+    with_service_base(repo_path, |base| run_config_patch(repo_path, base, &patch))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2011,13 +2248,23 @@ pub fn set_opencode_server_current_model(repo_path: &str, model: &str) -> Result
     with_service_base(repo_path, |base| {
         // OpenCode behavior: current model lives under /config (not /global/config).
         let body = serde_json::json!({ "model": m }).to_string();
-        let raw = run_curl_json(repo_path, "PATCH", format!("{base}/config").as_str(), Some(body.as_str()), 20)?;
+        let raw = run_curl_json(
+            repo_path,
+            "PATCH",
+            format!("{base}/config").as_str(),
+            Some(body.as_str()),
+            20,
+        )?;
         serde_json::from_str(&raw).map_err(|e| format!("parse patch /config response failed: {e}"))
     })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn put_opencode_server_auth(repo_path: &str, provider_id: &str, key: &str) -> Result<bool, String> {
+pub fn put_opencode_server_auth(
+    repo_path: &str,
+    provider_id: &str,
+    key: &str,
+) -> Result<bool, String> {
     command_runner::validate_repo_path(repo_path)?;
     let pid = provider_id.trim();
     if pid.is_empty() {
@@ -2037,7 +2284,13 @@ pub fn put_opencode_server_auth(repo_path: &str, provider_id: &str, key: &str) -
             15,
         )?;
         // Re-enable provider if it was previously disabled by "disconnect".
-        if let Ok(global_raw) = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15) {
+        if let Ok(global_raw) = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        ) {
             if let Ok(global_json) = serde_json::from_str::<Value>(&global_raw) {
                 let disabled = global_json
                     .get("disabled_providers")
@@ -2054,7 +2307,13 @@ pub fn put_opencode_server_auth(repo_path: &str, provider_id: &str, key: &str) -
         }
         // Match OpenCode web behavior: dispose global state so auth/provider
         // changes are immediately reflected by /provider and /config views.
-        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/global/dispose").as_str(),
+            Some("{}"),
+            8,
+        );
         Ok(true)
     })
 }
@@ -2075,13 +2334,22 @@ pub fn delete_opencode_server_auth(repo_path: &str, provider_id: &str) -> Result
             15,
         )?;
         // Keep provider/auth state consistent for subsequent /provider reads.
-        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/global/dispose").as_str(),
+            Some("{}"),
+            8,
+        );
         Ok(true)
     })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -> Result<bool, String> {
+pub fn disconnect_opencode_server_provider(
+    repo_path: &str,
+    provider_id: &str,
+) -> Result<bool, String> {
     command_runner::validate_repo_path(repo_path)?;
     let pid = provider_id.trim();
     if pid.is_empty() {
@@ -2089,7 +2357,13 @@ pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -
     }
     with_service_base(repo_path, |base| {
         // Inspect latest provider state from server.
-        let state_raw = run_curl_json(repo_path, "GET", format!("{base}/provider").as_str(), None, 15)?;
+        let state_raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/provider").as_str(),
+            None,
+            15,
+        )?;
         let state_json: Value =
             serde_json::from_str(&state_raw).map_err(|e| format!("parse /provider failed: {e}"))?;
         let mut source = String::new();
@@ -2118,9 +2392,15 @@ pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -
         );
 
         // For config providers, disconnect also disables provider in global config.
-        let global_raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
-        let mut global_json: Value =
-            serde_json::from_str(&global_raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let global_raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let mut global_json: Value = serde_json::from_str(&global_raw)
+            .map_err(|e| format!("parse /global/config failed: {e}"))?;
         let has_provider_cfg = global_json
             .get("provider")
             .and_then(|v| v.as_object())
@@ -2147,8 +2427,8 @@ pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -
                     Value::Array(disabled.into_iter().map(Value::String).collect()),
                 );
             }
-            let body =
-                serde_json::to_string(&global_json).map_err(|e| format!("serialize global config failed: {e}"))?;
+            let body = serde_json::to_string(&global_json)
+                .map_err(|e| format!("serialize global config failed: {e}"))?;
             let _ = run_curl_json(
                 repo_path,
                 "PATCH",
@@ -2159,13 +2439,22 @@ pub fn disconnect_opencode_server_provider(repo_path: &str, provider_id: &str) -
         }
 
         // Dispose for immediate consistency in provider listing.
-        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/global/dispose").as_str(),
+            Some("{}"),
+            8,
+        );
         Ok(true)
     })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn set_opencode_model_config(repo_path: &str, model: &str) -> Result<OpencodeModelConfig, String> {
+pub fn set_opencode_model_config(
+    repo_path: &str,
+    model: &str,
+) -> Result<OpencodeModelConfig, String> {
     command_runner::validate_repo_path(repo_path)?;
     if model.trim().is_empty() {
         return Err("model must not be empty".to_string());
@@ -2181,7 +2470,13 @@ pub fn set_opencode_model_config(repo_path: &str, model: &str) -> Result<Opencod
             Some(body.as_str()),
             20,
         )?;
-        let _ = run_curl_json(repo_path, "POST", format!("{base}/global/dispose").as_str(), Some("{}"), 8);
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base}/global/dispose").as_str(),
+            Some("{}"),
+            8,
+        );
         Ok(OpencodeModelConfig {
             config_path: "server:/global/config".to_string(),
             configured_model: model.trim().to_string(),
@@ -2191,25 +2486,46 @@ pub fn set_opencode_model_config(repo_path: &str, model: &str) -> Result<Opencod
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn get_opencode_provider_config(repo_path: &str, provider: &str) -> Result<OpencodeProviderConfig, String> {
+pub fn get_opencode_provider_config(
+    repo_path: &str,
+    provider: &str,
+) -> Result<OpencodeProviderConfig, String> {
     command_runner::validate_repo_path(repo_path)?;
     if provider.trim().is_empty() {
         return Err("provider must not be empty".to_string());
     }
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/global/config").as_str(), None, 15)?;
-        let json: Value = serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
         let pnode = json
             .get("provider")
             .and_then(|v| v.get(provider.trim()))
             .cloned()
             .unwrap_or_else(|| Value::Object(Map::new()));
-        let options = pnode.get("options").cloned().unwrap_or_else(|| Value::Object(Map::new()));
+        let options = pnode
+            .get("options")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
 
         Ok(OpencodeProviderConfig {
             provider: provider.trim().to_string(),
-            npm: pnode.get("npm").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            name: pnode.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            npm: pnode
+                .get("npm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            name: pnode
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             base_url: options
                 .get("baseURL")
                 .and_then(|v| v.as_str())
@@ -2264,11 +2580,23 @@ pub fn get_opencode_provider_config(repo_path: &str, provider: &str) -> Result<O
                 .to_string(),
             timeout: options
                 .get("timeout")
-                .map(|v| if v.is_number() { v.to_string() } else { v.as_str().unwrap_or("").to_string() })
+                .map(|v| {
+                    if v.is_number() {
+                        v.to_string()
+                    } else {
+                        v.as_str().unwrap_or("").to_string()
+                    }
+                })
                 .unwrap_or_default(),
             chunk_timeout: options
                 .get("chunkTimeout")
-                .map(|v| if v.is_number() { v.to_string() } else { v.as_str().unwrap_or("").to_string() })
+                .map(|v| {
+                    if v.is_number() {
+                        v.to_string()
+                    } else {
+                        v.as_str().unwrap_or("").to_string()
+                    }
+                })
                 .unwrap_or_default(),
         })
     })
@@ -2305,7 +2633,11 @@ pub fn set_opencode_provider_config(
     let base = base_url.unwrap_or_default().trim().to_string();
     let key_raw = api_key.unwrap_or_default().trim().to_string();
     let key_env = parse_env_placeholder(&key_raw);
-    let key = if key_env.is_some() { String::new() } else { key_raw.clone() };
+    let key = if key_env.is_some() {
+        String::new()
+    } else {
+        key_raw.clone()
+    };
     let endpoint_v = endpoint.unwrap_or_default().trim().to_string();
     let region_v = region.unwrap_or_default().trim().to_string();
     let profile_v = profile.unwrap_or_default().trim().to_string();
@@ -2351,10 +2683,16 @@ pub fn set_opencode_provider_config(
             options.insert("location".to_string(), Value::String(location_v.clone()));
         }
         if !resource_name_v.is_empty() {
-            options.insert("resourceName".to_string(), Value::String(resource_name_v.clone()));
+            options.insert(
+                "resourceName".to_string(),
+                Value::String(resource_name_v.clone()),
+            );
         }
         if !enterprise_url_v.is_empty() {
-            options.insert("enterpriseUrl".to_string(), Value::String(enterprise_url_v.clone()));
+            options.insert(
+                "enterpriseUrl".to_string(),
+                Value::String(enterprise_url_v.clone()),
+            );
         }
         if !timeout_v.is_empty() {
             if let Ok(n) = timeout_v.parse::<i64>() {
@@ -2367,7 +2705,10 @@ pub fn set_opencode_provider_config(
             if let Ok(n) = chunk_timeout_v.parse::<i64>() {
                 options.insert("chunkTimeout".to_string(), Value::Number(n.into()));
             } else {
-                options.insert("chunkTimeout".to_string(), Value::String(chunk_timeout_v.clone()));
+                options.insert(
+                    "chunkTimeout".to_string(),
+                    Value::String(chunk_timeout_v.clone()),
+                );
             }
         }
 
@@ -2389,18 +2730,24 @@ pub fn set_opencode_provider_config(
             };
             let mut models_patch = Map::new();
             models_patch.insert(model_id_v.clone(), model_entry);
-            provider_node.insert(
-                "models".to_string(),
-                Value::Object(models_patch),
-            );
+            provider_node.insert("models".to_string(), Value::Object(models_patch));
         }
         if let Some(env_name) = key_env.as_deref() {
-            provider_node.insert("env".to_string(), Value::Array(vec![Value::String(env_name.to_string())]));
+            provider_node.insert(
+                "env".to_string(),
+                Value::Array(vec![Value::String(env_name.to_string())]),
+            );
         }
 
-        let global_raw = run_curl_json(repo_path, "GET", format!("{base_ep}/global/config").as_str(), None, 15)?;
-        let mut global_json: Value =
-            serde_json::from_str(&global_raw).map_err(|e| format!("parse /global/config failed: {e}"))?;
+        let global_raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base_ep}/global/config").as_str(),
+            None,
+            15,
+        )?;
+        let mut global_json: Value = serde_json::from_str(&global_raw)
+            .map_err(|e| format!("parse /global/config failed: {e}"))?;
 
         // If caller does not provide a model id, keep existing models for this provider.
         if model_id_v.is_empty() {
@@ -2431,16 +2778,26 @@ pub fn set_opencode_provider_config(
         if !global_json.is_object() {
             global_json = serde_json::json!({});
         }
-        let obj = global_json.as_object_mut().ok_or_else(|| "global config is not an object".to_string())?;
-        if !obj.contains_key("provider") || !obj.get("provider").unwrap_or(&Value::Null).is_object() {
+        let obj = global_json
+            .as_object_mut()
+            .ok_or_else(|| "global config is not an object".to_string())?;
+        if !obj.contains_key("provider") || !obj.get("provider").unwrap_or(&Value::Null).is_object()
+        {
             obj.insert("provider".to_string(), Value::Object(Map::new()));
         }
         if let Some(provider_obj) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
-            provider_obj.insert(provider.trim().to_string(), Value::Object(provider_node.clone()));
+            provider_obj.insert(
+                provider.trim().to_string(),
+                Value::Object(provider_node.clone()),
+            );
         }
-        obj.insert("disabled_providers".to_string(), Value::Array(filtered_disabled));
+        obj.insert(
+            "disabled_providers".to_string(),
+            Value::Array(filtered_disabled),
+        );
 
-        let body = serde_json::to_string(&global_json).map_err(|e| format!("serialize config patch failed: {e}"))?;
+        let body = serde_json::to_string(&global_json)
+            .map_err(|e| format!("serialize config patch failed: {e}"))?;
         let _ = run_curl_json(
             repo_path,
             "PATCH",
@@ -2454,7 +2811,13 @@ pub fn set_opencode_provider_config(
         } else {
             set_opencode_auth_api_key(provider, key.as_str())?;
         }
-        let _ = run_curl_json(repo_path, "POST", format!("{base_ep}/global/dispose").as_str(), Some("{}"), 8);
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            format!("{base_ep}/global/dispose").as_str(),
+            Some("{}"),
+            8,
+        );
         Ok(())
     })?;
 
@@ -2498,7 +2861,9 @@ pub fn run_opencode_models(repo_path: &str, provider: Option<String>) -> Result<
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn get_opencode_models_dev_catalog(repo_path: &str) -> Result<Vec<OpencodeCatalogProvider>, String> {
+pub fn get_opencode_models_dev_catalog(
+    repo_path: &str,
+) -> Result<Vec<OpencodeCatalogProvider>, String> {
     if let Some(cache_path) = opencode_models_cache_path() {
         if let Ok(raw) = fs::read_to_string(&cache_path) {
             if let Ok(parsed) = parse_models_dev_catalog(&raw) {
@@ -2534,7 +2899,11 @@ pub fn run_opencode_stats(repo_path: &str) -> Result<String, String> {
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn test_opencode_model(repo_path: &str, model: &str, message: Option<String>) -> Result<String, String> {
+pub fn test_opencode_model(
+    repo_path: &str,
+    model: &str,
+    message: Option<String>,
+) -> Result<String, String> {
     if model.trim().is_empty() {
         return Err("model must not be empty".to_string());
     }
@@ -2575,7 +2944,14 @@ pub fn run_opencode_prompt(
     }
     command_runner::run_and_capture_in_dir_with_timeout(
         "opencode",
-        &["run", prompt, "--model", model_trimmed.as_str(), "--format", "json"],
+        &[
+            "run",
+            prompt,
+            "--model",
+            model_trimmed.as_str(),
+            "--format",
+            "json",
+        ],
         repo_path,
         120,
     )
@@ -2610,7 +2986,8 @@ pub fn run_opencode_prompt_stream(
         } else {
             Some(session_id.as_str())
         };
-        let stream_res = stream_prompt_via_opencode_service(&app, &repo, &prompt, &model, sid_opt, &req);
+        let stream_res =
+            stream_prompt_via_opencode_service(&app, &repo, &prompt, &model, sid_opt, &req);
         match stream_res {
             Ok(()) => emit_stream_event(&app, &req, "done", String::new()),
             Err(stream_err) => {

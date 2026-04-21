@@ -12,13 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "giteam",
+        "title": "",
         "width": 1720,
         "height": 980,
         "minWidth": 1280,
         "minHeight": 820,
         "maximized": true,
-        "backgroundColor": "#1E1E1E"
+        "backgroundColor": "#EEF1F4"
       }
     ]
   },

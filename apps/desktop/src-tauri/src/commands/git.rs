@@ -3,6 +3,39 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitWorktreeEntry {
+    pub path: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeOverview {
+    pub branch: String,
+    pub tracking: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub clean: bool,
+    pub staged_count: u32,
+    pub unstaged_count: u32,
+    pub untracked_count: u32,
+    pub entries: Vec<GitWorktreeEntry>,
+    pub raw: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitUserIdentity {
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitCommitSummary {
     pub sha: String,
     pub author: String,
@@ -305,6 +338,151 @@ pub fn run_git_commit_file_patch(
         &["show", "--format=", "--patch", commit_sha, "--", file_path],
         repo_path,
     )
+}
+
+#[tauri::command]
+pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview, String> {
+    let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
+    let mut branch = String::new();
+    let mut tracking = String::new();
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    let mut staged_count = 0u32;
+    let mut unstaged_count = 0u32;
+    let mut untracked_count = 0u32;
+    let mut entries = Vec::new();
+
+    for (idx, line) in raw.lines().enumerate() {
+        if idx == 0 && line.starts_with("## ") {
+            let head = line.trim_start_matches("## ").trim();
+            let mut branch_part = head;
+            let mut meta_part = "";
+            if let Some((lhs, rhs)) = head.split_once("...") {
+                branch_part = lhs.trim();
+                meta_part = rhs.trim();
+            }
+            branch = branch_part.to_string();
+            if !meta_part.is_empty() {
+                if let Some((tracking_name, rest)) = meta_part.split_once(' ') {
+                    tracking = tracking_name.trim().to_string();
+                    let meta = rest.trim();
+                    if let Some(start) = meta.find('[') {
+                        if let Some(end) = meta.rfind(']') {
+                            let body = &meta[start + 1..end];
+                            for item in body.split(',') {
+                                let it = item.trim();
+                                if let Some(v) = it.strip_prefix("ahead ") {
+                                    ahead = v.trim().parse::<u32>().unwrap_or(0);
+                                } else if let Some(v) = it.strip_prefix("behind ") {
+                                    behind = v.trim().parse::<u32>().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    tracking = meta_part.to_string();
+                }
+            }
+            continue;
+        }
+
+        let index_status = line.chars().next().unwrap_or(' ');
+        let worktree_status = line.chars().nth(1).unwrap_or(' ');
+        let path = line.get(3..).unwrap_or("").trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let staged = index_status != ' ' && index_status != '?';
+        let unstaged = worktree_status != ' ' && worktree_status != '?';
+        let untracked = index_status == '?' || worktree_status == '?';
+        if staged {
+            staged_count += 1;
+        }
+        if unstaged {
+            unstaged_count += 1;
+        }
+        if untracked {
+            untracked_count += 1;
+        }
+        entries.push(GitWorktreeEntry {
+            path,
+            index_status: index_status.to_string(),
+            worktree_status: worktree_status.to_string(),
+            staged,
+            unstaged,
+            untracked,
+        });
+    }
+
+    if branch.is_empty() {
+        branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+    }
+
+    Ok(GitWorktreeOverview {
+        branch,
+        tracking,
+        ahead,
+        behind,
+        clean: entries.is_empty(),
+        staged_count,
+        unstaged_count,
+        untracked_count,
+        entries,
+        raw,
+    })
+}
+
+#[tauri::command]
+pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<String, String> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err("file path is empty".to_string());
+    }
+    if path.contains('\n') || path.contains('\r') {
+        return Err("file path contains invalid line breaks".to_string());
+    }
+
+    let staged = run_git(&["diff", "--cached", "--", path], repo_path)?;
+    let unstaged = run_git(&["diff", "--", path], repo_path)?;
+    let mut parts = Vec::new();
+    if !staged.trim().is_empty() {
+        parts.push(format!("# Staged\n\n{}", staged.trim_end()));
+    }
+    if !unstaged.trim().is_empty() {
+        parts.push(format!("# Working Tree\n\n{}", unstaged.trim_end()));
+    }
+    if parts.is_empty() {
+        return Ok("No staged or unstaged patch available for this file.".to_string());
+    }
+    Ok(parts.join("\n\n"))
+}
+
+#[tauri::command]
+pub fn run_repo_terminal_command(repo_path: &str, command: &str) -> Result<String, String> {
+    let script = command.trim();
+    if script.is_empty() {
+        return Err("command is empty".to_string());
+    }
+    if script.contains('\0') {
+        return Err("command contains invalid null byte".to_string());
+    }
+    command_runner::run_and_capture_in_dir_with_timeout("/bin/zsh", &["-lc", script], repo_path, 30)
+}
+
+#[tauri::command]
+pub fn run_git_user_identity(repo_path: &str) -> Result<GitUserIdentity, String> {
+    let name = run_git(&["config", "user.name"], repo_path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let email = run_git(&["config", "user.email"], repo_path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok(GitUserIdentity { name, email })
 }
 
 #[cfg(test)]

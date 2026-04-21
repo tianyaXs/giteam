@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   FlatList,
+  Image,
   InteractionManager,
   LayoutChangeEvent,
   PanResponder,
@@ -44,6 +45,7 @@ import {
   getMessages,
   getOpencodeConfig,
   getProjects,
+  getSessionStatus,
   getSessions,
   health,
   NO_AUTH_TOKEN,
@@ -69,7 +71,7 @@ import {
   resolvePortFromSeed
 } from './src/discovery';
 import type { DiscoveredDevice } from './src/discovery';
-import type { MobileChatMessage, MobileRenderedTurn } from './src/types';
+import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from './src/types';
 
 // keys + storage moved to src/storage/*
 
@@ -246,7 +248,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           return (
             <View key={m.id} style={styles.bubbleAssistantWrap}>
               <View style={styles.bubbleAssistant}>
-                <View>{renderMarkdown(toText(m.text || '...'), 'assistant')}</View>
+                <View style={styles.bubbleContent}>{renderMarkdown(toText(m.text || '...'), 'assistant')}</View>
               </View>
             </View>
           );
@@ -293,17 +295,37 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             </View>
           );
         }
+        if (item.kind === 'divider') {
+          return (
+            <View key={item.divider.id} style={styles.dividerWrap}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerLabel}>{toText(item.divider.label || '会话已压缩')}</Text>
+              <View style={styles.dividerLine} />
+            </View>
+          );
+        }
+        if (item.kind === 'error') {
+          return (
+            <View key={item.error.id} style={styles.errorWrap}>
+              <View style={styles.errorCard}>
+                <Text style={styles.errorTitle}>{toText(item.error.title || 'Run failed')}</Text>
+                {toText(item.error.code) ? <Text style={styles.errorCode}>{toText(item.error.code)}</Text> : null}
+                <View style={styles.bubbleContent}>{renderMarkdown(toText(item.error.text || 'Unknown error'), 'assistant')}</View>
+              </View>
+            </View>
+          );
+        }
         const keepOpen = !streaming || isLastTurn;
         return (
-          <View key={item.card.id} style={styles.thinkWrap}>
-            <View style={styles.thinkCard}>
-              <Text style={styles.thinkTitle}>{item.card.title}</Text>
-              {keepOpen ? (
-                <View>{renderMarkdown(toText(item.card.text), 'think')}</View>
-              ) : (
-                <Text style={styles.thinkCollapsed}>{toText(item.card.text)}</Text>
-              )}
-            </View>
+            <View key={item.card.id} style={styles.thinkWrap}>
+              <View style={styles.thinkCard}>
+                <Text style={styles.thinkTitle}>{item.card.title}</Text>
+                {keepOpen ? (
+                  <View style={styles.bubbleContent}>{renderMarkdown(toText(item.card.text), 'think')}</View>
+                ) : (
+                  <Text style={styles.thinkCollapsed}>{toText(item.card.text)}</Text>
+                )}
+              </View>
           </View>
         );
       })}
@@ -538,6 +560,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [messages, setMessages] = useState<MobileChatMessage[]>([]);
   const [renderedTurns, setRenderedTurns] = useState<MobileRenderedTurn[]>([]);
+  const [sessionStatusMap, setSessionStatusMap] = useState<Record<string, SessionStatusInfo>>({});
   const [streaming, setStreaming] = useState(false);
   const [thinkingPulse, setThinkingPulse] = useState(false);
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
@@ -1019,6 +1042,7 @@ export default function App() {
       fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
       jumpToLatest: true
     });
+    void syncSessionStatus(sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, authed, sessionId, repoPath]);
 
@@ -1050,13 +1074,34 @@ export default function App() {
     setStreaming(false);
   }
 
+  async function syncSessionStatus(targetSessionId?: string) {
+    const sid = toText(targetSessionId || sessionIdRef.current).trim();
+    if (!authed || !serverUrl || !repoPath) return undefined;
+    try {
+      const next = await getSessionStatus({
+        baseUrl: serverUrl,
+        token,
+        repoPath
+      });
+      setSessionStatusMap(next);
+      if (!sid) return undefined;
+      return next[sid] || { type: 'idle' as const };
+    } catch {
+      return undefined;
+    }
+  }
+
   function setActiveSession(nextSessionId: string) {
     const sid = toText(nextSessionId).trim();
     sessionIdRef.current = sid;
     setSessionId(sid);
     // Switching session should not auto-scroll with animation.
     allowAutoScrollRef.current = false;
-    if (!sid) return;
+    if (!sid) {
+      setSessionStatusMap({});
+      return;
+    }
+    void syncSessionStatus(sid);
   }
 
   function triggerPulse(anim: Animated.Value) {
@@ -1400,6 +1445,7 @@ export default function App() {
         before,
         reason: mode
       });
+      const statusInfo = await syncSessionStatus(targetSessionId);
       if (!res || targetSessionId !== sessionIdRef.current) return undefined;
 
       const nextVisibleTurnCount = computeVisibleTurnCount({
@@ -1421,7 +1467,13 @@ export default function App() {
         setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
         setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
       }
-      if (!rendered.writing) {
+      const latestTurnHasError = (() => {
+        const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
+        if (!lastTurn) return false;
+        return lastTurn.items.some((item) => item.kind === 'error');
+      })();
+      const statusIdle = !statusInfo || statusInfo.type === 'idle';
+      if ((!rendered.writing && statusIdle) || latestTurnHasError) {
         setStreaming(false);
         setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
       }
@@ -1665,6 +1717,7 @@ export default function App() {
       if (now - lastSyncAt < 700) return;
       lastSyncAt = now;
       void syncSessionMessages(targetSessionId, { limit: INITIAL_SESSION_LIMIT });
+      void syncSessionStatus(targetSessionId);
     };
 
     es.addEventListener('open', () => {
@@ -1673,6 +1726,7 @@ export default function App() {
       syncFromServer();
     });
     es.addEventListener('error', (e: any) => {
+      syncFromServer();
       setStreaming(false);
       try {
         const detail = typeof e?.data === 'string' ? e.data : JSON.stringify(e);
@@ -1708,14 +1762,49 @@ export default function App() {
       pushConnLog('SSE end');
       syncFromServer();
       setStreaming(false);
+      setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
       setStatus('本轮回复完成');
     });
 
     streamRef.current = es;
   }
 
+  const latestTurnMeta = useMemo(() => {
+    const lastTurn = renderedTurns[renderedTurns.length - 1];
+    if (!lastTurn) {
+      return {
+        hasError: false
+      };
+    }
+    let hasError = false;
+    for (const item of lastTurn.items) {
+      if (item.kind === 'error') hasError = true;
+    }
+    return { hasError };
+  }, [renderedTurns]);
+
+  const currentSessionStatus = useMemo(() => {
+    const sid = toText(sessionId).trim();
+    if (!sid) return { type: 'idle' as const };
+    return sessionStatusMap[sid] || { type: 'idle' as const };
+  }, [sessionId, sessionStatusMap]);
+
+  const sessionWorking = useMemo(() => {
+    if (latestTurnMeta.hasError) return false;
+    if (currentSessionStatus.type === 'busy' || currentSessionStatus.type === 'retry') return true;
+    return streaming;
+  }, [currentSessionStatus, latestTurnMeta.hasError, streaming]);
+
   const showThinkingPlaceholder = useMemo(() => {
-    if (!streaming) return false;
+    if (!sessionWorking) return false;
+    if (currentSessionStatus.type === 'retry') return false;
+    for (let turnIdx = renderedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
+      const turn = renderedTurns[turnIdx];
+      for (let itemIdx = turn.items.length - 1; itemIdx >= 0; itemIdx -= 1) {
+        if (turn.items[itemIdx].kind === 'error') return false;
+      }
+      if (turn.userMessage) break;
+    }
     if (messages.length <= 0) return true;
     let lastUserIdx = -1;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -1729,7 +1818,7 @@ export default function App() {
       if (messages[i].role === 'assistant' && messages[i].text.trim()) return false;
     }
     return true;
-  }, [messages, streaming]);
+  }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
 
   async function connectWithAddressAndCode(
     inputBaseUrl: string,
@@ -2616,21 +2705,20 @@ export default function App() {
         <StatusBar barStyle="dark-content" />
 
       <View style={styles.topBar}>
-        <Pressable style={styles.iconBtn} onPress={() => openDrawer('left')}>
-          <Text style={styles.iconTxt}>≡</Text>
-        </Pressable>
+        <View style={styles.topSideSlot}>
+          <Pressable style={styles.iconBtn} onPress={() => openDrawer('left')}>
+            <Text style={styles.iconTxt}>≡</Text>
+          </Pressable>
+        </View>
         <Pressable style={styles.topBrand} onPress={workspacePickerOpen ? closeWorkspacePicker : openWorkspacePicker}>
           <Text style={styles.topTitle}>Giteam</Text>
           <Text numberOfLines={1} style={styles.topWorkspaceText}>
             {(repoPath ? projectNameFromPath(repoPath) : '选择工作空间') + ' ▾'}
           </Text>
         </Pressable>
-        <View style={styles.topRightGroup}>
-          <Pressable style={styles.iconBtn} onPress={onNewSession}>
-            <Text style={styles.iconTxt}>＋</Text>
-          </Pressable>
-          <Pressable style={styles.iconBtn} onPress={onResetAuth}>
-            <Text style={styles.iconTxt}>↻</Text>
+        <View style={styles.topSideSlotRight}>
+          <Pressable style={styles.toolBtn} onPress={() => openDrawer('right')}>
+            <Image source={require('./src/assets/icons/tool.png')} style={styles.toolBtnImage} resizeMode="contain" />
           </Pressable>
         </View>
       </View>
@@ -2703,12 +2791,12 @@ export default function App() {
             initialNumToRender={3}
             maxToRenderPerBatch={3}
             windowSize={4}
-            removeClippedSubviews={Platform.OS !== 'web'}
+            removeClippedSubviews={Platform.OS === 'web'}
             alwaysBounceVertical
             bounces
             overScrollMode="always"
             scrollEventThrottle={16}
-            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+            maintainVisibleContentPosition={Platform.OS === 'ios' ? { minIndexForVisible: 0 } : undefined}
             onScrollBeginDrag={() => {
               // 用户手势优先：立即取消会话切换后的“强制回到底部”窗口。
               forceScrollToLatestUntilRef.current = 0;
@@ -2815,15 +2903,15 @@ export default function App() {
               placeholderTextColor="#9aa5b3"
               multiline
           />
-          <Pressable
-            style={streaming || busy ? styles.actionBtnStop : styles.actionBtnSend}
-            onPress={streaming || busy ? onAbort : () => void onSendPrompt()}
-            disabled={streaming || busy ? !toText(sessionIdRef.current).trim() : !prompt.trim()}
-          >
-            <Text style={streaming || busy ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
-              {streaming || busy ? '■' : '→'}
-            </Text>
-          </Pressable>
+            <Pressable
+              style={sessionWorking ? styles.actionBtnStop : styles.actionBtnSend}
+              onPress={sessionWorking ? onAbort : () => void onSendPrompt()}
+              disabled={sessionWorking ? !toText(sessionIdRef.current).trim() : busy || !prompt.trim()}
+            >
+              <Text style={sessionWorking ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
+                {sessionWorking ? '■' : '→'}
+              </Text>
+            </Pressable>
         </View>
       </View>
 
@@ -2899,7 +2987,18 @@ export default function App() {
               ]}
             >
               <View style={styles.drawerHead}>
-                <Text style={styles.drawerTitle}>模型</Text>
+                <View style={styles.drawerHeadTop}>
+                  <Text style={styles.drawerTitle}>模型</Text>
+                  <Pressable
+                    style={styles.drawerLogoutBtn}
+                  onPress={() => {
+                      closeDrawer();
+                      onResetAuth();
+                    }}
+                  >
+                    <Image source={require('./src/assets/icons/logout.png')} style={styles.drawerLogoutImage} resizeMode="contain" />
+                  </Pressable>
+                </View>
                 <Text style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '请选择可用模型')}</Text>
               </View>
               <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
@@ -3258,12 +3357,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between'
+    justifyContent: 'space-between',
+    position: 'relative'
   },
-  topBrand: { flexDirection: 'column', alignItems: 'center', gap: 1, maxWidth: '60%' },
+  topSideSlot: { width: 48, alignItems: 'flex-start', zIndex: 1 },
+  topSideSlotRight: { width: 48, alignItems: 'flex-end', zIndex: 1 },
+  topBrand: {
+    position: 'absolute',
+    left: 68,
+    right: 68,
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 1
+  },
   topTitle: { fontSize: 20, color: '#202734', fontWeight: '700' },
   topWorkspaceText: { fontSize: 11, color: '#7a8798' },
-  topRightGroup: { flexDirection: 'row', gap: 6 },
+  toolBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef1f5'
+  },
+  toolBtnImage: { width: 16, height: 16 },
   workspaceMask: {
     position: 'absolute',
     top: 58,
@@ -3436,12 +3553,18 @@ const styles = StyleSheet.create({
   historyHintText: { color: '#7c8aa0', fontSize: 12 },
   thinkWrap: { width: '100%', alignItems: 'flex-start' },
   contextWrap: { width: '100%', alignItems: 'flex-start' },
+  dividerWrap: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: '#d8dee8' },
+  dividerLabel: { color: '#9aa4b2', fontSize: 11 },
+  errorWrap: { width: '100%', alignItems: 'flex-start' },
   contextCard: {
+    width: '96%',
     maxWidth: '96%',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e5eaf2',
     backgroundColor: '#f9fbff',
+    overflow: 'hidden',
     paddingVertical: 8,
     paddingHorizontal: 10,
     gap: 6
@@ -3454,11 +3577,13 @@ const styles = StyleSheet.create({
   contextToolDetail: { color: '#73839a', fontSize: 11, flex: 1 },
   eventWrap: { width: '100%', alignItems: 'flex-start' },
   eventCard: {
+    width: '96%',
     maxWidth: '96%',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e9edf3',
     backgroundColor: '#ffffff',
+    overflow: 'hidden',
     paddingVertical: 8,
     paddingHorizontal: 10,
     gap: 6
@@ -3472,12 +3597,28 @@ const styles = StyleSheet.create({
   eventDetail: { color: '#667487', fontSize: 12, lineHeight: 18 },
   eventMeta: { color: '#667a94', fontSize: 11 },
   eventOutput: { color: '#4f5e72', fontSize: 12, lineHeight: 18 },
+  errorCard: {
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#f0c9c9',
+    backgroundColor: '#fff5f5',
+    overflow: 'hidden',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    gap: 6
+  },
+  errorTitle: { color: '#8e2f2f', fontSize: 13, fontWeight: '700' },
+  errorCode: { color: '#b35656', fontSize: 11, fontWeight: '600' },
   thinkCard: {
+    width: '92%',
     maxWidth: '92%',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e9edf3',
     backgroundColor: '#f9fbff',
+    overflow: 'hidden',
     paddingVertical: 8,
     paddingHorizontal: 10,
     gap: 4
@@ -3519,9 +3660,11 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 9,
     paddingHorizontal: 12,
-    backgroundColor: '#1f2937'
+    backgroundColor: '#1f2937',
+    overflow: 'hidden'
   },
   bubbleAssistant: {
+    width: '84%',
     maxWidth: '84%',
     alignSelf: 'flex-start',
     flexShrink: 1,
@@ -3530,8 +3673,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#e6e9ee'
+    borderColor: '#e6e9ee',
+    overflow: 'hidden'
   },
+  bubbleContent: { width: '100%', flexShrink: 1, minWidth: 0 },
   bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },
   bubbleAssistantText: { color: '#2f3948', lineHeight: 20 },
 
@@ -3631,6 +3776,18 @@ const styles = StyleSheet.create({
     elevation: 8
   },
   drawerHead: { gap: 10, marginBottom: 12 },
+  drawerHeadTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+  drawerLogoutBtn: {
+    width: 32,
+    height: 32,
+    marginTop: -12,
+    marginRight: -6,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef1f5'
+  },
+  drawerLogoutImage: { width: 16, height: 16 },
   drawerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   drawerMetaChip: {
     borderRadius: 999,
