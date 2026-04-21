@@ -932,7 +932,7 @@ body {
 
 .opencode-msg {
   width: auto;
-  max-width: min(92%, 720px);
+  max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--line) 44%, transparent);
   border-radius: 12px;
   padding: 9px 12px;
@@ -960,6 +960,7 @@ body {
 
 .opencode-msg-assistant {
   align-self: flex-start;
+  margin-left: 12px;
   margin-right: 24px;
   color: var(--text);
   background: color-mix(in srgb, var(--bg-panel) 98%, var(--bg));
@@ -2420,8 +2421,12 @@ body {
   background: var(--bg);
 }
 
+:root {
+  --gt-titlebar-safe-left: 92px;
+}
+
 .gt-sidebar-inner {
-  padding: 12px 14px;
+  padding: 42px 14px 12px;
   gap: 12px;
   background: transparent;
 }
@@ -2594,10 +2599,11 @@ body {
 }
 
 .gt-user-settings {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
   color: #7e7a74;
+  font-size: 16px;
   cursor: pointer;
 }
 
@@ -2709,13 +2715,10 @@ body {
 }
 
 .gt-center-pane-left-closed .gt-chat-stream,
-.gt-center-pane-left-closed .gt-chat-composer-wrap {
-  max-width: 1040px;
-}
-
+.gt-center-pane-left-closed .gt-chat-composer-wrap,
 .gt-center-pane-wide .gt-chat-stream,
 .gt-center-pane-wide .gt-chat-composer-wrap {
-  max-width: 1120px;
+  max-width: 700px;
 }
 
 .gt-chat-main.is-empty .opencode-thread {
@@ -2798,7 +2801,7 @@ body {
   display: flex;
   justify-content: flex-start;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 12px 0 16px;
   align-self: stretch;
   min-height: 40px;
   box-sizing: border-box;
@@ -2876,7 +2879,7 @@ body {
   align-items: center;
   min-height: 40px;
   margin: 0;
-  padding: 6px 16px 6px 44px;
+  padding: 6px 16px 6px calc(var(--gt-titlebar-safe-left) + 28px);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
 }
 
@@ -2895,10 +2898,10 @@ body {
 }
 
 .gt-shell-toggle {
-  position: absolute;
+  position: fixed;
   top: 10px;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 24px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -2907,9 +2910,11 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  z-index: 5;
+  z-index: 1001;
   box-shadow: none;
   padding: 0;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 
 .gt-shell-toggle:hover {
@@ -2921,14 +2926,23 @@ body {
 .opencode-composer-send svg {
   width: 16px;
   height: 16px;
+  pointer-events: none;
 }
 
 .gt-shell-toggle-left {
-  left: 12px;
+  left: var(--gt-titlebar-safe-left);
 }
 
 .gt-shell-toggle-right {
   right: 12px;
+}
+
+.gt-shell-toggle-left.is-sidebar-open {
+  color: #5f6772;
+}
+
+.gt-shell-toggle-left.is-sidebar-closed {
+  color: #7c8692;
 }
 
 .gt-shell-toggle-right svg {
@@ -3047,7 +3061,7 @@ body {
   width: 100%;
   flex: 1;
   min-width: 0;
-  padding-left: 0;
+  padding-left: 16px;
   padding-right: 12px;
   border-left: 0;
 }
@@ -3606,11 +3620,11 @@ button {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(8, 11, 18, 0.5);
+  background: rgba(8, 11, 18, 0.58);
   display: grid;
   place-items: center;
-  z-index: 50;
-  backdrop-filter: blur(8px);
+  z-index: 2000;
+  backdrop-filter: none;
   animation: fade-in 180ms ease-out;
 }
 

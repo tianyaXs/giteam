@@ -4810,7 +4810,7 @@ export function App() {
 
   const editor = (
     <div className="wb-editor-inner gt-editor-shell">
-      <button className="gt-shell-toggle gt-shell-toggle-left" title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
+      <button className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
         <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
       </button>
       <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={() => setRightDrawerOpen((v) => !v)}>
