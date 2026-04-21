@@ -1494,6 +1494,7 @@ export function App() {
   const [sidebarOpencodeSessionsByRepo, setSidebarOpencodeSessionsByRepo] = useState<Record<string, OpencodeChatSession[]>>({});
   const [sidebarOpencodeSessionFetchLimitByRepo, setSidebarOpencodeSessionFetchLimitByRepo] = useState<Record<string, number>>({});
   const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
+  const [sidebarOpencodeSessionHasMoreByRepo, setSidebarOpencodeSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
   const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
@@ -1624,9 +1625,7 @@ export function App() {
   }
 
   function hasMoreRepoSessions(repoId: string): boolean {
-    const sessions = getRepoSessionsForSidebar(repoId);
-    const limit = getRepoSessionFetchLimit(repoId);
-    return sessions.length >= limit;
+    return Boolean(sidebarOpencodeSessionHasMoreByRepo[repoId.trim()]);
   }
 
   function isRepoSessionsLoading(repoId: string): boolean {
@@ -1853,11 +1852,14 @@ export function App() {
     sidebarOpencodeSessionRequestSeqRef.current[repoId] = requestSeq;
     setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
     try {
-      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit });
+      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit: limit + 1 });
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
-      const mapped = sortOpencodeSessionSummaries(rows || []).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+      const sorted = sortOpencodeSessionSummaries(rows || []);
+      const hasMore = sorted.length > limit;
+      const mapped = sorted.slice(0, limit).map((s, i) => opencodeSessionFromSummary(s, i + 1));
       setSidebarOpencodeSessionsByRepo((prev) => ({ ...prev, [repoId]: mapped }));
       setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
+      setSidebarOpencodeSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
     } finally {
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
         setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: false }));
@@ -3920,6 +3922,15 @@ export function App() {
     if (!selectedRepo?.id) return;
     setExpandedProjectIds((prev) => (prev.includes(selectedRepo.id) ? prev : [...prev, selectedRepo.id]));
   }, [selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    const repoId = selectedRepo.id.trim();
+    if (!repoId) return;
+    const alreadyLoaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepo, repoId);
+    if (alreadyLoaded) return;
+    void refreshSidebarRepoSessions(selectedRepo).catch((e) => setError(String(e)));
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, sidebarOpencodeSessionsByRepo]);
 
   useEffect(() => {
     if (!selectedCommit) return;
