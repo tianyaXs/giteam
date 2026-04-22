@@ -252,8 +252,10 @@ type OpencodeChatSession = {
   createdAt: number;
   updatedAt: number;
   messages: OpencodeChatMessage[];
-  visibleCount: number;
+  turnStart: number;
   loaded: boolean;
+  nextCursor?: string;
+  hasMore?: boolean;
 };
 type OpencodeSessionSummary = {
   id: string;
@@ -278,6 +280,24 @@ type TerminalEntry = {
   output: string;
   createdAt: number;
   ok: boolean;
+};
+
+type OpencodeMessageWindowCacheEntry = {
+  limit: number;
+  mapped: OpencodeChatMessage[];
+  turnCount: number;
+  hasMore: boolean;
+  fetchedAt: number;
+};
+
+type OpencodeMessagePageCacheEntry = {
+  before: string;
+  limit: number;
+  items: OpencodeChatMessage[];
+  detailsById: Record<string, OpencodeDetailedMessage>;
+  nextCursor?: string;
+  hasMore: boolean;
+  fetchedAt: number;
 };
 
 const EMPTY_WORKTREE: GitWorktreeOverview = {
@@ -489,6 +509,7 @@ function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | unde
   }
   return out;
 }
+
 type OnboardingStep = {
   title: string;
   body: string;
@@ -502,9 +523,13 @@ const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v1";
 const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
-const OPENCODE_PAGE_SIZE = 24;
+const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
 const OPENCODE_RECENT_VISIBLE = 2;
+const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
+const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
+const OPENCODE_TOP_LOAD_RATIO = 0.3;
+const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
 const OPENCODE_SESSION_TITLE_MAX = 42;
 
 const EMPTY_DEP = (name: "git" | "entire" | "opencode" | "giteam", installHint: string): RuntimeDependencyStatus => ({
@@ -644,8 +669,9 @@ function newOpencodeSession(seedPrompt?: string, indexHint?: number): OpencodeCh
     createdAt: now,
     updatedAt: now,
     messages: [],
-    visibleCount: OPENCODE_RECENT_VISIBLE,
-    loaded: true
+    turnStart: 0,
+    loaded: true,
+    nextCursor: undefined
   };
 }
 
@@ -656,8 +682,45 @@ function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?:
     createdAt: summary.createdAt || Date.now(),
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
     messages: [],
-    visibleCount: OPENCODE_RECENT_VISIBLE,
-    loaded: false
+    turnStart: 0,
+    loaded: false,
+    nextCursor: undefined
+  };
+}
+
+function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let currentStart = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    const msg = messages[i];
+    if (msg?.role === "user") {
+      if (i > currentStart) {
+        out.push({ start: currentStart, end: i });
+      }
+      currentStart = i;
+    }
+  }
+  if (messages.length > currentStart) {
+    out.push({ start: currentStart, end: messages.length });
+  }
+  return out;
+}
+
+function getInitialOpencodeTurnStart(totalTurns: number) {
+  return totalTurns > OPENCODE_RECENT_VISIBLE ? totalTurns - OPENCODE_RECENT_VISIBLE : 0;
+}
+
+function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[], turnStart: number) {
+  const turns = buildOpencodeTurnRanges(messages);
+  if (turns.length === 0) {
+    return { visible: [] as OpencodeChatMessage[], hidden: [] as OpencodeChatMessage[], totalTurns: turns.length };
+  }
+  const startTurnIndex = Math.max(0, Math.min(Math.floor(turnStart || 0), turns.length - 1));
+  const startMessageIndex = turns[startTurnIndex]?.start ?? 0;
+  return {
+    visible: messages.slice(startMessageIndex),
+    hidden: messages.slice(0, startMessageIndex),
+    totalTurns: turns.length
   };
 }
 
@@ -1508,11 +1571,15 @@ export function App() {
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const opencodeModelPickerRef = useRef<HTMLDivElement | null>(null);
-  const opencodePrevCountRef = useRef(0);
   const opencodeLoadingOlderRef = useRef(false);
   const opencodePrevScrollHeightRef = useRef(0);
   const opencodePrevActiveSessionIdRef = useRef("");
+  const opencodePendingAnchorSessionIdRef = useRef("");
+  const opencodeStickToBottomSessionRef = useRef("");
   const opencodeSessionsRepoIdRef = useRef("");
+  const opencodeMessageWindowCacheRef = useRef<Record<string, OpencodeMessageWindowCacheEntry[]>>({});
+  const opencodeMessagePageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
+  const opencodeMessagePageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
@@ -1602,7 +1669,8 @@ export function App() {
     opencodeModelsByProvider
   ]);
   const opencodeMessages = activeOpencodeSession?.messages ?? [];
-  const opencodeVisibleCount = activeOpencodeSession?.visibleCount ?? OPENCODE_RECENT_VISIBLE;
+  const opencodeTurnStart = activeOpencodeSession?.turnStart ?? 0;
+  const opencodeSessionLoading = Boolean(activeOpencodeSessionId && activeOpencodeSession && !activeOpencodeSession.loaded);
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
   function getRepoSessionFetchLimit(repoId: string): number {
@@ -1842,6 +1910,136 @@ export function App() {
     setOpencodeSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
   }
 
+  function getOpencodeMessageCacheKey(repoPathValue: string, sessionId: string) {
+    return `${repoPathValue.trim()}\n${sessionId.trim()}`;
+  }
+
+  function getOpencodeMessagePageCacheKey(repoPathValue: string, sessionId: string, before: string, limit: number) {
+    return `${getOpencodeMessageCacheKey(repoPathValue, sessionId)}\n${before}\n${limit}`;
+  }
+
+  function getOpencodeMessageCacheEntries(repoPathValue: string, sessionId: string) {
+    return opencodeMessageWindowCacheRef.current[getOpencodeMessageCacheKey(repoPathValue, sessionId)] || [];
+  }
+
+  function getBestOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, limit: number) {
+    const entries = getOpencodeMessageCacheEntries(repoPathValue, sessionId);
+    const need = Math.max(2, limit);
+    return entries.find((entry) => entry.limit >= need) || null;
+  }
+
+  function setOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, entry: OpencodeMessageWindowCacheEntry) {
+    const cacheKey = getOpencodeMessageCacheKey(repoPathValue, sessionId);
+    const prev = opencodeMessageWindowCacheRef.current[cacheKey] || [];
+    const next = [...prev.filter((item) => item.limit !== entry.limit), entry]
+      .sort((a, b) => a.limit - b.limit)
+      .slice(-6);
+    opencodeMessageWindowCacheRef.current = {
+      ...opencodeMessageWindowCacheRef.current,
+      [cacheKey]: next
+    };
+  }
+
+  function setOpencodeMessagePageCacheEntry(repoPathValue: string, sessionId: string, entry: OpencodeMessagePageCacheEntry) {
+    const key = getOpencodeMessagePageCacheKey(repoPathValue, sessionId, entry.before, entry.limit);
+    opencodeMessagePageCacheRef.current = {
+      ...opencodeMessagePageCacheRef.current,
+      [key]: entry
+    };
+  }
+
+  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number) {
+    const id = sessionId.trim();
+    const safeBefore = before.trim();
+    const safeLimit = Math.max(2, limit);
+    const cacheKey = getOpencodeMessagePageCacheKey(repoPath, id, safeBefore, safeLimit);
+    const cached = opencodeMessagePageCacheRef.current[cacheKey];
+    if (cached) {
+      appendOpencodeDebugLog(`session.messages page cache hit ${id} before=${safeBefore || "root"} limit=${safeLimit}`);
+      return cached;
+    }
+    const inflight = opencodeMessagePageInflightRef.current[cacheKey];
+    if (inflight) return inflight;
+    const task = (async () => {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qs = new URLSearchParams();
+      qs.set("limit", String(safeLimit));
+      qs.set("directory", repoPath);
+      if (safeBefore) qs.set("before", safeBefore);
+      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
+      if (!res.ok) {
+        throw new Error(`fetch message page failed: ${res.status}`);
+      }
+      const raw = (await res.json()) as unknown[];
+      const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+      const detailsById: Record<string, OpencodeDetailedMessage> = {};
+      const mapped: OpencodeChatMessage[] = [];
+      for (const item of items) {
+        const info = item?.info as Record<string, unknown> | undefined;
+        const parts = item?.parts as OpencodeDetailedPart[] | undefined;
+        if (!info) continue;
+        const msgId = String(info.id || "").trim();
+        if (!msgId) continue;
+        const role = String(info.role || "").trim();
+        if (role !== "user" && role !== "assistant") continue;
+        detailsById[msgId] = item;
+        mapped.push({ id: msgId, role: role as "user" | "assistant", content: buildOpencodeMainLineMarkdownFromParts(parts) });
+      }
+      const nextCursor = res.headers.get("x-next-cursor")?.trim() || undefined;
+      const entry: OpencodeMessagePageCacheEntry = {
+        before: safeBefore,
+        limit: safeLimit,
+        items: mapped,
+        detailsById,
+        nextCursor,
+        hasMore: Boolean(nextCursor),
+        fetchedAt: Date.now()
+      };
+      setOpencodeMessagePageCacheEntry(repoPath, id, entry);
+      return entry;
+    })().finally(() => {
+      delete opencodeMessagePageInflightRef.current[cacheKey];
+    });
+    opencodeMessagePageInflightRef.current[cacheKey] = task;
+    return task;
+  }
+
+  async function fetchOpencodeCompactMessagesWindow(sessionId: string, initialLimit: number) {
+    const id = sessionId.trim();
+    const limit = Math.max(2, initialLimit);
+    const cached = getBestOpencodeMessageCacheEntry(repoPath, id, limit);
+    if (cached) {
+      appendOpencodeDebugLog(`session.messages cache hit ${id} limit=${cached.limit}`);
+      return {
+        mapped: cached.mapped,
+        turnCount: cached.turnCount,
+        requestedLimit: cached.limit,
+        nextCursor: undefined as string | undefined,
+        hasMore: cached.hasMore
+      };
+    }
+    const page = await fetchOpencodeDetailedMessagePage(id, "", limit);
+    const mapped = page.items;
+    const turnCount = buildOpencodeTurnRanges(mapped).length;
+    setOpencodeMessageCacheEntry(repoPath, id, {
+      limit,
+      mapped,
+      turnCount,
+      hasMore: page.hasMore,
+      fetchedAt: Date.now()
+    });
+    if (Object.keys(page.detailsById).length > 0) {
+      setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+    }
+    return {
+      mapped,
+      turnCount,
+      requestedLimit: limit,
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore
+    };
+  }
+
   async function refreshSidebarRepoSessions(repo: RepositoryEntry, limitArg?: number) {
     if (!runtimeStatus.opencode.installed) return;
     const repoId = repo.id.trim();
@@ -1892,9 +2090,31 @@ export function App() {
       return;
     }
     appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
-    const mapped = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    const mappedBase = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
     opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
-    setOpencodeSessions(mapped);
+    setOpencodeSessions((prev) =>
+      mappedBase.map((session) => {
+        const cached = prev.find((item) => item.id === session.id);
+        if (!cached) return session;
+        return {
+          ...cached,
+          title: session.title,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        };
+      })
+    );
+    const mapped = mappedBase.map((session) => {
+      const cached = opencodeSessions.find((item) => item.id === session.id);
+      return cached
+        ? {
+            ...cached,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+          }
+        : session;
+    });
     const pending = pendingSidebarSessionSelectionRef.current;
     const pendingMatches = pending && pending.repoId === (selectedRepo?.id || "") ? mapped.some((x) => x.id === pending.sessionId) : false;
     if (pendingMatches && pending) {
@@ -1917,22 +2137,104 @@ export function App() {
     const id = sessionId.trim();
     if (!id) return;
     appendOpencodeDebugLog(`session.messages load ${id}`);
-    const rows = await invoke<OpencodeSessionMessage[]>("get_opencode_session_messages", {
-      repoPath,
-      sessionId: id,
-      limit: 160
+    try {
+      const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT);
+      const mapped = result.mapped;
+      const turnStart = getInitialOpencodeTurnStart(result.turnCount);
+      updateOpencodeSessionById(id, (session) => ({
+        ...session,
+        messages: mapped,
+        turnStart,
+        loaded: true,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore,
+        updatedAt: Date.now()
+      }));
+      appendOpencodeDebugLog(`session.messages loaded ${id} count=${mapped.length} turns=${result.turnCount} start=${turnStart} hasMore=${result.hasMore}`);
+      prefetchNextOpencodeHistoryPage({
+        id,
+        title: "",
+        createdAt: 0,
+        updatedAt: 0,
+        messages: [],
+        turnStart: 0,
+        loaded: true,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore
+      });
+    } catch (e) {
+      appendOpencodeDebugLog(`session.messages load ${id} failed: ${e}`);
+      updateOpencodeSessionById(id, (session) => ({
+        ...session,
+        messages: [],
+        turnStart: 0,
+        loaded: true,
+        updatedAt: Date.now()
+      }));
+    }
+  }
+
+  async function loadMoreOpencodeSessionMessages(sessionId: string) {
+    if (!ensureRepoSelected()) return;
+    const id = sessionId.trim();
+    if (!id) return;
+    const session = opencodeSessions.find((s) => s.id === id);
+    if (!session) return;
+    appendOpencodeDebugLog(`session.messages load more ${id}`);
+    const before = (session.nextCursor || "").trim();
+    if (!before) {
+      opencodeLoadingOlderRef.current = false;
+      opencodePrevScrollHeightRef.current = 0;
+      return;
+    }
+    try {
+      const prevTurnCount = buildOpencodeTurnRanges(session.messages).length;
+      const page = await fetchOpencodeDetailedMessagePage(id, before, OPENCODE_OLDER_MESSAGE_FETCH_LIMIT);
+      const merged = [...page.items, ...session.messages].filter((msg, index, arr) => arr.findIndex((item) => item.id === msg.id) === index);
+      const mapped = merged;
+      const growth = Math.max(0, buildOpencodeTurnRanges(mapped).length - prevTurnCount);
+      if (growth <= 0) {
+        updateOpencodeSessionById(id, (s) => ({
+          ...s,
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+          updatedAt: Date.now()
+        }));
+        opencodeLoadingOlderRef.current = false;
+        opencodePrevScrollHeightRef.current = 0;
+        return;
+      }
+      if (Object.keys(page.detailsById).length > 0) {
+        setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+      }
+      updateOpencodeSessionById(id, (s) => ({
+        ...s,
+        messages: mapped,
+        turnStart: Math.max(0, s.turnStart + growth),
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
+        updatedAt: Date.now()
+      }));
+      appendOpencodeDebugLog(`session.messages prefetch older ${id} count=${mapped.length} growth=${growth} hasMore=${page.hasMore}`);
+      prefetchNextOpencodeHistoryPage({
+        ...session,
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore
+      });
+    } catch (e) {
+      opencodeLoadingOlderRef.current = false;
+      opencodePrevScrollHeightRef.current = 0;
+      appendOpencodeDebugLog(`session.messages load more ${id} failed: ${e}`);
+    }
+  }
+
+  function prefetchNextOpencodeHistoryPage(session: OpencodeChatSession | null) {
+    if (!session?.hasMore) return;
+    const before = (session.nextCursor || "").trim();
+    if (!before) return;
+    void fetchOpencodeDetailedMessagePage(session.id, before, OPENCODE_OLDER_MESSAGE_FETCH_LIMIT).catch(() => {
+      /* keep prefetch silent */
     });
-    const mapped: OpencodeChatMessage[] = (rows || [])
-      .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-      .map((m) => ({ id: m.id, role: m.role, content: m.content || "" }));
-    updateOpencodeSessionById(id, (session) => ({
-      ...session,
-      messages: mapped,
-      visibleCount: Math.min(Math.max(OPENCODE_RECENT_VISIBLE, mapped.length), mapped.length || OPENCODE_RECENT_VISIBLE),
-      loaded: true,
-      updatedAt: Date.now()
-    }));
-    appendOpencodeDebugLog(`session.messages loaded ${id} count=${mapped.length}`);
   }
 
   async function loadOpencodeMessageDetails(sessionId: string, messageId: string, limit = 80) {
@@ -1989,7 +2291,6 @@ export function App() {
     setActiveOpencodeSessionId(created.id);
     setDraftOpencodeSession(false);
     setOpencodePromptInput("");
-    opencodePrevCountRef.current = 0;
     appendOpencodeDebugLog(`session.created ${created.id}`);
     requestAnimationFrame(() => {
       const el = opencodeThreadRef.current;
@@ -2930,15 +3231,13 @@ export function App() {
         { id: `user-${makeId()}`, role: "user", content: prompt },
         { id: assistantId, role: "assistant", content: "" }
       ];
-      const nextVisible =
-        session.messages.length <= 0
-          ? Math.min(nextMessages.length, OPENCODE_RECENT_VISIBLE)
-          : Math.min(nextMessages.length, Math.max(OPENCODE_RECENT_VISIBLE, session.visibleCount + 2));
+      const nextTurnCount = buildOpencodeTurnRanges(nextMessages).length;
+      const nextTurnStart = getInitialOpencodeTurnStart(nextTurnCount);
       return {
         ...session,
         title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt) : session.title,
         messages: nextMessages,
-        visibleCount: nextVisible,
+        turnStart: nextTurnStart,
         updatedAt: Date.now()
       };
     });
@@ -3142,7 +3441,7 @@ export function App() {
           return {
             ...session,
             messages: nextMessages,
-            visibleCount: Math.min(nextMessages.length, Math.max(OPENCODE_RECENT_VISIBLE, session.visibleCount + 1)),
+            turnStart: session.turnStart,
             updatedAt: Date.now()
           };
         });
@@ -4163,26 +4462,6 @@ export function App() {
   }, [showOpencodeModelPicker]);
 
   useEffect(() => {
-    const total = opencodeMessages.length;
-    const prevTotal = opencodePrevCountRef.current;
-    updateActiveOpencodeSession((session) => {
-      if (total <= 0) {
-        return { ...session, visibleCount: OPENCODE_RECENT_VISIBLE };
-      }
-      if (prevTotal <= 0) {
-        return { ...session, visibleCount: Math.min(total, OPENCODE_RECENT_VISIBLE) };
-      }
-      const growth = Math.max(0, total - prevTotal);
-      const keep = session.visibleCount + growth;
-      return {
-        ...session,
-        visibleCount: Math.min(total, Math.max(OPENCODE_RECENT_VISIBLE, keep))
-      };
-    });
-    opencodePrevCountRef.current = total;
-  }, [opencodeMessages.length, activeOpencodeSessionId]);
-
-  useEffect(() => {
     Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
       try {
         ctl.abort();
@@ -4199,7 +4478,6 @@ export function App() {
     setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
     opencodeSessionsRepoIdRef.current = "";
-    opencodePrevCountRef.current = 0;
     setTerminalEntries([]);
     setTerminalInput("git status -sb");
     setGitUserIdentity(EMPTY_GIT_IDENTITY);
@@ -4214,9 +4492,10 @@ export function App() {
     const sessionChanged = opencodePrevActiveSessionIdRef.current !== sid;
     if (sessionChanged) {
       opencodePrevActiveSessionIdRef.current = sid;
-      opencodePrevCountRef.current = opencodeMessages.length;
       opencodeLoadingOlderRef.current = false;
       opencodePrevScrollHeightRef.current = 0;
+      opencodePendingAnchorSessionIdRef.current = sid;
+      opencodeStickToBottomSessionRef.current = sid;
     }
     const session = opencodeSessions.find((s) => s.id === sid);
     if (session && !session.loaded && runtimeStatus.opencode.installed && selectedRepo) {
@@ -4226,25 +4505,36 @@ export function App() {
     requestAnimationFrame(() => {
       const el = opencodeThreadRef.current;
       if (!el) return;
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = 0;
     });
-  }, [activeOpencodeSessionId, opencodeMessages.length, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
+
+  const opencodeVisibleWindow = useMemo(() => sliceOpencodeMessagesByTurnStart(opencodeMessages, opencodeTurnStart), [opencodeMessages, opencodeTurnStart]);
 
   const opencodeRenderedMessages = useMemo(() => {
-    const visible =
-      opencodeMessages.length <= opencodeVisibleCount
-        ? opencodeMessages
-        : opencodeMessages.slice(opencodeMessages.length - opencodeVisibleCount);
+    const visible = opencodeVisibleWindow.visible;
     const streamingId = activeOpencodeStreamingAssistantId;
     const running = activeOpencodeSessionBusy;
-    // Only show the "Thinking" placeholder for the currently-streaming assistant message.
-    // Any older empty assistant messages are treated as transient placeholders and hidden.
     return visible.filter((msg) => {
       if (msg.role !== "assistant") return true;
       if ((msg.content || "").trim()) return true;
+      const detail = opencodeDetailsByMessageId[msg.id];
+      const loading = opencodeDetailsLoadingByMessageId[msg.id];
+      if (detail === undefined || loading) return true;
       return msg.id === streamingId && running;
     });
-  }, [opencodeMessages, opencodeVisibleCount, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy]);
+  }, [opencodeVisibleWindow.visible, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  useEffect(() => {
+    const sid = activeOpencodeSessionId.trim();
+    if (!sid) return;
+    for (const msg of opencodeVisibleWindow.visible) {
+      if (msg.role !== "assistant") continue;
+      if (opencodeDetailsByMessageId[msg.id] !== undefined) continue;
+      if (opencodeDetailsLoadingByMessageId[msg.id]) continue;
+      void loadOpencodeMessageDetails(sid, msg.id, 80);
+    }
+  }, [activeOpencodeSessionId, opencodeVisibleWindow.visible, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
   function renderOpencodeExecutionPart(part: OpencodeDetailedPart, keyHint: string) {
     const type = String(part?.type || "");
@@ -4315,45 +4605,97 @@ export function App() {
     );
   }
 
-  // 主线正文由 OpenCode 原始 SSE 流式更新；`/message` 仅在结束后 hydrate 对齐。
-  const opencodeHiddenHistorySpacer = useMemo(() => {
-    const hiddenCount = Math.max(0, opencodeMessages.length - opencodeVisibleCount);
-    if (hiddenCount <= 0) return 0;
-    const hidden = opencodeMessages.slice(0, hiddenCount);
-    if (hidden.length === 0) return 0;
-    const estimate = hidden.reduce((sum, msg) => {
-      const text = (msg.content || "").trim();
-      const charCount = text.length;
-      const explicitLines = (text.match(/\n/g)?.length ?? 0) + 1;
-      const wrappedLines = Math.max(1, Math.ceil(charCount / 42));
-      const lineCount = Math.max(explicitLines, wrappedLines);
-      return sum + 34 + Math.min(22, lineCount) * 15;
-    }, 0);
-    return Math.min(24000, Math.max(120, estimate));
-  }, [opencodeMessages, opencodeVisibleCount]);
+  const opencodeHasHiddenHistory = opencodeTurnStart > 0;
 
-  const opencodeHasHiddenHistory = opencodeVisibleCount < opencodeMessages.length;
+  useEffect(() => {
+    const sid = activeOpencodeSessionId.trim();
+    if (!sid) return;
+    if (opencodePendingAnchorSessionIdRef.current !== sid) return;
+    if (!activeOpencodeSession?.loaded || opencodeMessages.length <= 0) return;
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      const current = opencodeThreadRef.current;
+      if (!current) return;
+      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+      opencodePendingAnchorSessionIdRef.current = "";
+    });
+  }, [activeOpencodeSessionId, activeOpencodeSession?.loaded, opencodeMessages.length]);
+
+  useEffect(() => {
+    const sid = activeOpencodeSessionId.trim();
+    if (!sid) return;
+    if (opencodeStickToBottomSessionRef.current !== sid) return;
+    if (opencodeSessionLoading) return;
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      const current = opencodeThreadRef.current;
+      if (!current) return;
+      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+    });
+  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
   function loadOlderOpencodeHistory() {
     const el = opencodeThreadRef.current;
     if (!el) return;
-    if (!opencodeHasHiddenHistory) return;
     if (opencodeLoadingOlderRef.current) return;
     opencodeLoadingOlderRef.current = true;
     opencodePrevScrollHeightRef.current = el.scrollHeight;
-    updateActiveOpencodeSession((session) => ({
-      ...session,
-      visibleCount: Math.min(session.messages.length, session.visibleCount + OPENCODE_PAGE_SIZE)
-    }));
+    if (opencodeHasHiddenHistory) {
+      updateActiveOpencodeSession((s) => ({
+        ...s,
+        turnStart: Math.max(0, s.turnStart - OPENCODE_PAGE_SIZE)
+      }));
+      return;
+    }
+    const session = activeOpencodeSession;
+    if (session?.hasMore) {
+      void loadMoreOpencodeSessionMessages(session.id);
+    } else {
+      opencodeLoadingOlderRef.current = false;
+      opencodePrevScrollHeightRef.current = 0;
+    }
   }
 
   function onOpencodeThreadScroll() {
     const el = opencodeThreadRef.current;
     if (!el) return;
-    const nearTop = el.scrollTop <= 96;
-    if (!nearTop) return;
-    if (!opencodeHasHiddenHistory) return;
-    loadOlderOpencodeHistory();
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    const nearBottom = maxScroll - el.scrollTop <= 24;
+    if (nearBottom) {
+      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+    } else {
+      opencodeStickToBottomSessionRef.current = "";
+    }
+    if (maxScroll <= 0) return;
+    const topProgress = el.scrollTop / maxScroll;
+    const shouldPrefetch = topProgress <= OPENCODE_TOP_PREFETCH_RATIO;
+    if (shouldPrefetch && !opencodeHasHiddenHistory) {
+      prefetchNextOpencodeHistoryPage(activeOpencodeSession);
+    }
+    const shouldLoadNow = topProgress <= OPENCODE_TOP_LOAD_RATIO;
+    if (!shouldLoadNow) return;
+    if (opencodeHasHiddenHistory) {
+      loadOlderOpencodeHistory();
+    } else if (activeOpencodeSession?.hasMore) {
+      loadOlderOpencodeHistory();
+    }
+  }
+
+  function onOpencodeThreadWheel(event: React.WheelEvent<HTMLDivElement>) {
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    if (event.deltaY >= 0) return;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (maxScroll <= 0) return;
+    const topProgress = el.scrollTop / maxScroll;
+    if (topProgress <= OPENCODE_TOP_PREFETCH_RATIO && !opencodeHasHiddenHistory) {
+      prefetchNextOpencodeHistoryPage(activeOpencodeSession);
+    }
+    if (topProgress <= OPENCODE_TOP_LOAD_RATIO && (opencodeHasHiddenHistory || activeOpencodeSession?.hasMore)) {
+      loadOlderOpencodeHistory();
+    }
   }
 
   useEffect(() => {
@@ -4368,20 +4710,27 @@ export function App() {
       }
       opencodeLoadingOlderRef.current = false;
       opencodePrevScrollHeightRef.current = 0;
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (maxScroll <= 0) return;
+      const topProgress = el.scrollTop / maxScroll;
+      if (topProgress <= OPENCODE_TOP_LOAD_RATIO && (opencodeHasHiddenHistory || activeOpencodeSession?.hasMore)) {
+        loadOlderOpencodeHistory();
+      }
     });
-  }, [opencodeVisibleCount]);
+  }, [opencodeTurnStart, opencodeMessages.length, opencodeHasHiddenHistory, activeOpencodeSession?.hasMore]);
 
   useEffect(() => {
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (opencodeSessionLoading) return;
+    if (opencodeLoadingOlderRef.current) return;
     if (!opencodeHasHiddenHistory) return;
-    const notOverflowing = el.scrollHeight <= el.clientHeight + 1;
-    if (!notOverflowing) return;
-    updateActiveOpencodeSession((session) => ({
-      ...session,
-      visibleCount: Math.min(session.messages.length, session.visibleCount + OPENCODE_PAGE_SIZE)
+    if (el.scrollHeight > el.clientHeight + 1) return;
+    updateActiveOpencodeSession((s) => ({
+      ...s,
+      turnStart: Math.max(0, s.turnStart - OPENCODE_PAGE_SIZE)
     }));
-  }, [opencodeHasHiddenHistory, opencodeMessages.length, opencodeVisibleCount, opencodeRenderedMessages.length]);
+  }, [opencodeSessionLoading, opencodeHasHiddenHistory, opencodeTurnStart, opencodeMessages.length, opencodeRenderedMessages.length]);
 
   useEffect(() => {
     if (!repoContextMenu && !commitContextMenu) return;
@@ -4491,6 +4840,29 @@ export function App() {
                           className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
                           onClick={() => {
                             pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
+                            setOpencodeSessions((prev) => {
+                              const hit = prev.findIndex((s) => s.id === session.id);
+                              if (hit >= 0) {
+                                return prev.map((s) =>
+                                  s.id === session.id
+                                    ? {
+                                        ...s,
+                                        title: session.title,
+                                        createdAt: session.createdAt,
+                                        updatedAt: session.updatedAt,
+                                        loaded: s.loaded
+                                      }
+                                    : s
+                                );
+                              }
+                              return [
+                                {
+                                  ...opencodeSessionFromSummary(session),
+                                  loaded: false
+                                },
+                                ...prev
+                              ];
+                            });
                             setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
                             setSelectedRepo(repo);
                             setDraftOpencodeSession(false);
@@ -4541,18 +4913,12 @@ export function App() {
 
   const centerPane = runtimeStatus.opencode.installed ? (
     <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-      <div className={opencodeMessages.length === 0 ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
-        <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll}>
+      <div className={opencodeMessages.length === 0 && !opencodeSessionLoading ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
+        <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
           <div className="gt-chat-stream">
-            {opencodeHasHiddenHistory ? (
-              <button className="opencode-load-more" onClick={loadOlderOpencodeHistory}>
-                Load earlier messages
-              </button>
-            ) : null}
-            {opencodeHiddenHistorySpacer > 0 ? (
-              <div className="opencode-history-spacer" aria-hidden="true" style={{ height: `${opencodeHiddenHistorySpacer}px` }} />
-            ) : null}
-            {opencodeMessages.length === 0 ? null : (
+            {opencodeSessionLoading ? (
+              <div className="opencode-session-loading small muted">加载会话中…</div>
+            ) : opencodeMessages.length === 0 ? null : (
               opencodeRenderedMessages.map((msg) => {
                 const isAssistant = msg.role === "assistant";
                 const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;

@@ -1462,7 +1462,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         }
         let limit = req.query.get("limit").and_then(|v| v.parse::<u32>().ok());
         let before = req.query.get("before").cloned();
-        return match opencode::get_opencode_session_messages_detailed_page(
+        return match opencode::get_opencode_session_messages_detailed_page_impl(
             repo.as_str(),
             sid.as_str(),
             None,
@@ -1501,6 +1501,28 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         return match opencode::abort_opencode_session(payload.repo_path.as_str(), payload.session_id.as_str(), None) {
             Ok(v) => (200, serde_json::json!({ "ok": v })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/session/status" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let limit = req.query.get("limit").and_then(|v| v.parse::<u32>().ok()).unwrap_or(50);
+        let safe_limit = limit.clamp(1, 200);
+        return match opencode::list_opencode_sessions(repo.as_str(), Some(safe_limit)) {
+            Ok(sessions) => {
+                let mut result = serde_json::Map::new();
+                for s in sessions {
+                    result.insert(
+                        s.id.clone(),
+                        serde_json::json!({ "type": "idle" }),
+                    );
+                }
+                (200, Value::Object(result))
+            }
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
     }

@@ -190,6 +190,13 @@ pub struct OpencodeSessionMessage {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeDetailedMessagePage {
+    pub items: Value,
+    pub next_cursor: Option<String>,
+}
+
 fn extract_config_provider_catalog(root: &Value) -> Vec<OpencodeConfigProviderCatalog> {
     let mut out: Vec<OpencodeConfigProviderCatalog> = Vec::new();
     let Some(provider_root) = root.get("provider").and_then(|v| v.as_object()) else {
@@ -1600,7 +1607,7 @@ pub fn get_opencode_session_messages_detailed(
     })
 }
 
-pub fn get_opencode_session_messages_detailed_page(
+pub fn get_opencode_session_messages_detailed_page_impl(
     repo_path: &str,
     session_id: &str,
     directory: Option<String>,
@@ -1659,6 +1666,18 @@ pub fn get_opencode_session_messages_detailed_page(
         }
         Ok((Value::Array(arr), next_cursor))
     })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn get_opencode_session_messages_detailed_page(
+    repo_path: &str,
+    session_id: &str,
+    directory: Option<String>,
+    before: Option<String>,
+    limit: Option<u32>,
+) -> Result<OpencodeDetailedMessagePage, String> {
+    let (items, next_cursor) = get_opencode_session_messages_detailed_page_impl(repo_path, session_id, directory, before, limit)?;
+    Ok(OpencodeDetailedMessagePage { items, next_cursor })
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]

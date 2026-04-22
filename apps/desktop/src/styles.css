@@ -1111,10 +1111,8 @@ body {
   padding: 8px;
 }
 
-.opencode-history-spacer {
-  width: 100%;
-  pointer-events: none;
-  flex: 0 0 auto;
+.opencode-session-loading {
+  padding: 10px 4px;
 }
 
 .opencode-composer {
