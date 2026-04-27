@@ -64,6 +64,22 @@ export type MobileContextCard = {
   tools: MobileEventCard[];
 };
 
+export type MobileTodoItem = {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority?: string;
+};
+
+export type MobileTodoCard = {
+  id: string;
+  title: string;
+  summary: string;
+  createdAt?: number;
+  items: MobileTodoItem[];
+  finished: boolean;
+};
+
 export type MobileErrorCard = {
   id: string;
   title: string;
@@ -76,6 +92,28 @@ export type MobileDividerCard = {
   id: string;
   label: string;
   createdAt?: number;
+};
+
+export type QuestionOption = {
+  label: string;
+  description?: string;
+};
+
+export type QuestionInfo = {
+  question: string;
+  header?: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+};
+
+export type QuestionAnswer = string[];
+
+export type QuestionRequest = {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+  tool?: { messageID: string; callID: string };
 };
 
 export type MobileTimelineItem =
@@ -98,6 +136,11 @@ export type MobileTimelineItem =
       kind: 'context';
       createdAt: number;
       context: MobileContextCard;
+    }
+  | {
+      kind: 'todo';
+      createdAt: number;
+      todo: MobileTodoCard;
     }
   | {
       kind: 'divider';

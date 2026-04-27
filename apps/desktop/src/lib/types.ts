@@ -52,6 +52,30 @@ export type GitWorktreeOverview = {
   raw: string;
 };
 
+export type GitLinkedWorktree = {
+  path: string;
+  branch: string;
+  head: string;
+  isCurrent: boolean;
+  isDetached: boolean;
+  clean: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  locked: string;
+  prunable: string;
+};
+
+export type GitWorktreeCreateResult = {
+  path: string;
+  branch: string;
+  head: string;
+};
+
+export type GitWorktreeRemoveResult = {
+  path: string;
+};
+
 export type GitUserIdentity = {
   name: string;
   email: string;
@@ -99,4 +123,27 @@ export type ReviewAction = {
   action: ReviewActionType;
   note?: string;
   createdAt: string;
+};
+
+// Question types for AI interactive prompts
+export type QuestionOption = {
+  label: string;
+  description?: string;
+};
+
+export type QuestionInfo = {
+  question: string;
+  header?: string;
+  options: QuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+};
+
+export type QuestionAnswer = string[];
+
+export type QuestionRequest = {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+  tool?: { messageID: string; callID: string };
 };

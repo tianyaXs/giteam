@@ -1,4 +1,4 @@
-import type { HealthResponse, PairAuthResponse, PromptResponse, SessionStatusInfo } from '../types';
+import type { HealthResponse, PairAuthResponse, PromptResponse, QuestionRequest, SessionStatusInfo } from '../types';
 export const NO_AUTH_TOKEN = '__NO_AUTH__';
 
 function normalizeBaseUrl(input: string): string {
@@ -302,6 +302,69 @@ export async function abortSession(args: {
     })
   });
   ensureOk('abort', 'POST', url, result.status, result.ok, result.text);
+}
+
+export async function replyQuestion(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  requestId: string;
+  answers: string[][];
+}): Promise<void> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const url = `${baseUrl}/api/v1/opencode/question/${encodeURIComponent(args.requestId)}/reply`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(args.token)
+    },
+    body: JSON.stringify({
+      repoPath: args.repoPath,
+      answers: args.answers
+    })
+  });
+  ensureOk('question.reply', 'POST', url, result.status, result.ok, result.text);
+}
+
+export async function rejectQuestion(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  requestId: string;
+}): Promise<void> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const url = `${baseUrl}/api/v1/opencode/question/${encodeURIComponent(args.requestId)}/reject`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(args.token)
+    },
+    body: JSON.stringify({
+      repoPath: args.repoPath
+    })
+  });
+  ensureOk('question.reject', 'POST', url, result.status, result.ok, result.text);
+}
+
+export async function getPendingQuestions(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  sessionId?: string;
+}): Promise<QuestionRequest[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  const url = `${baseUrl}/api/v1/opencode/question?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, {
+    headers: authHeaders(args.token)
+  });
+  const raw = ensureOk('question.list', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  const rows = Array.isArray(parsed) ? parsed : [];
+  const sid = String(args.sessionId || '').trim();
+  return rows.filter((item: any) => !sid || String(item?.sessionID || '') === sid) as QuestionRequest[];
 }
 
 export function buildStreamUrl(args: {

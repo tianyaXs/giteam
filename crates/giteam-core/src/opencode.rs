@@ -1902,6 +1902,62 @@ pub fn abort_opencode_session(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn post_opencode_question_reply(
+    repo_path: &str,
+    request_id: &str,
+    answers: Vec<Vec<String>>,
+) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let body = serde_json::json!({ "answers": answers });
+        let mut url = format!("{base}/question/{}/reply", urlencoding::encode(request_id));
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some(body.to_string().as_str()), 12)?;
+        Ok(true)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_opencode_questions(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/question/");
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 12)?;
+        serde_json::from_str(&raw).map_err(|e| format!("parse /question failed: {e}"))
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn post_opencode_question_reject(repo_path: &str, request_id: &str) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/question/{}/reject", urlencoding::encode(request_id));
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some("{}"), 12)?;
+        Ok(true)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_opencode_model_config(repo_path: &str) -> Result<OpencodeModelConfig, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {

@@ -37,6 +37,7 @@ import type { Prefs } from './src/storage/prefs';
 import { loadDiscoverCache, saveDiscoverCache } from './src/storage/discoverCache';
 import type { DiscoverCacheDevice } from './src/storage/discoverCache';
 import { loadPairCodeMap, savePairCodeMap } from './src/storage/pairCodeMap';
+import { loadSessionCache, saveSessionCache } from './src/storage/sessionCache';
 import {
   abortSession,
   buildStreamUrl,
@@ -44,12 +45,15 @@ import {
   getCurrentProject,
   getMessages,
   getOpencodeConfig,
+  getPendingQuestions,
   getProjects,
   getSessionStatus,
   getSessions,
   health,
   NO_AUTH_TOKEN,
   pairAuth,
+  rejectQuestion,
+  replyQuestion,
   sendPrompt
 } from './src/api/controlApi';
 import {
@@ -71,12 +75,13 @@ import {
   resolvePortFromSeed
 } from './src/discovery';
 import type { DiscoveredDevice } from './src/discovery';
-import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from './src/types';
+import type { MobileChatMessage, MobileRenderedTurn, MobileTodoCard, SessionStatusInfo, QuestionRequest } from './src/types';
+import { QuestionDock } from './src/components/QuestionDock';
 
 // keys + storage moved to src/storage/*
 
-const INITIAL_SESSION_LIMIT = 2;
-const OLDER_SESSION_LIMIT = 2;
+const INITIAL_SESSION_LIMIT = 1;
+const OLDER_SESSION_LIMIT = 1;
 const INITIAL_MESSAGE_FETCH_LIMIT = 8;
 const OLDER_MESSAGE_FETCH_LIMIT = 8;
 const DISCOVER_OFFLINE_AFTER_MS = 45000;
@@ -95,6 +100,12 @@ type SessionItem = {
   /** 用于排序：优先服务端 updatedAt，缺失时用 createdAt，避免每次刷新用 Date.now() 导致顺序乱跳 */
   updatedAt: number;
   createdAt?: number;
+};
+
+type OptimisticUserMessage = {
+  id: string;
+  text: string;
+  createdAt: number;
 };
 
 /** 会话列表稳定排序：时间降序，相同时间用 id 字典序（避免服务端/合并顺序不稳定） */
@@ -226,12 +237,115 @@ function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): Re
   );
 }
 
+function todoMeta(card: MobileTodoCard) {
+  const items = Array.isArray(card.items) ? card.items : [];
+  const total = items.length;
+  const done = items.filter((item) => item.status === 'completed').length;
+  const active = items.find((item) => item.status === 'in_progress') || items.find((item) => item.status === 'pending') || items[items.length - 1] || null;
+  return { total, done, active };
+}
+
+function TodoThinkingDots(props: { pulse: boolean }) {
+  return (
+    <View style={styles.todoThinkingDots}>
+      <View style={[styles.todoThinkingDot, props.pulse ? styles.todoThinkingDotOn : null]} />
+      <View style={[styles.todoThinkingDot, !props.pulse ? styles.todoThinkingDotMid : styles.todoThinkingDotSoft]} />
+      <View style={[styles.todoThinkingDot, props.pulse ? styles.todoThinkingDotSoft : styles.todoThinkingDotOn]} />
+    </View>
+  );
+}
+
+function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; pulse: boolean }) {
+  if (props.status === 'completed') {
+    return (
+      <View style={styles.todoStatusCompleted}>
+        <Text style={styles.todoStatusCompletedText}>✓</Text>
+      </View>
+    );
+  }
+  if (props.status === 'in_progress') {
+    return (
+      <View style={styles.todoStatusRunningContainer}>
+        <View style={styles.todoStatusRunningPulse1} />
+        <View style={styles.todoStatusRunningPulse2} />
+        <View style={styles.todoStatusRunningCenter} />
+      </View>
+    );
+  }
+  if (props.status === 'cancelled') {
+    return <View style={styles.todoStatusCancelled} />;
+  }
+  return <View style={styles.todoStatusPending} />;
+}
+
+const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
+  card: MobileTodoCard;
+  compact?: boolean;
+  collapsed?: boolean;
+  pulse: boolean;
+  onToggle?: () => void;
+}) {
+  const { card, compact, collapsed, pulse, onToggle } = props;
+  const meta = todoMeta(card);
+  const activeText = toText(meta.active?.content);
+  const content = (
+    <>
+      <View style={compact ? styles.todoCardHeadCompact : styles.todoCardHead}>
+        <View style={styles.todoCardHeadMain}>
+          <View style={styles.todoTitleRow}>
+            <Text style={styles.todoTitle}>任务进度</Text>
+            <View style={card.finished ? styles.todoChipDone : styles.todoChipRunning}>
+              <Text style={card.finished ? styles.todoChipDoneText : styles.todoChipRunningText}>
+                {meta.done}/{meta.total}
+              </Text>
+            </View>
+          </View>
+          <Text numberOfLines={collapsed ? 1 : 2} style={styles.todoSummary}>
+            {activeText ? `当前：${activeText}` : toText(card.summary || '任务进行中')}
+          </Text>
+        </View>
+        {onToggle ? (
+          <View style={styles.todoToggleBtn}>
+            <View style={[styles.todoArrow, collapsed && styles.todoArrowUp]} />
+          </View>
+        ) : null}
+      </View>
+      {!collapsed ? (
+        <View style={styles.todoList}>
+          {card.items.map((item) => (
+            <View key={item.id} style={styles.todoRow}>
+              <TodoStatusBadge status={item.status} pulse={pulse} />
+              <Text
+                style={[
+                  styles.todoRowText,
+                  item.status === 'completed' ? styles.todoRowTextDone : null,
+                  item.status === 'cancelled' ? styles.todoRowTextCancelled : null
+                ]}
+              >
+                {toText(item.content)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </>
+  );
+
+  if (!onToggle) return <View style={compact ? styles.todoInlineCardCompact : styles.todoInlineCard}>{content}</View>;
+  return (
+    <Pressable style={compact ? styles.todoDockCompact : styles.todoDock} onPress={onToggle}>
+      {content}
+    </Pressable>
+  );
+});
+
 const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   turn: MobileRenderedTurn;
   streaming: boolean;
   isLastTurn: boolean;
+  thinkingPulse: boolean;
 }) {
-  const { turn, streaming, isLastTurn } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse } = props;
   return (
     <View style={styles.turnWrap}>
       {turn.userMessage ? (
@@ -276,6 +390,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             </View>
           );
         }
+        
         if (item.kind === 'event') {
           const st = toText(item.event.status).toLowerCase();
           const dotStyle = st === 'running' || st === 'pending' ? styles.eventDotRun : styles.eventDot;
@@ -315,6 +430,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             </View>
           );
         }
+        if (!item.card) return null;
         const keepOpen = !streaming || isLastTurn;
         return (
             <View key={item.card.id} style={styles.thinkWrap}>
@@ -336,6 +452,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   && prev.turn.signature === next.turn.signature
   && prev.streaming === next.streaming
   && prev.isLastTurn === next.isLastTurn
+  && prev.thinkingPulse === next.thinkingPulse
 ));
 
 // prefs + discover cache moved to src/storage/*
@@ -563,6 +680,9 @@ export default function App() {
   const [sessionStatusMap, setSessionStatusMap] = useState<Record<string, SessionStatusInfo>>({});
   const [streaming, setStreaming] = useState(false);
   const [thinkingPulse, setThinkingPulse] = useState(false);
+  const [todoDockCollapsed, setTodoDockCollapsed] = useState(false);
+  const [questionRequests, setQuestionRequests] = useState<QuestionRequest[]>([]);
+  const [dismissedQuestions, setDismissedQuestions] = useState<Set<string>>(() => new Set());
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -570,20 +690,25 @@ export default function App() {
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
   const [sessionHistoryRetryHint, setSessionHistoryRetryHint] = useState<Record<string, string>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [optimisticVersion, setOptimisticVersion] = useState(0);
+  const [sessionDisplayedCount, setSessionDisplayedCount] = useState(5);
+  const [drawerDragSide, setDrawerDragSide] = useState<'' | 'left' | 'right'>('');
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
   const messageScrollRef = useRef<FlatList<MobileRenderedTurn> | null>(null);
-  const topVisibleStableKeyRef = useRef<string>('');
   const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
   const allowAutoScrollRef = useRef(true);
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
+  const sessionCacheRef = useRef<Record<string, SessionItem[]>>({});
   const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
+  const sessionOptimisticUserMapRef = useRef<Record<string, OptimisticUserMessage[]>>({});
+  const draftOptimisticUserRef = useRef<OptimisticUserMessage | null>(null);
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
   const inflightMessageReqRef = useRef<Record<string, Promise<RefreshMessagesResult | undefined>>>({});
@@ -592,6 +717,7 @@ export default function App() {
   const messageScrollYRef = useRef(0);
   const messageViewportHRef = useRef(0);
   const messageUserScrollingRef = useRef(false);
+  const messageViewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 1, minimumViewTime: 0 });
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
   const discoveringRef = useRef(false);
@@ -675,13 +801,16 @@ export default function App() {
   const statusText = toText(status);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter((s) => {
-      const title = toText(s.title).toLowerCase();
-      const preview = toText(s.preview).toLowerCase();
-      return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
-    });
-  }, [sessions, sessionSearch]);
+    const source = q
+      ? sessions.filter((s) => {
+          const title = toText(s.title).toLowerCase();
+          const preview = toText(s.preview).toLowerCase();
+          return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
+        })
+      : sessions;
+    if (q || source.length <= sessionDisplayedCount) return source;
+    return source.slice(0, sessionDisplayedCount);
+  }, [sessions, sessionSearch, sessionDisplayedCount]);
   const workspacePanelHeight = useMemo(() => {
     const count = Math.max(1, projects.length);
     const headerAndPadding = 88;
@@ -843,6 +972,10 @@ export default function App() {
       });
       discoverCacheRef.current = map;
     });
+    loadSessionCache().then((cache) => {
+      if (!alive) return;
+      sessionCacheRef.current = cache;
+    });
     return () => {
       alive = false;
     };
@@ -873,6 +1006,17 @@ export default function App() {
     const timer = setInterval(() => setThinkingPulse((v) => !v), 480);
     return () => clearInterval(timer);
   }, [streaming]);
+
+  useEffect(() => {
+    const sid = toText(sessionId).trim();
+    if (!authed || !sid || !repoPath.trim()) return;
+    void refreshPendingQuestions(sid);
+    if (!streaming && sessionStatusMap[sid]?.type !== 'busy') return;
+    const timer = setInterval(() => {
+      void refreshPendingQuestions(sid);
+    }, 1200);
+    return () => clearInterval(timer);
+  }, [authed, sessionId, repoPath, serverUrl, token, streaming, sessionStatusMap]);
 
   useEffect(() => {
     if (!discoverOpen) return;
@@ -1095,6 +1239,9 @@ export default function App() {
     const sid = toText(nextSessionId).trim();
     sessionIdRef.current = sid;
     setSessionId(sid);
+    // Clear question state when switching sessions
+    setQuestionRequests([]);
+    setDismissedQuestions(new Set());
     // Switching session should not auto-scroll with animation.
     allowAutoScrollRef.current = false;
     if (!sid) {
@@ -1114,17 +1261,154 @@ export default function App() {
     }).start();
   }
 
+  function bumpOptimisticVersion() {
+    setOptimisticVersion((v) => v + 1);
+  }
+
+  function upsertOptimisticUserMessage(targetSessionId: string, message: OptimisticUserMessage) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid) return;
+    const prev = Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid] : [];
+    sessionOptimisticUserMapRef.current[sid] = [...prev.filter((item) => item.id !== message.id), message].sort(
+      (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)
+    );
+    bumpOptimisticVersion();
+  }
+
+  function dropOptimisticUserMessage(targetSessionId: string, optimisticId: string) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid || !optimisticId) return;
+    const prev = Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid] : [];
+    const next = prev.filter((item) => item.id !== optimisticId);
+    if (next.length > 0) sessionOptimisticUserMapRef.current[sid] = next;
+    else delete sessionOptimisticUserMapRef.current[sid];
+    bumpOptimisticVersion();
+  }
+
+  function moveDraftOptimisticToSession(targetSessionId: string, fallback?: OptimisticUserMessage | null) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid) return null;
+    const draft = draftOptimisticUserRef.current || fallback || null;
+    if (!draft) return null;
+    draftOptimisticUserRef.current = null;
+    upsertOptimisticUserMessage(sid, draft);
+    return draft;
+  }
+
+  function reconcileOptimisticUserMessages(targetSessionId: string, chatMessages: MobileChatMessage[]) {
+    const sid = toText(targetSessionId).trim();
+    const optimistic = Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid] : [];
+    if (!sid || optimistic.length === 0) return optimistic;
+    const serverUsers = chatMessages.filter((item) => item.role === 'user' && !!toText(item.text));
+    const usedIds = new Set<string>();
+    const remaining: OptimisticUserMessage[] = [];
+    for (const local of optimistic) {
+      const text = toText(local.text);
+      const matched = serverUsers.find((item) => {
+        if (usedIds.has(item.id)) return false;
+        if (toText(item.text) !== text) return false;
+        const delta = Math.abs((Number(item.createdAt || 0) || 0) - local.createdAt);
+        return delta <= 60000;
+      });
+      if (matched) {
+        usedIds.add(matched.id);
+        continue;
+      }
+      remaining.push(local);
+    }
+    if (remaining.length === optimistic.length) return optimistic;
+    if (remaining.length > 0) sessionOptimisticUserMapRef.current[sid] = remaining;
+    else delete sessionOptimisticUserMapRef.current[sid];
+    bumpOptimisticVersion();
+    return remaining;
+  }
+
+  function overlayOptimisticTurns(base: ReturnType<typeof buildTurnWindow>, optimistic: OptimisticUserMessage[]) {
+    if (optimistic.length === 0) return base;
+    const nextMessages = [...base.chatMessages];
+    const nextTurns = [...base.renderedTurns];
+    for (const item of optimistic) {
+      nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt });
+      nextTurns.push({
+        id: `turn:optimistic:${item.id}`,
+        createdAt: item.createdAt,
+        userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt },
+        items: [],
+        signature: `optimistic:${item.id}:${item.text.length}`
+      });
+    }
+    return {
+      ...base,
+      chatMessages: nextMessages,
+      renderedTurns: nextTurns,
+      mergedCount: base.mergedCount + optimistic.length,
+      visibleTurnCount: base.visibleTurnCount + optimistic.length,
+      totalTurnCount: base.totalTurnCount + optimistic.length,
+      hasUserTurn: true
+    };
+  }
+
+  function renderDraftOptimisticMessage(message: OptimisticUserMessage) {
+    draftOptimisticUserRef.current = message;
+    setRenderedTurns([
+      {
+        id: `turn:optimistic:${message.id}`,
+        createdAt: message.createdAt,
+        userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
+        items: [],
+        signature: `optimistic:${message.id}:${message.text.length}`
+      }
+    ]);
+    setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }]);
+    bumpOptimisticVersion();
+  }
+
+  function clearDraftOptimisticMessage(optimisticId: string) {
+    if (draftOptimisticUserRef.current?.id !== optimisticId) return;
+    draftOptimisticUserRef.current = null;
+    if (!toText(sessionIdRef.current).trim()) {
+      setRenderedTurns([]);
+      setMessages([]);
+    }
+    bumpOptimisticVersion();
+  }
+
+  function scrollToLatest(animated: boolean) {
+    const index = Math.max(0, displayedTurns.length - 1);
+    try {
+      messageScrollRef.current?.scrollToIndex({ index, animated, viewPosition: 1 });
+    } catch {
+      requestAnimationFrame(() => {
+        try {
+          messageScrollRef.current?.scrollToIndex({ index, animated: false, viewPosition: 1 });
+        } catch {}
+      });
+    }
+  }
+
+  const activeDrawerSide = drawerSide || drawerDragSide;
+
+  function animateDrawerProgress(toValue: number, onDone?: () => void) {
+    drawerAnim.stopAnimation((currentValue) => {
+      const distance = Math.abs((Number(currentValue) || 0) - toValue);
+      const duration = Math.max(120, Math.min(220, Math.round(160 * distance + 90)));
+      Animated.timing(drawerAnim, {
+        toValue,
+        duration,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start(() => {
+        onDone?.();
+      });
+    });
+  }
+
   function openDrawer(side: 'left' | 'right') {
-    if (drawerSide === side) return;
+    if (drawerSide === side && !drawerDragSide) return;
     setWorkspacePickerOpen(false);
+    setDrawerDragSide('');
     setDrawerSide(side);
-    drawerAnim.setValue(0);
-    Animated.timing(drawerAnim, {
-      toValue: 1,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start();
+    animateDrawerProgress(1);
     if (side === 'left') {
       void refreshSessionsFromServer();
     } else {
@@ -1133,12 +1417,10 @@ export default function App() {
   }
 
   function closeDrawer() {
-    Animated.timing(drawerAnim, {
-      toValue: 0,
-      duration: 180,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start(() => setDrawerSide(''));
+    animateDrawerProgress(0, () => {
+      setDrawerSide('');
+      setDrawerDragSide('');
+    });
   }
 
   function openWorkspacePicker() {
@@ -1179,7 +1461,6 @@ export default function App() {
         },
         onMoveShouldSetPanResponderCapture: (_evt, g) => {
           if (workspacePickerOpen) return false;
-          // Keep vertical pull gesture for message list refresh; only capture clear horizontal swipes.
           if (Math.abs(g.dx) < 18 || Math.abs(g.dx) < Math.abs(g.dy) * 1.8) return false;
           if (!drawerSide) return Math.abs(g.dx) > 32;
           if (drawerSide === 'left') return g.dx < -24;
@@ -1187,6 +1468,28 @@ export default function App() {
         },
         onPanResponderTerminationRequest: () => true,
         onShouldBlockNativeResponder: () => false,
+        onPanResponderMove: (_evt, g) => {
+          let nextSide: '' | 'left' | 'right' = drawerSide;
+          if (!nextSide) {
+            if (g.dx > 0) nextSide = 'left';
+            else if (g.dx < 0) nextSide = 'right';
+          }
+          if (!nextSide) return;
+          if (drawerDragSide !== nextSide) {
+            setWorkspacePickerOpen(false);
+            setDrawerDragSide(nextSide);
+            if (nextSide === 'left') void refreshSessionsFromServer();
+            else void refreshModelCatalog();
+          }
+          const progress = !drawerSide
+            ? nextSide === 'left'
+              ? Math.min(1, Math.max(0, g.dx / 320))
+              : Math.min(1, Math.max(0, -g.dx / 320))
+            : nextSide === 'left'
+              ? Math.min(1, Math.max(0, 1 + g.dx / 320))
+              : Math.min(1, Math.max(0, 1 - g.dx / 320));
+          drawerAnim.setValue(progress);
+        },
         onPanResponderRelease: (_evt, g) => {
           if (!drawerSide && g.dx > 56) {
             openDrawer('left');
@@ -1202,10 +1505,28 @@ export default function App() {
           }
           if (drawerSide === 'right' && g.dx > 56) {
             closeDrawer();
+            return;
           }
+          drawerAnim.stopAnimation((currentValue) => {
+            const progress = Number(currentValue) || 0;
+            const shouldOpen = drawerSide ? progress > 0.65 : progress > 0.28;
+            animateDrawerProgress(shouldOpen ? 1 : 0, () => {
+              if (shouldOpen) {
+                const nextSide = drawerSide || drawerDragSide;
+                if (nextSide) {
+                  setDrawerSide(nextSide);
+                }
+                setDrawerDragSide('');
+                return;
+              }
+              if (!drawerSide) {
+                setDrawerDragSide('');
+              }
+            });
+          });
         }
       }),
-    [drawerSide, workspacePickerOpen]
+    [drawerDragSide, drawerSide, workspacePickerOpen]
   );
 
   function upsertSession(nextSessionId: string, nextMessages: MobileChatMessage[]) {
@@ -1230,6 +1551,14 @@ export default function App() {
   async function refreshSessionsFromServer(targetRepoPath?: string) {
     const repo = toText(targetRepoPath || repoPath).trim();
     if (!authed || !repo) return [] as SessionItem[];
+    const cached = sessionCacheRef.current[repo];
+    if (cached && cached.length > 0) {
+      const prevIds = new Set(sessionsRef.current.map((x) => x.id));
+      const hasNew = cached.some((x) => !prevIds.has(x.id));
+      sessionsRef.current = cached;
+      setSessions(cached);
+      if (hasNew) triggerPulse(leftDrawerPulse);
+    }
     try {
       pushConnLog(`GET sessions repo=${repo}`);
       const rows = await getSessions({
@@ -1239,8 +1568,6 @@ export default function App() {
         limit: 200
       });
       pushConnLog(`GET sessions ok count=${rows.length}`);
-      const prevIds = new Set(sessionsRef.current.map((x) => x.id));
-      const hasNew = rows.some((x) => !prevIds.has(x.id));
       const nextSessions = stableSortSessionItems(
         rows.map((s) => {
           const createdAt = Number(s.createdAt || 0) || 0;
@@ -1254,28 +1581,77 @@ export default function App() {
           };
         })
       );
-      setSessions((prev) => {
-        const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
-        return nextSessions.map((s) => ({
-          id: s.id,
-          title: s.title,
-          preview: previewMap.get(s.id) || '',
-          updatedAt: s.updatedAt,
-          createdAt: s.createdAt
-        }));
-      });
-      if (hasNew) triggerPulse(leftDrawerPulse);
-      return nextSessions;
+      const merged = setSessionsWithCacheMerge(repo, nextSessions, sessionsRef.current);
+      sessionsRef.current = merged;
+      sessionCacheRef.current = { ...sessionCacheRef.current, [repo]: merged };
+      void saveSessionCache(sessionCacheRef.current);
+      return merged;
     } catch (e) {
       pushConnLog(`GET sessions error ${String(e)}`, 'error');
       setStatus((prev) => (prev.includes('sessions failed') ? prev : `会话同步失败: ${String(e)}`));
-      return [] as SessionItem[];
+      return sessionsRef.current;
     }
+  }
+
+  function setSessionsWithCacheMerge(repo: string, next: SessionItem[], prev: SessionItem[]): SessionItem[] {
+    const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
+    const merged = next.map((s) => ({
+      id: s.id,
+      title: s.title,
+      preview: previewMap.get(s.id) || '',
+      updatedAt: s.updatedAt,
+      createdAt: s.createdAt
+    }));
+    setSessions(merged);
+    return merged;
+  }
+
+  function extractQuestionRequests(raw: any[], targetSessionId: string): QuestionRequest[] {
+    const requests: QuestionRequest[] = [];
+    const seenIds = new Set<string>();
+    for (const row of raw) {
+      const parts = Array.isArray(row?.parts) ? row.parts : [];
+      for (const part of parts) {
+        const partType = toText(part?.type).toLowerCase();
+        if (partType !== 'tool') continue;
+        const toolName = toText(part?.tool).toLowerCase();
+        if (toolName !== 'question') continue;
+        const state = part?.state || {};
+        const status = toText(state?.status).toLowerCase();
+        if (status !== 'pending' && status !== 'running') continue;
+        const input = state?.input || {};
+        const questions = input?.questions;
+        if (!Array.isArray(questions) || questions.length === 0) continue;
+        const callID = toText(state?.callID) || toText(part?.id);
+        const messageID = toText(row?.info?.id);
+        const requestId = callID || `question-${messageID}`;
+        if (seenIds.has(requestId)) continue;
+        seenIds.add(requestId);
+        requests.push({
+          id: requestId,
+          sessionID: targetSessionId || sessionIdRef.current,
+          questions: questions.map((q: any) => ({
+            question: toText(q?.question),
+            header: toText(q?.header) || undefined,
+            options: Array.isArray(q?.options) ? q.options.map((opt: any) => ({
+              label: toText(opt?.label),
+              description: toText(opt?.description) || undefined,
+            })).filter((opt: any) => opt.label) : [],
+            multiple: q?.multiple === true,
+            custom: q?.custom !== false,
+          })),
+          tool: callID && messageID ? { messageID, callID } : undefined,
+        });
+      }
+    }
+    return requests;
   }
 
   function applyTurnWindow(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) {
     const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
-    const rendered = buildTurnWindow(merged, visibleTurnCount);
+    const baseRendered = buildTurnWindow(merged, visibleTurnCount);
+    const optimistic = reconcileOptimisticUserMessages(targetSessionId, baseRendered.chatMessages);
+    const rendered = overlayOptimisticTurns(baseRendered, optimistic);
     sessionVisibleTurnCountRef.current[targetSessionId] = rendered.visibleTurnCount;
     sessionTotalTurnCountRef.current[targetSessionId] = rendered.totalTurnCount;
     setMessages(rendered.chatMessages);
@@ -1284,7 +1660,27 @@ export default function App() {
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
     setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
+    
     return rendered;
+  }
+
+  async function refreshPendingQuestions(targetSessionId: string = sessionIdRef.current) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid || !repoPath.trim()) {
+      setQuestionRequests([]);
+      return;
+    }
+    try {
+      const requests = await getPendingQuestions({
+        baseUrl: serverUrl,
+        token,
+        repoPath,
+        sessionId: sid
+      });
+      setQuestionRequests(requests.filter((req) => !dismissedQuestions.has(req.id)));
+    } catch (e) {
+      pushConnLog(`question.list error ${String(e)}`, 'error');
+    }
   }
 
   function getOlderCursorBackoff(sessionKey: string, cursor: string): { retryAt: number; failures: number } | null {
@@ -1344,8 +1740,7 @@ export default function App() {
     const reqKey = `${targetSessionId}|${fetchLimit}|${before || '-'}`;
     const existing = inflightMessageReqRef.current[reqKey];
     if (existing) {
-      await existing;
-      return undefined;
+      return await existing;
     }
     const run = (async () => {
       try {
@@ -1463,9 +1858,9 @@ export default function App() {
 
       if (opts?.jumpToLatest) {
         forceScrollToLatestUntilRef.current = Date.now() + 800;
-        requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
-        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 120);
-        setTimeout(() => messageScrollRef.current?.scrollToEnd({ animated: false }), 320);
+        requestAnimationFrame(() => scrollToLatest(true));
+        setTimeout(() => scrollToLatest(true), 120);
+        setTimeout(() => scrollToLatest(true), 320);
       }
       const latestTurnHasError = (() => {
         const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
@@ -1679,9 +2074,12 @@ export default function App() {
     setSessionHasMore({});
     setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
+    sessionOptimisticUserMapRef.current = {};
+    draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     olderCursorBackoffRef.current = {};
+    bumpOptimisticVersion();
     const pname = projectNameFromPath(next);
     setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     allowAutoScrollRef.current = false;
@@ -1714,9 +2112,13 @@ export default function App() {
     const syncFromServer = () => {
       if (streamSessionRef.current !== targetSessionId || sessionIdRef.current !== targetSessionId) return;
       const now = Date.now();
-      if (now - lastSyncAt < 700) return;
+      if (now - lastSyncAt < 300) return;
       lastSyncAt = now;
-      void syncSessionMessages(targetSessionId, { limit: INITIAL_SESSION_LIMIT });
+      void syncSessionMessages(targetSessionId, {
+        limit: INITIAL_SESSION_LIMIT,
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
+        jumpToLatest: true
+      });
       void syncSessionStatus(targetSessionId);
     };
 
@@ -1789,11 +2191,27 @@ export default function App() {
     return sessionStatusMap[sid] || { type: 'idle' as const };
   }, [sessionId, sessionStatusMap]);
 
-  const sessionWorking = useMemo(() => {
+  const localPendingCount = useMemo(() => {
+    const sid = toText(sessionId).trim();
+    if (!sid) {
+      if (draftOptimisticUserRef.current) return 1;
+      return Object.values(sessionOptimisticUserMapRef.current).reduce((sum, items) => sum + items.length, 0);
+    }
+    return Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid].length : 0;
+  }, [optimisticVersion, sessionId]);
+
+  const localSending = localPendingCount > 0;
+
+  const remoteSessionWorking = useMemo(() => {
     if (latestTurnMeta.hasError) return false;
     if (currentSessionStatus.type === 'busy' || currentSessionStatus.type === 'retry') return true;
     return streaming;
   }, [currentSessionStatus, latestTurnMeta.hasError, streaming]);
+
+  const sessionWorking = useMemo(() => {
+    if (localSending) return true;
+    return remoteSessionWorking;
+  }, [localSending, remoteSessionWorking]);
 
   const showThinkingPlaceholder = useMemo(() => {
     if (!sessionWorking) return false;
@@ -1819,6 +2237,31 @@ export default function App() {
     }
     return true;
   }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
+
+  const displayedTurns = useMemo(() => renderedTurns, [renderedTurns]);
+
+  const latestTodoCard = useMemo(() => {
+    for (let turnIdx = displayedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
+      const turn = displayedTurns[turnIdx];
+      for (let itemIdx = turn.items.length - 1; itemIdx >= 0; itemIdx -= 1) {
+        const item = turn.items[itemIdx];
+        if (item.kind === 'todo') return item.todo;
+      }
+    }
+    return null;
+  }, [displayedTurns]);
+
+  useEffect(() => {
+    if (!latestTodoCard) {
+      setTodoDockCollapsed(false);
+      return;
+    }
+    if (sessionWorking) {
+      setTodoDockCollapsed(false);
+      return;
+    }
+    setTodoDockCollapsed(true);
+  }, [latestTodoCard?.id, latestTodoCard?.summary, latestTodoCard?.finished, sessionWorking]);
 
   async function connectWithAddressAndCode(
     inputBaseUrl: string,
@@ -2355,29 +2798,20 @@ export default function App() {
       return;
     }
     setBusy(true);
-    // Sending in current session should keep view pinned to latest output.
     allowAutoScrollRef.current = true;
+    const optimisticAt = Date.now();
+    const optimisticMessage: OptimisticUserMessage = {
+      id: `local:${optimisticAt}`,
+      text: payloadPrompt,
+      createdAt: optimisticAt
+    };
     try {
-      // Optimistic UI: show the user bubble immediately to avoid "flash then suddenly appear".
-      const optimisticAt = Date.now();
-      const optimisticId = `local:${optimisticAt}`;
-      setRenderedTurns((prev) => {
-        const next = [...prev];
-        next.push({
-          id: `turn:chat:${optimisticId}`,
-          createdAt: optimisticAt,
-          userMessage: { id: optimisticId, role: 'user', text: payloadPrompt, createdAt: optimisticAt },
-          items: [],
-          signature: `optimistic:${payloadPrompt.length}`
-        });
-        return next;
-      });
-      setMessages((prev) => {
-        const next = [...prev];
-        next.push({ id: optimisticId, role: 'user', text: payloadPrompt, createdAt: optimisticAt });
-        return next;
-      });
-
+      const currentSessionId = toText(sessionIdRef.current).trim();
+      if (currentSessionId) {
+        upsertOptimisticUserMessage(currentSessionId, optimisticMessage);
+      } else {
+        renderDraftOptimisticMessage(optimisticMessage);
+      }
       const normalizedModel = model.trim();
       const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
       pushConnLog(`POST prompt sid=${sessionId || '(new)'} model=${requestModel || '(default)'}`);
@@ -2389,10 +2823,10 @@ export default function App() {
         sessionId: sessionId || undefined,
         model: requestModel
       });
+      moveDraftOptimisticToSession(res.sessionId, optimisticMessage);
       setActiveSession(res.sessionId);
       setPrompt('');
       startStream(res.sessionId);
-      // Do not block UI on message refresh. Fetch in background.
       void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
         fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
@@ -2402,6 +2836,12 @@ export default function App() {
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);
       setStatus('已发送');
     } catch (e) {
+      const currentSessionId = toText(sessionIdRef.current).trim();
+      if (currentSessionId) {
+        dropOptimisticUserMessage(currentSessionId, optimisticMessage.id);
+      } else {
+        clearDraftOptimisticMessage(optimisticMessage.id);
+      }
       const msg = String(e);
       pushConnLog(`POST prompt error ${msg}`, 'error');
       if (msg.includes('invalid bearer token') && pairCode.trim()) {
@@ -2456,6 +2896,8 @@ export default function App() {
     allowAutoScrollRef.current = true;
     setMessages([]);
     setRenderedTurns([]);
+    draftOptimisticUserRef.current = null;
+    bumpOptimisticVersion();
     setSessionHistoryRetryHint((prev) => {
       if (!oldSid || !(oldSid in prev)) return prev;
       const next = { ...prev };
@@ -2495,9 +2937,12 @@ export default function App() {
     setSessionHasMore({});
     setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
+    sessionOptimisticUserMapRef.current = {};
+    draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     olderCursorBackoffRef.current = {};
+    bumpOptimisticVersion();
     setAuthAsciiBrand(pickRandomAuthAsciiBrand());
     setStatus('已退出授权');
     pushConnLog('reset auth');
@@ -2780,118 +3225,150 @@ export default function App() {
             </View>
           </View>
         ) : (
-          <FlatList
-            ref={messageScrollRef}
-            style={styles.msgScroll}
-            contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
-            onLayout={(evt) => {
-              messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
-            }}
-            data={renderedTurns}
-            initialNumToRender={3}
-            maxToRenderPerBatch={3}
-            windowSize={4}
-            removeClippedSubviews={Platform.OS === 'web'}
-            alwaysBounceVertical
-            bounces
-            overScrollMode="always"
-            scrollEventThrottle={16}
-            maintainVisibleContentPosition={Platform.OS === 'ios' ? { minIndexForVisible: 0 } : undefined}
-            onScrollBeginDrag={() => {
-              // 用户手势优先：立即取消会话切换后的“强制回到底部”窗口。
-              forceScrollToLatestUntilRef.current = 0;
-              allowAutoScrollRef.current = false;
-              messageUserScrollingRef.current = true;
-            }}
-            onScrollEndDrag={() => {
-              messageUserScrollingRef.current = false;
-            }}
-            onMomentumScrollBegin={() => {
-              messageUserScrollingRef.current = true;
-            }}
-            onMomentumScrollEnd={() => {
-              messageUserScrollingRef.current = false;
-            }}
-            refreshControl={
-              sessionId ? (
-                <RefreshControl
-                  refreshing={loadingOlder}
-                  onRefresh={() => {
-                    if (!sessionHasMore[sessionId]) return;
-                    void onLoadOlderMessages();
-                  }}
-                  enabled={!!sessionHasMore[sessionId]}
-                  tintColor="#607287"
-                  colors={['#607287']}
-                  progressViewOffset={28}
-                  title={sessionHasMore[sessionId] ? '下拉加载更多消息' : '没有更多消息'}
-                  titleColor="#607287"
-                />
-              ) : undefined
-            }
-            onScroll={(evt) => {
-              const y = Number(evt.nativeEvent.contentOffset?.y || 0);
-              // 只有用户“接近底部”时，才允许新消息自动滚到最新。
-              // 否则用户在看历史消息时，刷新/新消息会把视图强行拉到底部。
-              const layoutH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
-              const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
-              const distToBottom = contentH - (y + layoutH);
-              const nearBottom = distToBottom < 120; // px threshold
-              // 用户上滑看历史时，禁止自动回底；仅在用户非滚动态再更新自动回底开关。
-              if (!messageUserScrollingRef.current) {
-                allowAutoScrollRef.current = nearBottom;
-              } else if (!nearBottom) {
+          <View style={styles.chatListStage}>
+            <FlatList
+              ref={messageScrollRef}
+              style={styles.msgScroll}
+              contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
+              onLayout={(evt) => {
+                messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
+              }}
+              data={displayedTurns}
+              initialNumToRender={3}
+              maxToRenderPerBatch={3}
+              windowSize={4}
+              removeClippedSubviews={Platform.OS === 'web'}
+              alwaysBounceVertical
+              bounces
+              overScrollMode="always"
+              scrollEventThrottle={16}
+              viewabilityConfig={messageViewabilityConfigRef.current}
+              maintainVisibleContentPosition={Platform.OS === 'ios' ? { minIndexForVisible: 0 } : undefined}
+              onScrollBeginDrag={() => {
+                forceScrollToLatestUntilRef.current = 0;
                 allowAutoScrollRef.current = false;
+                messageUserScrollingRef.current = true;
+              }}
+              onScrollEndDrag={() => {
+                messageUserScrollingRef.current = false;
+              }}
+              onMomentumScrollBegin={() => {
+                messageUserScrollingRef.current = true;
+              }}
+              onMomentumScrollEnd={() => {
+                messageUserScrollingRef.current = false;
+                const latestTurn = displayedTurns[displayedTurns.length - 1];
+                allowAutoScrollRef.current = !!latestTurn;
+              }}
+              refreshControl={
+                sessionId ? (
+                  <RefreshControl
+                    refreshing={loadingOlder}
+                    onRefresh={() => {
+                      if (!sessionHasMore[sessionId]) return;
+                      void onLoadOlderMessages();
+                    }}
+                    enabled={!!sessionHasMore[sessionId]}
+                    tintColor="#607287"
+                    colors={['#607287']}
+                    progressViewOffset={28}
+                    title={sessionHasMore[sessionId] ? '下拉加载更多消息' : '没有更多消息'}
+                    titleColor="#607287"
+                  />
+                ) : undefined
               }
-              onMessageListScroll(y);
-            }}
-            onViewableItemsChanged={({ viewableItems }) => {
-              const v = viewableItems?.[0];
-              const it = (v as any)?.item as MobileRenderedTurn | undefined;
-              if (!it) return;
-              topVisibleStableKeyRef.current = it.id;
-            }}
-            onContentSizeChange={(_w, h) => {
-              if (suppressAutoScrollRef.current) return;
-              if (loadingOlder) return;
-              if (messageUserScrollingRef.current) return;
-              if (Date.now() < forceScrollToLatestUntilRef.current) {
-                requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: false }));
-                return;
-              }
-              if (!allowAutoScrollRef.current) return;
-              requestAnimationFrame(() => messageScrollRef.current?.scrollToEnd({ animated: true }));
-            }}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item, index }) => (
-              <MobileTurnCell turn={item} streaming={streaming} isLastTurn={index === renderedTurns.length - 1} />
-            )}
-            ListHeaderComponent={
-              sessionId ? (
-                <View style={styles.loadEarlierWrap}>
-                  {toText(sessionHistoryRetryHint[sessionId]).trim() ? (
-                    <Text style={styles.loadEarlierHint}>{toText(sessionHistoryRetryHint[sessionId])}</Text>
-                  ) : null}
-                </View>
-              ) : null
-            }
-            ListFooterComponent={
-              showThinkingPlaceholder ? (
-                <View style={styles.thinkingWrap}>
-                  <View style={styles.thinkingCard}>
-                    <View style={styles.thinkingDots}>
-                      <View style={[styles.thinkingDot, thinkingPulse ? styles.thinkingDotOn : null]} />
-                      <View style={[styles.thinkingDot, !thinkingPulse ? styles.thinkingDotOn : null]} />
-                      <View style={styles.thinkingDot} />
-                    </View>
-                    <Text style={styles.thinkingLabel}>Thinking</Text>
+              onScroll={(evt) => {
+                const y = Number(evt.nativeEvent.contentOffset?.y || 0);
+                onMessageListScroll(y);
+              }}
+              onViewableItemsChanged={({ viewableItems }) => {
+                const rows = Array.isArray(viewableItems) ? viewableItems : [];
+                const topmost = rows.reduce<{ index: number; item: MobileRenderedTurn } | null>((best, entry) => {
+                  const item = (entry as any)?.item as MobileRenderedTurn | undefined;
+                  const index = Number((entry as any)?.index);
+                  if (!item || !Number.isFinite(index)) return best;
+                  if (!best || index < best.index) return { index, item };
+                  return best;
+                }, null);
+                if (!topmost?.item) return;
+                const latestTurn = displayedTurns[displayedTurns.length - 1];
+                allowAutoScrollRef.current = !!latestTurn && latestTurn.id === topmost.item.id;
+              }}
+              onContentSizeChange={(_w, h) => {
+                if (loadingOlder) return;
+                if (messageUserScrollingRef.current) return;
+                if (Date.now() < forceScrollToLatestUntilRef.current) {
+                  requestAnimationFrame(() => scrollToLatest(false));
+                  return;
+                }
+              }}
+              onScrollToIndexFailed={() => {
+                requestAnimationFrame(() => scrollToLatest(false));
+              }}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item, index }) => (
+                <MobileTurnCell
+                  turn={item}
+                  streaming={streaming}
+                  isLastTurn={index === displayedTurns.length - 1}
+                  thinkingPulse={thinkingPulse}
+                />
+              )}
+              ListHeaderComponent={
+                sessionId ? (
+                  <View style={styles.loadEarlierWrap}>
+                    {toText(sessionHistoryRetryHint[sessionId]).trim() ? (
+                      <Text style={styles.loadEarlierHint}>{toText(sessionHistoryRetryHint[sessionId])}</Text>
+                    ) : null}
                   </View>
-                </View>
-              ) : null
-            }
-          />
+                ) : null
+              }
+              ListFooterComponent={null}
+            />
+          </View>
         )}
       </View>
+
+      {latestTodoCard ? (
+        <View style={styles.todoDockWrap}>
+          <MobileTodoCardView
+            card={latestTodoCard}
+            compact
+            collapsed={todoDockCollapsed}
+            pulse={thinkingPulse}
+            onToggle={() => setTodoDockCollapsed((prev) => !prev)}
+          />
+        </View>
+      ) : null}
+
+      {questionRequests.length > 0 && questionRequests.map((req) => (
+        <View key={req.id} style={styles.questionDockWrap}>
+          <QuestionDock
+            request={req}
+            onReply={(requestId, answers) => {
+              setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+              setDismissedQuestions((prev) => new Set([...prev, requestId]));
+              void replyQuestion({
+                baseUrl: serverUrl,
+                token,
+                repoPath,
+                requestId,
+                answers
+              });
+            }}
+            onDismiss={(requestId) => {
+              setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+              setDismissedQuestions((prev) => new Set([...prev, requestId]));
+              void rejectQuestion({
+                baseUrl: serverUrl,
+                token,
+                repoPath,
+                requestId
+              });
+            }}
+          />
+        </View>
+      ))}
 
       <View style={styles.inputDock}>
         <View style={styles.inputRow}>
@@ -2915,7 +3392,7 @@ export default function App() {
         </View>
       </View>
 
-        {drawerSide ? (
+        {activeDrawerSide ? (
         <View style={styles.drawerMask}>
           <Animated.View
             style={[
@@ -2925,7 +3402,7 @@ export default function App() {
           >
             <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
           </Animated.View>
-          {drawerSide === 'left' ? (
+          {activeDrawerSide === 'left' ? (
             <Animated.View
               style={[
                 styles.drawerPanelLeft,
@@ -2974,12 +3451,20 @@ export default function App() {
                       </Pressable>
                     );
                   })}
+                  {!sessionSearch.trim() && sessions.length > sessionDisplayedCount ? (
+                    <Pressable
+                      style={styles.drawerMoreBtn}
+                      onPress={() => setSessionDisplayedCount((p) => Math.min(p + 5, sessions.length))}
+                    >
+                      <Text style={styles.drawerMoreTxt}>… more</Text>
+                    </Pressable>
+                  ) : null}
                 </Animated.View>
                 {filteredSessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无匹配会话</Text> : null}
               </ScrollView>
             </Animated.View>
           ) : null}
-          {drawerSide === 'right' ? (
+          {activeDrawerSide === 'right' ? (
             <Animated.View
               style={[
                 styles.drawerPanelRight,
@@ -3529,6 +4014,7 @@ const styles = StyleSheet.create({
   iconTxt: { color: '#394455', fontWeight: '700' },
 
   chatBodyWrap: { flex: 1, paddingHorizontal: 16 },
+  chatListStage: { flex: 1, position: 'relative' },
   blankWrap: { marginTop: 26, gap: 10 },
   blankTitle: { fontSize: 40, fontWeight: '700', color: '#c7ced8' },
   blankSub: { color: '#7e8898', fontSize: 18 },
@@ -3553,10 +4039,186 @@ const styles = StyleSheet.create({
   historyHintText: { color: '#7c8aa0', fontSize: 12 },
   thinkWrap: { width: '100%', alignItems: 'flex-start' },
   contextWrap: { width: '100%', alignItems: 'flex-start' },
+  todoInlineWrap: { width: '100%', alignItems: 'flex-start' },
   dividerWrap: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
   dividerLine: { flex: 1, height: 1, backgroundColor: '#d8dee8' },
   dividerLabel: { color: '#9aa4b2', fontSize: 11 },
   errorWrap: { width: '100%', alignItems: 'flex-start' },
+  todoInlineCard: {
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#dbe5f1',
+    backgroundColor: '#f8fbff',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10,
+    shadowColor: '#96a9c4',
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 1
+  },
+  todoInlineCardCompact: {
+    width: '100%',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#dbe5f1',
+    backgroundColor: '#f8fbff',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10
+  },
+  todoCardHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  todoCardHeadCompact: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  todoCardHeadMain: { flex: 1, gap: 5 },
+  todoTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  todoTitle: { color: '#000000', fontSize: 13, fontWeight: '700' },
+  todoChipRunning: {
+    minWidth: 40,
+    height: 22,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#000000',
+    borderWidth: 0
+  },
+  todoChipRunningText: { color: '#ffffff', fontSize: 11, fontWeight: '600' },
+  todoChipDone: {
+    minWidth: 40,
+    height: 22,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#000000',
+    borderWidth: 0
+  },
+  todoChipDoneText: { color: '#ffffff', fontSize: 11, fontWeight: '600' },
+  todoSummary: { color: '#666666', fontSize: 12, lineHeight: 17, fontWeight: '400' },
+  todoChevron: {
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '0deg' }]
+  },
+  todoChevronCollapsed: {
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ rotate: '-90deg' }]
+  },
+  todoChevronLineLeft: {
+    position: 'absolute',
+    width: 6,
+    height: 1.5,
+    borderRadius: 999,
+    backgroundColor: '#73839a',
+    transform: [{ translateX: -1.5 }, { rotate: '45deg' }]
+  },
+  todoChevronLineRight: {
+    position: 'absolute',
+    width: 6,
+    height: 1.5,
+    borderRadius: 999,
+    backgroundColor: '#73839a',
+    transform: [{ translateX: 1.5 }, { rotate: '-45deg' }]
+  },
+  todoToggleBtn: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+    marginTop: -14
+  },
+  todoArrow: {
+    width: 10,
+    height: 10,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: '#1a1a1a',
+    transform: [{ rotate: '45deg' }]
+  },
+  todoArrowUp: {
+    transform: [{ rotate: '-135deg' }]
+  },
+  todoList: { gap: 8, paddingTop: 4 },
+  todoRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  todoRowText: { flex: 1, color: '#1a1a1a', fontSize: 13, lineHeight: 18, fontWeight: '500' },
+  todoRowTextDone: { color: '#999999', textDecorationLine: 'line-through' },
+  todoRowTextCancelled: { color: '#bbbbbb', textDecorationLine: 'line-through' },
+  todoStatusPending: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: '#e0e0e0',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  todoStatusCancelled: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: '#cccccc',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  todoStatusCompleted: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 0,
+    backgroundColor: '#000000',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  todoStatusCompletedText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
+  todoStatusRunningContainer: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative'
+  },
+  todoStatusRunningPulse1: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.08)'
+  },
+  todoStatusRunningPulse2: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.2)'
+  },
+  todoStatusRunningCenter: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: '#000000'
+  },
+  todoThinkingDots: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  todoThinkingDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#999999'
+  },
+  todoThinkingDotOn: { backgroundColor: '#000000', transform: [{ translateY: -0.5 }, { scale: 1.1 }] },
+  todoThinkingDotMid: { backgroundColor: '#666666' },
+  todoThinkingDotSoft: { backgroundColor: '#cccccc' },
   contextCard: {
     width: '96%',
     maxWidth: '96%',
@@ -3636,6 +4298,7 @@ const styles = StyleSheet.create({
   mdBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   mdBulletDot: { fontSize: 14, lineHeight: 20 },
   thinkingWrap: { alignItems: 'flex-start' },
+  thinkingStickyWrap: { alignItems: 'flex-start', paddingBottom: 6 },
   thinkingCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3679,6 +4342,38 @@ const styles = StyleSheet.create({
   bubbleContent: { width: '100%', flexShrink: 1, minWidth: 0 },
   bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },
   bubbleAssistantText: { color: '#2f3948', lineHeight: 20 },
+
+  todoDockWrap: {
+    marginHorizontal: 12,
+    marginBottom: 8
+  },
+  questionDockWrap: {
+    marginHorizontal: 12,
+    marginBottom: 8
+  },
+  todoDockCompact: {
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#1a1a1a',
+    backgroundColor: '#ffffff',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 8,
+    shadowColor: '#000000',
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3
+  },
+  todoDock: {
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#1a1a1a',
+    backgroundColor: '#ffffff',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 8
+  },
 
   inputDock: {
     marginHorizontal: 12,
@@ -3836,6 +4531,8 @@ const styles = StyleSheet.create({
   drawerScroll: { flex: 1 },
   drawerList: { paddingBottom: 42, paddingTop: 4 },
   drawerItemGap: { marginBottom: 8 },
+  drawerMoreBtn: { alignItems: 'center', paddingVertical: 12, marginTop: 6 },
+  drawerMoreTxt: { color: '#607287', fontSize: 12, letterSpacing: 0.3 },
   drawerSessionSearch: {
     height: 42,
     borderRadius: 12,

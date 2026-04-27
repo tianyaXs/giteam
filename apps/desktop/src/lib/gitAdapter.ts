@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitUserIdentity, GitWorktreeOverview } from "./types";
+import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitLinkedWorktree, GitUserIdentity, GitWorktreeCreateResult, GitWorktreeOverview, GitWorktreeRemoveResult } from "./types";
 
 export async function getHeadCommit(repoPath: string): Promise<string> {
   return invoke<string>("run_git_head_commit", { repoPath });
@@ -53,12 +53,59 @@ export async function getGitWorktreeOverview(repoPath: string): Promise<GitWorkt
   return invoke<GitWorktreeOverview>("run_git_worktree_overview", { repoPath });
 }
 
+export async function getGitWorktreeList(repoPath: string): Promise<GitLinkedWorktree[]> {
+  return invoke<GitLinkedWorktree[]>("run_git_worktree_list", { repoPath });
+}
+
 export async function getGitWorktreeFilePatch(repoPath: string, filePath: string): Promise<string> {
   return invoke<string>("run_git_worktree_file_patch", { repoPath, filePath });
 }
 
+export async function gitCheckoutBranch(repoPath: string, branchName: string): Promise<string> {
+  return invoke<string>("run_git_checkout_branch", { repoPath, branchName });
+}
+
+export async function createGitBranch(repoPath: string, branchName: string, startPoint?: string): Promise<string> {
+  return invoke<string>("run_git_create_branch", { repoPath, branchName, startPoint });
+}
+
+export async function createGitWorktreeFromBranch(repoPath: string, branchName: string, targetPath?: string): Promise<GitWorktreeCreateResult> {
+  return invoke<GitWorktreeCreateResult>("run_git_create_worktree_from_branch", { repoPath, branchName, targetPath });
+}
+
+export async function removeGitWorktree(repoPath: string, targetPath: string): Promise<GitWorktreeRemoveResult> {
+  return invoke<GitWorktreeRemoveResult>("run_git_remove_worktree", { repoPath, targetPath });
+}
+
 export async function runRepoTerminalCommand(repoPath: string, command: string): Promise<string> {
   return invoke<string>("run_repo_terminal_command", { repoPath, command });
+}
+
+export type RepoTerminalSnapshot = {
+  output: string;
+  seq: number;
+  alive: boolean;
+  cwd: string;
+};
+
+export async function startRepoTerminalSession(repoPath: string, sessionId?: string): Promise<RepoTerminalSnapshot> {
+  return invoke<RepoTerminalSnapshot>("start_repo_terminal_session", { repoPath, sessionId });
+}
+
+export async function sendRepoTerminalInput(repoPath: string, input: string, sessionId?: string): Promise<void> {
+  return invoke<void>("send_repo_terminal_input", { repoPath, sessionId, input });
+}
+
+export async function readRepoTerminalOutput(repoPath: string, afterSeq: number, sessionId?: string): Promise<RepoTerminalSnapshot> {
+  return invoke<RepoTerminalSnapshot>("read_repo_terminal_output", { repoPath, sessionId, afterSeq });
+}
+
+export async function clearRepoTerminalSession(repoPath: string, sessionId?: string): Promise<void> {
+  return invoke<void>("clear_repo_terminal_session", { repoPath, sessionId });
+}
+
+export async function closeRepoTerminalSession(repoPath: string, sessionId?: string): Promise<void> {
+  return invoke<void>("close_repo_terminal_session", { repoPath, sessionId });
 }
 
 export async function getGitUserIdentity(repoPath: string): Promise<GitUserIdentity> {

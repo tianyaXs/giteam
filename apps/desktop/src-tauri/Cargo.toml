@@ -18,5 +18,9 @@ rfd = "0.14"
 urlencoding = "2"
 base64 = "0.22"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["std", "NSMenu", "NSEvent", "NSResponder", "NSView"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

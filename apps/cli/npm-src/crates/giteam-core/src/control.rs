@@ -1031,6 +1031,9 @@ fn compact_mobile_tool_metadata(metadata: Option<&Map<String, Value>>) -> Option
     if let Some(v) = metadata.get("sessionID").cloned() {
         out.insert("sessionID".to_string(), v);
     }
+    if let Some(v) = metadata.get("todos").cloned() {
+        out.insert("todos".to_string(), v);
+    }
     if out.is_empty() {
         None
     } else {
@@ -1051,6 +1054,8 @@ fn compact_mobile_tool_input(input: Option<&Map<String, Value>>) -> Option<Value
         "url",
         "path",
         "subagent_type",
+        "todos",
+        "questions",
     ] {
         if let Some(v) = input.get(key).cloned() {
             out.insert(key.to_string(), v);

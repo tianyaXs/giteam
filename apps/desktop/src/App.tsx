@@ -7,17 +7,26 @@ import { Workbench } from "./layout/Workbench";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
+  closeRepoTerminalSession,
+  clearRepoTerminalSession,
+  createGitBranch,
+  createGitWorktreeFromBranch,
   getBranchCommits,
   getCommitChangedFiles,
   getCommitFilePatch,
   getCommitGraph,
+  getGitWorktreeList,
   getGitUserIdentity,
   getGitWorktreeFilePatch,
   getGitWorktreeOverview,
   getLocalBranches,
+  gitCheckoutBranch,
+  removeGitWorktree,
+  readRepoTerminalOutput,
   gitPull,
   gitPush,
-  runRepoTerminalCommand
+  sendRepoTerminalInput,
+  startRepoTerminalSession
 } from "./lib/gitAdapter";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
@@ -34,17 +43,32 @@ import type {
   GitBranchSummary,
   GitCommitSummary,
   GitGraphNode,
+  GitLinkedWorktree,
   GitUserIdentity,
+  GitWorktreeEntry,
   GitWorktreeOverview,
+  QuestionRequest,
+  QuestionAnswer,
   RepositoryEntry,
   ReviewAction,
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
+import { QuestionDock } from "./components/QuestionDock";
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
 type RightPaneTab = "worktree" | "changes" | "terminal";
+type TerminalTabState = {
+  id: string;
+  title: string;
+  input: string;
+  output: string;
+  seq: number;
+  alive: boolean;
+  history: string[];
+  historyIndex: number;
+};
 
 function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
   const dividerX = props.side === "left" ? 9 : 15;
@@ -69,7 +93,16 @@ function SendIcon(props: { busy: boolean }) {
 function RightPaneTabIcon(props: { tab: RightPaneTab; active: boolean }) {
   const stroke = props.active ? "currentColor" : "currentColor";
   if (props.tab === "worktree") {
-    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5H11L12.8 9.5H19V17.5H5V7.5Z" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinejoin="round" /><path d="M5 9.5H19" fill="none" stroke={stroke} strokeWidth="1.6" /></svg>;
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
+        <path d="M7 5v6a3 3 0 0 0 3 3h6" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M7 5v-1" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+        <path d="M7 14v5" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="7" cy="4" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
+        <circle cx="7" cy="19" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
+        <circle cx="18" cy="14" r="1.9" fill="currentColor" opacity={props.active ? 0.95 : 0.62} />
+      </svg>
+    );
   }
   if (props.tab === "changes") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 12H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 17H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="5" cy="7" r="1.2" fill="currentColor" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="5" cy="17" r="1.2" fill="currentColor" /></svg>;
@@ -101,6 +134,14 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
 }
 type DiffRowKind = "meta" | "add" | "del" | "ctx";
 type DiffRow = { kind: DiffRowKind; left: string; right: string };
+type WorktreePatchRow = {
+  kind: DiffRowKind;
+  text: string;
+  marker: string;
+  oldLine: number | null;
+  newLine: number | null;
+  tone: "meta" | "hunk" | "add" | "del" | "ctx";
+};
 type StatusSession = { title: string; quote?: string; meta?: string };
 type ParsedStatus = { headline?: string; project?: string; sessions: StatusSession[] };
 type TranscriptMessage = { role: "User" | "Assistant"; content: string };
@@ -273,13 +314,11 @@ type OpencodeDetailedMessage = {
   info?: Record<string, unknown>;
   parts?: OpencodeDetailedPart[];
 };
-
-type TerminalEntry = {
+type OpencodeTodoItem = {
   id: string;
-  command: string;
-  output: string;
-  createdAt: number;
-  ok: boolean;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority?: string;
 };
 
 type OpencodeMessageWindowCacheEntry = {
@@ -317,6 +356,131 @@ const EMPTY_GIT_IDENTITY: GitUserIdentity = {
   name: "",
   email: ""
 };
+
+type WorktreeTreeNode = {
+  name: string;
+  path: string;
+  kind: "dir" | "file";
+  children: WorktreeTreeNode[];
+  entry?: GitWorktreeEntry;
+};
+
+function buildWorktreeTree(entries: GitWorktreeEntry[]): WorktreeTreeNode[] {
+  const root: WorktreeTreeNode[] = [];
+  const dirMap = new Map<string, WorktreeTreeNode>();
+
+  for (const entry of entries) {
+    const parts = entry.path.split("/").filter(Boolean);
+    let parentPath = "";
+    let level = root;
+
+    parts.forEach((part, index) => {
+      const nextPath = parentPath ? `${parentPath}/${part}` : part;
+      const isFile = index === parts.length - 1;
+      let node = level.find((item) => item.path === nextPath);
+      if (!node && !isFile) node = dirMap.get(nextPath);
+      if (!node) {
+        node = {
+          name: part,
+          path: nextPath,
+          kind: isFile ? "file" : "dir",
+          children: [],
+          entry: isFile ? entry : undefined
+        };
+        level.push(node);
+        if (!isFile) dirMap.set(nextPath, node);
+      }
+      parentPath = nextPath;
+      level = node.children;
+    });
+  }
+
+  const sortNodes = (nodes: WorktreeTreeNode[]): WorktreeTreeNode[] => nodes
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    })
+    .map((node) => ({
+      ...node,
+      children: sortNodes(node.children)
+    }));
+
+  return sortNodes(root);
+}
+
+function collectWorktreeDirPaths(nodes: WorktreeTreeNode[]): string[] {
+  return nodes.flatMap((node) => {
+    if (node.kind !== "dir") return [];
+    return [node.path, ...collectWorktreeDirPaths(node.children)];
+  });
+}
+
+function getWorktreeDisplayStatus(entry: GitWorktreeEntry): string {
+  const flags = `${entry.indexStatus}${entry.worktreeStatus}`;
+  if (flags.includes("?")) return "A";
+  if (flags.includes("A")) return "A";
+  if (flags.includes("D")) return "D";
+  if (flags.includes("R")) return "R";
+  if (flags.includes("C")) return "C";
+  if (flags.includes("M")) return "M";
+  return flags.trim() || "-";
+}
+
+function getWorktreeFileKindLabel(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() || "file";
+  if (ext === "tsx" || ext === "jsx") return "tsx";
+  if (ext === "ts" || ext === "js") return ext;
+  if (ext === "css" || ext === "html" || ext === "rs") return ext;
+  return ext.slice(0, 4);
+}
+
+function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
+  if (!entry) return "未选择文件";
+  if (entry.untracked) return "新文件";
+  if (entry.staged && entry.unstaged) return "暂存 + 未暂存";
+  if (entry.staged) return "已暂存";
+  if (entry.unstaged) return "未暂存";
+  return "已修改";
+}
+
+function buildWorktreePatchRows(patch: string): WorktreePatchRow[] {
+  if (!patch.trim()) return [];
+  const rows: WorktreePatchRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) {
+      const match = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+      if (match) {
+        oldLine = Number(match[1]);
+        newLine = Number(match[2]);
+      }
+      rows.push({ kind: "meta", text: line, marker: "@@", oldLine: null, newLine: null, tone: "hunk" });
+      continue;
+    }
+    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
+      rows.push({ kind: "meta", text: line, marker: "•", oldLine: null, newLine: null, tone: "meta" });
+      continue;
+    }
+    if (line.startsWith("+")) {
+      rows.push({ kind: "add", text: line.slice(1), marker: "+", oldLine: null, newLine, tone: "add" });
+      newLine += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      rows.push({ kind: "del", text: line.slice(1), marker: "-", oldLine, newLine: null, tone: "del" });
+      oldLine += 1;
+      continue;
+    }
+    const text = line.startsWith(" ") ? line.slice(1) : line;
+    rows.push({ kind: "ctx", text, marker: " ", oldLine, newLine, tone: "ctx" });
+    oldLine += 1;
+    newLine += 1;
+  }
+
+  return rows;
+}
 
 function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
   const v = String(raw || "").trim().toLowerCase();
@@ -395,6 +559,40 @@ function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): b
     return true;
   }
   return false;
+}
+
+function parseOpencodeTodoItems(input: unknown): OpencodeTodoItem[] {
+  if (!Array.isArray(input)) return [];
+  const items: OpencodeTodoItem[] = [];
+  input.forEach((item, index) => {
+    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+    if (!row) return;
+    const content = String(row.content ?? "").trim();
+    const rawStatus = String(row.status ?? "pending").trim().toLowerCase();
+    if (!content) return;
+    const status: OpencodeTodoItem["status"] =
+      rawStatus === "completed" || rawStatus === "cancelled" || rawStatus === "in_progress"
+        ? rawStatus
+        : "pending";
+    items.push({
+      id: String(row.id ?? `todo-${index + 1}`).trim() || `todo-${index + 1}`,
+      content,
+      status,
+      priority: String(row.priority ?? "").trim() || undefined
+    });
+  });
+  return items;
+}
+
+function readOpencodeTodosFromPart(part: OpencodeDetailedPart | undefined | null): OpencodeTodoItem[] {
+  if (!part || String((part as any)?.type || "") !== "tool") return [];
+  if (String((part as any)?.tool || "") !== "todowrite") return [];
+  const state = ((part as any)?.state || {}) as Record<string, unknown>;
+  const metadata = ((part as any)?.metadata || state.metadata || {}) as Record<string, unknown>;
+  const input = (state.input || {}) as Record<string, unknown>;
+  const metaTodos = parseOpencodeTodoItems(metadata.todos);
+  if (metaTodos.length > 0) return metaTodos;
+  return parseOpencodeTodoItems(input.todos);
 }
 
 function isOpencodeContextTool(tool: string): boolean {
@@ -522,6 +720,7 @@ const SIDEBAR_WIDTH_CACHE_KEY = "giteam.layout.sidebar.width.v1";
 const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v1";
 const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
+const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
@@ -608,6 +807,44 @@ function parseModelRef(input: string): { provider: string; model: string } | nul
     provider: full.slice(0, idx),
     model: full.slice(idx + 1)
   };
+}
+
+function sanitizeTerminalOutput(text: string): string {
+  const cleaned = text
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
+    .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
+    .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
+
+  // Handle terminal backspace semantics so "l\bls" becomes "ls".
+  let out = "";
+  for (const ch of cleaned) {
+    if (ch === "\b" || ch === "\u007f") {
+      out = out.slice(0, -1);
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
+  const source = text || "";
+  const lines = source.split("\n");
+  let idx = lines.length - 1;
+  while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
+  if (idx < 0) return { body: "", prompt: "" };
+  const last = lines[idx] || "";
+  const looksLikePrompt = /[#$%]\s*$/.test(last) || /\)\s+[^\n]*\s[%#$]\s*$/.test(last);
+  if (!looksLikePrompt) return { body: source, prompt: "" };
+  // Drop dangling standalone prompt fragments like `%` left by stream chunk boundaries.
+  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*%\s*$/.test(line || ""));
+  const body = bodyLines.join("\n");
+  return { body, prompt: last };
 }
 
 /** Config keys that share the same resolved provider + model id (hide/disable stays consistent across refs). */
@@ -1389,6 +1626,340 @@ function BranchGraphLanes(props: {
   );
 }
 
+type TopologyNodeKind = "repo" | "worktree" | "branch" | "commit";
+
+type TopologyNode = {
+  id: string;
+  kind: TopologyNodeKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label: string;
+  meta: string;
+  accent: string;
+  accentSoft: string;
+  border: string;
+  branch?: string;
+  sha?: string;
+  path?: string;
+  refs?: string[];
+  isCurrent?: boolean;
+  dirtyCount?: number;
+  author?: string;
+  date?: string;
+  rank?: number;
+};
+
+type TopologyEdge = {
+  id: string;
+  from: string;
+  to: string;
+  color: string;
+  dashed?: boolean;
+};
+
+type TopologyGraphModel = {
+  nodes: TopologyNode[];
+  nodeById: Record<string, TopologyNode>;
+  edges: TopologyEdge[];
+  primaryNodeId: string;
+  nearbyNodeIds: Record<string, boolean>;
+  width: number;
+  height: number;
+};
+
+function clampLabel(text: string, max = 14): string {
+  const value = text.trim();
+  if (!value) return "-";
+  return value.length > max ? `${value.slice(0, Math.max(1, max - 2))}..` : value;
+}
+
+function wtLabelFromPath(path: string): string {
+  const parts = path.split(/[\/]/).filter(Boolean);
+  if (parts.length === 0) return "WT";
+  const leaf = parts[parts.length - 1];
+  return clampLabel(leaf, 8);
+}
+
+function shortSha(value: string, size = 8): string {
+  const text = value.trim();
+  if (!text) return "-";
+  return text.slice(0, size);
+}
+
+function branchTone(branchName: string) {
+  const branch = branchName.trim() || "unknown";
+  const prefix = branch.split("/")[0]?.toLowerCase() || branch.toLowerCase();
+  const preset: Record<string, { accent: string; soft: string; border: string }> = {
+    main: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
+    master: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
+    feature: { accent: "#22c55e", soft: "rgba(34,197,94,0.16)", border: "rgba(34,197,94,0.34)" },
+    hotfix: { accent: "#ef4444", soft: "rgba(239,68,68,0.16)", border: "rgba(239,68,68,0.34)" },
+    develop: { accent: "#a855f7", soft: "rgba(168,85,247,0.16)", border: "rgba(168,85,247,0.34)" },
+    release: { accent: "#f59e0b", soft: "rgba(245,158,11,0.16)", border: "rgba(245,158,11,0.34)" },
+    fix: { accent: "#ec4899", soft: "rgba(236,72,153,0.16)", border: "rgba(236,72,153,0.34)" },
+    chore: { accent: "#64748b", soft: "rgba(100,116,139,0.18)", border: "rgba(100,116,139,0.34)" },
+    docs: { accent: "#0ea5e9", soft: "rgba(14,165,233,0.16)", border: "rgba(14,165,233,0.34)" },
+    test: { accent: "#14b8a6", soft: "rgba(20,184,166,0.16)", border: "rgba(20,184,166,0.34)" },
+    refactor: { accent: "#f97316", soft: "rgba(249,115,22,0.16)", border: "rgba(249,115,22,0.34)" }
+  };
+  if (preset[prefix]) return preset[prefix];
+  const hue = Array.from(branch).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 360;
+  return {
+    accent: `hsl(${hue} 72% 56%)`,
+    soft: `hsl(${hue} 72% 56% / 0.16)`,
+    border: `hsl(${hue} 72% 56% / 0.34)`
+  };
+}
+
+function topologyEdgePath(from: TopologyNode, to: TopologyNode): string {
+  const startX = from.x + from.width / 2;
+  const startY = from.y + from.height;
+  const endX = to.x + to.width / 2;
+  const endY = to.y;
+  const midY = Math.round(startY + Math.max(26, (endY - startY) * 0.52));
+  if (Math.abs(startX - endX) < 2) {
+    return `M ${startX} ${startY} L ${endX} ${endY}`;
+  }
+  return `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
+}
+
+function buildTopologyModel(input: {
+  repoName: string;
+  repoPath: string;
+  currentBranch: string;
+  branches: GitBranchSummary[];
+  worktrees: GitLinkedWorktree[];
+  branchCommits: GitCommitSummary[];
+  commitGraph: GitGraphNode[];
+}): TopologyGraphModel {
+  const branchNames = Array.from(new Set(input.branches.map((row) => row.name).filter(Boolean)));
+  const rootBranch = branchNames.find((name) => name === "main")
+    || branchNames.find((name) => name === "master")
+    || input.currentBranch
+    || branchNames[0]
+    || "main";
+  const currentBranch = input.currentBranch || rootBranch;
+  const childBranches = branchNames.filter((name) => name !== rootBranch).slice(0, 8);
+  // Support multiple worktrees per branch (normalize branch names by stripping refs/heads/ prefix)
+  const normalizeBranchName = (name: string): string => name.replace(/^refs\/heads\//, "");
+  // Exclude main worktree (the repository root itself) from the topology
+  const mainWorktreePath = input.repoPath.trim();
+  const extraWorktrees = input.worktrees.filter((wt) => wt.path.trim() !== mainWorktreePath);
+  const worktreesByBranch = new Map<string, GitLinkedWorktree[]>();
+  for (const wt of extraWorktrees) {
+    if (!wt.branch) continue;
+    const normalizedBranch = normalizeBranchName(wt.branch);
+    const list = worktreesByBranch.get(normalizedBranch) || [];
+    list.push(wt);
+    worktreesByBranch.set(normalizedBranch, list);
+  }
+  const graphCommits = input.commitGraph.filter((row) => !row.isConnector && !!row.sha);
+  const branchHeadByName = new Map<string, string>();
+  const parseAllRefs = (text: string): string[] => {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    const inner = trimmed.startsWith("(") && trimmed.endsWith(")") ? trimmed.slice(1, -1) : trimmed;
+    return inner.split(",").map((part) => part.trim()).filter(Boolean);
+  };
+  for (const row of graphCommits) {
+    const refs = parseAllRefs(row.refs);
+    for (const ref of refs) {
+      const branch = branchFromRef(ref, input.branches);
+      if (branch && !branchHeadByName.has(branch)) {
+        branchHeadByName.set(branch, row.sha);
+      }
+    }
+  }
+
+  const branchWidth = 140;
+  const branchHeight = 72;
+  const worktreeWidth = 100;
+  const worktreeHeight = 36;
+  const branchGap = 200;
+  const worktreeGap = 120;
+  const rootY = 60;
+  const branchY = 180;
+  const worktreeOffsetY = branchHeight + 28;
+
+  const childCount = Math.max(1, childBranches.length);
+  const sceneWidth = Math.max(1280, childCount * branchGap + 540);
+  const centerX = sceneWidth / 2;
+
+  const nodes: TopologyNode[] = [];
+  const nodeById: Record<string, TopologyNode> = {};
+  const edges: TopologyEdge[] = [];
+  const branchNodeByName = new Map<string, TopologyNode>();
+
+  // --- Root branch node ---
+  const rootTone = branchTone(rootBranch);
+  const isSingleBranch = childBranches.length === 0;
+  const singleBranchScale = isSingleBranch ? 1.8 : 1;
+  const scaledBranchWidth = branchWidth * singleBranchScale;
+  const scaledBranchHeight = branchHeight * singleBranchScale;
+
+  const rootNode: TopologyNode = {
+    id: `branch:${rootBranch}`,
+    kind: "branch",
+    x: centerX - scaledBranchWidth / 2,
+    y: isSingleBranch ? rootY + 40 : rootY,
+    width: scaledBranchWidth,
+    height: scaledBranchHeight,
+    label: clampLabel(rootBranch, 12),
+    meta: "",
+    accent: "#0f172a",
+    accentSoft: "rgba(15,23,42,0.9)",
+    border: rootTone.border,
+    branch: rootBranch,
+    isCurrent: currentBranch === rootBranch,
+    sha: branchHeadByName.get(rootBranch),
+    rank: 0
+  };
+  nodes.push(rootNode);
+  nodeById[rootNode.id] = rootNode;
+  branchNodeByName.set(rootBranch, rootNode);
+
+  // Root worktrees (multiple supported)
+  const rootWts = worktreesByBranch.get(rootBranch) || [];
+  const rootWtCount = rootWts.length;
+  rootWts.forEach((wt, wtIndex) => {
+    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
+    const wtLabel = wtLabelFromPath(wt.path);
+    const totalWidth = rootWtCount * worktreeWidth + (rootWtCount - 1) * 12;
+    const startX = rootNode.x + (rootNode.width - totalWidth) / 2;
+    const wtNode: TopologyNode = {
+      id: `worktree:${wt.path}`,
+      kind: "worktree",
+      x: startX + wtIndex * (worktreeWidth + 12),
+      y: rootNode.y + worktreeOffsetY,
+      width: worktreeWidth,
+      height: worktreeHeight,
+      label: wtLabel,
+      meta: "",
+      accent: "#64748b",
+      accentSoft: "rgba(100,116,139,0.12)",
+      border: "rgba(100,116,139,0.30)",
+      branch: rootBranch,
+      isCurrent: wt.isCurrent,
+      path: wt.path,
+      sha: wt.head,
+      dirtyCount,
+      rank: 0
+    };
+    nodes.push(wtNode);
+    nodeById[wtNode.id] = wtNode;
+    edges.push({
+      id: `${rootNode.id}-${wtNode.id}`,
+      from: rootNode.id,
+      to: wtNode.id,
+      color: "rgba(148,163,184,0.30)",
+      dashed: true
+    });
+  });
+
+  // --- Child branch nodes + their worktrees ---
+  const childStartX = centerX - ((childCount - 1) * branchGap) / 2;
+  childBranches.forEach((branchName, index) => {
+    const tone = branchTone(branchName);
+    const branchNode: TopologyNode = {
+      id: `branch:${branchName}`,
+      kind: "branch",
+      x: childStartX + index * branchGap - branchWidth / 2,
+      y: branchY,
+      width: branchWidth,
+      height: branchHeight,
+      label: clampLabel(branchName, 12),
+      meta: "",
+      accent: tone.accent,
+      accentSoft: tone.soft,
+      border: tone.border,
+      branch: branchName,
+      isCurrent: currentBranch === branchName,
+      sha: branchHeadByName.get(branchName),
+      rank: index + 1
+    };
+    nodes.push(branchNode);
+    nodeById[branchNode.id] = branchNode;
+    branchNodeByName.set(branchName, branchNode);
+
+    edges.push({
+      id: `${rootNode.id}-${branchNode.id}`,
+      from: rootNode.id,
+      to: branchNode.id,
+      color: "rgba(148,163,184,0.36)"
+    });
+
+    // Worktrees under this branch (multiple supported, horizontally arranged)
+    const wts = worktreesByBranch.get(branchName) || [];
+    const wtCount = wts.length;
+    const totalWidth = wtCount * worktreeWidth + (wtCount - 1) * 12;
+    const wtStartX = branchNode.x + (branchNode.width - totalWidth) / 2;
+    wts.forEach((wt, wtIndex) => {
+      const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
+      const wtLabel = wtLabelFromPath(wt.path);
+      const wtNode: TopologyNode = {
+        id: `worktree:${wt.path}`,
+        kind: "worktree",
+        x: wtStartX + wtIndex * (worktreeWidth + 12),
+        y: branchNode.y + worktreeOffsetY,
+        width: worktreeWidth,
+        height: worktreeHeight,
+        label: wtLabel,
+        meta: "",
+        accent: "#64748b",
+        accentSoft: "rgba(100,116,139,0.12)",
+        border: "rgba(100,116,139,0.30)",
+        branch: branchName,
+        isCurrent: wt.isCurrent,
+        path: wt.path,
+        sha: wt.head,
+        dirtyCount,
+        rank: index + 1
+      };
+      nodes.push(wtNode);
+      nodeById[wtNode.id] = wtNode;
+      edges.push({
+        id: `${branchNode.id}-${wtNode.id}`,
+        from: branchNode.id,
+        to: wtNode.id,
+        color: "rgba(148,163,184,0.30)",
+        dashed: true
+      });
+    });
+  });
+
+  const currentBranchNode = branchNodeByName.get(currentBranch) || rootNode;
+  const primaryNodeId = currentBranchNode.id;
+
+  // Compute nearby nodes (within 3 hops from primary)
+  const nearbyNodeIds: Record<string, boolean> = { [primaryNodeId]: true };
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const from = adjacency.get(edge.from) || [];
+    from.push(edge.to);
+    adjacency.set(edge.from, from);
+    const to = adjacency.get(edge.to) || [];
+    to.push(edge.from);
+    adjacency.set(edge.to, to);
+  }
+  const queue: Array<{ id: string; depth: number }> = [{ id: primaryNodeId, depth: 0 }];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) break;
+    if (current.depth >= 3) continue;
+    for (const nextId of adjacency.get(current.id) || []) {
+      if (nearbyNodeIds[nextId]) continue;
+      nearbyNodeIds[nextId] = true;
+      queue.push({ id: nextId, depth: current.depth + 1 });
+    }
+  }
+
+  const maxNodeY = Math.max(...nodes.map((n) => n.y + n.height));
+  const height = Math.max(400, maxNodeY + 80);
+  return { nodes, nodeById, edges, primaryNodeId, nearbyNodeIds, width: sceneWidth, height };
+}
+
 export function App() {
   const [theme, toggleTheme] = useTheme();
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
@@ -1411,6 +1982,9 @@ export function App() {
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string } | null>(null);
+  const [topologyContextMenu, setTopologyContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [topologyCreateSourceNodeId, setTopologyCreateSourceNodeId] = useState("");
+  const [topologyInspectNodeId, setTopologyInspectNodeId] = useState("");
 
   // Panel is fused into the center reading area.
 
@@ -1427,12 +2001,31 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState("");
   const [selectedFilePatch, setSelectedFilePatch] = useState("");
   const [worktreeOverview, setWorktreeOverview] = useState<GitWorktreeOverview>(EMPTY_WORKTREE);
+  const [linkedWorktrees, setLinkedWorktrees] = useState<GitLinkedWorktree[]>([]);
   const [gitUserIdentity, setGitUserIdentity] = useState<GitUserIdentity>(EMPTY_GIT_IDENTITY);
   const [selectedWorktreeFile, setSelectedWorktreeFile] = useState("");
   const [selectedWorktreePatch, setSelectedWorktreePatch] = useState("");
+  const [expandedWorktreeDirs, setExpandedWorktreeDirs] = useState<string[]>([]);
+  const [topologySelectionId, setTopologySelectionId] = useState("");
+  const [topologyZoom, setTopologyZoom] = useState(1);
+  const [creatingTopologyNode, setCreatingTopologyNode] = useState(false);
+  const [showTopologyCreateDialog, setShowTopologyCreateDialog] = useState(false);
+  const [showTopologyInspectDialog, setShowTopologyInspectDialog] = useState(false);
+  const [topologyCreateBranchName, setTopologyCreateBranchName] = useState("");
+  const [topologyCreateTargetPath, setTopologyCreateTargetPath] = useState("");
+  const [topologyCreateMode, setTopologyCreateMode] = useState<"branch" | "worktree">("branch");
+  const [topologyCreatingNode, setTopologyCreatingNode] = useState<{
+    parentId: string;
+    name: string;
+    x: number;
+    y: number;
+    mode: "branch" | "worktree";
+  } | null>(null);
+  const [removingTopologyNode, setRemovingTopologyNode] = useState(false);
   const [selectedExplain, setSelectedExplain] = useState("");
   const [agentContextError, setAgentContextError] = useState("");
   const [statusText, setStatusText] = useState("");
+  const [showAgentContextFull, setShowAgentContextFull] = useState(false);
 
   const [records, setRecords] = useState<ReviewRecord[]>([]);
   const [actions, setActions] = useState<ReviewAction[]>([]);
@@ -1486,6 +2079,7 @@ export function App() {
   const [opencodeDisconnectingProvider, setOpencodeDisconnectingProvider] = useState("");
   const [opencodeProviderAuthCache, setOpencodeProviderAuthCache] = useState<Record<string, OpencodeProviderAuthMethod[]>>({});
   const [opencodeHiddenModels, setOpencodeHiddenModels] = useState<Set<string>>(() => new Set());
+  const [opencodeEnabledModels, setOpencodeEnabledModels] = useState<Set<string>>(() => new Set());
   const [opencodeDraftModel, setOpencodeDraftModel] = useState("");
   const [opencodeSessionModel, setOpencodeSessionModel] = useState<Record<string, string>>({});
   const [opencodeConfig, setOpencodeConfig] = useState<OpencodeModelConfig | null>(null);
@@ -1567,9 +2161,15 @@ export function App() {
   const [opencodeDetailsLoadingByMessageId, setOpencodeDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
   const [opencodeDetailsErrorByMessageId, setOpencodeDetailsErrorByMessageId] = useState<Record<string, string>>({});
   const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
+  const [opencodeTodoDockVisible, setOpencodeTodoDockVisible] = useState(false);
+  const [opencodeTodoDockCollapsed, setOpencodeTodoDockCollapsed] = useState(false);
+  const [opencodeQuestionRequests, setOpencodeQuestionRequests] = useState<QuestionRequest[]>([]);
+  const [opencodeDismissedQuestions, setOpencodeDismissedQuestions] = useState<Set<string>>(() => new Set());
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
+  const topologyViewportRef = useRef<HTMLDivElement | null>(null);
+  const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
   const opencodeModelPickerRef = useRef<HTMLDivElement | null>(null);
   const opencodeLoadingOlderRef = useRef(false);
   const opencodePrevScrollHeightRef = useRef(0);
@@ -1603,9 +2203,24 @@ export function App() {
   });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
-  const [terminalInput, setTerminalInput] = useState("git status -sb");
-  const [terminalBusy, setTerminalBusy] = useState(false);
-  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([]);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>([
+    {
+      id: "terminal-1",
+      title: "终端 1",
+      input: "",
+      output: "",
+      seq: 0,
+      alive: false,
+      history: [],
+      historyIndex: -1
+    }
+  ]);
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState("terminal-1");
+  const [terminalSidebarVisible, setTerminalSidebarVisible] = useState(true);
+  const terminalTabCounterRef = useRef(2);
+  const terminalSeqRef = useRef<Record<string, number>>({ "terminal-1": 0 });
+  const terminalLogRef = useRef<HTMLDivElement | null>(null);
+  const terminalInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void import("@tauri-apps/api/window")
@@ -1622,6 +2237,40 @@ export function App() {
   }, []);
 
   const repoPath = selectedRepo?.path ?? "";
+  const activeTerminalTab = useMemo(
+    () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? terminalTabs[0],
+    [terminalTabs, activeTerminalTabId]
+  );
+  const worktreeTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries), [worktreeOverview.entries]);
+  const selectedWorktreeEntry = useMemo(
+    () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
+    [worktreeOverview.entries, selectedWorktreeFile]
+  );
+  const worktreePatchRows = useMemo(() => buildWorktreePatchRows(selectedWorktreePatch), [selectedWorktreePatch]);
+  const worktreePatchStats = useMemo(() => ({
+    added: worktreePatchRows.filter((row) => row.tone === "add").length,
+    deleted: worktreePatchRows.filter((row) => row.tone === "del").length,
+    hunks: worktreePatchRows.filter((row) => row.tone === "hunk").length
+  }), [worktreePatchRows]);
+  const activeTerminalView = useMemo(
+    () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
+    [activeTerminalTab?.output]
+  );
+  const topologyModel = useMemo(
+    () => buildTopologyModel({
+      repoName: selectedRepo?.name || "Current Repo",
+      repoPath,
+      currentBranch: worktreeOverview.branch || selectedBranch,
+      branches,
+      worktrees: linkedWorktrees,
+      branchCommits: commits,
+      commitGraph
+    }),
+    [selectedRepo?.name, repoPath, worktreeOverview.branch, selectedBranch, branches, linkedWorktrees, commits, commitGraph]
+  );
+  const selectedTopologyNode = topologyModel.nodeById[topologySelectionId] || null;
+  const topologyCreateSourceNode = topologyModel.nodeById[topologyCreateSourceNodeId] || null;
+  const topologyInspectNode = topologyModel.nodeById[topologyInspectNodeId] || null;
   const selectedParsed = selectedExplain ? parseExplainCommit(selectedExplain) : undefined;
   const parsedStatus = useMemo(() => parseStatusText(statusText || ""), [statusText]);
   const parsedAgentContext = useMemo(() => parseAgentContextText(selectedExplain || ""), [selectedExplain]);
@@ -1714,11 +2363,10 @@ export function App() {
   }, [opencodeSavedModels, opencodeModelPickerSearch]);
 
   const opencodeConfiguredModelCandidates = useMemo(() => {
-    // Match desired UX: picker shows only "enabled/added" models from server config (/global/config),
-    // plus local visibility toggle (closed models are filtered out).
+    // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
     const q = opencodeModelPickerSearch.trim().toLowerCase();
     const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const out: string[] = [];
+    const out = new Set<string>();
     for (const pid of opencodeConfiguredProviders) {
       const resolvedProvider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
       if (resolvedProvider && !connected.has(resolvedProvider)) continue;
@@ -1733,16 +2381,32 @@ export function App() {
           const hay = `${full} ${name}`.toLowerCase();
           if (!hay.includes(q)) continue;
         }
-        out.push(full);
+        out.add(full);
       }
     }
-    out.sort((a, b) => a.localeCompare(b));
-    return out;
+    for (const full of opencodeEnabledModels) {
+      if (!full || opencodeHiddenModels.has(full)) continue;
+      const parsed = parseModelRef(full);
+      if (!parsed) continue;
+      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
+      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
+      if (q) {
+        const name =
+          opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model] ||
+          opencodeModelNamesByProvider[resolvedProvider]?.[parsed.model] ||
+          "";
+        const hay = `${full} ${name}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      out.add(full);
+    }
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
   }, [
     opencodeConfiguredProviders,
     opencodeConfiguredModelsByProvider,
     opencodeModelPickerSearch,
     opencodeHiddenModels,
+    opencodeEnabledModels,
     opencodeConnectedProviders,
     opencodeConfiguredModelNamesByProvider,
     opencodeModelsByProvider,
@@ -1787,6 +2451,20 @@ export function App() {
     opencodeGlobalConfigProviderMap,
     opencodeDisabledProviders
   ]);
+
+  function getOpencodeModelDisplay(modelRef: string) {
+    const normalized = normalizeModelRef(modelRef);
+    const parsed = normalized ? parseModelRef(normalized) : null;
+    const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
+    const modelId = parsed?.model || "";
+    const label = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[modelId] || opencodeModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
+    return {
+      ref: normalized || "",
+      provider: provider || "Auto",
+      modelId,
+      label
+    };
+  }
 
   function getOpencodeProviderSource(providerId: string): string {
     const pid = (providerId || "").trim();
@@ -2108,11 +2786,11 @@ export function App() {
       const cached = opencodeSessions.find((item) => item.id === session.id);
       return cached
         ? {
-            ...cached,
-            title: session.title,
-            createdAt: session.createdAt,
-            updatedAt: session.updatedAt,
-          }
+          ...cached,
+          title: session.title,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        }
         : session;
     });
     const pending = pendingSidebarSessionSelectionRef.current;
@@ -2409,10 +3087,10 @@ export function App() {
         hit >= 0
           ? { ...(next[hit] as any) }
           : {
-              id: pid,
-              messageID: mid,
-              type: field === "reasoning" ? "reasoning" : "text"
-            };
+            id: pid,
+            messageID: mid,
+            type: field === "reasoning" ? "reasoning" : "text"
+          };
       const old = String((base as any)[field] || "");
       (base as any)[field] = mergeOpencodeStreamText(old, old + delta);
       if (hit >= 0) next[hit] = base as OpencodeDetailedPart;
@@ -2735,8 +3413,8 @@ export function App() {
     appendOpencodeDebugLog(
       `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${opencodeProviders.length} configuredProviders=${opencodeConfiguredProviders.length} connectedProviders=${opencodeConnectedProviders.length}`
     );
-    // Ensure provider/model display names are fresh when opening the picker.
-    void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+    // Refresh config to pick up any model visibility changes made in the provider picker.
+    void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
   }, [showOpencodeProviderPicker]);
 
   useEffect(() => {
@@ -2917,7 +3595,7 @@ export function App() {
       Number(controlServerSettings.port) !== Number(controlServerSettingsSaved.port) ||
       controlServerSettings.pairCodeTtlMode !== controlServerSettingsSaved.pairCodeTtlMode ||
       String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "") !==
-        String(controlServerSettingsSaved.publicBaseUrl || "").trim().replace(/\/+$/, "");
+      String(controlServerSettingsSaved.publicBaseUrl || "").trim().replace(/\/+$/, "");
     if (!changed) return true;
     const port = Number(controlServerSettings.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -3577,6 +4255,25 @@ export function App() {
           return;
         }
 
+        if (typ === "question.asked") {
+          const request = props as QuestionRequest;
+          if (String(request?.sessionID || "") !== sessionId) return;
+          setOpencodeQuestionRequests((prev) => {
+            const next = prev.filter((item) => item.id !== request.id);
+            return [...next, request];
+          });
+          return;
+        }
+
+        if (typ === "question.replied" || typ === "question.rejected") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const requestID = String(props?.requestID || "");
+          if (!requestID) return;
+          setOpencodeQuestionRequests((prev) => prev.filter((item) => item.id !== requestID));
+          return;
+        }
+
         if (typ === "session.error") {
           const sid = String(props?.sessionID || "");
           if (sid !== sessionId) return;
@@ -3743,6 +4440,65 @@ export function App() {
     el.style.height = `${next}px`;
   }
 
+  async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
+    try {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      appendOpencodeDebugLog(`question.reply ${requestId}`);
+      await refreshPendingQuestions();
+      return true;
+    } catch (e) {
+      appendOpencodeDebugLog(`question.reply.error ${requestId} ${String(e)}`);
+      return false;
+    }
+  }
+
+  async function refreshPendingQuestions(sessionIdArg = activeOpencodeSessionId) {
+    const sid = sessionIdArg.trim();
+    if (!sid || !repoPath.trim()) {
+      setOpencodeQuestionRequests([]);
+      return;
+    }
+    try {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const res = await fetch(`${base}/question/?directory=${qdir}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await res.json();
+      const rows = Array.isArray(raw) ? raw : [];
+      const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
+      setOpencodeQuestionRequests(requests);
+    } catch (e) {
+      appendOpencodeDebugLog(`question.list.error ${String(e)}`);
+    }
+  }
+
+  async function sendQuestionReject(requestId: string) {
+    try {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      appendOpencodeDebugLog(`question.reject ${requestId}`);
+      await refreshPendingQuestions();
+      return true;
+    } catch (e) {
+      appendOpencodeDebugLog(`question.reject.error ${requestId} ${String(e)}`);
+      return false;
+    }
+  }
+
   function openRepoContextMenu(x: number, y: number, repo: RepositoryEntry) {
     const menuW = 132;
     const menuH = 44;
@@ -3753,6 +4509,300 @@ export function App() {
       y: Math.max(8, cy),
       repo
     });
+  }
+
+  function openTopologyContextMenu(x: number, y: number, nodeId: string) {
+    const menuW = 196;
+    const menuH = 152;
+    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+    // macOS native WKWebView may still flash a small Reload menu near cursor;
+    // offset our app menu so it stays readable and clickable.
+    const anchorX = isMac ? x + 28 : x;
+    const anchorY = isMac ? y + 54 : y;
+    const cx = Math.min(anchorX, window.innerWidth - menuW - 8);
+    const cy = Math.min(anchorY, window.innerHeight - menuH - 8);
+    setTopologyContextMenu({
+      x: Math.max(8, cx),
+      y: Math.max(8, cy),
+      nodeId
+    });
+  }
+
+  function focusTopologyNode(nodeId: string) {
+    setTopologySelectionId(nodeId);
+    const node = topologyModel.nodeById[nodeId];
+    if (!node) return;
+    // 点击时自动滚动到节点并适当放大
+    const viewport = topologyViewportRef.current;
+    if (viewport && node) {
+      const targetZoom = Math.min(1.4, Math.max(0.8, viewport.clientWidth / topologyModel.width * 2));
+      setTopologyZoom(targetZoom);
+      requestAnimationFrame(() => {
+        const nextLeft = Math.max(0, (node.x + node.width / 2) * targetZoom - viewport.clientWidth / 2);
+        const nextTop = Math.max(0, (node.y + node.height / 2) * targetZoom - viewport.clientHeight / 2);
+        viewport.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
+      });
+    }
+    if (node.kind === "commit" && node.sha) {
+      setSelectedCommit(node.sha);
+      return;
+    }
+    if (node.kind === "branch" && node.branch) {
+      void chooseBranch(node.branch);
+    }
+  }
+
+  async function activateLinkedWorktree(path: string) {
+    setTopologyContextMenu(null);
+    const target = path.trim();
+    if (!target) return;
+    if (!selectedRepo) return;
+    // Worktree is part of the same repo; just update the working path.
+    setSelectedRepo({ ...selectedRepo, path: target });
+    setMessage(`已切换到 worktree: ${target}`);
+    // Manually refresh using the new path because repoPath won't update until next render.
+    try {
+      const [overview, worktrees, branchList, graphRows] = await Promise.all([
+        getGitWorktreeOverview(target),
+        getGitWorktreeList(target),
+        getLocalBranches(target),
+        getCommitGraph(target, 600)
+      ]);
+      setWorktreeOverview(overview);
+      setLinkedWorktrees(worktrees);
+      setBranches(branchList);
+      setCommitGraph(graphRows);
+      const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
+      const targetBranch = branchList.some((b) => b.name === selectedBranch) ? selectedBranch : current;
+      setSelectedBranch(targetBranch);
+      if (targetBranch) {
+        const rows = await getBranchCommits(target, targetBranch, 80);
+        setCommits(rows);
+        setSelectedCommit(rows[0]?.sha ?? "");
+      }
+    } catch (e) {
+      setError(String(e));
+      setMessage(`切换 worktree 失败: ${target}`);
+    }
+  }
+
+  async function checkoutBranchFromTopology(branchName: string) {
+    if (!ensureRepoSelected()) return;
+    setTopologyContextMenu(null);
+    setBusy(true);
+    setError("");
+    setMessage(`检出分支: ${branchName}...`);
+    try {
+      // If the target branch already has a linked worktree, switch to that worktree instead.
+      const wt = linkedWorktrees.find((w) => w.branch === branchName);
+      if (wt) {
+        await activateLinkedWorktree(wt.path);
+        setMessage(`已切换到 worktree 分支: ${branchName}`);
+      } else {
+        await gitCheckoutBranch(repoPath, branchName);
+        setSelectedBranch(branchName);
+        await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+        setMessage(`已检出分支: ${branchName}`);
+      }
+    } catch (e) {
+      setError(String(e));
+      setMessage(`检出失败: ${branchName}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function inspectCommitFromTopology(sha: string) {
+    setTopologyContextMenu(null);
+    setSelectedCommit(sha);
+    setDetailTab("context");
+    setMessage(`查看 Entire agent 上下文: ${sha.slice(0, 8)}`);
+  }
+
+  function currentTopologyBaseBranch(): string {
+    return worktreeOverview.branch || selectedBranch || branches.find((item) => item.isCurrent)?.name || "";
+  }
+
+  function topologyCreateSource(nodeId?: string): { startPoint: string; baseBranch: string } {
+    const node = topologyModel.nodeById[nodeId || topologySelectionId || topologyModel.primaryNodeId];
+    if (!node) {
+      return { startPoint: "", baseBranch: currentTopologyBaseBranch() };
+    }
+    if (node.kind === "commit") {
+      return {
+        startPoint: node.sha || "",
+        baseBranch: node.branch || currentTopologyBaseBranch() || shortSha(node.sha || "", 7)
+      };
+    }
+    if (node.kind === "branch" || node.kind === "worktree") {
+      return {
+        startPoint: node.branch || node.sha || "",
+        baseBranch: node.branch || currentTopologyBaseBranch()
+      };
+    }
+    return { startPoint: currentTopologyBaseBranch(), baseBranch: currentTopologyBaseBranch() };
+  }
+
+  function suggestedTopologyPath(baseBranch: string, identifier?: string): string {
+    const currentPath = (repoPath || selectedRepo?.path || "").trim();
+    if (!currentPath) return "";
+    const prefix = baseBranch.trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
+    const suffix = (identifier || "").trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
+    const combined = suffix ? `${prefix}-${suffix}` : prefix;
+    const segs = currentPath.split("/").filter(Boolean);
+    if (segs.length === 0) return "";
+    const repoLeaf = segs[segs.length - 1] || "repo";
+    const parent = currentPath.slice(0, currentPath.length - repoLeaf.length).replace(/\/$/, "");
+    return `${parent}/${repoLeaf}.worktrees/${combined}`;
+  }
+
+  function openTopologyCreateDialog(mode: "branch" | "worktree", nodeId?: string) {
+    if (!ensureRepoSelected()) return;
+    const sourceId = nodeId || topologySelectionId || topologyModel.primaryNodeId;
+    const parentNode = topologyModel.nodeById[sourceId];
+    if (!parentNode) {
+      setError("未找到当前节点，无法创建");
+      return;
+    }
+    setTopologyContextMenu(null);
+    setTopologyCreateMode(mode);
+    // Place the creating node visually next to the parent
+    const offsetX = parentNode.kind === "branch" && parentNode.id === `branch:${worktreeOverview.branch || selectedBranch}` ? 200 : 0;
+    setTopologyCreatingNode({
+      parentId: sourceId,
+      name: "",
+      x: parentNode.x + parentNode.width + 20 + offsetX,
+      y: parentNode.y + (parentNode.kind === "branch" ? 0 : parentNode.height + 20),
+      mode
+    });
+  }
+
+  async function submitTopologyCreateDialog() {
+    if (!ensureRepoSelected()) return;
+    if (!topologyCreatingNode) return;
+    const branchName = topologyCreatingNode.name.trim();
+    if (!branchName) {
+      setError("请输入新的分支名");
+      return;
+    }
+    const { baseBranch, startPoint } = topologyCreateSource(topologyCreatingNode.parentId);
+    setTopologyContextMenu(null);
+    setCreatingTopologyNode(true);
+    setBusy(true);
+    setError("");
+
+    try {
+      if (topologyCreatingNode.mode === "branch") {
+        setMessage(`基于 ${baseBranch} 创建分支: ${branchName}...`);
+        await createGitBranch(repoPath, branchName, startPoint || undefined);
+        await refreshBranchesAndCommits();
+        setSelectedBranch(branchName);
+        setTopologySelectionId(`branch:${branchName}`);
+        setTopologyCreatingNode(null);
+        setMessage(`已创建分支: ${branchName}`);
+      } else {
+        let targetPath = suggestedTopologyPath(baseBranch, branchName);
+        // Check working tree status before creating worktree
+        if (worktreeOverview.stagedCount > 0 || worktreeOverview.unstagedCount > 0) {
+          throw new Error("当前工作区有未提交的更改，无法创建 worktree。请先提交或暂存更改。");
+        }
+        // Validate baseBranch exists
+        const branchExists = branches.some((b) => b.name === baseBranch);
+        if (!branchExists) {
+          throw new Error(`分支 "${baseBranch}" 不存在，请先创建分支。`);
+        }
+        // If suggested path already exists, let backend auto-generate a unique path
+        const pathExists = linkedWorktrees.some((wt) => wt.path === targetPath);
+        if (pathExists) {
+          targetPath = "";
+        }
+        const fullName = branchName ? `${baseBranch}-${branchName}` : baseBranch;
+        setMessage(`基于 ${baseBranch} 分支创建 worktree: ${fullName}...`);
+        console.log("Creating worktree:", { repoPath, baseBranch, targetPath: targetPath || "auto-generated" });
+        const created = await createGitWorktreeFromBranch(repoPath, baseBranch, targetPath || undefined);
+        console.log("Worktree created:", created);
+        await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
+        const newBranchCommits = await getBranchCommits(repoPath, created.branch, 80);
+        setCommits(newBranchCommits);
+        setSelectedCommit(newBranchCommits[0]?.sha ?? "");
+        setSelectedBranch(created.branch);
+        setTopologySelectionId(`worktree:${created.path}`);
+        setTopologyCreatingNode(null);
+        setMessage(`已创建 worktree: ${fullName} (${created.branch} 分支)`);
+      }
+    } catch (e) {
+      setError(String(e));
+      setMessage(`创建失败: ${branchName}`);
+    } finally {
+      setCreatingTopologyNode(false);
+      setBusy(false);
+    }
+  }
+
+  function openTopologyInspectDialog(nodeId: string) {
+    setTopologyContextMenu(null);
+    setTopologyInspectNodeId(nodeId);
+    setShowTopologyInspectDialog(true);
+    const node = topologyModel.nodeById[nodeId];
+    if (node?.kind === "commit" && node.sha) {
+      setSelectedCommit(node.sha);
+      setDetailTab("context");
+    }
+  }
+
+  async function removeTopologyWorktree(targetPath: string) {
+    if (!ensureRepoSelected()) return;
+    const target = targetPath.trim();
+    if (!target) {
+      setError("目标路径为空");
+      return;
+    }
+    const worktree = linkedWorktrees.find((item) => item.path.trim() === target);
+    if (worktree?.isCurrent) {
+      setError("不能删除当前 worktree 节点");
+      return;
+    }
+    setTopologyContextMenu(null);
+    setRemovingTopologyNode(true);
+    setBusy(true);
+    setError("");
+    setMessage(`正在删除 worktree: ${target}...`);
+    try {
+      console.log("Removing worktree:", { repoPath, target });
+      await removeGitWorktree(repoPath, target);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+      setTopologySelectionId(topologyModel.primaryNodeId);
+      setMessage("worktree 已删除");
+    } catch (e) {
+      console.error("删除 worktree 失败:", e);
+      setError(String(e));
+      setMessage(`删除失败: ${String(e)}`);
+    } finally {
+      setRemovingTopologyNode(false);
+      setBusy(false);
+    }
+  }
+
+  function centerTopologyOnCurrent() {
+    const viewport = topologyViewportRef.current;
+    const node = topologyModel.nodeById[topologyModel.primaryNodeId];
+    if (!viewport || !node) return;
+    const nextLeft = Math.max(0, (node.x + node.width / 2) * topologyZoom - viewport.clientWidth / 2);
+    const nextTop = Math.max(0, (node.y + node.height / 2) * topologyZoom - viewport.clientHeight / 2);
+    viewport.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
+    setTopologySelectionId(node.id);
+  }
+
+  function beginTopologyPan(clientX: number, clientY: number) {
+    const viewport = topologyViewportRef.current;
+    if (!viewport) return;
+    topologyDragStateRef.current = {
+      x: clientX,
+      y: clientY,
+      left: viewport.scrollLeft,
+      top: viewport.scrollTop
+    };
+    viewport.classList.add("is-dragging");
   }
 
   async function refreshStatus() {
@@ -3775,7 +4825,7 @@ export function App() {
     setMessage("加载分支与提交...");
     try {
       const branchList = await getLocalBranches(repoPath);
-      const graphRows = await getCommitGraph(repoPath, 140);
+      const graphRows = await getCommitGraph(repoPath, 600);
       setBranches(branchList);
       setCommitGraph(graphRows);
       const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
@@ -3810,8 +4860,12 @@ export function App() {
   async function refreshWorktreeData(preferredFile?: string) {
     if (!ensureRepoSelected()) return;
     try {
-      const overview = await getGitWorktreeOverview(repoPath);
+      const [overview, worktrees] = await Promise.all([
+        getGitWorktreeOverview(repoPath),
+        getGitWorktreeList(repoPath)
+      ]);
       setWorktreeOverview(overview);
+      setLinkedWorktrees(worktrees);
       const target = preferredFile && overview.entries.some((entry) => entry.path === preferredFile)
         ? preferredFile
         : overview.entries[0]?.path || "";
@@ -3825,6 +4879,7 @@ export function App() {
     } catch (e) {
       setError(String(e));
       setWorktreeOverview(EMPTY_WORKTREE);
+      setLinkedWorktrees([]);
       setSelectedWorktreeFile("");
       setSelectedWorktreePatch("");
     }
@@ -3852,39 +4907,114 @@ export function App() {
     }
   }
 
+  function toggleWorktreeDir(path: string) {
+    setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
+  }
+
+  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0): ReactNode {
+    return nodes.map((node) => {
+      if (node.kind === "dir") {
+        const expanded = expandedWorktreeDirs.includes(node.path);
+        return (
+          <div key={node.path} className="gt-worktree-tree-group">
+            <button
+              type="button"
+              className="gt-worktree-tree-row gt-worktree-tree-dir"
+              style={{ paddingLeft: `${depth * 14 + 6}px` }}
+              onClick={() => toggleWorktreeDir(node.path)}
+            >
+              <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
+              <span className="gt-worktree-tree-name">{node.name}</span>
+              <span className="gt-worktree-tree-dot" aria-hidden="true" />
+            </button>
+            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1)}</div> : null}
+          </div>
+        );
+      }
+
+      const entry = node.entry;
+      if (!entry) return null;
+      const status = getWorktreeDisplayStatus(entry);
+      const fileKind = getWorktreeFileKindLabel(entry.path);
+      return (
+        <button
+          key={node.path}
+          type="button"
+          className={selectedWorktreeFile === entry.path ? "gt-worktree-tree-row gt-worktree-tree-file active" : "gt-worktree-tree-row gt-worktree-tree-file"}
+          style={{ paddingLeft: `${depth * 14 + 6}px` }}
+          onClick={() => void refreshSelectedWorktreePatch(entry.path)}
+          title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
+        >
+          <span className="gt-worktree-tree-file-main">
+            <span className={`gt-worktree-kind gt-worktree-kind-${fileKind}`}>{fileKind}</span>
+            <span className="gt-worktree-tree-name">{node.name}</span>
+          </span>
+          <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
+        </button>
+      );
+    });
+  }
+
+  function updateTerminalTabById(tabId: string, patch: Partial<TerminalTabState> | ((prev: TerminalTabState) => TerminalTabState)) {
+    setTerminalTabs((prev) =>
+      prev.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        if (typeof patch === "function") return patch(tab);
+        return { ...tab, ...patch };
+      })
+    );
+  }
+
+  function createTerminalTab() {
+    const n = terminalTabCounterRef.current++;
+    const id = `terminal-${n}`;
+    terminalSeqRef.current[id] = 0;
+    setTerminalTabs((prev) => [
+      ...prev,
+      { id, title: `终端 ${n}`, input: "", output: "", seq: 0, alive: false, history: [], historyIndex: -1 }
+    ]);
+    setActiveTerminalTabId(id);
+  }
+
+  async function closeTerminalTab(tabId: string) {
+    if (terminalTabs.length <= 1) return;
+    if (selectedRepo?.path) {
+      await closeRepoTerminalSession(selectedRepo.path, tabId).catch(() => {
+        // ignore
+      });
+    }
+    delete terminalSeqRef.current[tabId];
+    setTerminalTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === tabId);
+      const next = prev.filter((t) => t.id !== tabId);
+      if (activeTerminalTabId === tabId) {
+        const fallback = next[Math.max(0, idx - 1)] || next[0];
+        if (fallback) setActiveTerminalTabId(fallback.id);
+      }
+      return next;
+    });
+  }
+
   async function runTerminalCommand(command?: string) {
     if (!ensureRepoSelected()) return;
-    const script = (command ?? terminalInput).trim();
+    if (!activeTerminalTab) return;
+    const script = (command ?? activeTerminalTab.input).trim();
     if (!script) return;
-    setTerminalBusy(true);
     try {
-      const output = await runRepoTerminalCommand(repoPath, script);
-      setTerminalEntries((prev) => [
-        {
-          id: `term-${makeId()}`,
-          command: script,
-          output: output.trim() || "(no output)",
-          createdAt: Date.now(),
-          ok: true
-        },
-        ...prev
-      ].slice(0, 40));
-      setTerminalInput(script);
+      await sendRepoTerminalInput(repoPath, `${script}\r`, activeTerminalTab.id);
+      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+        ...prev,
+        history: [script, ...prev.history.filter((x) => x !== script)].slice(0, 80),
+        historyIndex: -1,
+        input: ""
+      }));
     } catch (e) {
       const msg = String(e);
-      setTerminalEntries((prev) => [
-        {
-          id: `term-${makeId()}`,
-          command: script,
-          output: msg,
-          createdAt: Date.now(),
-          ok: false
-        },
-        ...prev
-      ].slice(0, 40));
+      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+        ...prev,
+        output: `${prev.output}${prev.output.endsWith("\n") || !prev.output ? "" : "\n"}[error] ${msg}\n`
+      }));
       setError(msg);
-    } finally {
-      setTerminalBusy(false);
     }
   }
 
@@ -3931,6 +5061,19 @@ export function App() {
       setSelectedExplain("");
       setAgentContextError(String(e));
       setMessage("文件与 Diff 已加载；AI 上下文暂不可用（请检查 Entire CLI）。");
+    }
+  }
+
+  async function loadCommitAgentContext(commitSha: string) {
+    if (!commitSha) return;
+    setSelectedExplain("");
+    setAgentContextError("");
+    try {
+      const explainRes = await explainCommitShort(commitSha, repoPath);
+      setSelectedExplain(explainRes.raw);
+    } catch (e) {
+      setSelectedExplain("");
+      setAgentContextError(String(e));
     }
   }
 
@@ -4237,6 +5380,57 @@ export function App() {
   }, [selectedCommit]);
 
   useEffect(() => {
+    if (!selectedCommit) return;
+    // Find commit node by sha (supports new ID format commit:${branch}:${sha})
+    const matched = topologyModel.nodes.find((node) => node.kind === "commit" && node.sha === selectedCommit);
+    if (matched) setTopologySelectionId(matched.id);
+  }, [selectedCommit, topologyModel]);
+
+  useEffect(() => {
+    if (topologyModel.nodes.length === 0) {
+      setTopologySelectionId("");
+      return;
+    }
+    if (topologySelectionId && topologyModel.nodeById[topologySelectionId]) {
+      return;
+    }
+    setTopologySelectionId(topologyModel.primaryNodeId || topologyModel.nodes[0]?.id || "");
+  }, [topologyModel, topologySelectionId]);
+
+  useEffect(() => {
+    setTopologyZoom(1);
+  }, [selectedRepo?.id]);
+
+  useEffect(() => {
+    const viewport = topologyViewportRef.current;
+    const node = topologyModel.nodeById[topologyModel.primaryNodeId];
+    if (!viewport || !node) return;
+    const nextLeft = Math.max(0, (node.x + node.width / 2) * topologyZoom - viewport.clientWidth / 2);
+    const nextTop = Math.max(0, (node.y + node.height / 2) * topologyZoom - viewport.clientHeight / 2);
+    viewport.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
+  }, [selectedRepo?.id, topologyModel.primaryNodeId]);
+
+  useEffect(() => {
+    const onMove = (evt: MouseEvent) => {
+      const state = topologyDragStateRef.current;
+      const viewport = topologyViewportRef.current;
+      if (!state || !viewport) return;
+      viewport.scrollLeft = state.left - (evt.clientX - state.x);
+      viewport.scrollTop = state.top - (evt.clientY - state.y);
+    };
+    const stop = () => {
+      topologyDragStateRef.current = null;
+      topologyViewportRef.current?.classList.remove("is-dragging");
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", stop);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", stop);
+    };
+  }, []);
+
+  useEffect(() => {
     if (draftOpencodeSession) return;
     if (opencodeSessions.length === 0) return;
     if (!opencodeSessions.some((s) => s.id === activeOpencodeSessionId)) {
@@ -4301,6 +5495,33 @@ export function App() {
       // ignore
     }
   }, [opencodeHiddenModels, selectedRepo?.id]);
+
+  useEffect(() => {
+    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) {
+        setOpencodeEnabledModels(new Set());
+        return;
+      }
+      const parsed = JSON.parse(raw) as { enabled?: string[] } | null;
+      const enabled = Array.isArray(parsed?.enabled) ? parsed!.enabled : [];
+      const normalized = enabled.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
+      setOpencodeEnabledModels(new Set(normalized));
+    } catch {
+      setOpencodeEnabledModels(new Set());
+    }
+  }, [selectedRepo?.id]);
+
+  useEffect(() => {
+    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
+    const enabled = Array.from(opencodeEnabledModels);
+    try {
+      window.localStorage.setItem(key, JSON.stringify({ enabled }));
+    } catch {
+      // ignore
+    }
+  }, [opencodeEnabledModels, selectedRepo?.id]);
 
   useEffect(() => {
     // Per repo model selection (OpenCode-like): draft + per-session overrides.
@@ -4444,11 +5665,7 @@ export function App() {
 
   useEffect(() => {
     if (!showOpencodeModelPicker) return;
-    // Avoid showing stale configured-model list while async /global/config refresh is in-flight.
-    // This prevents brief flashes of providers that are present in /config but not in /global/config (e.g. 302ai).
-    setOpencodeConfiguredProviders([]);
-    setOpencodeConfiguredModelsByProvider({});
-    setOpencodeConfiguredModelNamesByProvider({});
+    // Keep previous list until refresh resolves to avoid open-time flicker.
     void refreshOpencodeServerConfig();
     const onDown = (e: MouseEvent) => {
       const root = opencodeModelPickerRef.current;
@@ -4460,6 +5677,80 @@ export function App() {
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [showOpencodeModelPicker]);
+
+  useEffect(() => {
+    if (!selectedRepo?.path) {
+      setTerminalTabs((prev) => prev.map((tab) => ({ ...tab, output: "", seq: 0, alive: false })));
+      terminalSeqRef.current = Object.fromEntries(Object.keys(terminalSeqRef.current).map((id) => [id, 0]));
+      return;
+    }
+    if (!activeTerminalTab) return;
+    let stopped = false;
+    const repo = selectedRepo.path;
+    const tabId = activeTerminalTab.id;
+    const boot = async () => {
+      try {
+        const snapshot = await startRepoTerminalSession(repo, tabId);
+        if (stopped) return;
+        terminalSeqRef.current[tabId] = snapshot.seq;
+        updateTerminalTabById(tabId, {
+          seq: snapshot.seq,
+          alive: snapshot.alive,
+          output: sanitizeTerminalOutput(snapshot.output || "")
+        });
+      } catch (e) {
+        if (stopped) return;
+        updateTerminalTabById(tabId, { alive: false });
+        setError(String(e));
+      }
+    };
+    const poll = async () => {
+      try {
+        const afterSeq = terminalSeqRef.current[tabId] ?? 0;
+        const snapshot = await readRepoTerminalOutput(repo, afterSeq, tabId);
+        if (stopped) return;
+        terminalSeqRef.current[tabId] = snapshot.seq;
+        if (snapshot.output) {
+          const chunk = sanitizeTerminalOutput(snapshot.output);
+          if (chunk) {
+            updateTerminalTabById(tabId, (prev) => ({
+              ...prev,
+              seq: snapshot.seq,
+              alive: snapshot.alive,
+              output: `${prev.output}${chunk}`
+            }));
+          } else {
+            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+          }
+        } else {
+          updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+        }
+      } catch {
+        if (stopped) return;
+        updateTerminalTabById(tabId, { alive: false });
+      }
+    };
+    void boot();
+    const t = window.setInterval(() => void poll(), 320);
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+  }, [selectedRepo?.id, activeTerminalTabId]);
+
+  useEffect(() => {
+    const el = terminalLogRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeTerminalTab?.output]);
+
+  useEffect(() => {
+    if (rightPaneTab !== "terminal") return;
+    const t = window.setTimeout(() => {
+      terminalInputRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [rightPaneTab, rightDrawerOpen, activeTerminalTabId]);
 
   useEffect(() => {
     Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
@@ -4478,8 +5769,21 @@ export function App() {
     setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
     opencodeSessionsRepoIdRef.current = "";
-    setTerminalEntries([]);
-    setTerminalInput("git status -sb");
+    setTerminalTabs([
+      {
+        id: "terminal-1",
+        title: "终端 1",
+        input: "",
+        output: "",
+        seq: 0,
+        alive: false,
+        history: [],
+        historyIndex: -1
+      }
+    ]);
+    setActiveTerminalTabId("terminal-1");
+    terminalTabCounterRef.current = 2;
+    terminalSeqRef.current = { "terminal-1": 0 };
     setGitUserIdentity(EMPTY_GIT_IDENTITY);
   }, [selectedRepo?.id]);
 
@@ -4524,6 +5828,86 @@ export function App() {
       return msg.id === streamingId && running;
     });
   }, [opencodeVisibleWindow.visible, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  const opencodeActiveTodos = useMemo(() => {
+    const visible = opencodeVisibleWindow.visible;
+    for (let i = visible.length - 1; i >= 0; i -= 1) {
+      const msg = visible[i];
+      if (msg.role !== "assistant") continue;
+      const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+      const detail = opencodeDetailsByMessageId[msg.id] || null;
+      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
+      const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+      const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
+      for (let j = detailParts.length - 1; j >= 0; j -= 1) {
+        const todos = readOpencodeTodosFromPart(detailParts[j]);
+        if (todos.length > 0) return todos;
+      }
+    }
+    return [] as OpencodeTodoItem[];
+  }, [opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId]);
+
+  const opencodeActiveQuestions = useMemo(() => {
+    return opencodeQuestionRequests.filter(
+      (req) => req.sessionID === activeOpencodeSessionId && !opencodeDismissedQuestions.has(req.id)
+    );
+  }, [opencodeQuestionRequests, activeOpencodeSessionId, opencodeDismissedQuestions]);
+
+  const opencodeTodoProgress = useMemo(() => {
+    const total = opencodeActiveTodos.length;
+    const done = opencodeActiveTodos.filter((todo) => todo.status === "completed").length;
+    const finished = total > 0 && opencodeActiveTodos.every((todo) => todo.status === "completed" || todo.status === "cancelled");
+    const active =
+      opencodeActiveTodos.find((todo) => todo.status === "in_progress") ||
+      opencodeActiveTodos.find((todo) => todo.status === "pending") ||
+      opencodeActiveTodos[opencodeActiveTodos.length - 1] ||
+      null;
+    return { total, done, finished, active };
+  }, [opencodeActiveTodos]);
+
+  useEffect(() => {
+    if (opencodeActiveTodos.length === 0) {
+      setOpencodeTodoDockVisible(false);
+      setOpencodeTodoDockCollapsed(false);
+      return;
+    }
+    if (activeOpencodeSessionBusy) {
+      setOpencodeTodoDockVisible(true);
+      setOpencodeTodoDockCollapsed(false);
+      return;
+    }
+    setOpencodeTodoDockVisible(true);
+    setOpencodeTodoDockCollapsed(true);
+  }, [opencodeActiveTodos, activeOpencodeSessionBusy]);
+
+  useEffect(() => {
+    setOpencodeTodoDockCollapsed(false);
+    setOpencodeTodoDockVisible(false);
+    setOpencodeQuestionRequests([]);
+    setOpencodeDismissedQuestions(new Set());
+  }, [activeOpencodeSessionId]);
+
+  useEffect(() => {
+    if (!activeOpencodeSessionId || !runtimeStatus.opencode.installed || !selectedRepo) return;
+    void refreshPendingQuestions(activeOpencodeSessionId);
+    if (!activeOpencodeSessionBusy) return;
+    const timer = window.setInterval(() => {
+      void refreshPendingQuestions(activeOpencodeSessionId);
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [activeOpencodeSessionId, activeOpencodeSessionBusy, runtimeStatus.opencode.installed, selectedRepo?.id]);
+
+  useEffect(() => {
+    const dirPaths = collectWorktreeDirPaths(worktreeTree);
+    setExpandedWorktreeDirs((prev) => {
+      if (dirPaths.length === 0) return [];
+      const next = new Set(prev.filter((path) => dirPaths.includes(path)));
+      dirPaths.forEach((path) => {
+        if (!prev.includes(path)) next.add(path);
+      });
+      return Array.from(next);
+    });
+  }, [worktreeTree]);
 
   useEffect(() => {
     const sid = activeOpencodeSessionId.trim();
@@ -4733,23 +6117,39 @@ export function App() {
   }, [opencodeSessionLoading, opencodeHasHiddenHistory, opencodeTurnStart, opencodeMessages.length, opencodeRenderedMessages.length]);
 
   useEffect(() => {
-    if (!repoContextMenu && !commitContextMenu) return;
+    if (!repoContextMenu && !commitContextMenu && !topologyContextMenu) return;
     const dismiss = () => {
       setRepoContextMenu(null);
       setCommitContextMenu(null);
+      setTopologyContextMenu(null);
     };
     window.addEventListener("click", dismiss);
-    window.addEventListener("contextmenu", dismiss);
     return () => {
       window.removeEventListener("click", dismiss);
-      window.removeEventListener("contextmenu", dismiss);
     };
-  }, [repoContextMenu, commitContextMenu]);
+  }, [repoContextMenu, commitContextMenu, topologyContextMenu]);
+
+  useEffect(() => {
+    if (!showTopologyCreateDialog) return;
+    const sourceId = topologyCreateSourceNodeId || topologySelectionId || topologyModel.primaryNodeId;
+    if (!sourceId) return;
+    setTopologyCreateSourceNodeId(sourceId);
+  }, [showTopologyCreateDialog, topologyCreateSourceNodeId, topologySelectionId, topologyModel.primaryNodeId]);
 
   useEffect(() => {
     const onNativeContextMenu = (evt: MouseEvent) => {
       const target = evt.target as HTMLElement | null;
       if (!target) return;
+      const topologyNode = target.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
+      if (topologyNode) {
+        const nodeId = topologyNode.dataset.nodeId;
+        if (!nodeId) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        setTopologySelectionId(nodeId);
+        openTopologyContextMenu(evt.clientX, evt.clientY, nodeId);
+        return;
+      }
       const btn = target.closest(".wb-repo-ico[data-repo-id]") as HTMLElement | null;
       if (!btn) return;
       const repoId = btn.dataset.repoId;
@@ -4835,48 +6235,48 @@ export function App() {
                   ) : null}
                   {runtimeStatus.opencode.installed
                     ? repoSessions.map((session) => (
-                        <button
-                          key={`left-session-${session.id}`}
-                          className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
-                          onClick={() => {
-                            pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-                            setOpencodeSessions((prev) => {
-                              const hit = prev.findIndex((s) => s.id === session.id);
-                              if (hit >= 0) {
-                                return prev.map((s) =>
-                                  s.id === session.id
-                                    ? {
-                                        ...s,
-                                        title: session.title,
-                                        createdAt: session.createdAt,
-                                        updatedAt: session.updatedAt,
-                                        loaded: s.loaded
-                                      }
-                                    : s
-                                );
-                              }
-                              return [
-                                {
-                                  ...opencodeSessionFromSummary(session),
-                                  loaded: false
-                                },
-                                ...prev
-                              ];
-                            });
-                            setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                            setSelectedRepo(repo);
-                            setDraftOpencodeSession(false);
-                            setActiveOpencodeSessionId(session.id);
-                          }}
-                        >
-                          <span className="gt-session-title">{session.title}</span>
-                          <span className="gt-session-meta">
-                            {new Date(session.updatedAt).toLocaleDateString([], { month: "2-digit", day: "2-digit" })}
-                            {" · "}
-                            {new Date(session.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </span>
-                        </button>
-                      ))
+                      <button
+                        key={`left-session-${session.id}`}
+                        className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                        onClick={() => {
+                          pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
+                          setOpencodeSessions((prev) => {
+                            const hit = prev.findIndex((s) => s.id === session.id);
+                            if (hit >= 0) {
+                              return prev.map((s) =>
+                                s.id === session.id
+                                  ? {
+                                    ...s,
+                                    title: session.title,
+                                    createdAt: session.createdAt,
+                                    updatedAt: session.updatedAt,
+                                    loaded: s.loaded
+                                  }
+                                  : s
+                              );
+                            }
+                            return [
+                              {
+                                ...opencodeSessionFromSummary(session),
+                                loaded: false
+                              },
+                              ...prev
+                            ];
+                          });
+                          setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+                          setSelectedRepo(repo);
+                          setDraftOpencodeSession(false);
+                          setActiveOpencodeSessionId(session.id);
+                        }}
+                      >
+                        <span className="gt-session-title">{session.title}</span>
+                        <span className="gt-session-meta">
+                          {new Date(session.updatedAt).toLocaleDateString([], { month: "2-digit", day: "2-digit" })}
+                          {" · "}
+                          {new Date(session.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </button>
+                    ))
                     : null}
                   {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
                     <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
@@ -5030,121 +6430,189 @@ export function App() {
         </div>
         <div className="opencode-input-row">
           <div className="gt-chat-composer-wrap">
-          <div className="opencode-composer">
-            <div className="opencode-composer-body opencode-composer-body-inline">
-              <div className="opencode-input-shell opencode-composer-editor">
-                <textarea
-                  ref={opencodeInputRef}
-                  className="opencode-input"
-                  placeholder="Ask OpenCode to code, inspect, or fix..."
-                  value={opencodePromptInput}
-                  onChange={(e) => setOpencodePromptInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (activeOpencodeSessionBusy) return;
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void runOpencodePrompt();
-                    }
-                  }}
-                  rows={1}
-                />
-              </div>
-              <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
+            {opencodeTodoDockVisible && opencodeActiveTodos.length > 0 ? (
+              <div className="gt-opencode-todo-dock">
                 <button
                   type="button"
-                  className="opencode-model-trigger opencode-composer-model"
-                  onClick={() => {
-                    const next = !showOpencodeModelPicker;
-                    if (next) {
-                      setOpencodeConfiguredProviders([]);
-                      setOpencodeConfiguredModelsByProvider({});
-                      setOpencodeConfiguredModelNamesByProvider({});
-                      void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-                    }
-                    setShowOpencodeModelPicker(next);
-                  }}
+                  className="gt-opencode-todo-dock-head"
+                  onClick={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
+                  aria-expanded={!opencodeTodoDockCollapsed}
                 >
-                  {(() => {
-                    if (!activeOpencodeModel) return "Auto";
-                    const parsed = parseModelRef(activeOpencodeModel);
-                    const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
-                    const mid = parsed?.model || "";
-                    const name = (provider ? (opencodeModelNamesByProvider[provider]?.[mid] || opencodeConfiguredModelNamesByProvider[provider]?.[mid]) : "") || "";
-                    return name || activeOpencodeModel || "Auto";
-                  })()}
-                  <span className="opencode-model-caret">▾</span>
+                  <span className="gt-opencode-todo-dock-progress">
+                    已完成 {opencodeTodoProgress.done} 个任务（共 {opencodeTodoProgress.total} 个）
+                  </span>
+                  <span className="gt-opencode-todo-dock-preview">
+                    {opencodeTodoDockCollapsed ? opencodeTodoProgress.active?.content || "" : ""}
+                  </span>
+                  <span className={opencodeTodoDockCollapsed ? "gt-opencode-todo-dock-chevron is-collapsed" : "gt-opencode-todo-dock-chevron"} aria-hidden="true">
+                    <span />
+                    <span />
+                  </span>
                 </button>
-                {showOpencodeModelPicker ? (
-                  <div className="opencode-model-picker">
-                    <div className="opencode-model-picker-head">
-                      <input className="path-input opencode-model-search" placeholder="搜索已配置模型..." value={opencodeModelPickerSearch} onChange={(e) => setOpencodeModelPickerSearch(e.target.value)} />
-                      <button type="button" className="chip opencode-picker-config-btn" title="自定义提供商" onClick={() => {
-                        setShowOpencodeCustomProvider(true);
-                        setShowOpencodeModelPicker(false);
-                      }}>
-                        ＋
-                      </button>
-                      <button type="button" className="chip opencode-picker-config-btn" title="选择/连接提供商" onClick={() => {
-                        setShowOpencodeProviderPicker(true);
-                        setOpencodeProviderPickerSearch("");
-                        setOpencodeProviderPickerProvider(opencodeModelProvider);
-                        setOpencodeProviderPickerModelSearch("");
-                        setShowOpencodeModelPicker(false);
-                      }}>
-                        ⚙
-                      </button>
-                    </div>
-                    <div className="opencode-model-list-col">
-                      {opencodeConfiguredModelCandidates.length === 0 ? (
-                        <div className="small muted">暂无已配置模型。点击“＋”添加自定义提供商，或点“⚙”连接厂商。</div>
-                      ) : (
-                        opencodeConfiguredModelCandidates.map((m) => (
-                          <button type="button" key={`saved-model-${m}`} className={m === activeOpencodeModel ? "file-item selected" : "file-item"} onClick={() => {
-                            void applyOpencodeModel(m);
-                            setShowOpencodeModelPicker(false);
-                          }} title={m}>
-                            {(() => {
-                              const parsed = parseModelRef(m);
-                              const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
-                              const mid = parsed?.model || "";
-                              const name = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") || "";
-                              return (
-                                <span style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
-                                  <span>{name || m}</span>
-                                  {name ? <span className="small muted">{m}</span> : null}
-                                </span>
-                              );
-                            })()}
-                          </button>
-                        ))
-                      )}
-                    </div>
+                {!opencodeTodoDockCollapsed ? (
+                  <div className="gt-opencode-todo-dock-list">
+                    {opencodeActiveTodos.map((todo) => (
+                      <div key={todo.id} className={`gt-opencode-todo-item is-${todo.status}`}>
+                        <span className="gt-opencode-todo-item-check" aria-hidden="true">
+                          {todo.status === "completed" ? (
+                            "✓"
+                          ) : todo.status === "in_progress" ? (
+                            <span className="gt-opencode-todo-thinking">
+                              <span />
+                              <span />
+                              <span />
+                            </span>
+                          ) : (
+                            ""
+                          )}
+                        </span>
+                        <span className="gt-opencode-todo-item-content">{todo.content}</span>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
               </div>
-              <button
-                className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
-                onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
-                aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
-              >
-                <SendIcon busy={activeOpencodeSessionBusy} />
-              </button>
+            ) : null}
+            {opencodeActiveQuestions.length > 0 && opencodeActiveQuestions.map((req) => (
+              <QuestionDock
+                key={req.id}
+                request={req}
+                onReply={(requestId, answers) => {
+                  void sendQuestionReply(requestId, answers).then((ok) => {
+                    if (ok) setOpencodeDismissedQuestions((prev) => new Set([...prev, requestId]));
+                  });
+                }}
+                onDismiss={(requestId) => {
+                  void sendQuestionReject(requestId).then((ok) => {
+                    if (ok) setOpencodeDismissedQuestions((prev) => new Set([...prev, requestId]));
+                  });
+                }}
+              />
+            ))}
+            <div className="opencode-composer">
+              <div className="opencode-composer-body opencode-composer-body-inline">
+                <div className="opencode-input-shell opencode-composer-editor">
+                  <textarea
+                    ref={opencodeInputRef}
+                    className="opencode-input"
+                    placeholder="Ask OpenCode to code, inspect, or fix..."
+                    value={opencodePromptInput}
+                    onChange={(e) => setOpencodePromptInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (activeOpencodeSessionBusy) return;
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void runOpencodePrompt();
+                      }
+                    }}
+                    rows={1}
+                  />
+                </div>
+                <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
+                  <button
+                    type="button"
+                    className="opencode-model-trigger opencode-composer-model"
+                    aria-haspopup="listbox"
+                    aria-expanded={showOpencodeModelPicker}
+                    onClick={() => {
+                      const next = !showOpencodeModelPicker;
+                      setShowOpencodeModelPicker(next);
+                    }}
+                  >
+                    {(() => {
+                      const display = getOpencodeModelDisplay(activeOpencodeModel || "");
+                      return (
+                        <span className="opencode-model-trigger-copy">
+                          <span className="opencode-model-trigger-title">{display.label || "Auto"}</span>
+                        </span>
+                      );
+                    })()}
+                  </button>
+                  {showOpencodeModelPicker ? (
+                    <div className="opencode-model-picker">
+                      <div className="opencode-model-picker-head">
+                        <div className="opencode-model-picker-kicker">model</div>
+                        <input
+                          className="path-input opencode-model-search"
+                          placeholder="搜索模型或提供商"
+                          value={opencodeModelPickerSearch}
+                          onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
+                        />
+                      </div>
+                      <div className="opencode-model-list-col">
+                        {opencodeConfiguredModelCandidates.length === 0 ? (
+                          <div className="opencode-model-empty">
+                            <strong>暂无已配置模型</strong>
+                            <span>连接提供商或添加自定义模型后，这里会显示可用项。</span>
+                          </div>
+                        ) : (
+                          opencodeConfiguredModelCandidates.map((m) => (
+                            <button
+                              type="button"
+                              key={`saved-model-${m}`}
+                              className={m === activeOpencodeModel ? "opencode-model-option selected" : "opencode-model-option"}
+                              onClick={() => {
+                                void applyOpencodeModel(m);
+                                setShowOpencodeModelPicker(false);
+                              }}
+                              title={m}
+                            >
+                              {(() => {
+                                const display = getOpencodeModelDisplay(m);
+                                return (
+                                  <>
+                                    <span className="opencode-model-option-copy">
+                                      <span className="opencode-model-option-title">{display.label || m}</span>
+                                      <span className="opencode-model-option-meta">
+                                        <span className="opencode-model-option-provider">{display.provider || "Provider"}</span>
+                                      </span>
+                                    </span>
+                                    {m === activeOpencodeModel ? <span className="opencode-model-option-check">✓</span> : null}
+                                  </>
+                                );
+                              })()}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                      <div className="opencode-model-picker-foot">
+                        <button type="button" className="opencode-model-picker-config" onClick={() => {
+                          setShowOpencodeProviderPicker(true);
+                          setOpencodeProviderPickerSearch("");
+                          setOpencodeProviderPickerProvider(opencodeModelProvider);
+                          setOpencodeProviderPickerModelSearch("");
+                          setShowOpencodeModelPicker(false);
+                        }}>
+                          <span>配置模型与提供商</span>
+                          <span className="opencode-model-picker-config-tail">⌘</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <button
+                  className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
+                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
+                  onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
+                  aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
+                >
+                  <SendIcon busy={activeOpencodeSessionBusy} />
+                </button>
+              </div>
             </div>
           </div>
-          </div>
         </div>
-        </div>
-        {showOpencodeDebugLog ? (
-          <div className="opencode-debug-panel">
-            <div className="opencode-debug-head">
-              <strong>OpenCode Debug Log</strong>
-              <button className="chip" onClick={() => setOpencodeDebugLogs([])}>Clear</button>
-            </div>
-            <pre className="opencode-debug-log">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
-          </div>
-        ) : null}
       </div>
+      {showOpencodeDebugLog ? (
+        <div className="opencode-debug-panel">
+          <div className="opencode-debug-head">
+            <strong>OpenCode Debug Log</strong>
+            <button className="chip" onClick={() => setOpencodeDebugLogs([])}>Clear</button>
+          </div>
+          <pre className="opencode-debug-log">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
+        </div>
+      ) : null}
+    </div>
   ) : (
     <div className="panel opencode-panel opencode-empty-panel gt-chat-disabled">
       <div className="opencode-hero">
@@ -5158,53 +6626,342 @@ export function App() {
     <div className="gt-right-pane" ref={opencodeRightPaneRef}>
       <div className="gt-right-panel">
         {rightPaneTab === "worktree" ? (
-          <div className="gt-panel-stack">
-            <div className="gt-right-card">
-              <div className="gt-right-card-head">
-                <strong>Current Worktree</strong>
-                <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+          <div className="gt-worktree-topology-shell">
+            {/* 上半部分：代码分支图 */}
+            <div className="gt-worktree-topology-graph">
+              <div className="gt-worktree-topology-main" style={{ height: "100%", minHeight: "auto", borderRadius: 0, border: "none" }}>
+                <div
+                  className="gt-worktree-topology-viewport"
+                  ref={topologyViewportRef}
+                  onMouseDown={(e) => {
+                    const target = e.target as HTMLElement | null;
+                    if (target?.closest(".gt-topology-node") || e.button !== 0) return;
+                    beginTopologyPan(e.clientX, e.clientY);
+                  }}
+                >
+                  <div
+                    className="gt-worktree-topology-stage"
+                    style={{ width: topologyModel.width * topologyZoom, height: topologyModel.height * topologyZoom }}
+                  >
+                    <div
+                      className="gt-worktree-topology-scene"
+                      style={{ width: topologyModel.width, height: topologyModel.height, transform: `scale(${topologyZoom})` }}
+                      onMouseDownCapture={(e) => {
+                        if (e.button !== 2) return;
+                        const target = e.target as HTMLElement | null;
+                        const nodeEl = target?.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
+                        const nodeId = nodeEl?.dataset.nodeId;
+                        if (!nodeId) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTopologySelectionId(nodeId);
+                        openTopologyContextMenu(e.clientX, e.clientY, nodeId);
+                      }}
+                      onContextMenuCapture={(e) => {
+                        const target = e.target as HTMLElement | null;
+                        const nodeEl = target?.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
+                        const nodeId = nodeEl?.dataset.nodeId;
+                        if (!nodeId) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTopologySelectionId(nodeId);
+                        openTopologyContextMenu(e.clientX, e.clientY, nodeId);
+                      }}
+                    >
+                      <svg className="gt-worktree-topology-links" width={topologyModel.width} height={topologyModel.height} aria-hidden="true">
+                        {topologyModel.edges.map((edge) => {
+                          const from = topologyModel.nodeById[edge.from];
+                          const to = topologyModel.nodeById[edge.to];
+                          if (!from || !to) return null;
+                          return (
+                            <path
+                              key={edge.id}
+                              className={topologyModel.nearbyNodeIds[edge.from] && topologyModel.nearbyNodeIds[edge.to] ? "" : "is-muted"}
+                              d={topologyEdgePath(from, to)}
+                              fill="none"
+                              stroke={edge.color}
+                              strokeDasharray={edge.dashed ? "6 10" : undefined}
+                            />
+                          );
+                        })}
+                      </svg>
+
+                      {topologyModel.nodes.map((node) => {
+                        const selected = topologySelectionId === node.id || (node.kind === "commit" && node.sha === selectedCommit);
+                        const isRepoNode = node.kind === "repo";
+                        const isCurrentCommit = node.kind === "commit" && topologyModel.primaryNodeId === node.id;
+                        const isCurrentBranch = (node.kind === "branch" || node.kind === "worktree") && node.isCurrent;
+                        const className = [
+                          "gt-topology-node",
+                          `kind-${node.kind}`,
+                          node.kind === "commit" && (node.rank || 0) > 0 ? "is-history" : "",
+                          node.kind === "commit" && (node.rank || 0) > 2 ? "is-history-far" : "",
+                          selected ? "selected" : "",
+                          node.isCurrent ? "is-current" : "",
+                          topologyModel.primaryNodeId === node.id ? "is-primary" : "",
+                          topologyModel.nearbyNodeIds[node.id] ? "" : "is-dimmed"
+                        ].filter(Boolean).join(" ");
+                        return (
+                          <button
+                            key={node.id}
+                            type="button"
+                            data-node-id={node.id}
+                            className={className}
+                            style={{
+                              left: node.x,
+                              top: node.y,
+                              width: node.width,
+                              height: node.height,
+                              ["--node-accent" as string]: node.accent,
+                              ["--node-soft" as string]: node.accentSoft,
+                              ["--node-border" as string]: node.border
+                            } as CSSProperties}
+                            onClick={() => focusTopologyNode(node.id)}
+                            onDoubleClick={() => {
+                              if (node.kind === "commit") openTopologyInspectDialog(node.id);
+                            }}
+                            onMouseDown={(e) => {
+                              if (e.button !== 2) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setTopologySelectionId(node.id);
+                              openTopologyContextMenu(e.clientX, e.clientY, node.id);
+                            }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setTopologySelectionId(node.id);
+                              openTopologyContextMenu(e.clientX, e.clientY, node.id);
+                            }}
+                            title={node.path || node.branch || node.sha || node.label}
+                          >
+                            {isCurrentCommit ? <span className="gt-topology-node-dot" aria-hidden="true" /> : null}
+                            {isCurrentBranch ? <span className="gt-topology-node-current-badge" aria-hidden="true">●</span> : null}
+                            {node.kind === "worktree" ? <span className="gt-topology-node-worktree-badge" aria-hidden="true">WT</span> : null}
+                            <span className="gt-topology-node-label">{node.label}</span>
+                            <span className="gt-topology-node-meta">{node.meta}</span>
+                            {isRepoNode ? <span className="gt-topology-node-corner">ROOT</span> : null}
+                          </button>
+                        );
+                      })}
+                      {/* Inline creating node overlay */}
+                      {topologyCreatingNode ? (() => {
+                        const parent = topologyModel.nodeById[topologyCreatingNode.parentId];
+                        if (!parent) return null;
+                        return (
+                          <>
+                            {/* Dashed edge from parent to creating node */}
+                            <svg className="gt-worktree-topology-links" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width={topologyModel.width} height={topologyModel.height}>
+                              <path
+                                d={`M ${parent.x + parent.width / 2} ${parent.y + parent.height} L ${topologyCreatingNode.x + 70} ${topologyCreatingNode.y}`}
+                                fill="none"
+                                stroke="rgba(148,163,184,0.5)"
+                                strokeDasharray="6 10"
+                              />
+                            </svg>
+                            <div
+                              className="gt-topology-node kind-branch is-creating"
+                              style={{
+                                position: "absolute",
+                                left: topologyCreatingNode.x,
+                                top: topologyCreatingNode.y,
+                                width: 140,
+                                height: 72,
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                gap: 4,
+                                zIndex: 10
+                              }}
+                            >
+                              <input
+                                type="text"
+                                autoFocus
+                                placeholder={topologyCreatingNode.mode === "worktree" ? "输入标识，自动拼接前缀" : "分支名"}
+                                value={topologyCreatingNode.name}
+                                onChange={(e) => setTopologyCreatingNode({ ...topologyCreatingNode, name: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    void submitTopologyCreateDialog();
+                                  } else if (e.key === "Escape") {
+                                    setTopologyCreatingNode(null);
+                                  }
+                                }}
+                                onBlur={() => {
+                                  if (!topologyCreatingNode.name.trim()) {
+                                    setTopologyCreatingNode(null);
+                                  }
+                                }}
+                                style={{
+                                  width: 120,
+                                  padding: "4px 8px",
+                                  borderRadius: 4,
+                                  border: "1px solid var(--primary)",
+                                  background: "var(--surface)",
+                                  color: "var(--text)",
+                                  fontSize: 13,
+                                  textAlign: "center",
+                                  outline: "none"
+                                }}
+                              />
+                              {topologyCreatingNode.mode === "worktree" && topologyCreatingNode.name.trim() ? (
+                                <span style={{ fontSize: 10, color: "var(--text-tertiary)", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  将创建: {(() => {
+                                    const parentNode = topologyModel.nodeById[topologyCreatingNode.parentId];
+                                    const baseBranch = parentNode?.branch || "";
+                                    return `${baseBranch}-${topologyCreatingNode.name.trim()}`;
+                                  })()}
+                                </span>
+                              ) : null}
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  className="chip active"
+                                  style={{ padding: "2px 8px", fontSize: 11 }}
+                                  onClick={() => void submitTopologyCreateDialog()}
+                                  disabled={creatingTopologyNode || !topologyCreatingNode.name.trim()}
+                                >
+                                  {topologyCreatingNode.mode === "worktree" ? "创建 WT" : "创建分支"}
+                                </button>
+                                <button
+                                  className="chip"
+                                  style={{ padding: "2px 8px", fontSize: 11 }}
+                                  onClick={() => setTopologyCreatingNode(null)}
+                                >
+                                  取消
+                                </button>
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })() : null}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="gt-stat-grid">
-                <div className="gt-stat-item"><span>Branch</span><strong>{worktreeOverview.branch || selectedBranch || "-"}</strong></div>
-                <div className="gt-stat-item"><span>Tracking</span><strong>{worktreeOverview.tracking || "-"}</strong></div>
-                <div className="gt-stat-item"><span>Ahead / Behind</span><strong>{worktreeOverview.ahead} / {worktreeOverview.behind}</strong></div>
-                <div className="gt-stat-item"><span>Status</span><strong>{worktreeOverview.clean ? "Clean" : "Dirty"}</strong></div>
-              </div>
-              <div className="status-pill-row">
-                <span className="status-pill">staged {worktreeOverview.stagedCount}</span>
-                <span className="status-pill">unstaged {worktreeOverview.unstagedCount}</span>
-                <span className="status-pill">untracked {worktreeOverview.untrackedCount}</span>
-              </div>
-              <pre className="gt-right-pre">{worktreeOverview.raw || "git status -sb"}</pre>
             </div>
 
-            <div className="gt-right-card">
-              <div className="gt-right-card-head">
-                <strong>Branches</strong>
-                <button className="chip" onClick={() => void refreshBranchesAndCommits()} disabled={busy}>Refresh</button>
+            {/* 下半部分：左侧 commit 列表，右侧 agent 上下文 */}
+            <div className="gt-worktree-topology-detail">
+              {/* 左侧：当前分支 commit 列表 */}
+              <div className="gt-worktree-topology-commits">
+                <div className="gt-worktree-topology-commits-head">
+                  <span>提交历史 ({commits.length})</span>
+                  <span className="small muted">{selectedBranch || "当前分支"}</span>
+                </div>
+                <div className="gt-worktree-topology-commit-list">
+                  {commits.length === 0 ? (
+                    <div className="gt-empty-hint" style={{ padding: "20px" }}>暂无提交记录</div>
+                  ) : (
+                    commits.map((commit) => {
+                      const isSelected = selectedCommit === commit.sha;
+                      return (
+                        <div
+                          key={commit.sha}
+                          className={`gt-worktree-topology-commit-item ${isSelected ? "selected" : ""}`}
+                          onClick={() => {
+                            setSelectedCommit(commit.sha);
+                            void loadCommitAgentContext(commit.sha);
+                          }}
+                        >
+                          {isSelected ? <span className="commit-dot" /> : <span style={{ width: 6, flexShrink: 0 }} />}
+                          <span className="commit-sha">{commit.sha.slice(0, 7)}</span>
+                          <div className="commit-info">
+                            <span className="commit-subject">{commit.subject}</span>
+                            <span className="commit-meta">{commit.author} · {commit.date}</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
-              <div className="gt-branch-mini-list">
-                {branches.map((branch) => (
-                  <button key={branch.name} className={selectedBranch === branch.name ? "gt-branch-mini active" : "gt-branch-mini"} onClick={() => void chooseBranch(branch.name)}>
-                    <span className={branch.isCurrent ? "gt-branch-mini-dot current" : "gt-branch-mini-dot"} />
-                    <span>{branch.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
 
-            <div className="gt-right-card gt-right-card-fill">
-              <div className="gt-right-card-head">
-                <strong>Recent Graph</strong>
-                <button className="chip" onClick={() => setShowGraphPopover(true)}>Open Graph</button>
-              </div>
-              <div className="gt-commit-mini-list">
-                {commits.slice(0, 12).map((commit) => (
-                  <button key={commit.sha} className={selectedCommit === commit.sha ? "gt-commit-mini active" : "gt-commit-mini"} onClick={() => setSelectedCommit(commit.sha)}>
-                    <strong>{commit.subject}</strong>
-                    <span>{commit.sha.slice(0, 8)} · {commit.author}</span>
-                  </button>
-                ))}
+              {/* 右侧：选中 commit 的 agent 上下文 */}
+              <div className="gt-worktree-topology-context">
+                <div className="gt-worktree-topology-context-head">
+                  <span>Agent 上下文</span>
+                  {selectedCommit && (
+                    <span className="small muted">{selectedCommit.slice(0, 7)}</span>
+                  )}
+                </div>
+                <div className="gt-worktree-topology-context-body">
+                  {!selectedCommit ? (
+                    <div className="gt-worktree-topology-context-empty">
+                      选择左侧提交查看 Agent 上下文
+                    </div>
+                  ) : !selectedExplain ? (
+                    <div className="gt-worktree-topology-context-empty">
+                      {agentContextError || "加载中..."}
+                    </div>
+                  ) : (
+                    <>
+                      {parsedAgentContext.checkpoint && (
+                        <div className="gt-worktree-topology-context-section">
+                          <h4>Checkpoint</h4>
+                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.checkpoint}</p>
+                        </div>
+                      )}
+                      {parsedAgentContext.intent && (
+                        <div className="gt-worktree-topology-context-section">
+                          <h4>Intent</h4>
+                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.intent}</p>
+                        </div>
+                      )}
+                      {parsedAgentContext.outcome && (
+                        <div className="gt-worktree-topology-context-section">
+                          <h4>Outcome</h4>
+                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.outcome}</p>
+                        </div>
+                      )}
+                      {(parsedAgentContext.checkpoint || parsedAgentContext.intent || parsedAgentContext.outcome) && (
+                        <div className="gt-worktree-topology-context-section">
+                          <button className="context-expand-btn" onClick={() => setShowAgentContextFull(!showAgentContextFull)}>
+                            {showAgentContextFull ? "收起" : "查看全文"}
+                          </button>
+                        </div>
+                      )}
+                      {parsedAgentContext.files && parsedAgentContext.files.length > 0 && (
+                        <div className="gt-worktree-topology-context-section">
+                          <h4>Files</h4>
+                          <div className="gt-worktree-topology-context-files">
+                            {parsedAgentContext.files.map((file, idx) => (
+                              <span key={idx} className="gt-worktree-topology-context-file">{file}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {parsedAgentContext.transcript && parsedAgentContext.transcript.length > 0 && (
+                        <div className="gt-worktree-topology-context-section">
+                          <h4>Transcript</h4>
+                          <div className="gt-worktree-topology-context-transcript">
+                            {parsedAgentContext.transcript.map((entry, idx) => (
+                              <div key={idx} className="transcript-entry">
+                                <div className="transcript-role">{entry.role}</div>
+                                <div className="transcript-content">{entry.content}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {!parsedAgentContext.checkpoint && !parsedAgentContext.intent && !parsedAgentContext.outcome && (
+                        <div className="gt-worktree-topology-context-empty">
+                          该提交未关联 Entire checkpoint
+                        </div>
+                      )}
+                      {/* 显示原始内容用于调试 */}
+                      {selectedExplain && (
+                        <div className="gt-worktree-topology-context-section" style={{ marginTop: 32, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                          <h4>原始内容</h4>
+                          <pre style={{ fontSize: 11, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--muted)', maxHeight: 200, overflow: 'auto' }}>
+                            {selectedExplain}
+                          </pre>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -5217,21 +6974,9 @@ export function App() {
                 <strong>待提交文件</strong>
                 <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
               </div>
-              <div className="gt-worktree-file-list">
+              <div className="gt-worktree-file-list gt-worktree-tree-list">
                 {worktreeOverview.entries.length === 0 ? <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div> : null}
-                {worktreeOverview.entries.map((entry) => (
-                  <button key={entry.path} className={selectedWorktreeFile === entry.path ? "gt-worktree-file active" : "gt-worktree-file"} onClick={() => void refreshSelectedWorktreePatch(entry.path)}>
-                    <span className="gt-worktree-file-top">
-                      <strong>{entry.path}</strong>
-                      <span className="small muted">{entry.indexStatus}{entry.worktreeStatus}</span>
-                    </span>
-                    <span className="gt-worktree-file-tags">
-                      {entry.staged ? <span className="meta-chip">staged</span> : null}
-                      {entry.unstaged ? <span className="meta-chip">unstaged</span> : null}
-                      {entry.untracked ? <span className="meta-chip">untracked</span> : null}
-                    </span>
-                  </button>
-                ))}
+                {renderWorktreeNodes(worktreeTree)}
               </div>
             </div>
             <div className="gt-right-card gt-right-card-fill">
@@ -5239,43 +6984,171 @@ export function App() {
                 <strong>修改记录</strong>
                 <span className="small muted">{selectedWorktreeFile || "选择一个文件"}</span>
               </div>
-              <pre className="gt-right-pre gt-right-pre-fill">{selectedWorktreePatch || "选择左侧文件后查看 patch。"}</pre>
+              {selectedWorktreeFile ? (
+                <div className="gt-worktree-patch-view">
+                  <div className="gt-worktree-patch-summary">
+                    <div className="gt-worktree-patch-summary-main">
+                      <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
+                      <div className="gt-worktree-patch-summary-copy">
+                        <strong>{selectedWorktreeFile}</strong>
+                        <span className="small muted">{getWorktreeStatusText(selectedWorktreeEntry)}</span>
+                      </div>
+                    </div>
+                    <div className="gt-worktree-patch-summary-meta">
+                      {worktreePatchStats.hunks > 0 ? <span className="meta-chip">{worktreePatchStats.hunks} hunks</span> : null}
+                      {worktreePatchStats.added > 0 ? <span className="meta-chip">+{worktreePatchStats.added}</span> : null}
+                      {worktreePatchStats.deleted > 0 ? <span className="meta-chip">-{worktreePatchStats.deleted}</span> : null}
+                      {selectedWorktreeEntry?.staged ? <span className="meta-chip">staged</span> : null}
+                      {selectedWorktreeEntry?.unstaged ? <span className="meta-chip">unstaged</span> : null}
+                      {selectedWorktreeEntry?.untracked ? <span className="meta-chip">untracked</span> : null}
+                      {selectedWorktreeEntry ? <span className={`gt-worktree-tree-status is-${getWorktreeDisplayStatus(selectedWorktreeEntry).toLowerCase()}`}>{getWorktreeDisplayStatus(selectedWorktreeEntry)}</span> : null}
+                    </div>
+                  </div>
+                  {worktreePatchRows.length > 0 ? (
+                    <div className="gt-worktree-patch-body">
+                      <div className="gt-worktree-patch-body-head">
+                        <span>Type</span>
+                        <span>Old</span>
+                        <span>New</span>
+                        <span>Content</span>
+                      </div>
+                      <div className="gt-worktree-patch-body-scroll">
+                        {worktreePatchRows.map((row, idx) => {
+                        return (
+                          <div key={`worktree-diff-${idx}`} className={`gt-worktree-diff-row is-${row.tone}`}>
+                            <span className="gt-worktree-diff-marker">{row.marker}</span>
+                            <span className="gt-worktree-diff-line">{row.oldLine ?? ""}</span>
+                            <span className="gt-worktree-diff-line">{row.newLine ?? ""}</span>
+                            <code className="gt-worktree-diff-code">{row.text || " "}</code>
+                          </div>
+                        );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="gt-worktree-patch-empty">
+                      {selectedWorktreePatch || "这个文件当前没有可显示的 patch。"}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="gt-worktree-patch-empty">选择左侧文件后查看 patch。</div>
+              )}
             </div>
           </div>
         ) : null}
 
         {rightPaneTab === "terminal" ? (
           <div className="gt-panel-stack gt-panel-stack-terminal">
-            <div className="gt-right-card">
-              <div className="gt-right-card-head">
-                <strong>Terminal</strong>
-                <div className="toolbar">
-                  <button className="chip" onClick={() => setTerminalEntries([])}>Clear</button>
-                  <button className="chip" onClick={() => void runTerminalCommand()} disabled={terminalBusy || !selectedRepo}>Run</button>
-                </div>
-              </div>
-              <div className="gt-terminal-toolbar">
-                <button className="chip" onClick={() => { setTerminalInput("git status -sb"); void runTerminalCommand("git status -sb"); }} disabled={terminalBusy || !selectedRepo}>git status</button>
-                <button className="chip" onClick={() => { setTerminalInput("git branch --show-current"); void runTerminalCommand("git branch --show-current"); }} disabled={terminalBusy || !selectedRepo}>current branch</button>
-                <button className="chip" onClick={() => { setTerminalInput("git worktree list"); void runTerminalCommand("git worktree list"); }} disabled={terminalBusy || !selectedRepo}>worktrees</button>
-              </div>
-              <div className="gt-terminal-input-row">
-                <input className="path-input" value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} onKeyDown={(e) => {
-                  if (e.key === "Enter") void runTerminalCommand();
-                }} placeholder="输入命令，例如 git status -sb" />
+            <div className="gt-terminal-header">
+              <button
+                type="button"
+                className={terminalSidebarVisible ? "chip" : "chip active"}
+                onClick={() => setTerminalSidebarVisible((v) => !v)}
+                title={terminalSidebarVisible ? "隐藏终端列表" : "显示终端列表"}
+              >
+                ☰
+              </button>
+              <span className="gt-terminal-label">zsh</span>
+              <div className="gt-terminal-actions">
+                <button className="chip" onClick={async () => {
+                  if (!selectedRepo || !activeTerminalTab) return;
+                  await clearRepoTerminalSession(selectedRepo.path, activeTerminalTab.id);
+                  terminalSeqRef.current[activeTerminalTab.id] = 0;
+                  updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
+                }}>Clear</button>
               </div>
             </div>
-            <div className="gt-terminal-log">
-              {terminalEntries.length === 0 ? <div className="gt-empty-hint">运行命令后，这里会显示输出。</div> : null}
-              {terminalEntries.map((entry) => (
-                <div key={entry.id} className={entry.ok ? "gt-terminal-entry" : "gt-terminal-entry error"}>
-                  <div className="gt-terminal-entry-head">
-                    <strong>$ {entry.command}</strong>
-                    <span className="small muted">{new Date(entry.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+            <div className={terminalSidebarVisible ? "gt-terminal-layout" : "gt-terminal-layout sidebar-hidden"}>
+              {terminalSidebarVisible ? (
+                <aside className="gt-terminal-sidebar">
+                  <div className="gt-terminal-sidebar-head">
+                    <strong>{terminalTabs.length} Terminals</strong>
+                    <button type="button" className="chip" onClick={createTerminalTab} title="新建终端">＋</button>
                   </div>
-                  <pre className="gt-right-pre">{entry.output}</pre>
+                  <div className="gt-terminal-sidebar-list">
+                    {terminalTabs.map((tab) => (
+                      <button
+                        key={`terminal-side-${tab.id}`}
+                        type="button"
+                        className={tab.id === activeTerminalTabId ? "gt-terminal-side-item active" : "gt-terminal-side-item"}
+                        onClick={() => setActiveTerminalTabId(tab.id)}
+                      >
+                        <span className="gt-terminal-side-item-title">{tab.title}</span>
+                        {terminalTabs.length > 1 ? (
+                          <span
+                            className="gt-terminal-side-item-close"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void closeTerminalTab(tab.id);
+                            }}
+                            aria-hidden="true"
+                          >
+                            ×
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </aside>
+              ) : null}
+              <div className="gt-terminal-body" onClick={() => terminalInputRef.current?.focus()}>
+                <div ref={terminalLogRef} className="gt-terminal-console">
+                <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
+                <div className="gt-terminal-inline-input">
+                  <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
+                  <input
+                    ref={terminalInputRef}
+                    className="gt-terminal-input"
+                    value={activeTerminalTab?.input || ""}
+                    onChange={(e) => {
+                      if (!activeTerminalTab) return;
+                      updateTerminalTabById(activeTerminalTab.id, { input: e.target.value });
+                    }}
+                    onKeyDown={(e) => {
+                      if (!activeTerminalTab) return;
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void runTerminalCommand();
+                        return;
+                      }
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
+                          if (prev.history.length === 0) return prev;
+                          const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
+                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
+                        });
+                        return;
+                      }
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
+                          if (prev.history.length === 0) return prev;
+                          if (prev.historyIndex <= 0) {
+                            return { ...prev, historyIndex: -1, input: "" };
+                          }
+                          const next = prev.historyIndex - 1;
+                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
+                        });
+                        return;
+                      }
+                      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
+                        e.preventDefault();
+                        void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
+                          // ignore
+                        });
+                      }
+                    }}
+                    placeholder=""
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                  />
                 </div>
-              ))}
+                </div>
+              </div>
             </div>
           </div>
         ) : null}
@@ -5361,10 +7234,10 @@ export function App() {
     normalizeControlPairMode(controlAccessInfo?.pairCodeTtlMode || controlServerSettings.pairCodeTtlMode) === "none";
   const controlPairPayload = controlBaseUrl
     ? JSON.stringify({
-        baseUrl: controlBaseUrl,
-        authMode: controlAuthNoAuth ? "none" : "pair_code",
-        ...(controlAuthNoAuth ? {} : { pairCode: controlPairCode })
-      })
+      baseUrl: controlBaseUrl,
+      authMode: controlAuthNoAuth ? "none" : "pair_code",
+      ...(controlAuthNoAuth ? {} : { pairCode: controlPairCode })
+    })
     : "";
   const controlPairQrUrl = controlPairPayload
     ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=0&data=${encodeURIComponent(controlPairPayload)}`
@@ -5385,414 +7258,486 @@ export function App() {
   return (
     <AppErrorBoundary>
       <>
-      <Workbench
-        activityBar={activityBar}
-        sideBar={sideBar}
-        editor={editor}
-        panel={panel}
-        sidebarWidth={sidebarWidth}
-        sidebarCollapsed={!leftDrawerOpen}
-        sidebarResizing={draggingSplit?.kind === "sidebar"}
-        onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
-        statusBar={
-          <div className="wb-status-inner">
-            <div className="wb-status-group">
-              <button className="wb-status-btn" title="当前仓库/分支">
-                {(selectedRepo?.name ?? "No Project") + " · " + (selectedBranch || "—")}
-              </button>
-              <button
-                className={showGraphPopover ? "wb-status-btn active" : "wb-status-btn"}
-                title="Graph"
-                onClick={() => setShowGraphPopover((v) => !v)}
-              >
-                ⎇
-              </button>
-            </div>
-            <div className="wb-status-group">
-              <button
-                className="wb-status-btn"
-                title={mobileDot.label}
-                onClick={() => {
-                  if (!runtimeStatus.giteam.installed) {
-                    setShowSettings(true);
-                    setShowEnvSetup(true);
-                    return;
-                  }
-                  setShowMobileControlDialog(true);
-                }}
-              >
-                <span className="gt-status-dot" style={{ background: mobileDot.color }} aria-hidden="true" />
-                <span className="gt-status-text">Mobile</span>
-              </button>
-            </div>
-          </div>
-        }
-        panelPlacement={panelPlacement}
-      />
-
-      {overlayBusy ? (
-        <div className="ui-busy-layer" role="status" aria-live="polite">
-          <div className="ui-busy-card">
-            <span className="ui-busy-spinner" aria-hidden="true" />
-            <div className="ui-busy-copy">{message || "Loading..."}</div>
-            <div className="ui-busy-track" aria-hidden="true">
-              <span className="ui-busy-bar" />
-            </div>
-            <div className="toolbar" style={{ justifyContent: "center" }}>
-              <button
-                className="chip"
-                onClick={() => {
-                  setOverlayBusy(false);
-                  setBusy(false);
-                  setMessage("");
-                }}
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {mobileStatusChangeToast.visible ? (
-        <div className="mobile-status-toast" role="status" aria-live="polite">
-          <span className={`mobile-status-toast-icon ${mobileStatusChangeToast.message === "Disconnected" ? "disconnected" : "connected"}`}>
-            {mobileStatusChangeToast.message === "Disconnected" ? "✕" : "✓"}
-          </span>
-          <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
-        </div>
-      ) : null}
-
-      {showGraphPopover ? (
-        <div className="wb-graph-popover" role="dialog" aria-label="Graph" onClick={(e) => e.stopPropagation()}>
-          <div className="wb-graph-popover-head">
-            <strong>Graph</strong>
-            <button className="chip" onClick={() => setShowGraphPopover(false)}>
-              Close
-            </button>
-          </div>
-          <div className="wb-graph-popover-body">
-            <div className="branch-tree branch-tree-lanes" style={{ maxHeight: 360 }}>
-              <BranchGraphLanes rows={commitGraph} rowHeight={30} laneGap={14} selectedSha={selectedCommit} />
-              {commitGraph
-                .filter((g) => !g.isConnector && !!g.sha)
-                .map((g, idx) => (
-                  <button
-                    key={`${g.sha}-${idx}`}
-                    className={selectedCommit === g.sha ? "graph-row selected" : "graph-row"}
-                    onClick={() => setSelectedCommit(g.sha)}
-                  >
-                    <span className="graph-ascii graph-ascii-placeholder" aria-hidden="true" />
-                    <span className="graph-main">
-                      <span className="graph-subject">{g.subject || "(no subject)"}</span>
-                      <span className="graph-meta">
-                        {g.sha.slice(0, 8)} · {g.author} · {g.date}
-                      </span>
-                    </span>
-                    <span className="graph-refs">
-                      {parseRefs(g.refs).map((r) => (
-                        <span key={`${g.sha}-${r}`} className="graph-ref-btn" aria-hidden="true">
-                          {r}
-                        </span>
-                      ))}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showSettings ? (
-        <div className="modal-mask" onClick={() => void closeSettingsModal()}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
-            <h3>Settings</h3>
-            <p className="small muted">Theme and layout preferences</p>
-
-            <div className="settings-grid">
-              <div className="settings-row">
-                <div className="settings-label">Theme</div>
-                <div className="toolbar">
-                  <button className="chip" onClick={toggleTheme} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
-                    {theme === "dark" ? "Light" : "Dark"}
-                  </button>
-                </div>
+        <Workbench
+          activityBar={activityBar}
+          sideBar={sideBar}
+          editor={editor}
+          panel={panel}
+          sidebarWidth={sidebarWidth}
+          sidebarCollapsed={!leftDrawerOpen}
+          sidebarResizing={draggingSplit?.kind === "sidebar"}
+          onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
+          statusBar={
+            <div className="wb-status-inner">
+              <div className="wb-status-group">
+                <button className="wb-status-btn" title="当前仓库/分支">
+                  {(() => {
+                    const mainRepo = repos.find(r => r.id === selectedRepo?.id);
+                    const isWorktree = mainRepo && selectedRepo && mainRepo.path !== selectedRepo.path;
+                    return (selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
+                  })()}
+                </button>
+                <button
+                  className={showGraphPopover ? "wb-status-btn active" : "wb-status-btn"}
+                  title="Graph"
+                  onClick={() => setShowGraphPopover((v) => !v)}
+                >
+                  ⎇
+                </button>
               </div>
-
-              <div className="settings-row">
-                <div className="settings-label">Plugins</div>
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    onClick={() => {
+              <div className="wb-status-group">
+                <button
+                  className="wb-status-btn"
+                  title={mobileDot.label}
+                  onClick={() => {
+                    if (!runtimeStatus.giteam.installed) {
+                      setShowSettings(true);
                       setShowEnvSetup(true);
-                      const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
-                        (d) => !d.checked
-                      );
-                      if (unchecked) void refreshRuntimeRequirements();
-                    }}
-                  >
-                    Manage plugins
-                  </button>
-                </div>
+                      return;
+                    }
+                    setShowMobileControlDialog(true);
+                  }}
+                >
+                  <span className="gt-status-dot" style={{ background: mobileDot.color }} aria-hidden="true" />
+                  <span className="gt-status-text">Mobile</span>
+                </button>
               </div>
+            </div>
+          }
+          panelPlacement={panelPlacement}
+        />
 
-              <div className="settings-row">
-                <div className="settings-label">Mobile Control API</div>
-                <div className="settings-config-btn-wrap">
-                  <button
-                    className="chip"
-                    disabled={!runtimeStatus.giteam.installed}
-                    title={runtimeStatus.giteam.installed ? "Configure Mobile Control API" : "Install giteam plugin first"}
-                    onClick={openMobileControlDialog}
-                  >
-                    Configure
-                  </button>
-                </div>
+        {overlayBusy ? (
+          <div className="ui-busy-layer" role="status" aria-live="polite">
+            <div className="ui-busy-card">
+              <span className="ui-busy-spinner" aria-hidden="true" />
+              <div className="ui-busy-copy">{message || "Loading..."}</div>
+              <div className="ui-busy-track" aria-hidden="true">
+                <span className="ui-busy-bar" />
               </div>
-              {runtimeStatus.giteam.installed ? null : (
+              <div className="toolbar" style={{ justifyContent: "center" }}>
+                <button
+                  className="chip"
+                  onClick={() => {
+                    setOverlayBusy(false);
+                    setBusy(false);
+                    setMessage("");
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {mobileStatusChangeToast.visible ? (
+          <div className="mobile-status-toast" role="status" aria-live="polite">
+            <span className={`mobile-status-toast-icon ${mobileStatusChangeToast.message === "Disconnected" ? "disconnected" : "connected"}`}>
+              {mobileStatusChangeToast.message === "Disconnected" ? "✕" : "✓"}
+            </span>
+            <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
+          </div>
+        ) : null}
+
+        {showGraphPopover ? (
+          <div className="wb-graph-popover" role="dialog" aria-label="Graph" onClick={(e) => e.stopPropagation()}>
+            <div className="wb-graph-popover-head">
+              <strong>Graph</strong>
+              <button className="chip" onClick={() => setShowGraphPopover(false)}>
+                Close
+              </button>
+            </div>
+            <div className="wb-graph-popover-body">
+              <div className="branch-tree branch-tree-lanes" style={{ maxHeight: 360 }}>
+                <BranchGraphLanes rows={commitGraph} rowHeight={30} laneGap={14} selectedSha={selectedCommit} />
+                {commitGraph
+                  .filter((g) => !g.isConnector && !!g.sha)
+                  .map((g, idx) => (
+                    <button
+                      key={`${g.sha}-${idx}`}
+                      className={selectedCommit === g.sha ? "graph-row selected" : "graph-row"}
+                      onClick={() => setSelectedCommit(g.sha)}
+                    >
+                      <span className="graph-ascii graph-ascii-placeholder" aria-hidden="true" />
+                      <span className="graph-main">
+                        <span className="graph-subject">{g.subject || "(no subject)"}</span>
+                        <span className="graph-meta">
+                          {g.sha.slice(0, 8)} · {g.author} · {g.date}
+                        </span>
+                      </span>
+                      <span className="graph-refs">
+                        {parseRefs(g.refs).map((r) => (
+                          <span key={`${g.sha}-${r}`} className="graph-ref-btn" aria-hidden="true">
+                            {r}
+                          </span>
+                        ))}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showTopologyCreateDialog ? (
+          <div className="modal-mask" onClick={() => setShowTopologyCreateDialog(false)}>
+            <div className="modal-card gt-topology-create-card" onClick={(e) => e.stopPropagation()}>
+              <h3>从节点拉新分支</h3>
+              <p className="small muted">从当前节点拉出新分支，创建后会立即接入当前拓扑图并选中新节点。</p>
+              <div className="gt-topology-create-grid">
+                <label className="gt-topology-form-field">
+                  <span>来源节点</span>
+                  <strong>{topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
+                </label>
+                <label className="gt-topology-form-field">
+                  <span>新分支名</span>
+                  <input
+                    value={topologyCreateBranchName}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTopologyCreateBranchName(next);
+                      if (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/")) {
+                        setTopologyCreateTargetPath(suggestedTopologyPath(next));
+                      }
+                    }}
+                    placeholder="feature/my-node"
+                    autoFocus
+                  />
+                </label>
+                <label className="gt-topology-form-field gt-topology-form-field-wide">
+                  <span>目标目录</span>
+                  <input
+                    value={topologyCreateTargetPath}
+                    onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
+                    placeholder="留空则自动生成"
+                  />
+                </label>
+              </div>
+              <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 12 }}>
+                <button className="chip" onClick={() => setShowTopologyCreateDialog(false)}>取消</button>
+                <button className="chip active" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>拉新分支</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showTopologyInspectDialog && topologyInspectNode ? (
+          <div className="modal-mask" onClick={() => setShowTopologyInspectDialog(false)}>
+            <div className="modal-card gt-topology-inspect-card" onClick={(e) => e.stopPropagation()}>
+              <div className="gt-worktree-topology-info-head">
+                <strong>{topologyInspectNode.label}</strong>
+                <span className="small muted">{topologyInspectNode.kind}</span>
+              </div>
+              <div className="gt-worktree-topology-info-grid">
+                <div className="gt-worktree-topology-metric"><span>Branch</span><strong>{topologyInspectNode.branch || worktreeOverview.branch || "-"}</strong></div>
+                <div className="gt-worktree-topology-metric"><span>Commit</span><strong>{topologyInspectNode.sha ? shortSha(topologyInspectNode.sha) : shortSha(selectedCommit || commits[0]?.sha || "")}</strong></div>
+                <div className="gt-worktree-topology-metric"><span>Status</span><strong>{topologyInspectNode.kind === "commit" ? "history" : topologyInspectNode.dirtyCount ? `dirty ${topologyInspectNode.dirtyCount}` : worktreeOverview.clean ? "clean" : "dirty"}</strong></div>
+                <div className="gt-worktree-topology-metric"><span>Ahead / Behind</span><strong>{worktreeOverview.ahead} / {worktreeOverview.behind}</strong></div>
+              </div>
+              <div className="gt-worktree-topology-detail-list">
+                {topologyInspectNode.path ? <div className="gt-worktree-topology-detail-item"><span>Path</span><strong>{topologyInspectNode.path}</strong></div> : null}
+                {topologyInspectNode.author ? <div className="gt-worktree-topology-detail-item"><span>Author</span><strong>{topologyInspectNode.author}</strong></div> : null}
+                {topologyInspectNode.date ? <div className="gt-worktree-topology-detail-item"><span>Date</span><strong>{topologyInspectNode.date}</strong></div> : null}
+                {topologyInspectNode.refs?.length ? <div className="gt-worktree-topology-detail-item"><span>Refs</span><strong>{topologyInspectNode.refs.join(" · ")}</strong></div> : null}
+                {topologyInspectNode.kind === "commit" && selectedParsed?.hasCheckpoint ? <div className="gt-worktree-topology-detail-item"><span>Checkpoint</span><strong>{selectedParsed.checkpointId || "已关联"}</strong></div> : null}
+                {topologyInspectNode.kind === "commit" && selectedParsed?.sessionId ? <div className="gt-worktree-topology-detail-item"><span>Session</span><strong>{selectedParsed.sessionId}</strong></div> : null}
+              </div>
+              <pre className="gt-worktree-topology-context-preview">{topologyInspectNode.kind === "commit" ? (selectedExplain || "当前 commit 未解析到 Entire agent 上下文。") : (worktreeOverview.raw || "git status -sb")}</pre>
+            </div>
+          </div>
+        ) : null}
+
+        {showSettings ? (
+          <div className="modal-mask" onClick={() => void closeSettingsModal()}>
+            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
+              <h3>Settings</h3>
+              <p className="small muted">Theme and layout preferences</p>
+
+              <div className="settings-grid">
+                <div className="settings-row">
+                  <div className="settings-label">Theme</div>
+                  <div className="toolbar">
+                    <button className="chip" onClick={toggleTheme} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
+                      {theme === "dark" ? "Light" : "Dark"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-label">Plugins</div>
+                  <div className="toolbar">
+                    <button
+                      className="chip"
+                      onClick={() => {
+                        setShowEnvSetup(true);
+                        const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
+                          (d) => !d.checked
+                        );
+                        if (unchecked) void refreshRuntimeRequirements();
+                      }}
+                    >
+                      Manage plugins
+                    </button>
+                  </div>
+                </div>
+
                 <div className="settings-row">
                   <div className="settings-label">Mobile Control API</div>
-                  <div className="small muted">Install giteam plugin first. This feature is provided by giteam CLI.</div>
-                </div>
-              )}
-
-              {runtimeStatus.opencode.installed ? (
-                <div className="settings-row">
-                  <div className="settings-label">OpenCode API</div>
                   <div className="settings-config-btn-wrap">
-                    <button className="chip" onClick={() => setShowOpencodeApiDialog(true)}>
+                    <button
+                      className="chip"
+                      disabled={!runtimeStatus.giteam.installed}
+                      title={runtimeStatus.giteam.installed ? "Configure Mobile Control API" : "Install giteam plugin first"}
+                      onClick={openMobileControlDialog}
+                    >
                       Configure
                     </button>
                   </div>
                 </div>
-              ) : null}
-
-              {runtimeStatus.opencode.installed ? (
-                <>
+                {runtimeStatus.giteam.installed ? null : (
                   <div className="settings-row">
-                    <div className="settings-label">Model management</div>
-                    <div className="toolbar">
-                      <button
-                        className="chip"
-                        onClick={() => {
-                          setOpencodeProviderPickerProvider(
-                            parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
-                          );
-                          setShowOpencodeProviderPicker(true);
-                        }}
-                      >
-                        Open manager
+                    <div className="settings-label">Mobile Control API</div>
+                    <div className="small muted">Install giteam plugin first. This feature is provided by giteam CLI.</div>
+                  </div>
+                )}
+
+                {runtimeStatus.opencode.installed ? (
+                  <div className="settings-row">
+                    <div className="settings-label">OpenCode API</div>
+                    <div className="settings-config-btn-wrap">
+                      <button className="chip" onClick={() => setShowOpencodeApiDialog(true)}>
+                        Configure
                       </button>
                     </div>
                   </div>
-                </>
-              ) : null}
-              {runtimeStatus.opencode.installed ? null : (
-                <div className="settings-row">
-                  <div className="settings-label">Model management</div>
-                  <div className="small muted">Install OpenCode plugin first.</div>
-                </div>
-              )}
-            </div>
+                ) : null}
 
-            <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-              <button className="chip" onClick={() => void closeSettingsModal()}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+                {runtimeStatus.opencode.installed ? (
+                  <>
+                    <div className="settings-row">
+                      <div className="settings-label">Model management</div>
+                      <div className="toolbar">
+                        <button
+                          className="chip"
+                          onClick={() => {
+                            setOpencodeProviderPickerProvider(
+                              parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
+                            );
+                            setShowOpencodeProviderPicker(true);
+                          }}
+                        >
+                          Open manager
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+                {runtimeStatus.opencode.installed ? null : (
+                  <div className="settings-row">
+                    <div className="settings-label">Model management</div>
+                    <div className="small muted">Install OpenCode plugin first.</div>
+                  </div>
+                )}
+              </div>
 
-      {showMobileControlDialog && runtimeStatus.giteam.installed ? (
-        <div className="modal-mask" onClick={() => void closeMobileControlDialog()}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
-            <div className="env-setup-head">
-              <h3>Mobile Control API</h3>
-              <div className="mobile-control-head-right">
-                <span className="small muted">Service</span>
-                <button
-                  type="button"
-                  className={controlServerSettings.enabled ? "gt-switch on" : "gt-switch"}
-                  disabled={controlServerSettingsBusy}
-                  onClick={() => void toggleControlServiceEnabled(!controlServerSettings.enabled)}
-                  title={controlServerSettings.enabled ? "Disable service" : "Enable service"}
-                >
-                  <span className="gt-switch-thumb" aria-hidden="true" />
+              <div className="toolbar" style={{ justifyContent: "flex-end" }}>
+                <button className="chip" onClick={() => void closeSettingsModal()}>
+                  Close
                 </button>
               </div>
             </div>
-            <div className="settings-provider-form settings-mobile-control">
-              <div className="mobile-control-section-title">Connection</div>
-              <div className="mobile-control-config">
+          </div>
+        ) : null}
+
+        {showMobileControlDialog && runtimeStatus.giteam.installed ? (
+          <div className="modal-mask" onClick={() => void closeMobileControlDialog()}>
+            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
+              <div className="env-setup-head">
+                <h3>Mobile Control API</h3>
+                <div className="mobile-control-head-right">
+                  <span className="small muted">Service</span>
+                  <button
+                    type="button"
+                    className={controlServerSettings.enabled ? "gt-switch on" : "gt-switch"}
+                    disabled={controlServerSettingsBusy}
+                    onClick={() => void toggleControlServiceEnabled(!controlServerSettings.enabled)}
+                    title={controlServerSettings.enabled ? "Disable service" : "Enable service"}
+                  >
+                    <span className="gt-switch-thumb" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <div className="settings-provider-form settings-mobile-control">
+                <div className="mobile-control-section-title">Connection</div>
+                <div className="mobile-control-config">
+                  <div className="mobile-control-field">
+                    <div className="small muted">Port</div>
+                    <input
+                      className="path-input"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      disabled={!controlServiceEnabled}
+                      placeholder="Port"
+                      value={String(controlServerSettings.port)}
+                      onChange={(e) =>
+                        setControlServerSettings((prev) => ({
+                          ...prev,
+                          port: Number(e.target.value || "0")
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="mobile-control-field">
+                    <div className="small muted">Public URL (optional)</div>
+                    <input
+                      className="path-input"
+                      disabled={!controlServiceEnabled}
+                      placeholder="Public URL（默认自动取局域网 IPv4）"
+                      value={controlServerSettings.publicBaseUrl}
+                      onChange={(e) =>
+                        setControlServerSettings((prev) => ({
+                          ...prev,
+                          publicBaseUrl: e.target.value
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="mobile-control-section-title">Authentication</div>
+                <div className="mobile-control-auth-row">
+                  <div className="mobile-control-field">
+                    <div className="small muted">Pair Code Validity</div>
+                    <select
+                      className="path-input"
+                      disabled={!controlServiceEnabled}
+                      value={controlServerSettings.pairCodeTtlMode}
+                      onChange={(e) =>
+                        setControlServerSettings((prev) => ({
+                          ...prev,
+                          pairCodeTtlMode: normalizeControlPairMode(e.target.value)
+                        }))
+                      }
+                    >
+                      <option value="none">No Auth (no pair code)</option>
+                      <option value="24h">Pair code valid for 24 hours</option>
+                      <option value="7d">Pair code valid for 7 days</option>
+                      <option value="forever">Pair code valid indefinitely</option>
+                    </select>
+                  </div>
+                  <div className="mobile-control-field">
+                    <div className="small muted">Actions</div>
+                    <div className="toolbar" style={{ justifyContent: "flex-start", minHeight: 36 }}>
+                      <button
+                        className="chip"
+                        disabled={!controlServiceEnabled || controlServerSettingsBusy}
+                        onClick={() => {
+                          void forceRefreshControlPairCode();
+                          void loadControlAccessInfo();
+                        }}
+                      >
+                        Refresh code
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="toolbar mobile-control-status">
+                  <span className="small muted">
+                    {!controlServiceEnabled
+                      ? "Service is disabled"
+                      : controlAuthNoAuth
+                        ? "Current mode: No Auth"
+                        : `Pair code: ${controlPairCode || "------"}`}
+                  </span>
+                </div>
+                <div className="mobile-control-divider" />
+                <div className="mobile-control-section-title">QR Connection</div>
+                <div className="mobile-qr-card">
+                  <div className="mobile-qr-visual">
+                    {controlServiceEnabled && controlPairQrUrl ? (
+                      <img src={controlPairQrUrl} alt="Mobile pair QR code" />
+                    ) : (
+                      <div className="small muted">{controlServiceEnabled ? "QR unavailable" : "Service disabled"}</div>
+                    )}
+                  </div>
+                  <div className="mobile-qr-meta">
+                    <div className="small muted">
+                      {!controlServiceEnabled
+                        ? "Enable the service to generate a QR code for mobile pairing."
+                        : controlAuthNoAuth
+                          ? "Scan to connect directly (No Auth mode)"
+                          : "Scan, then connect on mobile with pair code (manual or auto-filled)"}
+                    </div>
+                    <div className="mobile-qr-code">{!controlServiceEnabled ? "Disabled" : controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
+                    <div className="mobile-qr-url">{controlServiceEnabled ? controlBaseUrl || "Waiting for local address..." : "Service disabled"}</div>
+                    <div className="toolbar">
+                      <button
+                        className="chip"
+                        disabled={!controlServiceEnabled || !controlBaseUrl}
+                        onClick={() => {
+                          void navigator.clipboard.writeText(controlBaseUrl);
+                          setMessage("Control server URL copied");
+                        }}
+                      >
+                        Copy URL
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showOpencodeApiDialog ? (
+          <div className="modal-mask" onClick={() => void closeOpencodeApiDialog()}>
+            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+              <div className="env-setup-head">
+                <h3>OpenCode API</h3>
+              </div>
+              <div className="settings-provider-form">
                 <div className="mobile-control-field">
-                  <div className="small muted">Port</div>
+                  <div className="small muted">Service port</div>
                   <input
                     className="path-input"
                     type="number"
                     min={1}
                     max={65535}
-                    disabled={!controlServiceEnabled}
-                    placeholder="Port"
-                    value={String(controlServerSettings.port)}
-                    onChange={(e) =>
-                      setControlServerSettings((prev) => ({
+                    placeholder="Service port"
+                    value={String(opencodeServiceSettings.port)}
+                    onChange={(e) => {
+                      const next = Number(e.target.value || "0");
+                      setOpencodeServiceSettings((prev) => ({
                         ...prev,
-                        port: Number(e.target.value || "0")
-                      }))
-                    }
-                  />
-                </div>
-                <div className="mobile-control-field">
-                  <div className="small muted">Public URL (optional)</div>
-                  <input
-                    className="path-input"
-                    disabled={!controlServiceEnabled}
-                    placeholder="Public URL（默认自动取局域网 IPv4）"
-                    value={controlServerSettings.publicBaseUrl}
-                    onChange={(e) =>
-                      setControlServerSettings((prev) => ({
-                        ...prev,
-                        publicBaseUrl: e.target.value
-                      }))
-                    }
+                        port: next
+                      }));
+                    }}
                   />
                 </div>
               </div>
-              <div className="mobile-control-section-title">Authentication</div>
-              <div className="mobile-control-auth-row">
-                <div className="mobile-control-field">
-                  <div className="small muted">Pair Code Validity</div>
-                  <select
-                    className="path-input"
-                    disabled={!controlServiceEnabled}
-                    value={controlServerSettings.pairCodeTtlMode}
-                    onChange={(e) =>
-                      setControlServerSettings((prev) => ({
-                        ...prev,
-                        pairCodeTtlMode: normalizeControlPairMode(e.target.value)
-                      }))
-                    }
-                  >
-                    <option value="none">No Auth (no pair code)</option>
-                    <option value="24h">Pair code valid for 24 hours</option>
-                    <option value="7d">Pair code valid for 7 days</option>
-                    <option value="forever">Pair code valid indefinitely</option>
-                  </select>
-                </div>
-                <div className="mobile-control-field">
-                  <div className="small muted">Actions</div>
-                  <div className="toolbar" style={{ justifyContent: "flex-start", minHeight: 36 }}>
-                    <button
-                      className="chip"
-                      disabled={!controlServiceEnabled || controlServerSettingsBusy}
-                      onClick={() => {
-                        void forceRefreshControlPairCode();
-                        void loadControlAccessInfo();
-                      }}
-                    >
-                      Refresh code
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="toolbar mobile-control-status">
-                <span className="small muted">
-                  {!controlServiceEnabled
-                    ? "Service is disabled"
-                    : controlAuthNoAuth
-                      ? "Current mode: No Auth"
-                      : `Pair code: ${controlPairCode || "------"}`}
-                </span>
-              </div>
-              <div className="mobile-control-divider" />
-              <div className="mobile-control-section-title">QR Connection</div>
-              <div className="mobile-qr-card">
-                <div className="mobile-qr-visual">
-                  {controlServiceEnabled && controlPairQrUrl ? (
-                    <img src={controlPairQrUrl} alt="Mobile pair QR code" />
-                  ) : (
-                    <div className="small muted">{controlServiceEnabled ? "QR unavailable" : "Service disabled"}</div>
-                  )}
-                </div>
-                <div className="mobile-qr-meta">
-                  <div className="small muted">
-                    {!controlServiceEnabled
-                      ? "Enable the service to generate a QR code for mobile pairing."
-                      : controlAuthNoAuth
-                      ? "Scan to connect directly (No Auth mode)"
-                      : "Scan, then connect on mobile with pair code (manual or auto-filled)"}
-                  </div>
-                  <div className="mobile-qr-code">{!controlServiceEnabled ? "Disabled" : controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
-                  <div className="mobile-qr-url">{controlServiceEnabled ? controlBaseUrl || "Waiting for local address..." : "Service disabled"}</div>
-                  <div className="toolbar">
-                    <button
-                      className="chip"
-                      disabled={!controlServiceEnabled || !controlBaseUrl}
-                      onClick={() => {
-                        void navigator.clipboard.writeText(controlBaseUrl);
-                        setMessage("Control server URL copied");
-                      }}
-                    >
-                      Copy URL
-                    </button>
-                  </div>
-                </div>
-              </div>
-              {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {showOpencodeApiDialog ? (
-        <div className="modal-mask" onClick={() => void closeOpencodeApiDialog()}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-            <div className="env-setup-head">
-              <h3>OpenCode API</h3>
-            </div>
-            <div className="settings-provider-form">
-              <div className="mobile-control-field">
-                <div className="small muted">Service port</div>
-                <input
-                  className="path-input"
-                  type="number"
-                  min={1}
-                  max={65535}
-                  placeholder="Service port"
-                  value={String(opencodeServiceSettings.port)}
-                  onChange={(e) => {
-                    const next = Number(e.target.value || "0");
-                    setOpencodeServiceSettings((prev) => ({
-                      ...prev,
-                      port: next
-                    }));
-                  }}
-                />
+        {showOpencodeProviderPicker ? (
+          <div className="modal-mask" onClick={() => setShowOpencodeProviderPicker(false)}>
+            <div className="modal-card settings-card opencode-provider-picker-card" onClick={(e) => e.stopPropagation()}>
+              <div className="env-setup-head">
+                <div className="opencode-provider-picker-title">
+                  <h3>Provider & Model Manager</h3>
+                </div>
+                <div className="toolbar">
+                  {opencodeCatalogLoading ? (
+                    <span className="opencode-inline-loading" aria-live="polite">
+                      <span />
+                      读取中
+                    </span>
+                  ) : null}
+                  <button className="chip" onClick={() => setShowOpencodeProviderPicker(false)}>Close</button>
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showOpencodeProviderPicker ? (
-        <div className="modal-mask" onClick={() => setShowOpencodeProviderPicker(false)}>
-          <div className="modal-card settings-card opencode-provider-picker-card" onClick={(e) => e.stopPropagation()}>
-            <div className="env-setup-head">
-              <div className="opencode-provider-picker-title">
-                <h3>Provider & Model Manager</h3>
-              </div>
-              <div className="toolbar">
-                {opencodeCatalogLoading ? (
-                  <span className="opencode-inline-loading" aria-live="polite">
-                    <span />
-                    读取中
-                  </span>
-                ) : null}
-                <button className="chip" onClick={() => setShowOpencodeProviderPicker(false)}>Close</button>
-              </div>
-            </div>
             <div className="settings-model-head opencode-provider-picker-toolbar">
               <input
                 className="path-input"
@@ -5805,10 +7750,9 @@ export function App() {
                 placeholder="搜索模型..."
                 value={opencodeProviderPickerModelSearch}
                 onChange={(e) => setOpencodeProviderPickerModelSearch(e.target.value)}
-                style={{ maxWidth: 240 }}
               />
               <button
-                className="chip"
+                className="chip opencode-provider-add-btn"
                 title="新增自定义提供商"
                 aria-label="新增自定义提供商"
                 onClick={() => {
@@ -5818,108 +7762,309 @@ export function App() {
               >
                 ＋
               </button>
-              <button className="chip" disabled={opencodeCatalogLoading} onClick={() => void refreshOpencodeCatalog()}>
-                {opencodeCatalogLoading ? "Refreshing..." : "Refresh"}
-              </button>
             </div>
-            <div className="settings-model-lists opencode-provider-picker-grid">
-              <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                {opencodeProviderPickerCandidates.length === 0 ? (
-                  <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>
-                ) : null}
-                {opencodeProviderPickerCandidates.map((provider, idx) => {
-                  const connected = opencodeConnectedProviders.includes(provider);
-                  const tag = getOpencodeProviderTag(provider);
-                  const prev = idx > 0 ? opencodeProviderPickerCandidates[idx - 1] : "";
-                  const prevConnected = prev ? opencodeConnectedProviders.includes(prev) : connected;
-                  const shouldSplit = idx > 0 && prevConnected && !connected;
-                  const modelCount = (opencodeModelsByProvider[provider] || []).length;
-                  return (
-                    <Fragment key={`provider-pick-wrap-${provider}`}>
-                      {shouldSplit ? (
-                        <div className="opencode-provider-divider small muted">
-                          未连接
-                        </div>
-                      ) : null}
-                      <button
-                        key={`provider-pick-${provider}`}
-                        className={opencodeProviderPickerProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setOpencodeProviderPickerProvider(provider);
-                          if (!connected) {
-                            // Show inline connect UI on the right column (matches OpenCode "connect" UX).
-                            setOpencodeConnectProviderId(provider);
-                            setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
-                            setOpencodeConnectApiKey("");
-                            return;
-                          }
-                          setShowOpencodeAuthDialogFor("");
-                        }}
-                        title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
-                      >
-                        <span className="opencode-provider-row-main">
-                          {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                          <small>{`${provider} · ${tag}`}</small>
-                        </span>
-                        <span className="opencode-provider-row-side">
-                          <small className="small muted">{modelCount} models</small>
-                          <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
-                            {connected ? "已连接" : "未连接"}
+              <div className="settings-model-lists opencode-provider-picker-grid">
+                <div className="settings-model-col" style={{ maxHeight: 420 }}>
+                  {opencodeProviderPickerCandidates.length === 0 ? (
+                    <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>
+                  ) : null}
+                  {opencodeProviderPickerCandidates.map((provider, idx) => {
+                    const connected = opencodeConnectedProviders.includes(provider);
+                    const tag = getOpencodeProviderTag(provider);
+                    const prev = idx > 0 ? opencodeProviderPickerCandidates[idx - 1] : "";
+                    const prevConnected = prev ? opencodeConnectedProviders.includes(prev) : connected;
+                    const shouldSplit = idx > 0 && prevConnected && !connected;
+                    const modelCount = (opencodeModelsByProvider[provider] || []).length;
+                    return (
+                      <Fragment key={`provider-pick-wrap-${provider}`}>
+                        {shouldSplit ? (
+                          <div className="opencode-provider-divider small muted">
+                            未连接
+                          </div>
+                        ) : null}
+                        <button
+                          key={`provider-pick-${provider}`}
+                          className={opencodeProviderPickerProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setOpencodeProviderPickerProvider(provider);
+                            if (!connected) {
+                              // Show inline connect UI on the right column (matches OpenCode "connect" UX).
+                              setOpencodeConnectProviderId(provider);
+                              setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
+                              setOpencodeConnectApiKey("");
+                              return;
+                            }
+                            setShowOpencodeAuthDialogFor("");
+                          }}
+                          title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
+                        >
+                          <span className="opencode-provider-row-main">
+                            {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
+                            <small>{`${provider} · ${tag}`}</small>
                           </span>
-                        </span>
-                      </button>
-                    </Fragment>
-                  );
-                })}
-              </div>
-              <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                {(() => {
-                  const resolved = resolveProviderAliasWithNames(
-                    opencodeProviderPickerProvider,
-                    opencodeModelsByProvider,
-                    opencodeProviderNames
-                  );
-                  const cfgResolved = resolveProviderAliasWithNames(
-                    opencodeProviderPickerProvider,
-                    opencodeConfiguredModelsByProvider,
-                    opencodeProviderNames
-                  );
-                  const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
-                  const cfgPid = (cfgResolved || pid) || "";
-                  const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
-                  // Prefer explicitly configured models for this provider.
-                  // This avoids selecting inherited/default catalog models that the user
-                  // did not configure for custom OpenAI-compatible endpoints.
+                          <span className="opencode-provider-row-side">
+                            <small className="small muted">{modelCount} models</small>
+                            <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
+                              {connected ? "已连接" : "未连接"}
+                            </span>
+                          </span>
+                        </button>
+                      </Fragment>
+                    );
+                  })}
+                </div>
+                <div className="settings-model-col" style={{ maxHeight: 420 }}>
+                  {(() => {
+                    const resolved = resolveProviderAliasWithNames(
+                      opencodeProviderPickerProvider,
+                      opencodeModelsByProvider,
+                      opencodeProviderNames
+                    );
+                    const cfgResolved = resolveProviderAliasWithNames(
+                      opencodeProviderPickerProvider,
+                      opencodeConfiguredModelsByProvider,
+                      opencodeProviderNames
+                    );
+                    const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
+                    const cfgPid = (cfgResolved || pid) || "";
+                    const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
                   const configuredPool = cfgPid ? (opencodeConfiguredModelsByProvider[cfgPid] ?? []) : [];
-                  const pool = configuredPool.length > 0 ? configuredPool : (pid ? (opencodeModelsByProvider[pid] ?? []) : []);
-                  const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
-                  const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
-                  if (!opencodeProviderPickerProvider) {
-                    return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
-                  }
-                  const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                  const tag = getOpencodeProviderTag(pid);
-                  const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                  const showAuthEditor = !connected;
-                  const menuOpen = opencodeProviderActionMenuFor === pid;
-                  const openAuthEditor = () => {
-                    setOpencodeConnectProviderId(pid);
-                    setOpencodeConnectProviderName(pretty);
-                    setOpencodeConnectApiKey("");
-                    setShowOpencodeAuthDialogFor(pid);
-                    setOpencodeProviderActionMenuFor("");
-                  };
-                  const authHint = connected
-                    ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
-                    : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
-                  const authBlock = showAuthEditor ? (
-                    <div className="opencode-provider-connect">
-                      <div className="small muted" style={{ marginBottom: 8 }}>{authHint}</div>
+                  const providerPool = pid ? (opencodeModelsByProvider[pid] ?? []) : [];
+                  // Keep full provider list visible while preserving configured entries.
+                  // This avoids list shrinking after enabling one model.
+                  const pool = Array.from(new Set([...providerPool, ...configuredPool])).sort((a, b) => a.localeCompare(b));
+                    const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
+                    const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
+                    if (!opencodeProviderPickerProvider) {
+                      return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
+                    }
+                    const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+                    const tag = getOpencodeProviderTag(pid);
+                    const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+                    const showAuthEditor = !connected;
+                    const menuOpen = opencodeProviderActionMenuFor === pid;
+                    const openAuthEditor = () => {
+                      setOpencodeConnectProviderId(pid);
+                      setOpencodeConnectProviderName(pretty);
+                      setOpencodeConnectApiKey("");
+                      setShowOpencodeAuthDialogFor(pid);
+                      setOpencodeProviderActionMenuFor("");
+                    };
+                    const authHint = connected
+                      ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
+                      : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
+                    const authBlock = showAuthEditor ? (
+                      <div className="opencode-provider-connect">
+                        <div className="small muted" style={{ marginBottom: 8 }}>{authHint}</div>
+                        <input
+                          className="path-input"
+                          placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
+                          value={keyValue}
+                          onChange={(e) => {
+                            setOpencodeConnectProviderId(pid);
+                            setOpencodeConnectProviderName(pretty);
+                            setOpencodeConnectApiKey(e.target.value);
+                          }}
+                        />
+                        <div className="toolbar" style={{ marginTop: 10 }}>
+                          <button
+                            className="chip"
+                            disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                            onClick={async () => {
+                              if (!ensureRepoSelected()) return;
+                              const authPid = pid.trim();
+                              const key = opencodeConnectApiKey.trim();
+                              if (!authPid || !key) return;
+                              setOpencodeConnectBusy(true);
+                              setError("");
+                              try {
+                                await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+                                await refreshOpencodeCatalog();
+                                if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                                  await fetchOpencodeModels(authPid);
+                                }
+                                setOpencodeProviderPickerProvider(authPid);
+                                setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
+                                setOpencodeConnectApiKey("");
+                              } catch (e) {
+                                setError(String(e));
+                                setMessage(connected ? "更新密钥失败" : "连接失败");
+                              } finally {
+                                setOpencodeConnectBusy(false);
+                              }
+                            }}
+                          >
+                            {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="opencode-provider-connect-compact">
+                        <div className="small muted">
+                          {`${pretty}（${tag}）已连接。`}
+                        </div>
+                        <span className="small muted">通过右上角菜单操作</span>
+                      </div>
+                    );
+                    const providerHeader = (
+                      <div className="opencode-provider-panel-head">
+                        <div className="opencode-provider-panel-title">
+                          <strong>{pretty}</strong>
+                          <small className="small muted">{`${pid} · ${tag}`}</small>
+                        </div>
+                        <div className="opencode-provider-panel-actions">
+                          <button
+                            type="button"
+                            className="chip opencode-provider-menu-trigger"
+                            title="更多操作"
+                            onClick={() => setOpencodeProviderActionMenuFor((prev) => (prev === pid ? "" : pid))}
+                          >
+                            ...
+                          </button>
+                          {menuOpen ? (
+                            <div className="opencode-provider-menu">
+                              <button
+                                type="button"
+                                className="opencode-provider-menu-item"
+                                onClick={openAuthEditor}
+                              >
+                                更新 API Key
+                              </button>
+                              {getOpencodeProviderSource(pid) !== "env" ? (
+                                <button
+                                  type="button"
+                                  className="opencode-provider-menu-item danger"
+                                  disabled={opencodeDisconnectingProvider === pid}
+                                  onClick={async () => {
+                                    setOpencodeProviderActionMenuFor("");
+                                    await disconnectOpencodeProvider(pid);
+                                  }}
+                                >
+                                  {opencodeDisconnectingProvider === pid ? "处理中..." : "断开连接"}
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                    if (!connected) {
+                      return (
+                        <div className="opencode-provider-right-panel">
+                          {providerHeader}
+                          {authBlock}
+                        </div>
+                      );
+                    }
+                    if (filtered.length === 0) {
+                      return (
+                        <div className="opencode-provider-right-panel">
+                          {providerHeader}
+                          {authBlock}
+                          <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="opencode-provider-right-panel">
+                        {providerHeader}
+                        {authBlock}
+                        {filtered.map((mid) => {
+                          const ref = `${cfgPid}/${mid}`;
+                          const refNorm = normalizeModelRef(ref);
+                          const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
+                          const locallyEnabled = !!refNorm && opencodeEnabledModels.has(refNorm);
+                          const enabled = !!refNorm && !opencodeHiddenModels.has(refNorm) && (configured || locallyEnabled);
+                          const modelDisplay =
+                            opencodeModelNamesByProvider[pid]?.[mid] ||
+                            opencodeConfiguredModelNamesByProvider[cfgPid]?.[mid] ||
+                            mid;
+                          return (
+                            <div
+                              key={`provider-model-pick-${refNorm || ref}`}
+                              className={
+                                normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"
+                              }
+                            >
+                              <button
+                                className="opencode-provider-model-main"
+                                onClick={() => {
+                                  if (!refNorm) return;
+                                  void applyOpencodeModel(refNorm);
+                                }}
+                                title={refNorm || ref}
+                              >
+                                <span>{modelDisplay}</span>
+                                {modelDisplay !== mid ? <small>{mid}</small> : null}
+                              </button>
+                              <button
+                                type="button"
+                                className={enabled ? "opencode-switch is-on" : "opencode-switch"}
+                                aria-pressed={enabled}
+                                aria-label={enabled ? "隐藏模型" : "启用模型"}
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!refNorm) return;
+                                  if (enabled) {
+                                    setOpencodeHiddenModels((prev) => {
+                                      const next = new Set(prev);
+                                      next.add(refNorm);
+                                      return next;
+                                    });
+                                    setOpencodeEnabledModels((prev) => {
+                                      const next = new Set(prev);
+                                      next.delete(refNorm);
+                                      return next;
+                                    });
+                                    return;
+                                  }
+                                  // Local enable semantics: unhide + mark enabled immediately.
+                                  setOpencodeHiddenModels((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(refNorm);
+                                    return next;
+                                  });
+                                  setOpencodeEnabledModels((prev) => {
+                                    const next = new Set(prev);
+                                    next.add(refNorm);
+                                    return next;
+                                  });
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showOpencodeAuthDialogFor ? (
+          <div className="modal-mask" onClick={() => setShowOpencodeAuthDialogFor("")}>
+            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+              {(() => {
+                const pid = showOpencodeAuthDialogFor.trim();
+                const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+                const tag = getOpencodeProviderTag(pid);
+                const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+                return (
+                  <>
+                    <div className="env-setup-head">
+                      <h3>{`更新 API Key · ${pretty}`}</h3>
+                      <button className="chip" onClick={() => setShowOpencodeAuthDialogFor("")}>Close</button>
+                    </div>
+                    <p className="small muted">{`${tag} provider`}</p>
+                    <div className="settings-provider-form" style={{ marginTop: 8 }}>
                       <input
                         className="path-input"
-                        placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
+                        placeholder="输入新的 API 密钥"
                         value={keyValue}
                         onChange={(e) => {
                           setOpencodeConnectProviderId(pid);
@@ -5927,535 +8072,309 @@ export function App() {
                           setOpencodeConnectApiKey(e.target.value);
                         }}
                       />
-                      <div className="toolbar" style={{ marginTop: 10 }}>
-                        <button
-                          className="chip"
-                          disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                          onClick={async () => {
-                            if (!ensureRepoSelected()) return;
-                            const authPid = pid.trim();
-                            const key = opencodeConnectApiKey.trim();
-                            if (!authPid || !key) return;
-                            setOpencodeConnectBusy(true);
-                            setError("");
-                            try {
-                              await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                              await refreshOpencodeCatalog();
-                              if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                                await fetchOpencodeModels(authPid);
-                              }
-                              setOpencodeProviderPickerProvider(authPid);
-                              setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
-                              setOpencodeConnectApiKey("");
-                            } catch (e) {
-                              setError(String(e));
-                              setMessage(connected ? "更新密钥失败" : "连接失败");
-                            } finally {
-                              setOpencodeConnectBusy(false);
+                    </div>
+                    <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
+                      <button
+                        className="chip"
+                        disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                        onClick={async () => {
+                          if (!ensureRepoSelected()) return;
+                          const authPid = pid.trim();
+                          const key = opencodeConnectApiKey.trim();
+                          if (!authPid || !key) return;
+                          setOpencodeConnectBusy(true);
+                          setError("");
+                          try {
+                            await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+                            await refreshOpencodeCatalog();
+                            if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                              await fetchOpencodeModels(authPid);
                             }
-                          }}
-                        >
-                          {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="opencode-provider-connect-compact">
-                      <div className="small muted">
-                        {`${pretty}（${tag}）已连接。`}
-                      </div>
-                      <span className="small muted">通过右上角菜单操作</span>
-                    </div>
-                  );
-                  const providerHeader = (
-                    <div className="opencode-provider-panel-head">
-                      <div className="opencode-provider-panel-title">
-                        <strong>{pretty}</strong>
-                        <small className="small muted">{`${pid} · ${tag}`}</small>
-                      </div>
-                      <div className="opencode-provider-panel-actions">
-                        <button
-                          type="button"
-                          className="chip opencode-provider-menu-trigger"
-                          title="更多操作"
-                          onClick={() => setOpencodeProviderActionMenuFor((prev) => (prev === pid ? "" : pid))}
-                        >
-                          ...
-                        </button>
-                        {menuOpen ? (
-                          <div className="opencode-provider-menu">
-                            <button
-                              type="button"
-                              className="opencode-provider-menu-item"
-                              onClick={openAuthEditor}
-                            >
-                              更新 API Key
-                            </button>
-                            {getOpencodeProviderSource(pid) !== "env" ? (
-                              <button
-                                type="button"
-                                className="opencode-provider-menu-item danger"
-                                disabled={opencodeDisconnectingProvider === pid}
-                                onClick={async () => {
-                                  setOpencodeProviderActionMenuFor("");
-                                  await disconnectOpencodeProvider(pid);
-                                }}
-                              >
-                                {opencodeDisconnectingProvider === pid ? "处理中..." : "断开连接"}
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                  if (!connected) {
-                    return (
-                      <div className="opencode-provider-right-panel">
-                        {providerHeader}
-                        {authBlock}
-                      </div>
-                    );
-                  }
-                  if (filtered.length === 0) {
-                    return (
-                      <div className="opencode-provider-right-panel">
-                        {providerHeader}
-                        {authBlock}
-                        <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="opencode-provider-right-panel">
-                      {providerHeader}
-                      {authBlock}
-                      {filtered.map((mid) => {
-                        const ref = `${cfgPid}/${mid}`;
-                        const refNorm = normalizeModelRef(ref);
-                        const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
-                    const enabled = configured && !!refNorm && !opencodeHiddenModels.has(refNorm);
-                    const modelDisplay =
-                      opencodeModelNamesByProvider[pid]?.[mid] ||
-                      opencodeConfiguredModelNamesByProvider[cfgPid]?.[mid] ||
-                      mid;
-                        return (
-                          <div
-                            key={`provider-model-pick-${refNorm || ref}`}
-                        className={
-                          normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"
-                        }
-                      >
-                        <button
-                          className="opencode-provider-model-main"
-                          onClick={() => {
-                            if (!refNorm) return;
-                            void applyOpencodeModel(refNorm);
-                          }}
-                          title={refNorm || ref}
-                        >
-                          <span>{modelDisplay}</span>
-                          {modelDisplay !== mid ? <small>{mid}</small> : null}
-                        </button>
-                        <button
-                          type="button"
-                          className={enabled ? "opencode-switch is-on" : "opencode-switch"}
-                          aria-pressed={enabled}
-                          aria-label={enabled ? "隐藏模型" : "启用模型"}
-                          onClick={async () => {
-                            if (!refNorm) return;
-                            if (enabled) {
-                              setOpencodeHiddenModels((prev) => {
-                                const next = new Set(prev);
-                                next.add(refNorm);
-                                return next;
-                              });
-                              return;
-                            }
-                            try {
-                              const patchModel =
-                                modelDisplay && modelDisplay.trim() && modelDisplay.trim() !== mid ? { name: modelDisplay } : {};
-                              await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
-                                repoPath,
-                                patch: {
-                                  provider: {
-                                    [cfgPid]: {
-                                      models: {
-                                        // Persist the human-readable name when available,
-                                        // so /provider can surface it for future sessions.
-                                        [mid]: patchModel
-                                      }
-                                    }
-                                  }
-                                }
-                              });
-                            } catch (e) {
-                              appendOpencodeDebugLog(`model.enable.warn ${String(e)}`);
-                            }
-                            setOpencodeHiddenModels((prev) => {
-                              const next = new Set(prev);
-                              next.delete(refNorm);
-                              return next;
-                            });
-                            // Avoid forcing current-model selection when just enabling a catalog entry.
-                            await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-                          }}
-                          />
-                        </div>
-                      );
-                      })}
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showOpencodeAuthDialogFor ? (
-        <div className="modal-mask" onClick={() => setShowOpencodeAuthDialogFor("")}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-            {(() => {
-              const pid = showOpencodeAuthDialogFor.trim();
-              const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-              const tag = getOpencodeProviderTag(pid);
-              const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-              return (
-                <>
-                  <div className="env-setup-head">
-                    <h3>{`更新 API Key · ${pretty}`}</h3>
-                    <button className="chip" onClick={() => setShowOpencodeAuthDialogFor("")}>Close</button>
-                  </div>
-                  <p className="small muted">{`${tag} provider`}</p>
-                  <div className="settings-provider-form" style={{ marginTop: 8 }}>
-                    <input
-                      className="path-input"
-                      placeholder="输入新的 API 密钥"
-                      value={keyValue}
-                      onChange={(e) => {
-                        setOpencodeConnectProviderId(pid);
-                        setOpencodeConnectProviderName(pretty);
-                        setOpencodeConnectApiKey(e.target.value);
-                      }}
-                    />
-                  </div>
-                  <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
-                    <button
-                      className="chip"
-                      disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                      onClick={async () => {
-                        if (!ensureRepoSelected()) return;
-                        const authPid = pid.trim();
-                        const key = opencodeConnectApiKey.trim();
-                        if (!authPid || !key) return;
-                        setOpencodeConnectBusy(true);
-                        setError("");
-                        try {
-                          await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                          await refreshOpencodeCatalog();
-                          if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                            await fetchOpencodeModels(authPid);
+                            setOpencodeProviderPickerProvider(authPid);
+                            setMessage(`已更新密钥: ${authPid}`);
+                            setOpencodeConnectApiKey("");
+                            setShowOpencodeAuthDialogFor("");
+                          } catch (e) {
+                            setError(String(e));
+                            setMessage("更新密钥失败");
+                          } finally {
+                            setOpencodeConnectBusy(false);
                           }
-                          setOpencodeProviderPickerProvider(authPid);
-                          setMessage(`已更新密钥: ${authPid}`);
-                          setOpencodeConnectApiKey("");
-                          setShowOpencodeAuthDialogFor("");
-                        } catch (e) {
-                          setError(String(e));
-                          setMessage("更新密钥失败");
-                        } finally {
-                          setOpencodeConnectBusy(false);
-                        }
-                      }}
-                    >
-                      {opencodeConnectBusy ? "Saving..." : "更新 API Key"}
-                    </button>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        </div>
-      ) : null}
-
-      {showOpencodeCustomProvider ? (
-        <div className="modal-mask" onClick={() => setShowOpencodeCustomProvider(false)}>
-          <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
-            <div className="env-setup-head">
-              <h3>自定义提供商</h3>
-              <button className="chip" onClick={() => setShowOpencodeCustomProvider(false)}>Close</button>
-            </div>
-            <p className="small muted">
-              OpenAI 兼容提供商（参考 `https://opencode.ai/docs/providers/#custom-provider`）。
-            </p>
-            <div className="settings-provider-form">
-              <input
-                className="path-input"
-                placeholder="provider id（例如 vllm / myprovider）"
-                value={opencodeProviderConfig.provider}
-                onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, provider: e.target.value }))}
-              />
-              <input
-                className="path-input"
-                placeholder="显示名称（可选）"
-                value={opencodeProviderConfig.name}
-                onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, name: e.target.value }))}
-              />
-              <input
-                className="path-input"
-                placeholder="baseURL（例如 http://127.0.0.1:8000/v1）"
-                value={opencodeProviderConfig.baseUrl}
-                onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, baseUrl: e.target.value }))}
-              />
-              <input
-                className="path-input"
-                placeholder="API Key（可空；支持 {env:ENV_NAME}）"
-                value={opencodeProviderConfig.apiKey}
-                onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
-              />
-              <input
-                className="path-input"
-                placeholder="model id（例如 qwen3.5_35b_a3b）"
-                value={opencodeSelectedModel}
-                onChange={(e) => setOpencodeSelectedModel(e.target.value)}
-              />
-              <div className="toolbar">
-                <button
-                  className="chip"
-                  disabled={opencodeProviderConfigBusy || opencodeConfigBusy || !opencodeProviderConfig.provider.trim() || !opencodeSelectedModel.trim()}
-                  onClick={async () => {
-                    try {
-                      setOpencodeProviderConfigBusy(true);
-                      setOpencodeConfigBusy(true);
-                      const pid = opencodeProviderConfig.provider.trim();
-                      const mid = opencodeSelectedModel.trim();
-                      const full = `${pid}/${mid}`;
-                      // OpenCode web flow:
-                      // 1) PUT /auth/:id with {type:"api", key:"..."} when apiKey provided
-                      // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers),
-                      //    and only re-enable current provider from disabled_providers.
-                      const key = opencodeProviderConfig.apiKey?.trim() || "";
-                      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-                        repoPath,
-                        provider: pid,
-                        npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
-                        name: opencodeProviderConfig.name || pid,
-                        baseUrl: opencodeProviderConfig.baseUrl,
-                        apiKey: key,
-                        headers: opencodeProviderConfig.headers || {},
-                        endpoint: opencodeProviderConfig.endpoint || "",
-                        region: opencodeProviderConfig.region || "",
-                        profile: opencodeProviderConfig.profile || "",
-                        project: opencodeProviderConfig.project || "",
-                        location: opencodeProviderConfig.location || "",
-                        resourceName: opencodeProviderConfig.resourceName || "",
-                        enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
-                        timeout: opencodeProviderConfig.timeout || "",
-                        chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
-                        modelId: mid,
-                        modelName: mid
-                      });
-                      await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
-                      const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-                      const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
-                      const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
-                      if (!hasProvider || !hasModel) {
-                        appendOpencodeDebugLog(
-                          `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
-                        );
-                        appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
-                        throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
-                      }
-                      await refreshOpencodeCatalog();
-                      await refreshOpencodeServerConfig();
-                      setShowOpencodeCustomProvider(false);
-                      setShowOpencodeModelPicker(true);
-                      setOpencodeModelPickerSearch("");
-                      setMessage(`Saved configuration: ${full}`);
-                    } catch (e) {
-                      setError(String(e));
-                      setMessage("Save configuration failed");
-                    } finally {
-                      setOpencodeConfigBusy(false);
-                      setOpencodeProviderConfigBusy(false);
-                    }
-                  }}
-                >
-                  {opencodeProviderConfigBusy || opencodeConfigBusy ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {/* inline connect UI lives inside provider picker right column */}
-
-      {showEnvSetup ? (
-        <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
-          <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
-            <div className="env-setup-head">
-              <h3>Runtime Setup</h3>
-              <button
-                className="env-refresh-circle"
-                title="Refresh runtime check"
-                aria-label="Refresh runtime check"
-                disabled={runtimeChecking || Boolean(installingDep)}
-                onClick={() => void refreshRuntimeRequirements()}
-              >
-                <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
-              </button>
-            </div>
-            <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
-
-            <div className="env-check-list">
-              {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam]
-                .filter((d): d is RuntimeDependencyStatus => Boolean(d))
-                .map((dep) => (
-                  <div className="env-check-row" key={dep.name}>
-                    <div>
-                      <strong>{dep.name}</strong>{" "}
-                      <span
-                        className={
-                          checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? "muted" : dep.installed ? "env-ok" : "env-missing"
-                        }
+                        }}
                       >
-                        {checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]
-                          ? "Checking..."
-                          : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
-                      </span>
-                      {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? (
-                        <div className="small muted">{dep.version}</div>
-                      ) : null}
-                      {dep.path ? <div className="small muted">{dep.path}</div> : null}
-                      {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
+                        {opencodeConnectBusy ? "Saving..." : "更新 API Key"}
+                      </button>
                     </div>
-                    <div className="toolbar">
-                      {!dep.installed ? (
-                        <button
-                          className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "install")}
-                        >
-                          {installingDep === dep.name ? (
-                            <>
-                              <span className="env-btn-spinner" aria-hidden="true" />
-                              {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                            </>
-                          ) : (
-                            `Install ${dep.name}`
-                          )}
-                        </button>
-                      ) : (
-                        <button
-                          className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                          disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                          onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "uninstall")}
-                        >
-                          {installingDep === dep.name ? (
-                            <>
-                              <span className="env-btn-spinner" aria-hidden="true" />
-                              {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                            </>
-                          ) : (
-                            `Uninstall ${dep.name}`
-                          )}
-                        </button>
-                      )}
-                    </div>
-                    {runtimeJob && runtimeJob.name === dep.name ? (
-                      <div className="env-inline-status">
-                        <button
-                          className="env-progress-button"
-                          onClick={() =>
-                            setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode" | "giteam")))
-                          }
-                          title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
-                        >
-                          <span className="env-progress-track-inline" aria-hidden="true">
-                            <span className={runtimeJob.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
-                          </span>
-                          <span className="env-progress-label">
-                            {runtimeJob.action} · {runtimeJob.status} {installingDep === dep.name ? `· ${installingElapsed}s` : ""}
-                          </span>
-                        </button>
-                        <div className="env-log-tail" title={runtimeLogTail || "No logs yet"}>
-                          {runtimeLogTail || "Waiting for logs..."}
-                        </div>
-                        {expandedLogDep === dep.name ? (
-                          <pre className="env-install-log">{runtimeInstallLog || "No logs yet."}</pre>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-            </div>
-
-            <div className="toolbar" style={{ justifyContent: "space-between" }}>
-              <div />
-              <div className="toolbar">
-                <button
-                  className="chip"
-                  onClick={() => {
-                    window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
-                    setShowEnvSetup(false);
-                  }}
-                >
-                  Continue anyway
-                </button>
-                <button className="chip" onClick={() => setShowEnvSetup(false)}>
-                  Close
-                </button>
-              </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {showOnboarding ? (
-        <div className="modal-mask" onClick={() => setShowOnboarding(false)}>
-          <div className="modal-card onboarding-card" onClick={(e) => e.stopPropagation()}>
-            <h3>Quick Guide</h3>
-            <p className="small muted">First-time walkthrough</p>
-
-            <div className="onboarding-step-title">{onboardingSteps[onboardingStep].title}</div>
-            <p className="onboarding-step-body">{onboardingSteps[onboardingStep].body}</p>
-
-            <div className="onboarding-dots">
-              {onboardingSteps.map((_, idx) => (
-                <button
-                  key={`dot-${idx}`}
-                  className={idx === onboardingStep ? "onboarding-dot active" : "onboarding-dot"}
-                  onClick={() => setOnboardingStep(idx)}
-                  aria-label={`Go to step ${idx + 1}`}
+        {showOpencodeCustomProvider ? (
+          <div className="modal-mask" onClick={() => setShowOpencodeCustomProvider(false)}>
+            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
+              <div className="env-setup-head">
+                <h3>自定义提供商</h3>
+                <button className="chip" onClick={() => setShowOpencodeCustomProvider(false)}>Close</button>
+              </div>
+              <p className="small muted">
+                OpenAI 兼容提供商（参考 `https://opencode.ai/docs/providers/#custom-provider`）。
+              </p>
+              <div className="settings-provider-form">
+                <input
+                  className="path-input"
+                  placeholder="provider id（例如 vllm / myprovider）"
+                  value={opencodeProviderConfig.provider}
+                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, provider: e.target.value }))}
                 />
-              ))}
+                <input
+                  className="path-input"
+                  placeholder="显示名称（可选）"
+                  value={opencodeProviderConfig.name}
+                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, name: e.target.value }))}
+                />
+                <input
+                  className="path-input"
+                  placeholder="baseURL（例如 http://127.0.0.1:8000/v1）"
+                  value={opencodeProviderConfig.baseUrl}
+                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, baseUrl: e.target.value }))}
+                />
+                <input
+                  className="path-input"
+                  placeholder="API Key（可空；支持 {env:ENV_NAME}）"
+                  value={opencodeProviderConfig.apiKey}
+                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
+                />
+                <input
+                  className="path-input"
+                  placeholder="model id（例如 qwen3.5_35b_a3b）"
+                  value={opencodeSelectedModel}
+                  onChange={(e) => setOpencodeSelectedModel(e.target.value)}
+                />
+                <div className="toolbar">
+                  <button
+                    className="chip"
+                    disabled={opencodeProviderConfigBusy || opencodeConfigBusy || !opencodeProviderConfig.provider.trim() || !opencodeSelectedModel.trim()}
+                    onClick={async () => {
+                      try {
+                        setOpencodeProviderConfigBusy(true);
+                        setOpencodeConfigBusy(true);
+                        const pid = opencodeProviderConfig.provider.trim();
+                        const mid = opencodeSelectedModel.trim();
+                        const full = `${pid}/${mid}`;
+                        // OpenCode web flow:
+                        // 1) PUT /auth/:id with {type:"api", key:"..."} when apiKey provided
+                        // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers),
+                        //    and only re-enable current provider from disabled_providers.
+                        const key = opencodeProviderConfig.apiKey?.trim() || "";
+                        await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
+                          repoPath,
+                          provider: pid,
+                          npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
+                          name: opencodeProviderConfig.name || pid,
+                          baseUrl: opencodeProviderConfig.baseUrl,
+                          apiKey: key,
+                          headers: opencodeProviderConfig.headers || {},
+                          endpoint: opencodeProviderConfig.endpoint || "",
+                          region: opencodeProviderConfig.region || "",
+                          profile: opencodeProviderConfig.profile || "",
+                          project: opencodeProviderConfig.project || "",
+                          location: opencodeProviderConfig.location || "",
+                          resourceName: opencodeProviderConfig.resourceName || "",
+                          enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
+                          timeout: opencodeProviderConfig.timeout || "",
+                          chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
+                          modelId: mid,
+                          modelName: mid
+                        });
+                        await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
+                        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+                        const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
+                        const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
+                        if (!hasProvider || !hasModel) {
+                          appendOpencodeDebugLog(
+                            `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
+                          );
+                          appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
+                          throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
+                        }
+                        await refreshOpencodeCatalog();
+                        await refreshOpencodeServerConfig();
+                        setShowOpencodeCustomProvider(false);
+                        setShowOpencodeModelPicker(true);
+                        setOpencodeModelPickerSearch("");
+                        setMessage(`Saved configuration: ${full}`);
+                      } catch (e) {
+                        setError(String(e));
+                        setMessage("Save configuration failed");
+                      } finally {
+                        setOpencodeConfigBusy(false);
+                        setOpencodeProviderConfigBusy(false);
+                      }
+                    }}
+                  >
+                    {opencodeProviderConfigBusy || opencodeConfigBusy ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              </div>
             </div>
+          </div>
+        ) : null}
 
-            <div className="toolbar" style={{ justifyContent: "space-between" }}>
-              <button
-                className="chip"
-                disabled={onboardingStep === 0}
-                onClick={() => setOnboardingStep((s) => Math.max(0, s - 1))}
-              >
-                Back
-              </button>
-              <div className="toolbar">
+        {/* inline connect UI lives inside provider picker right column */}
+
+        {showEnvSetup ? (
+          <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
+            <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
+              <div className="env-setup-head">
+                <h3>Runtime Setup</h3>
+                <button
+                  className="env-refresh-circle"
+                  title="Refresh runtime check"
+                  aria-label="Refresh runtime check"
+                  disabled={runtimeChecking || Boolean(installingDep)}
+                  onClick={() => void refreshRuntimeRequirements()}
+                >
+                  <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
+                </button>
+              </div>
+              <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
+
+              <div className="env-check-list">
+                {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam]
+                  .filter((d): d is RuntimeDependencyStatus => Boolean(d))
+                  .map((dep) => (
+                    <div className="env-check-row" key={dep.name}>
+                      <div>
+                        <strong>{dep.name}</strong>{" "}
+                        <span
+                          className={
+                            checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? "muted" : dep.installed ? "env-ok" : "env-missing"
+                          }
+                        >
+                          {checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]
+                            ? "Checking..."
+                            : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
+                        </span>
+                        {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? (
+                          <div className="small muted">{dep.version}</div>
+                        ) : null}
+                        {dep.path ? <div className="small muted">{dep.path}</div> : null}
+                        {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
+                      </div>
+                      <div className="toolbar">
+                        {!dep.installed ? (
+                          <button
+                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
+                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
+                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "install")}
+                          >
+                            {installingDep === dep.name ? (
+                              <>
+                                <span className="env-btn-spinner" aria-hidden="true" />
+                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
+                              </>
+                            ) : (
+                              `Install ${dep.name}`
+                            )}
+                          </button>
+                        ) : (
+                          <button
+                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
+                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
+                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "uninstall")}
+                          >
+                            {installingDep === dep.name ? (
+                              <>
+                                <span className="env-btn-spinner" aria-hidden="true" />
+                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
+                              </>
+                            ) : (
+                              `Uninstall ${dep.name}`
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      {runtimeJob && runtimeJob.name === dep.name ? (
+                        <div className="env-inline-status">
+                          <button
+                            className="env-progress-button"
+                            onClick={() =>
+                              setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode" | "giteam")))
+                            }
+                            title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
+                          >
+                            <span className="env-progress-track-inline" aria-hidden="true">
+                              <span className={runtimeJob.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
+                            </span>
+                            <span className="env-progress-label">
+                              {runtimeJob.action} · {runtimeJob.status} {installingDep === dep.name ? `· ${installingElapsed}s` : ""}
+                            </span>
+                          </button>
+                          <div className="env-log-tail" title={runtimeLogTail || "No logs yet"}>
+                            {runtimeLogTail || "Waiting for logs..."}
+                          </div>
+                          {expandedLogDep === dep.name ? (
+                            <pre className="env-install-log">{runtimeInstallLog || "No logs yet."}</pre>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+              </div>
+
+              <div className="toolbar" style={{ justifyContent: "space-between" }}>
+                <div />
+                <div className="toolbar">
+                  <button
+                    className="chip"
+                    onClick={() => {
+                      window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
+                      setShowEnvSetup(false);
+                    }}
+                  >
+                    Continue anyway
+                  </button>
+                  <button className="chip" onClick={() => setShowEnvSetup(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showOnboarding ? (
+          <div className="modal-mask" onClick={() => setShowOnboarding(false)}>
+            <div className="modal-card onboarding-card" onClick={(e) => e.stopPropagation()}>
+              <h3>Quick Guide</h3>
+              <p className="small muted">First-time walkthrough</p>
+
+              <div className="onboarding-step-title">{onboardingSteps[onboardingStep].title}</div>
+              <p className="onboarding-step-body">{onboardingSteps[onboardingStep].body}</p>
+
+              <div className="onboarding-dots">
+                {onboardingSteps.map((_, idx) => (
+                  <button
+                    key={`dot-${idx}`}
+                    className={idx === onboardingStep ? "onboarding-dot active" : "onboarding-dot"}
+                    onClick={() => setOnboardingStep(idx)}
+                    aria-label={`Go to step ${idx + 1}`}
+                  />
+                ))}
+              </div>
+
+              <div className="toolbar" style={{ justifyContent: "space-between" }}>
                 <button
                   className="chip"
-                  onClick={() => {
-                    window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
-                    setShowOnboarding(false);
-                  }}
+                  disabled={onboardingStep === 0}
+                  onClick={() => setOnboardingStep((s) => Math.max(0, s - 1))}
                 >
-                  Skip
+                  Back
                 </button>
-                {onboardingStep < onboardingSteps.length - 1 ? (
-                  <button className="chip" onClick={() => setOnboardingStep((s) => Math.min(onboardingSteps.length - 1, s + 1))}>
-                    Next
-                  </button>
-                ) : (
+                <div className="toolbar">
                   <button
                     className="chip"
                     onClick={() => {
@@ -6463,46 +8382,109 @@ export function App() {
                       setShowOnboarding(false);
                     }}
                   >
-                    Done
+                    Skip
                   </button>
-                )}
+                  {onboardingStep < onboardingSteps.length - 1 ? (
+                    <button className="chip" onClick={() => setOnboardingStep((s) => Math.min(onboardingSteps.length - 1, s + 1))}>
+                      Next
+                    </button>
+                  ) : (
+                    <button
+                      className="chip"
+                      onClick={() => {
+                        window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
+                        setShowOnboarding(false);
+                      }}
+                    >
+                      Done
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {repoContextMenu ? (
-        <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>
-          <div
-            className="repo-context-menu"
-            style={{ left: repoContextMenu.x, top: repoContextMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="repo-context-item"
-              onClick={() => void closeRepository(repoContextMenu.repo)}
-              disabled={busy}
+        {repoContextMenu ? (
+          <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>
+            <div
+              className="repo-context-menu"
+              style={{ left: repoContextMenu.x, top: repoContextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
             >
-              Close
-            </button>
+              <button
+                className="repo-context-item"
+                onClick={() => void closeRepository(repoContextMenu.repo)}
+                disabled={busy}
+              >
+                Close
+              </button>
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {commitContextMenu ? (
-        <div className="repo-context-layer" onClick={() => setCommitContextMenu(null)}>
-          <div
-            className="repo-context-menu"
-            style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
-              Copy commit id
-            </button>
+        {commitContextMenu ? (
+          <div className="repo-context-layer" onClick={() => setCommitContextMenu(null)}>
+            <div
+              className="repo-context-menu"
+              style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
+                Copy commit id
+              </button>
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+
+        {topologyContextMenu ? (() => {
+          const node = topologyModel.nodeById[topologyContextMenu.nodeId];
+          if (!node) return null;
+          const hasWorktree = node.kind === "branch" && linkedWorktrees.some((w) => w.branch === node.branch);
+          return (
+            <div className="repo-context-layer" onClick={() => setTopologyContextMenu(null)}>
+              <div
+                className="repo-context-menu repo-context-menu-wide"
+                style={{ left: topologyContextMenu.x, top: topologyContextMenu.y }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button className="repo-context-item" onClick={() => focusTopologyNode(node.id)}>
+                  聚焦节点
+                </button>
+                {node.kind === "branch" && node.branch ? (
+                  <>
+                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", node.id)}>
+                      从此拉新分支
+                    </button>
+                    {!hasWorktree ? (
+                      <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", node.id)}>
+                        基于此分支创建 worktree
+                      </button>
+                    ) : null}
+                    <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(node.branch || "")}>
+                      检出分支
+                    </button>
+                  </>
+                ) : null}
+                {node.kind === "worktree" && node.path ? (
+                  <>
+                    <button className="repo-context-item" onClick={() => void activateLinkedWorktree(node.path || "")}>
+                      切到此 worktree
+                    </button>
+                    {!node.isCurrent ? (
+                      <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(node.path || "")}>
+                        删除 worktree
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                {node.id !== topologyModel.primaryNodeId ? (
+                  <button className="repo-context-item" onClick={centerTopologyOnCurrent}>回到当前节点</button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })() : null}
 
       </>
     </AppErrorBoundary>

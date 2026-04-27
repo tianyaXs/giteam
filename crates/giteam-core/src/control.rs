@@ -1031,6 +1031,9 @@ fn compact_mobile_tool_metadata(metadata: Option<&Map<String, Value>>) -> Option
     if let Some(v) = metadata.get("sessionID").cloned() {
         out.insert("sessionID".to_string(), v);
     }
+    if let Some(v) = metadata.get("todos").cloned() {
+        out.insert("todos".to_string(), v);
+    }
     if out.is_empty() {
         None
     } else {
@@ -1051,6 +1054,8 @@ fn compact_mobile_tool_input(input: Option<&Map<String, Value>>) -> Option<Value
         "url",
         "path",
         "subagent_type",
+        "todos",
+        "questions",
     ] {
         if let Some(v) = input.get(key).cloned() {
             out.insert(key.to_string(), v);
@@ -1856,6 +1861,59 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             Ok(v) => (200, serde_json::json!({ "ok": v })),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/question" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::list_opencode_questions(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    // Question reply/reject endpoints
+    if req.method == "POST" && req.path.starts_with("/api/v1/opencode/question/") {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let repo_path = raw
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if repo_path.is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let path_parts: Vec<&str> = req.path.split('/').collect();
+        if path_parts.len() >= 6 {
+            let request_id = path_parts[5];
+            if req.path.ends_with("/reply") {
+                let answers = raw
+                    .get("answers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_array().map(|inner| {
+                                inner.iter().filter_map(|s| s.as_str().map(String::from)).collect()
+                            }))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return match opencode::post_opencode_question_reply(&repo_path, request_id, answers) {
+                    Ok(_) => (200, serde_json::json!({ "ok": true })),
+                    Err(e) => (500, serde_json::json!({ "error": e })),
+                };
+            } else if req.path.ends_with("/reject") {
+                return match opencode::post_opencode_question_reject(&repo_path, request_id) {
+                    Ok(_) => (200, serde_json::json!({ "ok": true })),
+                    Err(e) => (500, serde_json::json!({ "error": e })),
+                };
+            }
+        }
     }
 
     (404, serde_json::json!({ "error": "not found" }))

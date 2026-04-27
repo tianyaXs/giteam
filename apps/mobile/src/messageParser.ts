@@ -3,6 +3,8 @@ import type {
   MobileContextCard,
   MobileEventCard,
   MobileThinkCard,
+  MobileTodoCard,
+  MobileTodoItem,
   MobileTimelineItem,
   ParsedConversation
 } from './types';
@@ -87,11 +89,53 @@ function isRenderablePart(p: any): boolean {
   if (t === 'reasoning') return !!normalizeText(p?.text);
   if (t === 'step-start' || t === 'step-finish' || t === 'patch') return false;
   if (t === 'tool') {
-    const tool = normalizeText(p?.tool);
-    if (tool === 'todowrite') return false;
     return true;
   }
   return false;
+}
+
+function parseTodoItems(input: unknown): MobileTodoItem[] {
+  if (!Array.isArray(input)) return [];
+  const out: MobileTodoItem[] = [];
+  input.forEach((item, index) => {
+    const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : null;
+    if (!row) return;
+    const content = normalizeText(row.content);
+    if (!content) return;
+    const rawStatus = normalizeText(row.status).toLowerCase();
+    const status: MobileTodoItem['status'] =
+      rawStatus === 'completed' || rawStatus === 'cancelled' || rawStatus === 'in_progress'
+        ? rawStatus
+        : 'pending';
+    out.push({
+      id: normalizeText(row.id) || `todo-${index + 1}`,
+      content,
+      status,
+      priority: normalizeText(row.priority) || undefined
+    });
+  });
+  return out;
+}
+
+function buildTodoCard(part: any, id: string, createdAt: number, finished: boolean): MobileTodoCard | null {
+  const state = part?.state || {};
+  const metadata = state?.metadata || part?.metadata || {};
+  const items = (() => {
+    const fromMeta = parseTodoItems(metadata?.todos);
+    if (fromMeta.length > 0) return fromMeta;
+    return parseTodoItems(state?.input?.todos);
+  })();
+  if (items.length === 0) return null;
+  const done = items.filter((item) => item.status === 'completed').length;
+  const active = items.find((item) => item.status === 'in_progress') || items.find((item) => item.status === 'pending') || items[items.length - 1];
+  return {
+    id,
+    title: 'Todo',
+    summary: active ? `已完成 ${done}/${items.length} · ${active.content}` : `已完成 ${done}/${items.length}`,
+    createdAt,
+    items,
+    finished: finished || items.every((item) => item.status === 'completed' || item.status === 'cancelled')
+  };
 }
 
 function summarizeContextToolCounts(parts: any[]): { read: number; search: number; list: number } {
@@ -282,6 +326,19 @@ export function parseConversation(raw: unknown): ParsedConversation {
         continue;
       }
 
+      if (t === 'tool' && normalizeText(p?.tool) === 'todowrite') {
+        const todo = buildTodoCard(p, `todo:${partId}`, partCreatedAt, finished);
+        if (todo) {
+          timelineRows.push({
+            order: seq++,
+            item: { kind: 'todo', createdAt: partCreatedAt, todo }
+          });
+          hasAssistantRenderable = true;
+        }
+        pidx += 1;
+        continue;
+      }
+
       if (t === 'text') {
         const text = normalizeText(p?.text);
         if (text) {
@@ -334,6 +391,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     if (item.kind === 'chat') sig = `${sig}:${item.message.role}:${item.message.id}`;
     if (item.kind === 'think') sig = `${sig}:${item.card.id}`;
     if (item.kind === 'event') sig = `${sig}:${item.event.id}`;
+    if (item.kind === 'todo') sig = `${sig}:${item.todo.id}`;
     if (item.kind === 'divider') sig = `${sig}:${item.divider.id}`;
     if (item.kind === 'error') sig = `${sig}:${item.error.id}`;
     if (item.kind === 'context') sig = `${sig}:${item.context.id}`;

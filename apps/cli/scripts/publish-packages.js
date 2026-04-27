@@ -13,6 +13,8 @@ const rootOnly = args.includes('--root-only');
 const skipMissingTargets = args.includes('--skip-missing-targets');
 const npmTagIndex = args.indexOf('--tag');
 const npmTag = npmTagIndex >= 0 ? args[npmTagIndex + 1] : null;
+const otpIndex = args.indexOf('--otp');
+const otp = otpIndex >= 0 ? args[otpIndex + 1] : null;
 const platformArgValues = collectArgs('--platform');
 
 const rootPackage = JSON.parse(readFileSync(join(cliRoot, 'package.json'), 'utf8'));
@@ -95,6 +97,9 @@ function publishPackage(packageDir, packageName) {
   }
   if (npmTag) {
     publishArgs.push('--tag', npmTag);
+  }
+  if (otp) {
+    publishArgs.push('--otp', otp);
   }
 
   console.log(`[giteam] ${dryRun ? 'checking' : 'publishing'} ${packageName}`);
