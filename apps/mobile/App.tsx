@@ -418,6 +418,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           );
         }
         if (item.kind === 'question') {
+          if (toText(item.question.status).toLowerCase() === 'running') return null;
           const questions = Array.isArray(item.question.questions) ? item.question.questions : [];
           let liveRequest = liveQuestions.find((req) => {
             const reqTool: { messageID?: string; callID?: string } = req.tool || {};
@@ -426,6 +427,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             if (reqTool.messageID && itemTool.messageID && reqTool.messageID === itemTool.messageID) return true;
             return false;
           }) || null;
+          const hasLiveDockRequest = !!liveRequest;
           // Fallback: if question is running and has callID but not in liveQuestions (opencode /question may return empty),
           // use callID as request_id so backend can fallback match via cache or opencode list.
           if (!liveRequest && item.question.status === 'running' && item.question.tool?.callID) {
@@ -440,6 +442,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             };
           }
           const canReply = !!liveRequest;
+          if (hasLiveDockRequest) return null;
           const isExpanded = expandedTimelineQuestions.has(item.question.id);
           return (
             <View key={item.question.id} style={styles.questionTimelineWrap}>
@@ -1412,6 +1415,8 @@ export default function App() {
     const next = prev.filter((item) => item.id !== optimisticId);
     if (next.length > 0) sessionOptimisticUserMapRef.current[sid] = next;
     else delete sessionOptimisticUserMapRef.current[sid];
+    setMessages((prev) => prev.filter((item) => item.id !== optimisticId));
+    setRenderedTurns((prev) => prev.filter((item) => item.id !== `turn:optimistic:${optimisticId}`));
     bumpOptimisticVersion();
   }
 
@@ -1438,8 +1443,14 @@ export default function App() {
         if (usedIds.has(item.id)) return false;
         if (toText(item.text) !== text) return false;
         const delta = Math.abs((Number(item.createdAt || 0) || 0) - local.createdAt);
-        return delta <= 60000;
-      });
+        return delta <= 10 * 60 * 1000;
+      }) || serverUsers
+        .filter((item) => !usedIds.has(item.id) && toText(item.text) === text)
+        .sort((a, b) => {
+          const da = Math.abs((Number(a.createdAt || 0) || 0) - local.createdAt);
+          const db = Math.abs((Number(b.createdAt || 0) || 0) - local.createdAt);
+          return da - db;
+        })[0];
       if (matched) {
         usedIds.add(matched.id);
         continue;
@@ -1478,6 +1489,30 @@ export default function App() {
     };
   }
 
+  function appendOptimisticTurn(message: OptimisticUserMessage) {
+    setMessages((prev) => {
+      if (prev.some((item) => item.id === message.id)) return prev;
+      return [...prev, { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }];
+    });
+    setRenderedTurns((prev) => {
+      const id = `turn:optimistic:${message.id}`;
+      if (prev.some((item) => item.id === id)) return prev;
+      return [
+        ...prev,
+        {
+          id,
+          createdAt: message.createdAt,
+          userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
+          items: [],
+          signature: `optimistic:${message.id}:${message.text.length}`
+        }
+      ];
+    });
+    forceScrollToLatestUntilRef.current = Date.now() + 600;
+    requestAnimationFrame(() => scrollToLatest(false));
+    setTimeout(() => scrollToLatest(false), 80);
+  }
+
   function renderDraftOptimisticMessage(message: OptimisticUserMessage) {
     draftOptimisticUserRef.current = message;
     setRenderedTurns([
@@ -1501,6 +1536,19 @@ export default function App() {
       setMessages([]);
     }
     bumpOptimisticVersion();
+  }
+
+  function clearSessionOptimisticMessages(targetSessionId: string) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid) return;
+    const pending = sessionOptimisticUserMapRef.current[sid] || [];
+    if (pending.length) {
+      const ids = new Set(pending.map((item) => item.id));
+      delete sessionOptimisticUserMapRef.current[sid];
+      setMessages((prev) => prev.filter((item) => !ids.has(item.id)));
+      setRenderedTurns((prev) => prev.filter((item) => !ids.has(item.id.replace(/^turn:optimistic:/, ''))));
+      bumpOptimisticVersion();
+    }
   }
 
   function scrollToLatest(animated: boolean) {
@@ -1807,8 +1855,18 @@ export default function App() {
         sessionId: sid
       });
       pushConnLog(`question.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
-      // opencode /question returns ALL sessions' pending questions; filter to current session only
-      setQuestionRequests(requests.filter((req) => req.sessionID === sid && !dismissedQuestions.has(req.id)));
+      // opencode /question can return cached + live copies of the same question. Prefer real que_* ids.
+      const deduped = new Map<string, QuestionRequest>();
+      for (const req of requests) {
+        if (req.sessionID !== sid || dismissedQuestions.has(req.id)) continue;
+        const tool: { messageID?: string; callID?: string } = req.tool || {};
+        const key = tool.callID || tool.messageID || req.id;
+        const existing = deduped.get(key);
+        if (!existing || (req.id.startsWith('que_') && !existing.id.startsWith('que_'))) {
+          deduped.set(key, req);
+        }
+      }
+      setQuestionRequests([...deduped.values()]);
     } catch (e) {
       pushConnLog(`question.list error ${String(e)}`, 'error');
     }
@@ -2942,9 +3000,11 @@ export default function App() {
       const currentSessionId = toText(sessionIdRef.current).trim();
       if (currentSessionId) {
         upsertOptimisticUserMessage(currentSessionId, optimisticMessage);
+        appendOptimisticTurn(optimisticMessage);
       } else {
         renderDraftOptimisticMessage(optimisticMessage);
       }
+      setPrompt('');
       const normalizedModel = model.trim();
       const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
       pushConnLog(`POST prompt sid=${sessionId || '(new)'} model=${requestModel || '(default)'}`);
@@ -2958,7 +3018,6 @@ export default function App() {
       });
       moveDraftOptimisticToSession(res.sessionId, optimisticMessage);
       setActiveSession(res.sessionId);
-      setPrompt('');
       startStream(res.sessionId);
       void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
@@ -2975,6 +3034,7 @@ export default function App() {
       } else {
         clearDraftOptimisticMessage(optimisticMessage.id);
       }
+      if (customPrompt === undefined) setPrompt((prev) => prev || payloadPrompt);
       const msg = String(e);
       pushConnLog(`POST prompt error ${msg}`, 'error');
       if (msg.includes('invalid bearer token') && pairCode.trim()) {
@@ -3003,6 +3063,9 @@ export default function App() {
       return;
     }
     setBusy(true);
+    stopStream();
+    clearSessionOptimisticMessages(sid);
+    setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     try {
       pushConnLog(`POST abort sid=${sid}`);
       await abortSession({
@@ -3013,6 +3076,7 @@ export default function App() {
       });
       setStatus('已请求中断');
       await syncSessionMessages(sid, { limit: INITIAL_SESSION_LIMIT });
+      void syncSessionStatus(sid);
       pushConnLog('POST abort ok');
     } catch (e) {
       pushConnLog(`POST abort error ${String(e)}`, 'error');
@@ -3516,14 +3580,31 @@ export default function App() {
           <QuestionDock
             request={req}
             onReply={(requestId, answers) => {
-              setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
-              setDismissedQuestions((prev) => new Set([...prev, requestId]));
+              const sid = toText(sessionIdRef.current).trim();
+              setStatus('正在提交答案...');
               void replyQuestion({
                 baseUrl: serverUrl,
                 token,
                 repoPath,
                 requestId,
                 answers
+              }).then(() => {
+                setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+                setDismissedQuestions((prev) => new Set([...prev, requestId]));
+                pushConnLog(`question.reply ok ${requestId}`);
+                setStatus('答案已提交');
+                if (sid) {
+                  startStream(sid);
+                  void syncSessionMessages(sid, {
+                    limit: INITIAL_SESSION_LIMIT,
+                    fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
+                    jumpToLatest: true
+                  });
+                  void syncSessionStatus(sid);
+                }
+              }).catch((e) => {
+                pushConnLog(`question.reply error ${requestId} ${String(e)}`, 'error');
+                setStatus(`问题提交失败: ${String(e)}`);
               });
             }}
             onDismiss={(requestId) => {
