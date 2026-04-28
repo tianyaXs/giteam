@@ -22,10 +22,14 @@ import {
   getGitWorktreeOverview,
   getLocalBranches,
   gitCheckoutBranch,
+  gitDiscardChanges,
+  gitStageFile,
+  gitUnstageFile,
   removeGitWorktree,
   readRepoTerminalOutput,
   gitPull,
   gitPush,
+  gitCommit,
   sendRepoTerminalInput,
   startRepoTerminalSession
 } from "./lib/gitAdapter";
@@ -144,6 +148,19 @@ type WorktreePatchRow = {
   oldLine: number | null;
   newLine: number | null;
   tone: "meta" | "hunk" | "add" | "del" | "ctx";
+};
+
+type SplitDiffSide = {
+  line: number | null;
+  text: string;
+  marker: string;
+  tone: "del" | "add" | "ctx" | "empty";
+};
+
+type SplitDiffRow = {
+  kind: "hunk" | "meta" | "line";
+  left: SplitDiffSide;
+  right: SplitDiffSide;
 };
 type StatusSession = { title: string; quote?: string; meta?: string };
 type ParsedStatus = { headline?: string; project?: string; sessions: StatusSession[] };
@@ -453,7 +470,7 @@ function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
   return "已修改";
 }
 
-function buildWorktreePatchRows(patch: string): WorktreePatchRow[] {
+function buildSplitDiffRows(patch: string): SplitDiffRow[] {
   if (!patch.trim()) return [];
   const rows: WorktreePatchRow[] = [];
   let oldLine = 0;
@@ -489,7 +506,64 @@ function buildWorktreePatchRows(patch: string): WorktreePatchRow[] {
     newLine += 1;
   }
 
-  return rows;
+  const splitRows: SplitDiffRow[] = [];
+  const delBuffer: WorktreePatchRow[] = [];
+
+  function flushDelBuffer() {
+    for (const row of delBuffer) {
+      splitRows.push({
+        kind: "line",
+        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "del" },
+        right: { line: null, text: "", marker: "", tone: "empty" },
+      });
+    }
+    delBuffer.length = 0;
+  }
+
+  for (const row of rows) {
+    if (row.tone === "meta" || row.tone === "hunk") {
+      flushDelBuffer();
+      splitRows.push({
+        kind: row.tone === "hunk" ? "hunk" : "meta",
+        left: { line: null, text: row.text, marker: row.marker, tone: "empty" },
+        right: { line: null, text: row.text, marker: row.marker, tone: "empty" },
+      });
+      continue;
+    }
+    if (row.tone === "del") {
+      delBuffer.push(row);
+      continue;
+    }
+    if (row.tone === "add") {
+      if (delBuffer.length > 0) {
+        const delRow = delBuffer.shift()!;
+        splitRows.push({
+          kind: "line",
+          left: { line: delRow.oldLine, text: delRow.text, marker: delRow.marker, tone: "del" },
+          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
+        });
+      } else {
+        splitRows.push({
+          kind: "line",
+          left: { line: null, text: "", marker: "", tone: "empty" },
+          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
+        });
+      }
+      continue;
+    }
+    if (row.tone === "ctx") {
+      flushDelBuffer();
+      splitRows.push({
+        kind: "line",
+        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "ctx" },
+        right: { line: row.newLine, text: row.text, marker: row.marker, tone: "ctx" },
+      });
+      continue;
+    }
+  }
+
+  flushDelBuffer();
+  return splitRows;
 }
 
 function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
@@ -1999,11 +2073,12 @@ export function App() {
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 720, 560, 980));
+  const [changesSidebarWidth, setChangesSidebarWidth] = useState(420);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [draggingSplit, setDraggingSplit] = useState<null | {
-    kind: "sidebar" | "right";
+    kind: "sidebar" | "right" | "changes";
     startX: number;
     startWidth: number;
   }>(null);
@@ -2060,6 +2135,12 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
+  const [commitMessage, setCommitMessage] = useState("");
+  const [committing, setCommitting] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [discardingFile, setDiscardingFile] = useState("");
+  const [stagingFile, setStagingFile] = useState("");
+  const [unstagingFile, setUnstagingFile] = useState("");
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
@@ -2275,16 +2356,24 @@ export function App() {
     [terminalTabs, activeTerminalTabId]
   );
   const worktreeTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries), [worktreeOverview.entries]);
+  const stagedTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries.filter((e) => e.staged)), [worktreeOverview.entries]);
+  const unstagedTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries.filter((e) => e.unstaged || e.untracked)), [worktreeOverview.entries]);
   const selectedWorktreeEntry = useMemo(
     () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
     [worktreeOverview.entries, selectedWorktreeFile]
   );
-  const worktreePatchRows = useMemo(() => buildWorktreePatchRows(selectedWorktreePatch), [selectedWorktreePatch]);
+  const worktreePatchRows = useMemo(() => buildSplitDiffRows(selectedWorktreePatch), [selectedWorktreePatch]);
   const worktreePatchStats = useMemo(() => ({
-    added: worktreePatchRows.filter((row) => row.tone === "add").length,
-    deleted: worktreePatchRows.filter((row) => row.tone === "del").length,
-    hunks: worktreePatchRows.filter((row) => row.tone === "hunk").length
+    added: worktreePatchRows.filter((row) => row.right.tone === "add").length,
+    deleted: worktreePatchRows.filter((row) => row.left.tone === "del").length,
+    hunks: worktreePatchRows.filter((row) => row.kind === "hunk").length
   }), [worktreePatchRows]);
+  const worktreeChangeStats = useMemo(() => {
+    const entries = worktreeOverview.entries;
+    const stagedCount = entries.filter((e) => e.staged).length;
+    const unstagedCount = entries.filter((e) => e.unstaged || e.untracked).length;
+    return { total: entries.length, staged: stagedCount, unstaged: unstagedCount };
+  }, [worktreeOverview.entries]);
   const activeTerminalView = useMemo(
     () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
     [activeTerminalTab?.output]
@@ -3300,8 +3389,10 @@ export function App() {
       const delta = e.clientX - draggingSplit.startX;
       if (draggingSplit.kind === "sidebar") {
         setSidebarWidth(clamp(draggingSplit.startWidth + delta, 240, 520));
-      } else {
+      } else if (draggingSplit.kind === "right") {
         setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 360, 760));
+      } else {
+        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 300, 680));
       }
     };
     const onUp = () => setDraggingSplit(null);
@@ -3562,8 +3653,8 @@ export function App() {
     appendOpencodeDebugLog(
       `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${opencodeProviders.length} configuredProviders=${opencodeConfiguredProviders.length} connectedProviders=${opencodeConnectedProviders.length}`
     );
-    // Refresh config to pick up any model visibility changes made in the provider picker.
-    void refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
+    // Refresh catalog to pick up any model/provider changes from server.
+    void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
   }, [showOpencodeProviderPicker]);
 
   useEffect(() => {
@@ -5179,6 +5270,99 @@ export function App() {
     }
   }
 
+  async function handleGitCommit() {
+    if (!ensureRepoSelected()) return;
+    const msg = commitMessage.trim();
+    if (!msg) {
+      setMessage("请输入提交信息");
+      return;
+    }
+    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
+    if (!hasStaged) {
+      setMessage("没有已暂存的变更可提交，请先暂存文件");
+      return;
+    }
+    setCommitting(true);
+    setError("");
+    try {
+      const result = await gitCommit(repoPath, msg);
+      setCommitMessage("");
+      setMessage("提交成功");
+      await refreshWorktreeData();
+      appendOpencodeDebugLog(`git.commit ${result.trim()}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("提交失败");
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  async function handleGitPush() {
+    if (!ensureRepoSelected()) return;
+    setPushing(true);
+    setError("");
+    try {
+      const result = await gitPush(repoPath);
+      setMessage("推送成功");
+      await refreshWorktreeData();
+      appendOpencodeDebugLog(`git.push ${result.trim()}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("推送失败");
+    } finally {
+      setPushing(false);
+    }
+  }
+
+  async function handleDiscardChanges(filePath: string, isUntracked: boolean) {
+    if (!ensureRepoSelected() || !filePath) return;
+    setDiscardingFile(filePath);
+    setError("");
+    try {
+      await gitDiscardChanges(repoPath, filePath, isUntracked);
+      setMessage(`已撤销: ${filePath}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("撤销修改失败");
+    } finally {
+      setDiscardingFile("");
+    }
+  }
+
+  async function handleStageFile(filePath: string) {
+    if (!ensureRepoSelected() || !filePath) return;
+    setStagingFile(filePath);
+    setError("");
+    try {
+      await gitStageFile(repoPath, filePath);
+      setMessage(`已暂存: ${filePath}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("暂存失败");
+    } finally {
+      setStagingFile("");
+    }
+  }
+
+  async function handleUnstageFile(filePath: string) {
+    if (!ensureRepoSelected() || !filePath) return;
+    setUnstagingFile(filePath);
+    setError("");
+    try {
+      await gitUnstageFile(repoPath, filePath);
+      setMessage(`已取消暂存: ${filePath}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("取消暂存失败");
+    } finally {
+      setUnstagingFile("");
+    }
+  }
+
   function toggleWorktreeDir(path: string) {
     setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
   }
@@ -5208,21 +5392,67 @@ export function App() {
       if (!entry) return null;
       const status = getWorktreeDisplayStatus(entry);
       const fileKind = getWorktreeFileKindLabel(entry.path);
+      const canDiscard = entry.unstaged || entry.untracked;
       return (
-        <button
+        <div
           key={node.path}
-          type="button"
           className={selectedWorktreeFile === entry.path ? "gt-worktree-tree-row gt-worktree-tree-file active" : "gt-worktree-tree-row gt-worktree-tree-file"}
           style={{ paddingLeft: `${depth * 14 + 6}px` }}
-          onClick={() => void refreshSelectedWorktreePatch(entry.path)}
           title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
         >
-          <span className="gt-worktree-tree-file-main">
+          <button
+            type="button"
+            className="gt-worktree-file-main-btn"
+            onClick={() => void refreshSelectedWorktreePatch(entry.path)}
+          >
             <span className={`gt-worktree-kind gt-worktree-kind-${fileKind}`}>{fileKind}</span>
             <span className="gt-worktree-tree-name">{node.name}</span>
-          </span>
+          </button>
           <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-        </button>
+          <div className="gt-worktree-file-actions">
+            {entry.staged ? (
+              <button
+                type="button"
+                className="gt-worktree-action-btn"
+                title="取消暂存"
+                disabled={unstagingFile === entry.path}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleUnstageFile(entry.path);
+                }}
+              >
+                {unstagingFile === entry.path ? "−" : "−"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="gt-worktree-action-btn"
+                title="暂存更改"
+                disabled={stagingFile === entry.path}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleStageFile(entry.path);
+                }}
+              >
+                {stagingFile === entry.path ? "+" : "+"}
+              </button>
+            )}
+            {canDiscard ? (
+              <button
+                type="button"
+                className="gt-worktree-action-btn is-discard"
+                title={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
+                disabled={discardingFile === entry.path}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleDiscardChanges(entry.path, entry.untracked);
+                }}
+              >
+                {discardingFile === entry.path ? "..." : "✕"}
+              </button>
+            ) : null}
+          </div>
+        </div>
       );
     });
   }
@@ -5794,6 +6024,35 @@ export function App() {
       // ignore
     }
   }, [opencodeEnabledModels, selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!controlAccessInfo?.port || !selectedRepo?.id) return;
+    const payload = {
+      repoId: selectedRepo.id,
+      repoPath,
+      enabledModels: Array.from(opencodeEnabledModels),
+      hiddenModels: Array.from(opencodeHiddenModels),
+      activeModel: activeOpencodeModel || opencodeConfig?.configuredModel || "",
+      updatedAt: Date.now(),
+    };
+    const url = `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state`;
+    const timer = window.setTimeout(() => {
+      void fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeOpencodeModel,
+    controlAccessInfo?.port,
+    opencodeConfig?.configuredModel,
+    opencodeEnabledModels,
+    opencodeHiddenModels,
+    repoPath,
+    selectedRepo?.id,
+  ]);
 
   useEffect(() => {
     // Per repo model selection (OpenCode-like): draft + per-session overrides.
@@ -7281,25 +7540,168 @@ export function App() {
         ) : null}
 
         {rightPaneTab === "changes" ? (
-          <div className="gt-panel-stack gt-panel-stack-split">
+          <div
+            className="gt-panel-stack gt-panel-stack-split gt-changes-workspace"
+            style={{ "--changes-sidebar-width": `${changesSidebarWidth}px` } as CSSProperties}
+          >
             <div className="gt-right-card gt-right-card-files">
               <div className="gt-right-card-head">
-                <strong>待提交文件</strong>
-                <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+                <div className="gt-changes-header">
+                  <strong>Changes</strong>
+                  {worktreeChangeStats.total > 0 ? (
+                    <span className="gt-changes-count">
+                      {worktreeChangeStats.staged > 0 ? (
+                        <span className="gt-changes-staged">{worktreeChangeStats.staged} staged</span>
+                      ) : null}
+                      {worktreeChangeStats.unstaged > 0 ? (
+                        <span className="gt-changes-unstaged">{worktreeChangeStats.unstaged} unstaged</span>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="toolbar" style={{ gap: 6 }}>
+                  {worktreeChangeStats.unstaged > 0 ? (
+                    <button
+                      className="chip"
+                      title="暂存所有更改"
+                      onClick={async () => {
+                        if (!ensureRepoSelected()) return;
+                        const unstagedFiles = worktreeOverview.entries
+                          .filter((e) => e.unstaged || e.untracked)
+                          .map((e) => e.path);
+                        for (const file of unstagedFiles) {
+                          await gitStageFile(repoPath, file).catch(() => {});
+                        }
+                        await refreshWorktreeData();
+                        setMessage(`已暂存 ${unstagedFiles.length} 个文件`);
+                      }}
+                    >
+                      + 全部暂存
+                    </button>
+                  ) : null}
+                  <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+                </div>
+              </div>
+              <div style={{ padding: "0 12px 12px", borderBottom: "1px solid var(--gt-border-subtle)" }}>
+                <input
+                  className="path-input"
+                  style={{ marginBottom: 8, width: "100%" }}
+                  placeholder="输入提交信息..."
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  disabled={committing || pushing}
+                />
+                <div className="toolbar" style={{ gap: 8 }}>
+                  <button
+                    className="chip is-primary"
+                    onClick={() => void handleGitCommit()}
+                    disabled={committing || pushing || !commitMessage.trim() || worktreeChangeStats.staged === 0}
+                    title={worktreeChangeStats.staged === 0 ? "没有已暂存的文件" : ""}
+                  >
+                    {committing ? "提交中..." : `提交 (${worktreeChangeStats.staged})`}
+                  </button>
+                  <button
+                    className="chip"
+                    onClick={() => void handleGitPush()}
+                    disabled={committing || pushing}
+                  >
+                    {pushing ? "推送中..." : "推送"}
+                  </button>
+                </div>
               </div>
               <div className="gt-worktree-file-list gt-worktree-tree-list">
-                {worktreeOverview.entries.length === 0 ? <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div> : null}
-                {renderWorktreeNodes(worktreeTree)}
+                {worktreeOverview.entries.length === 0 ? (
+                  <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div>
+                ) : (
+                  <>
+                    {/* Staged Changes */}
+                    {stagedTree.length > 0 && (
+                      <div className="gt-changes-group">
+                        <div className="gt-changes-group-header">
+                          <span className="gt-changes-group-title">Staged Changes</span>
+                          <span className="gt-changes-group-count">{worktreeChangeStats.staged}</span>
+                        </div>
+                        <div className="gt-changes-group-list">
+                          {renderWorktreeNodes(stagedTree)}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Changes (unstaged) */}
+                    {unstagedTree.length > 0 && (
+                      <div className="gt-changes-group">
+                        <div className="gt-changes-group-header">
+                          <span className="gt-changes-group-title">Changes</span>
+                          <span className="gt-changes-group-count">{worktreeChangeStats.unstaged}</span>
+                        </div>
+                        <div className="gt-changes-group-list">
+                          {renderWorktreeNodes(unstagedTree)}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
-            <div className="gt-right-card gt-right-card-fill">
+            <div
+              className={draggingSplit?.kind === "changes" ? "gt-changes-splitter active" : "gt-changes-splitter"}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整 Changes 文件树宽度"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setDraggingSplit({ kind: "changes", startX: e.clientX, startWidth: changesSidebarWidth });
+              }}
+            />
+            <div className="gt-right-card gt-right-card-fill gt-diff-editor-pane">
               <div className="gt-right-card-head">
-                <strong>修改记录</strong>
-                <span className="small muted">{selectedWorktreeFile || "选择一个文件"}</span>
+                <div className="gt-diff-header">
+                  {selectedWorktreeFile ? (
+                    <>
+                      <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
+                      <strong className="gt-diff-filename">{selectedWorktreeFile}</strong>
+                      <span className="small muted">{getWorktreeStatusText(selectedWorktreeEntry)}</span>
+                      {worktreePatchStats.added > 0 ? <span className="meta-chip is-add">+{worktreePatchStats.added}</span> : null}
+                      {worktreePatchStats.deleted > 0 ? <span className="meta-chip is-del">-{worktreePatchStats.deleted}</span> : null}
+                    </>
+                  ) : (
+                    <span className="small muted">选择一个文件</span>
+                  )}
+                </div>
+                {selectedWorktreeEntry ? (
+                  <div className="toolbar" style={{ gap: 6 }}>
+                    {selectedWorktreeEntry.staged ? (
+                      <button
+                        className="chip"
+                        onClick={() => void handleUnstageFile(selectedWorktreeEntry.path)}
+                        disabled={unstagingFile === selectedWorktreeEntry.path}
+                      >
+                        取消暂存
+                      </button>
+                    ) : (
+                      <button
+                        className="chip"
+                        onClick={() => void handleStageFile(selectedWorktreeEntry.path)}
+                        disabled={stagingFile === selectedWorktreeEntry.path}
+                      >
+                        暂存
+                      </button>
+                    )}
+                    {(selectedWorktreeEntry.unstaged || selectedWorktreeEntry.untracked) ? (
+                      <button
+                        className="chip is-danger"
+                        onClick={() => void handleDiscardChanges(selectedWorktreeEntry.path, selectedWorktreeEntry.untracked)}
+                        disabled={discardingFile === selectedWorktreeEntry.path}
+                      >
+                        撤销
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               {selectedWorktreeFile ? (
                 <div className="gt-worktree-patch-view">
-                  <div className="gt-worktree-patch-summary">
+                  <div className="gt-worktree-patch-summary" style={{ display: "none" }}>
                     <div className="gt-worktree-patch-summary-main">
                       <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
                       <div className="gt-worktree-patch-summary-copy">
@@ -7318,23 +7720,40 @@ export function App() {
                     </div>
                   </div>
                   {worktreePatchRows.length > 0 ? (
-                    <div className="gt-worktree-patch-body">
-                      <div className="gt-worktree-patch-body-head">
-                        <span>Type</span>
-                        <span>Old</span>
-                        <span>New</span>
-                        <span>Content</span>
+                    <div className="gt-split-diff-body">
+                      <div className="gt-split-diff-header">
+                        <div className="gt-split-diff-col-head">
+                          <span>Old</span>
+                        </div>
+                        <div className="gt-split-diff-col-head">
+                          <span>New</span>
+                        </div>
                       </div>
-                      <div className="gt-worktree-patch-body-scroll">
+                      <div className="gt-split-diff-scroll">
                         {worktreePatchRows.map((row, idx) => {
-                        return (
-                          <div key={`worktree-diff-${idx}`} className={`gt-worktree-diff-row is-${row.tone}`}>
-                            <span className="gt-worktree-diff-marker">{row.marker}</span>
-                            <span className="gt-worktree-diff-line">{row.oldLine ?? ""}</span>
-                            <span className="gt-worktree-diff-line">{row.newLine ?? ""}</span>
-                            <code className="gt-worktree-diff-code">{row.text || " "}</code>
-                          </div>
-                        );
+                          if (row.kind === "hunk" || row.kind === "meta") {
+                            return (
+                              <div key={`worktree-diff-${idx}`} className={`gt-split-diff-row is-${row.kind}`}>
+                                <div className="gt-split-diff-cell">
+                                  <code className="gt-split-diff-code">{row.left.text}</code>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div key={`worktree-diff-${idx}`} className="gt-split-diff-row">
+                              <div className={`gt-split-diff-cell is-${row.left.tone}`}>
+                                <span className="gt-split-diff-line-num">{row.left.line ?? ""}</span>
+                                <span className="gt-split-diff-marker">{row.left.marker}</span>
+                                <code className="gt-split-diff-code">{row.left.text || " "}</code>
+                              </div>
+                              <div className={`gt-split-diff-cell is-${row.right.tone}`}>
+                                <span className="gt-split-diff-line-num">{row.right.line ?? ""}</span>
+                                <span className="gt-split-diff-marker">{row.right.marker}</span>
+                                <code className="gt-split-diff-code">{row.right.text || " "}</code>
+                              </div>
+                            </div>
+                          );
                         })}
                       </div>
                     </div>

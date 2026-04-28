@@ -4,6 +4,7 @@
   "private": true,
   "main": "index.js",
   "scripts": {
+    "postinstall": "node scripts/patch-expo-modules-core.js",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
@@ -16,6 +17,7 @@
   "dependencies": {
     "@expo/metro-runtime": "~3.2.3",
     "@react-native-async-storage/async-storage": "1.23.1",
+    "@shopify/flash-list": "^1.7.6",
     "@ronradtke/react-native-markdown-display": "^8.1.0",
     "expo": "~51.0.28",
     "expo-camera": "~15.0.16",

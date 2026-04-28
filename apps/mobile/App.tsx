@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
-  FlatList,
   Image,
   InteractionManager,
   LayoutChangeEvent,
@@ -25,6 +24,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Network from 'expo-network';
 import EventSource from 'react-native-sse';
+import { FlashList } from '@shopify/flash-list';
 import Markdown from '@ronradtke/react-native-markdown-display';
 import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
 import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
@@ -38,6 +38,7 @@ import { loadDiscoverCache, saveDiscoverCache } from './src/storage/discoverCach
 import type { DiscoverCacheDevice } from './src/storage/discoverCache';
 import { loadPairCodeMap, savePairCodeMap } from './src/storage/pairCodeMap';
 import { loadSessionCache, saveSessionCache } from './src/storage/sessionCache';
+import { loadQuestionDismissals, saveQuestionDismissal } from './src/storage/questionDismissals';
 import {
   abortSession,
   buildStreamUrl,
@@ -125,6 +126,11 @@ type ModelOption = {
   id: string;
   label: string;
   provider: string;
+};
+
+type QuestionSubmitState = {
+  status: 'submitting' | 'submitted' | 'failed';
+  error?: string;
 };
 
 type ProjectOption = {
@@ -347,19 +353,20 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   hasLiveQuestion: boolean;
   liveQuestions: QuestionRequest[];
   onQuestionReply: (requestId: string, answers: string[][]) => void;
+  onCopyMessage: (text: string) => void;
   expandedTimelineQuestions: Set<string>;
   onToggleTimelineQuestion: (id: string) => void;
   timelineQuestionTabs: Map<string, number>;
   onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
 }) {
-  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, expandedTimelineQuestions, onToggleTimelineQuestion, timelineQuestionTabs, onChangeTimelineTab } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, expandedTimelineQuestions, onToggleTimelineQuestion, timelineQuestionTabs, onChangeTimelineTab } = props;
   return (
     <View style={styles.turnWrap}>
       {turn.userMessage ? (
         <View style={styles.bubbleUserWrap}>
-          <View style={styles.bubbleUser}>
+          <Pressable style={styles.bubbleUser} onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))} delayLongPress={280}>
             <Text style={styles.bubbleUserText}>{toText(turn.userMessage.text || '...')}</Text>
-          </View>
+          </Pressable>
         </View>
       ) : null}
       {turn.items.map((item) => {
@@ -368,9 +375,9 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           if (m.role === 'user') return null;
           return (
             <View key={m.id} style={styles.bubbleAssistantWrap}>
-              <View style={styles.bubbleAssistant}>
+              <Pressable style={styles.bubbleAssistant} onLongPress={() => onCopyMessage(toText(m.text))} delayLongPress={280}>
                 <View style={styles.bubbleContent}>{renderMarkdown(toText(m.text || '...'), 'assistant')}</View>
-              </View>
+              </Pressable>
             </View>
           );
         }
@@ -456,6 +463,12 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                 >
                   <Text style={styles.questionTimelineTitle}>{toText(item.question.title || '问题')}</Text>
                   <View style={styles.questionTimelineHeadRight}>
+                    <Text style={styles.questionTimelineBadge}>{(() => {
+                      const status = toText(item.question.status).toLowerCase();
+                      if (status === 'completed') return '已提交';
+                      if (status === 'error') return '已忽略';
+                      return '已过期';
+                    })()}</Text>
                     {!canReply && (
                       <Text style={styles.questionTimelineToggle}>{isExpanded ? '▲' : '▼'}</Text>
                     )}
@@ -579,6 +592,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   && prev.thinkingPulse === next.thinkingPulse
   && prev.hasLiveQuestion === next.hasLiveQuestion
   && prev.liveQuestions === next.liveQuestions
+  && prev.onCopyMessage === next.onCopyMessage
   && prev.expandedTimelineQuestions === next.expandedTimelineQuestions
   && prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion
   && prev.timelineQuestionTabs === next.timelineQuestionTabs
@@ -680,6 +694,23 @@ function extractModelOptionsFromConfig(raw: any): ModelOption[] {
     const idx = configured.indexOf('/');
     out.set(configured, { id: configured, provider: configured.slice(0, idx), label: configured.slice(idx + 1) || configured });
   }
+  const mobileState = raw?.giteamMobileModelState && typeof raw.giteamMobileModelState === 'object' ? raw.giteamMobileModelState : {};
+  const hiddenModels = new Set<string>(
+    Array.isArray(mobileState?.hiddenModels) ? mobileState.hiddenModels.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+  );
+  const enabledModels = Array.isArray(mobileState?.enabledModels) ? mobileState.enabledModels : [];
+  for (const item of enabledModels) {
+    const id = String(item || '').trim();
+    if (!id || !id.includes('/') || hiddenModels.has(id)) continue;
+    const idx = id.indexOf('/');
+    if (!out.has(id)) out.set(id, { id, provider: id.slice(0, idx), label: id.slice(idx + 1) || id });
+  }
+  const activeModel = String(mobileState?.activeModel || '').trim();
+  if (activeModel && activeModel.includes('/') && !hiddenModels.has(activeModel) && !out.has(activeModel)) {
+    const idx = activeModel.indexOf('/');
+    out.set(activeModel, { id: activeModel, provider: activeModel.slice(0, idx), label: activeModel.slice(idx + 1) || activeModel });
+  }
+  for (const hidden of hiddenModels) out.delete(hidden);
   return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -813,6 +844,7 @@ export default function App() {
   const [todoDockCollapsed, setTodoDockCollapsed] = useState(false);
   const [questionRequests, setQuestionRequests] = useState<QuestionRequest[]>([]);
   const [dismissedQuestions, setDismissedQuestions] = useState<Set<string>>(() => new Set());
+  const [questionSubmitState, setQuestionSubmitState] = useState<Record<string, QuestionSubmitState>>({});
   const [expandedTimelineQuestions, setExpandedTimelineQuestions] = useState<Set<string>>(new Set());
   const [timelineQuestionTabs, setTimelineQuestionTabs] = useState<Map<string, number>>(new Map());
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
@@ -829,7 +861,7 @@ export default function App() {
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
-  const messageScrollRef = useRef<FlatList<MobileRenderedTurn> | null>(null);
+  const messageScrollRef = useRef<FlashList<MobileRenderedTurn> | null>(null);
   const forceScrollToLatestUntilRef = useRef(0);
   const suppressAutoScrollRef = useRef(false);
   const allowAutoScrollRef = useRef(true);
@@ -840,6 +872,7 @@ export default function App() {
   const modelOptionsRef = useRef<ModelOption[]>([]);
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
   const sessionOptimisticUserMapRef = useRef<Record<string, OptimisticUserMessage[]>>({});
+  const optimisticUserIdAliasRef = useRef<Record<string, Record<string, string>>>({});
   const draftOptimisticUserRef = useRef<OptimisticUserMessage | null>(null);
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
@@ -1152,6 +1185,23 @@ export default function App() {
   }, [authed, sessionId, repoPath, serverUrl, token, streaming, sessionStatusMap, questionRequests.length, dismissedQuestions]);
 
   useEffect(() => {
+    const sid = toText(sessionId).trim();
+    const repo = toText(repoPath).trim();
+    if (!sid || !repo) {
+      setDismissedQuestions(new Set());
+      return;
+    }
+    let alive = true;
+    loadQuestionDismissals(repo, sid).then((ids) => {
+      if (!alive) return;
+      setDismissedQuestions(ids);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, repoPath]);
+
+  useEffect(() => {
     if (!discoverOpen) return;
     radarPulse.setValue(0);
     deviceBob.setValue(0);
@@ -1316,8 +1366,7 @@ export default function App() {
     if (!loaded || !authed || !sessionId || !repoPath) return;
     void syncSessionMessages(sessionId, {
       limit: INITIAL_SESSION_LIMIT,
-      fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
-      jumpToLatest: true
+      fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
     });
     void syncSessionStatus(sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1374,7 +1423,7 @@ export default function App() {
     setSessionId(sid);
     // Clear question state when switching sessions
     setQuestionRequests([]);
-    setDismissedQuestions(new Set());
+    setQuestionSubmitState({});
     // Switching session should not auto-scroll with animation.
     allowAutoScrollRef.current = false;
     if (!sid) {
@@ -1452,6 +1501,10 @@ export default function App() {
           return da - db;
         })[0];
       if (matched) {
+        optimisticUserIdAliasRef.current[sid] = {
+          ...(optimisticUserIdAliasRef.current[sid] || {}),
+          [matched.id]: local.id,
+        };
         usedIds.add(matched.id);
         continue;
       }
@@ -1464,10 +1517,35 @@ export default function App() {
     return remaining;
   }
 
+  function stabilizeServerUserTurnIds(targetSessionId: string, base: ReturnType<typeof buildTurnWindow>) {
+    const sid = toText(targetSessionId).trim();
+    const alias = optimisticUserIdAliasRef.current[sid] || {};
+    if (!sid || Object.keys(alias).length === 0) return base;
+    const remapMessage = (message: MobileChatMessage): MobileChatMessage => {
+      const mapped = alias[message.id];
+      return mapped ? { ...message, id: mapped } : message;
+    };
+    return {
+      ...base,
+      chatMessages: base.chatMessages.map(remapMessage),
+      renderedTurns: base.renderedTurns.map((turn) => {
+        const user = turn.userMessage ? remapMessage(turn.userMessage) : undefined;
+        if (!user || user.id === turn.userMessage?.id) return turn;
+        return {
+          ...turn,
+          id: `turn:optimistic:${user.id}`,
+          userMessage: user,
+          signature: turn.signature.replace(`user:${turn.userMessage?.id || ''}:`, `user:${user.id}:`),
+        };
+      }),
+    };
+  }
+
   function overlayOptimisticTurns(base: ReturnType<typeof buildTurnWindow>, optimistic: OptimisticUserMessage[]) {
     if (optimistic.length === 0) return base;
-    const nextMessages = [...base.chatMessages];
-    const nextTurns = [...base.renderedTurns];
+    const keepBaseTurns = base.visibleTurnCount > INITIAL_SESSION_LIMIT;
+    const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
+    const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
     for (const item of optimistic) {
       nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt });
       nextTurns.push({
@@ -1483,7 +1561,7 @@ export default function App() {
       chatMessages: nextMessages,
       renderedTurns: nextTurns,
       mergedCount: base.mergedCount + optimistic.length,
-      visibleTurnCount: base.visibleTurnCount + optimistic.length,
+      visibleTurnCount: keepBaseTurns ? base.visibleTurnCount + optimistic.length : optimistic.length,
       totalTurnCount: base.totalTurnCount + optimistic.length,
       hasUserTurn: true
     };
@@ -1508,9 +1586,21 @@ export default function App() {
         }
       ];
     });
-    forceScrollToLatestUntilRef.current = Date.now() + 600;
-    requestAnimationFrame(() => scrollToLatest(false));
-    setTimeout(() => scrollToLatest(false), 80);
+  }
+
+  function appendOptimisticTurnAndStick(message: OptimisticUserMessage) {
+    setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }]);
+    setRenderedTurns([
+      {
+        id: `turn:optimistic:${message.id}`,
+        createdAt: message.createdAt,
+        userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
+        items: [],
+        signature: `optimistic:${message.id}:${message.text.length}`
+      }
+    ]);
+    sessionVisibleTurnCountRef.current[sessionIdRef.current] = INITIAL_SESSION_LIMIT;
+    bumpOptimisticVersion();
   }
 
   function renderDraftOptimisticMessage(message: OptimisticUserMessage) {
@@ -1586,12 +1676,12 @@ export default function App() {
     setWorkspacePickerOpen(false);
     setDrawerDragSide('');
     setDrawerSide(side);
-    animateDrawerProgress(1);
-    if (side === 'left') {
-      void refreshSessionsFromServer();
-    } else {
-      void refreshModelCatalog();
-    }
+    animateDrawerProgress(1, () => {
+      void InteractionManager.runAfterInteractions(() => {
+        if (side === 'left') void refreshSessionsFromServer();
+        else void refreshModelCatalog();
+      });
+    });
   }
 
   function closeDrawer() {
@@ -1656,8 +1746,6 @@ export default function App() {
           if (drawerDragSide !== nextSide) {
             setWorkspacePickerOpen(false);
             setDrawerDragSide(nextSide);
-            if (nextSide === 'left') void refreshSessionsFromServer();
-            else void refreshModelCatalog();
           }
           const progress = !drawerSide
             ? nextSide === 'left'
@@ -1693,6 +1781,10 @@ export default function App() {
                 const nextSide = drawerSide || drawerDragSide;
                 if (nextSide) {
                   setDrawerSide(nextSide);
+                  void InteractionManager.runAfterInteractions(() => {
+                    if (nextSide === 'left') void refreshSessionsFromServer();
+                    else void refreshModelCatalog();
+                  });
                 }
                 setDrawerDragSide('');
                 return;
@@ -1829,7 +1921,8 @@ export default function App() {
     const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
     const baseRendered = buildTurnWindow(merged, visibleTurnCount);
     const optimistic = reconcileOptimisticUserMessages(targetSessionId, baseRendered.chatMessages);
-    const rendered = overlayOptimisticTurns(baseRendered, optimistic);
+    const stableBaseRendered = stabilizeServerUserTurnIds(targetSessionId, baseRendered);
+    const rendered = overlayOptimisticTurns(stableBaseRendered, optimistic);
     sessionVisibleTurnCountRef.current[targetSessionId] = rendered.visibleTurnCount;
     sessionTotalTurnCountRef.current[targetSessionId] = rendered.totalTurnCount;
     setMessages(rendered.chatMessages);
@@ -1839,6 +1932,41 @@ export default function App() {
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
     setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
     return rendered;
+  }
+
+  function applyStreamMessageSnapshot(targetSessionId: string, payload: unknown) {
+    if (targetSessionId !== sessionIdRef.current) return undefined;
+    const incoming = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.items) ? (payload as any).items : [];
+    if (incoming.length === 0) return undefined;
+    const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
+    const merged = mergeMessageRows(prevRaw, incoming);
+    sessionRawMapRef.current[targetSessionId] = merged;
+    const turnInfo = inspectTurnWindow(merged);
+    const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
+    const nextVisibleTurnCount = computeVisibleTurnCount({
+      prevVisibleTurnCount,
+      totalTurnCount: turnInfo.totalTurnCount,
+      requestedVisibleTurnCount: INITIAL_SESSION_LIMIT,
+      initialTurnLimit: INITIAL_SESSION_LIMIT,
+      olderTurnLimit: OLDER_SESSION_LIMIT,
+      mode: 'default',
+      userAtTop: false,
+      hasNewHistoryFromCursor: false
+    });
+    const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount);
+    const nextQuestions = extractQuestionRequests(merged, targetSessionId).filter((req) => !dismissedQuestions.has(req.id));
+    if (nextQuestions.length > 0) setQuestionRequests(nextQuestions);
+    pushConnLog(`SSE messages sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} turns=${turnInfo.totalTurnCount}`);
+    return rendered;
+  }
+
+  function dismissQuestionRequest(requestId: string, targetSessionId: string = sessionIdRef.current) {
+    const id = toText(requestId).trim();
+    const sid = toText(targetSessionId).trim();
+    const repo = toText(repoPath).trim();
+    if (!id) return;
+    setDismissedQuestions((prev) => new Set([...prev, id]));
+    if (repo && sid) void saveQuestionDismissal(repo, sid, id);
   }
 
   async function refreshPendingQuestions(targetSessionId: string = sessionIdRef.current) {
@@ -1866,7 +1994,16 @@ export default function App() {
           deduped.set(key, req);
         }
       }
-      setQuestionRequests([...deduped.values()]);
+      const nextRequests = [...deduped.values()];
+      setQuestionRequests(nextRequests);
+      const liveIds = new Set(nextRequests.map((req) => req.id));
+      setQuestionSubmitState((prev) => {
+        const next: Record<string, QuestionSubmitState> = {};
+        for (const [id, state] of Object.entries(prev)) {
+          if (liveIds.has(id)) next[id] = state;
+        }
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
     } catch (e) {
       pushConnLog(`question.list error ${String(e)}`, 'error');
     }
@@ -2004,14 +2141,13 @@ export default function App() {
       limit?: number;
       fetchLimit?: number;
       loadingOlder?: boolean;
-      jumpToLatest?: boolean;
       before?: string;
       anchorStableKey?: string;
       forceVisibleCount?: number;
     }
   ) {
     const before = toText(opts?.before).trim();
-    const mode = opts?.jumpToLatest ? 'jumpToLatest' : opts?.loadingOlder ? 'loadingOlder' : 'default';
+    const mode = opts?.loadingOlder ? 'loadingOlder' : 'default';
     const syncKey = `${targetSessionId}|${mode}|${before || '-'}`;
     const existing = inflightSessionSyncRef.current[syncKey];
     if (existing) {
@@ -2045,12 +2181,6 @@ export default function App() {
       });
       const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
 
-      if (opts?.jumpToLatest) {
-        forceScrollToLatestUntilRef.current = Date.now() + 800;
-        requestAnimationFrame(() => scrollToLatest(true));
-        setTimeout(() => scrollToLatest(true), 120);
-        setTimeout(() => scrollToLatest(true), 320);
-      }
       const latestTurnHasError = (() => {
         const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
         if (!lastTurn) return false;
@@ -2136,10 +2266,12 @@ export default function App() {
         setModelCatalogStatus('未发现可用模型（请检查服务端 provider 配置）');
       }
       const configured = String(cfg?.model || '').trim();
-      if (configured && configured.includes('/')) {
+      const mobileActive = String(cfg?.giteamMobileModelState?.activeModel || '').trim();
+      const preferred = mobileActive && mobileActive.includes('/') ? mobileActive : configured;
+      if (preferred && preferred.includes('/')) {
         setModel((prev) => {
           const p = prev.trim();
-          if (!p || !p.includes('/')) return configured;
+          if (!p || !p.includes('/')) return preferred;
           return p;
         });
       }
@@ -2264,6 +2396,7 @@ export default function App() {
     setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
+    optimisticUserIdAliasRef.current = {};
     draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
@@ -2298,6 +2431,7 @@ export default function App() {
     const es = new EventSource(url, { headers } as any);
     pushConnLog(`SSE connect ${url}`);
     let lastSyncAt = 0;
+    let lastStatusSyncAt = 0;
     const syncFromServer = () => {
       if (streamSessionRef.current !== targetSessionId || sessionIdRef.current !== targetSessionId) return;
       const now = Date.now();
@@ -2305,9 +2439,14 @@ export default function App() {
       lastSyncAt = now;
       void syncSessionMessages(targetSessionId, {
         limit: INITIAL_SESSION_LIMIT,
-        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
-        jumpToLatest: true
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
       });
+      void syncSessionStatus(targetSessionId);
+    };
+    const syncStatusSoon = () => {
+      const now = Date.now();
+      if (now - lastStatusSyncAt < 900) return;
+      lastStatusSyncAt = now;
       void syncSessionStatus(targetSessionId);
     };
 
@@ -2342,8 +2481,18 @@ export default function App() {
         setStatus('流断开');
       }
     });
-    es.addEventListener('messages' as any, () => {
-      // Keep SSE as a trigger only. Use `/messages` as the render source of truth.
+    es.addEventListener('messages' as any, (event: any) => {
+      try {
+        const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
+        const rendered = applyStreamMessageSnapshot(targetSessionId, payload);
+        if (rendered) {
+          setStreaming(rendered.writing);
+          syncStatusSoon();
+          return;
+        }
+      } catch (err) {
+        pushConnLog(`SSE messages parse failed ${String(err)}`, 'error');
+      }
       syncFromServer();
     });
     es.addEventListener('heartbeat' as any, () => {
@@ -2441,6 +2590,10 @@ export default function App() {
     }
     return null;
   }, [displayedTurns]);
+
+  const activeQuestionRequest = useMemo(() => questionRequests[0] || null, [questionRequests]);
+  const promptText = toText(prompt).trim();
+  const composerWillAbort = sessionWorking && !promptText;
 
   useEffect(() => {
     if (!latestTodoCard) {
@@ -2989,7 +3142,6 @@ export default function App() {
       return;
     }
     setBusy(true);
-    allowAutoScrollRef.current = true;
     const optimisticAt = Date.now();
     const optimisticMessage: OptimisticUserMessage = {
       id: `local:${optimisticAt}`,
@@ -3000,7 +3152,7 @@ export default function App() {
       const currentSessionId = toText(sessionIdRef.current).trim();
       if (currentSessionId) {
         upsertOptimisticUserMessage(currentSessionId, optimisticMessage);
-        appendOptimisticTurn(optimisticMessage);
+        appendOptimisticTurnAndStick(optimisticMessage);
       } else {
         renderDraftOptimisticMessage(optimisticMessage);
       }
@@ -3021,8 +3173,7 @@ export default function App() {
       startStream(res.sessionId);
       void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
-        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
-        jumpToLatest: true
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
       });
       void refreshSessionsFromServer();
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);
@@ -3086,6 +3237,18 @@ export default function App() {
     }
   }
 
+  async function copyMessageText(text: string) {
+    const value = toText(text).trim();
+    if (!value) return;
+    try {
+      await Clipboard.setStringAsync(value);
+      Vibration.vibrate(10);
+      setStatus('已复制消息内容');
+    } catch (e) {
+      setStatus(`复制失败: ${String(e)}`);
+    }
+  }
+
   function onNewSession() {
     stopStream();
     const oldSid = toText(sessionIdRef.current).trim();
@@ -3135,6 +3298,7 @@ export default function App() {
     setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
+    optimisticUserIdAliasRef.current = {};
     draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
@@ -3423,17 +3587,15 @@ export default function App() {
           </View>
         ) : (
           <View style={styles.chatListStage}>
-            <FlatList
+            <FlashList
               ref={messageScrollRef}
               style={styles.msgScroll}
-              contentContainerStyle={[styles.msgList, { flexGrow: 1 }]}
+              contentContainerStyle={styles.msgList}
               onLayout={(evt) => {
                 messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
               }}
               data={displayedTurns}
-              initialNumToRender={3}
-              maxToRenderPerBatch={3}
-              windowSize={4}
+              estimatedItemSize={220}
               removeClippedSubviews={Platform.OS === 'web'}
               alwaysBounceVertical
               bounces
@@ -3479,6 +3641,7 @@ export default function App() {
                 onMessageListScroll(y);
               }}
               onViewableItemsChanged={({ viewableItems }) => {
+                if (Date.now() < forceScrollToLatestUntilRef.current) return;
                 const rows = Array.isArray(viewableItems) ? viewableItems : [];
                 const topmost = rows.reduce<{ index: number; item: MobileRenderedTurn } | null>((best, entry) => {
                   const item = (entry as any)?.item as MobileRenderedTurn | undefined;
@@ -3499,21 +3662,19 @@ export default function App() {
                   return;
                 }
               }}
-              onScrollToIndexFailed={() => {
-                requestAnimationFrame(() => scrollToLatest(false));
-              }}
               keyExtractor={(item) => item.id}
               renderItem={({ item, index }) => (
                 <MobileTurnCell
                   turn={item}
                   streaming={streaming}
-                  isLastTurn={index === displayedTurns.length - 1}
+                  isLastTurn={item.id === displayedTurns[displayedTurns.length - 1]?.id}
                   thinkingPulse={thinkingPulse}
                   hasLiveQuestion={questionRequests.length > 0}
                   liveQuestions={questionRequests}
+                  onCopyMessage={copyMessageText}
                   onQuestionReply={(requestId, answers) => {
                     setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
-                    setDismissedQuestions((prev) => new Set([...prev, requestId]));
+                    dismissQuestionRequest(requestId);
                     replyQuestion({
                       baseUrl: serverUrl,
                       token,
@@ -3575,12 +3736,15 @@ export default function App() {
         </View>
       ) : null}
 
-      {questionRequests.length > 0 && questionRequests.map((req) => (
-        <View key={req.id} style={styles.questionDockWrap}>
+      {activeQuestionRequest ? (
+        <View key={activeQuestionRequest.id} style={styles.questionDockWrap}>
           <QuestionDock
-            request={req}
+            request={activeQuestionRequest}
+            submitState={questionSubmitState[activeQuestionRequest.id]?.status || 'idle'}
+            submitError={questionSubmitState[activeQuestionRequest.id]?.error}
             onReply={(requestId, answers) => {
               const sid = toText(sessionIdRef.current).trim();
+              setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitting' } }));
               setStatus('正在提交答案...');
               void replyQuestion({
                 baseUrl: serverUrl,
@@ -3589,27 +3753,30 @@ export default function App() {
                 requestId,
                 answers
               }).then(() => {
-                setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
-                setDismissedQuestions((prev) => new Set([...prev, requestId]));
+                setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitted' } }));
                 pushConnLog(`question.reply ok ${requestId}`);
                 setStatus('答案已提交');
+                setTimeout(() => {
+                  setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+                  dismissQuestionRequest(requestId, sid);
+                }, 450);
                 if (sid) {
                   startStream(sid);
                   void syncSessionMessages(sid, {
                     limit: INITIAL_SESSION_LIMIT,
-                    fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
-                    jumpToLatest: true
+                    fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
                   });
                   void syncSessionStatus(sid);
                 }
               }).catch((e) => {
                 pushConnLog(`question.reply error ${requestId} ${String(e)}`, 'error');
                 setStatus(`问题提交失败: ${String(e)}`);
+                setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'failed', error: String(e) } }));
               });
             }}
             onDismiss={(requestId) => {
               setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
-              setDismissedQuestions((prev) => new Set([...prev, requestId]));
+              dismissQuestionRequest(requestId);
               void rejectQuestion({
                 baseUrl: serverUrl,
                 token,
@@ -3619,7 +3786,7 @@ export default function App() {
             }}
           />
         </View>
-      ))}
+      ) : null}
 
       <View style={styles.inputDock}>
         <View style={styles.inputRow}>
@@ -3632,12 +3799,12 @@ export default function App() {
               multiline
           />
             <Pressable
-              style={sessionWorking ? styles.actionBtnStop : styles.actionBtnSend}
-              onPress={sessionWorking ? onAbort : () => void onSendPrompt()}
-              disabled={sessionWorking ? !toText(sessionIdRef.current).trim() : busy || !prompt.trim()}
+              style={composerWillAbort ? styles.actionBtnStop : styles.actionBtnSend}
+              onPress={composerWillAbort ? onAbort : () => void onSendPrompt()}
+              disabled={composerWillAbort ? !toText(sessionIdRef.current).trim() : busy || !promptText}
             >
-              <Text style={sessionWorking ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
-                {sessionWorking ? '■' : '→'}
+              <Text style={composerWillAbort ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
+                {composerWillAbort ? '■' : '→'}
               </Text>
             </Pressable>
         </View>
@@ -4282,7 +4449,7 @@ const styles = StyleSheet.create({
   suggestText: { color: '#545f6f', fontSize: 14 },
 
   msgScroll: { flex: 1 },
-  msgList: { gap: 10, paddingTop: 8, paddingBottom: 120 },
+  msgList: { gap: 14, paddingTop: 8, paddingBottom: 120 },
   turnWrap: { width: '100%', alignSelf: 'stretch', gap: 10 },
   loadEarlierWrap: { alignItems: 'center', paddingTop: 2, paddingBottom: 4 },
   loadEarlierHint: { marginTop: 6, color: '#8b6c45', fontSize: 11 },
@@ -4543,6 +4710,15 @@ const styles = StyleSheet.create({
   },
   questionTimelineTitle: { color: '#1a2233', fontSize: 15, fontWeight: '700' },
   questionTimelineHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  questionTimelineBadge: {
+    color: '#607287',
+    fontSize: 11,
+    backgroundColor: '#eef1f5',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
   questionTimelineStatus: { 
     color: '#8a95a6', 
     fontSize: 11,
@@ -4612,16 +4788,15 @@ const styles = StyleSheet.create({
   errorTitle: { color: '#8e2f2f', fontSize: 13, fontWeight: '700' },
   errorCode: { color: '#b35656', fontSize: 11, fontWeight: '600' },
   thinkCard: {
-    width: '92%',
-    maxWidth: '92%',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e9edf3',
-    backgroundColor: '#f9fbff',
-    overflow: 'hidden',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    gap: 4
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    overflow: 'visible',
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    gap: 6
   },
   thinkTitle: { color: '#576579', fontSize: 12, fontWeight: '600' },
   thinkText: { color: '#5e6e84', fontSize: 13, lineHeight: 19 },
@@ -4665,17 +4840,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden'
   },
   bubbleAssistant: {
-    width: '84%',
-    maxWidth: '84%',
+    width: '96%',
+    maxWidth: '96%',
     alignSelf: 'flex-start',
     flexShrink: 1,
-    borderRadius: 14,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#e6e9ee',
-    overflow: 'hidden'
+    borderRadius: 0,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent',
+    overflow: 'visible'
   },
   bubbleContent: { width: '100%', flexShrink: 1, minWidth: 0 },
   bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },

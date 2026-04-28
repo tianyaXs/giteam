@@ -14,9 +14,11 @@ interface QuestionDockProps {
   onReply: (requestId: string, answers: QuestionAnswer[]) => void;
   onDismiss?: (requestId: string) => void;
   disabledReason?: string;
+  submitState?: 'idle' | 'submitting' | 'submitted' | 'failed';
+  submitError?: string;
 }
 
-export function QuestionDock({ request, onReply, onDismiss, disabledReason }: QuestionDockProps) {
+export function QuestionDock({ request, onReply, onDismiss, disabledReason, submitState = 'idle', submitError }: QuestionDockProps) {
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [customInputs, setCustomInputs] = useState<string[]>([]);
@@ -33,6 +35,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
   const isMultiSelect = useMemo(() => currentQuestion?.multiple === true, [currentQuestion]);
   const allowCustom = useMemo(() => currentQuestion?.custom !== false, [currentQuestion]);
   const isOtherOption = useMemo(() => allowCustom && selectedOption === options.length, [allowCustom, selectedOption, options.length]);
+  const locked = !!disabledReason || submitState === 'submitting' || submitState === 'submitted';
 
   const currentCustomInput = customInputs[currentTab] || "";
   const isCustomPicked = useMemo(() => {
@@ -45,7 +48,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
   }, [answers, currentTab]);
 
   const handlePick = useCallback((answer: string, isCustom: boolean = false) => {
-    if (disabledReason) return;
+    if (locked) return;
     const newAnswers = [...answers];
     newAnswers[currentTab] = [answer];
     setAnswers(newAnswers);
@@ -56,17 +59,14 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
       setCustomInputs(newCustomInputs);
     }
 
-    if (singleQuestion) {
-      onReply(request.id, [[answer]]);
-      return;
-    }
+    if (singleQuestion) return;
 
     setCurrentTab(currentTab + 1);
     setSelectedOption(0);
-  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, disabledReason]);
+  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, locked]);
 
   const handleToggle = useCallback((answer: string) => {
-    if (disabledReason) return;
+    if (locked) return;
     const existing = answers[currentTab] || [];
     const index = existing.indexOf(answer);
     let next: string[];
@@ -80,10 +80,10 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
     const newAnswers = [...answers];
     newAnswers[currentTab] = next;
     setAnswers(newAnswers);
-  }, [answers, currentTab, disabledReason]);
+  }, [answers, currentTab, locked]);
 
   const handleSelectOption = useCallback((index: number) => {
-    if (disabledReason) return;
+    if (locked) return;
     if (allowCustom && index === options.length) {
       setSelectedOption(index);
       if (!isMultiSelect) {
@@ -105,7 +105,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
     } else {
       handlePick(opt.label);
     }
-  }, [allowCustom, options, isMultiSelect, currentCustomInput, isCustomPicked, handleToggle, handlePick, disabledReason]);
+  }, [allowCustom, options, isMultiSelect, currentCustomInput, isCustomPicked, handleToggle, handlePick, locked]);
 
   const handleCustomSubmit = useCallback(() => {
     const text = currentCustomInput.trim();
@@ -144,16 +144,24 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
       setAnswers(newAnswers);
       setIsEditing(false);
     } else {
-      handlePick(text, true);
+      const newCustomInputs = [...customInputs];
+      newCustomInputs[currentTab] = text;
+      setCustomInputs(newCustomInputs);
+      const newAnswers = [...answers];
+      newAnswers[currentTab] = [text];
+      setAnswers(newAnswers);
+      setSelectedOption(options.length);
       setIsEditing(false);
+      if (!singleQuestion) setCurrentTab(currentTab + 1);
     }
-  }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, handlePick]);
+  }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, options.length, singleQuestion, locked]);
 
   const handleSubmitAll = useCallback(() => {
-    if (disabledReason) return;
+    if (locked) return;
     const finalAnswers = questions.map((_, i) => answers[i] || []);
+    if (finalAnswers.some((answer) => answer.length === 0)) return;
     onReply(request.id, finalAnswers);
-  }, [questions, answers, request.id, onReply, disabledReason]);
+  }, [questions, answers, request.id, onReply, locked]);
 
   const handleDismiss = useCallback(() => {
     if (onDismiss) {
@@ -202,7 +210,15 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
               <View>
                 <Text style={styles.confirmTitle}>确认您的选择</Text>
                 {questions.map((q, idx) => (
-                  <View key={idx} style={styles.confirmItem}>
+                  <Pressable
+                    key={idx}
+                    style={styles.confirmItem}
+                    onPress={() => {
+                      if (locked) return;
+                      setCurrentTab(idx);
+                      setSelectedOption(0);
+                    }}
+                  >
                     <Text style={styles.confirmQ}>{q.question}</Text>
                     <Text style={styles.confirmA}>
                       {(answers[idx] || []).length > 0
@@ -210,7 +226,8 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                         : <Text style={styles.confirmEmpty}>未选择</Text>
                       }
                     </Text>
-                  </View>
+                    {!locked ? <Text style={styles.confirmEdit}>点击修改</Text> : null}
+                  </Pressable>
                 ))}
               </View>
             ) : (
@@ -232,7 +249,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                       key={idx}
                       style={[
                         styles.option,
-                        disabledReason ? styles.optionDisabled : null,
+                        locked ? styles.optionDisabled : null,
                         idx === selectedOption && styles.optionSelected,
                         isOptionSelected(opt.label) && styles.optionPicked,
                       ]}
@@ -269,7 +286,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                       style={[
                         styles.option,
                         styles.optionCustom,
-                        disabledReason ? styles.optionDisabled : null,
+                        locked ? styles.optionDisabled : null,
                         isOtherOption && styles.optionSelected,
                         isCustomPicked && styles.optionPicked,
                       ]}
@@ -301,6 +318,12 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                               const newCustomInputs = [...customInputs];
                               newCustomInputs[currentTab] = text;
                               setCustomInputs(newCustomInputs);
+                              if (!isMultiSelect) {
+                                const trimmed = text.trim();
+                                const newAnswers = [...answers];
+                                newAnswers[currentTab] = trimmed ? [trimmed] : [];
+                                setAnswers(newAnswers);
+                              }
                             }}
                             onSubmitEditing={handleCustomSubmit}
                             onBlur={handleCustomSubmit}
@@ -325,16 +348,39 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
           </View>
 
           <View style={styles.footer}>
-            <Pressable style={styles.btnSecondary} onPress={handleDismiss}>
+            <Pressable style={[styles.btnSecondary, locked ? styles.btnDisabled : null]} onPress={handleDismiss} disabled={locked}>
               <Text style={styles.btnSecondaryText}>忽略</Text>
             </Pressable>
-            {disabledReason ? (
+            {submitState === 'submitting' ? (
+              <Text style={styles.submitState}>提交中...</Text>
+            ) : submitState === 'submitted' ? (
+              <Text style={styles.submitState}>已提交，等待回复...</Text>
+            ) : submitState === 'failed' ? (
+              <View style={styles.retryWrap}>
+                <Text style={styles.submitError} numberOfLines={1}>{submitError || '提交失败'}</Text>
+                <Pressable style={styles.btnPrimary} onPress={handleSubmitAll}>
+                  <Text style={styles.btnPrimaryText}>重试</Text>
+                </Pressable>
+              </View>
+            ) : disabledReason ? (
               <Text style={styles.disabledReason}>{disabledReason}</Text>
             ) : isConfirmTab ? (
-              <Pressable style={styles.btnPrimary} onPress={handleSubmitAll}>
+              <Pressable
+                style={[styles.btnPrimary, answers.some((answer) => !answer || answer.length === 0) ? styles.btnDisabled : null]}
+                onPress={handleSubmitAll}
+                disabled={answers.some((answer) => !answer || answer.length === 0)}
+              >
                 <Text style={styles.btnPrimaryText}>提交</Text>
               </Pressable>
-            ) : singleQuestion ? null : (
+            ) : singleQuestion ? (
+              <Pressable
+                style={[styles.btnPrimary, (answers[0] || []).length === 0 ? styles.btnDisabled : null]}
+                onPress={handleSubmitAll}
+                disabled={(answers[0] || []).length === 0}
+              >
+                <Text style={styles.btnPrimaryText}>提交</Text>
+              </Pressable>
+            ) : (
               <Pressable
                 style={[
                   styles.btnPrimary,
@@ -407,7 +453,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#c0c0c0",
   },
   tabActive: {
-    backgroundColor: "#0066b8",
+    backgroundColor: "#243447",
   },
   tabAnswered: {
     backgroundColor: "#2da44e",
@@ -453,8 +499,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#fafafa",
   },
   optionSelected: {
-    borderColor: "#0066b8",
-    backgroundColor: "rgba(0, 102, 184, 0.08)",
+    borderColor: "#243447",
+    backgroundColor: "rgba(36, 52, 71, 0.08)",
   },
   optionDisabled: {
     opacity: 0.62,
@@ -477,8 +523,8 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   radioChecked: {
-    borderColor: "#0066b8",
-    backgroundColor: "#0066b8",
+    borderColor: "#243447",
+    backgroundColor: "#243447",
   },
   checkbox: {
     width: 20,
@@ -490,8 +536,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   checkboxChecked: {
-    borderColor: "#0066b8",
-    backgroundColor: "#0066b8",
+    borderColor: "#243447",
+    backgroundColor: "#243447",
   },
   checkmark: {
     color: "#fff",
@@ -582,6 +628,7 @@ const styles = StyleSheet.create({
     color: "#cf6679",
     fontStyle: "italic",
   },
+  confirmEdit: { color: "#607287", fontSize: 11, marginTop: 6 },
   disabledReason: {
     color: "#9da5b4",
     fontSize: 12,
@@ -589,6 +636,15 @@ const styles = StyleSheet.create({
     textAlign: "right",
     flexShrink: 1,
   },
+  submitState: {
+    color: "#607287",
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "right",
+    flexShrink: 1,
+  },
+  retryWrap: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1 },
+  submitError: { color: "#cf6679", fontSize: 12, flexShrink: 1, maxWidth: 180 },
 });
 
 export default QuestionDock;

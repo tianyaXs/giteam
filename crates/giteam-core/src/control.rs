@@ -219,6 +219,39 @@ fn control_server_settings_path() -> Option<PathBuf> {
     None
 }
 
+fn mobile_model_state_path() -> Option<PathBuf> {
+    control_server_settings_path().map(|path| path.with_file_name("mobile-model-state.json"))
+}
+
+fn read_mobile_model_state() -> Value {
+    let Some(path) = mobile_model_state_path() else {
+        return serde_json::json!({});
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return serde_json::json!({});
+    };
+    serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn write_mobile_model_state(value: &Value) -> Result<(), String> {
+    let Some(path) = mobile_model_state_path() else {
+        return Err("mobile model state path unavailable".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create model state dir failed: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize model state failed: {e}"))?;
+    fs::write(path, text).map_err(|e| format!("write model state failed: {e}"))
+}
+
+fn attach_mobile_model_state(mut config: Value) -> Value {
+    let state = read_mobile_model_state();
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("giteamMobileModelState".to_string(), state);
+    }
+    config
+}
+
 fn control_auth_token_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -1572,6 +1605,20 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "PUT" && req.path == "/api/v1/admin/mobile/model-state" {
+        if let Err(resp) = ensure_loopback(remote_ip, "admin.mobile.model-state") {
+            return resp;
+        }
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        return match write_mobile_model_state(&raw) {
+            Ok(_) => (200, serde_json::json!({ "ok": true })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
     if req.method == "PUT" && req.path == "/api/v1/admin/control/settings" {
         if let Err(resp) = ensure_loopback(remote_ip, "admin.control.settings") {
             return resp;
@@ -1710,7 +1757,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
         return match opencode::get_opencode_server_config(repo.as_str()) {
-            Ok(v) => (200, v),
+            Ok(v) => (200, attach_mobile_model_state(v)),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
     }

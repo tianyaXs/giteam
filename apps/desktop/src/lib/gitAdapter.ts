@@ -13,6 +13,18 @@ export async function gitPush(repoPath: string): Promise<string> {
   return invoke<string>("run_git_push", { repoPath });
 }
 
+export async function gitCommit(repoPath: string, message: string): Promise<string> {
+  return invoke<string>("run_git_commit", { repoPath, message });
+}
+
+export async function gitStageFile(repoPath: string, filePath: string): Promise<string> {
+  return invoke<string>("run_git_stage_file", { repoPath, filePath });
+}
+
+export async function gitUnstageFile(repoPath: string, filePath: string): Promise<string> {
+  return invoke<string>("run_git_unstage_file", { repoPath, filePath });
+}
+
 export async function getCommitDiff(commitSha: string, repoPath: string): Promise<string> {
   return invoke<string>("run_git_show_patch", { commitSha, repoPath });
 }
@@ -63,6 +75,14 @@ export async function getGitWorktreeFilePatch(repoPath: string, filePath: string
 
 export async function gitCheckoutBranch(repoPath: string, branchName: string): Promise<string> {
   return invoke<string>("run_git_checkout_branch", { repoPath, branchName });
+}
+
+export async function gitDiscardChanges(
+  repoPath: string,
+  filePath: string,
+  isUntracked: boolean = false
+): Promise<string> {
+  return invoke<string>("run_git_discard_changes", { repoPath, filePath, isUntracked });
 }
 
 export async function createGitBranch(repoPath: string, branchName: string, startPoint?: string): Promise<string> {

@@ -329,6 +329,46 @@ fn run_git_with_timeout(args: &[&str], repo_path: &str, timeout_secs: u64) -> Re
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
 }
 
+fn decode_git_quoted_path(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let mut octal = String::with_capacity(3);
+            for _ in 0..3 {
+                if let Some(&next) = chars.peek() {
+                    if next.is_ascii_digit() && next != '8' && next != '9' {
+                        octal.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if octal.len() == 3 {
+                if let Ok(byte) = u8::from_str_radix(&octal, 8) {
+                    bytes.push(byte);
+                    continue;
+                }
+            }
+            bytes.push(b'\\');
+            bytes.extend(octal.bytes());
+        } else if ch == '"' {
+            // Skip surrounding quotes Git may add for escaped paths
+            continue;
+        } else {
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            bytes.extend(s.bytes());
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|e| {
+        String::from_utf8_lossy(e.as_bytes()).to_string()
+    })
+}
+
 fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
     let mut branch = String::new();
     let mut tracking = String::new();
@@ -375,7 +415,8 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
 
         let index_status = line.chars().next().unwrap_or(' ');
         let worktree_status = line.chars().nth(1).unwrap_or(' ');
-        let path = line.get(3..).unwrap_or("").trim().to_string();
+        let raw_path = line.get(3..).unwrap_or("").trim();
+        let path = decode_git_quoted_path(raw_path);
         if path.is_empty() {
             continue;
         }
@@ -474,6 +515,15 @@ pub fn run_git_pull(repo_path: &str) -> Result<String, String> {
 pub fn run_git_push(repo_path: &str) -> Result<String, String> {
     // Network operations can take longer than local reads.
     run_git_with_timeout(&["push"], repo_path, 90)
+}
+
+#[tauri::command]
+pub fn run_git_commit(repo_path: &str, message: &str) -> Result<String, String> {
+    let m = message.trim();
+    if m.is_empty() {
+        return Err("commit message must not be empty".to_string());
+    }
+    run_git(&["commit", "-m", m], repo_path)
 }
 
 #[tauri::command]
@@ -861,6 +911,49 @@ pub fn run_git_checkout_branch(repo_path: &str, branch_name: &str) -> Result<Str
         return Err("branch name contains invalid line breaks".to_string());
     }
     run_git_with_timeout(&["checkout", branch], repo_path, 60)
+}
+
+#[tauri::command]
+pub fn run_git_discard_changes(
+    repo_path: &str,
+    file_path: &str,
+    is_untracked: bool,
+) -> Result<String, String> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err("file path is empty".to_string());
+    }
+
+    if is_untracked {
+        // Untracked (new) files: remove from filesystem
+        // --  separates options from path names
+        run_git(&["clean", "-f", "--", path], repo_path)
+    } else {
+        // Tracked files: restore to HEAD (same as VS Code "Discard Changes")
+        // This handles staged, unstaged, or partially-staged files in one go
+        run_git(
+            &["restore", "--source=HEAD", "--staged", "--worktree", "--", path],
+            repo_path,
+        )
+    }
+}
+
+#[tauri::command]
+pub fn run_git_stage_file(repo_path: &str, file_path: &str) -> Result<String, String> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err("file path is empty".to_string());
+    }
+    run_git(&["add", "--", path], repo_path)
+}
+
+#[tauri::command]
+pub fn run_git_unstage_file(repo_path: &str, file_path: &str) -> Result<String, String> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err("file path is empty".to_string());
+    }
+    run_git(&["restore", "--staged", "--", path], repo_path)
 }
 
 #[tauri::command]
