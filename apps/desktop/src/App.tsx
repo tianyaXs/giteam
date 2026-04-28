@@ -4860,6 +4860,16 @@ export function App() {
   }
 
   function topologyCreateSource(nodeId?: string): { startPoint: string; baseBranch: string } {
+    if (nodeId?.startsWith("branch:")) {
+      const branch = nodeId.slice(7);
+      return { startPoint: branch, baseBranch: branch || currentTopologyBaseBranch() };
+    }
+    if (nodeId?.startsWith("commit:")) {
+      const parts = nodeId.split(":");
+      const branch = parts[1] || currentTopologyBaseBranch();
+      const sha = parts[2] || "";
+      return { startPoint: sha || branch, baseBranch: branch };
+    }
     const node = topologyModel.nodeById[nodeId || topologySelectionId || topologyModel.primaryNodeId];
     if (!node) {
       return { startPoint: "", baseBranch: currentTopologyBaseBranch() };
@@ -4896,6 +4906,18 @@ export function App() {
   function openTopologyCreateDialog(mode: "branch" | "worktree", nodeId?: string) {
     if (!ensureRepoSelected()) return;
     const sourceId = nodeId || topologySelectionId || topologyModel.primaryNodeId;
+    if (sourceId.startsWith("branch:")) {
+      const baseBranch = sourceId.slice(7);
+      setTopologyContextMenu(null);
+      setTopologySelectionId(sourceId);
+      setTopologyCreateSourceNodeId(sourceId);
+      setTopologyCreateMode(mode);
+      setTopologyCreateBranchName("");
+      setTopologyCreateTargetPath(mode === "worktree" && baseBranch ? suggestedTopologyPath(baseBranch) : "");
+      setTopologyCreatingNode(null);
+      setShowTopologyCreateDialog(true);
+      return;
+    }
     const parentNode = topologyModel.nodeById[sourceId];
     if (!parentNode) {
       setError("未找到当前节点，无法创建");
@@ -6948,58 +6970,48 @@ export function App() {
       <div className="gt-right-panel">
         {rightPaneTab === "worktree" ? (
           <div className="gt-worktree-topology-shell">
-            {/* 上半部分：Canvas拓扑图 */}
-            <div className="gt-worktree-topology-graph">
+            <div className="gt-gittree-panel">
               {(() => {
-                // ========== 1. 收集所有分支（过滤 worktree 相关分支）==========
                 const allBranchNames = new Set<string>();
-                
+                const isGitTreeBranch = (name: string) => {
+                  const normalized = name.trim().toLowerCase();
+                  return normalized.length > 0 && !normalized.includes("worktree") && !normalized.includes(".worktrees");
+                };
+
                 branches.forEach((b) => {
-                  // 过滤掉 worktree 路径分支
-                  if (!b.name.includes("worktree") && !b.name.includes(".worktrees")) {
+                  if (isGitTreeBranch(b.name)) {
                     allBranchNames.add(b.name);
                   }
                 });
                 Object.keys(branchParentMap).forEach((b) => {
-                  if (!b.includes("worktree") && !b.includes(".worktrees")) {
+                  if (isGitTreeBranch(b)) {
                     allBranchNames.add(b);
                   }
                 });
                 Object.values(branchParentMap).forEach((b) => {
-                  if (!b.includes("worktree") && !b.includes(".worktrees")) {
+                  if (isGitTreeBranch(b)) {
                     allBranchNames.add(b);
                   }
                 });
 
-                // ========== 2. 基于 commitGraph 推断分支父子关系 ==========
                 const defaultMain = Array.from(allBranchNames).find((b) => b === "main" || b === "master") || "";
-
-                // 构建有效的父子关系映射
                 const effectiveParentMap: Record<string, string> = {};
-
-                // 首先复制 branchParentMap 中已有的关系（确保双方都存在）
                 Object.entries(branchParentMap).forEach(([child, parent]) => {
                   if (allBranchNames.has(child) && allBranchNames.has(parent)) {
                     effectiveParentMap[child] = parent;
                   }
                 });
 
-                // 从 commitGraph 提取分支 head 映射和 sha 关系
                 const branchHeadByName = new Map<string, string>();
                 const shaToParents = new Map<string, string[]>();
-                
                 commitGraph.forEach((node) => {
                   if (node.isConnector || !node.sha) return;
-                  
-                  // 记录提交关系
                   shaToParents.set(node.sha, node.parents || []);
-                  
-                  // 解析 refs 提取分支名
                   const refsText = node.refs.trim();
                   if (!refsText) return;
                   const inner = refsText.startsWith("(") && refsText.endsWith(")") ? refsText.slice(1, -1) : refsText;
                   const refs = inner.split(",").map((p) => p.trim()).filter(Boolean);
-                  
+
                   refs.forEach((ref) => {
                     if (ref.startsWith("tag:")) return;
                     let branchName: string | null = null;
@@ -7015,7 +7027,6 @@ export function App() {
                   });
                 });
 
-                // 辅助函数：计算两个 sha 之间的距离
                 function ancestorDistance(targetSha: string, querySha: string): number {
                   const queue: Array<{ sha: string; dist: number }> = [{ sha: querySha, dist: 0 }];
                   const visited = new Set<string>();
@@ -7034,8 +7045,16 @@ export function App() {
                   return Infinity;
                 }
 
-                // 基于 commitGraph 自动推断分支层级
                 const branchNames = Array.from(allBranchNames);
+                const sortBranches = (items: string[]) => items.sort((a, b) => {
+                  if (a === defaultMain) return -1;
+                  if (b === defaultMain) return 1;
+                  if (a === currentBranchName) return -1;
+                  if (b === currentBranchName) return 1;
+                  return a.localeCompare(b);
+                });
+                const currentBranchName = worktreeOverview.branch || selectedBranch || branches.find((item) => item.isCurrent)?.name || "";
+
                 branchNames.forEach((branch) => {
                   if (effectiveParentMap[branch]) return;
                   if (branch === defaultMain) return;
@@ -7073,7 +7092,6 @@ export function App() {
                   }
                 });
 
-                // 找到根分支
                 const rootBranches: string[] = [];
                 allBranchNames.forEach((branch) => {
                   const parent = effectiveParentMap[branch];
@@ -7085,197 +7103,180 @@ export function App() {
                 if (rootBranches.length === 0 && allBranchNames.size > 0) {
                   rootBranches.push(Array.from(allBranchNames)[0]);
                 }
+                sortBranches(rootBranches);
 
-                const currentBranchName = worktreeOverview.branch || selectedBranch || "";
+                const childrenByParent = new Map<string, string[]>();
+                branchNames.forEach((branch) => {
+                  const parent = effectiveParentMap[branch];
+                  if (!parent || !allBranchNames.has(parent)) return;
+                  const list = childrenByParent.get(parent) || [];
+                  list.push(branch);
+                  childrenByParent.set(parent, list);
+                });
+                childrenByParent.forEach((list) => sortBranches(list));
 
-                // ========== 3. 构建分支树 ==========
-                const branchNodeMap = new Map<string, TopologyCanvasNode>();
+                const graphCommitBySha = new Map<string, GitGraphNode>();
+                commitGraph.forEach((node) => {
+                  if (!node.isConnector && node.sha) graphCommitBySha.set(node.sha, node);
+                });
 
-                const buildBranchNode = (branch: string, depth: number, parentId: string | null): TopologyCanvasNode => {
-                  const children: TopologyCanvasNode[] = [];
-                  allBranchNames.forEach((b) => {
-                    if (effectiveParentMap[b] === branch) {
-                      children.push(buildBranchNode(b, depth + 1, branch));
-                    }
-                  });
-
-                  const branchSummary = branches.find((b) => b.name === branch);
-                  const tone = branchTone(branch);
-
-                  // 计算提交数量（仅当前选中分支有commits数据）
-                  let commitCount: number | undefined;
-                  if (branch === currentBranchName && commits.length > 0) {
-                    commitCount = commits.length;
+                const commitsFromGraph = (branchName: string, limit = 40): GitCommitSummary[] => {
+                  const head = branchHeadByName.get(branchName);
+                  if (!head || !graphCommitBySha.has(head)) return [];
+                  const rows: GitCommitSummary[] = [];
+                  const visited = new Set<string>();
+                  let cursor = head;
+                  while (cursor && graphCommitBySha.has(cursor) && rows.length < limit) {
+                    if (visited.has(cursor)) break;
+                    visited.add(cursor);
+                    const row = graphCommitBySha.get(cursor)!;
+                    rows.push({ sha: row.sha, subject: row.subject, author: row.author, date: row.date });
+                    cursor = row.parents[0] || "";
                   }
-
-                  const node: TopologyCanvasNode = {
-                    id: `branch:${branch}`,
-                    kind: "branch",
-                    label: branch,
-                    branch,
-                    parentId,
-                    children,
-                    depth,
-                    gx: 0,
-                    gy: 0,
-                    tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
-                    commits: commitCount,
-                    isCurrent: branchSummary?.isCurrent || false,
-                    sha: undefined
-                  };
-                  branchNodeMap.set(node.id, node);
-                  return node;
+                  return rows;
                 };
 
-                const branchNodes = rootBranches.map((b) => buildBranchNode(b, 0, null));
+                const selectedTreeBranch = topologySelectionId.startsWith("branch:")
+                  ? topologySelectionId.slice(7)
+                  : selectedBranch || currentBranchName || defaultMain || rootBranches[0] || "";
+                const activeTreeBranch = allBranchNames.has(selectedTreeBranch) ? selectedTreeBranch : defaultMain || rootBranches[0] || "";
+                const activeBranchSummary = branches.find((branch) => branch.name === activeTreeBranch);
+                const activeTone = branchTone(activeTreeBranch);
+                const activeBranchCommits = activeTreeBranch === selectedBranch || activeTreeBranch === currentBranchName
+                  ? commits
+                  : commitsFromGraph(activeTreeBranch);
 
-                // ========== 4. 构建所有分支的 commit 链 ==========
-                // 为当前分支使用已加载的 commits 数据，其他分支从 commitGraph 提取
-                
-                const shaToCommit = new Map<string, GitGraphNode>();
-                commitGraph.forEach((node) => {
-                  if (node.isConnector || !node.sha) return;
-                  shaToCommit.set(node.sha, node);
-                });
+                const branchCommitCount = (branchName: string) => {
+                  if (branchName === selectedBranch || branchName === currentBranchName) return commits.length;
+                  return commitsFromGraph(branchName, 20).length;
+                };
 
-                const MAX_COMMITS_PER_BRANCH = 6;
-                
-                branchNames.forEach((branchName) => {
-                  const branchId = `branch:${branchName}`;
-                  const branchNode = branchNodeMap.get(branchId);
-                  if (!branchNode) return;
-                  
-                  const commitChain: TopologyCanvasNode[] = [];
+                const selectBranchFromTree = (branchName: string) => {
+                  setTopologySelectionId(`branch:${branchName}`);
+                  void chooseBranch(branchName);
+                };
+
+                const renderBranchRow = (branchName: string, depth = 0): ReactNode => {
+                  const childBranches = childrenByParent.get(branchName) || [];
+                  const treeKey = `tree:${branchName}`;
+                  const collapsed = collapsedBranchIds.has(treeKey);
                   const tone = branchTone(branchName);
-                  
-                  if (branchName === currentBranchName && commits.length > 0) {
-                    // 当前分支：使用已加载的 commits 数据（更完整）
-                    commits.slice(0, 20).forEach((commit, index) => {
-                      commitChain.push({
-                        id: `commit:${branchName}:${commit.sha}`,
-                        kind: "commit",
-                        label: commit.sha.slice(0, 7),
-                        branch: branchName,
-                        parentId: index === 0 ? branchId : `commit:${branchName}:${commits[index - 1].sha}`,
-                        children: [],
-                        depth: 0,
-                        gx: 0,
-                        gy: 0,
-                        tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
-                        meta: "commit",
-                        sha: commit.sha,
-                        author: commit.author,
-                        date: commit.date
-                      });
-                    });
-                  } else {
-                    // 其他分支：从 commitGraph 提取
-                    const branchSha = branchHeadByName.get(branchName);
-                    if (!branchSha || !shaToCommit.has(branchSha)) return;
-                    
-                    const visitedShas = new Set<string>();
-                    let currentSha = branchSha;
-                    
-                    while (currentSha && shaToCommit.has(currentSha) && commitChain.length < MAX_COMMITS_PER_BRANCH) {
-                      if (visitedShas.has(currentSha)) break;
-                      visitedShas.add(currentSha);
-                      
-                      const commitNode = shaToCommit.get(currentSha)!;
-                      
-                      commitChain.push({
-                        id: `commit:${branchName}:${currentSha}`,
-                        kind: "commit",
-                        label: currentSha.slice(0, 7),
-                        branch: branchName,
-                        parentId: null, // 稍后设置
-                        children: [],
-                        depth: 0,
-                        gx: 0,
-                        gy: 0,
-                        tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
-                        meta: "commit",
-                        sha: currentSha,
-                        author: commitNode.author,
-                        date: commitNode.date
-                      });
-                      
-                      currentSha = commitNode.parents[0] || "";
-                    }
-                    
-                    // 构建父子关系
-                    for (let i = 0; i < commitChain.length; i++) {
-                      if (i === 0) {
-                        commitChain[i].parentId = branchId;
-                      } else {
-                        commitChain[i].parentId = commitChain[i - 1].id;
-                      }
-                    }
-                  }
-                  
-                  if (commitChain.length > 0) {
-                    for (let i = 1; i < commitChain.length; i++) {
-                      commitChain[i - 1].children.push(commitChain[i]);
-                    }
-                    branchNode.children.push(commitChain[0]);
-                    branchNode.commitCount = commitChain.length;
-                  }
-                });
+                  const isCurrent = branchName === currentBranchName || branches.some((b) => b.name === branchName && b.isCurrent);
+                  const isActive = branchName === activeTreeBranch;
+                  return (
+                    <Fragment key={branchName}>
+                      <div
+                        className={isActive ? "gt-gittree-branch active" : "gt-gittree-branch"}
+                        style={{ paddingLeft: 10 + depth * 18 }}
+                        onClick={() => selectBranchFromTree(branchName)}
+                        onDoubleClick={() => void checkoutBranchFromTopology(branchName)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setTopologyContextMenu({ x: e.clientX, y: e.clientY, nodeId: `branch:${branchName}` });
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className={childBranches.length > 0 ? "gt-gittree-disclosure" : "gt-gittree-disclosure empty"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (childBranches.length === 0) return;
+                            setCollapsedBranchIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(treeKey)) next.delete(treeKey);
+                              else next.add(treeKey);
+                              return next;
+                            });
+                          }}
+                          aria-label={collapsed ? "展开分支" : "收起分支"}
+                        >
+                          {childBranches.length > 0 ? (collapsed ? "▸" : "▾") : ""}
+                        </button>
+                        <span className="gt-gittree-dot" style={{ background: tone.accent }} />
+                        <span className="gt-gittree-name" title={branchName}>{branchName}</span>
+                        {isCurrent ? <span className="gt-gittree-badge">CURRENT</span> : null}
+                        <span className="gt-gittree-count">{branchCommitCount(branchName) || "-"}</span>
+                      </div>
+                      {!collapsed ? childBranches.map((child) => renderBranchRow(child, depth + 1)) : null}
+                    </Fragment>
+                  );
+                };
 
                 return (
-                  <WorktreeTopologyCanvas
-                    nodes={branchNodes}
-                    selectedId={topologySelectionId}
-                    onSelect={(id) => {
-                      setTopologySelectionId(id);
-                      const allNodes: TopologyCanvasNode[] = [];
-                      const collect = (nodes: TopologyCanvasNode[]) => {
-                        for (const n of nodes) {
-                          allNodes.push(n);
-                          collect(n.children);
-                        }
-                      };
-                      collect(branchNodes);
-                      const node = allNodes.find((n) => n.id === id);
-                      if (node?.kind === "branch" && node.branch) {
-                        void chooseBranch(node.branch);
-                      } else if (node?.kind === "commit" && node.sha) {
-                        setSelectedCommit(node.sha);
-                      }
-                    }}
-                    onDoubleClick={(node) => {
-                      if (node.kind === "branch" && node.branch) {
-                        void chooseBranch(node.branch);
-                      } else if (node.kind === "commit" && node.sha) {
-                        setSelectedCommit(node.sha);
-                        setDetailTab("context");
-                      }
-                    }}
-                    onContextMenu={(node, e) => {
-                      setTopologyContextMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        nodeId: node.id
-                      });
-                    }}
-                    onToggleCollapse={(id) => {
-                      setCollapsedBranchIds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(id)) {
-                          next.delete(id);
-                        } else {
-                          next.add(id);
-                        }
-                        return next;
-                      });
-                    }}
-                    collapsedIds={collapsedBranchIds}
-                    theme={theme}
-                  />
+                  <>
+                    <div className="gt-gittree-sidebar">
+                      <div className="gt-gittree-head">
+                        <div>
+                          <span className="gt-gittree-kicker">GitTree</span>
+                          <strong>{selectedRepo?.name || "Repository"}</strong>
+                        </div>
+                        <button className="chip" onClick={() => void refreshScm()} disabled={busy}>Refresh</button>
+                      </div>
+                      <div className="gt-gittree-summary">
+                        <span>{branchNames.length} branches</span>
+                        <span>{currentBranchName || "no branch"}</span>
+                      </div>
+                      <div className="gt-gittree-branch-list">
+                        {rootBranches.length > 0 ? rootBranches.map((branch) => renderBranchRow(branch)) : (
+                          <div className="gt-empty-hint">暂无本地分支。</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="gt-gittree-detail">
+                      <div className="gt-gittree-detail-head">
+                        <div className="gt-gittree-selected-title">
+                          <span className="gt-gittree-dot large" style={{ background: activeTone.accent }} />
+                          <div>
+                            <strong>{activeTreeBranch || "未选择分支"}</strong>
+                            <span>{activeBranchSummary?.isCurrent ? "CURRENT" : branchHeadByName.get(activeTreeBranch)?.slice(0, 7) || "no head in graph"}</span>
+                          </div>
+                        </div>
+                        <div className="gt-gittree-actions">
+                          <button className="chip" onClick={() => activeTreeBranch && openTopologyCreateDialog("branch", `branch:${activeTreeBranch}`)} disabled={!activeTreeBranch}>New Branch</button>
+                          <button className="chip" onClick={() => activeTreeBranch && void checkoutBranchFromTopology(activeTreeBranch)} disabled={!activeTreeBranch}>Checkout</button>
+                          {activeTreeBranch && activeTreeBranch !== "main" && activeTreeBranch !== "master" ? (
+                            <button className="chip danger" onClick={() => void deleteBranchFromTopology(activeTreeBranch)}>Delete</button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="gt-gittree-commit-toolbar">
+                        <span>Commits</span>
+                        <span>{activeBranchCommits.length > 0 ? `${activeBranchCommits.length} loaded` : "No commit loaded"}</span>
+                      </div>
+                      <div className="gt-gittree-commit-list">
+                        {activeBranchCommits.length > 0 ? activeBranchCommits.map((commit, index) => (
+                          <button
+                            key={`${activeTreeBranch}:${commit.sha}`}
+                            className={selectedCommit === commit.sha ? "gt-gittree-commit selected" : "gt-gittree-commit"}
+                            onClick={() => setSelectedCommit(commit.sha)}
+                            onDoubleClick={() => {
+                              setSelectedCommit(commit.sha);
+                              setDetailTab("context");
+                            }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha });
+                            }}
+                          >
+                            <span className="gt-gittree-commit-index">{index === 0 ? "HEAD" : index + 1}</span>
+                            <span className="gt-gittree-commit-dot" style={{ background: activeTone.accent }} />
+                            <span className="gt-gittree-commit-main">
+                              <strong>{commit.subject || "(no subject)"}</strong>
+                              <span>{shortSha(commit.sha, 7)} · {commit.author || "unknown"} · {commit.date || "unknown date"}</span>
+                            </span>
+                          </button>
+                        )) : (
+                          <div className="gt-gittree-empty">
+                            <strong>没有可展示的提交</strong>
+                            <span>点击左侧分支会加载该分支提交；若仍为空，请刷新 Git 数据。</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
                 );
               })()}
             </div>
-
-
           </div>
         ) : null}
 

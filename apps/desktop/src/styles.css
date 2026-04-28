@@ -2301,6 +2301,271 @@ body {
   border-radius: 16px;
 }
 
+.gt-gittree-panel {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.3fr);
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.gt-gittree-sidebar,
+.gt-gittree-detail {
+  min-width: 0;
+  min-height: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, transparent), color-mix(in srgb, var(--bg) 92%, transparent));
+  display: flex;
+  flex-direction: column;
+}
+
+.gt-gittree-head,
+.gt-gittree-detail-head {
+  flex: 0 0 auto;
+  min-height: 62px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.gt-gittree-head > div,
+.gt-gittree-selected-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.gt-gittree-head strong,
+.gt-gittree-selected-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.gt-gittree-kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.gt-gittree-summary,
+.gt-gittree-commit-toolbar {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gt-gittree-branch-list,
+.gt-gittree-commit-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.gt-gittree-branch {
+  min-height: 34px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 18px 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.gt-gittree-branch:hover {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.gt-gittree-branch.active {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.gt-gittree-disclosure {
+  width: 18px;
+  height: 22px;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.gt-gittree-disclosure:hover {
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--text);
+}
+
+.gt-gittree-disclosure.empty {
+  pointer-events: none;
+}
+
+.gt-gittree-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.gt-gittree-dot.large {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.gt-gittree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.gt-gittree-badge,
+.gt-gittree-count {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 750;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+}
+
+.gt-gittree-badge {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.gt-gittree-selected-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gt-gittree-selected-title span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gt-gittree-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gt-gittree-commit {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 44px 10px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.gt-gittree-commit:hover {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.gt-gittree-commit.selected {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.gt-gittree-commit-index {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.gt-gittree-commit-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.gt-gittree-commit-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.gt-gittree-commit-main strong,
+.gt-gittree-commit-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gt-gittree-commit-main strong {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.gt-gittree-commit-main span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.gt-gittree-empty {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--muted);
+  padding: 22px;
+}
+
+.gt-gittree-empty strong {
+  color: var(--text);
+}
+
+@media (max-width: 980px) {
+  .gt-gittree-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gt-gittree-detail {
+    min-height: 44%;
+  }
+}
+
 .workspace-explorer {
   height: 100%;
   min-height: 0;
