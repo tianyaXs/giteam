@@ -344,8 +344,15 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   streaming: boolean;
   isLastTurn: boolean;
   thinkingPulse: boolean;
+  hasLiveQuestion: boolean;
+  liveQuestions: QuestionRequest[];
+  onQuestionReply: (requestId: string, answers: string[][]) => void;
+  expandedTimelineQuestions: Set<string>;
+  onToggleTimelineQuestion: (id: string) => void;
+  timelineQuestionTabs: Map<string, number>;
+  onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
 }) {
-  const { turn, streaming, isLastTurn, thinkingPulse } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, expandedTimelineQuestions, onToggleTimelineQuestion, timelineQuestionTabs, onChangeTimelineTab } = props;
   return (
     <View style={styles.turnWrap}>
       {turn.userMessage ? (
@@ -410,6 +417,116 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             </View>
           );
         }
+        if (item.kind === 'question') {
+          const questions = Array.isArray(item.question.questions) ? item.question.questions : [];
+          let liveRequest = liveQuestions.find((req) => {
+            const reqTool: { messageID?: string; callID?: string } = req.tool || {};
+            const itemTool: { messageID?: string; callID?: string } = item.question.tool || {};
+            if (reqTool.callID && itemTool.callID && reqTool.callID === itemTool.callID) return true;
+            if (reqTool.messageID && itemTool.messageID && reqTool.messageID === itemTool.messageID) return true;
+            return false;
+          }) || null;
+          // Fallback: if question is running and has callID but not in liveQuestions (opencode /question may return empty),
+          // use callID as request_id so backend can fallback match via cache or opencode list.
+          if (!liveRequest && item.question.status === 'running' && item.question.tool?.callID) {
+            liveRequest = {
+              id: item.question.tool.callID,
+              sessionID: '',
+              questions: item.question.questions,
+              tool: {
+                messageID: item.question.tool.messageID || '',
+                callID: item.question.tool.callID,
+              },
+            };
+          }
+          const canReply = !!liveRequest;
+          const isExpanded = expandedTimelineQuestions.has(item.question.id);
+          return (
+            <View key={item.question.id} style={styles.questionTimelineWrap}>
+              <View style={styles.questionTimelineCard}>
+                <Pressable
+                  style={styles.questionTimelineHead}
+                  onPress={() => {
+                    if (canReply) return; // 活跃问题不可展开/折叠
+                    onToggleTimelineQuestion(item.question.id);
+                  }}
+                >
+                  <Text style={styles.questionTimelineTitle}>{toText(item.question.title || '问题')}</Text>
+                  <View style={styles.questionTimelineHeadRight}>
+                    {!canReply && (
+                      <Text style={styles.questionTimelineToggle}>{isExpanded ? '▲' : '▼'}</Text>
+                    )}
+                  </View>
+                </Pressable>
+                {canReply ? (
+                  <View style={styles.questionTimelineBody}>
+                    <Text style={styles.questionTimelineHint}>请从底部弹窗回答此问题</Text>
+                  </View>
+                ) : isExpanded ? (
+                  <View style={styles.questionTimelineBody}>
+                    {questions.length > 1 ? (
+                      <View style={styles.questionTimelineTabs}>
+                        {questions.map((q, idx) => (
+                          <Pressable
+                            key={`${item.question.id}:tab:${idx}`}
+                            style={[
+                              styles.questionTimelineTab,
+                              idx === (timelineQuestionTabs.get(item.question.id) || 0) && styles.questionTimelineTabActive
+                            ]}
+                            onPress={() => onChangeTimelineTab(item.question.id, idx)}
+                          >
+                            <Text style={[
+                              styles.questionTimelineTabText,
+                              idx === (timelineQuestionTabs.get(item.question.id) || 0) && styles.questionTimelineTabTextActive
+                            ]}>{idx + 1}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    ) : null}
+                    {(() => {
+                      const currentTab = questions.length > 1 ? (timelineQuestionTabs.get(item.question.id) || 0) : 0;
+                      const q = questions[currentTab];
+                      if (!q) return null;
+                      return (
+                        <View key={`${item.question.id}:${currentTab}`} style={styles.questionTimelineBlock}>
+                          {toText(q.header) ? <Text style={styles.questionTimelineHeader}>{toText(q.header)}</Text> : null}
+                          <Text style={styles.questionTimelineText}>{toText(q.question || '请选择一个答案')}</Text>
+                          <Text style={styles.questionTimelineHint}>{q.multiple ? '选择多个答案' : '选择一个答案'}</Text>
+                          {(Array.isArray(q.options) ? q.options : []).map((opt, optIndex) => (
+                            <View
+                              key={`${item.question.id}:${currentTab}:${optIndex}`}
+                              style={styles.questionTimelineOption}
+                            >
+                              <View style={q.multiple ? styles.questionTimelineCheckbox : styles.questionTimelineRadio} />
+                              <View style={styles.questionTimelineOptionBody}>
+                                <Text style={styles.questionTimelineOptionLabel}>{toText(opt.label)}</Text>
+                                {toText(opt.description) ? <Text style={styles.questionTimelineOptionDesc}>{toText(opt.description)}</Text> : null}
+                              </View>
+                            </View>
+                          ))}
+                          {q.custom !== false ? (
+                            <View style={styles.questionTimelineOption}>
+                              <View style={q.multiple ? styles.questionTimelineCheckbox : styles.questionTimelineRadio} />
+                              <View style={styles.questionTimelineOptionBody}>
+                                <Text style={styles.questionTimelineOptionLabel}>输入自己的答案</Text>
+                                <Text style={styles.questionTimelineOptionDesc}>输入你的答案...</Text>
+                              </View>
+                            </View>
+                          ) : null}
+                        </View>
+                      );
+                    })()}
+                    <Text style={styles.questionTimelineDisabled}>已过期</Text>
+                  </View>
+                ) : (
+                  <View style={styles.questionTimelineBody}>
+                    <Text style={styles.questionTimelineHint}>点击展开查看问题详情</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          );
+        }
         if (item.kind === 'divider') {
           return (
             <View key={item.divider.id} style={styles.dividerWrap}>
@@ -430,20 +547,24 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
             </View>
           );
         }
-        if (!item.card) return null;
-        const keepOpen = !streaming || isLastTurn;
-        return (
-            <View key={item.card.id} style={styles.thinkWrap}>
-              <View style={styles.thinkCard}>
-                <Text style={styles.thinkTitle}>{item.card.title}</Text>
-                {keepOpen ? (
-                  <View style={styles.bubbleContent}>{renderMarkdown(toText(item.card.text), 'think')}</View>
-                ) : (
-                  <Text style={styles.thinkCollapsed}>{toText(item.card.text)}</Text>
-                )}
-              </View>
-          </View>
-        );
+        if (item.kind === 'think' || item.kind === 'todo') {
+          const card = 'card' in item ? item.card : null;
+          if (!card) return null;
+          const keepOpen = !streaming || isLastTurn;
+          return (
+              <View key={card.id} style={styles.thinkWrap}>
+                <View style={styles.thinkCard}>
+                  <Text style={styles.thinkTitle}>{card.title}</Text>
+                  {keepOpen ? (
+                    <View style={styles.bubbleContent}>{renderMarkdown(toText(card.text), 'think')}</View>
+                  ) : (
+                    <Text style={styles.thinkCollapsed}>{toText(card.text)}</Text>
+                  )}
+                </View>
+            </View>
+          );
+        }
+        return null;
       })}
     </View>
   );
@@ -453,6 +574,12 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   && prev.streaming === next.streaming
   && prev.isLastTurn === next.isLastTurn
   && prev.thinkingPulse === next.thinkingPulse
+  && prev.hasLiveQuestion === next.hasLiveQuestion
+  && prev.liveQuestions === next.liveQuestions
+  && prev.expandedTimelineQuestions === next.expandedTimelineQuestions
+  && prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion
+  && prev.timelineQuestionTabs === next.timelineQuestionTabs
+  && prev.onChangeTimelineTab === next.onChangeTimelineTab
 ));
 
 // prefs + discover cache moved to src/storage/*
@@ -683,6 +810,8 @@ export default function App() {
   const [todoDockCollapsed, setTodoDockCollapsed] = useState(false);
   const [questionRequests, setQuestionRequests] = useState<QuestionRequest[]>([]);
   const [dismissedQuestions, setDismissedQuestions] = useState<Set<string>>(() => new Set());
+  const [expandedTimelineQuestions, setExpandedTimelineQuestions] = useState<Set<string>>(new Set());
+  const [timelineQuestionTabs, setTimelineQuestionTabs] = useState<Map<string, number>>(new Map());
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -1011,12 +1140,13 @@ export default function App() {
     const sid = toText(sessionId).trim();
     if (!authed || !sid || !repoPath.trim()) return;
     void refreshPendingQuestions(sid);
-    if (!streaming && sessionStatusMap[sid]?.type !== 'busy') return;
+    // Only poll when streaming or session is busy or we have live questions
+    if (!streaming && sessionStatusMap[sid]?.type !== 'busy' && questionRequests.length === 0) return;
     const timer = setInterval(() => {
       void refreshPendingQuestions(sid);
     }, 1200);
     return () => clearInterval(timer);
-  }, [authed, sessionId, repoPath, serverUrl, token, streaming, sessionStatusMap]);
+  }, [authed, sessionId, repoPath, serverUrl, token, streaming, sessionStatusMap, questionRequests.length, dismissedQuestions]);
 
   useEffect(() => {
     if (!discoverOpen) return;
@@ -1660,7 +1790,6 @@ export default function App() {
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
     setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
-    
     return rendered;
   }
 
@@ -1677,7 +1806,9 @@ export default function App() {
         repoPath,
         sessionId: sid
       });
-      setQuestionRequests(requests.filter((req) => !dismissedQuestions.has(req.id)));
+      pushConnLog(`question.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
+      // opencode /question returns ALL sessions' pending questions; filter to current session only
+      setQuestionRequests(requests.filter((req) => req.sessionID === sid && !dismissedQuestions.has(req.id)));
     } catch (e) {
       pushConnLog(`question.list error ${String(e)}`, 'error');
     }
@@ -2239,6 +2370,8 @@ export default function App() {
   }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
 
   const displayedTurns = useMemo(() => renderedTurns, [renderedTurns]);
+
+
 
   const latestTodoCard = useMemo(() => {
     for (let turnIdx = displayedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
@@ -3312,6 +3445,43 @@ export default function App() {
                   streaming={streaming}
                   isLastTurn={index === displayedTurns.length - 1}
                   thinkingPulse={thinkingPulse}
+                  hasLiveQuestion={questionRequests.length > 0}
+                  liveQuestions={questionRequests}
+                  onQuestionReply={(requestId, answers) => {
+                    setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+                    setDismissedQuestions((prev) => new Set([...prev, requestId]));
+                    replyQuestion({
+                      baseUrl: serverUrl,
+                      token,
+                      repoPath,
+                      requestId,
+                      answers
+                    }).then(() => {
+                      pushConnLog(`question.reply ok ${requestId}`);
+                    }).catch((e) => {
+                      pushConnLog(`question.reply error ${requestId} ${String(e)}`, 'error');
+                    });
+                  }}
+                  expandedTimelineQuestions={expandedTimelineQuestions}
+                  onToggleTimelineQuestion={(id) => {
+                    setExpandedTimelineQuestions((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(id)) {
+                        next.delete(id);
+                      } else {
+                        next.add(id);
+                      }
+                      return next;
+                    });
+                  }}
+                  timelineQuestionTabs={timelineQuestionTabs}
+                  onChangeTimelineTab={(questionId, tabIndex) => {
+                    setTimelineQuestionTabs((prev) => {
+                      const next = new Map(prev);
+                      next.set(questionId, tabIndex);
+                      return next;
+                    });
+                  }}
                 />
               )}
               ListHeaderComponent={
@@ -4259,6 +4429,93 @@ const styles = StyleSheet.create({
   eventDetail: { color: '#667487', fontSize: 12, lineHeight: 18 },
   eventMeta: { color: '#667a94', fontSize: 11 },
   eventOutput: { color: '#4f5e72', fontSize: 12, lineHeight: 18 },
+  questionTimelineWrap: { width: '100%', alignItems: 'flex-start' },
+  questionTimelineCard: {
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e8ecf2',
+    backgroundColor: '#ffffff',
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  questionTimelineHead: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    paddingVertical: 12, 
+    paddingHorizontal: 14,
+    backgroundColor: '#f8f9fb',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eef1f5',
+  },
+  questionTimelineTitle: { color: '#1a2233', fontSize: 15, fontWeight: '700' },
+  questionTimelineHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  questionTimelineStatus: { 
+    color: '#8a95a6', 
+    fontSize: 11,
+    backgroundColor: '#eef1f5',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  questionTimelineToggle: { color: '#5f6b7a', fontSize: 12, fontWeight: '600' },
+  questionTimelineBody: { padding: 14, gap: 6 },
+  questionTimelineBlock: { gap: 6 },
+  questionTimelineHeader: { color: '#5f6b7a', fontSize: 12, fontWeight: '600', marginBottom: 2 },
+  questionTimelineText: { color: '#1a2233', fontSize: 14, fontWeight: '600', lineHeight: 20 },
+  questionTimelineHint: { color: '#9aa3b2', fontSize: 12, marginTop: 2 },
+  questionTimelineOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e4e9f0',
+    backgroundColor: '#f8f9fb',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginVertical: 2,
+  },
+  questionTimelineOptionLive: {
+    borderColor: '#0066b8',
+    backgroundColor: 'rgba(0, 102, 184, 0.06)'
+  },
+  questionTimelineRadio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#c5cdd8', backgroundColor: '#fff' },
+  questionTimelineCheckbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 2, borderColor: '#c5cdd8', backgroundColor: '#fff' },
+  questionTimelineOptionBody: { flex: 1 },
+  questionTimelineOptionLabel: { color: '#1a2233', fontSize: 14, fontWeight: '500', lineHeight: 20 },
+  questionTimelineOptionDesc: { color: '#7a8494', fontSize: 12, lineHeight: 17, marginTop: 1 },
+  questionTimelineDisabled: { color: '#8a95a6', fontSize: 11, lineHeight: 16 },
+  questionTimelineTabs: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  questionTimelineTab: {
+    minWidth: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#e4e9f0',
+    backgroundColor: '#f8f9fb',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  questionTimelineTabActive: {
+    borderColor: '#2d3a4d',
+    backgroundColor: '#2d3a4d'
+  },
+  questionTimelineTabText: { color: '#5f6b7a', fontSize: 13, fontWeight: '600' },
+  questionTimelineTabTextActive: { color: '#ffffff' },
   errorCard: {
     width: '96%',
     maxWidth: '96%',

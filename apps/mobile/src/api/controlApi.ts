@@ -356,6 +356,9 @@ export async function getPendingQuestions(args: {
 }): Promise<QuestionRequest[]> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const params = new URLSearchParams({ repoPath: args.repoPath });
+  if (args.sessionId) {
+    params.append('sessionId', args.sessionId);
+  }
   const url = `${baseUrl}/api/v1/opencode/question?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {
     headers: authHeaders(args.token)
@@ -363,8 +366,7 @@ export async function getPendingQuestions(args: {
   const raw = ensureOk('question.list', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
   const rows = Array.isArray(parsed) ? parsed : [];
-  const sid = String(args.sessionId || '').trim();
-  return rows.filter((item: any) => !sid || String(item?.sessionID || '') === sid) as QuestionRequest[];
+  return rows as QuestionRequest[];
 }
 
 export function buildStreamUrl(args: {

@@ -261,6 +261,7 @@ pub struct GitLinkedWorktree {
     pub branch: String,
     pub head: String,
     pub is_current: bool,
+    pub is_main_worktree: bool,
     pub is_detached: bool,
     pub clean: bool,
     pub staged_count: u32,
@@ -755,6 +756,7 @@ pub fn run_git_worktree_list(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, 
         let overview = run_git(&["status", "--short", "--branch"], path)
             .map(parse_worktree_overview)
             .unwrap_or_else(|_| parse_worktree_overview(String::new()));
+        let is_main_worktree = rows.is_empty();
         rows.push(GitLinkedWorktree {
             path: path.trim().to_string(),
             branch: if branch.trim().is_empty() {
@@ -764,6 +766,7 @@ pub fn run_git_worktree_list(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, 
             },
             head: head.trim().to_string(),
             is_current: *is_current,
+            is_main_worktree,
             is_detached: *is_detached,
             clean: overview.clean,
             staged_count: overview.staged_count,
@@ -875,6 +878,19 @@ pub fn run_git_create_branch(repo_path: &str, branch_name: &str, start_point: Op
     } else {
         run_git(&["branch", branch, &start], repo_path)?;
     }
+    Ok(branch.to_string())
+}
+
+#[tauri::command]
+pub fn run_git_delete_branch(repo_path: &str, branch_name: &str) -> Result<String, String> {
+    let branch = branch_name.trim();
+    if branch.is_empty() {
+        return Err("branch name is empty".to_string());
+    }
+    if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') {
+        return Err("branch name contains invalid characters".to_string());
+    }
+    run_git_with_timeout(&["branch", "-d", branch], repo_path, 60)?;
     Ok(branch.to_string())
 }
 

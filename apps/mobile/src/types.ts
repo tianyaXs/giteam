@@ -116,6 +116,18 @@ export type QuestionRequest = {
   tool?: { messageID: string; callID: string };
 };
 
+export type MobileQuestionCard = {
+  id: string;
+  title: string;
+  status: string;
+  createdAt?: number;
+  questions: QuestionInfo[];
+  answers?: QuestionAnswer[];
+  interactive: boolean;
+  tool?: { messageID?: string; callID?: string };
+  error?: string;
+};
+
 export type MobileTimelineItem =
   | {
       kind: 'chat';
@@ -141,6 +153,11 @@ export type MobileTimelineItem =
       kind: 'todo';
       createdAt: number;
       todo: MobileTodoCard;
+    }
+  | {
+      kind: 'question';
+      createdAt: number;
+      question: MobileQuestionCard;
     }
   | {
       kind: 'divider';

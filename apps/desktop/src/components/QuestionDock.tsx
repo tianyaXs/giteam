@@ -5,15 +5,16 @@ interface QuestionDockProps {
   request: QuestionRequest;
   onReply: (requestId: string, answers: QuestionAnswer[]) => void;
   onDismiss?: (requestId: string) => void;
+  disabledReason?: string;
 }
 
-export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps) {
+export function QuestionDock({ request, onReply, onDismiss, disabledReason }: QuestionDockProps) {
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [customInputs, setCustomInputs] = useState<string[]>([]);
   const [selectedOption, setSelectedOption] = useState<number>(0);
   const [isEditing, setIsEditing] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(!!disabledReason);
 
   const questions = useMemo(() => request.questions || [], [request.questions]);
   const singleQuestion = useMemo(() => questions.length === 1, [questions.length]);
@@ -36,6 +37,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
   }, [answers, currentTab]);
 
   const handlePick = useCallback((answer: string, isCustom: boolean = false) => {
+    if (disabledReason) return;
     const newAnswers = [...answers];
     newAnswers[currentTab] = [answer];
     setAnswers(newAnswers);
@@ -53,9 +55,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     
     setCurrentTab(currentTab + 1);
     setSelectedOption(0);
-  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply]);
+  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, disabledReason]);
 
   const handleToggle = useCallback((answer: string) => {
+    if (disabledReason) return;
     const existing = answers[currentTab] || [];
     const index = existing.indexOf(answer);
     let next: string[];
@@ -69,9 +72,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     const newAnswers = [...answers];
     newAnswers[currentTab] = next;
     setAnswers(newAnswers);
-  }, [answers, currentTab]);
+  }, [answers, currentTab, disabledReason]);
 
   const handleSelectOption = useCallback(() => {
+    if (disabledReason) return;
     if (isOtherOption) {
       if (!isMultiSelect) {
         setIsEditing(true);
@@ -93,7 +97,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     } else {
       handlePick(opt.label);
     }
-  }, [isOtherOption, isMultiSelect, currentCustomInput, isCustomPicked, options, selectedOption, handleToggle, handlePick]);
+  }, [isOtherOption, isMultiSelect, currentCustomInput, isCustomPicked, options, selectedOption, handleToggle, handlePick, disabledReason]);
 
   const handleCustomSubmit = useCallback(() => {
     const text = currentCustomInput.trim();
@@ -138,9 +142,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
   }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, handlePick]);
 
   const handleSubmitAll = useCallback(() => {
+    if (disabledReason) return;
     const finalAnswers = questions.map((_, i) => answers[i] || []);
     onReply(request.id, finalAnswers);
-  }, [questions, answers, request.id, onReply]);
+  }, [questions, answers, request.id, onReply, disabledReason]);
 
   const handleDismiss = useCallback(() => {
     if (onDismiss) {
@@ -216,8 +221,9 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
                   {options.map((opt, idx) => (
                     <div
                       key={idx}
-                      className={`gt-question-option ${idx === selectedOption ? "selected" : ""} ${isOptionSelected(opt.label) ? "picked" : ""}`}
+                      className={`gt-question-option ${disabledReason ? "disabled" : ""} ${idx === selectedOption ? "selected" : ""} ${isOptionSelected(opt.label) ? "picked" : ""}`}
                       onClick={() => {
+                        if (disabledReason) return;
                         setSelectedOption(idx);
                         if (isMultiSelect) {
                           handleToggle(opt.label);
@@ -250,8 +256,11 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
                   
                   {allowCustom && (
                     <div
-                      className={`gt-question-option custom ${isOtherOption ? "selected" : ""} ${isCustomPicked ? "picked" : ""}`}
-                      onClick={() => setSelectedOption(options.length)}
+                      className={`gt-question-option custom ${disabledReason ? "disabled" : ""} ${isOtherOption ? "selected" : ""} ${isCustomPicked ? "picked" : ""}`}
+                      onClick={() => {
+                        if (disabledReason) return;
+                        setSelectedOption(options.length);
+                      }}
                     >
                       <div className="gt-question-option-radio">
                         {isMultiSelect ? (
@@ -309,7 +318,9 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
             <button className="gt-question-btn gt-question-btn-secondary" onClick={handleDismiss}>
               忽略
             </button>
-            {isConfirmTab ? (
+            {disabledReason ? (
+              <span className="gt-question-disabled-reason">{disabledReason}</span>
+            ) : isConfirmTab ? (
               <button className="gt-question-btn gt-question-btn-primary" onClick={handleSubmitAll}>
                 提交
               </button>

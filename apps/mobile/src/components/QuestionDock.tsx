@@ -13,9 +13,10 @@ interface QuestionDockProps {
   request: QuestionRequest;
   onReply: (requestId: string, answers: QuestionAnswer[]) => void;
   onDismiss?: (requestId: string) => void;
+  disabledReason?: string;
 }
 
-export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps) {
+export function QuestionDock({ request, onReply, onDismiss, disabledReason }: QuestionDockProps) {
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [customInputs, setCustomInputs] = useState<string[]>([]);
@@ -44,6 +45,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
   }, [answers, currentTab]);
 
   const handlePick = useCallback((answer: string, isCustom: boolean = false) => {
+    if (disabledReason) return;
     const newAnswers = [...answers];
     newAnswers[currentTab] = [answer];
     setAnswers(newAnswers);
@@ -61,9 +63,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
 
     setCurrentTab(currentTab + 1);
     setSelectedOption(0);
-  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply]);
+  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, disabledReason]);
 
   const handleToggle = useCallback((answer: string) => {
+    if (disabledReason) return;
     const existing = answers[currentTab] || [];
     const index = existing.indexOf(answer);
     let next: string[];
@@ -77,9 +80,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     const newAnswers = [...answers];
     newAnswers[currentTab] = next;
     setAnswers(newAnswers);
-  }, [answers, currentTab]);
+  }, [answers, currentTab, disabledReason]);
 
   const handleSelectOption = useCallback((index: number) => {
+    if (disabledReason) return;
     if (allowCustom && index === options.length) {
       setSelectedOption(index);
       if (!isMultiSelect) {
@@ -101,7 +105,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     } else {
       handlePick(opt.label);
     }
-  }, [allowCustom, options, isMultiSelect, currentCustomInput, isCustomPicked, handleToggle, handlePick]);
+  }, [allowCustom, options, isMultiSelect, currentCustomInput, isCustomPicked, handleToggle, handlePick, disabledReason]);
 
   const handleCustomSubmit = useCallback(() => {
     const text = currentCustomInput.trim();
@@ -146,9 +150,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
   }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, handlePick]);
 
   const handleSubmitAll = useCallback(() => {
+    if (disabledReason) return;
     const finalAnswers = questions.map((_, i) => answers[i] || []);
     onReply(request.id, finalAnswers);
-  }, [questions, answers, request.id, onReply]);
+  }, [questions, answers, request.id, onReply, disabledReason]);
 
   const handleDismiss = useCallback(() => {
     if (onDismiss) {
@@ -162,9 +167,10 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
     <View style={styles.container}>
       <Pressable style={styles.header} onPress={() => setCollapsed(!collapsed)}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>
-            {singleQuestion ? "" : `${Math.min(currentTab + 1, questions.length)}/${questions.length} `}
-            个问题
+          <Text style={styles.title} numberOfLines={1}>
+            {singleQuestion
+              ? (currentQuestion?.header || currentQuestion?.question || "问题").slice(0, 20)
+              : `${Math.min(currentTab + 1, questions.length)}/${questions.length} ${(currentQuestion?.header || currentQuestion?.question || "个问题").slice(0, 16)}`}
           </Text>
           {!singleQuestion && (
             <View style={styles.tabs}>
@@ -226,6 +232,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
                       key={idx}
                       style={[
                         styles.option,
+                        disabledReason ? styles.optionDisabled : null,
                         idx === selectedOption && styles.optionSelected,
                         isOptionSelected(opt.label) && styles.optionPicked,
                       ]}
@@ -262,6 +269,7 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
                       style={[
                         styles.option,
                         styles.optionCustom,
+                        disabledReason ? styles.optionDisabled : null,
                         isOtherOption && styles.optionSelected,
                         isCustomPicked && styles.optionPicked,
                       ]}
@@ -320,7 +328,9 @@ export function QuestionDock({ request, onReply, onDismiss }: QuestionDockProps)
             <Pressable style={styles.btnSecondary} onPress={handleDismiss}>
               <Text style={styles.btnSecondaryText}>忽略</Text>
             </Pressable>
-            {isConfirmTab ? (
+            {disabledReason ? (
+              <Text style={styles.disabledReason}>{disabledReason}</Text>
+            ) : isConfirmTab ? (
               <Pressable style={styles.btnPrimary} onPress={handleSubmitAll}>
                 <Text style={styles.btnPrimaryText}>提交</Text>
               </Pressable>
@@ -446,6 +456,9 @@ const styles = StyleSheet.create({
     borderColor: "#0066b8",
     backgroundColor: "rgba(0, 102, 184, 0.08)",
   },
+  optionDisabled: {
+    opacity: 0.62,
+  },
   optionPicked: {
     borderColor: "#2da44e",
     backgroundColor: "rgba(45, 164, 78, 0.06)",
@@ -568,6 +581,13 @@ const styles = StyleSheet.create({
   confirmEmpty: {
     color: "#cf6679",
     fontStyle: "italic",
+  },
+  disabledReason: {
+    color: "#9da5b4",
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "right",
+    flexShrink: 1,
   },
 });
 

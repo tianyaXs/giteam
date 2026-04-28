@@ -2,6 +2,7 @@ import type {
   MobileChatMessage,
   MobileContextCard,
   MobileEventCard,
+  MobileQuestionCard,
   MobileThinkCard,
   MobileTodoCard,
   MobileTodoItem,
@@ -135,6 +136,51 @@ function buildTodoCard(part: any, id: string, createdAt: number, finished: boole
     createdAt,
     items,
     finished: finished || items.every((item) => item.status === 'completed' || item.status === 'cancelled')
+  };
+}
+
+function parseQuestionOptions(input: unknown): Array<{ label: string; description?: string }> {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item: any) => ({
+      label: normalizeText(item?.label),
+      description: normalizeText(item?.description) || undefined
+    }))
+    .filter((item) => !!item.label);
+}
+
+function buildQuestionCard(part: any, id: string, createdAt: number, messageId?: string): MobileQuestionCard | null {
+  const state = part?.state || {};
+  const input = state?.input || {};
+  const rawQuestions = Array.isArray(input?.questions) ? input.questions : [];
+  if (rawQuestions.length === 0) return null;
+  const questions = rawQuestions
+    .map((q: any) => ({
+      question: normalizeText(q?.question),
+      header: normalizeText(q?.header) || undefined,
+      options: parseQuestionOptions(q?.options),
+      multiple: q?.multiple === true,
+      custom: q?.custom !== false
+    }))
+    .filter((q: { question: string | null; options: unknown[] }) => q.question || q.options.length > 0);
+  if (questions.length === 0) return null;
+  const status = normalizeText(state?.status).toLowerCase() || 'running';
+  const errorText = normalizeText(state?.error) || undefined;
+  const metadata = state?.metadata || part?.metadata || {};
+  const answers = Array.isArray(metadata?.answers) ? metadata.answers : undefined;
+  return {
+    id,
+    title: '问题',
+    status,
+    createdAt,
+    questions,
+    answers,
+    interactive: false,
+    tool: {
+      messageID: normalizeText(part?.messageID) || normalizeText(metadata?.messageID) || normalizeText(state?.messageID) || normalizeText(messageId) || undefined,
+      callID: normalizeText(part?.callID) || normalizeText(metadata?.callID) || normalizeText(state?.callID) || normalizeText(part?.id) || undefined
+    },
+    error: errorText
   };
 }
 
@@ -339,6 +385,19 @@ export function parseConversation(raw: unknown): ParsedConversation {
         continue;
       }
 
+      if (t === 'tool' && normalizeText(p?.tool) === 'question') {
+        const question = buildQuestionCard(p, `question:${partId}`, partCreatedAt, id);
+        if (question) {
+          timelineRows.push({
+            order: seq++,
+            item: { kind: 'question', createdAt: partCreatedAt, question }
+          });
+          hasAssistantRenderable = true;
+        }
+        pidx += 1;
+        continue;
+      }
+
       if (t === 'text') {
         const text = normalizeText(p?.text);
         if (text) {
@@ -392,6 +451,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     if (item.kind === 'think') sig = `${sig}:${item.card.id}`;
     if (item.kind === 'event') sig = `${sig}:${item.event.id}`;
     if (item.kind === 'todo') sig = `${sig}:${item.todo.id}`;
+    if (item.kind === 'question') sig = `${sig}:${item.question.id}`;
     if (item.kind === 'divider') sig = `${sig}:${item.divider.id}`;
     if (item.kind === 'error') sig = `${sig}:${item.error.id}`;
     if (item.kind === 'context') sig = `${sig}:${item.context.id}`;

@@ -93,6 +93,7 @@ fn main() {
             commands::git::run_git_worktree_file_patch,
             commands::git::run_git_checkout_branch,
             commands::git::run_git_create_branch,
+            commands::git::run_git_delete_branch,
             commands::git::run_git_create_worktree_from_branch,
             commands::git::run_git_remove_worktree,
             commands::git::run_repo_terminal_command,

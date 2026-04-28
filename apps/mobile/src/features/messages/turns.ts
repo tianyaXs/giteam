@@ -63,6 +63,7 @@ function timelineStableKey(item: MobileTimelineItem): string {
   if (item.kind === 'think') return `think:${toText(item.card.id)}`;
   if (item.kind === 'event') return `event:${toText(item.event.id)}`;
   if (item.kind === 'todo') return `todo:${toText(item.todo.id)}`;
+  if (item.kind === 'question') return `question:${toText(item.question.id)}`;
   if (item.kind === 'divider') return `divider:${toText(item.divider.id)}`;
   if (item.kind === 'error') return `error:${toText(item.error.id)}`;
   return `context:${toText(item.context.id)}`;
@@ -77,6 +78,10 @@ function itemSignature(item: MobileTimelineItem): string {
   if (item.kind === 'todo') {
     const items = Array.isArray(item.todo.items) ? item.todo.items.map((todo) => `${todo.id}:${todo.status}`).join(',') : '';
     return `${timelineStableKey(item)}:${item.todo.finished ? 1 : 0}:${items}`;
+  }
+  if (item.kind === 'question') {
+    const questions = Array.isArray(item.question.questions) ? item.question.questions.map((q) => `${toText(q.question)}:${q.options.length}`).join(',') : '';
+    return `${timelineStableKey(item)}:${toText(item.question.status)}:${questions}`;
   }
   if (item.kind === 'divider') return `${timelineStableKey(item)}:${toText(item.divider.label)}`;
   if (item.kind === 'error') return `${timelineStableKey(item)}:${toText(item.error.code)}:${toText(item.error.text).length}`;

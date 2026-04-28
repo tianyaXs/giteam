@@ -69,6 +69,10 @@ export async function createGitBranch(repoPath: string, branchName: string, star
   return invoke<string>("run_git_create_branch", { repoPath, branchName, startPoint });
 }
 
+export async function deleteGitBranch(repoPath: string, branchName: string): Promise<string> {
+  return invoke<string>("run_git_delete_branch", { repoPath, branchName });
+}
+
 export async function createGitWorktreeFromBranch(repoPath: string, branchName: string, targetPath?: string): Promise<GitWorktreeCreateResult> {
   return invoke<GitWorktreeCreateResult>("run_git_create_worktree_from_branch", { repoPath, branchName, targetPath });
 }

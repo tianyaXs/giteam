@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -14,8 +15,6 @@ use wait_timeout::ChildExt;
 
 #[cfg(feature = "tauri-app")]
 use std::collections::HashSet;
-#[cfg(feature = "tauri-app")]
-use std::io::{BufRead, BufReader};
 #[cfg(feature = "tauri-app")]
 use tauri::Emitter;
 
@@ -1892,6 +1891,186 @@ pub fn abort_opencode_session(
         if let Some(d) = directory
             .as_deref()
             .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some("{}"), 12)?;
+        Ok(true)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn post_opencode_question_reply(
+    repo_path: &str,
+    request_id: &str,
+    answers: Vec<Vec<String>>,
+) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let body = serde_json::json!({ "answers": answers });
+        let mut url = format!("{base}/question/{}/reply", urlencoding::encode(request_id));
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some(body.to_string().as_str()), 12)?;
+        Ok(true)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_opencode_questions(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        // Don't add ?directory= query param; run_curl_json already sends
+        // x-opencode-directory header with the full repo_path. OpenCode
+        // prioritizes the query param over the header, and a bare directory
+        // name (e.g. "giteam") resolves to a different cwd than the full path.
+        let mut last_err = String::new();
+        for path in ["/question", "/question/"] {
+            let url = format!("{base}{path}");
+            match run_curl_json(repo_path, "GET", url.as_str(), None, 12) {
+                Ok(raw) => {
+                    let trimmed = raw.trim();
+                    if trimmed.is_empty() {
+                        last_err = format!("empty response from {path}");
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(trimmed) {
+                        Ok(v) => return Ok(v),
+                        Err(e) => {
+                            last_err = format!("parse {path} failed: {e}");
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("request {path} failed: {e}");
+                }
+            }
+        }
+        if last_err.is_empty() {
+            Ok(Value::Array(Vec::new()))
+        } else {
+            Err(last_err)
+        }
+    })
+}
+
+pub fn capture_opencode_question_events(
+    repo_path: &str,
+    session_id: &str,
+    timeout_secs: u64,
+) -> Result<Vec<Value>, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim().to_string();
+    if sid.is_empty() {
+        return Ok(Vec::new());
+    }
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/global/event");
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|d| !d.is_empty())
+        {
+            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
+        }
+        let mut child = Command::new("curl")
+            .arg("-sS")
+            .arg("--max-time")
+            .arg(timeout_secs.max(1).to_string())
+            .arg("-H")
+            .arg(format!("x-opencode-directory: {repo_path}"))
+            .arg("-H")
+            .arg("Accept: text/event-stream")
+            .arg(url.as_str())
+            .current_dir(repo_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("run curl global/event failed: {e}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            return Err("curl global/event stdout unavailable".to_string());
+        };
+        let mut out = Vec::new();
+        let mut frame = String::new();
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        let reader = BufReader::new(stdout);
+        for line_result in reader.lines() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let line = line_result.unwrap_or_default();
+            if line.trim().is_empty() {
+                if let Some(request) = parse_question_sse_frame(frame.as_str(), sid.as_str()) {
+                    out.push(request);
+                    // Continue listening for more questions instead of breaking after the first one
+                }
+                frame.clear();
+                continue;
+            }
+            frame.push_str(line.as_str());
+            frame.push('\n');
+        }
+        if out.is_empty() {
+            if let Some(request) = parse_question_sse_frame(frame.as_str(), sid.as_str()) {
+                out.push(request);
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        Ok(out)
+    })
+}
+
+fn parse_question_sse_frame(frame: &str, sid: &str) -> Option<Value> {
+            let mut data = String::new();
+            for line in frame.lines() {
+                let line = line.trim_end();
+                if let Some(rest) = line.strip_prefix("data:") {
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(rest.trim_start());
+                }
+            }
+            if data.trim().is_empty() {
+                return None;
+            }
+            let Ok(json) = serde_json::from_str::<Value>(data.trim()) else {
+                return None;
+            };
+            let wrapped = json.get("payload").unwrap_or(&json);
+            let typ = wrapped.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if typ != "question.asked" {
+                return None;
+            }
+            let props = wrapped.get("properties").cloned().unwrap_or(Value::Null);
+            if props
+                .get("sessionID")
+                .and_then(|v| v.as_str())
+                .map(|v| v == sid)
+                .unwrap_or(false)
+            {
+                return Some(props);
+            }
+    None
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn post_opencode_question_reject(repo_path: &str, request_id: &str) -> Result<bool, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let mut url = format!("{base}/question/{}/reject", urlencoding::encode(request_id));
+        if let Some(d) = std::path::Path::new(repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
             .filter(|d| !d.is_empty())
         {
             url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());

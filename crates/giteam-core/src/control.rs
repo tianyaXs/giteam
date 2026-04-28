@@ -63,6 +63,44 @@ struct PairState {
     expires_at: u64,
 }
 
+fn question_cache() -> &'static Mutex<HashMap<String, Vec<Value>>> {
+    static CELL: OnceLock<Mutex<HashMap<String, Vec<Value>>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn question_cache_key(repo_path: &str, session_id: &str) -> String {
+    format!("{}\n{}", repo_path.trim(), session_id.trim())
+}
+
+fn cache_question_requests(repo_path: &str, session_id: &str, requests: Vec<Value>) {
+    if requests.is_empty() {
+        return;
+    }
+    let key = question_cache_key(repo_path, session_id);
+    if let Ok(mut guard) = question_cache().lock() {
+        let bucket = guard.entry(key).or_default();
+        for request in requests {
+            let id = request.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() || bucket.iter().any(|item| item.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                continue;
+            }
+            bucket.push(request);
+        }
+    }
+}
+
+fn remove_cached_question(request_id: &str) {
+    let id = request_id.trim();
+    if id.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = question_cache().lock() {
+        for bucket in guard.values_mut() {
+            bucket.retain(|item| item.get("id").and_then(|v| v.as_str()) != Some(id));
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HttpRequest {
     method: String,
@@ -1167,6 +1205,12 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                 if let Some(id) = part_obj.get("id").cloned() {
                     node.insert("id".to_string(), id);
                 }
+                if let Some(call_id) = part_obj.get("callID").cloned() {
+                    node.insert("callID".to_string(), call_id);
+                }
+                if let Some(message_id) = part_obj.get("messageID").cloned() {
+                    node.insert("messageID".to_string(), message_id);
+                }
                 if let Some(metadata) = compact_mobile_tool_metadata(
                     part_obj.get("metadata").and_then(|v| v.as_object()),
                 ) {
@@ -1179,6 +1223,9 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                     }
                     if let Some(v) = state.get("title").cloned() {
                         compact_state.insert("title".to_string(), v);
+                    }
+                    if let Some(v) = state.get("error").cloned() {
+                        compact_state.insert("error".to_string(), v);
                     }
                     if let Some(input) =
                         compact_mobile_tool_input(state.get("input").and_then(|v| v.as_object()))
@@ -1773,6 +1820,21 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             };
             session_id = created.id;
         }
+        {
+            let repo_for_capture = payload.repo_path.clone();
+            let sid_for_capture = session_id.clone();
+            thread::spawn(move || {
+                // Capture question events for up to 120 seconds to handle slow question generation
+                if let Ok(requests) = opencode::capture_opencode_question_events(
+                    repo_for_capture.as_str(),
+                    sid_for_capture.as_str(),
+                    120,
+                ) {
+                    cache_question_requests(repo_for_capture.as_str(), sid_for_capture.as_str(), requests);
+                }
+            });
+            thread::sleep(Duration::from_millis(180));
+        }
         return match opencode::post_opencode_session_prompt_async(
             payload.repo_path.as_str(),
             session_id.as_str(),
@@ -1868,10 +1930,44 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if repo.trim().is_empty() {
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
-        return match opencode::list_opencode_questions(repo.as_str()) {
-            Ok(v) => (200, v),
-            Err(e) => (500, serde_json::json!({ "error": e })),
+        let session_id = req.query.get("sessionId").cloned().unwrap_or_default();
+        let cached: Vec<Value> = if let Ok(guard) = question_cache().lock() {
+            guard
+                .iter()
+                .filter(|(key, _)| key.starts_with(format!("{}\n", repo.trim()).as_str()))
+                .flat_map(|(_, rows)| rows.clone())
+                .filter(|item| {
+                    if session_id.is_empty() {
+                        return true;
+                    }
+                    item.get("sessionID").and_then(|v| v.as_str()) == Some(session_id.as_str())
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
+        match opencode::list_opencode_questions(repo.as_str()) {
+            Ok(v) => {
+                let mut rows = v.as_array().cloned().unwrap_or_default();
+                // Filter by sessionId if provided
+                if !session_id.is_empty() {
+                    rows.retain(|row| row.get("sessionID").and_then(|v| v.as_str()) == Some(session_id.as_str()));
+                }
+                for item in cached {
+                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if !id.is_empty() && !rows.iter().any(|row| row.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                        rows.push(item);
+                    }
+                }
+                return (200, Value::Array(rows));
+            }
+            Err(e) => {
+                if !cached.is_empty() {
+                    return (200, Value::Array(cached));
+                }
+                return (500, serde_json::json!({ "error": e }));
+            }
+        }
     }
 
     // Question reply/reject endpoints
@@ -1892,7 +1988,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if path_parts.len() >= 6 {
             let request_id = path_parts[5];
             if req.path.ends_with("/reply") {
-                let answers = raw
+                let answers: Vec<Vec<String>> = raw
                     .get("answers")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -1903,13 +1999,69 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                             .collect()
                     })
                     .unwrap_or_default();
-                return match opencode::post_opencode_question_reply(&repo_path, request_id, answers) {
-                    Ok(_) => (200, serde_json::json!({ "ok": true })),
-                    Err(e) => (500, serde_json::json!({ "error": e })),
-                };
+                // Try direct submission first
+                match opencode::post_opencode_question_reply(&repo_path, request_id, answers.clone()) {
+                    Ok(_) => {
+                        remove_cached_question(request_id);
+                        return (200, serde_json::json!({ "ok": true }));
+                    }
+                    Err(direct_err) => {
+                        // If direct submission fails and request_id looks like a tool callID,
+                        // try to find the actual question request_id from cache or opencode list
+                        if request_id.starts_with("call_function_") {
+                            // Try cache first
+                            if let Ok(guard) = question_cache().lock() {
+                                for (_, bucket) in guard.iter() {
+                                    for item in bucket {
+                                        let cached_call_id = item.get("tool")
+                                            .and_then(|v| v.get("callID"))
+                                            .and_then(|v| v.as_str());
+                                        if cached_call_id == Some(request_id) {
+                                            if let Some(actual_id) = item.get("id").and_then(|v| v.as_str()) {
+                                                match opencode::post_opencode_question_reply(
+                                                    &repo_path, actual_id, answers.clone()) {
+                                                    Ok(_) => {
+                                                        remove_cached_question(actual_id);
+                                                        return (200, serde_json::json!({ "ok": true }));
+                                                    }
+                                                    Err(_) => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Try fetching from opencode and match by callID
+                            if let Ok(v) = opencode::list_opencode_questions(repo_path.as_str()) {
+                                if let Some(rows) = v.as_array() {
+                                    for row in rows {
+                                        let row_call_id = row.get("tool")
+                                            .and_then(|v| v.get("callID"))
+                                            .and_then(|v| v.as_str());
+                                        if row_call_id == Some(request_id) {
+                                            if let Some(actual_id) = row.get("id").and_then(|v| v.as_str()) {
+                                                match opencode::post_opencode_question_reply(&repo_path, actual_id, answers.clone()) {
+                                                    Ok(_) => {
+                                                        remove_cached_question(actual_id);
+                                                        return (200, serde_json::json!({ "ok": true }));
+                                                    }
+                                                    Err(_) => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return (500, serde_json::json!({ "error": direct_err }));
+                    }
+                }
             } else if req.path.ends_with("/reject") {
                 return match opencode::post_opencode_question_reject(&repo_path, request_id) {
-                    Ok(_) => (200, serde_json::json!({ "ok": true })),
+                    Ok(_) => {
+                        remove_cached_question(request_id);
+                        (200, serde_json::json!({ "ok": true }))
+                    }
                     Err(e) => (500, serde_json::json!({ "error": e })),
                 };
             }

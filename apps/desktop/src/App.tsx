@@ -11,6 +11,7 @@ import {
   clearRepoTerminalSession,
   createGitBranch,
   createGitWorktreeFromBranch,
+  deleteGitBranch,
   getBranchCommits,
   getCommitChangedFiles,
   getCommitFilePatch,
@@ -55,6 +56,8 @@ import type {
   ReviewRecord
 } from "./lib/types";
 import { QuestionDock } from "./components/QuestionDock";
+import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
+import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
@@ -297,6 +300,13 @@ type OpencodeChatSession = {
   loaded: boolean;
   nextCursor?: string;
   hasMore?: boolean;
+};
+type WorkspaceAgentBinding = {
+  workspacePath: string;
+  branch: string;
+  activeSessionId: string;
+  sessionIds: string[];
+  updatedAt: number;
 };
 type OpencodeSessionSummary = {
   id: string;
@@ -722,6 +732,8 @@ const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
+const WORKSPACE_AGENT_BINDINGS_KEY = "giteam.workspace-agent-bindings.v1";
+const BRANCH_PARENT_MAP_KEY = "giteam.branch-parent-map.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
 const OPENCODE_RECENT_VISIBLE = 2;
@@ -923,6 +935,69 @@ function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?:
     loaded: false,
     nextCursor: undefined
   };
+}
+
+function normalizeWorkspacePath(path: string): string {
+  return path.trim();
+}
+
+function readWorkspaceAgentBindings(): Record<string, WorkspaceAgentBinding> {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_AGENT_BINDINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, WorkspaceAgentBinding> | null;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, WorkspaceAgentBinding> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const workspacePath = normalizeWorkspacePath(value?.workspacePath || key);
+      const activeSessionId = String(value?.activeSessionId || "").trim();
+      if (!workspacePath || !activeSessionId) continue;
+      out[workspacePath] = {
+        workspacePath,
+        branch: String(value?.branch || "").trim(),
+        activeSessionId,
+        sessionIds: Array.isArray(value?.sessionIds) ? value.sessionIds.map((id) => String(id || "").trim()).filter(Boolean) : [activeSessionId],
+        updatedAt: Number(value?.updatedAt || Date.now())
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeWorkspaceAgentBindings(bindings: Record<string, WorkspaceAgentBinding>) {
+  try {
+    window.localStorage.setItem(WORKSPACE_AGENT_BINDINGS_KEY, JSON.stringify(bindings));
+  } catch {
+    // localStorage may be unavailable in restricted WebViews.
+  }
+}
+
+function readBranchParentMap(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(BRANCH_PARENT_MAP_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string> | null;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [child, parent] of Object.entries(parsed)) {
+      const c = child.trim();
+      const p = String(parent || "").trim();
+      if (c && p && c !== p) out[c] = p;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeBranchParentMap(map: Record<string, string>) {
+  try {
+    window.localStorage.setItem(BRANCH_PARENT_MAP_KEY, JSON.stringify(map));
+  } catch {
+    // ignore unavailable storage
+  }
 }
 
 function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
@@ -1659,10 +1734,20 @@ type TopologyEdge = {
   dashed?: boolean;
 };
 
+type TopologySection = {
+  id: string;
+  label: string;
+  hint: string;
+  x: number;
+  y: number;
+  width: number;
+};
+
 type TopologyGraphModel = {
   nodes: TopologyNode[];
   nodeById: Record<string, TopologyNode>;
   edges: TopologyEdge[];
+  sections: TopologySection[];
   primaryNodeId: string;
   nearbyNodeIds: Record<string, boolean>;
   width: number;
@@ -1680,6 +1765,10 @@ function wtLabelFromPath(path: string): string {
   if (parts.length === 0) return "WT";
   const leaf = parts[parts.length - 1];
   return clampLabel(leaf, 8);
+}
+
+function pathLeaf(path: string): string {
+  return path.split(/[\/]/).filter(Boolean).pop() || path.trim() || "workspace";
 }
 
 function shortSha(value: string, size = 8): string {
@@ -1718,6 +1807,10 @@ function topologyEdgePath(from: TopologyNode, to: TopologyNode): string {
   const startY = from.y + from.height;
   const endX = to.x + to.width / 2;
   const endY = to.y;
+  if (from.kind === "branch" && to.kind === "branch") {
+    const bend = Math.max(48, Math.min(110, (endY - startY) * 0.62));
+    return `M ${startX} ${startY} C ${startX} ${startY + bend}, ${endX} ${endY - bend}, ${endX} ${endY}`;
+  }
   const midY = Math.round(startY + Math.max(26, (endY - startY) * 0.52));
   if (Math.abs(startX - endX) < 2) {
     return `M ${startX} ${startY} L ${endX} ${endY}`;
@@ -1733,28 +1826,18 @@ function buildTopologyModel(input: {
   worktrees: GitLinkedWorktree[];
   branchCommits: GitCommitSummary[];
   commitGraph: GitGraphNode[];
+  branchParentMap: Record<string, string>;
 }): TopologyGraphModel {
   const branchNames = Array.from(new Set(input.branches.map((row) => row.name).filter(Boolean)));
-  const rootBranch = branchNames.find((name) => name === "main")
-    || branchNames.find((name) => name === "master")
-    || input.currentBranch
-    || branchNames[0]
-    || "main";
-  const currentBranch = input.currentBranch || rootBranch;
-  const childBranches = branchNames.filter((name) => name !== rootBranch).slice(0, 8);
-  // Support multiple worktrees per branch (normalize branch names by stripping refs/heads/ prefix)
+  const currentBranch = input.currentBranch || branchNames.find((name) => name === "main") || branchNames[0] || "main";
   const normalizeBranchName = (name: string): string => name.replace(/^refs\/heads\//, "");
-  // Exclude main worktree (the repository root itself) from the topology
-  const mainWorktreePath = input.repoPath.trim();
-  const extraWorktrees = input.worktrees.filter((wt) => wt.path.trim() !== mainWorktreePath);
-  const worktreesByBranch = new Map<string, GitLinkedWorktree[]>();
-  for (const wt of extraWorktrees) {
-    if (!wt.branch) continue;
-    const normalizedBranch = normalizeBranchName(wt.branch);
-    const list = worktreesByBranch.get(normalizedBranch) || [];
-    list.push(wt);
-    worktreesByBranch.set(normalizedBranch, list);
-  }
+  const worktrees = input.worktrees
+    .filter((wt) => wt.path.trim())
+    .map((wt) => ({ ...wt, branch: normalizeBranchName(wt.branch || currentBranch) }));
+  const currentWorktree = worktrees.find((wt) => wt.isCurrent)
+    || worktrees.find((wt) => wt.path.trim() === input.repoPath.trim())
+    || null;
+  const workspaceBranchNames = new Set(worktrees.map((wt) => wt.branch).filter(Boolean));
   const graphCommits = input.commitGraph.filter((row) => !row.isConnector && !!row.sha);
   const branchHeadByName = new Map<string, string>();
   const parseAllRefs = (text: string): string[] => {
@@ -1773,191 +1856,135 @@ function buildTopologyModel(input: {
     }
   }
 
-  const branchWidth = 140;
+  const currentWidth = 320;
+  const currentHeight = 112;
+  const workspaceWidth = 176;
+  const workspaceHeight = 86;
+  const branchWidth = 156;
   const branchHeight = 72;
-  const worktreeWidth = 100;
-  const worktreeHeight = 36;
-  const branchGap = 200;
-  const worktreeGap = 120;
-  const rootY = 60;
-  const branchY = 180;
-  const worktreeOffsetY = branchHeight + 28;
-
-  const childCount = Math.max(1, childBranches.length);
-  const sceneWidth = Math.max(1280, childCount * branchGap + 540);
+  const colGap = 24;
+  const rowGap = 24;
+  const marginX = 92;
+  const topY = 96;
+  const sectionGap = 76;
+  const currentWorkspace = currentWorktree || {
+    path: input.repoPath,
+    branch: currentBranch,
+    head: branchHeadByName.get(currentBranch) || "",
+    isCurrent: true,
+    isMainWorktree: true,
+    isDetached: false,
+    clean: true,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    locked: "",
+    prunable: ""
+  };
+  const activeWorkspaces = worktrees
+    .filter((wt) => wt.path !== currentWorkspace.path)
+    .sort((a, b) => Number(b.stagedCount + b.unstagedCount + b.untrackedCount > 0) - Number(a.stagedCount + a.unstagedCount + a.untrackedCount > 0) || a.branch.localeCompare(b.branch));
+  const availableBranches = branchNames
+    .filter((name) => !workspaceBranchNames.has(name))
+    .sort((a, b) => a.localeCompare(b));
+  const activeCols = Math.min(4, Math.max(1, activeWorkspaces.length));
+  const branchCols = Math.min(5, Math.max(1, availableBranches.length));
+  const boardWidth = Math.max(
+    currentWidth,
+    activeCols * workspaceWidth + (activeCols - 1) * colGap,
+    branchCols * branchWidth + (branchCols - 1) * colGap
+  );
+  const sceneWidth = Math.max(1280, boardWidth + marginX * 2);
   const centerX = sceneWidth / 2;
 
   const nodes: TopologyNode[] = [];
   const nodeById: Record<string, TopologyNode> = {};
   const edges: TopologyEdge[] = [];
-  const branchNodeByName = new Map<string, TopologyNode>();
-
-  // --- Root branch node ---
-  const rootTone = branchTone(rootBranch);
-  const isSingleBranch = childBranches.length === 0;
-  const singleBranchScale = isSingleBranch ? 1.8 : 1;
-  const scaledBranchWidth = branchWidth * singleBranchScale;
-  const scaledBranchHeight = branchHeight * singleBranchScale;
-
-  const rootNode: TopologyNode = {
-    id: `branch:${rootBranch}`,
-    kind: "branch",
-    x: centerX - scaledBranchWidth / 2,
-    y: isSingleBranch ? rootY + 40 : rootY,
-    width: scaledBranchWidth,
-    height: scaledBranchHeight,
-    label: clampLabel(rootBranch, 12),
-    meta: "",
-    accent: "#0f172a",
-    accentSoft: "rgba(15,23,42,0.9)",
-    border: rootTone.border,
-    branch: rootBranch,
-    isCurrent: currentBranch === rootBranch,
-    sha: branchHeadByName.get(rootBranch),
-    rank: 0
+  const sections: TopologySection[] = [];
+  const pushNode = (node: TopologyNode) => {
+    nodes.push(node);
+    nodeById[node.id] = node;
   };
-  nodes.push(rootNode);
-  nodeById[rootNode.id] = rootNode;
-  branchNodeByName.set(rootBranch, rootNode);
-
-  // Root worktrees (multiple supported)
-  const rootWts = worktreesByBranch.get(rootBranch) || [];
-  const rootWtCount = rootWts.length;
-  rootWts.forEach((wt, wtIndex) => {
+  const workspaceMeta = (wt: GitLinkedWorktree, current = false): string => {
     const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-    const wtLabel = wtLabelFromPath(wt.path);
-    const totalWidth = rootWtCount * worktreeWidth + (rootWtCount - 1) * 12;
-    const startX = rootNode.x + (rootNode.width - totalWidth) / 2;
-    const wtNode: TopologyNode = {
-      id: `worktree:${wt.path}`,
+    const flags = [wt.isMainWorktree ? "MAIN" : "WT", current ? "CURRENT" : "", dirtyCount > 0 ? `${dirtyCount} changes` : "clean"].filter(Boolean);
+    return flags.join(" · ");
+  };
+  const makeWorkspaceNode = (wt: GitLinkedWorktree, x: number, y: number, width: number, height: number, current = false): TopologyNode => {
+    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
+    return {
+      id: `worktree:${wt.path || wt.branch}`,
       kind: "worktree",
-      x: startX + wtIndex * (worktreeWidth + 12),
-      y: rootNode.y + worktreeOffsetY,
-      width: worktreeWidth,
-      height: worktreeHeight,
-      label: wtLabel,
-      meta: "",
+      x,
+      y,
+      width,
+      height,
+      label: clampLabel(wt.branch || pathLeaf(wt.path), current ? 22 : 14),
+      meta: workspaceMeta(wt, current),
       accent: "#64748b",
       accentSoft: "rgba(100,116,139,0.12)",
       border: "rgba(100,116,139,0.30)",
-      branch: rootBranch,
-      isCurrent: wt.isCurrent,
+      branch: wt.branch,
+      isCurrent: current || wt.isCurrent,
       path: wt.path,
       sha: wt.head,
       dirtyCount,
       rank: 0
     };
-    nodes.push(wtNode);
-    nodeById[wtNode.id] = wtNode;
-    edges.push({
-      id: `${rootNode.id}-${wtNode.id}`,
-      from: rootNode.id,
-      to: wtNode.id,
-      color: "rgba(148,163,184,0.30)",
-      dashed: true
-    });
+  };
+
+  const currentY = topY;
+  sections.push({ id: "current", label: "Current Workspace", hint: "当前正在工作的目录", x: centerX - boardWidth / 2, y: currentY - 34, width: boardWidth });
+  const currentNode = makeWorkspaceNode(currentWorkspace, centerX - currentWidth / 2, currentY, currentWidth, currentHeight, true);
+  pushNode(currentNode);
+
+  const activeY = currentY + currentHeight + sectionGap;
+  sections.push({ id: "active", label: "Active Workspaces", hint: "已创建 worktree 的工作现场", x: centerX - boardWidth / 2, y: activeY - 34, width: boardWidth });
+  activeWorkspaces.forEach((wt, index) => {
+    const row = Math.floor(index / activeCols);
+    const col = index % activeCols;
+    const rowCount = index >= activeWorkspaces.length - activeCols ? Math.min(activeCols, activeWorkspaces.length - row * activeCols) : activeCols;
+    const rowWidth = rowCount * workspaceWidth + (rowCount - 1) * colGap;
+    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (workspaceWidth + colGap);
+    const y = activeY + row * (workspaceHeight + rowGap);
+    pushNode(makeWorkspaceNode(wt, x, y, workspaceWidth, workspaceHeight, false));
   });
 
-  // --- Child branch nodes + their worktrees ---
-  const childStartX = centerX - ((childCount - 1) * branchGap) / 2;
-  childBranches.forEach((branchName, index) => {
+  const activeRows = Math.max(1, Math.ceil(activeWorkspaces.length / activeCols));
+  const branchY = activeY + activeRows * (workspaceHeight + rowGap) + sectionGap;
+  sections.push({ id: "branches", label: "Available Branches", hint: "还没有激活为工作空间的分支", x: centerX - boardWidth / 2, y: branchY - 34, width: boardWidth });
+  availableBranches.forEach((branchName, index) => {
+    const row = Math.floor(index / branchCols);
+    const col = index % branchCols;
+    const rowCount = index >= availableBranches.length - branchCols ? Math.min(branchCols, availableBranches.length - row * branchCols) : branchCols;
+    const rowWidth = rowCount * branchWidth + (rowCount - 1) * colGap;
+    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (branchWidth + colGap);
+    const y = branchY + row * (branchHeight + rowGap);
     const tone = branchTone(branchName);
-    const branchNode: TopologyNode = {
+    pushNode({
       id: `branch:${branchName}`,
       kind: "branch",
-      x: childStartX + index * branchGap - branchWidth / 2,
-      y: branchY,
+      x,
+      y,
       width: branchWidth,
       height: branchHeight,
       label: clampLabel(branchName, 12),
-      meta: "",
+      meta: "BR only",
       accent: tone.accent,
       accentSoft: tone.soft,
       border: tone.border,
       branch: branchName,
-      isCurrent: currentBranch === branchName,
+      isCurrent: false,
       sha: branchHeadByName.get(branchName),
       rank: index + 1
-    };
-    nodes.push(branchNode);
-    nodeById[branchNode.id] = branchNode;
-    branchNodeByName.set(branchName, branchNode);
-
-    edges.push({
-      id: `${rootNode.id}-${branchNode.id}`,
-      from: rootNode.id,
-      to: branchNode.id,
-      color: "rgba(148,163,184,0.36)"
-    });
-
-    // Worktrees under this branch (multiple supported, horizontally arranged)
-    const wts = worktreesByBranch.get(branchName) || [];
-    const wtCount = wts.length;
-    const totalWidth = wtCount * worktreeWidth + (wtCount - 1) * 12;
-    const wtStartX = branchNode.x + (branchNode.width - totalWidth) / 2;
-    wts.forEach((wt, wtIndex) => {
-      const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-      const wtLabel = wtLabelFromPath(wt.path);
-      const wtNode: TopologyNode = {
-        id: `worktree:${wt.path}`,
-        kind: "worktree",
-        x: wtStartX + wtIndex * (worktreeWidth + 12),
-        y: branchNode.y + worktreeOffsetY,
-        width: worktreeWidth,
-        height: worktreeHeight,
-        label: wtLabel,
-        meta: "",
-        accent: "#64748b",
-        accentSoft: "rgba(100,116,139,0.12)",
-        border: "rgba(100,116,139,0.30)",
-        branch: branchName,
-        isCurrent: wt.isCurrent,
-        path: wt.path,
-        sha: wt.head,
-        dirtyCount,
-        rank: index + 1
-      };
-      nodes.push(wtNode);
-      nodeById[wtNode.id] = wtNode;
-      edges.push({
-        id: `${branchNode.id}-${wtNode.id}`,
-        from: branchNode.id,
-        to: wtNode.id,
-        color: "rgba(148,163,184,0.30)",
-        dashed: true
-      });
     });
   });
 
-  const currentBranchNode = branchNodeByName.get(currentBranch) || rootNode;
-  const primaryNodeId = currentBranchNode.id;
-
-  // Compute nearby nodes (within 3 hops from primary)
-  const nearbyNodeIds: Record<string, boolean> = { [primaryNodeId]: true };
-  const adjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    const from = adjacency.get(edge.from) || [];
-    from.push(edge.to);
-    adjacency.set(edge.from, from);
-    const to = adjacency.get(edge.to) || [];
-    to.push(edge.from);
-    adjacency.set(edge.to, to);
-  }
-  const queue: Array<{ id: string; depth: number }> = [{ id: primaryNodeId, depth: 0 }];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) break;
-    if (current.depth >= 3) continue;
-    for (const nextId of adjacency.get(current.id) || []) {
-      if (nearbyNodeIds[nextId]) continue;
-      nearbyNodeIds[nextId] = true;
-      queue.push({ id: nextId, depth: current.depth + 1 });
-    }
-  }
-
-  const maxNodeY = Math.max(...nodes.map((n) => n.y + n.height));
+  const primaryNodeId = currentNode.id;
+  const nearbyNodeIds = Object.fromEntries(nodes.map((node) => [node.id, true]));
+  const maxNodeY = Math.max(...nodes.map((n) => n.y + n.height), branchY + branchHeight);
   const height = Math.max(400, maxNodeY + 80);
-  return { nodes, nodeById, edges, primaryNodeId, nearbyNodeIds, width: sceneWidth, height };
+  return { nodes, nodeById, edges, sections, primaryNodeId, nearbyNodeIds, width: sceneWidth, height };
 }
 
 export function App() {
@@ -1971,7 +1998,7 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
-  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 420, 360, 760));
+  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 720, 560, 980));
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
@@ -2008,6 +2035,7 @@ export function App() {
   const [expandedWorktreeDirs, setExpandedWorktreeDirs] = useState<string[]>([]);
   const [topologySelectionId, setTopologySelectionId] = useState("");
   const [topologyZoom, setTopologyZoom] = useState(1);
+  const [collapsedBranchIds, setCollapsedBranchIds] = useState<Set<string>>(new Set());
   const [creatingTopologyNode, setCreatingTopologyNode] = useState(false);
   const [showTopologyCreateDialog, setShowTopologyCreateDialog] = useState(false);
   const [showTopologyInspectDialog, setShowTopologyInspectDialog] = useState(false);
@@ -2153,6 +2181,8 @@ export function App() {
   const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
   const [sidebarOpencodeSessionHasMoreByRepo, setSidebarOpencodeSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
+  const [workspaceAgentBindings, setWorkspaceAgentBindings] = useState<Record<string, WorkspaceAgentBinding>>(() => readWorkspaceAgentBindings());
+  const [branchParentMap, setBranchParentMap] = useState<Record<string, string>>(() => readBranchParentMap());
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
   const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
   const [opencodeDebugLogs, setOpencodeDebugLogs] = useState<string[]>([]);
@@ -2164,7 +2194,8 @@ export function App() {
   const [opencodeTodoDockVisible, setOpencodeTodoDockVisible] = useState(false);
   const [opencodeTodoDockCollapsed, setOpencodeTodoDockCollapsed] = useState(false);
   const [opencodeQuestionRequests, setOpencodeQuestionRequests] = useState<QuestionRequest[]>([]);
-  const [opencodeDismissedQuestions, setOpencodeDismissedQuestions] = useState<Set<string>>(() => new Set());
+  const [opencodeQuestionLoading, setOpencodeQuestionLoading] = useState(false);
+  const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
@@ -2237,6 +2268,8 @@ export function App() {
   }, []);
 
   const repoPath = selectedRepo?.path ?? "";
+  const workspacePath = normalizeWorkspacePath(repoPath);
+  const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? terminalTabs[0],
     [terminalTabs, activeTerminalTabId]
@@ -2264,9 +2297,10 @@ export function App() {
       branches,
       worktrees: linkedWorktrees,
       branchCommits: commits,
-      commitGraph
+      commitGraph,
+      branchParentMap
     }),
-    [selectedRepo?.name, repoPath, worktreeOverview.branch, selectedBranch, branches, linkedWorktrees, commits, commitGraph]
+    [selectedRepo?.name, repoPath, worktreeOverview.branch, selectedBranch, branches, linkedWorktrees, commits, commitGraph, branchParentMap]
   );
   const selectedTopologyNode = topologyModel.nodeById[topologySelectionId] || null;
   const topologyCreateSourceNode = topologyModel.nodeById[topologyCreateSourceNodeId] || null;
@@ -2322,6 +2356,104 @@ export function App() {
   const opencodeSessionLoading = Boolean(activeOpencodeSessionId && activeOpencodeSession && !activeOpencodeSession.loaded);
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
+
+  function bindOpencodeSessionToWorkspace(sessionId: string, workspacePathInput = repoPath, branchInput = worktreeOverview.branch || selectedBranch) {
+    const workspace = normalizeWorkspacePath(workspacePathInput);
+    const sid = sessionId.trim();
+    if (!workspace || !sid) return;
+    setWorkspaceAgentBindings((prev) => {
+      const current = prev[workspace];
+      const sessionIds = [sid, ...(current?.sessionIds || []).filter((id) => id !== sid)];
+      const next = {
+        ...prev,
+        [workspace]: {
+          workspacePath: workspace,
+          branch: branchInput.trim(),
+          activeSessionId: sid,
+          sessionIds,
+          updatedAt: Date.now()
+        }
+      };
+      writeWorkspaceAgentBindings(next);
+      return next;
+    });
+  }
+
+  function unbindWorkspaceAgent(workspacePathInput: string) {
+    const workspace = normalizeWorkspacePath(workspacePathInput);
+    if (!workspace) return;
+    setWorkspaceAgentBindings((prev) => {
+      if (!prev[workspace]) return prev;
+      const next = { ...prev };
+      delete next[workspace];
+      writeWorkspaceAgentBindings(next);
+      return next;
+    });
+  }
+
+  function rememberBranchParent(childBranch: string, parentBranch: string) {
+    const child = childBranch.trim();
+    const parent = parentBranch.trim();
+    if (!child || !parent || child === parent) return;
+    setBranchParentMap((prev) => {
+      const next = { ...prev, [child]: parent };
+      writeBranchParentMap(next);
+      return next;
+    });
+  }
+
+  function forgetBranchParent(branchName: string) {
+    const branch = branchName.trim();
+    if (!branch) return;
+    setBranchParentMap((prev) => {
+      if (!prev[branch]) return prev;
+      const next = { ...prev };
+      delete next[branch];
+      writeBranchParentMap(next);
+      return next;
+    });
+  }
+
+  async function bindAgentToWorkspacePath(workspacePathInput: string, branchInput = "") {
+    if (!ensureRepoSelected()) return;
+    const target = normalizeWorkspacePath(workspacePathInput);
+    if (!target) return;
+    setTopologyContextMenu(null);
+    setMessage(`正在绑定 Agent: ${pathLeaf(target)}...`);
+    try {
+      if (target !== repoPath) {
+        await activateLinkedWorktree(target);
+      }
+      const title = `Agent · ${branchInput || pathLeaf(target)}`;
+      const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
+        repoPath: target,
+        title
+      });
+      const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
+      next.loaded = true;
+      setOpencodeSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
+      setActiveOpencodeSessionId(created.id);
+      setDraftOpencodeSession(false);
+      bindOpencodeSessionToWorkspace(created.id, target, branchInput);
+      setMessage(`已绑定 Agent: ${pathLeaf(target)}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("绑定 Agent 失败");
+    }
+  }
+
+  function unbindAgentFromWorkspacePath(workspacePathInput: string) {
+    const target = normalizeWorkspacePath(workspacePathInput);
+    if (!target) return;
+    setTopologyContextMenu(null);
+    unbindWorkspaceAgent(target);
+    if (target === workspacePath) {
+      setActiveOpencodeSessionId("");
+      setDraftOpencodeSession(true);
+    }
+    setMessage(`已解除 Agent 绑定: ${pathLeaf(target)}`);
+  }
+
   function getRepoSessionFetchLimit(repoId: string): number {
     const id = repoId.trim();
     if (!id) return OPENCODE_SESSION_PAGE_SIZE;
@@ -2756,6 +2888,9 @@ export function App() {
 
   async function refreshOpencodeSessions(limitArg?: number) {
     if (!ensureRepoSelected()) return;
+    const repoIdAtRequest = selectedRepo?.id || "";
+    const pendingAtRequest = pendingSidebarSessionSelectionRef.current;
+    const currentWorkspace = normalizeWorkspacePath(repoPath);
     const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
     appendOpencodeDebugLog("session.list requested");
     const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit });
@@ -2768,8 +2903,17 @@ export function App() {
       return;
     }
     appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
-    const mappedBase = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
-    opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
+    let mappedBase = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    const pendingForRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
+    if (pendingForRepo && !mappedBase.some((session) => session.id === pendingForRepo.sessionId)) {
+      const sidebarHit = (sidebarOpencodeSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForRepo.sessionId);
+      const cachedHit = opencodeSessions.find((session) => session.id === pendingForRepo.sessionId);
+      const pendingSession = sidebarHit || cachedHit;
+      if (pendingSession) {
+        mappedBase = [pendingSession, ...mappedBase];
+      }
+    }
+    opencodeSessionsRepoIdRef.current = repoIdAtRequest;
     setOpencodeSessions((prev) =>
       mappedBase.map((session) => {
         const cached = prev.find((item) => item.id === session.id);
@@ -2793,11 +2937,15 @@ export function App() {
         }
         : session;
     });
+    const boundSessionId = currentWorkspace ? workspaceAgentBindings[currentWorkspace]?.activeSessionId || "" : "";
+    const bindingMatches = boundSessionId && mapped.some((x) => x.id === boundSessionId);
     const pending = pendingSidebarSessionSelectionRef.current;
-    const pendingMatches = pending && pending.repoId === (selectedRepo?.id || "") ? mapped.some((x) => x.id === pending.sessionId) : false;
+    const pendingMatches = pending && pending.repoId === repoIdAtRequest ? mapped.some((x) => x.id === pending.sessionId) : false;
     if (pendingMatches && pending) {
       setActiveOpencodeSessionId(pending.sessionId);
       pendingSidebarSessionSelectionRef.current = null;
+    } else if (bindingMatches) {
+      setActiveOpencodeSessionId(boundSessionId);
     } else {
       setActiveOpencodeSessionId((prev) => (prev && mapped.some((x) => x.id === prev) ? prev : mapped[0].id));
     }
@@ -2967,6 +3115,7 @@ export function App() {
       return exists ? prev : [next, ...prev];
     });
     setActiveOpencodeSessionId(created.id);
+    bindOpencodeSessionToWorkspace(created.id, repoPath, worktreeOverview.branch || selectedBranch);
     setDraftOpencodeSession(false);
     setOpencodePromptInput("");
     appendOpencodeDebugLog(`session.created ${created.id}`);
@@ -3891,6 +4040,7 @@ export function App() {
       sessionId = await createPersistedOpencodeSession(prompt);
     }
     if (!sessionId) return;
+    bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
     if (opencodeRunBusyBySession[sessionId]) return;
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
@@ -4464,19 +4614,36 @@ export function App() {
     const sid = sessionIdArg.trim();
     if (!sid || !repoPath.trim()) {
       setOpencodeQuestionRequests([]);
+      setOpencodeQuestionLoading(false);
       return;
     }
+    setOpencodeQuestionLoading(true);
     try {
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
-      const res = await fetch(`${base}/question/?directory=${qdir}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const raw = await res.json();
+      let raw: unknown = [];
+      let lastError = "";
+      for (const path of ["/question", "/question/"]) {
+        try {
+          const res = await fetch(`${base}${path}?directory=${qdir}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          if (!text.trim()) throw new Error("empty response");
+          raw = JSON.parse(text);
+          lastError = "";
+          break;
+        } catch (e) {
+          lastError = `${path}: ${String(e)}`;
+        }
+      }
+      if (lastError) throw new Error(lastError);
       const rows = Array.isArray(raw) ? raw : [];
       const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
       setOpencodeQuestionRequests(requests);
     } catch (e) {
       appendOpencodeDebugLog(`question.list.error ${String(e)}`);
+    } finally {
+      setOpencodeQuestionLoading(false);
     }
   }
 
@@ -4612,6 +4779,75 @@ export function App() {
     }
   }
 
+  async function activateBranchWorkspace(branchName: string) {
+    if (!ensureRepoSelected()) return;
+    const branch = branchName.trim();
+    if (!branch) return;
+    setTopologyContextMenu(null);
+    setBusy(true);
+    setError("");
+    setMessage(`激活工作空间: ${branch}...`);
+    try {
+      const linked = linkedWorktrees.find((wt) => wt.branch === branch && !wt.isMainWorktree);
+      if (linked) {
+        await activateLinkedWorktree(linked.path);
+        setMessage(`已打开工作空间: ${branch}`);
+        return;
+      }
+      const main = linkedWorktrees.find((wt) => wt.branch === branch && wt.isMainWorktree);
+      if (main) {
+        setMessage(`分支 ${branch} 已在主工作区中`);
+        return;
+      }
+      const branchExists = branches.some((b) => b.name === branch);
+      if (!branchExists) {
+        throw new Error(`分支 "${branch}" 不存在`);
+      }
+      const targetPath = suggestedTopologyPath(branch);
+      const created = await createGitWorktreeFromBranch(repoPath, branch, targetPath || undefined);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
+      setTopologySelectionId(`worktree:${created.path}`);
+      setMessage(`已激活工作空间: ${branch}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage(`激活工作空间失败: ${branch}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteBranchFromTopology(branchName: string) {
+    if (!ensureRepoSelected()) return;
+    const branch = branchName.trim();
+    if (!branch) return;
+    setTopologyContextMenu(null);
+    setBusy(true);
+    setError("");
+    setMessage(`删除分支: ${branch}...`);
+    try {
+      const isCurrent = branches.some((b) => b.name === branch && b.isCurrent) || worktreeOverview.branch === branch;
+      if (isCurrent) {
+        throw new Error("不能删除当前分支");
+      }
+      const hasLinkedWorktree = linkedWorktrees.some((wt) => wt.branch === branch);
+      if (hasLinkedWorktree) {
+        throw new Error("该分支仍有关联工作空间，请先移除工作空间");
+      }
+      await deleteGitBranch(repoPath, branch);
+      forgetBranchParent(branch);
+      await refreshBranchesAndCommits();
+      await refreshWorktreeData(selectedWorktreeFile);
+      setTopologySelectionId(topologyModel.primaryNodeId);
+      setMessage(`已删除分支: ${branch}`);
+    } catch (e) {
+      const text = String(e);
+      setError(text);
+      setMessage(`删除分支失败: ${text}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function inspectCommitFromTopology(sha: string) {
     setTopologyContextMenu(null);
     setSelectedCommit(sha);
@@ -4644,7 +4880,8 @@ export function App() {
   }
 
   function suggestedTopologyPath(baseBranch: string, identifier?: string): string {
-    const currentPath = (repoPath || selectedRepo?.path || "").trim();
+    const mainWorktree = linkedWorktrees.find((wt) => wt.isMainWorktree)?.path || "";
+    const currentPath = (mainWorktree || repoPath || selectedRepo?.path || "").trim();
     if (!currentPath) return "";
     const prefix = baseBranch.trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
     const suffix = (identifier || "").trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
@@ -4665,61 +4902,72 @@ export function App() {
       return;
     }
     setTopologyContextMenu(null);
+    setTopologySelectionId(sourceId);
+    setTopologyCreateSourceNodeId(sourceId);
     setTopologyCreateMode(mode);
-    // Place the creating node visually next to the parent
-    const offsetX = parentNode.kind === "branch" && parentNode.id === `branch:${worktreeOverview.branch || selectedBranch}` ? 200 : 0;
-    setTopologyCreatingNode({
-      parentId: sourceId,
-      name: "",
-      x: parentNode.x + parentNode.width + 20 + offsetX,
-      y: parentNode.y + (parentNode.kind === "branch" ? 0 : parentNode.height + 20),
-      mode
-    });
+    setTopologyCreateBranchName("");
+    const baseBranch = parentNode.branch || currentTopologyBaseBranch();
+    setTopologyCreateTargetPath(mode === "worktree" && baseBranch ? suggestedTopologyPath(baseBranch) : "");
+    setTopologyCreatingNode(null);
+    setShowTopologyCreateDialog(true);
   }
 
   async function submitTopologyCreateDialog() {
     if (!ensureRepoSelected()) return;
-    if (!topologyCreatingNode) return;
-    const branchName = topologyCreatingNode.name.trim();
+    const sourceId = topologyCreateSourceNodeId || topologyCreatingNode?.parentId || topologySelectionId || topologyModel.primaryNodeId;
+    const mode = topologyCreateMode || topologyCreatingNode?.mode || "branch";
+    const branchName = (topologyCreateBranchName || topologyCreatingNode?.name || "").trim();
     if (!branchName) {
-      setError("请输入新的分支名");
+      setError(mode === "worktree" ? "请输入工作空间标识" : "请输入新的分支名");
       return;
     }
-    const { baseBranch, startPoint } = topologyCreateSource(topologyCreatingNode.parentId);
+    const { baseBranch, startPoint } = topologyCreateSource(sourceId);
     setTopologyContextMenu(null);
     setCreatingTopologyNode(true);
     setBusy(true);
     setError("");
 
     try {
-      if (topologyCreatingNode.mode === "branch") {
+      if (mode === "branch") {
+        if (branches.some((b) => b.name === branchName)) {
+          throw new Error(`分支 "${branchName}" 已存在`);
+        }
         setMessage(`基于 ${baseBranch} 创建分支: ${branchName}...`);
         await createGitBranch(repoPath, branchName, startPoint || undefined);
+        rememberBranchParent(branchName, baseBranch);
         await refreshBranchesAndCommits();
         setSelectedBranch(branchName);
         setTopologySelectionId(`branch:${branchName}`);
         setTopologyCreatingNode(null);
+        setShowTopologyCreateDialog(false);
         setMessage(`已创建分支: ${branchName}`);
       } else {
-        let targetPath = suggestedTopologyPath(baseBranch, branchName);
-        // Check working tree status before creating worktree
-        if (worktreeOverview.stagedCount > 0 || worktreeOverview.unstagedCount > 0) {
-          throw new Error("当前工作区有未提交的更改，无法创建 worktree。请先提交或暂存更改。");
-        }
+        const workspaceBranch = branchName.includes("/") || branchName.startsWith(`${baseBranch}-`)
+          ? branchName
+          : `${baseBranch}-${branchName}`;
+        let targetPath = topologyCreateTargetPath.trim() || suggestedTopologyPath(baseBranch, branchName);
         // Validate baseBranch exists
         const branchExists = branches.some((b) => b.name === baseBranch);
         if (!branchExists) {
           throw new Error(`分支 "${baseBranch}" 不存在，请先创建分支。`);
+        }
+        const workspaceBranchExists = branches.some((b) => b.name === workspaceBranch);
+        const workspaceAlreadyActive = linkedWorktrees.some((wt) => wt.branch === workspaceBranch);
+        if (workspaceAlreadyActive) {
+          throw new Error(`工作空间分支 "${workspaceBranch}" 已经被激活`);
         }
         // If suggested path already exists, let backend auto-generate a unique path
         const pathExists = linkedWorktrees.some((wt) => wt.path === targetPath);
         if (pathExists) {
           targetPath = "";
         }
-        const fullName = branchName ? `${baseBranch}-${branchName}` : baseBranch;
-        setMessage(`基于 ${baseBranch} 分支创建 worktree: ${fullName}...`);
-        console.log("Creating worktree:", { repoPath, baseBranch, targetPath: targetPath || "auto-generated" });
-        const created = await createGitWorktreeFromBranch(repoPath, baseBranch, targetPath || undefined);
+        setMessage(`基于 ${baseBranch} 创建工作空间: ${workspaceBranch}...`);
+        if (!workspaceBranchExists) {
+          await createGitBranch(repoPath, workspaceBranch, baseBranch);
+          rememberBranchParent(workspaceBranch, baseBranch);
+        }
+        console.log("Creating workspace:", { repoPath, baseBranch, workspaceBranch, targetPath: targetPath || "auto-generated" });
+        const created = await createGitWorktreeFromBranch(repoPath, workspaceBranch, targetPath || undefined);
         console.log("Worktree created:", created);
         await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
         const newBranchCommits = await getBranchCommits(repoPath, created.branch, 80);
@@ -4728,7 +4976,8 @@ export function App() {
         setSelectedBranch(created.branch);
         setTopologySelectionId(`worktree:${created.path}`);
         setTopologyCreatingNode(null);
-        setMessage(`已创建 worktree: ${fullName} (${created.branch} 分支)`);
+        setShowTopologyCreateDialog(false);
+        setMessage(`已创建工作空间: ${workspaceBranch}`);
       }
     } catch (e) {
       setError(String(e));
@@ -4770,6 +5019,7 @@ export function App() {
     try {
       console.log("Removing worktree:", { repoPath, target });
       await removeGitWorktree(repoPath, target);
+      unbindWorkspaceAgent(target);
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
       setTopologySelectionId(topologyModel.primaryNodeId);
       setMessage("worktree 已删除");
@@ -5182,7 +5432,7 @@ export function App() {
       const [statusRes, branchList, graphRows, reviewRows, actionRows] = await Promise.all([
         getEntireStatusDetailed(repoPath),
         getLocalBranches(repoPath),
-        getCommitGraph(repoPath, 140),
+        getCommitGraph(repoPath, 300),
         loadReviewRecords(repoPath),
         loadReviewActions(repoPath)
       ]);
@@ -5447,7 +5697,7 @@ export function App() {
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
     void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch((e) => setError(String(e)));
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
@@ -5848,10 +6098,60 @@ export function App() {
   }, [opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId]);
 
   const opencodeActiveQuestions = useMemo(() => {
+    const dismissed = new Set(opencodeDismissedQuestionsBySession[activeOpencodeSessionId] || []);
     return opencodeQuestionRequests.filter(
-      (req) => req.sessionID === activeOpencodeSessionId && !opencodeDismissedQuestions.has(req.id)
+      (req) => req.sessionID === activeOpencodeSessionId && !dismissed.has(req.id)
     );
-  }, [opencodeQuestionRequests, activeOpencodeSessionId, opencodeDismissedQuestions]);
+  }, [opencodeQuestionRequests, activeOpencodeSessionId, opencodeDismissedQuestionsBySession]);
+
+  const opencodeStaleQuestions = useMemo(() => {
+    if (opencodeActiveQuestions.length > 0) return [] as QuestionRequest[];
+    const visible = opencodeVisibleWindow.visible;
+    const requests: QuestionRequest[] = [];
+    const seenIds = new Set<string>();
+    const dismissed = new Set(opencodeDismissedQuestionsBySession[activeOpencodeSessionId] || []);
+    for (let i = visible.length - 1; i >= 0; i -= 1) {
+      const msg = visible[i];
+      if (msg.role !== "assistant") continue;
+      const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
+      const detail = opencodeDetailsByMessageId[msg.id] || null;
+      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
+      const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+      const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
+      for (let j = detailParts.length - 1; j >= 0; j -= 1) {
+        const part = detailParts[j] as any;
+        if (String(part?.type || "").trim() !== "tool") continue;
+        if (String(part?.tool || "").trim() !== "question") continue;
+        const state = part?.state || {};
+        const status = String(state?.status || "").trim().toLowerCase();
+        if (status !== "pending" && status !== "running") continue;
+        const questions = state?.input?.questions;
+        if (!Array.isArray(questions) || questions.length === 0) continue;
+        const id = `stale-question-${msg.id}-${String(part?.id || j)}`;
+        if (seenIds.has(id) || dismissed.has(id)) continue;
+        seenIds.add(id);
+        requests.push({
+          id,
+          sessionID: activeOpencodeSessionId,
+          questions: questions.map((q: any) => ({
+            question: String(q?.question || "").trim(),
+            header: String(q?.header || "").trim() || undefined,
+            options: Array.isArray(q?.options)
+              ? q.options
+                  .map((opt: any) => ({
+                    label: String(opt?.label || "").trim(),
+                    description: String(opt?.description || "").trim() || undefined,
+                  }))
+                  .filter((opt: any) => opt.label)
+              : [],
+            multiple: q?.multiple === true,
+            custom: q?.custom !== false,
+          })),
+        });
+      }
+    }
+    return requests;
+  }, [opencodeActiveQuestions.length, opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId, activeOpencodeSessionId, opencodeDismissedQuestionsBySession]);
 
   const opencodeTodoProgress = useMemo(() => {
     const total = opencodeActiveTodos.length;
@@ -5884,7 +6184,7 @@ export function App() {
     setOpencodeTodoDockCollapsed(false);
     setOpencodeTodoDockVisible(false);
     setOpencodeQuestionRequests([]);
-    setOpencodeDismissedQuestions(new Set());
+    setOpencodeQuestionLoading(true);
   }, [activeOpencodeSessionId]);
 
   useEffect(() => {
@@ -6267,6 +6567,7 @@ export function App() {
                           setSelectedRepo(repo);
                           setDraftOpencodeSession(false);
                           setActiveOpencodeSessionId(session.id);
+                          bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
                         }}
                       >
                         <span className="gt-session-title">{session.title}</span>
@@ -6479,13 +6780,33 @@ export function App() {
                 request={req}
                 onReply={(requestId, answers) => {
                   void sendQuestionReply(requestId, answers).then((ok) => {
-                    if (ok) setOpencodeDismissedQuestions((prev) => new Set([...prev, requestId]));
+                    if (ok) setOpencodeDismissedQuestionsBySession((prev) => ({
+                      ...prev,
+                      [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                    }));
                   });
                 }}
                 onDismiss={(requestId) => {
                   void sendQuestionReject(requestId).then((ok) => {
-                    if (ok) setOpencodeDismissedQuestions((prev) => new Set([...prev, requestId]));
+                    if (ok) setOpencodeDismissedQuestionsBySession((prev) => ({
+                      ...prev,
+                      [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                    }));
                   });
+                }}
+              />
+            ))}
+            {!opencodeQuestionLoading && opencodeActiveQuestions.length === 0 && opencodeStaleQuestions.map((req) => (
+              <QuestionDock
+                key={req.id}
+                request={req}
+                disabledReason="该问题已失效，无法提交；请重新发起本轮请求"
+                onReply={() => {}}
+                onDismiss={(requestId) => {
+                  setOpencodeDismissedQuestionsBySession((prev) => ({
+                    ...prev,
+                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                  }));
                 }}
               />
             ))}
@@ -6627,343 +6948,334 @@ export function App() {
       <div className="gt-right-panel">
         {rightPaneTab === "worktree" ? (
           <div className="gt-worktree-topology-shell">
-            {/* 上半部分：代码分支图 */}
+            {/* 上半部分：Canvas拓扑图 */}
             <div className="gt-worktree-topology-graph">
-              <div className="gt-worktree-topology-main" style={{ height: "100%", minHeight: "auto", borderRadius: 0, border: "none" }}>
-                <div
-                  className="gt-worktree-topology-viewport"
-                  ref={topologyViewportRef}
-                  onMouseDown={(e) => {
-                    const target = e.target as HTMLElement | null;
-                    if (target?.closest(".gt-topology-node") || e.button !== 0) return;
-                    beginTopologyPan(e.clientX, e.clientY);
-                  }}
-                >
-                  <div
-                    className="gt-worktree-topology-stage"
-                    style={{ width: topologyModel.width * topologyZoom, height: topologyModel.height * topologyZoom }}
-                  >
-                    <div
-                      className="gt-worktree-topology-scene"
-                      style={{ width: topologyModel.width, height: topologyModel.height, transform: `scale(${topologyZoom})` }}
-                      onMouseDownCapture={(e) => {
-                        if (e.button !== 2) return;
-                        const target = e.target as HTMLElement | null;
-                        const nodeEl = target?.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
-                        const nodeId = nodeEl?.dataset.nodeId;
-                        if (!nodeId) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setTopologySelectionId(nodeId);
-                        openTopologyContextMenu(e.clientX, e.clientY, nodeId);
-                      }}
-                      onContextMenuCapture={(e) => {
-                        const target = e.target as HTMLElement | null;
-                        const nodeEl = target?.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
-                        const nodeId = nodeEl?.dataset.nodeId;
-                        if (!nodeId) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setTopologySelectionId(nodeId);
-                        openTopologyContextMenu(e.clientX, e.clientY, nodeId);
-                      }}
-                    >
-                      <svg className="gt-worktree-topology-links" width={topologyModel.width} height={topologyModel.height} aria-hidden="true">
-                        {topologyModel.edges.map((edge) => {
-                          const from = topologyModel.nodeById[edge.from];
-                          const to = topologyModel.nodeById[edge.to];
-                          if (!from || !to) return null;
-                          return (
-                            <path
-                              key={edge.id}
-                              className={topologyModel.nearbyNodeIds[edge.from] && topologyModel.nearbyNodeIds[edge.to] ? "" : "is-muted"}
-                              d={topologyEdgePath(from, to)}
-                              fill="none"
-                              stroke={edge.color}
-                              strokeDasharray={edge.dashed ? "6 10" : undefined}
-                            />
-                          );
-                        })}
-                      </svg>
+              {(() => {
+                // ========== 1. 收集所有分支（过滤 worktree 相关分支）==========
+                const allBranchNames = new Set<string>();
+                
+                branches.forEach((b) => {
+                  // 过滤掉 worktree 路径分支
+                  if (!b.name.includes("worktree") && !b.name.includes(".worktrees")) {
+                    allBranchNames.add(b.name);
+                  }
+                });
+                Object.keys(branchParentMap).forEach((b) => {
+                  if (!b.includes("worktree") && !b.includes(".worktrees")) {
+                    allBranchNames.add(b);
+                  }
+                });
+                Object.values(branchParentMap).forEach((b) => {
+                  if (!b.includes("worktree") && !b.includes(".worktrees")) {
+                    allBranchNames.add(b);
+                  }
+                });
 
-                      {topologyModel.nodes.map((node) => {
-                        const selected = topologySelectionId === node.id || (node.kind === "commit" && node.sha === selectedCommit);
-                        const isRepoNode = node.kind === "repo";
-                        const isCurrentCommit = node.kind === "commit" && topologyModel.primaryNodeId === node.id;
-                        const isCurrentBranch = (node.kind === "branch" || node.kind === "worktree") && node.isCurrent;
-                        const className = [
-                          "gt-topology-node",
-                          `kind-${node.kind}`,
-                          node.kind === "commit" && (node.rank || 0) > 0 ? "is-history" : "",
-                          node.kind === "commit" && (node.rank || 0) > 2 ? "is-history-far" : "",
-                          selected ? "selected" : "",
-                          node.isCurrent ? "is-current" : "",
-                          topologyModel.primaryNodeId === node.id ? "is-primary" : "",
-                          topologyModel.nearbyNodeIds[node.id] ? "" : "is-dimmed"
-                        ].filter(Boolean).join(" ");
-                        return (
-                          <button
-                            key={node.id}
-                            type="button"
-                            data-node-id={node.id}
-                            className={className}
-                            style={{
-                              left: node.x,
-                              top: node.y,
-                              width: node.width,
-                              height: node.height,
-                              ["--node-accent" as string]: node.accent,
-                              ["--node-soft" as string]: node.accentSoft,
-                              ["--node-border" as string]: node.border
-                            } as CSSProperties}
-                            onClick={() => focusTopologyNode(node.id)}
-                            onDoubleClick={() => {
-                              if (node.kind === "commit") openTopologyInspectDialog(node.id);
-                            }}
-                            onMouseDown={(e) => {
-                              if (e.button !== 2) return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setTopologySelectionId(node.id);
-                              openTopologyContextMenu(e.clientX, e.clientY, node.id);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setTopologySelectionId(node.id);
-                              openTopologyContextMenu(e.clientX, e.clientY, node.id);
-                            }}
-                            title={node.path || node.branch || node.sha || node.label}
-                          >
-                            {isCurrentCommit ? <span className="gt-topology-node-dot" aria-hidden="true" /> : null}
-                            {isCurrentBranch ? <span className="gt-topology-node-current-badge" aria-hidden="true">●</span> : null}
-                            {node.kind === "worktree" ? <span className="gt-topology-node-worktree-badge" aria-hidden="true">WT</span> : null}
-                            <span className="gt-topology-node-label">{node.label}</span>
-                            <span className="gt-topology-node-meta">{node.meta}</span>
-                            {isRepoNode ? <span className="gt-topology-node-corner">ROOT</span> : null}
-                          </button>
-                        );
-                      })}
-                      {/* Inline creating node overlay */}
-                      {topologyCreatingNode ? (() => {
-                        const parent = topologyModel.nodeById[topologyCreatingNode.parentId];
-                        if (!parent) return null;
-                        return (
-                          <>
-                            {/* Dashed edge from parent to creating node */}
-                            <svg className="gt-worktree-topology-links" style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width={topologyModel.width} height={topologyModel.height}>
-                              <path
-                                d={`M ${parent.x + parent.width / 2} ${parent.y + parent.height} L ${topologyCreatingNode.x + 70} ${topologyCreatingNode.y}`}
-                                fill="none"
-                                stroke="rgba(148,163,184,0.5)"
-                                strokeDasharray="6 10"
-                              />
-                            </svg>
-                            <div
-                              className="gt-topology-node kind-branch is-creating"
-                              style={{
-                                position: "absolute",
-                                left: topologyCreatingNode.x,
-                                top: topologyCreatingNode.y,
-                                width: 140,
-                                height: 72,
-                                display: "flex",
-                                flexDirection: "column",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 4,
-                                zIndex: 10
-                              }}
-                            >
-                              <input
-                                type="text"
-                                autoFocus
-                                placeholder={topologyCreatingNode.mode === "worktree" ? "输入标识，自动拼接前缀" : "分支名"}
-                                value={topologyCreatingNode.name}
-                                onChange={(e) => setTopologyCreatingNode({ ...topologyCreatingNode, name: e.target.value })}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    void submitTopologyCreateDialog();
-                                  } else if (e.key === "Escape") {
-                                    setTopologyCreatingNode(null);
-                                  }
-                                }}
-                                onBlur={() => {
-                                  if (!topologyCreatingNode.name.trim()) {
-                                    setTopologyCreatingNode(null);
-                                  }
-                                }}
-                                style={{
-                                  width: 120,
-                                  padding: "4px 8px",
-                                  borderRadius: 4,
-                                  border: "1px solid var(--primary)",
-                                  background: "var(--surface)",
-                                  color: "var(--text)",
-                                  fontSize: 13,
-                                  textAlign: "center",
-                                  outline: "none"
-                                }}
-                              />
-                              {topologyCreatingNode.mode === "worktree" && topologyCreatingNode.name.trim() ? (
-                                <span style={{ fontSize: 10, color: "var(--text-tertiary)", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                  将创建: {(() => {
-                                    const parentNode = topologyModel.nodeById[topologyCreatingNode.parentId];
-                                    const baseBranch = parentNode?.branch || "";
-                                    return `${baseBranch}-${topologyCreatingNode.name.trim()}`;
-                                  })()}
-                                </span>
-                              ) : null}
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button
-                                  className="chip active"
-                                  style={{ padding: "2px 8px", fontSize: 11 }}
-                                  onClick={() => void submitTopologyCreateDialog()}
-                                  disabled={creatingTopologyNode || !topologyCreatingNode.name.trim()}
-                                >
-                                  {topologyCreatingNode.mode === "worktree" ? "创建 WT" : "创建分支"}
-                                </button>
-                                <button
-                                  className="chip"
-                                  style={{ padding: "2px 8px", fontSize: 11 }}
-                                  onClick={() => setTopologyCreatingNode(null)}
-                                >
-                                  取消
-                                </button>
-                              </div>
-                            </div>
-                          </>
-                        );
-                      })() : null}
-                    </div>
-                  </div>
-                </div>
-              </div>
+                // ========== 2. 基于 commitGraph 推断分支父子关系 ==========
+                const defaultMain = Array.from(allBranchNames).find((b) => b === "main" || b === "master") || "";
+
+                // 构建有效的父子关系映射
+                const effectiveParentMap: Record<string, string> = {};
+
+                // 首先复制 branchParentMap 中已有的关系（确保双方都存在）
+                Object.entries(branchParentMap).forEach(([child, parent]) => {
+                  if (allBranchNames.has(child) && allBranchNames.has(parent)) {
+                    effectiveParentMap[child] = parent;
+                  }
+                });
+
+                // 从 commitGraph 提取分支 head 映射和 sha 关系
+                const branchHeadByName = new Map<string, string>();
+                const shaToParents = new Map<string, string[]>();
+                
+                commitGraph.forEach((node) => {
+                  if (node.isConnector || !node.sha) return;
+                  
+                  // 记录提交关系
+                  shaToParents.set(node.sha, node.parents || []);
+                  
+                  // 解析 refs 提取分支名
+                  const refsText = node.refs.trim();
+                  if (!refsText) return;
+                  const inner = refsText.startsWith("(") && refsText.endsWith(")") ? refsText.slice(1, -1) : refsText;
+                  const refs = inner.split(",").map((p) => p.trim()).filter(Boolean);
+                  
+                  refs.forEach((ref) => {
+                    if (ref.startsWith("tag:")) return;
+                    let branchName: string | null = null;
+                    if (ref.includes("->")) {
+                      const rhs = ref.split("->")[1]?.trim();
+                      if (rhs && allBranchNames.has(rhs)) branchName = rhs;
+                    } else if (allBranchNames.has(ref)) {
+                      branchName = ref;
+                    }
+                    if (branchName && !branchHeadByName.has(branchName)) {
+                      branchHeadByName.set(branchName, node.sha);
+                    }
+                  });
+                });
+
+                // 辅助函数：计算两个 sha 之间的距离
+                function ancestorDistance(targetSha: string, querySha: string): number {
+                  const queue: Array<{ sha: string; dist: number }> = [{ sha: querySha, dist: 0 }];
+                  const visited = new Set<string>();
+                  while (queue.length > 0) {
+                    const { sha, dist } = queue.shift()!;
+                    if (sha === targetSha) return dist;
+                    if (visited.has(sha)) continue;
+                    visited.add(sha);
+                    const parents = shaToParents.get(sha) || [];
+                    for (const p of parents) {
+                      if (!visited.has(p)) {
+                        queue.push({ sha: p, dist: dist + 1 });
+                      }
+                    }
+                  }
+                  return Infinity;
+                }
+
+                // 基于 commitGraph 自动推断分支层级
+                const branchNames = Array.from(allBranchNames);
+                branchNames.forEach((branch) => {
+                  if (effectiveParentMap[branch]) return;
+                  if (branch === defaultMain) return;
+
+                  const branchSha = branchHeadByName.get(branch);
+                  if (!branchSha) return;
+
+                  const candidates: Array<{ name: string; distance: number }> = [];
+                  branchNames.forEach((candidate) => {
+                    if (candidate === branch) return;
+                    const candidateSha = branchHeadByName.get(candidate);
+                    if (!candidateSha) return;
+                    
+                    const dist = ancestorDistance(candidateSha, branchSha);
+                    if (dist < Infinity && dist > 0) {
+                      candidates.push({ name: candidate, distance: dist });
+                    }
+                  });
+
+                  if (candidates.length > 0) {
+                    candidates.sort((a, b) => a.distance - b.distance);
+                    effectiveParentMap[branch] = candidates[0].name;
+                  } else if (defaultMain) {
+                    const prefix = branch.split("/")[0]?.toLowerCase() || "";
+                    const developBranch = branchNames.find((b) => b === "develop" || b === "dev");
+                    const isFeatureLike = ["feature", "hotfix", "fix", "release", "chore", "docs", "test", "refactor", "style"].includes(prefix);
+
+                    if (branch === "develop" || branch === "dev") {
+                      effectiveParentMap[branch] = defaultMain;
+                    } else if (isFeatureLike && developBranch) {
+                      effectiveParentMap[branch] = developBranch;
+                    } else {
+                      effectiveParentMap[branch] = defaultMain;
+                    }
+                  }
+                });
+
+                // 找到根分支
+                const rootBranches: string[] = [];
+                allBranchNames.forEach((branch) => {
+                  const parent = effectiveParentMap[branch];
+                  if (!parent || !allBranchNames.has(parent)) {
+                    rootBranches.push(branch);
+                  }
+                });
+
+                if (rootBranches.length === 0 && allBranchNames.size > 0) {
+                  rootBranches.push(Array.from(allBranchNames)[0]);
+                }
+
+                const currentBranchName = worktreeOverview.branch || selectedBranch || "";
+
+                // ========== 3. 构建分支树 ==========
+                const branchNodeMap = new Map<string, TopologyCanvasNode>();
+
+                const buildBranchNode = (branch: string, depth: number, parentId: string | null): TopologyCanvasNode => {
+                  const children: TopologyCanvasNode[] = [];
+                  allBranchNames.forEach((b) => {
+                    if (effectiveParentMap[b] === branch) {
+                      children.push(buildBranchNode(b, depth + 1, branch));
+                    }
+                  });
+
+                  const branchSummary = branches.find((b) => b.name === branch);
+                  const tone = branchTone(branch);
+
+                  // 计算提交数量（仅当前选中分支有commits数据）
+                  let commitCount: number | undefined;
+                  if (branch === currentBranchName && commits.length > 0) {
+                    commitCount = commits.length;
+                  }
+
+                  const node: TopologyCanvasNode = {
+                    id: `branch:${branch}`,
+                    kind: "branch",
+                    label: branch,
+                    branch,
+                    parentId,
+                    children,
+                    depth,
+                    gx: 0,
+                    gy: 0,
+                    tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
+                    commits: commitCount,
+                    isCurrent: branchSummary?.isCurrent || false,
+                    sha: undefined
+                  };
+                  branchNodeMap.set(node.id, node);
+                  return node;
+                };
+
+                const branchNodes = rootBranches.map((b) => buildBranchNode(b, 0, null));
+
+                // ========== 4. 构建所有分支的 commit 链 ==========
+                // 为当前分支使用已加载的 commits 数据，其他分支从 commitGraph 提取
+                
+                const shaToCommit = new Map<string, GitGraphNode>();
+                commitGraph.forEach((node) => {
+                  if (node.isConnector || !node.sha) return;
+                  shaToCommit.set(node.sha, node);
+                });
+
+                const MAX_COMMITS_PER_BRANCH = 6;
+                
+                branchNames.forEach((branchName) => {
+                  const branchId = `branch:${branchName}`;
+                  const branchNode = branchNodeMap.get(branchId);
+                  if (!branchNode) return;
+                  
+                  const commitChain: TopologyCanvasNode[] = [];
+                  const tone = branchTone(branchName);
+                  
+                  if (branchName === currentBranchName && commits.length > 0) {
+                    // 当前分支：使用已加载的 commits 数据（更完整）
+                    commits.slice(0, 20).forEach((commit, index) => {
+                      commitChain.push({
+                        id: `commit:${branchName}:${commit.sha}`,
+                        kind: "commit",
+                        label: commit.sha.slice(0, 7),
+                        branch: branchName,
+                        parentId: index === 0 ? branchId : `commit:${branchName}:${commits[index - 1].sha}`,
+                        children: [],
+                        depth: 0,
+                        gx: 0,
+                        gy: 0,
+                        tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
+                        meta: "commit",
+                        sha: commit.sha,
+                        author: commit.author,
+                        date: commit.date
+                      });
+                    });
+                  } else {
+                    // 其他分支：从 commitGraph 提取
+                    const branchSha = branchHeadByName.get(branchName);
+                    if (!branchSha || !shaToCommit.has(branchSha)) return;
+                    
+                    const visitedShas = new Set<string>();
+                    let currentSha = branchSha;
+                    
+                    while (currentSha && shaToCommit.has(currentSha) && commitChain.length < MAX_COMMITS_PER_BRANCH) {
+                      if (visitedShas.has(currentSha)) break;
+                      visitedShas.add(currentSha);
+                      
+                      const commitNode = shaToCommit.get(currentSha)!;
+                      
+                      commitChain.push({
+                        id: `commit:${branchName}:${currentSha}`,
+                        kind: "commit",
+                        label: currentSha.slice(0, 7),
+                        branch: branchName,
+                        parentId: null, // 稍后设置
+                        children: [],
+                        depth: 0,
+                        gx: 0,
+                        gy: 0,
+                        tone: { accent: tone.accent, soft: tone.soft, border: tone.border },
+                        meta: "commit",
+                        sha: currentSha,
+                        author: commitNode.author,
+                        date: commitNode.date
+                      });
+                      
+                      currentSha = commitNode.parents[0] || "";
+                    }
+                    
+                    // 构建父子关系
+                    for (let i = 0; i < commitChain.length; i++) {
+                      if (i === 0) {
+                        commitChain[i].parentId = branchId;
+                      } else {
+                        commitChain[i].parentId = commitChain[i - 1].id;
+                      }
+                    }
+                  }
+                  
+                  if (commitChain.length > 0) {
+                    for (let i = 1; i < commitChain.length; i++) {
+                      commitChain[i - 1].children.push(commitChain[i]);
+                    }
+                    branchNode.children.push(commitChain[0]);
+                    branchNode.commitCount = commitChain.length;
+                  }
+                });
+
+                return (
+                  <WorktreeTopologyCanvas
+                    nodes={branchNodes}
+                    selectedId={topologySelectionId}
+                    onSelect={(id) => {
+                      setTopologySelectionId(id);
+                      const allNodes: TopologyCanvasNode[] = [];
+                      const collect = (nodes: TopologyCanvasNode[]) => {
+                        for (const n of nodes) {
+                          allNodes.push(n);
+                          collect(n.children);
+                        }
+                      };
+                      collect(branchNodes);
+                      const node = allNodes.find((n) => n.id === id);
+                      if (node?.kind === "branch" && node.branch) {
+                        void chooseBranch(node.branch);
+                      } else if (node?.kind === "commit" && node.sha) {
+                        setSelectedCommit(node.sha);
+                      }
+                    }}
+                    onDoubleClick={(node) => {
+                      if (node.kind === "branch" && node.branch) {
+                        void chooseBranch(node.branch);
+                      } else if (node.kind === "commit" && node.sha) {
+                        setSelectedCommit(node.sha);
+                        setDetailTab("context");
+                      }
+                    }}
+                    onContextMenu={(node, e) => {
+                      setTopologyContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        nodeId: node.id
+                      });
+                    }}
+                    onToggleCollapse={(id) => {
+                      setCollapsedBranchIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(id)) {
+                          next.delete(id);
+                        } else {
+                          next.add(id);
+                        }
+                        return next;
+                      });
+                    }}
+                    collapsedIds={collapsedBranchIds}
+                    theme={theme}
+                  />
+                );
+              })()}
             </div>
 
-            {/* 下半部分：左侧 commit 列表，右侧 agent 上下文 */}
-            <div className="gt-worktree-topology-detail">
-              {/* 左侧：当前分支 commit 列表 */}
-              <div className="gt-worktree-topology-commits">
-                <div className="gt-worktree-topology-commits-head">
-                  <span>提交历史 ({commits.length})</span>
-                  <span className="small muted">{selectedBranch || "当前分支"}</span>
-                </div>
-                <div className="gt-worktree-topology-commit-list">
-                  {commits.length === 0 ? (
-                    <div className="gt-empty-hint" style={{ padding: "20px" }}>暂无提交记录</div>
-                  ) : (
-                    commits.map((commit) => {
-                      const isSelected = selectedCommit === commit.sha;
-                      return (
-                        <div
-                          key={commit.sha}
-                          className={`gt-worktree-topology-commit-item ${isSelected ? "selected" : ""}`}
-                          onClick={() => {
-                            setSelectedCommit(commit.sha);
-                            void loadCommitAgentContext(commit.sha);
-                          }}
-                        >
-                          {isSelected ? <span className="commit-dot" /> : <span style={{ width: 6, flexShrink: 0 }} />}
-                          <span className="commit-sha">{commit.sha.slice(0, 7)}</span>
-                          <div className="commit-info">
-                            <span className="commit-subject">{commit.subject}</span>
-                            <span className="commit-meta">{commit.author} · {commit.date}</span>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
 
-              {/* 右侧：选中 commit 的 agent 上下文 */}
-              <div className="gt-worktree-topology-context">
-                <div className="gt-worktree-topology-context-head">
-                  <span>Agent 上下文</span>
-                  {selectedCommit && (
-                    <span className="small muted">{selectedCommit.slice(0, 7)}</span>
-                  )}
-                </div>
-                <div className="gt-worktree-topology-context-body">
-                  {!selectedCommit ? (
-                    <div className="gt-worktree-topology-context-empty">
-                      选择左侧提交查看 Agent 上下文
-                    </div>
-                  ) : !selectedExplain ? (
-                    <div className="gt-worktree-topology-context-empty">
-                      {agentContextError || "加载中..."}
-                    </div>
-                  ) : (
-                    <>
-                      {parsedAgentContext.checkpoint && (
-                        <div className="gt-worktree-topology-context-section">
-                          <h4>Checkpoint</h4>
-                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.checkpoint}</p>
-                        </div>
-                      )}
-                      {parsedAgentContext.intent && (
-                        <div className="gt-worktree-topology-context-section">
-                          <h4>Intent</h4>
-                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.intent}</p>
-                        </div>
-                      )}
-                      {parsedAgentContext.outcome && (
-                        <div className="gt-worktree-topology-context-section">
-                          <h4>Outcome</h4>
-                          <p className={showAgentContextFull ? "is-expanded" : ""}>{parsedAgentContext.outcome}</p>
-                        </div>
-                      )}
-                      {(parsedAgentContext.checkpoint || parsedAgentContext.intent || parsedAgentContext.outcome) && (
-                        <div className="gt-worktree-topology-context-section">
-                          <button className="context-expand-btn" onClick={() => setShowAgentContextFull(!showAgentContextFull)}>
-                            {showAgentContextFull ? "收起" : "查看全文"}
-                          </button>
-                        </div>
-                      )}
-                      {parsedAgentContext.files && parsedAgentContext.files.length > 0 && (
-                        <div className="gt-worktree-topology-context-section">
-                          <h4>Files</h4>
-                          <div className="gt-worktree-topology-context-files">
-                            {parsedAgentContext.files.map((file, idx) => (
-                              <span key={idx} className="gt-worktree-topology-context-file">{file}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {parsedAgentContext.transcript && parsedAgentContext.transcript.length > 0 && (
-                        <div className="gt-worktree-topology-context-section">
-                          <h4>Transcript</h4>
-                          <div className="gt-worktree-topology-context-transcript">
-                            {parsedAgentContext.transcript.map((entry, idx) => (
-                              <div key={idx} className="transcript-entry">
-                                <div className="transcript-role">{entry.role}</div>
-                                <div className="transcript-content">{entry.content}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {!parsedAgentContext.checkpoint && !parsedAgentContext.intent && !parsedAgentContext.outcome && (
-                        <div className="gt-worktree-topology-context-empty">
-                          该提交未关联 Entire checkpoint
-                        </div>
-                      )}
-                      {/* 显示原始内容用于调试 */}
-                      {selectedExplain && (
-                        <div className="gt-worktree-topology-context-section" style={{ marginTop: 32, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-                          <h4>原始内容</h4>
-                          <pre style={{ fontSize: 11, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--muted)', maxHeight: 200, overflow: 'auto' }}>
-                            {selectedExplain}
-                          </pre>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
           </div>
         ) : null}
 
@@ -7383,40 +7695,49 @@ export function App() {
         {showTopologyCreateDialog ? (
           <div className="modal-mask" onClick={() => setShowTopologyCreateDialog(false)}>
             <div className="modal-card gt-topology-create-card" onClick={(e) => e.stopPropagation()}>
-              <h3>从节点拉新分支</h3>
-              <p className="small muted">从当前节点拉出新分支，创建后会立即接入当前拓扑图并选中新节点。</p>
+              <h3>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</h3>
+              <p className="small muted">
+                {topologyCreateMode === "worktree"
+                  ? "会先基于来源分支创建一个工作空间分支，再创建对应 worktree 目录。"
+                  : "从来源分支创建新分支，创建后会选中新分支。"}
+              </p>
               <div className="gt-topology-create-grid">
                 <label className="gt-topology-form-field">
-                  <span>来源节点</span>
-                  <strong>{topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
+                  <span>来源分支</span>
+                  <strong>{topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
                 </label>
                 <label className="gt-topology-form-field">
-                  <span>新分支名</span>
+                  <span>{topologyCreateMode === "worktree" ? "工作空间标识 / 分支名" : "新分支名"}</span>
                   <input
                     value={topologyCreateBranchName}
                     onChange={(e) => {
                       const next = e.target.value;
                       setTopologyCreateBranchName(next);
-                      if (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/")) {
-                        setTopologyCreateTargetPath(suggestedTopologyPath(next));
+                      if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
+                        const base = topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
+                        setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
                       }
                     }}
-                    placeholder="feature/my-node"
+                    placeholder={topologyCreateMode === "worktree" ? "ui-v2 或 feature/ui-v2" : "feature/my-node"}
                     autoFocus
                   />
                 </label>
-                <label className="gt-topology-form-field gt-topology-form-field-wide">
-                  <span>目标目录</span>
-                  <input
-                    value={topologyCreateTargetPath}
-                    onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
-                    placeholder="留空则自动生成"
-                  />
-                </label>
+                {topologyCreateMode === "worktree" ? (
+                  <label className="gt-topology-form-field gt-topology-form-field-wide">
+                    <span>目标目录</span>
+                    <input
+                      value={topologyCreateTargetPath}
+                      onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
+                      placeholder="留空则自动生成"
+                    />
+                  </label>
+                ) : null}
               </div>
               <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 12 }}>
                 <button className="chip" onClick={() => setShowTopologyCreateDialog(false)}>取消</button>
-                <button className="chip active" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>拉新分支</button>
+                <button className="chip active" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
+                  {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
+                </button>
               </div>
             </div>
           </div>
@@ -8438,9 +8759,41 @@ export function App() {
         ) : null}
 
         {topologyContextMenu ? (() => {
-          const node = topologyModel.nodeById[topologyContextMenu.nodeId];
-          if (!node) return null;
-          const hasWorktree = node.kind === "branch" && linkedWorktrees.some((w) => w.branch === node.branch);
+          // 优先从 topologyModel 查找节点，否则解析 nodeId
+          let node = topologyModel.nodeById[topologyContextMenu.nodeId];
+          let branchName = "";
+          let worktreePath = "";
+          let isBranch = false;
+          let isWorktree = false;
+          
+          if (node) {
+            // 旧版拓扑模型节点
+            isBranch = node.kind === "branch";
+            isWorktree = node.kind === "worktree";
+            branchName = node.branch || "";
+            worktreePath = node.path || "";
+          } else if (topologyContextMenu.nodeId.startsWith("branch:")) {
+            // 新版 Canvas 分支节点
+            isBranch = true;
+            branchName = topologyContextMenu.nodeId.slice(7);
+          } else if (topologyContextMenu.nodeId.startsWith("worktree:")) {
+            // 新版 Canvas 工作空间节点
+            isWorktree = true;
+            worktreePath = topologyContextMenu.nodeId.slice(9);
+            const wt = linkedWorktrees.find((w) => w.path === worktreePath || w.path.includes(worktreePath));
+            branchName = wt?.branch || "";
+          } else if (topologyContextMenu.nodeId.startsWith("commit:")) {
+            // Commit 节点 - 不提供右键菜单
+            return null;
+          }
+          
+          if (!isBranch && !isWorktree) return null;
+          
+          const hasWorktree = isBranch && linkedWorktrees.some((w) => w.branch === branchName);
+          const nodeWorkspacePath = isWorktree ? normalizeWorkspacePath(worktreePath) : "";
+          const nodeAgentBinding = nodeWorkspacePath ? workspaceAgentBindings[nodeWorkspacePath] || null : null;
+          const isCurrentBranch = isBranch && (worktreeOverview.branch === branchName || branches.some((b) => b.name === branchName && b.isCurrent));
+          
           return (
             <div className="repo-context-layer" onClick={() => setTopologyContextMenu(null)}>
               <div
@@ -8448,38 +8801,58 @@ export function App() {
                 style={{ left: topologyContextMenu.x, top: topologyContextMenu.y }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <button className="repo-context-item" onClick={() => focusTopologyNode(node.id)}>
-                  聚焦节点
-                </button>
-                {node.kind === "branch" && node.branch ? (
+                {isBranch ? (
                   <>
-                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", node.id)}>
-                      从此拉新分支
+                    <div className="repo-context-header" style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
+                      {branchName}
+                    </div>
+                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                      创建子分支
                     </button>
                     {!hasWorktree ? (
-                      <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", node.id)}>
-                        基于此分支创建 worktree
+                      <button className="repo-context-item" onClick={() => void activateBranchWorkspace(branchName)}>
+                        激活为工作空间
                       </button>
                     ) : null}
-                    <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(node.branch || "")}>
+                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
+                      创建子分支并激活
+                    </button>
+                    <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
                       检出分支
                     </button>
-                  </>
-                ) : null}
-                {node.kind === "worktree" && node.path ? (
-                  <>
-                    <button className="repo-context-item" onClick={() => void activateLinkedWorktree(node.path || "")}>
-                      切到此 worktree
-                    </button>
-                    {!node.isCurrent ? (
-                      <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(node.path || "")}>
-                        删除 worktree
+                    {branchName !== "main" && branchName !== "master" && !hasWorktree ? (
+                      <button className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
+                        删除分支
                       </button>
                     ) : null}
                   </>
                 ) : null}
-                {node.id !== topologyModel.primaryNodeId ? (
-                  <button className="repo-context-item" onClick={centerTopologyOnCurrent}>回到当前节点</button>
+                {isWorktree ? (
+                  <>
+                    <div className="repo-context-header" style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
+                      {worktreePath.split("/").pop() || worktreePath}
+                    </div>
+                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                      基于此工作空间创建分支
+                    </button>
+                    <button className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
+                      打开工作空间
+                    </button>
+                    {nodeAgentBinding ? (
+                      <button className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
+                        解除 Agent 绑定
+                      </button>
+                    ) : (
+                      <button className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
+                        绑定 Agent
+                      </button>
+                    )}
+                    {!isCurrentBranch ? (
+                      <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
+                        移除工作空间
+                      </button>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             </div>

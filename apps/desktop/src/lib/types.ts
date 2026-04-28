@@ -57,6 +57,7 @@ export type GitLinkedWorktree = {
   branch: string;
   head: string;
   isCurrent: boolean;
+  isMainWorktree: boolean;
   isDetached: boolean;
   clean: boolean;
   stagedCount: number;
