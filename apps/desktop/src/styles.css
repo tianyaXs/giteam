@@ -8824,40 +8824,7 @@ pre {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.gt-changes-count {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  font-weight: 500;
-}
-
-.gt-changes-staged {
-  color: #0f8b4c;
-}
-
-.gt-changes-unstaged {
-  color: var(--accent);
-}
-
-.gt-sync-status {
-  max-width: 120px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.gt-sync-status.needs-sync {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
+  flex: 1 1 auto;
 }
 
 /* Diff view header */
