@@ -531,15 +531,21 @@ pub fn run_git_head_commit(repo_path: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn run_git_pull(repo_path: &str) -> Result<String, String> {
+pub async fn run_git_pull(repo_path: String) -> Result<String, String> {
     // Network operations can take longer than local reads.
-    run_git_with_timeout(&["pull", "--ff-only"], repo_path, 90)
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git_with_timeout(&["pull", "--ff-only"], &repo_path, 90)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn run_git_push(repo_path: &str) -> Result<String, String> {
+pub async fn run_git_push(repo_path: String) -> Result<String, String> {
     // Network operations can take longer than local reads.
-    run_git_with_timeout(&["push"], repo_path, 90)
+    tauri::async_runtime::spawn_blocking(move || run_git_with_timeout(&["push"], &repo_path, 90))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

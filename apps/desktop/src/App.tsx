@@ -2166,6 +2166,7 @@ export function App() {
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
+  const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [discardingFile, setDiscardingFile] = useState("");
@@ -2420,9 +2421,17 @@ export function App() {
   const commitButtonCount = worktreeChangeStats.staged > 0 ? worktreeChangeStats.staged : worktreeChangeStats.unstaged;
   const needsGitSync = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0;
   const commitPrimaryIsSync = !hasCommittableChanges && needsGitSync;
-  const gitSyncLabel = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0
-    ? `${worktreeOverview.ahead > 0 ? `↑${worktreeOverview.ahead}` : ""}${worktreeOverview.ahead > 0 && worktreeOverview.behind > 0 ? " " : ""}${worktreeOverview.behind > 0 ? `↓${worktreeOverview.behind}` : ""}`
-    : "synced";
+  const gitOperationLabel = gitOperation === "push"
+    ? "Pushing..."
+    : gitOperation === "sync"
+      ? "Syncing..."
+      : gitOperation === "commitPush"
+        ? "Commit & Push..."
+        : gitOperation === "commitSync"
+          ? "Commit & Sync..."
+          : gitOperation === "commit"
+            ? "Committing..."
+            : "";
 
   useEffect(() => {
     repoPathRef.current = repoPath;
@@ -5354,6 +5363,7 @@ export function App() {
       return;
     }
     setCommitting(true);
+    setGitOperation("commit");
     setError("");
     try {
       if (!hasStaged) {
@@ -5371,6 +5381,7 @@ export function App() {
       setMessage("提交失败");
     } finally {
       setCommitting(false);
+      setGitOperation(null);
     }
   }
 
@@ -5378,7 +5389,9 @@ export function App() {
     if (!ensureRepoSelected()) return;
     if (committing || pushing) return;
     setPushing(true);
+    setGitOperation("push");
     setError("");
+    setShowCommitActionMenu(false);
     try {
       const result = await gitPush(repoPath);
       setMessage("推送成功");
@@ -5389,6 +5402,7 @@ export function App() {
       setMessage("推送失败");
     } finally {
       setPushing(false);
+      setGitOperation(null);
     }
   }
 
@@ -5396,6 +5410,7 @@ export function App() {
     if (!ensureRepoSelected()) return;
     if (committing || pushing) return;
     setPushing(true);
+    setGitOperation("sync");
     setError("");
     setShowCommitActionMenu(false);
     try {
@@ -5412,6 +5427,7 @@ export function App() {
       setMessage("Sync failed");
     } finally {
       setPushing(false);
+      setGitOperation(null);
     }
   }
 
@@ -5434,6 +5450,7 @@ export function App() {
     }
     setCommitting(true);
     setPushing(true);
+    setGitOperation("commitPush");
     setError("");
     setShowCommitActionMenu(false);
     try {
@@ -5455,6 +5472,7 @@ export function App() {
     } finally {
       setCommitting(false);
       setPushing(false);
+      setGitOperation(null);
     }
   }
 
@@ -5477,6 +5495,7 @@ export function App() {
     }
     setCommitting(true);
     setPushing(true);
+    setGitOperation("commitSync");
     setError("");
     setShowCommitActionMenu(false);
     try {
@@ -5498,6 +5517,7 @@ export function App() {
     } finally {
       setCommitting(false);
       setPushing(false);
+      setGitOperation(null);
     }
   }
 
@@ -7854,21 +7874,6 @@ export function App() {
               <div className="gt-right-card-head gt-changes-pane-head">
                 <div className="gt-changes-header">
                   <strong>Changes</strong>
-                  {worktreeChangeStats.total > 0 ? (
-                    <span className="gt-changes-count">
-                      {worktreeChangeStats.staged > 0 ? (
-                        <span className="gt-changes-staged">{worktreeChangeStats.staged} staged</span>
-                      ) : null}
-                      {worktreeChangeStats.unstaged > 0 ? (
-                        <span className="gt-changes-unstaged">{worktreeChangeStats.unstaged} unstaged</span>
-                      ) : null}
-                    </span>
-                  ) : null}
-                  {worktreeOverview.branch ? (
-                    <span className={needsGitSync ? "gt-sync-status needs-sync" : "gt-sync-status"} title={worktreeOverview.tracking || "No upstream"}>
-                      {worktreeOverview.branch} {gitSyncLabel}
-                    </span>
-                  ) : null}
                 </div>
                 <div className="toolbar" style={{ gap: 6 }}>
                   {worktreeChangeStats.total > 0 ? (
@@ -7917,9 +7922,9 @@ export function App() {
                       title={commitPrimaryIsSync ? "Sync branch" : (!hasCommittableChanges ? "No changes to commit" : "")}
                     >
                       {committing || pushing ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
-                      {commitPrimaryIsSync
+                      {gitOperationLabel || (commitPrimaryIsSync
                         ? (pushing ? "Syncing..." : `↕ Sync (${worktreeOverview.ahead}/${worktreeOverview.behind})`)
-                        : (committing ? "Committing..." : `✓ Commit (${commitButtonCount})`)}
+                        : `✓ Commit (${commitButtonCount})`)}
                     </button>
                     <button
                       type="button"
