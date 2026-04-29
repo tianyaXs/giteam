@@ -8842,6 +8842,24 @@ pre {
   color: var(--accent);
 }
 
+.gt-sync-status {
+  max-width: 120px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gt-sync-status.needs-sync {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
 /* Diff view header */
 .gt-diff-header {
   display: flex;
@@ -9101,17 +9119,51 @@ pre {
 }
 
 .gt-commit-main-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
+.gt-commit-main-btn.is-loading {
+  cursor: default;
+}
+
+.gt-btn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: gt-spin 0.75s linear infinite;
+}
+
+@keyframes gt-spin {
+  to { transform: rotate(360deg); }
+}
+
 .gt-commit-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-left: 1px solid color-mix(in srgb, var(--bg) 32%, transparent);
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  font-size: 13px !important;
   line-height: 1;
+}
+
+.gt-commit-chevron {
+  width: 14px;
+  height: 14px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .gt-commit-action-menu {
