@@ -327,6 +327,7 @@ pub struct GitCommitSummary {
 pub struct GitBranchSummary {
     pub name: String,
     pub is_current: bool,
+    pub is_remote: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -606,30 +607,63 @@ pub fn run_git_recent_commits(
 
 #[tauri::command]
 pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, String> {
-    // Branch names list (plain, one per line).
-    let names_raw = run_git(
+    // Local branch names.
+    let local_raw = run_git(
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
         repo_path,
     )
-    .or_else(|_| run_git(&["branch", "--list"], repo_path))?;
+    .or_else(|_| run_git(&["branch", "--list"], repo_path))
+    .unwrap_or_default();
+
+    // Remote branch names.
+    let remote_raw = run_git(
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+        repo_path,
+    )
+    .unwrap_or_default();
 
     // Current branch name from HEAD.
     let current = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
+    let mut seen = std::collections::HashSet::new();
     let mut branches = Vec::new();
-    for line in names_raw.lines() {
+
+    // Parse local branches first so they take precedence.
+    for line in local_raw.lines() {
         let mut name = line.trim().to_string();
-        // `git branch --list` fallback may include marker like "* main"
         if name.starts_with('*') {
             name = name.trim_start_matches('*').trim().to_string();
         }
         if name.is_empty() || name.starts_with("entire/") {
             continue;
         }
+        seen.insert(name.clone());
         branches.push(GitBranchSummary {
             is_current: name == current,
+            is_remote: false,
+            name,
+        });
+    }
+
+    // Parse remote branches.
+    for line in remote_raw.lines() {
+        let name = line.trim().to_string();
+        if name.is_empty() || name.starts_with("entire/") {
+            continue;
+        }
+        // Skip symbolic refs like "origin/HEAD -> origin/main"
+        if name.contains(" -> ") {
+            continue;
+        }
+        if seen.contains(&name) {
+            continue;
+        }
+        seen.insert(name.clone());
+        branches.push(GitBranchSummary {
+            is_current: false,
+            is_remote: true,
             name,
         });
     }
@@ -643,6 +677,7 @@ pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, 
         branches.push(GitBranchSummary {
             name: current,
             is_current: true,
+            is_remote: false,
         });
     }
 
@@ -966,6 +1001,21 @@ pub fn run_git_checkout_branch(repo_path: &str, branch_name: &str) -> Result<Str
 }
 
 #[tauri::command]
+pub fn run_git_checkout_remote_branch(repo_path: &str, remote_branch: &str, local_branch: Option<String>) -> Result<String, String> {
+    let remote = remote_branch.trim();
+    if remote.is_empty() {
+        return Err("remote branch name is empty".to_string());
+    }
+    let local = local_branch
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| remote.split('/').nth(1).unwrap_or(remote).to_string());
+    if local.is_empty() {
+        return Err("local branch name is empty".to_string());
+    }
+    run_git_with_timeout(&["checkout", "-b", &local, remote], repo_path, 60)
+}
+
+#[tauri::command]
 pub fn run_git_discard_changes(
     repo_path: &str,
     file_path: &str,
@@ -1111,6 +1161,71 @@ pub fn run_git_create_worktree_from_branch(
     Ok(GitWorktreeCreateResult {
         path: target_text,
         branch: branch.to_string(),
+        head,
+    })
+}
+
+#[tauri::command]
+pub fn run_git_create_detached_worktree(
+    repo_path: &str,
+    start_point: &str,
+    target_path: Option<String>,
+) -> Result<GitWorktreeCreateResult, String> {
+    let start = start_point.trim();
+    if start.is_empty() {
+        return Err("start point is empty".to_string());
+    }
+
+    let target_text = if let Some(custom) = target_path {
+        let trimmed = custom.trim();
+        if trimmed.is_empty() {
+            return Err("target path is empty".to_string());
+        }
+        let candidate = PathBuf::from(trimmed);
+        if candidate.exists() {
+            return Err(format!("target path already exists: {trimmed}"));
+        }
+        if let Some(parent) = candidate.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create parent directory: {e}"))?;
+        }
+        candidate.to_string_lossy().to_string()
+    } else {
+        let main_root = main_worktree_root(repo_path)?;
+        let repo_name = main_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("repo");
+        let parent = main_root
+            .parent()
+            .ok_or_else(|| "failed to resolve parent directory for worktrees".to_string())?;
+        let worktree_root = parent.join(format!("{repo_name}.worktrees"));
+        fs::create_dir_all(&worktree_root)
+            .map_err(|e| format!("failed to create worktree root: {e}"))?;
+
+        let base_name = sanitize_branch_for_dir(start);
+        let mut target_path = worktree_root.join(&base_name);
+        let mut suffix = 2u32;
+        while target_path.exists() {
+            target_path = worktree_root.join(format!("{base_name}-{suffix}"));
+            suffix += 1;
+        }
+        target_path.to_string_lossy().to_string()
+    };
+
+    run_git_with_timeout(
+        &["worktree", "add", "--detach", &target_text, start],
+        repo_path,
+        120,
+    )?;
+    let head = run_git(&["rev-parse", "HEAD"], &target_text)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok(GitWorktreeCreateResult {
+        path: target_text,
+        branch: "(detached)".to_string(),
         head,
     })
 }

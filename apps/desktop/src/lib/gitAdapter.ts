@@ -81,6 +81,10 @@ export async function gitCheckoutBranch(repoPath: string, branchName: string): P
   return invoke<string>("run_git_checkout_branch", { repoPath, branchName });
 }
 
+export async function gitCheckoutRemoteBranch(repoPath: string, remoteBranch: string, localBranch?: string): Promise<string> {
+  return invoke<string>("run_git_checkout_remote_branch", { repoPath, remoteBranch, localBranch });
+}
+
 export async function gitDiscardChanges(
   repoPath: string,
   filePath: string,
@@ -99,6 +103,10 @@ export async function deleteGitBranch(repoPath: string, branchName: string): Pro
 
 export async function createGitWorktreeFromBranch(repoPath: string, branchName: string, targetPath?: string): Promise<GitWorktreeCreateResult> {
   return invoke<GitWorktreeCreateResult>("run_git_create_worktree_from_branch", { repoPath, branchName, targetPath });
+}
+
+export async function createGitDetachedWorktree(repoPath: string, startPoint: string, targetPath?: string): Promise<GitWorktreeCreateResult> {
+  return invoke<GitWorktreeCreateResult>("run_git_create_detached_worktree", { repoPath, startPoint, targetPath });
 }
 
 export async function removeGitWorktree(repoPath: string, targetPath: string): Promise<GitWorktreeRemoveResult> {

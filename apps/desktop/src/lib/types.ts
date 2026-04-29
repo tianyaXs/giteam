@@ -17,6 +17,7 @@ export type GitCommitSummary = {
 export type GitBranchSummary = {
   name: string;
   isCurrent: boolean;
+  isRemote: boolean;
 };
 
 export type GitGraphNode = {

@@ -13,6 +13,7 @@ import {
   closeRepoTerminalSession,
   clearRepoTerminalSession,
   createGitBranch,
+  createGitDetachedWorktree,
   createGitWorktreeFromBranch,
   deleteGitBranch,
   getBranchCommits,
@@ -26,6 +27,7 @@ import {
   getGitWorktreeOverview,
   getLocalBranches,
   gitCheckoutBranch,
+  gitCheckoutRemoteBranch,
   gitDiscardChanges,
   gitStageFile,
   gitUnstageFile,
@@ -836,6 +838,7 @@ const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
 const WORKSPACE_AGENT_BINDINGS_KEY = "giteam.workspace-agent-bindings.v1";
 const BRANCH_PARENT_MAP_KEY = "giteam.branch-parent-map.v1";
+const WORKTREE_PARENT_MAP_KEY = "giteam.worktree-parent-map.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
 const OPENCODE_RECENT_VISIBLE = 2;
@@ -1097,6 +1100,32 @@ function readBranchParentMap(): Record<string, string> {
 function writeBranchParentMap(map: Record<string, string>) {
   try {
     window.localStorage.setItem(BRANCH_PARENT_MAP_KEY, JSON.stringify(map));
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
+function readWorktreeParentMap(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(WORKTREE_PARENT_MAP_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string> | null;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [path, branch] of Object.entries(parsed)) {
+      const p = normalizeWorkspacePath(path);
+      const b = String(branch || "").trim();
+      if (p && b) out[p] = b;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeWorktreeParentMap(map: Record<string, string>) {
+  try {
+    window.localStorage.setItem(WORKTREE_PARENT_MAP_KEY, JSON.stringify(map));
   } catch {
     // ignore unavailable storage
   }
@@ -2111,10 +2140,11 @@ export function App() {
     startWidth: number;
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
-  const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string } | null>(null);
+  const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string; branch?: string; subject?: string } | null>(null);
   const [topologyContextMenu, setTopologyContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [topologyCreateSourceNodeId, setTopologyCreateSourceNodeId] = useState("");
   const [topologyInspectNodeId, setTopologyInspectNodeId] = useState("");
+  const [selectedWorktreePath, setSelectedWorktreePath] = useState("");
 
   // Panel is fused into the center reading area.
 
@@ -2172,6 +2202,10 @@ export function App() {
   const [discardingFile, setDiscardingFile] = useState("");
   const [showDiscardAllConfirm, setShowDiscardAllConfirm] = useState(false);
   const [discardingAll, setDiscardingAll] = useState(false);
+  const [worktreeContextMenu, setWorktreeContextMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  const [showRemoveWorktreeConfirm, setShowRemoveWorktreeConfirm] = useState(false);
+  const [removingWorktreePath, setRemovingWorktreePath] = useState("");
+  const [worktreeToRemove, setWorktreeToRemove] = useState("");
   const [stagingFile, setStagingFile] = useState("");
   const [unstagingFile, setUnstagingFile] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2297,6 +2331,7 @@ export function App() {
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [workspaceAgentBindings, setWorkspaceAgentBindings] = useState<Record<string, WorkspaceAgentBinding>>(() => readWorkspaceAgentBindings());
   const [branchParentMap, setBranchParentMap] = useState<Record<string, string>>(() => readBranchParentMap());
+  const [worktreeParentMap, setWorktreeParentMap] = useState<Record<string, string>>(() => readWorktreeParentMap());
   const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
   const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
   const [opencodeDebugLogs, setOpencodeDebugLogs] = useState<string[]>([]);
@@ -2564,6 +2599,17 @@ export function App() {
       const next = { ...prev };
       delete next[branch];
       writeBranchParentMap(next);
+      return next;
+    });
+  }
+
+  function rememberWorktreeParent(worktreePath: string, parentBranch: string) {
+    const path = normalizeWorkspacePath(worktreePath);
+    const parent = parentBranch.trim();
+    if (!path || !parent) return;
+    setWorktreeParentMap((prev) => {
+      const next = { ...prev, [path]: parent };
+      writeWorktreeParentMap(next);
       return next;
     });
   }
@@ -4935,6 +4981,26 @@ export function App() {
     }
   }
 
+  async function checkoutRemoteBranchFromTopology(remoteBranch: string) {
+    if (!ensureRepoSelected()) return;
+    setTopologyContextMenu(null);
+    setBusy(true);
+    setError("");
+    const localName = remoteBranch.split('/').slice(1).join('/');
+    setMessage(`创建本地分支: ${localName} from ${remoteBranch}...`);
+    try {
+      await gitCheckoutRemoteBranch(repoPath, remoteBranch, localName);
+      setSelectedBranch(localName);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+      setMessage(`已创建并检出分支: ${localName}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage(`创建分支失败: ${localName}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function activateBranchWorkspace(branchName: string) {
     if (!ensureRepoSelected()) return;
     const branch = branchName.trim();
@@ -5059,6 +5125,31 @@ export function App() {
     return `${parent}/${repoLeaf}.worktrees/${combined}`;
   }
 
+  function commitWorktreeBranchName(commit: GitCommitSummary): string {
+    const subjectSlug = (commit.subject || "commit")
+      .toLowerCase()
+      .replace(/[^a-z0-9/_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 28);
+    return `worktree/${subjectSlug || "commit"}-${shortSha(commit.sha, 7)}`;
+  }
+
+  function openCommitWorktreeDialog(commit: GitCommitSummary, branchName?: string) {
+    if (!ensureRepoSelected()) return;
+    const branch = branchName || selectedBranch || worktreeOverview.branch || currentTopologyBaseBranch();
+    const sourceId = `commit:${branch}:${commit.sha}`;
+    const name = commitWorktreeBranchName(commit);
+    setCommitContextMenu(null);
+    setTopologyContextMenu(null);
+    setTopologySelectionId(sourceId);
+    setTopologyCreateSourceNodeId(sourceId);
+    setTopologyCreateMode("worktree");
+    setTopologyCreateBranchName(name);
+    setTopologyCreateTargetPath(suggestedTopologyPath(branch || shortSha(commit.sha, 7), name));
+    setTopologyCreatingNode(null);
+    setShowTopologyCreateDialog(true);
+  }
+
   function openTopologyCreateDialog(mode: "branch" | "worktree", nodeId?: string) {
     if (!ensureRepoSelected()) return;
     const sourceId = nodeId || topologySelectionId || topologyModel.primaryNodeId;
@@ -5070,6 +5161,18 @@ export function App() {
       setTopologyCreateMode(mode);
       setTopologyCreateBranchName("");
       setTopologyCreateTargetPath(mode === "worktree" && baseBranch ? suggestedTopologyPath(baseBranch) : "");
+      setTopologyCreatingNode(null);
+      setShowTopologyCreateDialog(true);
+      return;
+    }
+    if (sourceId.startsWith("commit:")) {
+      const { baseBranch, startPoint } = topologyCreateSource(sourceId);
+      setTopologyContextMenu(null);
+      setTopologySelectionId(sourceId);
+      setTopologyCreateSourceNodeId(sourceId);
+      setTopologyCreateMode(mode);
+      setTopologyCreateBranchName(mode === "worktree" ? `worktree/${shortSha(startPoint, 7)}` : "");
+      setTopologyCreateTargetPath(mode === "worktree" ? suggestedTopologyPath(baseBranch || shortSha(startPoint, 7), shortSha(startPoint, 7)) : "");
       setTopologyCreatingNode(null);
       setShowTopologyCreateDialog(true);
       return;
@@ -5120,42 +5223,33 @@ export function App() {
         setShowTopologyCreateDialog(false);
         setMessage(`已创建分支: ${branchName}`);
       } else {
-        const workspaceBranch = branchName.includes("/") || branchName.startsWith(`${baseBranch}-`)
-          ? branchName
-          : `${baseBranch}-${branchName}`;
+        const workspaceName = branchName;
         let targetPath = topologyCreateTargetPath.trim() || suggestedTopologyPath(baseBranch, branchName);
-        // Validate baseBranch exists
-        const branchExists = branches.some((b) => b.name === baseBranch);
-        if (!branchExists) {
-          throw new Error(`分支 "${baseBranch}" 不存在，请先创建分支。`);
-        }
-        const workspaceBranchExists = branches.some((b) => b.name === workspaceBranch);
-        const workspaceAlreadyActive = linkedWorktrees.some((wt) => wt.branch === workspaceBranch);
+        const workspaceAlreadyActive = linkedWorktrees.some((wt) => normalizeWorkspacePath(wt.path) === normalizeWorkspacePath(targetPath));
         if (workspaceAlreadyActive) {
-          throw new Error(`工作空间分支 "${workspaceBranch}" 已经被激活`);
+          throw new Error(`工作空间 "${workspaceName}" 已经存在`);
         }
         // If suggested path already exists, let backend auto-generate a unique path
         const pathExists = linkedWorktrees.some((wt) => wt.path === targetPath);
         if (pathExists) {
           targetPath = "";
         }
-        setMessage(`基于 ${baseBranch} 创建工作空间: ${workspaceBranch}...`);
-        if (!workspaceBranchExists) {
-          await createGitBranch(repoPath, workspaceBranch, baseBranch);
-          rememberBranchParent(workspaceBranch, baseBranch);
-        }
-        console.log("Creating workspace:", { repoPath, baseBranch, workspaceBranch, targetPath: targetPath || "auto-generated" });
-        const created = await createGitWorktreeFromBranch(repoPath, workspaceBranch, targetPath || undefined);
+        setMessage(`基于 ${startPoint || baseBranch} 创建工作空间: ${workspaceName}...`);
+        console.log("Creating detached workspace:", { repoPath, baseBranch, startPoint, targetPath: targetPath || "auto-generated" });
+        const created = await createGitDetachedWorktree(repoPath, startPoint || baseBranch, targetPath || undefined);
+        rememberWorktreeParent(created.path, baseBranch);
         console.log("Worktree created:", created);
         await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-        const newBranchCommits = await getBranchCommits(repoPath, created.branch, 80);
-        setCommits(newBranchCommits);
-        setSelectedCommit(newBranchCommits[0]?.sha ?? "");
-        setSelectedBranch(created.branch);
-        setTopologySelectionId(`worktree:${created.path}`);
+        const newBranchCommits = baseBranch ? await getBranchCommits(repoPath, baseBranch, 80) : [];
+        if (newBranchCommits.length > 0) {
+          setCommits(newBranchCommits);
+          setSelectedCommit(newBranchCommits[0]?.sha ?? "");
+        }
+        setSelectedBranch(baseBranch);
+        setTopologySelectionId(`branch:${baseBranch}`);
         setTopologyCreatingNode(null);
         setShowTopologyCreateDialog(false);
-        setMessage(`已创建工作空间: ${workspaceBranch}`);
+        setMessage(`已创建工作空间: ${workspaceName}`);
       }
     } catch (e) {
       setError(String(e));
@@ -5629,6 +5723,26 @@ export function App() {
     }
   }
 
+  async function handleRemoveWorktree(path: string) {
+    if (!ensureRepoSelected() || !path) return;
+    setRemovingWorktreePath(path);
+    setError("");
+    try {
+      await removeGitWorktree(repoPath, path);
+      setMessage(`已移除 worktree: ${path}`);
+      setShowRemoveWorktreeConfirm(false);
+      setWorktreeContextMenu(null);
+      await refreshWorktreeData();
+      await Promise.all([refreshBranchesAndCommits()]);
+    } catch (e) {
+      setError(String(e));
+      setMessage("移除 worktree 失败");
+    } finally {
+      setRemovingWorktreePath("");
+      setWorktreeToRemove("");
+    }
+  }
+
   function toggleWorktreeDir(path: string) {
     setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
   }
@@ -5937,10 +6051,10 @@ export function App() {
       const rows = await getBranchCommits(selectedRepo.path, branchName, 80);
       setCommits(rows);
       setSelectedCommit(rows[0]?.sha ?? "");
-      setMessage(`已切换分支: ${branchName}`);
+      setMessage(`已选择分支: ${branchName}`);
     } catch (e) {
       setError(String(e));
-      setMessage("切换分支失败");
+      setMessage("加载分支失败");
     }
   }
 
@@ -7557,6 +7671,11 @@ export function App() {
           <div className="gt-worktree-topology-shell">
             <div className="gt-gittree-panel">
               {(() => {
+                const worktreeOnlyBranches = new Set(
+                  linkedWorktrees
+                    .filter((wt) => !wt.isMainWorktree && branchParentMap[wt.branch])
+                    .map((wt) => wt.branch)
+                );
                 const allBranchNames = new Set<string>();
                 const isGitTreeBranch = (name: string) => {
                   const normalized = name.trim().toLowerCase();
@@ -7564,12 +7683,12 @@ export function App() {
                 };
 
                 branches.forEach((b) => {
-                  if (isGitTreeBranch(b.name)) {
+                  if (isGitTreeBranch(b.name) && !worktreeOnlyBranches.has(b.name)) {
                     allBranchNames.add(b.name);
                   }
                 });
                 Object.keys(branchParentMap).forEach((b) => {
-                  if (isGitTreeBranch(b)) {
+                  if (isGitTreeBranch(b) && !worktreeOnlyBranches.has(b)) {
                     allBranchNames.add(b);
                   }
                 });
@@ -7631,14 +7750,13 @@ export function App() {
                 }
 
                 const branchNames = Array.from(allBranchNames);
+                const actualCurrentBranchName = branches.find((item) => item.isCurrent)?.name || (worktreeOverview.branch && worktreeOverview.branch !== "HEAD" && worktreeOverview.branch !== "(detached)" ? worktreeOverview.branch : "");
+                const currentBranchName = actualCurrentBranchName;
                 const sortBranches = (items: string[]) => items.sort((a, b) => {
                   if (a === defaultMain) return -1;
                   if (b === defaultMain) return 1;
-                  if (a === currentBranchName) return -1;
-                  if (b === currentBranchName) return 1;
                   return a.localeCompare(b);
                 });
-                const currentBranchName = worktreeOverview.branch || selectedBranch || branches.find((item) => item.isCurrent)?.name || "";
 
                 branchNames.forEach((branch) => {
                   if (effectiveParentMap[branch]) return;
@@ -7721,15 +7839,28 @@ export function App() {
                   return rows;
                 };
 
-                const selectedTreeBranch = topologySelectionId.startsWith("branch:")
+                const selectedTreeBranch = topologySelectionId.startsWith("worktree:")
+                  ? worktreeParentMap[normalizeWorkspacePath(topologySelectionId.slice(9))] || selectedBranch || actualCurrentBranchName || defaultMain || rootBranches[0] || ""
+                  : topologySelectionId.startsWith("branch:")
                   ? topologySelectionId.slice(7)
-                  : selectedBranch || currentBranchName || defaultMain || rootBranches[0] || "";
+                  : selectedBranch || actualCurrentBranchName || defaultMain || rootBranches[0] || "";
                 const activeTreeBranch = allBranchNames.has(selectedTreeBranch) ? selectedTreeBranch : defaultMain || rootBranches[0] || "";
                 const activeBranchSummary = branches.find((branch) => branch.name === activeTreeBranch);
                 const activeTone = branchTone(activeTreeBranch);
                 const activeBranchCommits = activeTreeBranch === selectedBranch || activeTreeBranch === currentBranchName
                   ? commits
                   : commitsFromGraph(activeTreeBranch);
+                const selectedTreeCommit = topologySelectionId.startsWith("commit:")
+                  ? activeBranchCommits.find((commit) => commit.sha === selectedCommit) || null
+                  : null;
+                const worktreeParentBranch = (wt: GitLinkedWorktree) => {
+                  const pathParent = worktreeParentMap[normalizeWorkspacePath(wt.path)] || "";
+                  if (pathParent) return pathParent;
+                  return wt.branch;
+                };
+                const branchWorktrees = (branchName: string) => linkedWorktrees.filter((wt) => !wt.isMainWorktree && worktreeParentBranch(wt) === branchName);
+                const activeBranchWorktrees = branchWorktrees(activeTreeBranch);
+                const activeBranchIsCurrent = activeBranchSummary?.isCurrent || worktreeOverview.branch === activeTreeBranch;
 
                 const branchCommitCount = (branchName: string) => {
                   if (branchName === selectedBranch || branchName === currentBranchName) return commits.length;
@@ -7743,18 +7874,22 @@ export function App() {
 
                 const renderBranchRow = (branchName: string, depth = 0): ReactNode => {
                   const childBranches = childrenByParent.get(branchName) || [];
+                  const childWorktrees = branchWorktrees(branchName);
                   const treeKey = `tree:${branchName}`;
                   const collapsed = collapsedBranchIds.has(treeKey);
                   const tone = branchTone(branchName);
-                  const isCurrent = branchName === currentBranchName || branches.some((b) => b.name === branchName && b.isCurrent);
+                  const branchInfo = branches.find((b) => b.name === branchName);
+                  const isCurrent = branchName === currentBranchName || !!branchInfo?.isCurrent;
+                  const isRemote = !!branchInfo?.isRemote;
                   const isActive = branchName === activeTreeBranch;
+                  const displayName = isRemote && branchName.includes("/") ? branchName.split("/").slice(1).join("/") : branchName;
                   return (
                     <Fragment key={branchName}>
                       <div
-                        className={isActive ? "gt-gittree-branch active" : "gt-gittree-branch"}
+                        className={isActive ? "gt-gittree-branch active" : isRemote ? "gt-gittree-branch is-remote" : "gt-gittree-branch"}
                         style={{ paddingLeft: 10 + depth * 18 }}
                         onClick={() => selectBranchFromTree(branchName)}
-                        onDoubleClick={() => void checkoutBranchFromTopology(branchName)}
+                        onDoubleClick={() => !isRemote && void checkoutBranchFromTopology(branchName)}
                         onContextMenu={(e) => {
                           e.preventDefault();
                           setTopologyContextMenu({ x: e.clientX, y: e.clientY, nodeId: `branch:${branchName}` });
@@ -7778,8 +7913,9 @@ export function App() {
                           {childBranches.length > 0 ? (collapsed ? "▸" : "▾") : ""}
                         </button>
                         <span className="gt-gittree-dot" style={{ background: tone.accent }} />
-                        <span className="gt-gittree-name" title={branchName}>{branchName}</span>
+                        <span className="gt-gittree-name" title={branchName}>{displayName}</span>
                         {isCurrent ? <span className="gt-gittree-badge">CURRENT</span> : null}
+                        {isRemote ? <span className="gt-gittree-badge is-remote">REMOTE</span> : null}
                         <span className="gt-gittree-count">{branchCommitCount(branchName) || "-"}</span>
                       </div>
                       {!collapsed ? childBranches.map((child) => renderBranchRow(child, depth + 1)) : null}
@@ -7806,24 +7942,6 @@ export function App() {
                           <div className="gt-empty-hint">暂无本地分支。</div>
                         )}
                       </div>
-                    </div>
-                    <div className="gt-gittree-detail">
-                      <div className="gt-gittree-detail-head">
-                        <div className="gt-gittree-selected-title">
-                          <span className="gt-gittree-dot large" style={{ background: activeTone.accent }} />
-                          <div>
-                            <strong>{activeTreeBranch || "未选择分支"}</strong>
-                            <span>{activeBranchSummary?.isCurrent ? "CURRENT" : branchHeadByName.get(activeTreeBranch)?.slice(0, 7) || "no head in graph"}</span>
-                          </div>
-                        </div>
-                        <div className="gt-gittree-actions">
-                          <button className="chip" onClick={() => activeTreeBranch && openTopologyCreateDialog("branch", `branch:${activeTreeBranch}`)} disabled={!activeTreeBranch}>New Branch</button>
-                          <button className="chip" onClick={() => activeTreeBranch && void checkoutBranchFromTopology(activeTreeBranch)} disabled={!activeTreeBranch}>Checkout</button>
-                          {activeTreeBranch && activeTreeBranch !== "main" && activeTreeBranch !== "master" ? (
-                            <button className="chip danger" onClick={() => void deleteBranchFromTopology(activeTreeBranch)}>Delete</button>
-                          ) : null}
-                        </div>
-                      </div>
                       <div className="gt-gittree-commit-toolbar">
                         <span>Commits</span>
                         <span>{activeBranchCommits.length > 0 ? `${activeBranchCommits.length} loaded` : "No commit loaded"}</span>
@@ -7833,14 +7951,17 @@ export function App() {
                           <button
                             key={`${activeTreeBranch}:${commit.sha}`}
                             className={selectedCommit === commit.sha ? "gt-gittree-commit selected" : "gt-gittree-commit"}
-                            onClick={() => setSelectedCommit(commit.sha)}
+                            onClick={() => {
+                              setSelectedCommit(commit.sha);
+                              setTopologySelectionId(`commit:${activeTreeBranch}:${commit.sha}`);
+                            }}
                             onDoubleClick={() => {
                               setSelectedCommit(commit.sha);
                               setDetailTab("context");
                             }}
                             onContextMenu={(e) => {
                               e.preventDefault();
-                              setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha });
+                              setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject });
                             }}
                           >
                             <span className="gt-gittree-commit-index">{index === 0 ? "HEAD" : index + 1}</span>
@@ -7857,6 +7978,89 @@ export function App() {
                           </div>
                         )}
                       </div>
+                    </div>
+                    <div className="gt-gittree-detail">
+                      <div className="gt-gittree-detail-head">
+                        <div className="gt-gittree-selected-title">
+                          <span className="gt-gittree-dot large" style={{ background: activeTone.accent }} />
+                          <div>
+                            <strong>{selectedTreeCommit ? selectedTreeCommit.subject || "(no subject)" : activeTreeBranch || "未选择分支"}</strong>
+                            <span>{selectedTreeCommit ? `${shortSha(selectedTreeCommit.sha, 8)} · ${activeTreeBranch}` : activeBranchIsCurrent ? "CURRENT" : branchHeadByName.get(activeTreeBranch)?.slice(0, 7) || "no head in graph"}</span>
+                          </div>
+                        </div>
+                        <div className="gt-gittree-actions">
+                          {selectedTreeCommit ? (
+                            <>
+                              <button className="chip active" onClick={() => openCommitWorktreeDialog(selectedTreeCommit, activeTreeBranch)}>Create Worktree</button>
+                              <button className="chip" onClick={() => inspectCommitFromTopology(selectedTreeCommit.sha)}>Explain</button>
+                            </>
+                          ) : (
+                            <button className="chip" onClick={() => activeTreeBranch && openTopologyCreateDialog("worktree", `branch:${activeTreeBranch}`)} disabled={!activeTreeBranch}>New Worktree</button>
+                          )}
+                        </div>
+                      </div>
+                      {selectedTreeCommit ? (
+                        <div className="gt-gittree-detail-body">
+                          <div className="gt-gittree-detail-card">
+                            <span>Commit</span>
+                            <strong>{shortSha(selectedTreeCommit.sha, 12)}</strong>
+                            <p>{selectedTreeCommit.subject || "(no subject)"}</p>
+                          </div>
+                          <div className="gt-gittree-detail-grid">
+                            <div><span>Branch</span><strong>{activeTreeBranch || "-"}</strong></div>
+                            <div><span>Author</span><strong>{selectedTreeCommit.author || "unknown"}</strong></div>
+                            <div><span>Date</span><strong>{selectedTreeCommit.date || "unknown"}</strong></div>
+                            <div><span>Worktree</span><strong>{activeBranchWorktrees.length || 0}</strong></div>
+                          </div>
+                          <pre className="gt-gittree-detail-preview">{selectedExplain || "Select Explain to load Entire context for this commit."}</pre>
+                        </div>
+                      ) : (
+                        <div className="gt-gittree-detail-body">
+                          <div className="gt-gittree-commit-toolbar gt-gittree-worktree-toolbar">
+                            <span>Worktrees</span>
+                            <div className="toolbar" style={{ gap: 8 }}>
+                              <span>{activeBranchWorktrees.length} linked</span>
+                              <button
+                                className="chip"
+                                style={{ fontSize: 10, height: 22, padding: "0 8px" }}
+                                onClick={() => activeTreeBranch && openTopologyCreateDialog("worktree", `branch:${activeTreeBranch}`)}
+                                disabled={!activeTreeBranch}
+                              >
+                                + New
+                              </button>
+                            </div>
+                          </div>
+                          <div className="gt-gittree-worktree-list">
+                            {activeBranchWorktrees.length > 0 ? activeBranchWorktrees.map((wt) => (
+                              <button
+                                key={wt.path}
+                                className={selectedWorktreePath === wt.path ? "gt-gittree-worktree-row selected" : "gt-gittree-worktree-row"}
+                                onClick={() => setSelectedWorktreePath(wt.path)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  setWorktreeContextMenu({ x: e.clientX, y: e.clientY, path: wt.path });
+                                }}
+                              >
+                                <span className="gt-gittree-worktree-state">{wt.isCurrent ? "Current" : wt.isDetached ? "Detached" : "Worktree"}</span>
+                                <strong>{wt.path.split("/").filter(Boolean).pop() || wt.branch || "worktree"}</strong>
+                                <span>{wt.path}</span>
+                                <em>{wt.clean ? "clean" : `${wt.stagedCount + wt.unstagedCount + wt.untrackedCount} changes`}</em>
+                                <button
+                                  type="button"
+                                  className="chip"
+                                  style={{ fontSize: 10, height: 22, padding: "0 8px" }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void activateLinkedWorktree(wt.path);
+                                  }}
+                                >
+                                  Open
+                                </button>
+                              </button>
+                            )) : <div className="gt-empty-hint">No worktree for this branch.</div>}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </>
                 );
@@ -8438,27 +8642,27 @@ export function App() {
               <h3>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</h3>
               <p className="small muted">
                 {topologyCreateMode === "worktree"
-                  ? "会先基于来源分支创建一个工作空间分支，再创建对应 worktree 目录。"
+                  ? "会在来源分支或 commit 下创建一个独立 worktree 目录，不会额外创建子分支。"
                   : "从来源分支创建新分支，创建后会选中新分支。"}
               </p>
               <div className="gt-topology-create-grid">
                 <label className="gt-topology-form-field">
-                  <span>来源分支</span>
-                  <strong>{topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
+                  <span>{topologyCreateSourceNodeId.startsWith("commit:") ? "来源 Commit" : "来源分支"}</span>
+                  <strong>{topologyCreateSourceNodeId.startsWith("commit:") ? shortSha(topologyCreateSource(topologyCreateSourceNodeId).startPoint, 10) : topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
                 </label>
                 <label className="gt-topology-form-field">
-                  <span>{topologyCreateMode === "worktree" ? "工作空间标识 / 分支名" : "新分支名"}</span>
+                  <span>{topologyCreateMode === "worktree" ? "工作空间目录名" : "新分支名"}</span>
                   <input
                     value={topologyCreateBranchName}
                     onChange={(e) => {
                       const next = e.target.value;
                       setTopologyCreateBranchName(next);
                       if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
-                        const base = topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
+                        const base = topologyCreateSource(topologyCreateSourceNodeId).baseBranch || topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
                         setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
                       }
                     }}
-                    placeholder={topologyCreateMode === "worktree" ? "ui-v2 或 feature/ui-v2" : "feature/my-node"}
+                    placeholder={topologyCreateMode === "worktree" ? "ui-v2" : "feature/my-node"}
                     autoFocus
                   />
                 </label>
@@ -8520,6 +8724,44 @@ export function App() {
                 <button className="chip" onClick={() => setShowDiscardAllConfirm(false)} disabled={discardingAll}>取消</button>
                 <button className="chip is-danger" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
                   {discardingAll ? "撤销中..." : "确认撤销"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {worktreeContextMenu ? (
+          <div className="repo-context-layer" onClick={() => setWorktreeContextMenu(null)}>
+            <div
+              className="repo-context-menu"
+              style={{ left: worktreeContextMenu.x, top: worktreeContextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                className="repo-context-item"
+                onClick={() => {
+                  setWorktreeToRemove(worktreeContextMenu.path);
+                  setShowRemoveWorktreeConfirm(true);
+                  setWorktreeContextMenu(null);
+                }}
+              >
+                Remove worktree
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {showRemoveWorktreeConfirm ? (
+          <div className="modal-mask" onClick={() => { if (!removingWorktreePath) { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); } }}>
+            <div className="modal-card gt-discard-confirm-card" onClick={(e) => e.stopPropagation()}>
+              <h3>Remove worktree?</h3>
+              <p className="small muted">
+                This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.
+              </p>
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 14 }}>
+                <button className="chip" onClick={() => { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); }} disabled={!!removingWorktreePath}>取消</button>
+                <button className="chip is-danger" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
+                  {removingWorktreePath ? "Removing..." : "Confirm Remove"}
                 </button>
               </div>
             </div>
@@ -9508,6 +9750,26 @@ export function App() {
               style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
+              <button
+                className="repo-context-item"
+                onClick={() => openCommitWorktreeDialog({
+                  sha: commitContextMenu.sha,
+                  subject: commitContextMenu.subject || "",
+                  author: "",
+                  date: ""
+                }, commitContextMenu.branch)}
+              >
+                Create worktree from commit
+              </button>
+              <button
+                className="repo-context-item"
+                onClick={() => {
+                  setCommitContextMenu(null);
+                  openTopologyCreateDialog("branch", `commit:${commitContextMenu.branch || currentTopologyBaseBranch()}:${commitContextMenu.sha}`);
+                }}
+              >
+                Create branch from commit
+              </button>
               <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
                 Copy commit id
               </button>
@@ -9546,10 +9808,12 @@ export function App() {
           
           if (!isBranch && !isWorktree) return null;
           
+          const branchInfo = isBranch ? branches.find((b) => b.name === branchName) : null;
+          const isRemoteBranch = !!branchInfo?.isRemote;
           const hasWorktree = isBranch && linkedWorktrees.some((w) => w.branch === branchName);
           const nodeWorkspacePath = isWorktree ? normalizeWorkspacePath(worktreePath) : "";
           const nodeAgentBinding = nodeWorkspacePath ? workspaceAgentBindings[nodeWorkspacePath] || null : null;
-          const isCurrentBranch = isBranch && (worktreeOverview.branch === branchName || branches.some((b) => b.name === branchName && b.isCurrent));
+          const isCurrentBranch = isBranch && (worktreeOverview.branch === branchName || !!branchInfo?.isCurrent);
           
           return (
             <div className="repo-context-layer" onClick={() => setTopologyContextMenu(null)}>
@@ -9564,22 +9828,23 @@ export function App() {
                       {branchName}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      创建子分支
+                      Create Branch
                     </button>
-                    {!hasWorktree ? (
-                      <button className="repo-context-item" onClick={() => void activateBranchWorkspace(branchName)}>
-                        激活为工作空间
-                      </button>
-                    ) : null}
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
-                      创建子分支并激活
+                      Create Worktree
                     </button>
-                    <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
-                      检出分支
-                    </button>
-                    {branchName !== "main" && branchName !== "master" && !hasWorktree ? (
+                    {isRemoteBranch ? (
+                      <button className="repo-context-item" onClick={() => void checkoutRemoteBranchFromTopology(branchName)}>
+                        Checkout as new local branch
+                      </button>
+                    ) : (
+                      <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
+                        Checkout
+                      </button>
+                    )}
+                    {!isRemoteBranch && branchName !== "main" && branchName !== "master" && !hasWorktree ? (
                       <button className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
-                        删除分支
+                        Delete Branch
                       </button>
                     ) : null}
                   </>
@@ -9590,23 +9855,23 @@ export function App() {
                       {worktreePath.split("/").pop() || worktreePath}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      基于此工作空间创建分支
+                      Create Branch from Worktree
                     </button>
                     <button className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
-                      打开工作空间
+                      Open Worktree
                     </button>
                     {nodeAgentBinding ? (
                       <button className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
-                        解除 Agent 绑定
+                        Unbind Agent
                       </button>
                     ) : (
                       <button className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
-                        绑定 Agent
+                        Bind Agent
                       </button>
                     )}
                     {!isCurrentBranch ? (
                       <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
-                        移除工作空间
+                        Remove Worktree
                       </button>
                     ) : null}
                   </>
