@@ -291,11 +291,16 @@ fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, St
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("failed to spawn shell: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn shell: {e}"))?;
 
     let start = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("failed waiting shell: {e}"))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("failed waiting shell: {e}"))?
+        {
             let out = child
                 .stdout
                 .take()
@@ -327,49 +332,38 @@ fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, St
 
 fn install_script(name: &str, action: &str) -> Result<&'static str, String> {
     match (name, action) {
-        ("git", "install") => Ok(
-            r#"if command -v brew >/dev/null 2>&1; then
+        ("git", "install") => Ok(r#"if command -v brew >/dev/null 2>&1; then
   brew install git
 else
   xcode-select --install || true
   echo "Homebrew not found. Triggered Xcode Command Line Tools installer."
-fi"#,
-        ),
-        ("git", "uninstall") => Ok(
-            r#"if command -v brew >/dev/null 2>&1; then
+fi"#),
+        ("git", "uninstall") => Ok(r#"if command -v brew >/dev/null 2>&1; then
   brew uninstall git || true
 else
   echo "Git installed by Xcode Command Line Tools must be removed manually."
-fi"#,
-        ),
-        ("entire", "install") => Ok(
-            r#"if ! command -v brew >/dev/null 2>&1; then
+fi"#),
+        ("entire", "install") => Ok(r#"if ! command -v brew >/dev/null 2>&1; then
   echo "Homebrew is required to install Entire CLI."
   exit 2
 fi
 brew tap entireio/tap
-brew install entireio/tap/entire"#,
-        ),
-        ("entire", "uninstall") => Ok(
-            r##"if command -v brew >/dev/null 2>&1; then
+brew install entireio/tap/entire"#),
+        ("entire", "uninstall") => Ok(r##"if command -v brew >/dev/null 2>&1; then
   brew uninstall entireio/tap/entire || true
 fi
 if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
-echo "Entire uninstall finished.""##,
-        ),
-        ("opencode", "install") => Ok(
-            r##"if command -v brew >/dev/null 2>&1; then
+echo "Entire uninstall finished.""##),
+        ("opencode", "install") => Ok(r##"if command -v brew >/dev/null 2>&1; then
   brew install anomalyco/tap/opencode
 elif command -v npm >/dev/null 2>&1; then
   npm install -g opencode-ai
 else
   curl -fsSL https://opencode.ai/install | bash
-fi"##,
-        ),
-        ("opencode", "uninstall") => Ok(
-            r##"if command -v opencode >/dev/null 2>&1; then
+fi"##),
+        ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true
 fi
 if command -v brew >/dev/null 2>&1; then
@@ -378,10 +372,8 @@ fi
 if command -v npm >/dev/null 2>&1; then
   npm uninstall -g opencode-ai || true
 fi
-echo "OpenCode uninstall finished.""##,
-        ),
-        ("giteam", "install") | ("giteam", "update") => Ok(
-            r##"NPM_CMD=""
+echo "OpenCode uninstall finished.""##),
+        ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
 else
@@ -434,10 +426,8 @@ if [ -x "$BIN" ]; then
   echo "[giteam] installed_bin=$BIN"
 else
   echo "[giteam] install finished but bin not found at $BIN"
-fi"##,
-        ),
-        ("giteam", "uninstall") => Ok(
-            r##"NPM_CMD=""
+fi"##),
+        ("giteam", "uninstall") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
 else
@@ -451,8 +441,7 @@ fi
 if [ -n "$NPM_CMD" ]; then
   "$NPM_CMD" uninstall -g giteam || true
 fi
-echo "giteam uninstall finished.""##,
-        ),
+echo "giteam uninstall finished.""##),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
 }

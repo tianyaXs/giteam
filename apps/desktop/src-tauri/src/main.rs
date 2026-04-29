@@ -5,7 +5,7 @@ mod macos_context_menu {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use objc2::runtime::{AnyObject, Imp, Sel};
-    use objc2::{sel};
+    use objc2::sel;
     use objc2_app_kit::{NSEvent, NSMenu};
     use tauri::{App, Manager};
 
@@ -56,6 +56,7 @@ mod macos_context_menu {
 
 fn main() {
     let app = tauri::Builder::default()
+        .manage(commands::watch::GitWorktreeWatcherState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
@@ -92,6 +93,7 @@ fn main() {
             commands::git::run_git_worktree_overview,
             commands::git::run_git_worktree_list,
             commands::git::run_git_worktree_file_patch,
+            commands::git::run_git_worktree_file_content,
             commands::git::run_git_checkout_branch,
             commands::git::run_git_discard_changes,
             commands::git::run_git_stage_file,
@@ -157,7 +159,9 @@ fn main() {
             commands::giteam_cli::giteam_cli_set_settings,
             commands::giteam_cli::giteam_cli_get_pair_code,
             commands::giteam_cli::giteam_cli_refresh_pair_code,
-            commands::giteam_cli::giteam_cli_get_access_info
+            commands::giteam_cli::giteam_cli_get_access_info,
+            commands::watch::start_git_worktree_watcher,
+            commands::watch::stop_git_worktree_watcher
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri app");

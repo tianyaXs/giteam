@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -217,6 +218,39 @@ fn control_server_settings_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn mobile_model_state_path() -> Option<PathBuf> {
+    control_server_settings_path().map(|path| path.with_file_name("mobile-model-state.json"))
+}
+
+fn read_mobile_model_state() -> Value {
+    let Some(path) = mobile_model_state_path() else {
+        return serde_json::json!({});
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return serde_json::json!({});
+    };
+    serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn write_mobile_model_state(value: &Value) -> Result<(), String> {
+    let Some(path) = mobile_model_state_path() else {
+        return Err("mobile model state path unavailable".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create model state dir failed: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize model state failed: {e}"))?;
+    fs::write(path, text).map_err(|e| format!("write model state failed: {e}"))
+}
+
+fn attach_mobile_model_state(mut config: Value) -> Value {
+    let state = read_mobile_model_state();
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("giteamMobileModelState".to_string(), state);
+    }
+    config
 }
 
 fn control_auth_token_path() -> Option<PathBuf> {
@@ -773,6 +807,265 @@ fn write_sse_event(stream: &mut TcpStream, event: &str, payload: &Value) -> Resu
         .map_err(|e| format!("write sse event failed: {e}"))
 }
 
+fn sse_frame_data(frame: &str) -> Option<String> {
+    let mut data = String::new();
+    for line in frame.lines() {
+        if let Some(rest) = line.trim_end().strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.trim_start());
+        }
+    }
+    if data.trim().is_empty() {
+        None
+    } else {
+        Some(data)
+    }
+}
+
+fn wrapped_opencode_event(data: &str) -> Option<Value> {
+    let json = serde_json::from_str::<Value>(data.trim()).ok()?;
+    Some(json.get("payload").cloned().unwrap_or(json))
+}
+
+fn event_session_id(event: &Value) -> &str {
+    event
+        .get("properties")
+        .and_then(|v| v.get("sessionID"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+fn stream_opencode_global_events(
+    stream: &mut TcpStream,
+    repo: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    let base = opencode::get_opencode_service_base(repo)?;
+    let url = format!("{base}/global/event");
+    let mut child = Command::new("curl")
+        .arg("-sS")
+        .arg("-N")
+        .arg("--fail")
+        .arg("-H")
+        .arg(format!("x-opencode-directory: {repo}"))
+        .arg("-H")
+        .arg("Accept: text/event-stream")
+        .arg(url.as_str())
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("open opencode global event stream failed: {e}"))?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return Err("opencode global event stdout unavailable".to_string());
+    };
+
+    let mut message_roles = HashMap::<String, String>::new();
+    let mut part_types = HashMap::<String, String>::new();
+    let mut pending_delta = HashMap::<String, Vec<(String, String, String)>>::new();
+    let mut frame = String::new();
+    let reader = BufReader::new(stdout);
+    let finish = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| format!("read opencode global event failed: {e}"))?;
+        if !line.trim().is_empty() {
+            frame.push_str(line.as_str());
+            frame.push('\n');
+            continue;
+        }
+        let data = sse_frame_data(frame.as_str());
+        frame.clear();
+        let Some(data) = data else { continue };
+        let Some(event) = wrapped_opencode_event(data.as_str()) else { continue };
+        let typ = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if event_session_id(&event) != session_id {
+            continue;
+        }
+
+        if typ == "session.idle" {
+            let _ = write_sse_event(stream, "end", &serde_json::json!({ "reason": "idle" }));
+            finish(&mut child);
+            return Ok(());
+        }
+        if typ == "session.status" {
+            let status_type = event
+                .get("properties")
+                .and_then(|v| v.get("status"))
+                .and_then(|v| v.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if status_type == "idle" {
+                let _ = write_sse_event(stream, "end", &serde_json::json!({ "reason": "idle" }));
+                finish(&mut child);
+                return Ok(());
+            }
+        }
+        if typ == "session.error" {
+            let error = event
+                .get("properties")
+                .and_then(|v| v.get("error"))
+                .cloned()
+                .unwrap_or(Value::String("session.error".to_string()));
+            let _ = write_sse_event(stream, "error", &serde_json::json!({ "error": error }));
+            finish(&mut child);
+            return Ok(());
+        }
+        if typ == "message.updated" {
+            let props = event.get("properties").and_then(|v| v.as_object());
+            let info = props
+                .and_then(|p| p.get("info"))
+                .and_then(|v| v.as_object());
+            let role = info
+                .and_then(|i| i.get("role"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let message_id = info
+                .and_then(|i| i.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !message_id.is_empty() {
+                message_roles.insert(message_id.to_string(), role.to_string());
+                if role == "assistant" {
+                    let _ = write_sse_event(
+                        stream,
+                        "assistant_message",
+                        &serde_json::json!({ "sessionId": session_id, "messageId": message_id }),
+                    );
+                    if let Some(deltas) = pending_delta.remove(message_id) {
+                        for (part_id, field, delta) in deltas {
+                            let event_type = match part_types.get(part_id.as_str()).map(String::as_str) {
+                                Some("reasoning") => "reasoning",
+                                Some("text") => "text",
+                                _ if field == "reasoning" => "reasoning",
+                                _ => "text",
+                            };
+                            if write_sse_event(
+                                stream,
+                                "delta",
+                                &serde_json::json!({
+                                    "sessionId": session_id,
+                                    "messageId": message_id,
+                                    "partId": part_id,
+                                    "type": event_type,
+                                    "delta": delta
+                                }),
+                            )
+                            .is_err()
+                            {
+                                finish(&mut child);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if typ == "message.part.delta" {
+            let props = event.get("properties").and_then(|v| v.as_object());
+            let message_id = props
+                .and_then(|p| p.get("messageID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let field = props
+                .and_then(|p| p.get("field"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let part_id = props
+                .and_then(|p| p.get("partID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(field);
+            let delta = props
+                .and_then(|p| p.get("delta"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if message_id.is_empty() || delta.is_empty() || (field != "text" && field != "reasoning") {
+                continue;
+            }
+            if message_roles.get(message_id).map(String::as_str) != Some("assistant") {
+                pending_delta
+                    .entry(message_id.to_string())
+                    .or_default()
+                    .push((part_id.to_string(), field.to_string(), delta.to_string()));
+                continue;
+            }
+            let event_type = match part_types.get(part_id).map(String::as_str) {
+                Some("reasoning") => "reasoning",
+                Some("text") => "text",
+                _ if field == "reasoning" => "reasoning",
+                _ => "text",
+            };
+            if write_sse_event(
+                stream,
+                "delta",
+                &serde_json::json!({
+                    "sessionId": session_id,
+                    "messageId": message_id,
+                    "partId": part_id,
+                    "type": event_type,
+                    "delta": delta
+                }),
+            )
+            .is_err()
+            {
+                finish(&mut child);
+                return Ok(());
+            }
+            continue;
+        }
+        if typ == "message.part.updated" {
+            let part = event
+                .get("properties")
+                .and_then(|v| v.get("part"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            if let (Some(part_id), Some(part_type)) = (
+                part.get("id").and_then(|v| v.as_str()),
+                part.get("type").and_then(|v| v.as_str()),
+            ) {
+                if !part_id.is_empty() && !part_type.is_empty() {
+                    part_types.insert(part_id.to_string(), part_type.to_string());
+                }
+            }
+            let message_id = part
+                .get("messageID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if message_id.is_empty() {
+                continue;
+            }
+            if message_roles.get(message_id).map(String::as_str) != Some("assistant") {
+                continue;
+            }
+            if write_sse_event(
+                stream,
+                "part",
+                &serde_json::json!({
+                    "sessionId": session_id,
+                    "messageId": message_id,
+                    "part": part
+                }),
+            )
+            .is_err()
+            {
+                finish(&mut child);
+                return Ok(());
+            }
+        }
+    }
+
+    finish(&mut child);
+    Ok(())
+}
+
 fn extract_bearer(req: &HttpRequest) -> String {
     let auth = req
         .headers
@@ -1224,6 +1517,9 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                     if let Some(v) = state.get("title").cloned() {
                         compact_state.insert("title".to_string(), v);
                     }
+                    if let Some(v) = state.get("error").cloned() {
+                        compact_state.insert("error".to_string(), v);
+                    }
                     if let Some(input) =
                         compact_mobile_tool_input(state.get("input").and_then(|v| v.as_object()))
                     {
@@ -1417,9 +1713,21 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
         &serde_json::json!({
             "repoPath": repo,
             "sessionId": session_id,
-            "intervalMs": interval_ms
+            "intervalMs": interval_ms,
+            "mode": "opencode-global-event"
         }),
     );
+
+    match stream_opencode_global_events(&mut stream, repo.as_str(), session_id.as_str()) {
+        Ok(()) => return,
+        Err(e) => {
+            let _ = write_sse_event(
+                &mut stream,
+                "stream_fallback",
+                &serde_json::json!({ "reason": e, "mode": "message-snapshot" }),
+            );
+        }
+    }
 
     let mut prev_fingerprint = String::new();
     let start = now_unix_secs();
@@ -1569,6 +1877,20 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "PUT" && req.path == "/api/v1/admin/mobile/model-state" {
+        if let Err(resp) = ensure_loopback(remote_ip, "admin.mobile.model-state") {
+            return resp;
+        }
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        return match write_mobile_model_state(&raw) {
+            Ok(_) => (200, serde_json::json!({ "ok": true })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
     if req.method == "PUT" && req.path == "/api/v1/admin/control/settings" {
         if let Err(resp) = ensure_loopback(remote_ip, "admin.control.settings") {
             return resp;
@@ -1707,7 +2029,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
         return match opencode::get_opencode_server_config(repo.as_str()) {
-            Ok(v) => (200, v),
+            Ok(v) => (200, attach_mobile_model_state(v)),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
     }

@@ -4,8 +4,10 @@ import {
   Text,
   TextInput,
   Pressable,
+  ScrollView,
   StyleSheet,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import type { QuestionRequest, QuestionAnswer, QuestionInfo } from "../types";
 
@@ -19,6 +21,7 @@ interface QuestionDockProps {
 }
 
 export function QuestionDock({ request, onReply, onDismiss, disabledReason, submitState = 'idle', submitError }: QuestionDockProps) {
+  const { height: windowHeight } = useWindowDimensions();
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [customInputs, setCustomInputs] = useState<string[]>([]);
@@ -34,6 +37,9 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
   const options = useMemo(() => currentQuestion?.options || [], [currentQuestion]);
   const isMultiSelect = useMemo(() => currentQuestion?.multiple === true, [currentQuestion]);
   const allowCustom = useMemo(() => currentQuestion?.custom !== false, [currentQuestion]);
+  const denseOptions = options.length + (allowCustom ? 1 : 0) >= 5;
+  const maxDockHeight = Math.max(360, Math.round(windowHeight * 0.68));
+  const maxBodyHeight = Math.max(230, Math.round(windowHeight * 0.48));
   const isOtherOption = useMemo(() => allowCustom && selectedOption === options.length, [allowCustom, selectedOption, options.length]);
   const locked = !!disabledReason || submitState === 'submitting' || submitState === 'submitted';
 
@@ -172,7 +178,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
   if (questions.length === 0) return null;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { maxHeight: maxDockHeight }]}>
       <Pressable style={styles.header} onPress={() => setCollapsed(!collapsed)}>
         <View style={styles.titleRow}>
           <Text style={styles.title} numberOfLines={1}>
@@ -205,7 +211,12 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
 
       {!collapsed && (
         <>
-          <View style={styles.body}>
+          <ScrollView
+            style={[styles.body, { maxHeight: maxBodyHeight }]}
+            contentContainerStyle={styles.bodyContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
             {isConfirmTab ? (
               <View>
                 <Text style={styles.confirmTitle}>确认您的选择</Text>
@@ -236,7 +247,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                   {currentQuestion?.header ? (
                     <Text style={styles.headerText}>{currentQuestion.header}</Text>
                   ) : null}
-                  <Text style={styles.questionText}>{currentQuestion?.question}</Text>
+                  <Text style={styles.questionText} numberOfLines={denseOptions ? 3 : undefined}>{currentQuestion?.question}</Text>
                 </View>
 
                 <Text style={styles.hint}>
@@ -249,6 +260,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                       key={idx}
                       style={[
                         styles.option,
+                        denseOptions ? styles.optionCompact : null,
                         locked ? styles.optionDisabled : null,
                         idx === selectedOption && styles.optionSelected,
                         isOptionSelected(opt.label) && styles.optionPicked,
@@ -269,13 +281,15 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                           <View style={[
                             styles.radio,
                             isOptionSelected(opt.label) && styles.radioChecked,
-                          ]} />
+                          ]}>
+                            {isOptionSelected(opt.label) ? <View style={styles.radioDot} /> : null}
+                          </View>
                         )}
                       </View>
                       <View style={styles.optionContent}>
-                        <Text style={styles.optionLabel}>{opt.label}</Text>
+                        <Text style={styles.optionLabel} numberOfLines={denseOptions ? 1 : undefined}>{opt.label}</Text>
                         {opt.description ? (
-                          <Text style={styles.optionDesc}>{opt.description}</Text>
+                          <Text style={styles.optionDesc} numberOfLines={denseOptions ? 1 : 2}>{opt.description}</Text>
                         ) : null}
                       </View>
                     </Pressable>
@@ -285,6 +299,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                     <Pressable
                       style={[
                         styles.option,
+                        denseOptions ? styles.optionCompact : null,
                         styles.optionCustom,
                         locked ? styles.optionDisabled : null,
                         isOtherOption && styles.optionSelected,
@@ -306,7 +321,9 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                           <View style={[
                             styles.radio,
                             isCustomPicked && styles.radioChecked,
-                          ]} />
+                          ]}>
+                            {isCustomPicked ? <View style={styles.radioDot} /> : null}
+                          </View>
                         )}
                       </View>
                       <View style={styles.optionContent}>
@@ -333,7 +350,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                           />
                         ) : (
                           <>
-                            <Text style={styles.optionLabel}>输入自己的答案</Text>
+                            <Text style={styles.optionLabel} numberOfLines={1}>输入自己的答案</Text>
                             <Text style={styles.optionDesc}>
                               {currentCustomInput || "输入你的答案..."}
                             </Text>
@@ -345,7 +362,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                 </View>
               </>
             )}
-          </View>
+          </ScrollView>
 
           <View style={styles.footer}>
             <Pressable style={[styles.btnSecondary, locked ? styles.btnDisabled : null]} onPress={handleDismiss} disabled={locked}>
@@ -462,8 +479,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#9da5b4",
   },
-  body: {
+  body: {},
+  bodyContent: {
     padding: 14,
+    paddingBottom: 10,
   },
   questionHeader: {
     marginBottom: 8,
@@ -485,7 +504,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   options: {
-    gap: 8,
+    gap: 6,
   },
   option: {
     flexDirection: "row",
@@ -497,6 +516,12 @@ const styles = StyleSheet.create({
     borderColor: "#e5e5e5",
     borderRadius: 8,
     backgroundColor: "#fafafa",
+  },
+  optionCompact: {
+    alignItems: "center",
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    gap: 8,
   },
   optionSelected: {
     borderColor: "#243447",
@@ -513,36 +538,47 @@ const styles = StyleSheet.create({
     // no extra styles
   },
   optionRadio: {
-    marginTop: 2,
+    marginTop: 1,
   },
   radio: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: "#c0c0c0",
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderWidth: 1.5,
+    borderColor: "#b8c1cf",
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
   },
   radioChecked: {
     borderColor: "#243447",
+    backgroundColor: "#fff",
+  },
+  radioDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: "#243447",
   },
   checkbox: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: "#c0c0c0",
-    borderRadius: 4,
+    width: 18,
+    height: 18,
+    borderWidth: 1.5,
+    borderColor: "#b8c1cf",
+    borderRadius: 5,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#fff",
   },
   checkboxChecked: {
     borderColor: "#243447",
-    backgroundColor: "#243447",
+    backgroundColor: "rgba(36, 52, 71, 0.08)",
   },
   checkmark: {
-    color: "#fff",
-    fontSize: 12,
+    color: "#243447",
+    fontSize: 11,
     fontWeight: "700",
+    lineHeight: 14,
   },
   optionContent: {
     flex: 1,

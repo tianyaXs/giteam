@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { DiffEditor, loader } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -18,6 +21,7 @@ import {
   getCommitGraph,
   getGitWorktreeList,
   getGitUserIdentity,
+  getGitWorktreeFileContent,
   getGitWorktreeFilePatch,
   getGitWorktreeOverview,
   getLocalBranches,
@@ -31,7 +35,9 @@ import {
   gitPush,
   gitCommit,
   sendRepoTerminalInput,
-  startRepoTerminalSession
+  startGitWorktreeWatcher,
+  startRepoTerminalSession,
+  stopGitWorktreeWatcher
 } from "./lib/gitAdapter";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
@@ -50,6 +56,7 @@ import type {
   GitGraphNode,
   GitLinkedWorktree,
   GitUserIdentity,
+  GitWorktreeFileContent,
   GitWorktreeEntry,
   GitWorktreeOverview,
   QuestionRequest,
@@ -62,6 +69,8 @@ import type {
 import { QuestionDock } from "./components/QuestionDock";
 import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
 import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
+
+loader.config({ monaco });
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
@@ -384,6 +393,11 @@ const EMPTY_GIT_IDENTITY: GitUserIdentity = {
   email: ""
 };
 
+const EMPTY_WORKTREE_FILE_CONTENT: GitWorktreeFileContent = {
+  original: "",
+  modified: ""
+};
+
 type WorktreeTreeNode = {
   name: string;
   path: string;
@@ -459,6 +473,20 @@ function getWorktreeFileKindLabel(path: string): string {
   if (ext === "ts" || ext === "js") return ext;
   if (ext === "css" || ext === "html" || ext === "rs") return ext;
   return ext.slice(0, 4);
+}
+
+function getMonacoLanguage(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  if (ext === "ts" || ext === "tsx") return "typescript";
+  if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") return "javascript";
+  if (ext === "rs") return "rust";
+  if (ext === "css") return "css";
+  if (ext === "html") return "html";
+  if (ext === "json") return "json";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "toml") return "toml";
+  if (ext === "yaml" || ext === "yml") return "yaml";
+  return "plaintext";
 }
 
 function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
@@ -2072,8 +2100,8 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
-  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 720, 560, 980));
-  const [changesSidebarWidth, setChangesSidebarWidth] = useState(420);
+  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 840, 640, 1120));
+  const [changesSidebarWidth, setChangesSidebarWidth] = useState(260);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
@@ -2107,6 +2135,7 @@ export function App() {
   const [gitUserIdentity, setGitUserIdentity] = useState<GitUserIdentity>(EMPTY_GIT_IDENTITY);
   const [selectedWorktreeFile, setSelectedWorktreeFile] = useState("");
   const [selectedWorktreePatch, setSelectedWorktreePatch] = useState("");
+  const [selectedWorktreeContent, setSelectedWorktreeContent] = useState<GitWorktreeFileContent>(EMPTY_WORKTREE_FILE_CONTENT);
   const [expandedWorktreeDirs, setExpandedWorktreeDirs] = useState<string[]>([]);
   const [topologySelectionId, setTopologySelectionId] = useState("");
   const [topologyZoom, setTopologyZoom] = useState(1);
@@ -2136,9 +2165,12 @@ export function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
   const [commitMessage, setCommitMessage] = useState("");
+  const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [discardingFile, setDiscardingFile] = useState("");
+  const [showDiscardAllConfirm, setShowDiscardAllConfirm] = useState(false);
+  const [discardingAll, setDiscardingAll] = useState(false);
   const [stagingFile, setStagingFile] = useState("");
   const [unstagingFile, setUnstagingFile] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2279,6 +2311,7 @@ export function App() {
   const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const commitMessageInputRef = useRef<HTMLInputElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
@@ -2349,6 +2382,11 @@ export function App() {
   }, []);
 
   const repoPath = selectedRepo?.path ?? "";
+  const repoPathRef = useRef(repoPath);
+  const selectedWorktreeFileRef = useRef(selectedWorktreeFile);
+  const rightPaneTabRef = useRef(rightPaneTab);
+  const gitAutoRefreshBlockedRef = useRef(false);
+  const gitAutoRefreshTimerRef = useRef<number | null>(null);
   const workspacePath = normalizeWorkspacePath(repoPath);
   const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
@@ -2374,6 +2412,21 @@ export function App() {
     const unstagedCount = entries.filter((e) => e.unstaged || e.untracked).length;
     return { total: entries.length, staged: stagedCount, unstaged: unstagedCount };
   }, [worktreeOverview.entries]);
+  const discardAllCount = useMemo(
+    () => worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked).length,
+    [worktreeOverview.entries]
+  );
+  const hasCommittableChanges = worktreeChangeStats.staged > 0 || worktreeChangeStats.unstaged > 0;
+  const commitButtonCount = worktreeChangeStats.staged > 0 ? worktreeChangeStats.staged : worktreeChangeStats.unstaged;
+  const needsGitSync = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0;
+  const commitPrimaryIsSync = !hasCommittableChanges && needsGitSync;
+
+  useEffect(() => {
+    repoPathRef.current = repoPath;
+    selectedWorktreeFileRef.current = selectedWorktreeFile;
+    rightPaneTabRef.current = rightPaneTab;
+    gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
+  }, [repoPath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
   const activeTerminalView = useMemo(
     () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
     [activeTerminalTab?.output]
@@ -3390,9 +3443,9 @@ export function App() {
       if (draggingSplit.kind === "sidebar") {
         setSidebarWidth(clamp(draggingSplit.startWidth + delta, 240, 520));
       } else if (draggingSplit.kind === "right") {
-        setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 360, 760));
+        setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 520, 1120));
       } else {
-        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 300, 680));
+        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 220, 420));
       }
     };
     const onUp = () => setDraggingSplit(null);
@@ -5235,10 +5288,15 @@ export function App() {
       setSelectedWorktreeFile(target);
       if (!target) {
         setSelectedWorktreePatch(overview.clean ? "Working tree is clean." : "No patch available.");
+        setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
         return;
       }
-      const patch = await getGitWorktreeFilePatch(repoPath, target);
+      const [patch, content] = await Promise.all([
+        getGitWorktreeFilePatch(repoPath, target),
+        getGitWorktreeFileContent(repoPath, target)
+      ]);
       setSelectedWorktreePatch(patch);
+      setSelectedWorktreeContent(content);
     } catch (e) {
       setError(String(e));
       setWorktreeOverview(EMPTY_WORKTREE);
@@ -5262,11 +5320,16 @@ export function App() {
     if (!ensureRepoSelected() || !filePath) return;
     setSelectedWorktreeFile(filePath);
     try {
-      const patch = await getGitWorktreeFilePatch(repoPath, filePath);
+      const [patch, content] = await Promise.all([
+        getGitWorktreeFilePatch(repoPath, filePath),
+        getGitWorktreeFileContent(repoPath, filePath)
+      ]);
       setSelectedWorktreePatch(patch);
+      setSelectedWorktreeContent(content);
     } catch (e) {
       setError(String(e));
       setSelectedWorktreePatch("");
+      setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
     }
   }
 
@@ -5274,17 +5337,26 @@ export function App() {
     if (!ensureRepoSelected()) return;
     const msg = commitMessage.trim();
     if (!msg) {
-      setMessage("请输入提交信息");
+      setMessage("Please enter a commit message");
+      commitMessageInputRef.current?.focus();
       return;
     }
     const hasStaged = worktreeOverview.entries.some((e) => e.staged);
-    if (!hasStaged) {
-      setMessage("没有已暂存的变更可提交，请先暂存文件");
+    const unstagedFiles = worktreeOverview.entries
+      .filter((e) => e.unstaged || e.untracked)
+      .map((e) => e.path);
+    if (!hasStaged && unstagedFiles.length === 0) {
+      setMessage("No changes to commit");
       return;
     }
     setCommitting(true);
     setError("");
     try {
+      if (!hasStaged) {
+        for (const file of unstagedFiles) {
+          await gitStageFile(repoPath, file);
+        }
+      }
       const result = await gitCommit(repoPath, msg);
       setCommitMessage("");
       setMessage("提交成功");
@@ -5311,6 +5383,112 @@ export function App() {
       setError(String(e));
       setMessage("推送失败");
     } finally {
+      setPushing(false);
+    }
+  }
+
+  async function handleGitSync() {
+    if (!ensureRepoSelected()) return;
+    setPushing(true);
+    setError("");
+    setShowCommitActionMenu(false);
+    try {
+      if (worktreeOverview.behind > 0) {
+        await gitPull(repoPath);
+      }
+      if (worktreeOverview.ahead > 0) {
+        await gitPush(repoPath);
+      }
+      setMessage("Sync succeeded");
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+    } catch (e) {
+      setError(String(e));
+      setMessage("Sync failed");
+    } finally {
+      setPushing(false);
+    }
+  }
+
+  async function handleGitCommitAndPush() {
+    if (!ensureRepoSelected()) return;
+    const msg = commitMessage.trim();
+    if (!msg) {
+      setMessage("Please enter a commit message");
+      commitMessageInputRef.current?.focus();
+      return;
+    }
+    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
+    const unstagedFiles = worktreeOverview.entries
+      .filter((e) => e.unstaged || e.untracked)
+      .map((e) => e.path);
+    if (!hasStaged && unstagedFiles.length === 0) {
+      setMessage("No changes to commit");
+      return;
+    }
+    setCommitting(true);
+    setPushing(true);
+    setError("");
+    setShowCommitActionMenu(false);
+    try {
+      if (!hasStaged) {
+        for (const file of unstagedFiles) {
+          await gitStageFile(repoPath, file);
+        }
+      }
+      const commitResult = await gitCommit(repoPath, msg);
+      const pushResult = await gitPush(repoPath);
+      setCommitMessage("");
+      setMessage("提交并推送成功");
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
+      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
+      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("提交并推送失败");
+    } finally {
+      setCommitting(false);
+      setPushing(false);
+    }
+  }
+
+  async function handleGitCommitAndSync() {
+    if (!ensureRepoSelected()) return;
+    const msg = commitMessage.trim();
+    if (!msg) {
+      setMessage("Please enter a commit message");
+      commitMessageInputRef.current?.focus();
+      return;
+    }
+    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
+    const unstagedFiles = worktreeOverview.entries
+      .filter((e) => e.unstaged || e.untracked)
+      .map((e) => e.path);
+    if (!hasStaged && unstagedFiles.length === 0) {
+      setMessage("No changes to commit");
+      return;
+    }
+    setCommitting(true);
+    setPushing(true);
+    setError("");
+    setShowCommitActionMenu(false);
+    try {
+      if (!hasStaged) {
+        for (const file of unstagedFiles) {
+          await gitStageFile(repoPath, file);
+        }
+      }
+      const commitResult = await gitCommit(repoPath, msg);
+      const pushResult = await gitPush(repoPath);
+      setCommitMessage("");
+      setMessage("Commit & Sync succeeded");
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
+      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
+      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("Commit & Sync failed");
+    } finally {
+      setCommitting(false);
       setPushing(false);
     }
   }
@@ -5363,6 +5541,66 @@ export function App() {
     }
   }
 
+  async function handleToggleStageAll() {
+    if (!ensureRepoSelected()) return;
+    const unstagedFiles = worktreeOverview.entries
+      .filter((e) => e.unstaged || e.untracked)
+      .map((e) => e.path);
+    const stagedFiles = worktreeOverview.entries
+      .filter((e) => e.staged)
+      .map((e) => e.path);
+
+    setError("");
+    try {
+      if (unstagedFiles.length > 0) {
+        for (const file of unstagedFiles) {
+          await gitStageFile(repoPath, file);
+        }
+        setMessage(`已暂存 ${unstagedFiles.length} 个文件`);
+      } else if (stagedFiles.length > 0) {
+        for (const file of stagedFiles) {
+          await gitUnstageFile(repoPath, file);
+        }
+        setMessage(`已取消暂存 ${stagedFiles.length} 个文件`);
+      }
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage(unstagedFiles.length > 0 ? "全部暂存失败" : "全部取消暂存失败");
+    }
+  }
+
+  function openDiscardAllConfirm() {
+    if (!ensureRepoSelected()) return;
+    const entries = worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked);
+    if (entries.length === 0) return;
+    setShowDiscardAllConfirm(true);
+  }
+
+  async function handleDiscardAllChanges() {
+    if (!ensureRepoSelected()) return;
+    const entries = worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked);
+    if (entries.length === 0) {
+      setShowDiscardAllConfirm(false);
+      return;
+    }
+    setDiscardingAll(true);
+    setError("");
+    try {
+      for (const entry of entries) {
+        await gitDiscardChanges(repoPath, entry.path, entry.untracked);
+      }
+      setMessage(`已撤销 ${entries.length} 个文件`);
+      setShowDiscardAllConfirm(false);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("撤销全部修改失败");
+    } finally {
+      setDiscardingAll(false);
+    }
+  }
+
   function toggleWorktreeDir(path: string) {
     setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
   }
@@ -5392,7 +5630,15 @@ export function App() {
       if (!entry) return null;
       const status = getWorktreeDisplayStatus(entry);
       const fileKind = getWorktreeFileKindLabel(entry.path);
-      const canDiscard = entry.unstaged || entry.untracked;
+      const canDiscard = entry.staged || entry.unstaged || entry.untracked;
+      const toggleStaged = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (entry.staged) {
+          void handleUnstageFile(entry.path);
+        } else {
+          void handleStageFile(entry.path);
+        }
+      };
       return (
         <div
           key={node.path}
@@ -5408,35 +5654,23 @@ export function App() {
             <span className={`gt-worktree-kind gt-worktree-kind-${fileKind}`}>{fileKind}</span>
             <span className="gt-worktree-tree-name">{node.name}</span>
           </button>
-          <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-          <div className="gt-worktree-file-actions">
-            {entry.staged ? (
-              <button
-                type="button"
-                className="gt-worktree-action-btn"
-                title="取消暂存"
-                disabled={unstagingFile === entry.path}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleUnstageFile(entry.path);
-                }}
-              >
-                {unstagingFile === entry.path ? "−" : "−"}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="gt-worktree-action-btn"
-                title="暂存更改"
-                disabled={stagingFile === entry.path}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleStageFile(entry.path);
-                }}
-              >
-                {stagingFile === entry.path ? "+" : "+"}
-              </button>
-            )}
+          <div className="gt-worktree-row-tail">
+            <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
+            <div className="gt-worktree-file-actions">
+            <button
+              type="button"
+              className={entry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+              title={entry.staged ? "取消暂存" : "暂存更改"}
+              aria-pressed={entry.staged}
+              disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
+              onClick={toggleStaged}
+            >
+              {entry.staged ? (
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M4 8.2 6.7 11 12 5" />
+                </svg>
+              ) : null}
+            </button>
             {canDiscard ? (
               <button
                 type="button"
@@ -5448,9 +5682,17 @@ export function App() {
                   void handleDiscardChanges(entry.path, entry.untracked);
                 }}
               >
-                {discardingFile === entry.path ? "..." : "✕"}
+                {discardingFile === entry.path ? (
+                  "..."
+                ) : (
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M6 4 3 7l3 3" />
+                    <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
+                  </svg>
+                )}
               </button>
             ) : null}
+            </div>
           </div>
         </div>
       );
@@ -5861,6 +6103,55 @@ export function App() {
       setMessage("仓库数据加载失败");
     });
   }, [selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!repoPath) {
+      void stopGitWorktreeWatcher().catch(() => {});
+      return;
+    }
+    void startGitWorktreeWatcher(repoPath).catch((e) => setError(String(e)));
+    return () => {
+      if (gitAutoRefreshTimerRef.current !== null) {
+        window.clearTimeout(gitAutoRefreshTimerRef.current);
+        gitAutoRefreshTimerRef.current = null;
+      }
+    };
+  }, [repoPath]);
+
+  useEffect(() => {
+    const scheduleRefresh = (delay = 600) => {
+      if (gitAutoRefreshTimerRef.current !== null) {
+        window.clearTimeout(gitAutoRefreshTimerRef.current);
+      }
+      gitAutoRefreshTimerRef.current = window.setTimeout(() => {
+        gitAutoRefreshTimerRef.current = null;
+        if (!repoPathRef.current) return;
+        if (document.visibilityState === "hidden") return;
+        if (gitAutoRefreshBlockedRef.current) return;
+        void refreshWorktreeData(selectedWorktreeFileRef.current).catch((e) => setError(String(e)));
+      }, delay);
+    };
+
+    const unlistenPromise = listen<{ repo_path: string }>("git-worktree-changed", (event) => {
+      if (event.payload?.repo_path !== repoPathRef.current) return;
+      scheduleRefresh();
+    });
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefresh(0);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (gitAutoRefreshTimerRef.current !== null) {
+        window.clearTimeout(gitAutoRefreshTimerRef.current);
+        gitAutoRefreshTimerRef.current = null;
+      }
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+      void stopGitWorktreeWatcher().catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedRepo?.id) return;
@@ -6711,6 +7002,13 @@ export function App() {
   }, [repoContextMenu, commitContextMenu, topologyContextMenu]);
 
   useEffect(() => {
+    if (!showCommitActionMenu) return;
+    const dismiss = () => setShowCommitActionMenu(false);
+    window.addEventListener("click", dismiss);
+    return () => window.removeEventListener("click", dismiss);
+  }, [showCommitActionMenu]);
+
+  useEffect(() => {
     if (!showTopologyCreateDialog) return;
     const sourceId = topologyCreateSourceNodeId || topologySelectionId || topologyModel.primaryNodeId;
     if (!sourceId) return;
@@ -7545,7 +7843,7 @@ export function App() {
             style={{ "--changes-sidebar-width": `${changesSidebarWidth}px` } as CSSProperties}
           >
             <div className="gt-right-card gt-right-card-files">
-              <div className="gt-right-card-head">
+              <div className="gt-right-card-head gt-changes-pane-head">
                 <div className="gt-changes-header">
                   <strong>Changes</strong>
                   {worktreeChangeStats.total > 0 ? (
@@ -7560,53 +7858,72 @@ export function App() {
                   ) : null}
                 </div>
                 <div className="toolbar" style={{ gap: 6 }}>
-                  {worktreeChangeStats.unstaged > 0 ? (
+                  {worktreeChangeStats.total > 0 ? (
                     <button
-                      className="chip"
-                      title="暂存所有更改"
-                      onClick={async () => {
-                        if (!ensureRepoSelected()) return;
-                        const unstagedFiles = worktreeOverview.entries
-                          .filter((e) => e.unstaged || e.untracked)
-                          .map((e) => e.path);
-                        for (const file of unstagedFiles) {
-                          await gitStageFile(repoPath, file).catch(() => {});
-                        }
-                        await refreshWorktreeData();
-                        setMessage(`已暂存 ${unstagedFiles.length} 个文件`);
-                      }}
+                      type="button"
+                      className="chip gt-icon-chip"
+                      title={worktreeChangeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
+                      onClick={() => void handleToggleStageAll()}
                     >
-                      + 全部暂存
+                      {worktreeChangeStats.unstaged > 0 ? "+" : "−"}
                     </button>
                   ) : null}
-                  <button className="chip" onClick={() => void refreshWorktreeData(selectedWorktreeFile)} disabled={busy}>Refresh</button>
+                  {worktreeChangeStats.total > 0 ? (
+                    <button
+                      type="button"
+                      className="chip gt-icon-chip is-danger"
+                      title="撤销全部修改"
+                      disabled={discardingAll}
+                      onClick={openDiscardAllConfirm}
+                    >
+                      <svg className="gt-icon-chip-svg" viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M6 4 3 7l3 3" />
+                        <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
+                      </svg>
+                    </button>
+                  ) : null}
                 </div>
               </div>
-              <div style={{ padding: "0 12px 12px", borderBottom: "1px solid var(--gt-border-subtle)" }}>
+              <div className="gt-changes-commit-box">
                 <input
+                  ref={commitMessageInputRef}
                   className="path-input"
-                  style={{ marginBottom: 8, width: "100%" }}
-                  placeholder="输入提交信息..."
+                  style={{ width: "100%" }}
+                  placeholder="Message"
                   value={commitMessage}
                   onChange={(e) => setCommitMessage(e.target.value)}
                   disabled={committing || pushing}
                 />
-                <div className="toolbar" style={{ gap: 8 }}>
-                  <button
-                    className="chip is-primary"
-                    onClick={() => void handleGitCommit()}
-                    disabled={committing || pushing || !commitMessage.trim() || worktreeChangeStats.staged === 0}
-                    title={worktreeChangeStats.staged === 0 ? "没有已暂存的文件" : ""}
-                  >
-                    {committing ? "提交中..." : `提交 (${worktreeChangeStats.staged})`}
-                  </button>
-                  <button
-                    className="chip"
-                    onClick={() => void handleGitPush()}
-                    disabled={committing || pushing}
-                  >
-                    {pushing ? "推送中..." : "推送"}
-                  </button>
+                <div className="gt-changes-commit-actions" onClick={(e) => e.stopPropagation()}>
+                  <div className="gt-commit-split-wrap">
+                    <button
+                      className="chip is-primary gt-commit-main-btn"
+                      onClick={() => void (commitPrimaryIsSync ? handleGitSync() : handleGitCommit())}
+                      disabled={commitPrimaryIsSync ? (committing || pushing) : (committing || pushing || !hasCommittableChanges)}
+                      title={commitPrimaryIsSync ? "Sync branch" : (!hasCommittableChanges ? "No changes to commit" : "")}
+                    >
+                      {commitPrimaryIsSync
+                        ? (pushing ? "Syncing..." : `↕ Sync (${worktreeOverview.ahead}/${worktreeOverview.behind})`)
+                        : (committing ? "Committing..." : `✓ Commit (${commitButtonCount})`)}
+                    </button>
+                    <button
+                      type="button"
+                      className="chip is-primary gt-commit-menu-btn"
+                      onClick={() => setShowCommitActionMenu((prev) => !prev)}
+                      disabled={committing || pushing}
+                      title="More commit actions"
+                    >
+                      ˅
+                    </button>
+                    {showCommitActionMenu ? (
+                      <div className="gt-commit-action-menu" role="menu">
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommit()} disabled={committing || pushing || !hasCommittableChanges}>Commit</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitPush()} disabled={committing || pushing}>Push</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndPush()} disabled={committing || pushing || !hasCommittableChanges}>Commit & Push</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndSync()} disabled={committing || pushing || !hasCommittableChanges}>Commit & Sync</button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
               <div className="gt-worktree-file-list gt-worktree-tree-list">
@@ -7654,13 +7971,23 @@ export function App() {
               }}
             />
             <div className="gt-right-card gt-right-card-fill gt-diff-editor-pane">
-              <div className="gt-right-card-head">
+              <div className="gt-right-card-head gt-diff-compact-head">
                 <div className="gt-diff-header">
                   {selectedWorktreeFile ? (
                     <>
                       <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
                       <strong className="gt-diff-filename">{selectedWorktreeFile}</strong>
-                      <span className="small muted">{getWorktreeStatusText(selectedWorktreeEntry)}</span>
+                      <button
+                        type="button"
+                        className="gt-diff-icon-btn"
+                        title="复制文件路径"
+                        onClick={() => void copyText(selectedWorktreeFile)}
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <rect x="5" y="3" width="8" height="8" rx="1.5" />
+                          <path d="M3 5.5v6A1.5 1.5 0 0 0 4.5 13h6" />
+                        </svg>
+                      </button>
                       {worktreePatchStats.added > 0 ? <span className="meta-chip is-add">+{worktreePatchStats.added}</span> : null}
                       {worktreePatchStats.deleted > 0 ? <span className="meta-chip is-del">-{worktreePatchStats.deleted}</span> : null}
                     </>
@@ -7669,99 +7996,70 @@ export function App() {
                   )}
                 </div>
                 {selectedWorktreeEntry ? (
-                  <div className="toolbar" style={{ gap: 6 }}>
-                    {selectedWorktreeEntry.staged ? (
+                  <div className="gt-diff-header-actions">
+                    <button
+                      className={selectedWorktreeEntry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+                      title={selectedWorktreeEntry.staged ? "取消暂存" : "暂存"}
+                      aria-pressed={selectedWorktreeEntry.staged}
+                      onClick={() => {
+                        if (selectedWorktreeEntry.staged) {
+                          void handleUnstageFile(selectedWorktreeEntry.path);
+                        } else {
+                          void handleStageFile(selectedWorktreeEntry.path);
+                        }
+                      }}
+                      disabled={(selectedWorktreeEntry.staged ? unstagingFile : stagingFile) === selectedWorktreeEntry.path}
+                    >
+                      {selectedWorktreeEntry.staged ? (
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M4 8.2 6.7 11 12 5" />
+                        </svg>
+                      ) : null}
+                    </button>
+                    {(selectedWorktreeEntry.staged || selectedWorktreeEntry.unstaged || selectedWorktreeEntry.untracked) ? (
                       <button
-                        className="chip"
-                        onClick={() => void handleUnstageFile(selectedWorktreeEntry.path)}
-                        disabled={unstagingFile === selectedWorktreeEntry.path}
-                      >
-                        取消暂存
-                      </button>
-                    ) : (
-                      <button
-                        className="chip"
-                        onClick={() => void handleStageFile(selectedWorktreeEntry.path)}
-                        disabled={stagingFile === selectedWorktreeEntry.path}
-                      >
-                        暂存
-                      </button>
-                    )}
-                    {(selectedWorktreeEntry.unstaged || selectedWorktreeEntry.untracked) ? (
-                      <button
-                        className="chip is-danger"
+                        className="gt-diff-icon-btn is-danger"
+                        title="撤销修改"
                         onClick={() => void handleDiscardChanges(selectedWorktreeEntry.path, selectedWorktreeEntry.untracked)}
                         disabled={discardingFile === selectedWorktreeEntry.path}
                       >
-                        撤销
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M6 4 3 7l3 3" />
+                          <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
+                        </svg>
                       </button>
                     ) : null}
                   </div>
                 ) : null}
               </div>
               {selectedWorktreeFile ? (
-                <div className="gt-worktree-patch-view">
-                  <div className="gt-worktree-patch-summary" style={{ display: "none" }}>
-                    <div className="gt-worktree-patch-summary-main">
-                      <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
-                      <div className="gt-worktree-patch-summary-copy">
-                        <strong>{selectedWorktreeFile}</strong>
-                        <span className="small muted">{getWorktreeStatusText(selectedWorktreeEntry)}</span>
-                      </div>
-                    </div>
-                    <div className="gt-worktree-patch-summary-meta">
-                      {worktreePatchStats.hunks > 0 ? <span className="meta-chip">{worktreePatchStats.hunks} hunks</span> : null}
-                      {worktreePatchStats.added > 0 ? <span className="meta-chip">+{worktreePatchStats.added}</span> : null}
-                      {worktreePatchStats.deleted > 0 ? <span className="meta-chip">-{worktreePatchStats.deleted}</span> : null}
-                      {selectedWorktreeEntry?.staged ? <span className="meta-chip">staged</span> : null}
-                      {selectedWorktreeEntry?.unstaged ? <span className="meta-chip">unstaged</span> : null}
-                      {selectedWorktreeEntry?.untracked ? <span className="meta-chip">untracked</span> : null}
-                      {selectedWorktreeEntry ? <span className={`gt-worktree-tree-status is-${getWorktreeDisplayStatus(selectedWorktreeEntry).toLowerCase()}`}>{getWorktreeDisplayStatus(selectedWorktreeEntry)}</span> : null}
-                    </div>
-                  </div>
-                  {worktreePatchRows.length > 0 ? (
-                    <div className="gt-split-diff-body">
-                      <div className="gt-split-diff-header">
-                        <div className="gt-split-diff-col-head">
-                          <span>Old</span>
-                        </div>
-                        <div className="gt-split-diff-col-head">
-                          <span>New</span>
-                        </div>
-                      </div>
-                      <div className="gt-split-diff-scroll">
-                        {worktreePatchRows.map((row, idx) => {
-                          if (row.kind === "hunk" || row.kind === "meta") {
-                            return (
-                              <div key={`worktree-diff-${idx}`} className={`gt-split-diff-row is-${row.kind}`}>
-                                <div className="gt-split-diff-cell">
-                                  <code className="gt-split-diff-code">{row.left.text}</code>
-                                </div>
-                              </div>
-                            );
-                          }
-                          return (
-                            <div key={`worktree-diff-${idx}`} className="gt-split-diff-row">
-                              <div className={`gt-split-diff-cell is-${row.left.tone}`}>
-                                <span className="gt-split-diff-line-num">{row.left.line ?? ""}</span>
-                                <span className="gt-split-diff-marker">{row.left.marker}</span>
-                                <code className="gt-split-diff-code">{row.left.text || " "}</code>
-                              </div>
-                              <div className={`gt-split-diff-cell is-${row.right.tone}`}>
-                                <span className="gt-split-diff-line-num">{row.right.line ?? ""}</span>
-                                <span className="gt-split-diff-marker">{row.right.marker}</span>
-                                <code className="gt-split-diff-code">{row.right.text || " "}</code>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="gt-worktree-patch-empty">
-                      {selectedWorktreePatch || "这个文件当前没有可显示的 patch。"}
-                    </div>
-                  )}
+                <div className="gt-monaco-diff-shell">
+                  <DiffEditor
+                    key={selectedWorktreeFile}
+                    height="100%"
+                    width="100%"
+                    original={selectedWorktreeContent.original}
+                    modified={selectedWorktreeContent.modified}
+                    language={getMonacoLanguage(selectedWorktreeFile)}
+                    theme={theme === "light" ? "light" : "vs-dark"}
+                    options={{
+                      readOnly: true,
+                      renderSideBySide: true,
+                      automaticLayout: true,
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      renderOverviewRuler: false,
+                      folding: true,
+                      fontSize: 12,
+                      lineHeight: 18,
+                      wordWrap: "off",
+                      scrollbar: {
+                        alwaysConsumeMouseWheel: false,
+                        horizontalScrollbarSize: 10,
+                        verticalScrollbarSize: 10
+                      }
+                    }}
+                  />
                 </div>
               ) : (
                 <div className="gt-worktree-patch-empty">选择左侧文件后查看 patch。</div>
@@ -8185,6 +8483,23 @@ export function App() {
                 {topologyInspectNode.kind === "commit" && selectedParsed?.sessionId ? <div className="gt-worktree-topology-detail-item"><span>Session</span><strong>{selectedParsed.sessionId}</strong></div> : null}
               </div>
               <pre className="gt-worktree-topology-context-preview">{topologyInspectNode.kind === "commit" ? (selectedExplain || "当前 commit 未解析到 Entire agent 上下文。") : (worktreeOverview.raw || "git status -sb")}</pre>
+            </div>
+          </div>
+        ) : null}
+
+        {showDiscardAllConfirm ? (
+          <div className="modal-mask" onClick={() => !discardingAll && setShowDiscardAllConfirm(false)}>
+            <div className="modal-card gt-discard-confirm-card" onClick={(e) => e.stopPropagation()}>
+              <h3>撤销全部修改？</h3>
+              <p className="small muted">
+                将撤销 {discardAllCount} 个文件的修改。未跟踪文件会被删除，已跟踪文件会恢复到 HEAD。
+              </p>
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 14 }}>
+                <button className="chip" onClick={() => setShowDiscardAllConfirm(false)} disabled={discardingAll}>取消</button>
+                <button className="chip is-danger" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
+                  {discardingAll ? "撤销中..." : "确认撤销"}
+                </button>
+              </div>
             </div>
           </div>
         ) : null}

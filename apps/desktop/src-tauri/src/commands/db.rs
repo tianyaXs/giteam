@@ -73,8 +73,9 @@ fn db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     if !db.exists() {
         if let Some(legacy) = legacy_db_path() {
             if legacy.exists() {
-                fs::copy(&legacy, &db)
-                    .map_err(|e| format!("cannot migrate legacy database from {:?}: {e}", legacy))?;
+                fs::copy(&legacy, &db).map_err(|e| {
+                    format!("cannot migrate legacy database from {:?}: {e}", legacy)
+                })?;
             }
         }
     }
@@ -86,9 +87,16 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Stri
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|e| format!("prepare pragma failed: {e}"))?;
-    let mut rows = stmt.query([]).map_err(|e| format!("query pragma failed: {e}"))?;
-    while let Some(row) = rows.next().map_err(|e| format!("iterate pragma failed: {e}"))? {
-        let name: String = row.get(1).map_err(|e| format!("read pragma row failed: {e}"))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| format!("query pragma failed: {e}"))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("iterate pragma failed: {e}"))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|e| format!("read pragma row failed: {e}"))?;
         if name == col {
             return Ok(true);
         }
@@ -137,8 +145,10 @@ fn open_db(app_handle: &AppHandle) -> Result<Connection, String> {
     .map_err(|e| format!("migrate repositories failed: {e}"))?;
 
     if !column_exists(&conn, "review_records", "repo_path")? {
-        conn.execute_batch("ALTER TABLE review_records ADD COLUMN repo_path TEXT NOT NULL DEFAULT '';")
-            .map_err(|e| format!("add repo_path column failed: {e}"))?;
+        conn.execute_batch(
+            "ALTER TABLE review_records ADD COLUMN repo_path TEXT NOT NULL DEFAULT '';",
+        )
+        .map_err(|e| format!("add repo_path column failed: {e}"))?;
     }
     Ok(conn)
 }
@@ -146,8 +156,8 @@ fn open_db(app_handle: &AppHandle) -> Result<Connection, String> {
 #[tauri::command]
 pub fn db_save_review_record(app_handle: AppHandle, record: ReviewRecord) -> Result<(), String> {
     let conn = open_db(&app_handle)?;
-    let findings_json =
-        serde_json::to_string(&record.findings).map_err(|e| format!("serialize findings failed: {e}"))?;
+    let findings_json = serde_json::to_string(&record.findings)
+        .map_err(|e| format!("serialize findings failed: {e}"))?;
 
     conn.execute(
         "INSERT OR REPLACE INTO review_records
@@ -225,8 +235,8 @@ pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<Repository
         return Err(format!("not a git repository: {path}"));
     }
 
-    let canonical = fs::canonicalize(p)
-        .map_err(|e| format!("failed to resolve repository path: {e}"))?;
+    let canonical =
+        fs::canonicalize(p).map_err(|e| format!("failed to resolve repository path: {e}"))?;
     let canonical_str = canonical
         .to_str()
         .ok_or_else(|| "repository path is not valid utf-8".to_string())?
@@ -379,13 +389,27 @@ pub fn db_list_review_actions(
             .map_err(|e| format!("iterate action rows failed: {e}"))?
         {
             out.push(ReviewAction {
-                id: row.get(0).map_err(|e| format!("decode action row failed: {e}"))?,
-                repo_path: row.get(1).map_err(|e| format!("decode action row failed: {e}"))?,
-                review_id: row.get(2).map_err(|e| format!("decode action row failed: {e}"))?,
-                finding_id: row.get(3).map_err(|e| format!("decode action row failed: {e}"))?,
-                action: row.get(4).map_err(|e| format!("decode action row failed: {e}"))?,
-                note: row.get(5).map_err(|e| format!("decode action row failed: {e}"))?,
-                created_at: row.get(6).map_err(|e| format!("decode action row failed: {e}"))?,
+                id: row
+                    .get(0)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                repo_path: row
+                    .get(1)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                review_id: row
+                    .get(2)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                finding_id: row
+                    .get(3)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                action: row
+                    .get(4)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                note: row
+                    .get(5)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                created_at: row
+                    .get(6)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
             });
         }
     } else {
@@ -397,13 +421,27 @@ pub fn db_list_review_actions(
             .map_err(|e| format!("iterate action rows failed: {e}"))?
         {
             out.push(ReviewAction {
-                id: row.get(0).map_err(|e| format!("decode action row failed: {e}"))?,
-                repo_path: row.get(1).map_err(|e| format!("decode action row failed: {e}"))?,
-                review_id: row.get(2).map_err(|e| format!("decode action row failed: {e}"))?,
-                finding_id: row.get(3).map_err(|e| format!("decode action row failed: {e}"))?,
-                action: row.get(4).map_err(|e| format!("decode action row failed: {e}"))?,
-                note: row.get(5).map_err(|e| format!("decode action row failed: {e}"))?,
-                created_at: row.get(6).map_err(|e| format!("decode action row failed: {e}"))?,
+                id: row
+                    .get(0)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                repo_path: row
+                    .get(1)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                review_id: row
+                    .get(2)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                finding_id: row
+                    .get(3)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                action: row
+                    .get(4)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                note: row
+                    .get(5)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
+                created_at: row
+                    .get(6)
+                    .map_err(|e| format!("decode action row failed: {e}"))?,
             });
         }
     }

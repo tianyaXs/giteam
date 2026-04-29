@@ -1909,14 +1909,9 @@ pub fn post_opencode_question_reply(
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
         let body = serde_json::json!({ "answers": answers });
-        let mut url = format!("{base}/question/{}/reply", urlencoding::encode(request_id));
-        if let Some(d) = std::path::Path::new(repo_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .filter(|d| !d.is_empty())
-        {
-            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
-        }
+        let url = format!("{base}/question/{}/reply", urlencoding::encode(request_id));
+        // run_curl_json already sends x-opencode-directory with the full path.
+        // A directory query with only the repo name makes opencode resolve a different cwd.
         let _ = run_curl_json(repo_path, "POST", url.as_str(), Some(body.to_string().as_str()), 12)?;
         Ok(true)
     })
@@ -2067,14 +2062,8 @@ fn parse_question_sse_frame(frame: &str, sid: &str) -> Option<Value> {
 pub fn post_opencode_question_reject(repo_path: &str, request_id: &str) -> Result<bool, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let mut url = format!("{base}/question/{}/reject", urlencoding::encode(request_id));
-        if let Some(d) = std::path::Path::new(repo_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .filter(|d| !d.is_empty())
-        {
-            url.push_str(format!("?directory={}", urlencoding::encode(d)).as_str());
-        }
+        let url = format!("{base}/question/{}/reject", urlencoding::encode(request_id));
+        // run_curl_json already sends x-opencode-directory with the full path.
         let _ = run_curl_json(repo_path, "POST", url.as_str(), Some("{}"), 12)?;
         Ok(true)
     })

@@ -28,6 +28,40 @@ export function rowId(row: RawMessageRow): string {
   return toText(row?.info?.id);
 }
 
+function partKey(part: any, index: number): string {
+  const id = toText(part?.id) || toText(part?.partID) || toText(part?.callID);
+  if (id) return id;
+  return `${toText(part?.type) || 'part'}:${index}`;
+}
+
+function mergeMessageRow(prev: RawMessageRow | undefined, incoming: RawMessageRow): RawMessageRow {
+  if (!prev) return incoming;
+  const prevParts = Array.isArray(prev?.parts) ? prev.parts : [];
+  const incomingParts = Array.isArray(incoming?.parts) ? incoming.parts : [];
+  if (prevParts.length === 0 || incomingParts.length === 0) {
+    return { ...prev, ...incoming, info: { ...(prev.info || {}), ...(incoming.info || {}) } };
+  }
+  const parts = [...prevParts];
+  const indexByKey = new Map<string, number>();
+  parts.forEach((part, index) => indexByKey.set(partKey(part, index), index));
+  incomingParts.forEach((part, index) => {
+    const key = partKey(part, index);
+    const existingIndex = indexByKey.get(key);
+    if (typeof existingIndex === 'number') {
+      parts[existingIndex] = { ...(parts[existingIndex] || {}), ...(part || {}) };
+    } else {
+      indexByKey.set(key, parts.length);
+      parts.push(part);
+    }
+  });
+  return {
+    ...prev,
+    ...incoming,
+    info: { ...(prev.info || {}), ...(incoming.info || {}) },
+    parts
+  };
+}
+
 export function mergeMessageRows(prev: RawMessageRow[], incoming: RawMessageRow[]): RawMessageRow[] {
   const byId = new Map<string, RawMessageRow>();
   for (const row of prev) {
@@ -38,7 +72,7 @@ export function mergeMessageRows(prev: RawMessageRow[], incoming: RawMessageRow[
   for (const row of incoming) {
     const id = rowId(row);
     if (!id) continue;
-    byId.set(id, row);
+    byId.set(id, mergeMessageRow(byId.get(id), row));
   }
   return [...byId.values()].sort((a, b) => {
     const ta = rowCreatedAt(a);

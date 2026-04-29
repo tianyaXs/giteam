@@ -1,8 +1,8 @@
 use super::command_runner;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -77,7 +77,8 @@ struct ManagedRepoTerminalSession {
     cwd: String,
 }
 
-static REPO_TERMINAL_SESSIONS: OnceLock<Mutex<HashMap<String, ManagedRepoTerminalSession>>> = OnceLock::new();
+static REPO_TERMINAL_SESSIONS: OnceLock<Mutex<HashMap<String, ManagedRepoTerminalSession>>> =
+    OnceLock::new();
 
 fn terminal_sessions() -> &'static Mutex<HashMap<String, ManagedRepoTerminalSession>> {
     REPO_TERMINAL_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -153,9 +154,18 @@ fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSes
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to start terminal shell: {e}"))?;
-    let stdin = child.stdin.take().ok_or_else(|| "failed to open terminal stdin".to_string())?;
-    let stdout = child.stdout.take().ok_or_else(|| "failed to open terminal stdout".to_string())?;
-    let stderr = child.stderr.take().ok_or_else(|| "failed to open terminal stderr".to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open terminal stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to open terminal stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to open terminal stderr".to_string())?;
     let buffer = Arc::new(Mutex::new(TerminalBuffer::default()));
     spawn_terminal_reader(stdout, Arc::clone(&buffer));
     spawn_terminal_reader(stderr, Arc::clone(&buffer));
@@ -186,7 +196,11 @@ fn ensure_terminal_session(repo_path: &str, session_id: Option<&str>) -> Result<
     Ok(key)
 }
 
-fn read_terminal_snapshot(repo_path: &str, session_id: Option<&str>, after_seq: u64) -> Result<RepoTerminalSnapshot, String> {
+fn read_terminal_snapshot(
+    repo_path: &str,
+    session_id: Option<&str>,
+    after_seq: u64,
+) -> Result<RepoTerminalSnapshot, String> {
     let repo_key = normalize_repo_key(repo_path)?;
     let terminal_id = normalize_terminal_id(session_id);
     let key = make_terminal_key(&repo_key, &terminal_id);
@@ -294,6 +308,13 @@ pub struct GitUserIdentity {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitWorktreeFileContent {
+    pub original: String,
+    pub modified: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitCommitSummary {
     pub sha: String,
     pub author: String,
@@ -325,7 +346,11 @@ fn run_git(args: &[&str], repo_path: &str) -> Result<String, String> {
     command_runner::run_and_capture_in_dir("git", args, repo_path)
 }
 
-fn run_git_with_timeout(args: &[&str], repo_path: &str, timeout_secs: u64) -> Result<String, String> {
+fn run_git_with_timeout(
+    args: &[&str],
+    repo_path: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
 }
 
@@ -364,9 +389,7 @@ fn decode_git_quoted_path(input: &str) -> String {
             bytes.extend(s.bytes());
         }
     }
-    String::from_utf8(bytes).unwrap_or_else(|e| {
-        String::from_utf8_lossy(e.as_bytes()).to_string()
-    })
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string())
 }
 
 fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
@@ -479,7 +502,9 @@ fn main_worktree_root(repo_path: &str) -> Result<PathBuf, String> {
     let absolute = if common.is_absolute() {
         common.to_path_buf()
     } else {
-        normalize_repo_key(repo_path).map(PathBuf::from)?.join(common)
+        normalize_repo_key(repo_path)
+            .map(PathBuf::from)?
+            .join(common)
     };
     absolute
         .parent()
@@ -529,11 +554,17 @@ pub fn run_git_commit(repo_path: &str, message: &str) -> Result<String, String> 
 #[tauri::command]
 pub fn run_git_show_patch(commit_sha: &str, repo_path: &str) -> Result<String, String> {
     command_runner::validate_commit_sha(commit_sha)?;
-    run_git(&["show", "--patch", "--format=fuller", commit_sha], repo_path)
+    run_git(
+        &["show", "--patch", "--format=fuller", commit_sha],
+        repo_path,
+    )
 }
 
 #[tauri::command]
-pub fn run_git_recent_commits(repo_path: &str, limit: Option<u32>) -> Result<Vec<GitCommitSummary>, String> {
+pub fn run_git_recent_commits(
+    repo_path: &str,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommitSummary>, String> {
     let n = limit.unwrap_or(30).clamp(1, 200);
     let sep = '\u{1f}';
     let pretty = format!("%H{sep}%an{sep}%ad{sep}%s");
@@ -570,8 +601,11 @@ pub fn run_git_recent_commits(repo_path: &str, limit: Option<u32>) -> Result<Vec
 #[tauri::command]
 pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, String> {
     // Branch names list (plain, one per line).
-    let names_raw = run_git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"], repo_path)
-        .or_else(|_| run_git(&["branch", "--list"], repo_path))?;
+    let names_raw = run_git(
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        repo_path,
+    )
+    .or_else(|_| run_git(&["branch", "--list"], repo_path))?;
 
     // Current branch name from HEAD.
     let current = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
@@ -595,7 +629,11 @@ pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, 
     }
 
     // Guarantee at least one branch when HEAD is valid.
-    if branches.is_empty() && !current.is_empty() && current != "HEAD" && !current.starts_with("entire/") {
+    if branches.is_empty()
+        && !current.is_empty()
+        && current != "HEAD"
+        && !current.starts_with("entire/")
+    {
         branches.push(GitBranchSummary {
             name: current,
             is_current: true,
@@ -646,7 +684,10 @@ pub fn run_git_branch_commits(
 }
 
 #[tauri::command]
-pub fn run_git_commit_graph(repo_path: &str, limit: Option<u32>) -> Result<Vec<GitGraphNode>, String> {
+pub fn run_git_commit_graph(
+    repo_path: &str,
+    limit: Option<u32>,
+) -> Result<Vec<GitGraphNode>, String> {
     let n = limit.unwrap_or(120).clamp(20, 300);
     let sep = '\u{1f}';
     // Include parents so frontend can compute proper lanes/merge links.
@@ -730,7 +771,10 @@ pub fn run_git_commit_graph(repo_path: &str, limit: Option<u32>) -> Result<Vec<G
 }
 
 #[tauri::command]
-pub fn run_git_commit_changed_files(repo_path: &str, commit_sha: &str) -> Result<Vec<String>, String> {
+pub fn run_git_commit_changed_files(
+    repo_path: &str,
+    commit_sha: &str,
+) -> Result<Vec<String>, String> {
     command_runner::validate_commit_sha(commit_sha)?;
     let raw = run_git(
         &["show", "--pretty=format:", "--name-only", commit_sha],
@@ -782,7 +826,8 @@ pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview,
 pub fn run_git_worktree_list(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, String> {
     let raw = run_git(&["worktree", "list", "--porcelain"], repo_path)?;
     let mut rows = Vec::new();
-    let current_key = normalize_repo_key(repo_path).unwrap_or_else(|_| repo_path.trim().to_string());
+    let current_key =
+        normalize_repo_key(repo_path).unwrap_or_else(|_| repo_path.trim().to_string());
 
     let mut path = String::new();
     let mut head = String::new();
@@ -851,7 +896,8 @@ pub fn run_git_worktree_list(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, 
         }
         if let Some(v) = trimmed.strip_prefix("worktree ") {
             path = v.trim().to_string();
-            is_current = normalize_repo_key(&path).unwrap_or_else(|_| path.trim().to_string()) == current_key;
+            is_current = normalize_repo_key(&path).unwrap_or_else(|_| path.trim().to_string())
+                == current_key;
             continue;
         }
         if let Some(v) = trimmed.strip_prefix("HEAD ") {
@@ -932,7 +978,14 @@ pub fn run_git_discard_changes(
         // Tracked files: restore to HEAD (same as VS Code "Discard Changes")
         // This handles staged, unstaged, or partially-staged files in one go
         run_git(
-            &["restore", "--source=HEAD", "--staged", "--worktree", "--", path],
+            &[
+                "restore",
+                "--source=HEAD",
+                "--staged",
+                "--worktree",
+                "--",
+                path,
+            ],
             repo_path,
         )
     }
@@ -957,7 +1010,11 @@ pub fn run_git_unstage_file(repo_path: &str, file_path: &str) -> Result<String, 
 }
 
 #[tauri::command]
-pub fn run_git_create_branch(repo_path: &str, branch_name: &str, start_point: Option<String>) -> Result<String, String> {
+pub fn run_git_create_branch(
+    repo_path: &str,
+    branch_name: &str,
+    start_point: Option<String>,
+) -> Result<String, String> {
     let branch = branch_name.trim();
     if branch.is_empty() {
         return Err("branch name is empty".to_string());
@@ -1064,7 +1121,7 @@ pub fn run_git_remove_worktree(
     let current_key = normalize_repo_key(repo_path)?;
     let target_key = normalize_repo_key(target)?;
     if current_key == target_key {
-      return Err("cannot remove current worktree".to_string());
+        return Err("cannot remove current worktree".to_string());
     }
     run_git_with_timeout(&["worktree", "remove", "--force", target], repo_path, 120)?;
     Ok(GitWorktreeRemoveResult {
@@ -1098,6 +1155,33 @@ pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<S
 }
 
 #[tauri::command]
+pub fn run_git_worktree_file_content(
+    repo_path: &str,
+    file_path: &str,
+) -> Result<GitWorktreeFileContent, String> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err("file path is empty".to_string());
+    }
+    if path.contains('\n') || path.contains('\r') || path.contains('\0') {
+        return Err("file path contains invalid characters".to_string());
+    }
+    let rel_path = std::path::Path::new(path);
+    if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
+        return Err("file path must be repository-relative".to_string());
+    }
+
+    let original = run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
+    let repo_root = normalize_repo_key(repo_path)?;
+    let full_path = PathBuf::from(repo_root).join(rel_path);
+    let modified = fs::read(full_path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .unwrap_or_default();
+
+    Ok(GitWorktreeFileContent { original, modified })
+}
+
+#[tauri::command]
 pub fn run_repo_terminal_command(repo_path: &str, command: &str) -> Result<String, String> {
     let script = command.trim();
     if script.is_empty() {
@@ -1110,13 +1194,20 @@ pub fn run_repo_terminal_command(repo_path: &str, command: &str) -> Result<Strin
 }
 
 #[tauri::command]
-pub fn start_repo_terminal_session(repo_path: &str, session_id: Option<String>) -> Result<RepoTerminalSnapshot, String> {
+pub fn start_repo_terminal_session(
+    repo_path: &str,
+    session_id: Option<String>,
+) -> Result<RepoTerminalSnapshot, String> {
     ensure_terminal_session(repo_path, session_id.as_deref())?;
     read_terminal_snapshot(repo_path, session_id.as_deref(), 0)
 }
 
 #[tauri::command]
-pub fn send_repo_terminal_input(repo_path: &str, session_id: Option<String>, input: &str) -> Result<(), String> {
+pub fn send_repo_terminal_input(
+    repo_path: &str,
+    session_id: Option<String>,
+    input: &str,
+) -> Result<(), String> {
     let key = ensure_terminal_session(repo_path, session_id.as_deref())?;
     if input.is_empty() {
         return Err("terminal input is empty".to_string());
@@ -1151,7 +1242,10 @@ pub fn read_repo_terminal_output(
 }
 
 #[tauri::command]
-pub fn clear_repo_terminal_session(repo_path: &str, session_id: Option<String>) -> Result<(), String> {
+pub fn clear_repo_terminal_session(
+    repo_path: &str,
+    session_id: Option<String>,
+) -> Result<(), String> {
     let key = ensure_terminal_session(repo_path, session_id.as_deref())?;
     let mut sessions = terminal_sessions()
         .lock()
@@ -1168,7 +1262,10 @@ pub fn clear_repo_terminal_session(repo_path: &str, session_id: Option<String>) 
 }
 
 #[tauri::command]
-pub fn close_repo_terminal_session(repo_path: &str, session_id: Option<String>) -> Result<(), String> {
+pub fn close_repo_terminal_session(
+    repo_path: &str,
+    session_id: Option<String>,
+) -> Result<(), String> {
     close_terminal_session(repo_path, session_id.as_deref())
 }
 
@@ -1196,7 +1293,8 @@ mod tests {
         if !Path::new(repo_path).exists() {
             return;
         }
-        let branches = run_git_local_branches(repo_path).expect("run_git_local_branches should succeed");
+        let branches =
+            run_git_local_branches(repo_path).expect("run_git_local_branches should succeed");
         // At least one regular branch should be visible for a valid repo.
         assert!(
             !branches.is_empty(),

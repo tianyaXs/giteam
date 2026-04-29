@@ -82,6 +82,11 @@ export type GitUserIdentity = {
   email: string;
 };
 
+export type GitWorktreeFileContent = {
+  original: string;
+  modified: string;
+};
+
 export type RepositoryEntry = {
   id: string;
   path: string;

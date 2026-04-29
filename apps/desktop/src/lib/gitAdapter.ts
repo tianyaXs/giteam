@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitLinkedWorktree, GitUserIdentity, GitWorktreeCreateResult, GitWorktreeOverview, GitWorktreeRemoveResult } from "./types";
+import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitLinkedWorktree, GitUserIdentity, GitWorktreeCreateResult, GitWorktreeFileContent, GitWorktreeOverview, GitWorktreeRemoveResult } from "./types";
 
 export async function getHeadCommit(repoPath: string): Promise<string> {
   return invoke<string>("run_git_head_commit", { repoPath });
@@ -73,6 +73,10 @@ export async function getGitWorktreeFilePatch(repoPath: string, filePath: string
   return invoke<string>("run_git_worktree_file_patch", { repoPath, filePath });
 }
 
+export async function getGitWorktreeFileContent(repoPath: string, filePath: string): Promise<GitWorktreeFileContent> {
+  return invoke<GitWorktreeFileContent>("run_git_worktree_file_content", { repoPath, filePath });
+}
+
 export async function gitCheckoutBranch(repoPath: string, branchName: string): Promise<string> {
   return invoke<string>("run_git_checkout_branch", { repoPath, branchName });
 }
@@ -134,4 +138,12 @@ export async function closeRepoTerminalSession(repoPath: string, sessionId?: str
 
 export async function getGitUserIdentity(repoPath: string): Promise<GitUserIdentity> {
   return invoke<GitUserIdentity>("run_git_user_identity", { repoPath });
+}
+
+export async function startGitWorktreeWatcher(repoPath: string): Promise<void> {
+  return invoke<void>("start_git_worktree_watcher", { repoPath });
+}
+
+export async function stopGitWorktreeWatcher(): Promise<void> {
+  return invoke<void>("stop_git_worktree_watcher");
 }

@@ -42,6 +42,7 @@ import { loadQuestionDismissals, saveQuestionDismissal } from './src/storage/que
 import {
   abortSession,
   buildStreamUrl,
+  createSession,
   getClientRepositories,
   getCurrentProject,
   getMessages,
@@ -451,6 +452,9 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           const canReply = !!liveRequest;
           if (hasLiveDockRequest) return null;
           const isExpanded = expandedTimelineQuestions.has(item.question.id);
+          const firstQuestion = questions[0];
+          const questionSummary = toText(firstQuestion?.question || firstQuestion?.header || '查看问题详情');
+          const optionCount = questions.reduce((sum, q) => sum + (Array.isArray(q.options) ? q.options.length : 0) + (q.custom !== false ? 1 : 0), 0);
           return (
             <View key={item.question.id} style={styles.questionTimelineWrap}>
               <View style={styles.questionTimelineCard}>
@@ -461,7 +465,10 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                     onToggleTimelineQuestion(item.question.id);
                   }}
                 >
-                  <Text style={styles.questionTimelineTitle}>{toText(item.question.title || '问题')}</Text>
+                  <View style={styles.questionTimelineTitleWrap}>
+                    <Text style={styles.questionTimelineTitle}>{toText(item.question.title || '问题')}</Text>
+                    <Text numberOfLines={1} style={styles.questionTimelineSummary}>{questionSummary}</Text>
+                  </View>
                   <View style={styles.questionTimelineHeadRight}>
                     <Text style={styles.questionTimelineBadge}>{(() => {
                       const status = toText(item.question.status).toLowerCase();
@@ -507,7 +514,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                         <View key={`${item.question.id}:${currentTab}`} style={styles.questionTimelineBlock}>
                           {toText(q.header) ? <Text style={styles.questionTimelineHeader}>{toText(q.header)}</Text> : null}
                           <Text style={styles.questionTimelineText}>{toText(q.question || '请选择一个答案')}</Text>
-                          <Text style={styles.questionTimelineHint}>{q.multiple ? '选择多个答案' : '选择一个答案'}</Text>
+                          <Text style={styles.questionTimelineHint}>{q.multiple ? '多选' : '单选'} · 已过期</Text>
                           {(Array.isArray(q.options) ? q.options : []).map((opt, optIndex) => (
                             <View
                               key={`${item.question.id}:${currentTab}:${optIndex}`}
@@ -532,13 +539,9 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                         </View>
                       );
                     })()}
-                    <Text style={styles.questionTimelineDisabled}>已过期</Text>
+                    <Text style={styles.questionTimelineDisabled}>{questions.length} 个问题 · {optionCount} 个选项 · 仅查看</Text>
                   </View>
-                ) : (
-                  <View style={styles.questionTimelineBody}>
-                    <Text style={styles.questionTimelineHint}>点击展开查看问题详情</Text>
-                  </View>
-                )}
+                ) : null}
               </View>
             </View>
           );
@@ -857,6 +860,8 @@ export default function App() {
   const [optimisticVersion, setOptimisticVersion] = useState(0);
   const [sessionDisplayedCount, setSessionDisplayedCount] = useState(5);
   const [drawerDragSide, setDrawerDragSide] = useState<'' | 'left' | 'right'>('');
+  const [showLatestJump, setShowLatestJump] = useState(false);
+  const [inputDockHeight, setInputDockHeight] = useState(88);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
@@ -873,6 +878,10 @@ export default function App() {
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
   const sessionOptimisticUserMapRef = useRef<Record<string, OptimisticUserMessage[]>>({});
   const optimisticUserIdAliasRef = useRef<Record<string, Record<string, string>>>({});
+  const streamDeltaTextRef = useRef<Record<string, string>>({});
+  const streamPartMapRef = useRef<Record<string, Record<string, any>>>({});
+  const streamPartTypeRef = useRef<Record<string, 'text' | 'reasoning'>>({});
+  const streamPartDeltaKeyRef = useRef<Record<string, string>>({});
   const draftOptimisticUserRef = useRef<OptimisticUserMessage | null>(null);
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
@@ -881,7 +890,10 @@ export default function App() {
   const olderCursorBackoffRef = useRef<Record<string, { cursor: string; retryAt: number; failures: number }>>({});
   const messageScrollYRef = useRef(0);
   const messageViewportHRef = useRef(0);
+  const messageContentHRef = useRef(0);
   const messageUserScrollingRef = useRef(false);
+  const streamRunIdRef = useRef(0);
+  const sessionStatusEpochRef = useRef(0);
   const messageViewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 1, minimumViewTime: 0 });
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
@@ -911,9 +923,11 @@ export default function App() {
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
   const workspaceAnim = useRef(new Animated.Value(0)).current;
+  const streamTopGlowAnim = useRef(new Animated.Value(0)).current;
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
+  const showStreamTopGlow = busy || streaming;
 
   const localIpv4PrefixRef = useRef<{ prefix: string; ip: string; at: number } | null>(null);
 
@@ -1173,6 +1187,25 @@ export default function App() {
   }, [streaming]);
 
   useEffect(() => {
+    if (!showStreamTopGlow) {
+      streamTopGlowAnim.stopAnimation();
+      streamTopGlowAnim.setValue(0);
+      return;
+    }
+    streamTopGlowAnim.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(streamTopGlowAnim, {
+        toValue: 1,
+        duration: 1450,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [showStreamTopGlow, streamTopGlowAnim]);
+
+  useEffect(() => {
     const sid = toText(sessionId).trim();
     if (!authed || !sid || !repoPath.trim()) return;
     void refreshPendingQuestions(sid);
@@ -1391,6 +1424,8 @@ export default function App() {
   }, [loaded, authed, serverUrl, token, projects.length]);
 
   function stopStream() {
+    streamRunIdRef.current += 1;
+    sessionStatusEpochRef.current += 1;
     if (streamRef.current) {
       pushConnLog('SSE close');
       streamRef.current.close();
@@ -1403,12 +1438,14 @@ export default function App() {
   async function syncSessionStatus(targetSessionId?: string) {
     const sid = toText(targetSessionId || sessionIdRef.current).trim();
     if (!authed || !serverUrl || !repoPath) return undefined;
+    const epoch = sessionStatusEpochRef.current;
     try {
       const next = await getSessionStatus({
         baseUrl: serverUrl,
         token,
         repoPath
       });
+      if (epoch !== sessionStatusEpochRef.current) return undefined;
       setSessionStatusMap(next);
       if (!sid) return undefined;
       return next[sid] || { type: 'idle' as const };
@@ -1548,12 +1585,20 @@ export default function App() {
     const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
     for (const item of optimistic) {
       nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt });
+      const streamedItems = keepBaseTurns ? [] : base.renderedTurns.flatMap((turn) => turn.items);
       nextTurns.push({
         id: `turn:optimistic:${item.id}`,
         createdAt: item.createdAt,
         userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt },
-        items: [],
-        signature: `optimistic:${item.id}:${item.text.length}`
+        items: streamedItems,
+        signature: `optimistic:${item.id}:${item.text.length}:${streamedItems.map((streamed: any) => {
+          if (streamed.kind === 'chat') return `${streamed.kind}:${streamed.message?.id}:${toText(streamed.message?.text).length}`;
+          if (streamed.kind === 'event') return `${streamed.kind}:${streamed.event?.id}:${toText(streamed.event?.status)}`;
+          if (streamed.kind === 'think') return `${streamed.kind}:${streamed.card?.id}:${toText(streamed.card?.text).length}`;
+          if (streamed.kind === 'todo') return `${streamed.kind}:${streamed.todo?.id}:${streamed.todo?.finished ? 1 : 0}`;
+          if (streamed.kind === 'question') return `${streamed.kind}:${streamed.question?.id}:${toText(streamed.question?.status)}`;
+          return `${streamed.kind}:${streamed.createdAt || 0}`;
+        }).join('|')}`
       });
     }
     return {
@@ -1642,16 +1687,27 @@ export default function App() {
   }
 
   function scrollToLatest(animated: boolean) {
-    const index = Math.max(0, displayedTurns.length - 1);
+    const list = messageScrollRef.current;
+    const bottomInset = Math.max(140, inputDockHeight + 44);
+    const maxOffset = Math.max(0, messageContentHRef.current - messageViewportHRef.current + bottomInset);
     try {
-      messageScrollRef.current?.scrollToIndex({ index, animated, viewPosition: 1 });
-    } catch {
-      requestAnimationFrame(() => {
-        try {
-          messageScrollRef.current?.scrollToIndex({ index, animated: false, viewPosition: 1 });
-        } catch {}
-      });
-    }
+      list?.scrollToOffset({ offset: maxOffset + 1200, animated });
+      return;
+    } catch {}
+    try {
+      list?.scrollToEnd({ animated });
+    } catch {}
+  }
+
+  function jumpToLatest() {
+    allowAutoScrollRef.current = true;
+    messageUserScrollingRef.current = false;
+    forceScrollToLatestUntilRef.current = Date.now() + 900;
+    setShowLatestJump(false);
+    scrollToLatest(true);
+    [80, 220, 420, 760, 1200].forEach((delay) => {
+      setTimeout(() => scrollToLatest(false), delay);
+    });
   }
 
   const activeDrawerSide = drawerSide || drawerDragSide;
@@ -1960,6 +2016,105 @@ export default function App() {
     return rendered;
   }
 
+  function applyAssistantDelta(targetSessionId: string, payload: unknown) {
+    if (targetSessionId !== sessionIdRef.current) return;
+    const messageId = toText((payload as any)?.messageId || (payload as any)?.messageID).trim();
+    const partId = toText((payload as any)?.partId).trim() || 'text';
+    const delta = typeof (payload as any)?.delta === 'string' ? (payload as any).delta : '';
+    const partTypeKey = `${targetSessionId}:${messageId}:${partId}`;
+    const kind = streamPartTypeRef.current[partTypeKey] || (toText((payload as any)?.type).trim() === 'reasoning' ? 'reasoning' : 'text');
+    if (!messageId || !delta) return;
+
+    const key = normalizedDeltaKey(targetSessionId, messageId, partId, kind);
+    streamPartDeltaKeyRef.current[partTypeKey] = key;
+    const nextText = `${streamDeltaTextRef.current[key] || ''}${delta}`;
+    streamDeltaTextRef.current[key] = nextText;
+    const now = Date.now();
+    upsertStreamPart(targetSessionId, messageId, {
+      type: kind,
+      id: partId,
+      messageID: messageId,
+      text: nextText
+    }, now);
+    renderStreamWindow(targetSessionId);
+    setStreaming(true);
+  }
+
+  function normalizedDeltaKey(targetSessionId: string, messageId: string, partId: string, kind: 'text' | 'reasoning') {
+    return `${targetSessionId}:${messageId}:${partId}:${kind}`;
+  }
+
+  function migrateStreamPartType(targetSessionId: string, messageId: string, partId: string, nextKind: 'text' | 'reasoning') {
+    const partTypeKey = `${targetSessionId}:${messageId}:${partId}`;
+    const prevDeltaKey = streamPartDeltaKeyRef.current[partTypeKey];
+    const nextDeltaKey = normalizedDeltaKey(targetSessionId, messageId, partId, nextKind);
+    streamPartTypeRef.current[partTypeKey] = nextKind;
+    streamPartDeltaKeyRef.current[partTypeKey] = nextDeltaKey;
+    if (prevDeltaKey && prevDeltaKey !== nextDeltaKey) {
+      const prevText = streamDeltaTextRef.current[prevDeltaKey] || '';
+      const nextText = streamDeltaTextRef.current[nextDeltaKey] || '';
+      if (prevText && !nextText) streamDeltaTextRef.current[nextDeltaKey] = prevText;
+      delete streamDeltaTextRef.current[prevDeltaKey];
+    }
+    const messageKey = `${targetSessionId}:${messageId}`;
+    const partMap = streamPartMapRef.current[messageKey] || {};
+    const current = partMap[partId];
+    if (current) {
+      const migratedText = streamDeltaTextRef.current[nextDeltaKey] || toText(current.text);
+      streamPartMapRef.current[messageKey] = {
+        ...partMap,
+        [partId]: { ...current, type: nextKind, text: migratedText }
+      };
+      rewriteStreamMessageRow(targetSessionId, messageId);
+    }
+  }
+
+  function renderStreamWindow(targetSessionId: string) {
+    const totalTurns = Math.max(1, Number(sessionTotalTurnCountRef.current[targetSessionId] || INITIAL_SESSION_LIMIT));
+    const visibleTurns = Math.max(INITIAL_SESSION_LIMIT, Number(sessionVisibleTurnCountRef.current[targetSessionId] || INITIAL_SESSION_LIMIT));
+    applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns));
+  }
+
+  function upsertStreamPart(targetSessionId: string, messageId: string, part: any, createdAt: number = Date.now()) {
+    const partId = toText(part?.id || part?.partID || part?.callID || `${part?.type || 'part'}:${Object.keys(streamPartMapRef.current[`${targetSessionId}:${messageId}`] || {}).length}`);
+    if (!targetSessionId || !messageId || !partId) return;
+    const key = `${targetSessionId}:${messageId}`;
+    const current = streamPartMapRef.current[key] || {};
+    const nextPart = { ...(current[partId] || {}), ...part, id: partId, messageID: messageId };
+    streamPartMapRef.current[key] = { ...current, [partId]: nextPart };
+    rewriteStreamMessageRow(targetSessionId, messageId, createdAt);
+  }
+
+  function rewriteStreamMessageRow(targetSessionId: string, messageId: string, createdAt: number = Date.now()) {
+    const key = `${targetSessionId}:${messageId}`;
+    const partMap = streamPartMapRef.current[key] || {};
+    const parts = Object.values(streamPartMapRef.current[key]);
+    const row = {
+      info: {
+        id: messageId,
+        role: 'assistant',
+        time: { created: createdAt }
+      },
+      parts
+    };
+    sessionRawMapRef.current[targetSessionId] = mergeMessageRows(sessionRawMapRef.current[targetSessionId] || [], [row]);
+  }
+
+  function applyAssistantPart(targetSessionId: string, payload: unknown) {
+    if (targetSessionId !== sessionIdRef.current) return;
+    const messageId = toText((payload as any)?.messageId || (payload as any)?.messageID).trim();
+    const part = (payload as any)?.part;
+    if (!messageId || !part || typeof part !== 'object') return;
+    const partId = toText(part?.id || part?.partID || part?.callID).trim();
+    const partType = toText(part?.type).trim();
+    if (partId && (partType === 'text' || partType === 'reasoning')) {
+      migrateStreamPartType(targetSessionId, messageId, partId, partType);
+    }
+    upsertStreamPart(targetSessionId, messageId, part);
+    renderStreamWindow(targetSessionId);
+    setStreaming(true);
+  }
+
   function dismissQuestionRequest(requestId: string, targetSessionId: string = sessionIdRef.current) {
     const id = toText(requestId).trim();
     const sid = toText(targetSessionId).trim();
@@ -2246,8 +2401,19 @@ export default function App() {
     }, 120);
   }
 
-  function onMessageListScroll(y: number) {
+  function onMessageListScroll(y: number, viewportH?: number, contentH?: number) {
     messageScrollYRef.current = y;
+    if (typeof viewportH === 'number' && Number.isFinite(viewportH)) {
+      messageViewportHRef.current = viewportH;
+    }
+    if (typeof contentH === 'number' && Number.isFinite(contentH)) {
+      messageContentHRef.current = contentH;
+    }
+    const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - y);
+    setShowLatestJump(distanceFromBottom > 36);
+    if (!messageUserScrollingRef.current && distanceFromBottom <= 96) {
+      allowAutoScrollRef.current = true;
+    }
   }
 
   async function refreshModelCatalog(targetRepoPath?: string) {
@@ -2397,6 +2563,10 @@ export default function App() {
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
+    streamDeltaTextRef.current = {};
+    streamPartMapRef.current = {};
+    streamPartTypeRef.current = {};
+    streamPartDeltaKeyRef.current = {};
     draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
@@ -2418,6 +2588,7 @@ export default function App() {
   function startStream(targetSessionId: string) {
     stopStream();
     if (!authed || !serverUrl || !repoPath || !targetSessionId) return;
+    const streamRunId = streamRunIdRef.current;
     streamSessionRef.current = targetSessionId;
     const url = buildStreamUrl({
       baseUrl: serverUrl,
@@ -2429,11 +2600,20 @@ export default function App() {
     const headers: Record<string, string> = {};
     if (token && token !== NO_AUTH_TOKEN) headers.Authorization = `Bearer ${token}`;
     const es = new EventSource(url, { headers } as any);
+    streamRef.current = es;
     pushConnLog(`SSE connect ${url}`);
+    let streamClosed = false;
+    const isCurrentStream = () =>
+      !streamClosed &&
+      streamRunIdRef.current === streamRunId &&
+      streamRef.current === es &&
+      streamSessionRef.current === targetSessionId &&
+      sessionIdRef.current === targetSessionId;
     let lastSyncAt = 0;
     let lastStatusSyncAt = 0;
+    let lastPartSyncAt = 0;
     const syncFromServer = () => {
-      if (streamSessionRef.current !== targetSessionId || sessionIdRef.current !== targetSessionId) return;
+      if (!isCurrentStream()) return;
       const now = Date.now();
       if (now - lastSyncAt < 300) return;
       lastSyncAt = now;
@@ -2449,13 +2629,24 @@ export default function App() {
       lastStatusSyncAt = now;
       void syncSessionStatus(targetSessionId);
     };
+    const syncPartsSoon = () => {
+      const now = Date.now();
+      if (now - lastPartSyncAt < 900) return;
+      lastPartSyncAt = now;
+      void syncSessionMessages(targetSessionId, {
+        limit: INITIAL_SESSION_LIMIT,
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+      });
+    };
 
     es.addEventListener('open', () => {
+      if (!isCurrentStream()) return;
       pushConnLog('SSE open');
       setStreaming(true);
       syncFromServer();
     });
     es.addEventListener('error', (e: any) => {
+      if (!isCurrentStream()) return;
       syncFromServer();
       setStreaming(false);
       try {
@@ -2482,6 +2673,7 @@ export default function App() {
       }
     });
     es.addEventListener('messages' as any, (event: any) => {
+      if (!isCurrentStream()) return;
       try {
         const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
         const rendered = applyStreamMessageSnapshot(targetSessionId, payload);
@@ -2495,18 +2687,58 @@ export default function App() {
       }
       syncFromServer();
     });
+    es.addEventListener('delta' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
+        applyAssistantDelta(targetSessionId, payload);
+        syncStatusSoon();
+        syncPartsSoon();
+      } catch (err) {
+        pushConnLog(`SSE delta parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('part' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
+        applyAssistantPart(targetSessionId, payload);
+        syncStatusSoon();
+      } catch (err) {
+        pushConnLog(`SSE part parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('stream_fallback' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      pushConnLog(`SSE fallback ${toText(event?.data) || 'message-snapshot'}`);
+      syncFromServer();
+    });
     es.addEventListener('heartbeat' as any, () => {
+      if (!isCurrentStream()) return;
       pushConnLog('SSE heartbeat');
     });
     es.addEventListener('end' as any, () => {
+      if (!isCurrentStream()) return;
       pushConnLog('SSE end');
-      syncFromServer();
+      streamClosed = true;
+      sessionStatusEpochRef.current += 1;
+      streamSessionRef.current = '';
+      if (streamRef.current === es) {
+        es.close();
+        streamRef.current = null;
+      }
       setStreaming(false);
       setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
       setStatus('本轮回复完成');
+      void syncSessionMessages(targetSessionId, {
+        limit: INITIAL_SESSION_LIMIT,
+        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+      }).finally(() => {
+        if (streamRunIdRef.current !== streamRunId || sessionIdRef.current !== targetSessionId) return;
+        setStreaming(false);
+        setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
+      });
     });
-
-    streamRef.current = es;
   }
 
   const latestTurnMeta = useMemo(() => {
@@ -2577,6 +2809,7 @@ export default function App() {
   }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
 
   const displayedTurns = useMemo(() => renderedTurns, [renderedTurns]);
+  const messageBottomInset = Math.max(140, inputDockHeight + 44);
 
 
 
@@ -3149,28 +3382,35 @@ export default function App() {
       createdAt: optimisticAt
     };
     try {
-      const currentSessionId = toText(sessionIdRef.current).trim();
-      if (currentSessionId) {
-        upsertOptimisticUserMessage(currentSessionId, optimisticMessage);
-        appendOptimisticTurnAndStick(optimisticMessage);
-      } else {
-        renderDraftOptimisticMessage(optimisticMessage);
-      }
-      setPrompt('');
+      let targetSessionId = toText(sessionIdRef.current).trim();
       const normalizedModel = model.trim();
       const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
-      pushConnLog(`POST prompt sid=${sessionId || '(new)'} model=${requestModel || '(default)'}`);
+      if (!targetSessionId) {
+        pushConnLog(`POST session.create model=${requestModel || '(default)'}`);
+        const created = await createSession({
+          baseUrl: serverUrl,
+          token,
+          repoPath,
+          title: payloadPrompt.slice(0, 24) || '新会话'
+        });
+        targetSessionId = created.id;
+        setActiveSession(targetSessionId);
+      }
+      allowAutoScrollRef.current = true;
+      upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
+      appendOptimisticTurnAndStick(optimisticMessage);
+      setPrompt('');
+      startStream(targetSessionId);
+      pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'}`);
       const res = await sendPrompt({
         baseUrl: serverUrl,
         token,
         repoPath,
         prompt: payloadPrompt,
-        sessionId: sessionId || undefined,
+        sessionId: targetSessionId,
         model: requestModel
       });
-      moveDraftOptimisticToSession(res.sessionId, optimisticMessage);
       setActiveSession(res.sessionId);
-      startStream(res.sessionId);
       void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
         fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
@@ -3299,6 +3539,10 @@ export default function App() {
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
+    streamDeltaTextRef.current = {};
+    streamPartMapRef.current = {};
+    streamPartTypeRef.current = {};
+    streamPartDeltaKeyRef.current = {};
     draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
@@ -3573,6 +3817,24 @@ export default function App() {
         </View>
       ) : null}
       <View style={styles.chatBodyWrap}>
+        {showStreamTopGlow ? (
+          <View pointerEvents="none" style={styles.streamTopGlowTrack}>
+            <Animated.View
+              style={[
+                styles.streamTopGlowSweep,
+                {
+                  opacity: streamTopGlowAnim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.18, 0.46, 0.18] }),
+                  transform: [{
+                    translateX: streamTopGlowAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [-180, 360]
+                    })
+                  }]
+                }
+              ]}
+            />
+          </View>
+        ) : null}
         {renderedTurns.length === 0 ? (
           <View style={styles.blankWrap}>
             <Text style={styles.blankTitle}>Giteam</Text>
@@ -3590,7 +3852,7 @@ export default function App() {
             <FlashList
               ref={messageScrollRef}
               style={styles.msgScroll}
-              contentContainerStyle={styles.msgList}
+              contentContainerStyle={{ ...styles.msgList, paddingBottom: messageBottomInset }}
               onLayout={(evt) => {
                 messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
               }}
@@ -3602,7 +3864,7 @@ export default function App() {
               overScrollMode="always"
               scrollEventThrottle={16}
               viewabilityConfig={messageViewabilityConfigRef.current}
-              maintainVisibleContentPosition={Platform.OS === 'ios' ? { minIndexForVisible: 0 } : undefined}
+              maintainVisibleContentPosition={Platform.OS === 'ios' && !sessionWorking ? { minIndexForVisible: 0 } : undefined}
               onScrollBeginDrag={() => {
                 forceScrollToLatestUntilRef.current = 0;
                 allowAutoScrollRef.current = false;
@@ -3610,14 +3872,18 @@ export default function App() {
               }}
               onScrollEndDrag={() => {
                 messageUserScrollingRef.current = false;
+                const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
+                allowAutoScrollRef.current = distanceFromBottom <= 96;
+                setShowLatestJump(distanceFromBottom > 36);
               }}
               onMomentumScrollBegin={() => {
                 messageUserScrollingRef.current = true;
               }}
               onMomentumScrollEnd={() => {
                 messageUserScrollingRef.current = false;
-                const latestTurn = displayedTurns[displayedTurns.length - 1];
-                allowAutoScrollRef.current = !!latestTurn;
+                const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
+                allowAutoScrollRef.current = distanceFromBottom <= 96;
+                setShowLatestJump(distanceFromBottom > 36);
               }}
               refreshControl={
                 sessionId ? (
@@ -3638,23 +3904,20 @@ export default function App() {
               }
               onScroll={(evt) => {
                 const y = Number(evt.nativeEvent.contentOffset?.y || 0);
-                onMessageListScroll(y);
+                const viewportH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
+                const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
+                onMessageListScroll(y, viewportH, contentH);
               }}
               onViewableItemsChanged={({ viewableItems }) => {
                 if (Date.now() < forceScrollToLatestUntilRef.current) return;
-                const rows = Array.isArray(viewableItems) ? viewableItems : [];
-                const topmost = rows.reduce<{ index: number; item: MobileRenderedTurn } | null>((best, entry) => {
-                  const item = (entry as any)?.item as MobileRenderedTurn | undefined;
-                  const index = Number((entry as any)?.index);
-                  if (!item || !Number.isFinite(index)) return best;
-                  if (!best || index < best.index) return { index, item };
-                  return best;
-                }, null);
-                if (!topmost?.item) return;
-                const latestTurn = displayedTurns[displayedTurns.length - 1];
-                allowAutoScrollRef.current = !!latestTurn && latestTurn.id === topmost.item.id;
+                if (messageUserScrollingRef.current) return;
+                const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
+                if (distanceFromBottom <= 96) allowAutoScrollRef.current = true;
               }}
               onContentSizeChange={(_w, h) => {
+                messageContentHRef.current = Number(h || 0);
+                const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
+                setShowLatestJump(distanceFromBottom > 36);
                 if (loadingOlder) return;
                 if (messageUserScrollingRef.current) return;
                 if (Date.now() < forceScrollToLatestUntilRef.current) {
@@ -3720,6 +3983,11 @@ export default function App() {
               }
               ListFooterComponent={null}
             />
+            {showLatestJump ? (
+              <Pressable style={styles.latestJumpBtn} onPress={jumpToLatest}>
+                <Text style={styles.latestJumpTxt}>↑</Text>
+              </Pressable>
+            ) : null}
           </View>
         )}
       </View>
@@ -3788,7 +4056,13 @@ export default function App() {
         </View>
       ) : null}
 
-      <View style={styles.inputDock}>
+      <View
+        style={styles.inputDock}
+        onLayout={(evt) => {
+          const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
+          if (h > 0 && Math.abs(h - inputDockHeight) > 2) setInputDockHeight(h);
+        }}
+      >
         <View style={styles.inputRow}>
             <TextInput
               style={styles.inputMain}
@@ -4261,7 +4535,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    position: 'relative'
+    position: 'relative',
+    overflow: 'hidden'
+  },
+  streamTopGlowTrack: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(96, 114, 135, 0.12)',
+    overflow: 'hidden',
+    zIndex: 8,
+    elevation: 8
+  },
+  streamTopGlowSweep: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 160,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: '#243447'
   },
   topSideSlot: { width: 48, alignItems: 'flex-start', zIndex: 1 },
   topSideSlotRight: { width: 48, alignItems: 'flex-end', zIndex: 1 },
@@ -4431,7 +4727,7 @@ const styles = StyleSheet.create({
   },
   iconTxt: { color: '#394455', fontWeight: '700' },
 
-  chatBodyWrap: { flex: 1, paddingHorizontal: 16 },
+  chatBodyWrap: { flex: 1, paddingHorizontal: 16, position: 'relative' },
   chatListStage: { flex: 1, position: 'relative' },
   blankWrap: { marginTop: 26, gap: 10 },
   blankTitle: { fontSize: 40, fontWeight: '700', color: '#c7ced8' },
@@ -4449,7 +4745,26 @@ const styles = StyleSheet.create({
   suggestText: { color: '#545f6f', fontSize: 14 },
 
   msgScroll: { flex: 1 },
-  msgList: { gap: 14, paddingTop: 8, paddingBottom: 120 },
+  msgList: { gap: 14, paddingTop: 8 },
+  latestJumpBtn: {
+    position: 'absolute',
+    bottom: 14,
+    alignSelf: 'center',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#d6dee8',
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    shadowColor: '#64748b',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4
+  },
+  latestJumpTxt: { color: '#334155', fontSize: 20, fontWeight: '800', lineHeight: 24 },
   turnWrap: { width: '100%', alignSelf: 'stretch', gap: 10 },
   loadEarlierWrap: { alignItems: 'center', paddingTop: 2, paddingBottom: 4 },
   loadEarlierHint: { marginTop: 6, color: '#8b6c45', fontSize: 11 },
@@ -4679,9 +4994,9 @@ const styles = StyleSheet.create({
   eventOutput: { color: '#4f5e72', fontSize: 12, lineHeight: 18 },
   questionTimelineWrap: { width: '100%', alignItems: 'flex-start' },
   questionTimelineCard: {
-    width: '96%',
-    maxWidth: '96%',
-    borderRadius: 16,
+    width: '92%',
+    maxWidth: '92%',
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#e8ecf2',
     backgroundColor: '#ffffff',
@@ -4702,20 +5017,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row', 
     alignItems: 'center', 
     justifyContent: 'space-between', 
-    paddingVertical: 12, 
-    paddingHorizontal: 14,
+    paddingVertical: 8, 
+    paddingHorizontal: 10,
     backgroundColor: '#f8f9fb',
-    borderBottomWidth: 1,
+    borderBottomWidth: 0,
     borderBottomColor: '#eef1f5',
   },
-  questionTimelineTitle: { color: '#1a2233', fontSize: 15, fontWeight: '700' },
-  questionTimelineHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  questionTimelineTitleWrap: { flex: 1, minWidth: 0, gap: 2 },
+  questionTimelineTitle: { color: '#1a2233', fontSize: 13, fontWeight: '700' },
+  questionTimelineSummary: { color: '#697789', fontSize: 12, lineHeight: 16 },
+  questionTimelineHeadRight: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 8 },
   questionTimelineBadge: {
     color: '#607287',
-    fontSize: 11,
+    fontSize: 10,
     backgroundColor: '#eef1f5',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
     borderRadius: 999,
     overflow: 'hidden',
   },
@@ -4727,51 +5044,51 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 10,
   },
-  questionTimelineToggle: { color: '#5f6b7a', fontSize: 12, fontWeight: '600' },
-  questionTimelineBody: { padding: 14, gap: 6 },
-  questionTimelineBlock: { gap: 6 },
+  questionTimelineToggle: { color: '#5f6b7a', fontSize: 11, fontWeight: '700' },
+  questionTimelineBody: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 5, borderTopWidth: 1, borderTopColor: '#eef1f5' },
+  questionTimelineBlock: { gap: 5 },
   questionTimelineHeader: { color: '#5f6b7a', fontSize: 12, fontWeight: '600', marginBottom: 2 },
-  questionTimelineText: { color: '#1a2233', fontSize: 14, fontWeight: '600', lineHeight: 20 },
-  questionTimelineHint: { color: '#9aa3b2', fontSize: 12, marginTop: 2 },
+  questionTimelineText: { color: '#1a2233', fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  questionTimelineHint: { color: '#9aa3b2', fontSize: 11, marginTop: 1 },
   questionTimelineOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    borderRadius: 10,
+    gap: 7,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#e4e9f0',
     backgroundColor: '#f8f9fb',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginVertical: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginVertical: 1,
   },
   questionTimelineOptionLive: {
     borderColor: '#0066b8',
     backgroundColor: 'rgba(0, 102, 184, 0.06)'
   },
-  questionTimelineRadio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#c5cdd8', backgroundColor: '#fff' },
-  questionTimelineCheckbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 2, borderColor: '#c5cdd8', backgroundColor: '#fff' },
+  questionTimelineRadio: { width: 12, height: 12, borderRadius: 6, borderWidth: 1.5, borderColor: '#c5cdd8', backgroundColor: '#fff' },
+  questionTimelineCheckbox: { width: 12, height: 12, borderRadius: 3, borderWidth: 1.5, borderColor: '#c5cdd8', backgroundColor: '#fff' },
   questionTimelineOptionBody: { flex: 1 },
-  questionTimelineOptionLabel: { color: '#1a2233', fontSize: 14, fontWeight: '500', lineHeight: 20 },
-  questionTimelineOptionDesc: { color: '#7a8494', fontSize: 12, lineHeight: 17, marginTop: 1 },
-  questionTimelineDisabled: { color: '#8a95a6', fontSize: 11, lineHeight: 16 },
-  questionTimelineTabs: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  questionTimelineOptionLabel: { color: '#1a2233', fontSize: 12, fontWeight: '500', lineHeight: 17 },
+  questionTimelineOptionDesc: { color: '#7a8494', fontSize: 11, lineHeight: 15, marginTop: 1 },
+  questionTimelineDisabled: { color: '#8a95a6', fontSize: 10, lineHeight: 14 },
+  questionTimelineTabs: { flexDirection: 'row', gap: 6, marginBottom: 5 },
   questionTimelineTab: {
-    minWidth: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1.5,
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
     borderColor: '#e4e9f0',
     backgroundColor: '#f8f9fb',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 7,
   },
   questionTimelineTabActive: {
     borderColor: '#2d3a4d',
     backgroundColor: '#2d3a4d'
   },
-  questionTimelineTabText: { color: '#5f6b7a', fontSize: 13, fontWeight: '600' },
+  questionTimelineTabText: { color: '#5f6b7a', fontSize: 11, fontWeight: '600' },
   questionTimelineTabTextActive: { color: '#ffffff' },
   errorCard: {
     width: '96%',

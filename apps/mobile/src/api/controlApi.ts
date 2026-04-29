@@ -104,6 +104,29 @@ export async function sendPrompt(args: {
   return JSON.parse(raw) as PromptResponse;
 }
 
+export async function createSession(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  title?: string;
+}): Promise<{ id: string; title: string; createdAt?: number; updatedAt?: number }> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const url = `${baseUrl}/api/v1/opencode/session`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(args.token)
+    },
+    body: JSON.stringify({
+      repoPath: args.repoPath,
+      title: args.title || undefined
+    })
+  });
+  const raw = ensureOk('session.create', 'POST', url, result.status, result.ok, result.text);
+  return JSON.parse(raw) as { id: string; title: string; createdAt?: number; updatedAt?: number };
+}
+
 export async function getMessages(args: {
   baseUrl: string;
   token: string;
