@@ -2420,6 +2420,9 @@ export function App() {
   const commitButtonCount = worktreeChangeStats.staged > 0 ? worktreeChangeStats.staged : worktreeChangeStats.unstaged;
   const needsGitSync = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0;
   const commitPrimaryIsSync = !hasCommittableChanges && needsGitSync;
+  const gitSyncLabel = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0
+    ? `${worktreeOverview.ahead > 0 ? `↑${worktreeOverview.ahead}` : ""}${worktreeOverview.ahead > 0 && worktreeOverview.behind > 0 ? " " : ""}${worktreeOverview.behind > 0 ? `↓${worktreeOverview.behind}` : ""}`
+    : "synced";
 
   useEffect(() => {
     repoPathRef.current = repoPath;
@@ -5335,6 +5338,7 @@ export function App() {
 
   async function handleGitCommit() {
     if (!ensureRepoSelected()) return;
+    if (committing || pushing) return;
     const msg = commitMessage.trim();
     if (!msg) {
       setMessage("Please enter a commit message");
@@ -5372,6 +5376,7 @@ export function App() {
 
   async function handleGitPush() {
     if (!ensureRepoSelected()) return;
+    if (committing || pushing) return;
     setPushing(true);
     setError("");
     try {
@@ -5389,6 +5394,7 @@ export function App() {
 
   async function handleGitSync() {
     if (!ensureRepoSelected()) return;
+    if (committing || pushing) return;
     setPushing(true);
     setError("");
     setShowCommitActionMenu(false);
@@ -5411,6 +5417,7 @@ export function App() {
 
   async function handleGitCommitAndPush() {
     if (!ensureRepoSelected()) return;
+    if (committing || pushing) return;
     const msg = commitMessage.trim();
     if (!msg) {
       setMessage("Please enter a commit message");
@@ -5453,6 +5460,7 @@ export function App() {
 
   async function handleGitCommitAndSync() {
     if (!ensureRepoSelected()) return;
+    if (committing || pushing) return;
     const msg = commitMessage.trim();
     if (!msg) {
       setMessage("Please enter a commit message");
@@ -7856,6 +7864,11 @@ export function App() {
                       ) : null}
                     </span>
                   ) : null}
+                  {worktreeOverview.branch ? (
+                    <span className={needsGitSync ? "gt-sync-status needs-sync" : "gt-sync-status"} title={worktreeOverview.tracking || "No upstream"}>
+                      {worktreeOverview.branch} {gitSyncLabel}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="toolbar" style={{ gap: 6 }}>
                   {worktreeChangeStats.total > 0 ? (
@@ -7897,11 +7910,13 @@ export function App() {
                 <div className="gt-changes-commit-actions" onClick={(e) => e.stopPropagation()}>
                   <div className="gt-commit-split-wrap">
                     <button
-                      className="chip is-primary gt-commit-main-btn"
+                      className={committing || pushing ? "chip is-primary gt-commit-main-btn is-loading" : "chip is-primary gt-commit-main-btn"}
                       onClick={() => void (commitPrimaryIsSync ? handleGitSync() : handleGitCommit())}
-                      disabled={commitPrimaryIsSync ? (committing || pushing) : (committing || pushing || !hasCommittableChanges)}
+                      disabled={commitPrimaryIsSync ? false : !hasCommittableChanges}
+                      aria-busy={committing || pushing}
                       title={commitPrimaryIsSync ? "Sync branch" : (!hasCommittableChanges ? "No changes to commit" : "")}
                     >
+                      {committing || pushing ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
                       {commitPrimaryIsSync
                         ? (pushing ? "Syncing..." : `↕ Sync (${worktreeOverview.ahead}/${worktreeOverview.behind})`)
                         : (committing ? "Committing..." : `✓ Commit (${commitButtonCount})`)}
@@ -7913,7 +7928,9 @@ export function App() {
                       disabled={committing || pushing}
                       title="More commit actions"
                     >
-                      ˅
+                      <svg className="gt-commit-chevron" viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4.5 6.5 8 10l3.5-3.5" />
+                      </svg>
                     </button>
                     {showCommitActionMenu ? (
                       <div className="gt-commit-action-menu" role="menu">
