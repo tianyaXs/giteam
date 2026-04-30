@@ -82,7 +82,11 @@ fn cache_question_requests(repo_path: &str, session_id: &str, requests: Vec<Valu
         let bucket = guard.entry(key).or_default();
         for request in requests {
             let id = request.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if id.is_empty() || bucket.iter().any(|item| item.get("id").and_then(|v| v.as_str()) == Some(id)) {
+            if id.is_empty()
+                || bucket
+                    .iter()
+                    .any(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))
+            {
                 continue;
             }
             bucket.push(request);
@@ -241,7 +245,8 @@ fn write_mobile_model_state(value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create model state dir failed: {e}"))?;
     }
-    let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize model state failed: {e}"))?;
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("serialize model state failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write model state failed: {e}"))
 }
 
@@ -866,7 +871,7 @@ fn stream_opencode_global_events(
 
     let mut message_roles = HashMap::<String, String>::new();
     let mut part_types = HashMap::<String, String>::new();
-    let mut pending_delta = HashMap::<String, Vec<(String, String, String)>>::new();
+    let mut seen_activity = false;
     let mut frame = String::new();
     let reader = BufReader::new(stdout);
     let finish = |child: &mut std::process::Child| {
@@ -884,13 +889,18 @@ fn stream_opencode_global_events(
         let data = sse_frame_data(frame.as_str());
         frame.clear();
         let Some(data) = data else { continue };
-        let Some(event) = wrapped_opencode_event(data.as_str()) else { continue };
+        let Some(event) = wrapped_opencode_event(data.as_str()) else {
+            continue;
+        };
         let typ = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if event_session_id(&event) != session_id {
             continue;
         }
 
         if typ == "session.idle" {
+            if !seen_activity {
+                continue;
+            }
             let _ = write_sse_event(stream, "end", &serde_json::json!({ "reason": "idle" }));
             finish(&mut child);
             return Ok(());
@@ -903,6 +913,9 @@ fn stream_opencode_global_events(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if status_type == "idle" {
+                if !seen_activity {
+                    continue;
+                }
                 let _ = write_sse_event(stream, "end", &serde_json::json!({ "reason": "idle" }));
                 finish(&mut child);
                 return Ok(());
@@ -919,6 +932,7 @@ fn stream_opencode_global_events(
             return Ok(());
         }
         if typ == "message.updated" {
+            seen_activity = true;
             let props = event.get("properties").and_then(|v| v.as_object());
             let info = props
                 .and_then(|p| p.get("info"))
@@ -939,37 +953,12 @@ fn stream_opencode_global_events(
                         "assistant_message",
                         &serde_json::json!({ "sessionId": session_id, "messageId": message_id }),
                     );
-                    if let Some(deltas) = pending_delta.remove(message_id) {
-                        for (part_id, field, delta) in deltas {
-                            let event_type = match part_types.get(part_id.as_str()).map(String::as_str) {
-                                Some("reasoning") => "reasoning",
-                                Some("text") => "text",
-                                _ if field == "reasoning" => "reasoning",
-                                _ => "text",
-                            };
-                            if write_sse_event(
-                                stream,
-                                "delta",
-                                &serde_json::json!({
-                                    "sessionId": session_id,
-                                    "messageId": message_id,
-                                    "partId": part_id,
-                                    "type": event_type,
-                                    "delta": delta
-                                }),
-                            )
-                            .is_err()
-                            {
-                                finish(&mut child);
-                                return Ok(());
-                            }
-                        }
-                    }
                 }
             }
             continue;
         }
         if typ == "message.part.delta" {
+            seen_activity = true;
             let props = event.get("properties").and_then(|v| v.as_object());
             let message_id = props
                 .and_then(|p| p.get("messageID"))
@@ -987,14 +976,10 @@ fn stream_opencode_global_events(
                 .and_then(|p| p.get("delta"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if message_id.is_empty() || delta.is_empty() || (field != "text" && field != "reasoning") {
-                continue;
-            }
-            if message_roles.get(message_id).map(String::as_str) != Some("assistant") {
-                pending_delta
-                    .entry(message_id.to_string())
-                    .or_default()
-                    .push((part_id.to_string(), field.to_string(), delta.to_string()));
+            if message_id.is_empty()
+                || delta.is_empty()
+                || (field != "text" && field != "reasoning")
+            {
                 continue;
             }
             let event_type = match part_types.get(part_id).map(String::as_str) {
@@ -1022,6 +1007,7 @@ fn stream_opencode_global_events(
             continue;
         }
         if typ == "message.part.updated" {
+            seen_activity = true;
             let part = event
                 .get("properties")
                 .and_then(|v| v.get("part"))
@@ -1035,10 +1021,7 @@ fn stream_opencode_global_events(
                     part_types.insert(part_id.to_string(), part_type.to_string());
                 }
             }
-            let message_id = part
-                .get("messageID")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let message_id = part.get("messageID").and_then(|v| v.as_str()).unwrap_or("");
             if message_id.is_empty() {
                 continue;
             }
@@ -1365,6 +1348,9 @@ fn compact_mobile_tool_metadata(metadata: Option<&Map<String, Value>>) -> Option
     if let Some(v) = metadata.get("todos").cloned() {
         out.insert("todos".to_string(), v);
     }
+    if let Some(v) = metadata.get("writeSummary").cloned() {
+        out.insert("writeSummary".to_string(), v);
+    }
     if out.is_empty() {
         None
     } else {
@@ -1434,7 +1420,112 @@ fn compact_mobile_tool_output(value: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
+fn compact_mobile_path(path: &str) -> String {
+    let normalized = path.trim().replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 2 {
+        normalized
+    } else {
+        parts[parts.len().saturating_sub(2)..].join("/")
+    }
+}
+
+fn parse_apply_patch_output_files(output: &str) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let Some((flag, path)) = trimmed.split_once(' ') else {
+            continue;
+        };
+        let action = match flag {
+            "A" => "Added",
+            "D" => "Deleted",
+            "M" => "Modified",
+            _ => continue,
+        };
+        let path = path.trim();
+        if !path.is_empty() {
+            rows.push((action.to_string(), path.to_string()));
+        }
+    }
+    rows
+}
+
+fn git_numstat_for_paths(repo_path: &str, paths: &[String]) -> HashMap<String, (u64, u64)> {
+    if repo_path.trim().is_empty() || paths.is_empty() {
+        return HashMap::new();
+    }
+    let output = Command::new("git")
+        .arg("diff")
+        .arg("--numstat")
+        .arg("--")
+        .args(paths)
+        .current_dir(repo_path)
+        .output();
+    let Ok(output) = output else {
+        return HashMap::new();
+    };
+    if !output.status.success() {
+        return HashMap::new();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut stats = HashMap::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 3 {
+            continue;
+        }
+        let add = cols[0].parse::<u64>().unwrap_or(0);
+        let del = cols[1].parse::<u64>().unwrap_or(0);
+        stats.insert(cols[2].trim().to_string(), (add, del));
+    }
+    stats
+}
+
+fn summarize_mobile_write_tool(
+    repo_path: &str,
+    tool: &str,
+    state: &Map<String, Value>,
+) -> Option<String> {
+    if tool != "apply_patch" {
+        return None;
+    }
+    let output = state
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let files = parse_apply_patch_output_files(output);
+    if files.is_empty() {
+        return None;
+    }
+    let paths: Vec<String> = files.iter().map(|(_, path)| path.clone()).collect();
+    let stats = git_numstat_for_paths(repo_path, &paths);
+    let mut summaries = Vec::new();
+    for (action, path) in files {
+        let suffix = stats
+            .get(path.as_str())
+            .map(|(add, del)| format!(" +{} -{}", add, del))
+            .unwrap_or_default();
+        summaries.push(format!(
+            "{} {}{}",
+            action,
+            compact_mobile_path(path.as_str()),
+            suffix
+        ));
+    }
+    if summaries.len() <= 2 {
+        Some(summaries.join("；"))
+    } else {
+        Some(format!(
+            "{}；等 {} 个文件",
+            summaries[..2].join("；"),
+            summaries.len()
+        ))
+    }
+}
+
+fn compact_mobile_message_parts(repo_path: &str, role: &str, parts: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for part in parts {
         let Some(part_obj) = part.as_object() else {
@@ -1533,6 +1624,14 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                     ) {
                         compact_state.insert("metadata".to_string(), metadata);
                     }
+                    if let Some(summary) = summarize_mobile_write_tool(repo_path, tool, state) {
+                        let mut metadata = compact_state
+                            .remove("metadata")
+                            .and_then(|v| v.as_object().cloned())
+                            .unwrap_or_default();
+                        metadata.insert("writeSummary".to_string(), Value::String(summary));
+                        compact_state.insert("metadata".to_string(), Value::Object(metadata));
+                    }
                     if !compact_state.is_empty() {
                         node.insert("state".to_string(), Value::Object(compact_state));
                     }
@@ -1559,7 +1658,7 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
     out
 }
 
-fn compact_mobile_message_payload(mut v: Value) -> Value {
+fn compact_mobile_message_payload(mut v: Value, repo_path: &str) -> Value {
     let Some(arr) = v.as_array_mut() else {
         return v;
     };
@@ -1588,7 +1687,11 @@ fn compact_mobile_message_payload(mut v: Value) -> Value {
         if let Some(parts) = item_obj.get("parts").and_then(|v| v.as_array()) {
             item_obj.insert(
                 "parts".to_string(),
-                Value::Array(compact_mobile_message_parts(role.as_str(), parts)),
+                Value::Array(compact_mobile_message_parts(
+                    repo_path,
+                    role.as_str(),
+                    parts,
+                )),
             );
         }
     }
@@ -1763,7 +1866,7 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
                     break;
                 }
                 let filtered_v = filter_mobile_compacted_messages(v);
-                let compact_v = compact_mobile_message_payload(filtered_v);
+                let compact_v = compact_mobile_message_payload(filtered_v, repo.as_str());
                 let fp = serde_json::to_string(&compact_v).unwrap_or_default();
                 if fp != prev_fingerprint {
                     prev_fingerprint = fp;
@@ -2149,7 +2252,11 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                     sid_for_capture.as_str(),
                     120,
                 ) {
-                    cache_question_requests(repo_for_capture.as_str(), sid_for_capture.as_str(), requests);
+                    cache_question_requests(
+                        repo_for_capture.as_str(),
+                        sid_for_capture.as_str(),
+                        requests,
+                    );
                 }
             });
             thread::sleep(Duration::from_millis(180));
@@ -2207,7 +2314,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                     items
                 };
                 let filtered_items = filter_mobile_compacted_messages(final_items);
-                let compact_items = compact_mobile_message_payload(filtered_items);
+                let compact_items = compact_mobile_message_payload(filtered_items, repo.as_str());
                 (
                     200,
                     serde_json::json!({
@@ -2270,11 +2377,17 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 let mut rows = v.as_array().cloned().unwrap_or_default();
                 // Filter by sessionId if provided
                 if !session_id.is_empty() {
-                    rows.retain(|row| row.get("sessionID").and_then(|v| v.as_str()) == Some(session_id.as_str()));
+                    rows.retain(|row| {
+                        row.get("sessionID").and_then(|v| v.as_str()) == Some(session_id.as_str())
+                    });
                 }
                 for item in cached {
                     let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if !id.is_empty() && !rows.iter().any(|row| row.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                    if !id.is_empty()
+                        && !rows
+                            .iter()
+                            .any(|row| row.get("id").and_then(|v| v.as_str()) == Some(id))
+                    {
                         rows.push(item);
                     }
                 }
@@ -2312,14 +2425,23 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|item| item.as_array().map(|inner| {
-                                inner.iter().filter_map(|s| s.as_str().map(String::from)).collect()
-                            }))
+                            .filter_map(|item| {
+                                item.as_array().map(|inner| {
+                                    inner
+                                        .iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
                 // Try direct submission first
-                match opencode::post_opencode_question_reply(&repo_path, request_id, answers.clone()) {
+                match opencode::post_opencode_question_reply(
+                    &repo_path,
+                    request_id,
+                    answers.clone(),
+                ) {
                     Ok(_) => {
                         remove_cached_question(request_id);
                         return (200, serde_json::json!({ "ok": true }));
@@ -2332,16 +2454,25 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                             if let Ok(guard) = question_cache().lock() {
                                 for (_, bucket) in guard.iter() {
                                     for item in bucket {
-                                        let cached_call_id = item.get("tool")
+                                        let cached_call_id = item
+                                            .get("tool")
                                             .and_then(|v| v.get("callID"))
                                             .and_then(|v| v.as_str());
                                         if cached_call_id == Some(request_id) {
-                                            if let Some(actual_id) = item.get("id").and_then(|v| v.as_str()) {
+                                            if let Some(actual_id) =
+                                                item.get("id").and_then(|v| v.as_str())
+                                            {
                                                 match opencode::post_opencode_question_reply(
-                                                    &repo_path, actual_id, answers.clone()) {
+                                                    &repo_path,
+                                                    actual_id,
+                                                    answers.clone(),
+                                                ) {
                                                     Ok(_) => {
                                                         remove_cached_question(actual_id);
-                                                        return (200, serde_json::json!({ "ok": true }));
+                                                        return (
+                                                            200,
+                                                            serde_json::json!({ "ok": true }),
+                                                        );
                                                     }
                                                     Err(_) => {}
                                                 }
@@ -2354,15 +2485,25 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                             if let Ok(v) = opencode::list_opencode_questions(repo_path.as_str()) {
                                 if let Some(rows) = v.as_array() {
                                     for row in rows {
-                                        let row_call_id = row.get("tool")
+                                        let row_call_id = row
+                                            .get("tool")
                                             .and_then(|v| v.get("callID"))
                                             .and_then(|v| v.as_str());
                                         if row_call_id == Some(request_id) {
-                                            if let Some(actual_id) = row.get("id").and_then(|v| v.as_str()) {
-                                                match opencode::post_opencode_question_reply(&repo_path, actual_id, answers.clone()) {
+                                            if let Some(actual_id) =
+                                                row.get("id").and_then(|v| v.as_str())
+                                            {
+                                                match opencode::post_opencode_question_reply(
+                                                    &repo_path,
+                                                    actual_id,
+                                                    answers.clone(),
+                                                ) {
                                                     Ok(_) => {
                                                         remove_cached_question(actual_id);
-                                                        return (200, serde_json::json!({ "ok": true }));
+                                                        return (
+                                                            200,
+                                                            serde_json::json!({ "ok": true }),
+                                                        );
                                                     }
                                                     Err(_) => {}
                                                 }

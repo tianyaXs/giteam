@@ -48,7 +48,7 @@ function mergeMessageRow(prev: RawMessageRow | undefined, incoming: RawMessageRo
     const key = partKey(part, index);
     const existingIndex = indexByKey.get(key);
     if (typeof existingIndex === 'number') {
-      parts[existingIndex] = { ...(parts[existingIndex] || {}), ...(part || {}) };
+      parts[existingIndex] = mergeMessagePart(parts[existingIndex], part);
     } else {
       indexByKey.set(key, parts.length);
       parts.push(part);
@@ -60,6 +60,16 @@ function mergeMessageRow(prev: RawMessageRow | undefined, incoming: RawMessageRo
     info: { ...(prev.info || {}), ...(incoming.info || {}) },
     parts
   };
+}
+
+function mergeMessagePart(prev: any, incoming: any): any {
+  const next = { ...(prev || {}), ...(incoming || {}) };
+  const prevText = typeof prev?.text === 'string' ? prev.text : '';
+  const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
+  if (prevText && (!incomingText || incomingText.length < prevText.length)) {
+    next.text = prevText;
+  }
+  return next;
 }
 
 export function mergeMessageRows(prev: RawMessageRow[], incoming: RawMessageRow[]): RawMessageRow[] {

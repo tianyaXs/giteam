@@ -38,6 +38,7 @@ const file = path.join(
 );
 
 if (!fs.existsSync(file)) {
+  patchReactNativeMarked();
   process.exit(0);
 }
 
@@ -46,13 +47,38 @@ const after = 'return requestedPermissions?.contains(permission) == true';
 const source = fs.readFileSync(file, 'utf8');
 
 if (source.includes(after)) {
+  patchReactNativeMarked();
   process.exit(0);
 }
 
 if (!source.includes(before)) {
   console.warn('[patch-expo-modules-core] target line not found, skipping');
+  patchReactNativeMarked();
   process.exit(0);
 }
 
 fs.writeFileSync(file, source.replace(before, after));
 console.log('[patch-expo-modules-core] patched PermissionsService.kt');
+patchReactNativeMarked();
+
+function patchReactNativeMarked() {
+  const parserFile = path.join(
+    rootDir,
+    'node_modules',
+    'react-native-marked',
+    'src',
+    'lib',
+    'Parser.tsx'
+  );
+  if (!fs.existsSync(parserFile)) return;
+  const parserSource = fs.readFileSync(parserFile, 'utf8');
+  const parserBefore = `\t\t\t\t\tthis.styles.code,\n\t\t\t\t\tthis.styles.em,`;
+  const parserAfter = `\t\t\t\t\tthis.styles.code,\n\t\t\t\t\tthis.styles.codespan,`;
+  if (parserSource.includes(parserAfter)) return;
+  if (!parserSource.includes(parserBefore)) {
+    console.warn('[patch-react-native-marked] target line not found, skipping');
+    return;
+  }
+  fs.writeFileSync(parserFile, parserSource.replace(parserBefore, parserAfter));
+  console.log('[patch-react-native-marked] patched code block text style');
+}

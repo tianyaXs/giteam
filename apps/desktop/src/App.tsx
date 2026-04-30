@@ -5,6 +5,8 @@ import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
@@ -648,17 +650,7 @@ function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | 
     const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
     if (text) chunks.push(text);
   }
-  if (chunks.length > 0) return chunks.join("\n\n");
-  // Fallback: some providers may emit only reasoning.
-  const fallback: string[] = [];
-  for (const p of rows) {
-    if (!p) continue;
-    const t = String((p as any)?.type || "");
-    if (t !== "reasoning") continue;
-    const text = String((p as any)?.text ?? "").trim();
-    if (text) fallback.push(text);
-  }
-  return fallback.join("\n\n");
+  return chunks.join("\n\n");
 }
 
 function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
@@ -1364,111 +1356,13 @@ function MarkdownLite(props: { source: string }) {
   const text = props.source.replace(/\r\n/g, "\n").replace(/\\n/g, "\n").trim();
   if (!text) return <p className="muted">等待上下文加载...</p>;
 
-  const lines = text.split("\n");
-  const blocks: ReactNode[] = [];
-  let i = 0;
-  let key = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!line.trim()) {
-      i += 1;
-      continue;
-    }
-    if (line.startsWith("```")) {
-      const lang = line.slice(3).trim();
-      i += 1;
-      const codeLines: string[] = [];
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        codeLines.push(lines[i]);
-        i += 1;
-      }
-      if (i < lines.length) i += 1;
-      blocks.push(
-        <pre key={`pre-${key++}`} className="md-code">
-          {lang ? <span className="md-code-lang">{lang}</span> : null}
-          <code>{codeLines.join("\n")}</code>
-        </pre>
-      );
-      continue;
-    }
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      const level = Math.min(heading[1].length, 6);
-      const cls = `md-h${level}`;
-      blocks.push(
-        <p key={`h-${key++}`} className={cls}>
-          {renderInlineMarkdown(heading[2])}
-        </p>
-      );
-      i += 1;
-      continue;
-    }
-    if (/^>\s?/.test(line)) {
-      const quoteLines: string[] = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) {
-        quoteLines.push(lines[i].replace(/^>\s?/, ""));
-        i += 1;
-      }
-      blocks.push(
-        <blockquote key={`q-${key++}`} className="md-quote">
-          {quoteLines.map((q, idx) => (
-            <p key={`qp-${idx}`}>{renderInlineMarkdown(q)}</p>
-          ))}
-        </blockquote>
-      );
-      continue;
-    }
-    if (/^[-*+]\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^[-*+]\s+/, ""));
-        i += 1;
-      }
-      blocks.push(
-        <ul key={`ul-${key++}`} className="md-list">
-          {items.map((item, idx) => (
-            <li key={`li-${idx}`}>{renderInlineMarkdown(item)}</li>
-          ))}
-        </ul>
-      );
-      continue;
-    }
-    if (/^\d+\.\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\d+\.\s+/, ""));
-        i += 1;
-      }
-      blocks.push(
-        <ol key={`ol-${key++}`} className="md-list">
-          {items.map((item, idx) => (
-            <li key={`oli-${idx}`}>{renderInlineMarkdown(item)}</li>
-          ))}
-        </ol>
-      );
-      continue;
-    }
-    const para: string[] = [line];
-    i += 1;
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !lines[i].startsWith("```") &&
-      !/^(#{1,6})\s+/.test(lines[i]) &&
-      !/^>\s?/.test(lines[i]) &&
-      !/^[-*+]\s+/.test(lines[i]) &&
-      !/^\d+\.\s+/.test(lines[i])
-    ) {
-      para.push(lines[i]);
-      i += 1;
-    }
-    blocks.push(
-      <p key={`p-${key++}`} className="md-p">
-        {renderInlineMarkdown(para.join(" "))}
-      </p>
-    );
-  }
-  return <div className="markdown-lite">{blocks}</div>;
+  return (
+    <div className="markdown-lite">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function parseStatusText(raw: string): ParsedStatus {
@@ -2361,6 +2255,7 @@ export function App() {
   const opencodeMessageWindowCacheRef = useRef<Record<string, OpencodeMessageWindowCacheEntry[]>>({});
   const opencodeMessagePageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
   const opencodeMessagePageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
+  const opencodePassiveSyncSeqRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
@@ -2932,10 +2827,24 @@ export function App() {
     return opencodeMessageWindowCacheRef.current[getOpencodeMessageCacheKey(repoPathValue, sessionId)] || [];
   }
 
-  function getBestOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, limit: number) {
+  function getBestOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, limit: number, minFetchedAt = 0) {
     const entries = getOpencodeMessageCacheEntries(repoPathValue, sessionId);
     const need = Math.max(2, limit);
-    return entries.find((entry) => entry.limit >= need) || null;
+    return entries.find((entry) => entry.limit >= need && entry.fetchedAt >= minFetchedAt) || null;
+  }
+
+  function invalidateOpencodeMessageCache(repoPathValue: string, sessionId: string) {
+    const baseKey = getOpencodeMessageCacheKey(repoPathValue, sessionId);
+    const pagePrefix = `${baseKey}\n`;
+    const nextWindow = { ...opencodeMessageWindowCacheRef.current };
+    delete nextWindow[baseKey];
+    opencodeMessageWindowCacheRef.current = nextWindow;
+    opencodeMessagePageCacheRef.current = Object.fromEntries(
+      Object.entries(opencodeMessagePageCacheRef.current).filter(([key]) => !key.startsWith(pagePrefix))
+    );
+    opencodeMessagePageInflightRef.current = Object.fromEntries(
+      Object.entries(opencodeMessagePageInflightRef.current).filter(([key]) => !key.startsWith(pagePrefix))
+    );
   }
 
   function setOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, entry: OpencodeMessageWindowCacheEntry) {
@@ -2958,13 +2867,13 @@ export function App() {
     };
   }
 
-  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number) {
+  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0) {
     const id = sessionId.trim();
     const safeBefore = before.trim();
     const safeLimit = Math.max(2, limit);
     const cacheKey = getOpencodeMessagePageCacheKey(repoPath, id, safeBefore, safeLimit);
     const cached = opencodeMessagePageCacheRef.current[cacheKey];
-    if (cached) {
+    if (cached && cached.fetchedAt >= minFetchedAt) {
       appendOpencodeDebugLog(`session.messages page cache hit ${id} before=${safeBefore || "root"} limit=${safeLimit}`);
       return cached;
     }
@@ -3017,7 +2926,8 @@ export function App() {
   async function fetchOpencodeCompactMessagesWindow(sessionId: string, initialLimit: number) {
     const id = sessionId.trim();
     const limit = Math.max(2, initialLimit);
-    const cached = getBestOpencodeMessageCacheEntry(repoPath, id, limit);
+    const sessionUpdatedAt = opencodeSessions.find((session) => session.id === id)?.updatedAt || 0;
+    const cached = getBestOpencodeMessageCacheEntry(repoPath, id, limit, sessionUpdatedAt);
     if (cached) {
       appendOpencodeDebugLog(`session.messages cache hit ${id} limit=${cached.limit}`);
       return {
@@ -3028,7 +2938,7 @@ export function App() {
         hasMore: cached.hasMore
       };
     }
-    const page = await fetchOpencodeDetailedMessagePage(id, "", limit);
+    const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt);
     const mapped = page.items;
     const turnCount = buildOpencodeTurnRanges(mapped).length;
     setOpencodeMessageCacheEntry(repoPath, id, {
@@ -4244,6 +4154,7 @@ export function App() {
     if (!sessionId) return;
     bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
     if (opencodeRunBusyBySession[sessionId]) return;
+    invalidateOpencodeMessageCache(repoPath, sessionId);
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
@@ -6793,6 +6704,101 @@ export function App() {
       el.scrollTop = 0;
     });
   }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!runtimeStatus.opencode.installed || !selectedRepo || !repoPath || !activeOpencodeSessionId) return;
+    if (activeOpencodeSessionBusy) return;
+    const sessionId = activeOpencodeSessionId.trim();
+    if (!sessionId) return;
+    const seq = opencodePassiveSyncSeqRef.current + 1;
+    opencodePassiveSyncSeqRef.current = seq;
+    const abort = new AbortController();
+    let refreshTimer: number | null = null;
+    let stopped = false;
+    const scheduleRefresh = (delay = 700) => {
+      if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
+        invalidateOpencodeMessageCache(repoPath, sessionId);
+        void loadOpencodeSessionMessages(sessionId).catch((e) => setError(String(e)));
+        void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch(() => {});
+      }, delay);
+    };
+    const handleRawEvent = (raw: string) => {
+      let event: any;
+      try {
+        event = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      const wrapped = event?.payload ? event.payload : event;
+      const typ = String(wrapped?.type || "");
+      const props = wrapped?.properties || {};
+      const sid = String(props?.sessionID || props?.part?.sessionID || "");
+      if (sid !== sessionId) return;
+      if (typ === "message.updated" || typ === "message.part.updated" || typ === "message.part.removed") {
+        scheduleRefresh(350);
+        return;
+      }
+      if (typ === "message.part.delta") return;
+      if (typ === "session.idle") {
+        scheduleRefresh(80);
+        return;
+      }
+      if (typ === "session.status" && String(props?.status?.type || "") === "idle") {
+        scheduleRefresh(80);
+      }
+    };
+    void (async () => {
+      try {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        if (stopped || abort.signal.aborted) return;
+        const url = `${base}/global/event?directory=${encodeURIComponent(repoPath)}`;
+        appendOpencodeDebugLog(`session.passiveSync.connect ${sessionId}`);
+        const resp = await fetch(url, {
+          method: "GET",
+          headers: { Accept: "text/event-stream" },
+          signal: abort.signal
+        });
+        if (!resp.ok || !resp.body) throw new Error(`SSE connect failed: HTTP ${resp.status}`);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        const processFrame = (frame: string) => {
+          if (!frame.trim()) return;
+          const dataLines: string[] = [];
+          for (const rawLine of frame.split(/\r?\n/)) {
+            if (!rawLine || rawLine.startsWith(":")) continue;
+            if (!rawLine.startsWith("data:")) continue;
+            dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
+          }
+          if (dataLines.length > 0) handleRawEvent(dataLines.join("\n"));
+        };
+        while (!stopped && !abort.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          while (true) {
+            const m = buf.match(/\r?\n\r?\n/);
+            if (!m || m.index == null) break;
+            const frame = buf.slice(0, m.index);
+            buf = buf.slice(m.index + m[0].length);
+            processFrame(frame);
+          }
+        }
+        processFrame(buf);
+      } catch (e) {
+        if (!abort.signal.aborted && !stopped) appendOpencodeDebugLog(`session.passiveSync.warn ${String(e)}`);
+      }
+    })();
+    return () => {
+      stopped = true;
+      abort.abort();
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    };
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
 
   const opencodeVisibleWindow = useMemo(() => sliceOpencodeMessagesByTurnStart(opencodeMessages, opencodeTurnStart), [opencodeMessages, opencodeTurnStart]);
 

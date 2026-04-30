@@ -1,6 +1,6 @@
 {
   "name": "giteam",
-  "version": "0.1.14",
+  "version": "0.1.17",
   "description": "giteam terminal control service",
   "author": "giteam Contributors",
   "type": "module",
@@ -34,7 +34,12 @@
   "bin": {
     "giteam": "bin/giteam.js"
   },
-  "optionalDependencies": {},
+  "optionalDependencies": {
+    "giteam-darwin-arm64": "0.1.17",
+    "giteam-darwin-x64": "0.1.17",
+    "giteam-linux-arm64": "0.1.17",
+    "giteam-linux-x64": "0.1.17"
+  },
   "scripts": {
     "start": "node ./bin/giteam.js serve",
     "serve": "cargo run -- serve",
@@ -55,8 +60,5 @@
     "prepublish:verify": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js && cargo check",
     "publish:npm": "node ./scripts/publish-packages.js",
     "prepublishOnly": "npm run prepublish:verify"
-  },
-  "dependencies": {
-    "giteam": "^0.1.14"
   }
 }

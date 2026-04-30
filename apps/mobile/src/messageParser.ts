@@ -60,10 +60,83 @@ function toolMode(tool: string): string {
 function toolDetail(input: any): string {
   return normalizeText(input?.description)
     || normalizeText(input?.filePath)
-    || normalizeText(input?.pattern)
+    || readableSearchPattern(input?.pattern)
     || normalizeText(input?.query)
     || normalizeText(input?.url)
     || normalizeText(input?.path);
+}
+
+function readableSearchPattern(pattern: unknown): string {
+  return normalizeText(pattern)
+    .replace(/\\\./g, '.')
+    .replace(/\\\//g, '/')
+    .replace(/\\-/g, '-');
+}
+
+function compactPath(input: string): string {
+  const path = normalizeText(input).replace(/\\/g, '/');
+  if (!path) return '';
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length <= 2) return path;
+  return parts.slice(-2).join('/');
+}
+
+function summarizePatchText(patchText: string): string {
+  const rows = new Map<string, { action: string; add: number; del: number }>();
+  let current = '';
+  for (const line of patchText.split(/\r?\n/)) {
+    const header = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
+    if (header) {
+      current = normalizeText(header[2]);
+      rows.set(current, { action: header[1], add: 0, del: 0 });
+      continue;
+    }
+    if (!current) continue;
+    const row = rows.get(current);
+    if (!row) continue;
+    if (line.startsWith('+') && !line.startsWith('+++')) row.add += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) row.del += 1;
+  }
+  const summaries = [...rows.entries()].map(([path, row]) => {
+    const action = row.action === 'Add' ? 'Added' : row.action === 'Delete' ? 'Deleted' : 'Modified';
+    return `${action} ${compactPath(path)} +${row.add} -${row.del}`;
+  });
+  if (summaries.length <= 2) return summaries.join('；');
+  return `${summaries.slice(0, 2).join('；')}；等 ${summaries.length} 个文件`;
+}
+
+function summarizePatchOutput(outputText: string): string {
+  const rows: string[] = [];
+  for (const line of outputText.split(/\r?\n/)) {
+    const m = line.match(/^\s*([MAD])\s+(.+)$/);
+    if (!m) continue;
+    const action = m[1] === 'A' ? 'Added' : m[1] === 'D' ? 'Deleted' : 'Modified';
+    rows.push(`${action} ${compactPath(m[2])}`);
+  }
+  if (rows.length <= 2) return rows.join('；');
+  return `${rows.slice(0, 2).join('；')}；等 ${rows.length} 个文件`;
+}
+
+function summarizeWriteTool(tool: string, input: any): string {
+  if (tool === 'apply_patch') {
+    const patchText = normalizeText(input?.patchText) || normalizeText(input?.patch);
+    return summarizePatchText(patchText);
+  }
+  const filePath = compactPath(normalizeText(input?.filePath) || normalizeText(input?.path));
+  if (tool === 'write') {
+    const content = typeof input?.content === 'string' ? input.content : '';
+    const lineCount = content ? content.split(/\r?\n/).length : 0;
+    return [filePath, lineCount ? `${lineCount} 行` : ''].filter(Boolean).join(' · ');
+  }
+  if (tool === 'edit') {
+    const oldText = typeof input?.old_string === 'string' ? input.old_string : '';
+    const newText = typeof input?.new_string === 'string' ? input.new_string : '';
+    const oldLines = oldText ? oldText.split(/\r?\n/).length : 0;
+    const newLines = newText ? newText.split(/\r?\n/).length : 0;
+    const delta = oldLines || newLines ? `+${newLines} -${oldLines}` : '';
+    return [filePath, delta].filter(Boolean).join(' · ');
+  }
+  return '';
 }
 
 function toolOutputText(state: any): string {
@@ -228,6 +301,7 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
   const showOutput = !isContextTool(tool) && !!outputText && (status === 'error' || tool === 'bash');
   const output = showOutput ? (outputText.length > 320 ? `${outputText.slice(0, 320)}...` : outputText) : '';
   const metadata = state?.metadata || part?.metadata || {};
+  const writeSummary = normalizeText(metadata?.writeSummary);
   const rawTaskSessionId = normalizeText(metadata?.sessionId) || normalizeText(metadata?.sessionID);
   const taskSessionId = rawTaskSessionId || (() => {
     if (!outputText) return '';
@@ -238,7 +312,7 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
   return {
     id,
     title: tool,
-    detail: toolDetail(state?.input),
+    detail: writeSummary || summarizeWriteTool(tool, state?.input) || (tool === 'apply_patch' ? summarizePatchOutput(outputText) : '') || toolDetail(state?.input),
     mode: toolMode(tool),
     status,
     output,

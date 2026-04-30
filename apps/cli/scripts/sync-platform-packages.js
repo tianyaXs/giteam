@@ -7,6 +7,11 @@ import { bugsUrl, cliRoot, homepageUrl, listPlatforms, packageAuthor, packageKey
 const rootPackagePath = join(cliRoot, 'package.json');
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, 'utf8'));
 const version = rootPackage.version;
+rootPackage.optionalDependencies = Object.fromEntries(
+  listPlatforms().map((platform) => [platform.packageName, version])
+);
+delete rootPackage.dependencies;
+writeFileSync(rootPackagePath, `${JSON.stringify(rootPackage, null, 2)}\n`);
 
 for (const platform of listPlatforms()) {
   mkdirSync(join(platform.packageDir, 'bin'), { recursive: true });

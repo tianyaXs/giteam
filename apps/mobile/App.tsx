@@ -6,6 +6,7 @@ import {
   Image,
   InteractionManager,
   LayoutChangeEvent,
+  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -348,9 +349,12 @@ function ThinkPreviewLines(props: { text: string; active: boolean }) {
     .map((line) => line.trim())
     .filter(Boolean);
   const visible = lines.length ? lines.slice(-6) : ['正在整理上下文...', '分析可执行步骤...', '准备生成回复...'];
+  const hasContent = toText(props.text).trim().length > 0;
+  const steps = (props.active ? visible.slice(-3) : visible.slice(-2));
   const [lineIndex, setLineIndex] = useState(Math.max(0, visible.length - 1));
   const lineAnim = useRef(new Animated.Value(1)).current;
-  const orbitAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  const dotAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     setLineIndex(Math.max(0, visible.length - 1));
@@ -358,22 +362,24 @@ function ThinkPreviewLines(props: { text: string; active: boolean }) {
 
   useEffect(() => {
     if (!props.active) {
-      orbitAnim.stopAnimation();
-      orbitAnim.setValue(0);
+      progressAnim.stopAnimation();
+      progressAnim.setValue(0);
+      dotAnim.stopAnimation();
+      dotAnim.setValue(0);
       return;
     }
-    orbitAnim.setValue(0);
+    dotAnim.setValue(0);
     const loop = Animated.loop(
-      Animated.timing(orbitAnim, {
+      Animated.timing(dotAnim, {
         toValue: 1,
-        duration: 1800,
-        easing: Easing.linear,
+        duration: 960,
+        easing: Easing.inOut(Easing.quad),
         useNativeDriver: true
       })
     );
     loop.start();
     return () => loop.stop();
-  }, [orbitAnim, props.active]);
+  }, [dotAnim, progressAnim, props.active]);
 
   useEffect(() => {
     if (!props.active || visible.length <= 1) return;
@@ -397,34 +403,74 @@ function ThinkPreviewLines(props: { text: string; active: boolean }) {
     return () => clearInterval(timer);
   }, [lineAnim, props.active, visible.length]);
 
-  const currentLine = visible[Math.min(lineIndex, visible.length - 1)] || '正在整理思路...';
-  const rotate = orbitAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const currentLine = props.active
+    ? (visible[Math.min(lineIndex, visible.length - 1)] || '正在整理思路...')
+    : '已完成思考';
+  const dotScaleA = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.72, 1.22, 0.82, 0.72] });
+  const dotScaleB = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.82, 0.72, 1.22, 0.82] });
+  const dotScaleC = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [1.12, 0.82, 0.72, 1.12] });
+  const dotOpacityA = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.45, 1, 0.55, 0.45] });
+  const dotOpacityB = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.55, 0.45, 1, 0.55] });
+  const dotOpacityC = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [1, 0.55, 0.45, 1] });
   return (
     <View style={styles.thinkFlowRow}>
       <View style={styles.thinkFlowIconShell}>
-        <Animated.View style={[styles.thinkFlowHalo, { transform: [{ rotate }] }]} />
-        <View style={styles.thinkFlowLens} />
+        <Text style={styles.thinkFlowIconText}>G</Text>
       </View>
-      <View style={styles.thinkFlowPill}>
-        <Animated.Text
-          numberOfLines={1}
-          style={[
-            styles.thinkFlowLine,
-            {
-              opacity: lineAnim,
-              transform: [{ translateY: lineAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }]
-            }
-          ]}
-        >
-          {currentLine}
-        </Animated.Text>
+      <View style={styles.thinkFlowContent}>
+        <View style={hasContent ? styles.thinkFlowPill : styles.thinkFlowPillWaiting}>
+          {props.active || !hasContent ? (
+            <View style={styles.thinkFlowDots}>
+              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityA, transform: [{ scale: dotScaleA }] }]} />
+              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityB, transform: [{ scale: dotScaleB }] }]} />
+              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityC, transform: [{ scale: dotScaleC }] }]} />
+            </View>
+          ) : null}
+          {hasContent ? (
+            <Animated.Text
+              numberOfLines={1}
+              style={[
+                styles.thinkFlowLine,
+                {
+                  opacity: lineAnim,
+                  transform: [{ translateY: lineAnim.interpolate({ inputRange: [0, 1], outputRange: [7, 0] }) }]
+                }
+              ]}
+            >
+              {currentLine}
+            </Animated.Text>
+          ) : null}
+        </View>
+        {hasContent ? (
+          <Animated.View style={[styles.thinkFlowSteps, { opacity: lineAnim }]}> 
+            {steps.map((step, index) => (
+              <View key={`${index}:${step}`} style={styles.thinkFlowStepRow}>
+                <View style={index === steps.length - 1 && props.active ? styles.thinkFlowStepDotLive : styles.thinkFlowStepDot} />
+                <Text numberOfLines={1} style={styles.thinkFlowStepText}>{step}</Text>
+              </View>
+            ))}
+          </Animated.View>
+        ) : null}
       </View>
     </View>
   );
 }
 
 function normalizeMarkdownForMobile(input: string) {
-  return toText(input);
+  return toText(input)
+    // Some server text is visually indented before markdown markers; marked treats 4-space indent as code.
+    .replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
+}
+
+const STREAM_DEBUG = false;
+
+function streamDebug(label: string, payload?: Record<string, unknown>) {
+  if (!STREAM_DEBUG) return;
+  try {
+    console.log(`[GiteamStream] ${label}`, payload ? JSON.stringify(payload) : '');
+  } catch {
+    console.log(`[GiteamStream] ${label}`);
+  }
 }
 
 function normalizeReasoningText(input: string) {
@@ -447,6 +493,25 @@ const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
   const { card, compact, collapsed, pulse, onToggle, onClose } = props;
   const meta = todoMeta(card);
   const activeText = toText(meta.active?.content);
+  const swipeX = useRef(new Animated.Value(0)).current;
+  const swipeResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gesture) => !!onClose && gesture.dx > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+    onPanResponderMove: (_, gesture) => {
+      if (!onClose) return;
+      swipeX.setValue(Math.min(96, Math.max(0, gesture.dx)));
+    },
+    onPanResponderRelease: (_, gesture) => {
+      if (!onClose) return;
+      if (gesture.dx > 72) {
+        Animated.timing(swipeX, { toValue: 140, duration: 140, useNativeDriver: true }).start(() => onClose());
+        return;
+      }
+      Animated.spring(swipeX, { toValue: 0, useNativeDriver: true, tension: 110, friction: 12 }).start();
+    },
+    onPanResponderTerminate: () => {
+      Animated.spring(swipeX, { toValue: 0, useNativeDriver: true, tension: 110, friction: 12 }).start();
+    }
+  }), [onClose, swipeX]);
   const content = (
     <>
       <View style={compact ? styles.todoCardHeadCompact : styles.todoCardHead}>
@@ -467,18 +532,6 @@ const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
           </View>
         </View>
         <View style={styles.todoActions}>
-          {onClose ? (
-            <Pressable
-              style={styles.todoCloseBtn}
-              hitSlop={8}
-              onPress={(evt: any) => {
-                evt?.stopPropagation?.();
-                onClose();
-              }}
-            >
-              <Text style={styles.todoCloseText}>×</Text>
-            </Pressable>
-          ) : null}
           {onToggle ? (
             <View style={styles.todoToggleBtn}>
               <View style={[styles.todoArrow, collapsed && styles.todoArrowUp]} />
@@ -508,10 +561,19 @@ const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
   );
 
   if (!onToggle) return <View style={compact ? styles.todoInlineCardCompact : styles.todoInlineCard}>{content}</View>;
+  const dock = (
+    <Animated.View style={{ transform: [{ translateX: swipeX }] }} {...(onClose ? swipeResponder.panHandlers : {})}>
+      <Pressable style={compact ? styles.todoDockCompact : styles.todoDock} onPress={onToggle}>
+        {content}
+      </Pressable>
+    </Animated.View>
+  );
+  if (!onClose) return dock;
   return (
-    <Pressable style={compact ? styles.todoDockCompact : styles.todoDock} onPress={onToggle}>
-      {content}
-    </Pressable>
+    <View style={styles.todoSwipeShell}>
+      <View style={styles.todoSwipeHint}><Text style={styles.todoSwipeHintText}>右滑关闭</Text></View>
+      {dock}
+    </View>
   );
 });
 
@@ -565,8 +627,9 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           return (
             <View key={item.context.id} style={styles.contextWrap}>
               <View style={styles.contextCard}>
-                <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
-                <Text style={styles.contextSummary}>{toText(item.context.summary || `tools: ${tools.length}`)}</Text>
+                <View style={styles.contextHeadRow}>
+                  <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
+                </View>
                 {tools.length > 0 ? (
                   <View style={styles.contextTools}>
                     {tools.slice(0, 3).map((t) => (
@@ -575,6 +638,11 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                         <Text numberOfLines={1} style={styles.contextToolDetail}>
                           {toText(t.detail || t.mode || t.status || '执行完成')}
                         </Text>
+                        {toText(t.detail) ? (
+                          <Pressable hitSlop={8} style={styles.contextCopyBtn} onPress={() => onCopyMessage(toText(t.detail))}>
+                            <Text style={styles.contextCopyText}>⧉</Text>
+                          </Pressable>
+                        ) : null}
                       </View>
                     ))}
                   </View>
@@ -587,14 +655,45 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
         if (item.kind === 'event') {
           const st = toText(item.event.status).toLowerCase();
           const dotStyle = st === 'running' || st === 'pending' ? styles.eventDotRun : styles.eventDot;
+          const title = toText(item.event.title || 'Event');
+          const mode = toText(item.event.mode);
+          const eventDetail = toText(item.event.detail);
           const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
+          const isWriteEvent = mode === '写入' || mode.toLowerCase() === 'write' || title === 'apply_patch';
+          if (isWriteEvent) {
+            const writeTitle = title === 'apply_patch' ? 'Patch' : 'Write';
+            const summary = eventDetail.match(/^(Added|Modified|Deleted|新增|修改|删除)\s+(.+?)(?:\s+(\+\d+)\s+(-\d+))?$/);
+            const actionLabel = summary
+              ? ({ '新增': 'Added', '修改': 'Modified', '删除': 'Deleted' } as Record<string, string>)[summary[1]] || summary[1]
+              : '';
+            return (
+              <View key={item.event.id} style={styles.eventWrap}>
+                <View style={styles.writeEventCard}>
+                  <View style={styles.writeEventHead}>
+                    <View style={st === 'running' || st === 'pending' ? styles.writeEventDotRun : styles.writeEventDot} />
+                    <Text numberOfLines={1} style={styles.writeEventTitle}>{writeTitle}</Text>
+                    <Text style={styles.writeEventTime}>{formatClock(item.event.createdAt)}</Text>
+                  </View>
+                  {summary ? (
+                    <View style={styles.writeEventSummaryRow}>
+                      <Text style={styles.writeEventAction}>{actionLabel}</Text>
+                      <Text numberOfLines={1} style={styles.writeEventFile}>{summary[2]}</Text>
+                      {summary[3] ? <Text style={styles.writeEventAdd}>{summary[3]}</Text> : null}
+                      {summary[4] ? <Text style={styles.writeEventDel}>{summary[4]}</Text> : null}
+                    </View>
+                  ) : eventDetail ? <Text numberOfLines={1} style={styles.writeEventDetail}>{eventDetail}</Text> : null}
+                  {toText(item.event.output) ? <Text numberOfLines={3} style={styles.writeEventOutput}>{toText(item.event.output)}</Text> : null}
+                </View>
+              </View>
+            );
+          }
           return (
             <View key={item.event.id} style={styles.eventWrap}>
               <View style={styles.eventCard}>
                 <View style={styles.eventHead}>
                   <View style={dotStyle} />
-                  <Text style={styles.eventTitle}>{toText(item.event.title || 'Event')}</Text>
-                  {toText(item.event.mode) ? <Text style={styles.eventMode}>{toText(item.event.mode)}</Text> : null}
+                  <Text style={styles.eventTitle}>{title}</Text>
+                  {mode ? <Text style={styles.eventMode}>{mode}</Text> : null}
                   <Text style={styles.eventTime}>{formatClock(item.event.createdAt)}</Text>
                 </View>
                 <Text style={styles.eventDetail}>{detail}</Text>
@@ -1120,8 +1219,8 @@ export default function App() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
-  const streamTopGlowRequested = busy || streaming;
-  const showStreamTopGlow = streamTopGlowVisible;
+  const streamTopGlowRequested = false;
+  const showStreamTopGlow = false;
 
   const localIpv4PrefixRef = useRef<{ prefix: string; ip: string; at: number } | null>(null);
 
@@ -2198,12 +2297,18 @@ export default function App() {
 
   function applyAssistantDelta(targetSessionId: string, payload: unknown) {
     if (targetSessionId !== sessionIdRef.current) return;
-    const messageId = toText((payload as any)?.messageId || (payload as any)?.messageID).trim();
-    const partId = toText((payload as any)?.partId).trim() || 'text';
-    const delta = typeof (payload as any)?.delta === 'string' ? (payload as any).delta : '';
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const messageId = toText(source?.messageId || source?.messageID).trim();
+    const partId = toText(source?.partId || source?.partID).trim() || 'text';
+    const field = toText(source?.field).trim();
+    const delta = typeof source?.delta === 'string' ? source.delta : '';
     const partTypeKey = `${targetSessionId}:${messageId}:${partId}`;
-    const kind = streamPartTypeRef.current[partTypeKey] || (toText((payload as any)?.type).trim() === 'reasoning' ? 'reasoning' : 'text');
-    if (!messageId || !delta) return;
+    const kind = streamPartTypeRef.current[partTypeKey] || (toText(source?.type).trim() === 'reasoning' || field === 'reasoning' ? 'reasoning' : 'text');
+    streamDebug('delta.received', { sid: targetSessionId, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
+    if (!messageId || !delta) {
+      streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
+      return;
+    }
 
     const key = normalizedDeltaKey(targetSessionId, messageId, partId, kind);
     streamPartDeltaKeyRef.current[partTypeKey] = key;
@@ -2217,6 +2322,7 @@ export default function App() {
       text: nextText
     }, now);
     renderStreamWindow(targetSessionId);
+    streamDebug('delta.applied', { sid: targetSessionId, messageId, partId, kind, totalLen: nextText.length });
     setStreaming(true);
   }
 
@@ -2252,7 +2358,15 @@ export default function App() {
   function renderStreamWindow(targetSessionId: string) {
     const totalTurns = Math.max(1, Number(sessionTotalTurnCountRef.current[targetSessionId] || INITIAL_SESSION_LIMIT));
     const visibleTurns = Math.max(INITIAL_SESSION_LIMIT, Number(sessionVisibleTurnCountRef.current[targetSessionId] || INITIAL_SESSION_LIMIT));
-    applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns));
+    const rendered = applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns));
+    const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
+    streamDebug('render.window', {
+      sid: targetSessionId,
+      turns: rendered.renderedTurns.length,
+      writing: rendered.writing,
+      lastTurn: last?.id,
+      lastItems: last?.items?.map((item: any) => item.kind).join(',') || ''
+    });
   }
 
   function upsertStreamPart(targetSessionId: string, messageId: string, part: any, createdAt: number = Date.now()) {
@@ -2269,6 +2383,11 @@ export default function App() {
     const key = `${targetSessionId}:${messageId}`;
     const partMap = streamPartMapRef.current[key] || {};
     const parts = Object.values(streamPartMapRef.current[key]);
+    streamDebug('stream.row.rewrite', {
+      sid: targetSessionId,
+      messageId,
+      parts: parts.map((p: any) => `${p?.type || '?'}:${toText(p?.text).length}`).join(',')
+    });
     const row = {
       info: {
         id: messageId,
@@ -2282,8 +2401,9 @@ export default function App() {
 
   function applyAssistantPart(targetSessionId: string, payload: unknown) {
     if (targetSessionId !== sessionIdRef.current) return;
-    const messageId = toText((payload as any)?.messageId || (payload as any)?.messageID).trim();
-    const part = (payload as any)?.part;
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const part = source?.part;
+    const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
     if (!messageId || !part || typeof part !== 'object') return;
     const partId = toText(part?.id || part?.partID || part?.callID).trim();
     const partType = toText(part?.type).trim();
@@ -2502,6 +2622,13 @@ export default function App() {
       });
       const statusInfo = await syncSessionStatus(targetSessionId);
       if (!res || targetSessionId !== sessionIdRef.current) return undefined;
+      streamDebug('sync.messages.result', {
+        sid: targetSessionId,
+        mergedCount: res.mergedCount,
+        prevMergedCount: res.prevMergedCount,
+        totalTurnCount: res.totalTurnCount,
+        status: statusInfo?.type || 'none'
+      });
 
       const nextVisibleTurnCount = computeVisibleTurnCount({
         prevVisibleTurnCount,
@@ -2515,6 +2642,14 @@ export default function App() {
         hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
       });
       const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
+      const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
+      streamDebug('sync.rendered', {
+        sid: targetSessionId,
+        turns: rendered.renderedTurns.length,
+        writing: rendered.writing,
+        lastTurn: last?.id,
+        lastItems: last?.items?.map((item: any) => item.kind).join(',') || ''
+      });
 
       const latestTurnHasError = (() => {
         const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
@@ -2825,10 +2960,23 @@ export default function App() {
         fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
       });
     };
+    const parseSseData = (event: any) => {
+      return typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
+    };
+    const handleDeltaPayload = (payload: any) => {
+      applyAssistantDelta(targetSessionId, payload);
+      syncStatusSoon();
+      syncPartsSoon();
+    };
+    const handlePartPayload = (payload: any) => {
+      applyAssistantPart(targetSessionId, payload);
+      syncStatusSoon();
+    };
 
     es.addEventListener('open', () => {
       if (!isCurrentStream()) return;
       pushConnLog('SSE open');
+      streamDebug('sse.open', { sid: targetSessionId });
       setStreaming(true);
       syncFromServer();
     });
@@ -2838,6 +2986,7 @@ export default function App() {
       setStreaming(false);
       try {
         const detail = typeof e?.data === 'string' ? e.data : JSON.stringify(e);
+        streamDebug('sse.error', { sid: targetSessionId, detail: toText(detail).slice(0, 180) });
         pushConnLog(`SSE error ${toText(detail) || 'unknown'}`, 'error');
         if (detail?.includes('invalid bearer token') && pairCode.trim()) {
           pushConnLog('SSE auto pairAuth retry');
@@ -2863,6 +3012,7 @@ export default function App() {
       if (!isCurrentStream()) return;
       try {
         const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
+        streamDebug('sse.messages', { sid: targetSessionId, payloadType: Array.isArray(payload) ? 'array' : typeof payload });
         const rendered = applyStreamMessageSnapshot(targetSessionId, payload);
         if (rendered) {
           setStreaming(rendered.writing);
@@ -2877,10 +3027,9 @@ export default function App() {
     es.addEventListener('delta' as any, (event: any) => {
       if (!isCurrentStream()) return;
       try {
-        const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
-        applyAssistantDelta(targetSessionId, payload);
-        syncStatusSoon();
-        syncPartsSoon();
+        const payload = parseSseData(event);
+        streamDebug('sse.delta.event', { sid: targetSessionId, keys: payload && typeof payload === 'object' ? Object.keys(payload).join(',') : typeof payload });
+        handleDeltaPayload(payload);
       } catch (err) {
         pushConnLog(`SSE delta parse failed ${String(err)}`, 'error');
       }
@@ -2888,9 +3037,9 @@ export default function App() {
     es.addEventListener('part' as any, (event: any) => {
       if (!isCurrentStream()) return;
       try {
-        const payload = typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
-        applyAssistantPart(targetSessionId, payload);
-        syncStatusSoon();
+        const payload = parseSseData(event);
+        streamDebug('sse.part.event', { sid: targetSessionId, keys: payload && typeof payload === 'object' ? Object.keys(payload).join(',') : typeof payload });
+        handlePartPayload(payload);
       } catch (err) {
         pushConnLog(`SSE part parse failed ${String(err)}`, 'error');
       }
@@ -2907,6 +3056,7 @@ export default function App() {
     es.addEventListener('end' as any, () => {
       if (!isCurrentStream()) return;
       pushConnLog('SSE end');
+      streamDebug('sse.end', { sid: targetSessionId });
       streamClosed = true;
       sessionStatusEpochRef.current += 1;
       streamSessionRef.current = '';
@@ -2974,10 +3124,24 @@ export default function App() {
     if (currentSessionStatus.type === 'retry') return false;
     for (let turnIdx = renderedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
       const turn = renderedTurns[turnIdx];
+      let hasAssistantProgress = false;
       for (let itemIdx = turn.items.length - 1; itemIdx >= 0; itemIdx -= 1) {
-        if (turn.items[itemIdx].kind === 'error') return false;
+        const item = turn.items[itemIdx];
+        if (item.kind === 'error') return false;
+        if (item.kind !== 'chat' || item.message.role !== 'user') hasAssistantProgress = true;
       }
-      if (turn.userMessage) break;
+      if (turn.userMessage) {
+        const show = !hasAssistantProgress;
+        streamDebug('pending.placeholder.check', {
+          turnId: turn.id,
+          show,
+          hasAssistantProgress,
+          itemKinds: turn.items.map((item: any) => item.kind).join(','),
+          sessionWorking,
+          status: currentSessionStatus.type
+        });
+        return show;
+      }
     }
     if (messages.length <= 0) return true;
     let lastUserIdx = -1;
@@ -2991,10 +3155,33 @@ export default function App() {
     for (let i = lastUserIdx + 1; i < messages.length; i += 1) {
       if (messages[i].role === 'assistant' && messages[i].text.trim()) return false;
     }
+    streamDebug('pending.placeholder.fallback', { show: true, reason: 'no assistant text after last user', messages: messages.length });
     return true;
   }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
 
-  const displayedTurns = renderedTurns;
+  const displayedTurns = useMemo(() => {
+    if (!showThinkingPlaceholder || renderedTurns.length <= 0) return renderedTurns;
+    const lastTurn = renderedTurns[renderedTurns.length - 1];
+    const pendingItem = {
+      kind: 'think' as const,
+      createdAt: Date.now(),
+      card: {
+        id: `${lastTurn.id}:pending-thinking`,
+        title: '思考中',
+        text: '',
+        createdAt: Date.now(),
+        finished: false
+      }
+    };
+    return [
+      ...renderedTurns.slice(0, -1),
+      {
+        ...lastTurn,
+        items: [...lastTurn.items, pendingItem],
+        signature: `${lastTurn.signature}:pending-thinking`
+      }
+    ];
+  }, [renderedTurns, showThinkingPlaceholder]);
   const messageBottomInset = Math.max(140, inputDockHeight + 44);
 
   const liveQuestionTurnId = useMemo(() => {
@@ -4775,7 +4962,7 @@ const styles = StyleSheet.create({
   },
   workspaceBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.12)'
+    backgroundColor: 'transparent'
   },
   workspacePanel: {
     marginTop: 8,
@@ -4991,15 +5178,6 @@ const styles = StyleSheet.create({
   todoTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   todoTitle: { color: '#1f2f46', fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
   todoActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 4 },
-  todoCloseBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#eef3f8'
-  },
-  todoCloseText: { color: '#718096', fontSize: 16, lineHeight: 19, fontWeight: '700' },
   todoChipRunning: {
     minWidth: 42,
     height: 21,
@@ -5169,12 +5347,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     gap: 6
   },
+  contextHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   contextTitle: { color: '#2f415a', fontSize: 12, fontWeight: '700' },
   contextSummary: { color: '#65758a', fontSize: 12, lineHeight: 18 },
   contextTools: { gap: 5 },
   contextToolRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   contextToolTitle: { color: '#2d3a4d', fontSize: 12, fontWeight: '600' },
   contextToolDetail: { color: '#73839a', fontSize: 11, flex: 1 },
+  contextCopyBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef3f8'
+  },
+  contextCopyText: { color: '#65758a', fontSize: 12, lineHeight: 14, fontWeight: '800' },
   eventWrap: { width: '100%', alignItems: 'flex-start' },
   eventCard: {
     width: '96%',
@@ -5197,6 +5385,47 @@ const styles = StyleSheet.create({
   eventDetail: { color: '#667487', fontSize: 12, lineHeight: 18 },
   eventMeta: { color: '#667a94', fontSize: 11 },
   eventOutput: { color: '#4f5e72', fontSize: 12, lineHeight: 18 },
+  writeEventCard: {
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: '#e7edf4',
+    backgroundColor: '#ffffff',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 8
+  },
+  writeEventHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  writeEventDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#a8b7c8' },
+  writeEventDotRun: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#4f7aaf' },
+  writeEventTitle: { flexShrink: 1, color: '#2d4058', fontSize: 13, lineHeight: 18, fontWeight: '800', letterSpacing: 0.1 },
+  writeEventTime: { marginLeft: 'auto', color: '#9aa8b8', fontSize: 12, lineHeight: 17, fontWeight: '500' },
+  writeEventDetail: { color: '#5f7186', fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  writeEventSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
+  writeEventAction: {
+    color: '#5f7f9e',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '800',
+    backgroundColor: '#eef5fb',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    overflow: 'hidden'
+  },
+  writeEventFile: { flex: 1, color: '#445a73', fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  writeEventAdd: { color: '#1f8a5b', fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  writeEventDel: { color: '#b65b5b', fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  writeEventOutput: {
+    color: '#536478',
+    fontSize: 12,
+    lineHeight: 18,
+    backgroundColor: '#f6f8fb',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
   questionTimelineWrap: { width: '100%', alignItems: 'flex-start' },
   questionTimelineCard: {
     width: '92%',
@@ -5346,62 +5575,88 @@ const styles = StyleSheet.create({
   thinkPreviewDot: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#c4cfdb' },
   thinkPreviewDotLive: { backgroundColor: '#21aaa0', transform: [{ scale: 1.25 }] },
   thinkPreviewLineText: { flex: 1, color: '#6c7c92', fontSize: 12, lineHeight: 17, fontWeight: '500' },
-  thinkFlowRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingTop: 1 },
+  thinkFlowRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 11, paddingTop: 1 },
   thinkFlowIconShell: {
-    width: 26,
-    height: 26,
-    borderRadius: 999,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.72)',
+    backgroundColor: '#132338',
     borderWidth: 1,
-    borderColor: 'rgba(10, 80, 125, 0.08)',
-    shadowColor: '#7c8fa6',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
+    borderColor: 'rgba(255,255,255,0.16)',
+    shadowColor: '#14263f',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2
+  },
+  thinkFlowIconText: { color: '#ffffff', fontSize: 14, lineHeight: 18, fontWeight: '800', letterSpacing: 0.2 },
+  thinkFlowStatusDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: '#9aa6b2',
+    borderWidth: 2,
+    borderColor: '#f7f8fa'
+  },
+  thinkFlowStatusDotActive: { backgroundColor: '#34c759' },
+  thinkFlowContent: { flex: 1, minWidth: 0, gap: 8 },
+  thinkFlowDots: { flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 2 },
+  thinkFlowDot: { width: 5.5, height: 5.5, borderRadius: 999, backgroundColor: '#0a507d' },
+  thinkFlowDotActive: { backgroundColor: '#0a507d', opacity: 1, transform: [{ scale: 1.18 }] },
+  thinkFlowDotMid: { backgroundColor: '#21aaa0', opacity: 0.75 },
+  thinkFlowDotSoft: { backgroundColor: '#8fa2b7', opacity: 0.48 },
+  thinkFlowPill: {
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    minHeight: 36,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.055)',
+    paddingLeft: 14,
+    paddingRight: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    shadowColor: '#6d7f91',
+    shadowOpacity: 0.07,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
     elevation: 1
   },
-  thinkFlowHalo: {
-    position: 'absolute',
-    width: 18,
-    height: 18,
+  thinkFlowPillWaiting: {
+    alignSelf: 'flex-start',
+    minWidth: 64,
+    minHeight: 36,
     borderRadius: 999,
-    borderTopWidth: 2,
-    borderRightWidth: 2,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
-    borderTopColor: '#0a507d',
-    borderRightColor: 'rgba(33,170,160,0.25)',
-    borderBottomColor: 'rgba(10,80,125,0.14)',
-    borderLeftColor: 'rgba(33,170,160,0.48)'
-  },
-  thinkFlowLens: {
-    width: 6,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: '#0a507d',
-    opacity: 0.86
-  },
-  thinkFlowPill: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.76)',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: 'rgba(12, 42, 70, 0.07)',
-    paddingLeft: 14,
-    paddingRight: 15,
+    borderColor: 'rgba(0,0,0,0.055)',
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
-    shadowColor: '#8092a8',
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
+    shadowColor: '#6d7f91',
+    shadowOpacity: 0.07,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
     elevation: 1
   },
   thinkFlowKicker: { color: '#21aaa0', fontSize: 10, lineHeight: 12, fontWeight: '800', letterSpacing: 0.6 },
-  thinkFlowLine: { color: '#5e6d80', fontSize: 12, lineHeight: 16, fontWeight: '600' },
+  thinkFlowLine: { flexShrink: 1, color: '#4d5b6a', fontSize: 13, lineHeight: 17, fontWeight: '600', letterSpacing: -0.1 },
+  thinkFlowSteps: { gap: 6, paddingLeft: 8 },
+  thinkFlowStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  thinkFlowStepDot: { width: 4, height: 4, borderRadius: 999, backgroundColor: '#c3cbd4' },
+  thinkFlowStepDotLive: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#34c759' },
+  thinkFlowStepText: { flex: 1, color: '#8a96a4', fontSize: 12, lineHeight: 16, fontWeight: '500' },
   mdText: { fontSize: 15, lineHeight: 20 },
   mdInlineRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: 0 },
   mdSegText: { fontSize: 15, lineHeight: 20 },
@@ -5462,6 +5717,18 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     marginBottom: 8
   },
+  todoSwipeShell: {
+    borderRadius: 22,
+    overflow: 'hidden'
+  },
+  todoSwipeHint: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    paddingLeft: 18,
+    backgroundColor: '#edf6f2'
+  },
+  todoSwipeHintText: { color: '#4f8a6b', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   questionDockWrap: {
     marginHorizontal: 12,
     marginBottom: 8

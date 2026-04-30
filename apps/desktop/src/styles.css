@@ -6897,6 +6897,33 @@ button {
   margin: 6px 0;
 }
 
+.markdown-lite table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.markdown-lite th,
+.markdown-lite td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-lite th {
+  background: var(--bg-elevated);
+  font-weight: 600;
+}
+
+.markdown-lite tr:nth-child(even) {
+  background: var(--bg-elevated);
+}
+
+.markdown-lite tr:hover {
+  background: var(--bg-hover);
+}
+
 .modal-mask {
   position: fixed;
   inset: 0;
