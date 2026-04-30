@@ -13,19 +13,19 @@ const config = getDefaultConfig(projectRoot);
 config.resolver.disableHierarchicalLookup = false;
 config.resolver.nodeModulesPaths = [nodeModules, workspaceNodeModules];
 config.resolver.extraNodeModules = {
-  react: path.resolve(nodeModules, 'react'),
-  'react-dom': path.resolve(nodeModules, 'react-dom'),
-  'react-native': path.resolve(nodeModules, 'react-native')
+  react: path.resolve(workspaceNodeModules, 'react'),
+  'react-dom': path.resolve(workspaceNodeModules, 'react-dom'),
+  'react-native': path.resolve(workspaceNodeModules, 'react-native')
 };
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName === 'react' || moduleName === 'react/jsx-runtime' || moduleName === 'react/jsx-dev-runtime') {
-    return context.resolveRequest(context, path.resolve(nodeModules, moduleName), platform);
+    return context.resolveRequest(context, path.resolve(workspaceNodeModules, moduleName), platform);
   }
   if (moduleName === 'react-dom' || moduleName === 'react-dom/client') {
-    return context.resolveRequest(context, path.resolve(nodeModules, moduleName), platform);
+    return context.resolveRequest(context, path.resolve(workspaceNodeModules, moduleName), platform);
   }
   if (moduleName === 'react-native') {
-    return context.resolveRequest(context, path.resolve(nodeModules, 'react-native'), platform);
+    return context.resolveRequest(context, path.resolve(workspaceNodeModules, 'react-native'), platform);
   }
   return context.resolveRequest(context, moduleName, platform);
 };

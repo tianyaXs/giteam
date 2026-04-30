@@ -10,6 +10,8 @@
     "build": "npm --prefix apps/desktop run build",
     "tauri:dev": "npm --prefix apps/desktop run tauri:dev",
     "tauri:build": "npm --prefix apps/desktop run tauri:build"
+  },
+  "devDependencies": {
+    "expo-asset": "~11.0.5"
   }
 }
-

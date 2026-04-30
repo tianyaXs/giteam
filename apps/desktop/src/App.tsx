@@ -5350,6 +5350,20 @@ export function App() {
       const graphRows = await getCommitGraph(repoPath, 600);
       setBranches(branchList);
       setCommitGraph(graphRows);
+      setBranchParentMap((prev) => {
+        const cleaned = Object.fromEntries(
+          Object.entries(prev).filter(([child, parent]) => {
+            if (!child.trim() || !parent.trim()) return false;
+            const childExists = branchList.some((b) => b.name === child) || Object.prototype.hasOwnProperty.call(prev, child);
+            const parentExists = branchList.some((b) => b.name === parent);
+            return childExists && parentExists;
+          })
+        );
+        if (Object.keys(cleaned).length !== Object.keys(prev).length) {
+          writeBranchParentMap(cleaned);
+        }
+        return cleaned;
+      });
       const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
       const target = branchList.some((b) => b.name === selectedBranch) ? selectedBranch : current;
       setSelectedBranch(target);
@@ -6270,7 +6284,10 @@ export function App() {
         if (!repoPathRef.current) return;
         if (document.visibilityState === "hidden") return;
         if (gitAutoRefreshBlockedRef.current) return;
-        void refreshWorktreeData(selectedWorktreeFileRef.current).catch((e) => setError(String(e)));
+        void Promise.all([
+          refreshBranchesAndCommits(),
+          refreshWorktreeData(selectedWorktreeFileRef.current)
+        ]).catch((e) => setError(String(e)));
       }, delay);
     };
 
@@ -7679,10 +7696,14 @@ export function App() {
                 const allBranchNames = new Set<string>();
                 const isGitTreeBranch = (name: string) => {
                   const normalized = name.trim().toLowerCase();
-                  return normalized.length > 0 && !normalized.includes("worktree") && !normalized.includes(".worktrees");
+                  if (normalized.length === 0 || normalized.includes("worktree") || normalized.includes(".worktrees")) return false;
+                  // Filter out pure remote names like "origin" (not actual branches)
+                  const info = branches.find((b) => b.name === name);
+                  if (info?.isRemote && !name.includes("/")) return false;
+                  return true;
                 };
 
-                branches.forEach((b) => {
+branches.forEach((b) => {
                   if (isGitTreeBranch(b.name) && !worktreeOnlyBranches.has(b.name)) {
                     allBranchNames.add(b.name);
                   }
@@ -7699,10 +7720,17 @@ export function App() {
                 });
 
                 const defaultMain = Array.from(allBranchNames).find((b) => b === "main" || b === "master") || "";
-                const effectiveParentMap: Record<string, string> = {};
+                const isRemoteBranch = (name: string) => name.includes("/") && !name.startsWith("worktree/");
+                
+                // Separate local and remote parent maps
+                const localParentMap: Record<string, string> = {};
+                const remoteParentMap: Record<string, string> = {};
                 Object.entries(branchParentMap).forEach(([child, parent]) => {
-                  if (allBranchNames.has(child) && allBranchNames.has(parent)) {
-                    effectiveParentMap[child] = parent;
+                  if (!allBranchNames.has(child) || !allBranchNames.has(parent)) return;
+                  if (isRemoteBranch(child)) {
+                    remoteParentMap[child] = parent;
+                  } else {
+                    localParentMap[child] = parent;
                   }
                 });
 
@@ -7759,8 +7787,9 @@ export function App() {
                 });
 
                 branchNames.forEach((branch) => {
-                  if (effectiveParentMap[branch]) return;
+                  if (localParentMap[branch]) return;
                   if (branch === defaultMain) return;
+                  if (isRemoteBranch(branch)) return;
 
                   const branchSha = branchHeadByName.get(branch);
                   if (!branchSha) return;
@@ -7768,6 +7797,7 @@ export function App() {
                   const candidates: Array<{ name: string; distance: number }> = [];
                   branchNames.forEach((candidate) => {
                     if (candidate === branch) return;
+                    if (isRemoteBranch(candidate)) return;
                     const candidateSha = branchHeadByName.get(candidate);
                     if (!candidateSha) return;
                     
@@ -7779,44 +7809,69 @@ export function App() {
 
                   if (candidates.length > 0) {
                     candidates.sort((a, b) => a.distance - b.distance);
-                    effectiveParentMap[branch] = candidates[0].name;
+                    localParentMap[branch] = candidates[0].name;
                   } else if (defaultMain) {
                     const prefix = branch.split("/")[0]?.toLowerCase() || "";
                     const developBranch = branchNames.find((b) => b === "develop" || b === "dev");
                     const isFeatureLike = ["feature", "hotfix", "fix", "release", "chore", "docs", "test", "refactor", "style"].includes(prefix);
 
                     if (branch === "develop" || branch === "dev") {
-                      effectiveParentMap[branch] = defaultMain;
+                      localParentMap[branch] = defaultMain;
                     } else if (isFeatureLike && developBranch) {
-                      effectiveParentMap[branch] = developBranch;
+                      localParentMap[branch] = developBranch;
                     } else {
-                      effectiveParentMap[branch] = defaultMain;
+                      localParentMap[branch] = defaultMain;
                     }
                   }
                 });
 
-                const rootBranches: string[] = [];
-                allBranchNames.forEach((branch) => {
-                  const parent = effectiveParentMap[branch];
-                  if (!parent || !allBranchNames.has(parent)) {
-                    rootBranches.push(branch);
+                // Build local branch tree
+                const localBranchNames = branchNames.filter((b) => !isRemoteBranch(b));
+                const localRootBranches: string[] = [];
+                localBranchNames.forEach((branch) => {
+                  const parent = localParentMap[branch];
+                  if (!parent || !localBranchNames.includes(parent)) {
+                    localRootBranches.push(branch);
                   }
                 });
-
-                if (rootBranches.length === 0 && allBranchNames.size > 0) {
-                  rootBranches.push(Array.from(allBranchNames)[0]);
+                if (localRootBranches.length === 0 && localBranchNames.length > 0) {
+                  localRootBranches.push(localBranchNames[0]);
                 }
-                sortBranches(rootBranches);
+                sortBranches(localRootBranches);
 
-                const childrenByParent = new Map<string, string[]>();
-                branchNames.forEach((branch) => {
-                  const parent = effectiveParentMap[branch];
-                  if (!parent || !allBranchNames.has(parent)) return;
-                  const list = childrenByParent.get(parent) || [];
+                const localChildrenByParent = new Map<string, string[]>();
+                localBranchNames.forEach((branch) => {
+                  const parent = localParentMap[branch];
+                  if (!parent || !localBranchNames.includes(parent)) return;
+                  const list = localChildrenByParent.get(parent) || [];
                   list.push(branch);
-                  childrenByParent.set(parent, list);
+                  localChildrenByParent.set(parent, list);
                 });
-                childrenByParent.forEach((list) => sortBranches(list));
+                localChildrenByParent.forEach((list) => sortBranches(list));
+
+                // Build remote branch tree
+                const remoteBranchNames = branchNames.filter((b) => isRemoteBranch(b));
+                const remoteRootBranches: string[] = [];
+                remoteBranchNames.forEach((branch) => {
+                  const parent = remoteParentMap[branch];
+                  if (!parent || !remoteBranchNames.includes(parent)) {
+                    remoteRootBranches.push(branch);
+                  }
+                });
+                if (remoteRootBranches.length === 0 && remoteBranchNames.length > 0) {
+                  remoteRootBranches.push(remoteBranchNames[0]);
+                }
+                sortBranches(remoteRootBranches);
+
+                const remoteChildrenByParent = new Map<string, string[]>();
+                remoteBranchNames.forEach((branch) => {
+                  const parent = remoteParentMap[branch];
+                  if (!parent || !remoteBranchNames.includes(parent)) return;
+                  const list = remoteChildrenByParent.get(parent) || [];
+                  list.push(branch);
+                  remoteChildrenByParent.set(parent, list);
+                });
+                remoteChildrenByParent.forEach((list) => sortBranches(list));
 
                 const graphCommitBySha = new Map<string, GitGraphNode>();
                 commitGraph.forEach((node) => {
@@ -7840,11 +7895,11 @@ export function App() {
                 };
 
                 const selectedTreeBranch = topologySelectionId.startsWith("worktree:")
-                  ? worktreeParentMap[normalizeWorkspacePath(topologySelectionId.slice(9))] || selectedBranch || actualCurrentBranchName || defaultMain || rootBranches[0] || ""
+                  ? worktreeParentMap[normalizeWorkspacePath(topologySelectionId.slice(9))] || selectedBranch || actualCurrentBranchName || defaultMain || localRootBranches[0] || ""
                   : topologySelectionId.startsWith("branch:")
                   ? topologySelectionId.slice(7)
-                  : selectedBranch || actualCurrentBranchName || defaultMain || rootBranches[0] || "";
-                const activeTreeBranch = allBranchNames.has(selectedTreeBranch) ? selectedTreeBranch : defaultMain || rootBranches[0] || "";
+                  : selectedBranch || actualCurrentBranchName || defaultMain || localRootBranches[0] || "";
+                const activeTreeBranch = allBranchNames.has(selectedTreeBranch) ? selectedTreeBranch : defaultMain || localRootBranches[0] || "";
                 const activeBranchSummary = branches.find((branch) => branch.name === activeTreeBranch);
                 const activeTone = branchTone(activeTreeBranch);
                 const activeBranchCommits = activeTreeBranch === selectedBranch || activeTreeBranch === currentBranchName
@@ -7863,7 +7918,6 @@ export function App() {
                 const activeBranchIsCurrent = activeBranchSummary?.isCurrent || worktreeOverview.branch === activeTreeBranch;
 
                 const branchCommitCount = (branchName: string) => {
-                  if (branchName === selectedBranch || branchName === currentBranchName) return commits.length;
                   return commitsFromGraph(branchName, 20).length;
                 };
 
@@ -7872,15 +7926,15 @@ export function App() {
                   void chooseBranch(branchName);
                 };
 
-                const renderBranchRow = (branchName: string, depth = 0): ReactNode => {
-                  const childBranches = childrenByParent.get(branchName) || [];
+                const renderBranchRow = (branchName: string, depth = 0, childrenMap = localChildrenByParent): ReactNode => {
+                  const childBranches = childrenMap.get(branchName) || [];
                   const childWorktrees = branchWorktrees(branchName);
                   const treeKey = `tree:${branchName}`;
                   const collapsed = collapsedBranchIds.has(treeKey);
                   const tone = branchTone(branchName);
                   const branchInfo = branches.find((b) => b.name === branchName);
                   const isCurrent = branchName === currentBranchName || !!branchInfo?.isCurrent;
-                  const isRemote = !!branchInfo?.isRemote;
+                  const isRemote = !!branchInfo?.isRemote || (branchName.includes("/") && !branchName.startsWith("worktree/"));
                   const isActive = branchName === activeTreeBranch;
                   const displayName = isRemote && branchName.includes("/") ? branchName.split("/").slice(1).join("/") : branchName;
                   return (
@@ -7918,7 +7972,7 @@ export function App() {
                         {isRemote ? <span className="gt-gittree-badge is-remote">REMOTE</span> : null}
                         <span className="gt-gittree-count">{branchCommitCount(branchName) || "-"}</span>
                       </div>
-                      {!collapsed ? childBranches.map((child) => renderBranchRow(child, depth + 1)) : null}
+                      {!collapsed ? childBranches.map((child) => renderBranchRow(child, depth + 1, childrenMap)) : null}
                     </Fragment>
                   );
                 };
@@ -7938,9 +7992,20 @@ export function App() {
                         <span>{currentBranchName || "no branch"}</span>
                       </div>
                       <div className="gt-gittree-branch-list">
-                        {rootBranches.length > 0 ? rootBranches.map((branch) => renderBranchRow(branch)) : (
+                        {localRootBranches.length > 0 ? (
+                          <>
+                            {localRootBranches.map((branch) => renderBranchRow(branch, 0, localChildrenByParent))}
+                          </>
+                        ) : null}
+                        {remoteRootBranches.length > 0 ? (
+                          <>
+                            <div className="gt-gittree-section-divider" style={{ margin: "8px 0", padding: "4px 10px", fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Remote</div>
+                            {remoteRootBranches.map((branch) => renderBranchRow(branch, 0, remoteChildrenByParent))}
+                          </>
+                        ) : null}
+                        {localRootBranches.length === 0 && remoteRootBranches.length === 0 ? (
                           <div className="gt-empty-hint">暂无本地分支。</div>
-                        )}
+                        ) : null}
                       </div>
                       <div className="gt-gittree-commit-toolbar">
                         <span>Commits</span>

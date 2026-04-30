@@ -1,9 +1,28 @@
 const fs = require('fs');
 const path = require('path');
 
+const rootDir = path.join(__dirname, '..', '..', '..');
+const gradlePluginFile = path.join(
+  rootDir,
+  'node_modules',
+  'expo-modules-core',
+  'expo-module-gradle-plugin',
+  'build.gradle.kts'
+);
+
+const kotlinVersion = '2.1.0';
+
+if (fs.existsSync(gradlePluginFile)) {
+  const source = fs.readFileSync(gradlePluginFile, 'utf8');
+  const newSource = source.replace(/kotlin\("jvm"\) version "[\d.]+"/, `kotlin("jvm") version "${kotlinVersion}"`);
+  if (newSource !== source) {
+    fs.writeFileSync(gradlePluginFile, newSource);
+    console.log(`[patch-expo-modules-core] patched Kotlin version to ${kotlinVersion} in expo-module-gradle-plugin`);
+  }
+}
+
 const file = path.join(
-  __dirname,
-  '..',
+  rootDir,
   'node_modules',
   'expo-modules-core',
   'android',

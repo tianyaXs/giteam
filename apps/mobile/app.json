@@ -4,16 +4,27 @@
     "slug": "giteam-mobile",
     "version": "0.1.0",
     "icon": "../../apps/desktop/src-tauri/icons/icon.png",
+    "splash": {
+      "image": "../../apps/desktop/src-tauri/icons/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "assetBundlePatterns": [
       "**/*"
     ],
+    "newArchEnabled": true,
     "android": {
       "package": "io.giteam.mobile",
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "../../apps/desktop/src-tauri/icons/icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "splash": {
+        "image": "../../apps/desktop/src-tauri/icons/icon.png",
+        "resizeMode": "contain",
         "backgroundColor": "#ffffff"
       }
     },

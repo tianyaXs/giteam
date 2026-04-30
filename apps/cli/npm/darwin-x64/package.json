@@ -1,6 +1,6 @@
 {
   "name": "giteam-darwin-x64",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Prebuilt darwin/x64 binary for giteam",
   "author": "giteam Contributors",
   "type": "module",

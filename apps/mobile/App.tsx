@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -6,7 +6,6 @@ import {
   Image,
   InteractionManager,
   LayoutChangeEvent,
-  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -19,13 +18,16 @@ import {
   Vibration,
   View
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Drawer } from 'react-native-drawer-layout';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Network from 'expo-network';
 import EventSource from 'react-native-sse';
-import { FlashList } from '@shopify/flash-list';
-import Markdown from '@ronradtke/react-native-markdown-display';
+import { FlashList, FlashListRef, useLayoutState } from '@shopify/flash-list';
+import { useMarkdown } from 'react-native-marked';
+import type { MarkedStyles } from 'react-native-marked';
 import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
 import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
@@ -77,7 +79,7 @@ import {
   resolvePortFromSeed
 } from './src/discovery';
 import type { DiscoveredDevice } from './src/discovery';
-import type { MobileChatMessage, MobileRenderedTurn, MobileTodoCard, SessionStatusInfo, QuestionRequest } from './src/types';
+import type { MobileChatMessage, MobileRenderedTurn, MobileTodoCard, SessionStatusInfo, QuestionRequest, MobileQuestionCard } from './src/types';
 import { QuestionDock } from './src/components/QuestionDock';
 
 // keys + storage moved to src/storage/*
@@ -198,49 +200,104 @@ class RenderBoundary extends React.Component<RenderBoundaryProps, RenderBoundary
   }
 }
 
+function GiteamLaunchMark() {
+  return (
+    <View style={styles.launchMarkWrap}>
+      <Text style={styles.launchWordmark}>Giteam</Text>
+    </View>
+  );
+}
+
 // toText moved to src/lib/text
 
 function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): React.ReactNode {
-  const src = toText(text);
+  return <MarkdownMessage text={toText(text)} tone={tone} />;
+}
+
+function MarkdownMessage(props: { text: string; tone: 'user' | 'assistant' | 'think' }) {
+  const { text, tone } = props;
+  const src = normalizeMarkdownForMobile(text);
   const isUser = tone === 'user';
   const isThink = tone === 'think';
+  const textColor = isUser ? '#f8fafc' : isThink ? '#607089' : '#243244';
+  const mutedColor = isUser ? '#cbd5e1' : isThink ? '#7d8ba0' : '#66758a';
+  const headingColor = isUser ? '#ffffff' : isThink ? '#52657d' : '#162235';
+  const codeBg = isUser ? 'rgba(15, 23, 42, 0.32)' : isThink ? '#eef3f8' : '#f1f6fb';
+  const codeColor = isUser ? '#f8fafc' : '#142033';
+  const markdownStyles = useMemo<MarkedStyles>(() => ({
+    text: {
+      color: textColor,
+      fontSize: isThink ? 14 : 15,
+      lineHeight: isThink ? 22 : 24,
+      letterSpacing: 0.08,
+      fontFamily: Platform.OS === 'android' ? 'sans-serif' : undefined
+    },
+    paragraph: { paddingVertical: 3, marginBottom: 3 },
+    strong: { color: headingColor, fontWeight: '800' },
+    em: { color: mutedColor, fontStyle: 'italic' },
+    strikethrough: { color: mutedColor, textDecorationLine: 'line-through' },
+    link: { color: isUser ? '#bfdbfe' : '#1768c2', fontWeight: '700', fontStyle: 'normal' },
+    h1: { color: headingColor, fontSize: 20, lineHeight: 27, fontWeight: '800', marginTop: 8, marginBottom: 6, borderBottomWidth: 0 },
+    h2: { color: headingColor, fontSize: 18, lineHeight: 25, fontWeight: '800', marginTop: 6, marginBottom: 5, borderBottomWidth: 0 },
+    h3: { color: headingColor, fontSize: 16, lineHeight: 23, fontWeight: '800', marginTop: 5, marginBottom: 4 },
+    h4: { color: headingColor, fontSize: 15, lineHeight: 22, fontWeight: '800', marginTop: 4, marginBottom: 3 },
+    h5: { color: headingColor, fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 4, marginBottom: 3 },
+    h6: { color: mutedColor, fontSize: 13, lineHeight: 20, fontWeight: '800', marginTop: 4, marginBottom: 3 },
+    list: { marginVertical: 4, paddingLeft: 2 },
+    li: { color: textColor, fontSize: isThink ? 14 : 15, lineHeight: isThink ? 22 : 24, flexShrink: 1 },
+    codespan: {
+      color: codeColor,
+      backgroundColor: codeBg,
+      borderRadius: 6,
+      paddingHorizontal: 5,
+      paddingVertical: 2,
+      fontSize: 13,
+      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+      fontStyle: 'normal',
+      fontWeight: '500'
+    },
+    code: {
+      backgroundColor: codeBg,
+      borderRadius: 12,
+      padding: 12,
+      marginVertical: 8,
+      minWidth: '100%'
+    },
+    blockquote: {
+      backgroundColor: isUser ? 'rgba(15, 23, 42, 0.18)' : '#f6f9fc',
+      borderLeftColor: isUser ? '#bfdbfe' : '#8fb6df',
+      borderLeftWidth: 3,
+      borderRadius: 10,
+      paddingLeft: 12,
+      paddingRight: 10,
+      paddingVertical: 8,
+      marginVertical: 8,
+      opacity: 1
+    },
+    hr: { borderBottomColor: isUser ? 'rgba(226,232,240,0.35)' : '#dbe5ef', marginVertical: 10 },
+    table: { borderColor: isUser ? 'rgba(226,232,240,0.35)' : '#d8e3ee', borderWidth: 1, borderRadius: 10, marginVertical: 8 },
+    tableRow: { borderBottomColor: isUser ? 'rgba(226,232,240,0.18)' : '#e5edf5', borderBottomWidth: 1 },
+    tableCell: { padding: 8 }
+  }), [codeBg, codeColor, headingColor, isThink, isUser, mutedColor, textColor]);
+  const elements = useMarkdown(src, {
+    colorScheme: 'light',
+    styles: markdownStyles,
+    theme: {
+      colors: {
+        text: textColor,
+        link: isUser ? '#bfdbfe' : '#1768c2',
+        code: codeBg,
+        border: isUser ? 'rgba(226,232,240,0.35)' : '#dbe5ef'
+      }
+    }
+  });
+
   return (
-    <Markdown
-      style={{
-        body: { color: isUser ? '#f5f7fb' : isThink ? '#5e6e84' : '#2f3948', fontSize: 15, lineHeight: 22 },
-        paragraph: { marginTop: 0, marginBottom: 8 },
-        heading1: { color: isUser ? '#f5f7fb' : '#27384d', fontSize: 18, fontWeight: '700' },
-        heading2: { color: isUser ? '#f5f7fb' : '#2f415a', fontSize: 16, fontWeight: '700' },
-        heading3: { color: isUser ? '#f5f7fb' : '#3a4e66', fontSize: 15, fontWeight: '700' },
-        bullet_list: { marginVertical: 4 },
-        ordered_list: { marginVertical: 4 },
-        list_item: { color: isUser ? '#f5f7fb' : '#3c4a5f' },
-        code_inline: {
-          color: isUser ? '#f5f7fb' : '#243247',
-          backgroundColor: isUser ? '#334155' : '#edf2f8',
-          borderRadius: 4
-        },
-        code_block: {
-          color: isUser ? '#f5f7fb' : '#243247',
-          backgroundColor: isUser ? '#334155' : '#edf2f8',
-          borderRadius: 8,
-          padding: 8
-        },
-        fence: {
-          color: isUser ? '#f5f7fb' : '#243247',
-          backgroundColor: isUser ? '#334155' : '#edf2f8',
-          borderRadius: 8,
-          padding: 8
-        },
-        blockquote: {
-          borderLeftColor: isUser ? '#94a3b8' : '#ccd7e6',
-          borderLeftWidth: 3,
-          paddingLeft: 10
-        }
-      }}
-    >
-      {src}
-    </Markdown>
+    <View style={styles.markdownBlock}>
+      {elements.map((element, index) => (
+        <React.Fragment key={`md-${index}`}>{element}</React.Fragment>
+      ))}
+    </View>
   );
 }
 
@@ -285,14 +342,109 @@ function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed
   return <View style={styles.todoStatusPending} />;
 }
 
+function ThinkPreviewLines(props: { text: string; active: boolean }) {
+  const lines = toText(props.text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const visible = lines.length ? lines.slice(-6) : ['正在整理上下文...', '分析可执行步骤...', '准备生成回复...'];
+  const [lineIndex, setLineIndex] = useState(Math.max(0, visible.length - 1));
+  const lineAnim = useRef(new Animated.Value(1)).current;
+  const orbitAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    setLineIndex(Math.max(0, visible.length - 1));
+  }, [visible.length, props.text]);
+
+  useEffect(() => {
+    if (!props.active) {
+      orbitAnim.stopAnimation();
+      orbitAnim.setValue(0);
+      return;
+    }
+    orbitAnim.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(orbitAnim, {
+        toValue: 1,
+        duration: 1800,
+        easing: Easing.linear,
+        useNativeDriver: true
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [orbitAnim, props.active]);
+
+  useEffect(() => {
+    if (!props.active || visible.length <= 1) return;
+    const timer = setInterval(() => {
+      Animated.timing(lineAnim, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start(() => {
+        setLineIndex((value) => (value + 1) % visible.length);
+        lineAnim.setValue(0);
+        Animated.timing(lineAnim, {
+          toValue: 1,
+          duration: 260,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true
+        }).start();
+      });
+    }, 1050);
+    return () => clearInterval(timer);
+  }, [lineAnim, props.active, visible.length]);
+
+  const currentLine = visible[Math.min(lineIndex, visible.length - 1)] || '正在整理思路...';
+  const rotate = orbitAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  return (
+    <View style={styles.thinkFlowRow}>
+      <View style={styles.thinkFlowIconShell}>
+        <Animated.View style={[styles.thinkFlowHalo, { transform: [{ rotate }] }]} />
+        <View style={styles.thinkFlowLens} />
+      </View>
+      <View style={styles.thinkFlowPill}>
+        <Animated.Text
+          numberOfLines={1}
+          style={[
+            styles.thinkFlowLine,
+            {
+              opacity: lineAnim,
+              transform: [{ translateY: lineAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }]
+            }
+          ]}
+        >
+          {currentLine}
+        </Animated.Text>
+      </View>
+    </View>
+  );
+}
+
+function normalizeMarkdownForMobile(input: string) {
+  return toText(input);
+}
+
+function normalizeReasoningText(input: string) {
+  return toText(input)
+    .replace(/\*\*/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*[-*•·]\s+/gm, '• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
   card: MobileTodoCard;
   compact?: boolean;
   collapsed?: boolean;
   pulse: boolean;
   onToggle?: () => void;
+  onClose?: () => void;
 }) {
-  const { card, compact, collapsed, pulse, onToggle } = props;
+  const { card, compact, collapsed, pulse, onToggle, onClose } = props;
   const meta = todoMeta(card);
   const activeText = toText(meta.active?.content);
   const content = (
@@ -310,12 +462,29 @@ const MobileTodoCardView = React.memo(function MobileTodoCardView(props: {
           <Text numberOfLines={collapsed ? 1 : 2} style={styles.todoSummary}>
             {activeText ? `当前：${activeText}` : toText(card.summary || '任务进行中')}
           </Text>
-        </View>
-        {onToggle ? (
-          <View style={styles.todoToggleBtn}>
-            <View style={[styles.todoArrow, collapsed && styles.todoArrowUp]} />
+          <View style={styles.todoProgressTrack}>
+            <View style={[styles.todoProgressFill, { width: `${meta.total ? Math.round((meta.done / meta.total) * 100) : 0}%` }]} />
           </View>
-        ) : null}
+        </View>
+        <View style={styles.todoActions}>
+          {onClose ? (
+            <Pressable
+              style={styles.todoCloseBtn}
+              hitSlop={8}
+              onPress={(evt: any) => {
+                evt?.stopPropagation?.();
+                onClose();
+              }}
+            >
+              <Text style={styles.todoCloseText}>×</Text>
+            </Pressable>
+          ) : null}
+          {onToggle ? (
+            <View style={styles.todoToggleBtn}>
+              <View style={[styles.todoArrow, collapsed && styles.todoArrowUp]} />
+            </View>
+          ) : null}
+        </View>
       </View>
       {!collapsed ? (
         <View style={styles.todoList}>
@@ -352,17 +521,26 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   isLastTurn: boolean;
   thinkingPulse: boolean;
   hasLiveQuestion: boolean;
-  liveQuestions: QuestionRequest[];
+  liveQuestions: MobileQuestionCard[];
   onQuestionReply: (requestId: string, answers: string[][]) => void;
   onCopyMessage: (text: string) => void;
   expandedTimelineQuestions: Set<string>;
   onToggleTimelineQuestion: (id: string) => void;
+  expandedThinkCards: Set<string>;
+  onToggleThinkCard: (id: string) => void;
   timelineQuestionTabs: Map<string, number>;
   onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
 }) {
-  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, expandedTimelineQuestions, onToggleTimelineQuestion, timelineQuestionTabs, onChangeTimelineTab } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab } = props;
+  const [, setMeasuredHeight] = useLayoutState(0);
   return (
-    <View style={styles.turnWrap}>
+    <View
+      style={styles.turnWrap}
+      onLayout={(evt) => {
+        const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
+        if (h > 0) setMeasuredHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+      }}
+    >
       {turn.userMessage ? (
         <View style={styles.bubbleUserWrap}>
           <Pressable style={styles.bubbleUser} onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))} delayLongPress={280}>
@@ -441,8 +619,10 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
           if (!liveRequest && item.question.status === 'running' && item.question.tool?.callID) {
             liveRequest = {
               id: item.question.tool.callID,
-              sessionID: '',
+              title: '',
+              status: 'running',
               questions: item.question.questions,
+              interactive: true,
               tool: {
                 messageID: item.question.tool.messageID || '',
                 callID: item.question.tool.callID,
@@ -569,17 +749,23 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
         if (item.kind === 'think' || item.kind === 'todo') {
           const card = 'card' in item ? item.card : null;
           if (!card) return null;
-          const keepOpen = !streaming || isLastTurn;
+          const isThinkExpanded = expandedThinkCards.has(card.id);
+  const contentText = normalizeReasoningText(card.text);
           return (
               <View key={card.id} style={styles.thinkWrap}>
-                <View style={styles.thinkCard}>
-                  <Text style={styles.thinkTitle}>{card.title}</Text>
-                  {keepOpen ? (
-                    <View style={styles.bubbleContent}>{renderMarkdown(toText(card.text), 'think')}</View>
+                <Pressable style={isThinkExpanded ? styles.thinkCardExpanded : styles.thinkCard} onPress={() => onToggleThinkCard(card.id)}>
+                  {isThinkExpanded ? (
+                    <>
+                      <View style={styles.thinkExpandedHead}>
+                        <Text style={styles.thinkExpandedTitle}>过程详情</Text>
+                        <Text style={styles.thinkToggleText}>收起</Text>
+                      </View>
+                      <View style={styles.bubbleContent}>{renderMarkdown(contentText, 'think')}</View>
+                    </>
                   ) : (
-                    <Text style={styles.thinkCollapsed}>{toText(card.text)}</Text>
+                    <ThinkPreviewLines text={contentText} active={streaming && isLastTurn} />
                   )}
-                </View>
+                </Pressable>
             </View>
           );
         }
@@ -598,6 +784,8 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   && prev.onCopyMessage === next.onCopyMessage
   && prev.expandedTimelineQuestions === next.expandedTimelineQuestions
   && prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion
+  && prev.expandedThinkCards === next.expandedThinkCards
+  && prev.onToggleThinkCard === next.onToggleThinkCard
   && prev.timelineQuestionTabs === next.timelineQuestionTabs
   && prev.onChangeTimelineTab === next.onChangeTimelineTab
 ));
@@ -844,11 +1032,14 @@ export default function App() {
   const [sessionStatusMap, setSessionStatusMap] = useState<Record<string, SessionStatusInfo>>({});
   const [streaming, setStreaming] = useState(false);
   const [thinkingPulse, setThinkingPulse] = useState(false);
+  const [streamTopGlowVisible, setStreamTopGlowVisible] = useState(false);
   const [todoDockCollapsed, setTodoDockCollapsed] = useState(false);
+  const [dismissedTodoCardId, setDismissedTodoCardId] = useState('');
   const [questionRequests, setQuestionRequests] = useState<QuestionRequest[]>([]);
   const [dismissedQuestions, setDismissedQuestions] = useState<Set<string>>(() => new Set());
   const [questionSubmitState, setQuestionSubmitState] = useState<Record<string, QuestionSubmitState>>({});
   const [expandedTimelineQuestions, setExpandedTimelineQuestions] = useState<Set<string>>(new Set());
+  const [expandedThinkCards, setExpandedThinkCards] = useState<Set<string>>(new Set());
   const [timelineQuestionTabs, setTimelineQuestionTabs] = useState<Map<string, number>>(new Map());
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -859,17 +1050,17 @@ export default function App() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [optimisticVersion, setOptimisticVersion] = useState(0);
   const [sessionDisplayedCount, setSessionDisplayedCount] = useState(5);
-  const [drawerDragSide, setDrawerDragSide] = useState<'' | 'left' | 'right'>('');
   const [showLatestJump, setShowLatestJump] = useState(false);
   const [inputDockHeight, setInputDockHeight] = useState(88);
+  const [chatListResetKey, setChatListResetKey] = useState(0);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
-  const messageScrollRef = useRef<FlashList<MobileRenderedTurn> | null>(null);
+  const messageScrollRef = useRef<FlashListRef<MobileRenderedTurn> | null>(null);
   const forceScrollToLatestUntilRef = useRef(0);
-  const suppressAutoScrollRef = useRef(false);
-  const allowAutoScrollRef = useRef(true);
+  const latestJumpVisibleRef = useRef(false);
+  const latestJumpLastChangeRef = useRef(0);
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
   const sessionCacheRef = useRef<Record<string, SessionItem[]>>({});
@@ -882,7 +1073,6 @@ export default function App() {
   const streamPartMapRef = useRef<Record<string, Record<string, any>>>({});
   const streamPartTypeRef = useRef<Record<string, 'text' | 'reasoning'>>({});
   const streamPartDeltaKeyRef = useRef<Record<string, string>>({});
-  const draftOptimisticUserRef = useRef<OptimisticUserMessage | null>(null);
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
   const inflightMessageReqRef = useRef<Record<string, Promise<RefreshMessagesResult | undefined>>>({});
@@ -894,7 +1084,6 @@ export default function App() {
   const messageUserScrollingRef = useRef(false);
   const streamRunIdRef = useRef(0);
   const sessionStatusEpochRef = useRef(0);
-  const messageViewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 1, minimumViewTime: 0 });
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
   const discoveringRef = useRef(false);
@@ -919,15 +1108,20 @@ export default function App() {
   const deviceBob = useRef(new Animated.Value(0)).current;
   const connectProgressAnim = useRef(new Animated.Value(0)).current;
   const discoverCardAnim = useRef(new Animated.Value(0)).current;
-  const drawerAnim = useRef(new Animated.Value(0)).current;
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
   const workspaceAnim = useRef(new Animated.Value(0)).current;
   const streamTopGlowAnim = useRef(new Animated.Value(0)).current;
+  const streamTopGlowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+  const streamTopGlowActiveRef = useRef(false);
+  const streamTopGlowHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
+  const [launchOverlayVisible, setLaunchOverlayVisible] = useState(true);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
-  const showStreamTopGlow = busy || streaming;
+  const streamTopGlowRequested = busy || streaming;
+  const showStreamTopGlow = streamTopGlowVisible;
 
   const localIpv4PrefixRef = useRef<{ prefix: string; ip: string; at: number } | null>(null);
 
@@ -977,6 +1171,20 @@ export default function App() {
       if (typeof prev === 'function') ErrorUtilsAny.setGlobalHandler(prev);
     };
   }, []);
+
+  useEffect(() => {
+    if (!loaded || !launchOverlayVisible) return;
+    const timer = setTimeout(() => {
+      Animated.timing(launchOverlayOpacity, {
+        toValue: 0,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start(() => setLaunchOverlayVisible(false));
+    }, 260);
+    return () => clearTimeout(timer);
+  }, [launchOverlayOpacity, launchOverlayVisible, loaded]);
+
   const statusText = toText(status);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
@@ -1187,22 +1395,59 @@ export default function App() {
   }, [streaming]);
 
   useEffect(() => {
-    if (!showStreamTopGlow) {
-      streamTopGlowAnim.stopAnimation();
-      streamTopGlowAnim.setValue(0);
+    if (streamTopGlowHideTimerRef.current) {
+      clearTimeout(streamTopGlowHideTimerRef.current);
+      streamTopGlowHideTimerRef.current = null;
+    }
+    if (streamTopGlowRequested) {
+      setStreamTopGlowVisible(true);
       return;
     }
-    streamTopGlowAnim.setValue(0);
+    streamTopGlowHideTimerRef.current = setTimeout(() => {
+      setStreamTopGlowVisible(false);
+      streamTopGlowHideTimerRef.current = null;
+    }, 520);
+    return () => {
+      if (streamTopGlowHideTimerRef.current) {
+        clearTimeout(streamTopGlowHideTimerRef.current);
+        streamTopGlowHideTimerRef.current = null;
+      }
+    };
+  }, [streamTopGlowRequested]);
+
+  useEffect(() => {
+    if (!showStreamTopGlow) {
+      if (!streamTopGlowActiveRef.current) return;
+      streamTopGlowActiveRef.current = false;
+      streamTopGlowLoopRef.current?.stop();
+      streamTopGlowLoopRef.current = null;
+      Animated.timing(streamTopGlowAnim, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true
+      }).start();
+      return;
+    }
+    if (streamTopGlowActiveRef.current || streamTopGlowLoopRef.current) return;
+    streamTopGlowActiveRef.current = true;
     const loop = Animated.loop(
       Animated.timing(streamTopGlowAnim, {
         toValue: 1,
-        duration: 1450,
-        easing: Easing.inOut(Easing.quad),
+        duration: 1900,
+        easing: Easing.linear,
         useNativeDriver: true
       })
     );
+    streamTopGlowAnim.setValue(0);
+    streamTopGlowLoopRef.current = loop;
     loop.start();
-    return () => loop.stop();
+    return () => {
+      if (!streamTopGlowActiveRef.current) {
+        loop.stop();
+        if (streamTopGlowLoopRef.current === loop) streamTopGlowLoopRef.current = null;
+      }
+    };
   }, [showStreamTopGlow, streamTopGlowAnim]);
 
   useEffect(() => {
@@ -1461,8 +1706,6 @@ export default function App() {
     // Clear question state when switching sessions
     setQuestionRequests([]);
     setQuestionSubmitState({});
-    // Switching session should not auto-scroll with animation.
-    allowAutoScrollRef.current = false;
     if (!sid) {
       setSessionStatusMap({});
       return;
@@ -1504,16 +1747,6 @@ export default function App() {
     setMessages((prev) => prev.filter((item) => item.id !== optimisticId));
     setRenderedTurns((prev) => prev.filter((item) => item.id !== `turn:optimistic:${optimisticId}`));
     bumpOptimisticVersion();
-  }
-
-  function moveDraftOptimisticToSession(targetSessionId: string, fallback?: OptimisticUserMessage | null) {
-    const sid = toText(targetSessionId).trim();
-    if (!sid) return null;
-    const draft = draftOptimisticUserRef.current || fallback || null;
-    if (!draft) return null;
-    draftOptimisticUserRef.current = null;
-    upsertOptimisticUserMessage(sid, draft);
-    return draft;
   }
 
   function reconcileOptimisticUserMessages(targetSessionId: string, chatMessages: MobileChatMessage[]) {
@@ -1612,27 +1845,6 @@ export default function App() {
     };
   }
 
-  function appendOptimisticTurn(message: OptimisticUserMessage) {
-    setMessages((prev) => {
-      if (prev.some((item) => item.id === message.id)) return prev;
-      return [...prev, { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }];
-    });
-    setRenderedTurns((prev) => {
-      const id = `turn:optimistic:${message.id}`;
-      if (prev.some((item) => item.id === id)) return prev;
-      return [
-        ...prev,
-        {
-          id,
-          createdAt: message.createdAt,
-          userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
-          items: [],
-          signature: `optimistic:${message.id}:${message.text.length}`
-        }
-      ];
-    });
-  }
-
   function appendOptimisticTurnAndStick(message: OptimisticUserMessage) {
     setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }]);
     setRenderedTurns([
@@ -1645,31 +1857,6 @@ export default function App() {
       }
     ]);
     sessionVisibleTurnCountRef.current[sessionIdRef.current] = INITIAL_SESSION_LIMIT;
-    bumpOptimisticVersion();
-  }
-
-  function renderDraftOptimisticMessage(message: OptimisticUserMessage) {
-    draftOptimisticUserRef.current = message;
-    setRenderedTurns([
-      {
-        id: `turn:optimistic:${message.id}`,
-        createdAt: message.createdAt,
-        userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
-        items: [],
-        signature: `optimistic:${message.id}:${message.text.length}`
-      }
-    ]);
-    setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }]);
-    bumpOptimisticVersion();
-  }
-
-  function clearDraftOptimisticMessage(optimisticId: string) {
-    if (draftOptimisticUserRef.current?.id !== optimisticId) return;
-    draftOptimisticUserRef.current = null;
-    if (!toText(sessionIdRef.current).trim()) {
-      setRenderedTurns([]);
-      setMessages([]);
-    }
     bumpOptimisticVersion();
   }
 
@@ -1700,9 +1887,10 @@ export default function App() {
   }
 
   function jumpToLatest() {
-    allowAutoScrollRef.current = true;
     messageUserScrollingRef.current = false;
     forceScrollToLatestUntilRef.current = Date.now() + 900;
+    latestJumpVisibleRef.current = false;
+    latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
     scrollToLatest(true);
     [80, 220, 420, 760, 1200].forEach((delay) => {
@@ -1710,42 +1898,118 @@ export default function App() {
     });
   }
 
-  const activeDrawerSide = drawerSide || drawerDragSide;
-
-  function animateDrawerProgress(toValue: number, onDone?: () => void) {
-    drawerAnim.stopAnimation((currentValue) => {
-      const distance = Math.abs((Number(currentValue) || 0) - toValue);
-      const duration = Math.max(120, Math.min(220, Math.round(160 * distance + 90)));
-      Animated.timing(drawerAnim, {
-        toValue,
-        duration,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true
-      }).start(() => {
-        onDone?.();
-      });
-    });
-  }
-
   function openDrawer(side: 'left' | 'right') {
-    if (drawerSide === side && !drawerDragSide) return;
+    if (drawerSide === side) return;
     setWorkspacePickerOpen(false);
-    setDrawerDragSide('');
     setDrawerSide(side);
-    animateDrawerProgress(1, () => {
-      void InteractionManager.runAfterInteractions(() => {
-        if (side === 'left') void refreshSessionsFromServer();
-        else void refreshModelCatalog();
-      });
+    void InteractionManager.runAfterInteractions(() => {
+      if (side === 'left') void refreshSessionsFromServer();
+      else void refreshModelCatalog();
     });
   }
 
   function closeDrawer() {
-    animateDrawerProgress(0, () => {
-      setDrawerSide('');
-      setDrawerDragSide('');
-    });
+    setDrawerSide('');
   }
+
+  const renderLeftDrawerContent = useCallback(() => (
+    <View style={styles.drawerPanelLeft}>
+      <View style={styles.drawerHead}>
+        <Text style={styles.drawerTitle}>会话</Text>
+        <View style={styles.drawerMetaRow}>
+          <Text style={styles.drawerMetaChip}>会话 {sessions.length}</Text>
+        </View>
+        <Pressable style={styles.drawerNewBtn} onPress={() => { onNewSession(); closeDrawer(); }}>
+          <Text style={styles.drawerNewTxt}>新建对话</Text>
+        </Pressable>
+      </View>
+      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
+        <TextInput
+          style={styles.drawerSessionSearch}
+          value={sessionSearch}
+          onChangeText={setSessionSearch}
+          autoCapitalize="none"
+          placeholder="搜索会话"
+          placeholderTextColor="#9ca7b5"
+        />
+        <Animated.View style={{ opacity: leftDrawerPulse }}>
+          {filteredSessions.map((s, idx) => {
+            const preview = toText(s.preview).trim();
+            return (
+              <Pressable
+                key={s.id}
+                style={[
+                  s.id === sessionId ? styles.drawerItemActive : styles.drawerItem,
+                  idx < filteredSessions.length - 1 ? styles.drawerItemGap : null
+                ]}
+                onPress={() => {
+                  stopStream();
+                  setActiveSession(s.id);
+                  closeDrawer();
+                }}
+              >
+                <View style={styles.drawerItemHead}>
+                  <Text numberOfLines={1} style={styles.drawerItemTitle}>{toText(s.title || '新会话')}</Text>
+                  <Text style={styles.drawerItemTime}>{formatClock(s.updatedAt)}</Text>
+                </View>
+                {preview ? <Text numberOfLines={1} style={styles.drawerItemPreview}>{preview}</Text> : null}
+              </Pressable>
+            );
+          })}
+          {!sessionSearch.trim() && sessions.length > sessionDisplayedCount ? (
+            <Pressable
+              style={styles.drawerMoreBtn}
+              onPress={() => setSessionDisplayedCount((p) => Math.min(p + 5, sessions.length))}
+            >
+              <Text style={styles.drawerMoreTxt}>… more</Text>
+            </Pressable>
+          ) : null}
+        </Animated.View>
+        {filteredSessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无匹配会话</Text> : null}
+      </ScrollView>
+    </View>
+  ), [sessions.length, sessionSearch, filteredSessions, sessionId, sessionDisplayedCount, leftDrawerPulse]);
+
+  const renderRightDrawerContent = useCallback(() => (
+    <View style={styles.drawerPanelRight}>
+      <View style={styles.drawerHead}>
+        <View style={styles.drawerHeadTop}>
+          <Text style={styles.drawerTitle}>模型</Text>
+          <Pressable
+            style={styles.drawerLogoutBtn}
+            onPress={() => {
+              closeDrawer();
+              onResetAuth();
+            }}
+          >
+            <Image source={require('./src/assets/icons/logout.png')} style={styles.drawerLogoutImage} resizeMode="contain" />
+          </Pressable>
+        </View>
+        <Text style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '请选择可用模型')}</Text>
+      </View>
+      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
+        <Animated.View style={{ opacity: rightDrawerPulse }}>
+          {modelOptions.map((opt, idx) => {
+            const active = model.trim() === opt.id;
+            return (
+              <Pressable
+                key={opt.id}
+                style={[
+                  active ? styles.drawerModelListItemActive : styles.drawerModelListItem,
+                  idx < modelOptions.length - 1 ? styles.drawerItemGap : null
+                ]}
+                onPress={() => setModel(opt.id)}
+              >
+                <Text style={active ? styles.drawerModelListTitleActive : styles.drawerModelListTitle}>{toText(opt.label)}</Text>
+                <Text style={active ? styles.drawerModelListSubActive : styles.drawerModelListSub}>{toText(opt.id)}</Text>
+              </Pressable>
+            );
+          })}
+        </Animated.View>
+        {modelOptions.length === 0 ? <Text style={styles.drawerEmpty}>暂无可用模型</Text> : null}
+      </ScrollView>
+    </View>
+  ), [modelCatalogStatus, modelOptions, model, rightDrawerPulse]);
 
   function openWorkspacePicker() {
     if (workspacePickerOpen) return;
@@ -1770,90 +2034,6 @@ export default function App() {
       useNativeDriver: true
     }).start(() => setWorkspacePickerOpen(false));
   }
-
-  const swipeResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onStartShouldSetPanResponderCapture: () => false,
-        onMoveShouldSetPanResponder: (_evt, g) => {
-          if (workspacePickerOpen) return false;
-          if (Math.abs(g.dx) < 14 || Math.abs(g.dx) < Math.abs(g.dy)) return false;
-          if (!drawerSide) return Math.abs(g.dx) > 40;
-          if (drawerSide === 'left') return g.dx < 0;
-          return g.dx > 0;
-        },
-        onMoveShouldSetPanResponderCapture: (_evt, g) => {
-          if (workspacePickerOpen) return false;
-          if (Math.abs(g.dx) < 18 || Math.abs(g.dx) < Math.abs(g.dy) * 1.8) return false;
-          if (!drawerSide) return Math.abs(g.dx) > 32;
-          if (drawerSide === 'left') return g.dx < -24;
-          return g.dx > 24;
-        },
-        onPanResponderTerminationRequest: () => true,
-        onShouldBlockNativeResponder: () => false,
-        onPanResponderMove: (_evt, g) => {
-          let nextSide: '' | 'left' | 'right' = drawerSide;
-          if (!nextSide) {
-            if (g.dx > 0) nextSide = 'left';
-            else if (g.dx < 0) nextSide = 'right';
-          }
-          if (!nextSide) return;
-          if (drawerDragSide !== nextSide) {
-            setWorkspacePickerOpen(false);
-            setDrawerDragSide(nextSide);
-          }
-          const progress = !drawerSide
-            ? nextSide === 'left'
-              ? Math.min(1, Math.max(0, g.dx / 320))
-              : Math.min(1, Math.max(0, -g.dx / 320))
-            : nextSide === 'left'
-              ? Math.min(1, Math.max(0, 1 + g.dx / 320))
-              : Math.min(1, Math.max(0, 1 - g.dx / 320));
-          drawerAnim.setValue(progress);
-        },
-        onPanResponderRelease: (_evt, g) => {
-          if (!drawerSide && g.dx > 56) {
-            openDrawer('left');
-            return;
-          }
-          if (!drawerSide && g.dx < -56) {
-            openDrawer('right');
-            return;
-          }
-          if (drawerSide === 'left' && g.dx < -56) {
-            closeDrawer();
-            return;
-          }
-          if (drawerSide === 'right' && g.dx > 56) {
-            closeDrawer();
-            return;
-          }
-          drawerAnim.stopAnimation((currentValue) => {
-            const progress = Number(currentValue) || 0;
-            const shouldOpen = drawerSide ? progress > 0.65 : progress > 0.28;
-            animateDrawerProgress(shouldOpen ? 1 : 0, () => {
-              if (shouldOpen) {
-                const nextSide = drawerSide || drawerDragSide;
-                if (nextSide) {
-                  setDrawerSide(nextSide);
-                  void InteractionManager.runAfterInteractions(() => {
-                    if (nextSide === 'left') void refreshSessionsFromServer();
-                    else void refreshModelCatalog();
-                  });
-                }
-                setDrawerDragSide('');
-                return;
-              }
-              if (!drawerSide) {
-                setDrawerDragSide('');
-              }
-            });
-          });
-        }
-      }),
-    [drawerDragSide, drawerSide, workspacePickerOpen]
-  );
 
   function upsertSession(nextSessionId: string, nextMessages: MobileChatMessage[]) {
     if (!nextSessionId) return;
@@ -2382,7 +2562,6 @@ export default function App() {
       return;
     }
     setLoadingOlder(true);
-    suppressAutoScrollRef.current = true;
     if (cursor) {
       await syncSessionMessages(sid, {
         limit: OLDER_SESSION_LIMIT,
@@ -2393,12 +2572,8 @@ export default function App() {
     } else {
       setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
       setLoadingOlder(false);
-      suppressAutoScrollRef.current = false;
       return;
     }
-    setTimeout(() => {
-      suppressAutoScrollRef.current = false;
-    }, 120);
   }
 
   function onMessageListScroll(y: number, viewportH?: number, contentH?: number) {
@@ -2410,10 +2585,25 @@ export default function App() {
       messageContentHRef.current = contentH;
     }
     const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - y);
-    setShowLatestJump(distanceFromBottom > 36);
-    if (!messageUserScrollingRef.current && distanceFromBottom <= 96) {
-      allowAutoScrollRef.current = true;
+    updateLatestJumpVisibility(distanceFromBottom);
+  }
+
+  function updateLatestJumpVisibility(distanceFromBottom: number, immediate = false) {
+    const now = Date.now();
+    const currentlyVisible = latestJumpVisibleRef.current;
+    const shouldShow = distanceFromBottom > 112;
+    const shouldHide = distanceFromBottom < 42 || Date.now() < forceScrollToLatestUntilRef.current;
+    let next = currentlyVisible;
+    if (currentlyVisible) {
+      if (shouldHide) next = false;
+    } else if (shouldShow) {
+      next = true;
     }
+    if (next === currentlyVisible) return;
+    if (!immediate && now - latestJumpLastChangeRef.current < 220) return;
+    latestJumpVisibleRef.current = next;
+    latestJumpLastChangeRef.current = now;
+    setShowLatestJump(next);
   }
 
   async function refreshModelCatalog(targetRepoPath?: string) {
@@ -2567,21 +2757,18 @@ export default function App() {
     streamPartMapRef.current = {};
     streamPartTypeRef.current = {};
     streamPartDeltaKeyRef.current = {};
-    draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
     const pname = projectNameFromPath(next);
     setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
-    allowAutoScrollRef.current = false;
     setStatus(`已切换项目: ${projectNameFromPath(next)}`);
     await refreshModelCatalog(next);
     const nextSessions = await refreshSessionsFromServer(next);
     if (nextSessions.length > 0) {
       const latest = nextSessions[0];
       setActiveSession(latest.id);
-      allowAutoScrollRef.current = false;
     }
   }
 
@@ -2764,7 +2951,6 @@ export default function App() {
   const localPendingCount = useMemo(() => {
     const sid = toText(sessionId).trim();
     if (!sid) {
-      if (draftOptimisticUserRef.current) return 1;
       return Object.values(sessionOptimisticUserMapRef.current).reduce((sum, items) => sum + items.length, 0);
     }
     return Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid].length : 0;
@@ -2808,8 +2994,27 @@ export default function App() {
     return true;
   }, [currentSessionStatus.type, messages, renderedTurns, sessionWorking]);
 
-  const displayedTurns = useMemo(() => renderedTurns, [renderedTurns]);
+  const displayedTurns = renderedTurns;
   const messageBottomInset = Math.max(140, inputDockHeight + 44);
+
+  const liveQuestionTurnId = useMemo(() => {
+    for (let i = renderedTurns.length - 1; i >= 0; i -= 1) {
+      const turn = renderedTurns[i];
+      for (const item of turn.items) {
+        if (item.kind === 'question') return turn.id;
+      }
+    }
+    return '';
+  }, [renderedTurns]);
+
+  const activeQuestionsForTurn = useMemo(() => {
+    if (!liveQuestionTurnId) return [];
+    const turn = renderedTurns.find((t) => t.id === liveQuestionTurnId);
+    if (!turn) return [];
+    return turn.items
+      .filter((item): item is Extract<typeof item, { kind: 'question' }> => item.kind === 'question')
+      .map((item) => item.question);
+  }, [liveQuestionTurnId, renderedTurns]);
 
 
 
@@ -2833,12 +3038,15 @@ export default function App() {
       setTodoDockCollapsed(false);
       return;
     }
+    if (dismissedTodoCardId && latestTodoCard.id !== dismissedTodoCardId) {
+      setDismissedTodoCardId('');
+    }
     if (sessionWorking) {
       setTodoDockCollapsed(false);
       return;
     }
     setTodoDockCollapsed(true);
-  }, [latestTodoCard?.id, latestTodoCard?.summary, latestTodoCard?.finished, sessionWorking]);
+  }, [dismissedTodoCardId, latestTodoCard?.id, latestTodoCard?.summary, latestTodoCard?.finished, sessionWorking]);
 
   async function connectWithAddressAndCode(
     inputBaseUrl: string,
@@ -3396,7 +3604,7 @@ export default function App() {
         targetSessionId = created.id;
         setActiveSession(targetSessionId);
       }
-      allowAutoScrollRef.current = true;
+      setChatListResetKey((value) => value + 1);
       upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
       appendOptimisticTurnAndStick(optimisticMessage);
       setPrompt('');
@@ -3422,8 +3630,6 @@ export default function App() {
       const currentSessionId = toText(sessionIdRef.current).trim();
       if (currentSessionId) {
         dropOptimisticUserMessage(currentSessionId, optimisticMessage.id);
-      } else {
-        clearDraftOptimisticMessage(optimisticMessage.id);
       }
       if (customPrompt === undefined) setPrompt((prev) => prev || payloadPrompt);
       const msg = String(e);
@@ -3493,10 +3699,8 @@ export default function App() {
     stopStream();
     const oldSid = toText(sessionIdRef.current).trim();
     setActiveSession('');
-    allowAutoScrollRef.current = true;
     setMessages([]);
     setRenderedTurns([]);
-    draftOptimisticUserRef.current = null;
     bumpOptimisticVersion();
     setSessionHistoryRetryHint((prev) => {
       if (!oldSid || !(oldSid in prev)) return prev;
@@ -3543,7 +3747,6 @@ export default function App() {
     streamPartMapRef.current = {};
     streamPartTypeRef.current = {};
     streamPartDeltaKeyRef.current = {};
-    draftOptimisticUserRef.current = null;
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     olderCursorBackoffRef.current = {};
@@ -3553,14 +3756,17 @@ export default function App() {
     pushConnLog('reset auth');
   }
 
+  const launchOverlay = launchOverlayVisible ? (
+    <Animated.View pointerEvents="none" style={[styles.launchOverlay, { opacity: launchOverlayOpacity }]}> 
+      <GiteamLaunchMark />
+    </Animated.View>
+  ) : null;
+
   if (!loaded) {
     return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.centerWrap}>
-          <ActivityIndicator color="#cfe6ff" />
-          <Text style={styles.centerText}>加载中...</Text>
-        </View>
-      </SafeAreaView>
+      <View style={styles.launchScreen}>
+        <GiteamLaunchMark />
+      </View>
     );
   }
 
@@ -3668,7 +3874,7 @@ export default function App() {
     return (
       <SafeAreaView style={styles.safe}>
         <RenderBoundary name="auth-screen">
-          <StatusBar barStyle="dark-content" />
+        <StatusBar barStyle="dark-content" />
           <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
             <View style={styles.authPageFrame}>
               <View style={styles.authFormWrap}>
@@ -3745,14 +3951,42 @@ export default function App() {
 
           </ScrollView>
         </RenderBoundary>
+        {launchOverlay}
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.chatSafe} {...swipeResponder.panHandlers}>
-      <RenderBoundary name="chat-screen">
-        <StatusBar barStyle="dark-content" />
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <SafeAreaView style={styles.chatSafe}>
+        <RenderBoundary name="chat-screen">
+        <Drawer
+          drawerPosition="right"
+          drawerStyle={{ width: 320 }}
+          open={drawerSide === 'right'}
+          onOpen={() => setDrawerSide('right')}
+          onClose={() => setDrawerSide((side) => (side === 'right' ? '' : side))}
+          renderDrawerContent={renderRightDrawerContent}
+          overlayStyle={{ backgroundColor: 'rgba(15,23,42,0.2)' }}
+          swipeEnabled={drawerSide !== 'left'}
+          swipeEdgeWidth={72}
+          swipeMinDistance={18}
+          swipeMinVelocity={180}
+        >
+          <Drawer
+            drawerPosition="left"
+            drawerStyle={{ width: 320 }}
+            open={drawerSide === 'left'}
+            onOpen={() => setDrawerSide('left')}
+            onClose={() => setDrawerSide((side) => (side === 'left' ? '' : side))}
+            renderDrawerContent={renderLeftDrawerContent}
+            overlayStyle={{ backgroundColor: 'rgba(15,23,42,0.2)' }}
+            swipeEnabled={drawerSide !== 'right'}
+            swipeEdgeWidth={72}
+            swipeMinDistance={18}
+            swipeMinVelocity={180}
+          >
+            <StatusBar barStyle="dark-content" />
 
       <View style={styles.topBar}>
         <View style={styles.topSideSlot}>
@@ -3850,6 +4084,7 @@ export default function App() {
         ) : (
           <View style={styles.chatListStage}>
             <FlashList
+              key={`chat-list-${sessionId || 'draft'}-${chatListResetKey}`}
               ref={messageScrollRef}
               style={styles.msgScroll}
               contentContainerStyle={{ ...styles.msgList, paddingBottom: messageBottomInset }}
@@ -3857,24 +4092,23 @@ export default function App() {
                 messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
               }}
               data={displayedTurns}
-              estimatedItemSize={220}
               removeClippedSubviews={Platform.OS === 'web'}
               alwaysBounceVertical
               bounces
               overScrollMode="always"
               scrollEventThrottle={16}
-              viewabilityConfig={messageViewabilityConfigRef.current}
-              maintainVisibleContentPosition={Platform.OS === 'ios' && !sessionWorking ? { minIndexForVisible: 0 } : undefined}
+              maintainVisibleContentPosition={{
+                autoscrollToBottomThreshold: 0.35,
+                animateAutoScrollToBottom: false
+              }}
               onScrollBeginDrag={() => {
                 forceScrollToLatestUntilRef.current = 0;
-                allowAutoScrollRef.current = false;
                 messageUserScrollingRef.current = true;
               }}
               onScrollEndDrag={() => {
                 messageUserScrollingRef.current = false;
                 const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
-                allowAutoScrollRef.current = distanceFromBottom <= 96;
-                setShowLatestJump(distanceFromBottom > 36);
+                updateLatestJumpVisibility(distanceFromBottom, true);
               }}
               onMomentumScrollBegin={() => {
                 messageUserScrollingRef.current = true;
@@ -3882,8 +4116,7 @@ export default function App() {
               onMomentumScrollEnd={() => {
                 messageUserScrollingRef.current = false;
                 const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
-                allowAutoScrollRef.current = distanceFromBottom <= 96;
-                setShowLatestJump(distanceFromBottom > 36);
+                updateLatestJumpVisibility(distanceFromBottom, true);
               }}
               refreshControl={
                 sessionId ? (
@@ -3908,16 +4141,10 @@ export default function App() {
                 const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
                 onMessageListScroll(y, viewportH, contentH);
               }}
-              onViewableItemsChanged={({ viewableItems }) => {
-                if (Date.now() < forceScrollToLatestUntilRef.current) return;
-                if (messageUserScrollingRef.current) return;
-                const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
-                if (distanceFromBottom <= 96) allowAutoScrollRef.current = true;
-              }}
               onContentSizeChange={(_w, h) => {
                 messageContentHRef.current = Number(h || 0);
                 const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
-                setShowLatestJump(distanceFromBottom > 36);
+                updateLatestJumpVisibility(distanceFromBottom);
                 if (loadingOlder) return;
                 if (messageUserScrollingRef.current) return;
                 if (Date.now() < forceScrollToLatestUntilRef.current) {
@@ -3932,24 +4159,41 @@ export default function App() {
                   streaming={streaming}
                   isLastTurn={item.id === displayedTurns[displayedTurns.length - 1]?.id}
                   thinkingPulse={thinkingPulse}
-                  hasLiveQuestion={questionRequests.length > 0}
-                  liveQuestions={questionRequests}
-                  onCopyMessage={copyMessageText}
+                  hasLiveQuestion={liveQuestionTurnId === item.id}
+                  liveQuestions={liveQuestionTurnId === item.id ? activeQuestionsForTurn : []}
                   onQuestionReply={(requestId, answers) => {
-                    setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
-                    dismissQuestionRequest(requestId);
-                    replyQuestion({
+                    const sid = toText(sessionIdRef.current).trim();
+                    setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitting' } }));
+                    setStatus('正在提交答案...');
+                    void replyQuestion({
                       baseUrl: serverUrl,
                       token,
                       repoPath,
                       requestId,
                       answers
                     }).then(() => {
+                      setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitted' } }));
                       pushConnLog(`question.reply ok ${requestId}`);
+                      setStatus('答案已提交');
+                      setTimeout(() => {
+                        setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
+                        dismissQuestionRequest(requestId, sid);
+                      }, 450);
+                      if (sid) {
+                        startStream(sid);
+                        void syncSessionMessages(sid, {
+                          limit: INITIAL_SESSION_LIMIT,
+                          fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+                        });
+                        void syncSessionStatus(sid);
+                      }
                     }).catch((e) => {
                       pushConnLog(`question.reply error ${requestId} ${String(e)}`, 'error');
+                      setStatus(`问题提交失败: ${String(e)}`);
+                      setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'failed', error: String(e) } }));
                     });
                   }}
+                  onCopyMessage={copyMessageText}
                   expandedTimelineQuestions={expandedTimelineQuestions}
                   onToggleTimelineQuestion={(id) => {
                     setExpandedTimelineQuestions((prev) => {
@@ -3959,6 +4203,15 @@ export default function App() {
                       } else {
                         next.add(id);
                       }
+                      return next;
+                    });
+                  }}
+                  expandedThinkCards={expandedThinkCards}
+                  onToggleThinkCard={(id) => {
+                    setExpandedThinkCards((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(id)) next.delete(id);
+                      else next.add(id);
                       return next;
                     });
                   }}
@@ -3992,7 +4245,7 @@ export default function App() {
         )}
       </View>
 
-      {latestTodoCard ? (
+      {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id ? (
         <View style={styles.todoDockWrap}>
           <MobileTodoCardView
             card={latestTodoCard}
@@ -4000,6 +4253,7 @@ export default function App() {
             collapsed={todoDockCollapsed}
             pulse={thinkingPulse}
             onToggle={() => setTodoDockCollapsed((prev) => !prev)}
+            onClose={() => setDismissedTodoCardId(latestTodoCard.id)}
           />
         </View>
       ) : null}
@@ -4084,133 +4338,63 @@ export default function App() {
         </View>
       </View>
 
-        {activeDrawerSide ? (
-        <View style={styles.drawerMask}>
-          <Animated.View
-            style={[
-              styles.drawerBackdrop,
-              { opacity: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }
-            ]}
-          >
-            <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
-          </Animated.View>
-          {activeDrawerSide === 'left' ? (
-            <Animated.View
-              style={[
-                styles.drawerPanelLeft,
-                { transform: [{ translateX: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [-320, 0] }) }] }
-              ]}
-            >
-              <View style={styles.drawerHead}>
-                <Text style={styles.drawerTitle}>会话</Text>
-                <View style={styles.drawerMetaRow}>
-                  <Text style={styles.drawerMetaChip}>会话 {sessions.length}</Text>
-                </View>
-                <Pressable style={styles.drawerNewBtn} onPress={() => { onNewSession(); closeDrawer(); }}>
-                  <Text style={styles.drawerNewTxt}>新建对话</Text>
-                </Pressable>
-              </View>
-              <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
-                <TextInput
-                  style={styles.drawerSessionSearch}
-                  value={sessionSearch}
-                  onChangeText={setSessionSearch}
-                  autoCapitalize="none"
-                  placeholder="搜索会话"
-                  placeholderTextColor="#9ca7b5"
-                />
-                <Animated.View style={{ opacity: leftDrawerPulse }}>
-                  {filteredSessions.map((s, idx) => {
-                    const preview = toText(s.preview).trim();
-                    return (
-                      <Pressable
-                        key={s.id}
-                        style={[
-                          s.id === sessionId ? styles.drawerItemActive : styles.drawerItem,
-                          idx < filteredSessions.length - 1 ? styles.drawerItemGap : null
-                        ]}
-                        onPress={() => {
-                          stopStream();
-                          setActiveSession(s.id);
-                          closeDrawer();
-                        }}
-                      >
-                        <View style={styles.drawerItemHead}>
-                          <Text numberOfLines={1} style={styles.drawerItemTitle}>{toText(s.title || '新会话')}</Text>
-                          <Text style={styles.drawerItemTime}>{formatClock(s.updatedAt)}</Text>
-                        </View>
-                        {preview ? <Text numberOfLines={1} style={styles.drawerItemPreview}>{preview}</Text> : null}
-                      </Pressable>
-                    );
-                  })}
-                  {!sessionSearch.trim() && sessions.length > sessionDisplayedCount ? (
-                    <Pressable
-                      style={styles.drawerMoreBtn}
-                      onPress={() => setSessionDisplayedCount((p) => Math.min(p + 5, sessions.length))}
-                    >
-                      <Text style={styles.drawerMoreTxt}>… more</Text>
-                    </Pressable>
-                  ) : null}
-                </Animated.View>
-                {filteredSessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无匹配会话</Text> : null}
-              </ScrollView>
-            </Animated.View>
-          ) : null}
-          {activeDrawerSide === 'right' ? (
-            <Animated.View
-              style={[
-                styles.drawerPanelRight,
-                { transform: [{ translateX: drawerAnim.interpolate({ inputRange: [0, 1], outputRange: [320, 0] }) }] }
-              ]}
-            >
-              <View style={styles.drawerHead}>
-                <View style={styles.drawerHeadTop}>
-                  <Text style={styles.drawerTitle}>模型</Text>
-                  <Pressable
-                    style={styles.drawerLogoutBtn}
-                  onPress={() => {
-                      closeDrawer();
-                      onResetAuth();
-                    }}
-                  >
-                    <Image source={require('./src/assets/icons/logout.png')} style={styles.drawerLogoutImage} resizeMode="contain" />
-                  </Pressable>
-                </View>
-                <Text style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '请选择可用模型')}</Text>
-              </View>
-              <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
-                <Animated.View style={{ opacity: rightDrawerPulse }}>
-                  {modelOptions.map((opt, idx) => {
-                    const active = model.trim() === opt.id;
-                    return (
-                      <Pressable
-                        key={opt.id}
-                        style={[
-                          active ? styles.drawerModelListItemActive : styles.drawerModelListItem,
-                          idx < modelOptions.length - 1 ? styles.drawerItemGap : null
-                        ]}
-                        onPress={() => setModel(opt.id)}
-                      >
-                        <Text style={active ? styles.drawerModelListTitleActive : styles.drawerModelListTitle}>{toText(opt.label)}</Text>
-                        <Text style={active ? styles.drawerModelListSubActive : styles.drawerModelListSub}>{toText(opt.id)}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </Animated.View>
-                {modelOptions.length === 0 ? <Text style={styles.drawerEmpty}>暂无可用模型</Text> : null}
-              </ScrollView>
-            </Animated.View>
-          ) : null}
-        </View>
-        ) : null}
-      </RenderBoundary>
-    </SafeAreaView>
+          </Drawer>
+        </Drawer>
+        </RenderBoundary>
+        {launchOverlay}
+      </SafeAreaView>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
+  gestureRoot: { flex: 1 },
   safe: { flex: 1, backgroundColor: '#f7f8fa' },
   chatSafe: { flex: 1, backgroundColor: '#f7f8fa' },
+
+  launchScreen: { flex: 1, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  launchOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  launchMarkWrap: { alignItems: 'center', justifyContent: 'center', transform: [{ translateY: -10 }] },
+  launchPeopleRow: { width: 92, height: 46, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', gap: 7 },
+  launchPersonTeal: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    borderWidth: 6,
+    borderColor: '#22b8ad',
+    marginBottom: 2
+  },
+  launchPersonCore: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    borderWidth: 7,
+    borderColor: '#18b7aa',
+    marginBottom: 8
+  },
+  launchPersonNavy: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    borderWidth: 6,
+    borderColor: '#07517f',
+    marginBottom: 2
+  },
+  launchWordmark: {
+    marginTop: 10,
+    color: '#07517f',
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '800',
+    letterSpacing: -1.2
+  },
 
   centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
   centerText: { color: '#4a5565' },
@@ -4543,9 +4727,9 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: 2,
+    height: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(96, 114, 135, 0.12)',
+    backgroundColor: 'rgba(33, 170, 160, 0.08)',
     overflow: 'hidden',
     zIndex: 8,
     elevation: 8
@@ -4554,10 +4738,10 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
-    width: 160,
-    height: 2,
+    width: 220,
+    height: 3,
     borderRadius: 999,
-    backgroundColor: '#243447'
+    backgroundColor: 'rgba(33, 170, 160, 0.72)'
   },
   topSideSlot: { width: 48, alignItems: 'flex-start', zIndex: 1 },
   topSideSlotRight: { width: 48, alignItems: 'flex-end', zIndex: 1 },
@@ -4780,57 +4964,78 @@ const styles = StyleSheet.create({
   todoInlineCard: {
     width: '96%',
     maxWidth: '96%',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#dbe5f1',
-    backgroundColor: '#f8fbff',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 10,
-    shadowColor: '#96a9c4',
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
+    borderRadius: 18,
+    borderWidth: 0,
+    backgroundColor: '#f7fafc',
+    paddingVertical: 12,
+    paddingHorizontal: 13,
+    gap: 12,
+    shadowColor: '#7b8da6',
+    shadowOpacity: 0.10,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 1
   },
   todoInlineCardCompact: {
     width: '100%',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#dbe5f1',
-    backgroundColor: '#f8fbff',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 10
+    borderRadius: 18,
+    borderWidth: 0,
+    backgroundColor: '#f7fafc',
+    paddingVertical: 12,
+    paddingHorizontal: 13,
+    gap: 12
   },
   todoCardHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   todoCardHeadCompact: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  todoCardHeadMain: { flex: 1, gap: 5 },
+  todoCardHeadMain: { flex: 1, gap: 7 },
   todoTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  todoTitle: { color: '#000000', fontSize: 13, fontWeight: '700' },
+  todoTitle: { color: '#1f2f46', fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
+  todoActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 4 },
+  todoCloseBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef3f8'
+  },
+  todoCloseText: { color: '#718096', fontSize: 16, lineHeight: 19, fontWeight: '700' },
   todoChipRunning: {
-    minWidth: 40,
-    height: 22,
+    minWidth: 42,
+    height: 21,
     borderRadius: 999,
     paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#000000',
-    borderWidth: 0
+    backgroundColor: '#e7f4f2',
+    borderWidth: 1,
+    borderColor: '#c8e8e3'
   },
-  todoChipRunningText: { color: '#ffffff', fontSize: 11, fontWeight: '600' },
+  todoChipRunningText: { color: '#08746f', fontSize: 11, fontWeight: '800' },
   todoChipDone: {
-    minWidth: 40,
-    height: 22,
+    minWidth: 42,
+    height: 21,
     borderRadius: 999,
     paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#000000',
-    borderWidth: 0
+    backgroundColor: '#eef6ff',
+    borderWidth: 1,
+    borderColor: '#d5e8ff'
   },
-  todoChipDoneText: { color: '#ffffff', fontSize: 11, fontWeight: '600' },
-  todoSummary: { color: '#666666', fontSize: 12, lineHeight: 17, fontWeight: '400' },
+  todoChipDoneText: { color: '#276aa8', fontSize: 11, fontWeight: '800' },
+  todoSummary: { color: '#637084', fontSize: 12, lineHeight: 18, fontWeight: '500' },
+  todoProgressTrack: {
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: '#e8eef5',
+    overflow: 'hidden'
+  },
+  todoProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#21aaa0'
+  },
   todoChevron: {
     width: 16,
     height: 16,
@@ -4867,31 +5072,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 8,
-    marginTop: -14
+    marginTop: -8
   },
   todoArrow: {
     width: 10,
     height: 10,
     borderRightWidth: 2,
     borderBottomWidth: 2,
-    borderColor: '#1a1a1a',
+    borderColor: '#708298',
     transform: [{ rotate: '45deg' }]
   },
   todoArrowUp: {
     transform: [{ rotate: '-135deg' }]
   },
-  todoList: { gap: 8, paddingTop: 4 },
-  todoRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  todoRowText: { flex: 1, color: '#1a1a1a', fontSize: 13, lineHeight: 18, fontWeight: '500' },
-  todoRowTextDone: { color: '#999999', textDecorationLine: 'line-through' },
-  todoRowTextCancelled: { color: '#bbbbbb', textDecorationLine: 'line-through' },
+  todoList: { gap: 7, paddingTop: 2 },
+  todoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  todoRowText: { flex: 1, color: '#2f3d52', fontSize: 13, lineHeight: 19, fontWeight: '500' },
+  todoRowTextDone: { color: '#91a0b2', textDecorationLine: 'line-through' },
+  todoRowTextCancelled: { color: '#aeb7c3', textDecorationLine: 'line-through' },
   todoStatusPending: {
     width: 20,
     height: 20,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: '#e0e0e0',
-    backgroundColor: 'transparent',
+    borderColor: '#d5dee9',
+    backgroundColor: '#ffffff',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -4900,8 +5105,8 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: '#cccccc',
-    backgroundColor: 'transparent',
+    borderColor: '#d7dce4',
+    backgroundColor: '#f3f5f8',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -4910,7 +5115,7 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 999,
     borderWidth: 0,
-    backgroundColor: '#000000',
+    backgroundColor: '#21aaa0',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -4927,20 +5132,20 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 999,
-    backgroundColor: 'rgba(0,0,0,0.08)'
+    backgroundColor: 'rgba(33,170,160,0.12)'
   },
   todoStatusRunningPulse2: {
     position: 'absolute',
     width: 14,
     height: 14,
     borderRadius: 999,
-    backgroundColor: 'rgba(0,0,0,0.2)'
+    backgroundColor: 'rgba(33,170,160,0.28)'
   },
   todoStatusRunningCenter: {
     width: 8,
     height: 8,
     borderRadius: 999,
-    backgroundColor: '#000000'
+    backgroundColor: '#21aaa0'
   },
   todoThinkingDots: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   todoThinkingDot: {
@@ -4949,9 +5154,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#999999'
   },
-  todoThinkingDotOn: { backgroundColor: '#000000', transform: [{ translateY: -0.5 }, { scale: 1.1 }] },
-  todoThinkingDotMid: { backgroundColor: '#666666' },
-  todoThinkingDotSoft: { backgroundColor: '#cccccc' },
+  todoThinkingDotOn: { backgroundColor: '#21aaa0', transform: [{ translateY: -0.5 }, { scale: 1.1 }] },
+  todoThinkingDotMid: { backgroundColor: '#7990a7' },
+  todoThinkingDotSoft: { backgroundColor: '#cdd7e2' },
   contextCard: {
     width: '96%',
     maxWidth: '96%',
@@ -5107,17 +5312,96 @@ const styles = StyleSheet.create({
   thinkCard: {
     width: '96%',
     maxWidth: '96%',
-    borderRadius: 0,
+    borderRadius: 20,
     borderWidth: 0,
     backgroundColor: 'transparent',
-    overflow: 'visible',
+    overflow: 'hidden',
     paddingVertical: 4,
     paddingHorizontal: 2,
-    gap: 6
+    gap: 0
   },
-  thinkTitle: { color: '#576579', fontSize: 12, fontWeight: '600' },
+  thinkCardExpanded: {
+    width: '96%',
+    maxWidth: '96%',
+    borderRadius: 16,
+    borderWidth: 0,
+    backgroundColor: '#f5f8fb',
+    overflow: 'hidden',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    gap: 8
+  },
+  thinkHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  thinkIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0, flex: 1 },
+  thinkSpark: { color: '#21aaa0', fontSize: 15, lineHeight: 18, fontWeight: '800' },
+  thinkHeadMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  thinkTitle: { color: '#52627a', fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
+  thinkToggleText: { color: '#8190a3', fontSize: 11, fontWeight: '700' },
+  thinkExpandedHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  thinkExpandedTitle: { color: '#6f7d90', fontSize: 12, fontWeight: '700' },
   thinkText: { color: '#5e6e84', fontSize: 13, lineHeight: 19 },
   thinkCollapsed: { color: '#6f7f95', fontSize: 12, lineHeight: 18 },
+  thinkPreviewLines: { gap: 5, paddingTop: 2 },
+  thinkPreviewLineRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  thinkPreviewDot: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#c4cfdb' },
+  thinkPreviewDotLive: { backgroundColor: '#21aaa0', transform: [{ scale: 1.25 }] },
+  thinkPreviewLineText: { flex: 1, color: '#6c7c92', fontSize: 12, lineHeight: 17, fontWeight: '500' },
+  thinkFlowRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingTop: 1 },
+  thinkFlowIconShell: {
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(10, 80, 125, 0.08)',
+    shadowColor: '#7c8fa6',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 1
+  },
+  thinkFlowHalo: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderTopColor: '#0a507d',
+    borderRightColor: 'rgba(33,170,160,0.25)',
+    borderBottomColor: 'rgba(10,80,125,0.14)',
+    borderLeftColor: 'rgba(33,170,160,0.48)'
+  },
+  thinkFlowLens: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#0a507d',
+    opacity: 0.86
+  },
+  thinkFlowPill: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.76)',
+    borderWidth: 1,
+    borderColor: 'rgba(12, 42, 70, 0.07)',
+    paddingLeft: 14,
+    paddingRight: 15,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    shadowColor: '#8092a8',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  thinkFlowKicker: { color: '#21aaa0', fontSize: 10, lineHeight: 12, fontWeight: '800', letterSpacing: 0.6 },
+  thinkFlowLine: { color: '#5e6d80', fontSize: 12, lineHeight: 16, fontWeight: '600' },
   mdText: { fontSize: 15, lineHeight: 20 },
   mdInlineRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: 0 },
   mdSegText: { fontSize: 15, lineHeight: 20 },
@@ -5170,6 +5454,7 @@ const styles = StyleSheet.create({
     overflow: 'visible'
   },
   bubbleContent: { width: '100%', flexShrink: 1, minWidth: 0 },
+  markdownBlock: { width: '100%', flexShrink: 1, minWidth: 0 },
   bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },
   bubbleAssistantText: { color: '#2f3948', lineHeight: 20 },
 
@@ -5182,27 +5467,30 @@ const styles = StyleSheet.create({
     marginBottom: 8
   },
   todoDockCompact: {
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: '#1a1a1a',
-    backgroundColor: '#ffffff',
-    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 0,
+    backgroundColor: '#fbfdff',
+    paddingVertical: 12,
     paddingHorizontal: 14,
-    gap: 8,
-    shadowColor: '#000000',
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
+    gap: 10,
+    shadowColor: '#66809c',
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
     elevation: 3
   },
   todoDock: {
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: '#1a1a1a',
-    backgroundColor: '#ffffff',
-    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 0,
+    backgroundColor: '#fbfdff',
+    paddingVertical: 12,
     paddingHorizontal: 14,
-    gap: 8
+    gap: 10,
+    shadowColor: '#66809c',
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2
   },
 
   inputDock: {
@@ -5252,22 +5540,8 @@ const styles = StyleSheet.create({
   actionBtnStopTxt: { color: '#5c6779', fontSize: 12, fontWeight: '700' },
   actionBtnSendTxt: { color: '#fff', fontSize: 18, fontWeight: '700' },
 
-  drawerMask: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0
-  },
-  drawerBackdrop: { ...StyleSheet.absoluteFillObject, zIndex: 1, backgroundColor: 'rgba(15,23,42,0.2)' },
   drawerPanelLeft: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    zIndex: 2,
-    width: '82%',
-    maxWidth: 384,
+    flex: 1,
     backgroundColor: '#fbfdff',
     borderRightWidth: 1,
     borderColor: '#dde6f2',
@@ -5281,13 +5555,7 @@ const styles = StyleSheet.create({
     elevation: 8
   },
   drawerPanelRight: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    right: 0,
-    zIndex: 2,
-    width: '82%',
-    maxWidth: 384,
+    flex: 1,
     backgroundColor: '#fbfdff',
     borderLeftWidth: 1,
     borderColor: '#dde6f2',
