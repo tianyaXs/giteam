@@ -108,6 +108,7 @@ fn main() {
             commands::git::start_repo_terminal_session,
             commands::git::send_repo_terminal_input,
             commands::git::read_repo_terminal_output,
+            commands::git::complete_repo_terminal_input,
             commands::git::clear_repo_terminal_session,
             commands::git::close_repo_terminal_session,
             commands::git::run_git_user_identity,

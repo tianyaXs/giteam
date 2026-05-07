@@ -136,6 +136,10 @@ export async function readRepoTerminalOutput(repoPath: string, afterSeq: number,
   return invoke<RepoTerminalSnapshot>("read_repo_terminal_output", { repoPath, sessionId, afterSeq });
 }
 
+export async function completeRepoTerminalInput(repoPath: string, input: string, cwd?: string): Promise<string> {
+  return invoke<string>("complete_repo_terminal_input", { repoPath, input, cwd });
+}
+
 export async function clearRepoTerminalSession(repoPath: string, sessionId?: string): Promise<void> {
   return invoke<void>("clear_repo_terminal_session", { repoPath, sessionId });
 }

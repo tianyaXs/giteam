@@ -23,12 +23,15 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Drawer } from 'react-native-drawer-layout';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 import * as Network from 'expo-network';
 import EventSource from 'react-native-sse';
-import { FlashList, FlashListRef, useLayoutState } from '@shopify/flash-list';
+import { FlashList } from '@shopify/flash-list';
 import { useMarkdown } from 'react-native-marked';
 import type { MarkedStyles } from 'react-native-marked';
+import { Feather } from '@expo/vector-icons';
 import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
 import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
@@ -49,6 +52,7 @@ import {
   getClientRepositories,
   getCurrentProject,
   getMessages,
+  getOpencodeCommands,
   getOpencodeConfig,
   getPendingQuestions,
   getProjects,
@@ -113,6 +117,21 @@ type OptimisticUserMessage = {
   createdAt: number;
 };
 
+type ComposerAttachment = {
+  id: string;
+  uri: string;
+  filename: string;
+  mime: string;
+  dataUrl: string;
+};
+
+type RecentImageItem = {
+  id: string;
+  uri: string;
+  filename: string;
+  mediaType?: string;
+};
+
 /** 会话列表稳定排序：时间降序，相同时间用 id 字典序（避免服务端/合并顺序不稳定） */
 function stableSortSessionItems(items: SessionItem[]): SessionItem[] {
   return [...items].sort((a, b) => {
@@ -159,6 +178,14 @@ type PairPayload = {
   repoPath?: string;
   repoPaths?: string[];
   currentRepoPath?: string;
+};
+
+type OpencodeSlashCommand = {
+  id: string;
+  trigger: string;
+  title: string;
+  description?: string;
+  source: 'builtin' | 'command' | 'skill' | 'mcp';
 };
 
 type RenderBoundaryProps = {
@@ -594,7 +621,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
 }) {
   const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab } = props;
-  const [, setMeasuredHeight] = useLayoutState(0);
+  const [, setMeasuredHeight] = useState(0);
   return (
     <View
       style={styles.turnWrap}
@@ -1126,6 +1153,14 @@ export default function App() {
 
   const [prompt, setPrompt] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [slashCommands, setSlashCommands] = useState<OpencodeSlashCommand[]>([]);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [imageAttachments, setImageAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [attachmentPanelVisible, setAttachmentPanelVisible] = useState(false);
+  const [recentImages, setRecentImages] = useState<RecentImageItem[]>([]);
+  const [recentImagesLoading, setRecentImagesLoading] = useState(false);
   const [messages, setMessages] = useState<MobileChatMessage[]>([]);
   const [renderedTurns, setRenderedTurns] = useState<MobileRenderedTurn[]>([]);
   const [sessionStatusMap, setSessionStatusMap] = useState<Record<string, SessionStatusInfo>>({});
@@ -1156,7 +1191,7 @@ export default function App() {
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
   const streamSessionRef = useRef('');
-  const messageScrollRef = useRef<FlashListRef<MobileRenderedTurn> | null>(null);
+  const messageScrollRef = useRef<any>(null);
   const forceScrollToLatestUntilRef = useRef(0);
   const latestJumpVisibleRef = useRef(false);
   const latestJumpLastChangeRef = useRef(0);
@@ -1215,6 +1250,9 @@ export default function App() {
   const streamTopGlowActiveRef = useRef(false);
   const streamTopGlowHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const launchOverlayOpacity = useRef(new Animated.Value(1)).current;
+  const actionIconAnim = useRef(new Animated.Value(1)).current;
+  const attachmentPanelAnim = useRef(new Animated.Value(0)).current;
+  const attachmentToggleAnim = useRef(new Animated.Value(0)).current;
   const [launchOverlayVisible, setLaunchOverlayVisible] = useState(true);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
@@ -1481,6 +1519,44 @@ export default function App() {
       model
     });
   }, [loaded, serverUrl, serverUrlTouched, preferHttps, pairCode, repoPath, projects, token, sessionId, model]);
+
+  useEffect(() => {
+    const repo = toText(repoPath).trim();
+    if (!repo || !serverUrl || !token) {
+      setSlashCommands([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await getOpencodeCommands({ baseUrl: serverUrl, token, repoPath: repo });
+        if (cancelled) return;
+        const commands: OpencodeSlashCommand[] = (Array.isArray(rows) ? rows : [])
+          .map((item: any): OpencodeSlashCommand | null => {
+            const name = String(item?.name || item?.command || item?.id || '').replace(/^\//, '').trim();
+            if (!name) return null;
+            const sourceRaw = String(item?.source || item?.type || 'command').toLowerCase();
+            const source: OpencodeSlashCommand['source'] = sourceRaw.includes('skill')
+              ? 'skill'
+              : sourceRaw.includes('mcp')
+                ? 'mcp'
+                : 'command';
+            return {
+              id: `opencode-${source}-${name}`,
+              trigger: name,
+              title: String(item?.title || item?.description || name),
+              description: String(item?.description || ''),
+              source
+            };
+          })
+          .filter(Boolean) as OpencodeSlashCommand[];
+        setSlashCommands(commands);
+      } catch {
+        setSlashCommands([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [repoPath, serverUrl, token]);
 
   function onChangeServerUrl(value: string) {
     setServerUrlTouched(true);
@@ -3217,8 +3293,245 @@ export default function App() {
   }, [displayedTurns]);
 
   const activeQuestionRequest = useMemo(() => questionRequests[0] || null, [questionRequests]);
+
+  const builtinSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
+    { id: 'builtin-new', trigger: 'new', title: 'New session', source: 'builtin' },
+    { id: 'builtin-compact', trigger: 'compact', title: 'Compact', source: 'builtin' },
+    { id: 'builtin-model', trigger: 'model', title: 'Model', source: 'builtin' },
+    { id: 'builtin-agent', trigger: 'agent', title: 'Agent', source: 'builtin' }
+  ], []);
+
+  const slashQuery = useMemo(() => {
+    const m = prompt.match(/^\/(\S*)$/);
+    return m ? m[1].toLowerCase() : '';
+  }, [prompt]);
+
+  const slashSuggestions = useMemo(() => {
+    if (!slashOpen) return [];
+    const all = [...builtinSlashCommands, ...slashCommands];
+    const seen = new Set<string>();
+    return all
+      .filter((cmd) => {
+        const key = cmd.trigger.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return !slashQuery || key.includes(slashQuery) || cmd.title.toLowerCase().includes(slashQuery);
+      })
+      .slice(0, 8);
+  }, [builtinSlashCommands, slashCommands, slashOpen, slashQuery]);
+
   const promptText = toText(prompt).trim();
-  const composerWillAbort = sessionWorking && !promptText;
+  const hasPromptText = promptText.length > 0;
+  const hasSendAction = hasPromptText || imageAttachments.length > 0;
+  const canSendNow = !busy && hasSendAction;
+
+  const attachmentPanelStyle = {
+    opacity: attachmentPanelAnim,
+    transform: [
+      {
+        translateY: attachmentPanelAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [18, 0]
+        })
+      },
+      {
+        scale: attachmentPanelAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.96, 1]
+        })
+      }
+    ]
+  } as const;
+
+  useEffect(() => {
+    if (hasSendAction) setAttachmentMenuOpen(false);
+  }, [hasSendAction]);
+
+  useEffect(() => {
+    actionIconAnim.setValue(0.7);
+    Animated.timing(actionIconAnim, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+  }, [actionIconAnim, attachmentMenuOpen, hasSendAction]);
+
+  useEffect(() => {
+    Animated.timing(attachmentToggleAnim, {
+      toValue: attachmentMenuOpen ? 1 : 0,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+
+    if (attachmentMenuOpen) {
+      setAttachmentPanelVisible(true);
+      Animated.spring(attachmentPanelAnim, {
+        toValue: 1,
+        stiffness: 220,
+        damping: 22,
+        mass: 0.9,
+        useNativeDriver: true
+      }).start();
+      void loadRecentImages();
+      return;
+    }
+
+    Animated.timing(attachmentPanelAnim, {
+      toValue: 0,
+      duration: 180,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true
+    }).start(({ finished }) => {
+      if (finished) setAttachmentPanelVisible(false);
+    });
+  }, [attachmentMenuOpen]);
+
+  function inferMimeFromFilename(filename: string): string {
+    const lower = toText(filename).toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.heic')) return 'image/heic';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    return 'image/jpeg';
+  }
+
+  async function fileUriToDataUrl(uri: string, fallbackMime: string): Promise<string> {
+    const res = await fetch(uri);
+    const blob = await res.blob();
+    const mime = blob.type || fallbackMime;
+    const reader = new FileReader();
+    return await new Promise<string>((resolve, reject) => {
+      reader.onerror = () => reject(new Error('read file failed'));
+      reader.onloadend = () => resolve(toText(reader.result));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function appendAssetsAsAttachments(items: Array<{ uri: string; filename: string; mime?: string; dataUrl?: string }>) {
+    try {
+      const mapped = await Promise.all(items.map(async (item, idx) => {
+        const mime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
+        const dataUrl = item.dataUrl || await fileUriToDataUrl(item.uri, mime);
+        if (!dataUrl || dataUrl.length <= 20) return null;
+        return {
+          id: `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+          uri: item.uri,
+          filename: item.filename,
+          mime,
+          dataUrl
+        } satisfies ComposerAttachment;
+      }));
+      const valid = mapped.filter((item): item is ComposerAttachment => Boolean(item));
+      if (valid.length > 0) {
+        setImageAttachments((prev) => [...prev, ...valid]);
+      }
+    } catch (e) {
+      setStatus(`处理图片失败: ${String(e)}`);
+    }
+  }
+
+  async function loadRecentImages() {
+    try {
+      setRecentImagesLoading(true);
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if (!perm.granted) {
+        setRecentImages([]);
+        setStatus('相册权限被拒绝');
+        return;
+      }
+      const page = await MediaLibrary.getAssetsAsync({
+        first: 18,
+        mediaType: [MediaLibrary.MediaType.photo],
+        sortBy: [MediaLibrary.SortBy.creationTime]
+      });
+      const items = page.assets.map((asset) => ({
+        id: asset.id,
+        uri: asset.uri,
+        filename: asset.filename || `photo-${asset.id}.jpg`,
+        mediaType: String(asset.mediaType || '')
+      }));
+      setRecentImages(items);
+    } catch (e) {
+      setRecentImages([]);
+      setStatus(`读取最近图片失败: ${String(e)}`);
+    } finally {
+      setRecentImagesLoading(false);
+    }
+  }
+
+  async function pickImageFromLibrary(kind: 'album' | 'file') {
+    try {
+      if (kind === 'file') {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: '*/*',
+          multiple: true,
+          copyToCacheDirectory: true
+        });
+        if (result.canceled || !result.assets?.length) return;
+        await appendAssetsAsAttachments(result.assets.map((asset, idx) => ({
+          uri: asset.uri,
+          filename: asset.name || `file-${idx}`,
+          mime: asset.mimeType || 'application/octet-stream',
+          dataUrl: ''
+        })));
+        return;
+      }
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setStatus('相册权限被拒绝');
+        return;
+      }
+      const pick = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        quality: 1,
+        base64: true
+      });
+      if (pick.canceled || !pick.assets?.length) return;
+      await appendAssetsAsAttachments(pick.assets.map((asset, idx) => ({
+        uri: asset.uri,
+        filename: asset.fileName || `image-${idx}.png`,
+        mime: asset.mimeType || 'image/png',
+        dataUrl: `data:${asset.mimeType || 'image/png'};base64,${asset.base64 || ''}`
+      })));
+    } catch (e) {
+      setStatus(kind === 'album' ? `选择图片失败: ${String(e)}` : `选择文件失败: ${String(e)}`);
+    }
+  }
+
+  async function captureWithCamera() {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) { setStatus('相机权限被拒绝'); return; }
+      const pick = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 1,
+        base64: true
+      });
+      if (pick.canceled || !pick.assets?.[0]) return;
+      const asset = pick.assets[0];
+      await appendAssetsAsAttachments([{
+        uri: asset.uri,
+        filename: asset.fileName || `camera-${Date.now()}.png`,
+        mime: asset.mimeType || 'image/png',
+        dataUrl: `data:${asset.mimeType || 'image/png'};base64,${asset.base64 || ''}`
+      }]);
+    } catch (e) {
+      setStatus(`拍照失败: ${String(e)}`);
+    }
+  }
+
+  async function attachRecentImage(item: RecentImageItem) {
+    setAttachmentMenuOpen(false);
+    await appendAssetsAsAttachments([{
+      uri: item.uri,
+      filename: item.filename,
+      mime: inferMimeFromFilename(item.filename)
+    }]);
+  }
 
   useEffect(() => {
     if (!latestTodoCard) {
@@ -3757,6 +4070,7 @@ export default function App() {
 
   async function onSendPrompt(customPrompt?: string) {
     const payloadPrompt = (customPrompt ?? prompt).trim();
+    const images = imageAttachments;
     if (!authed) {
       setStatus('请先授权');
       return;
@@ -3765,7 +4079,7 @@ export default function App() {
       setStatus('未选择项目，请在左侧抽屉切换项目');
       return;
     }
-    if (!payloadPrompt) {
+    if (!payloadPrompt && images.length === 0) {
       setStatus('请输入消息');
       return;
     }
@@ -3773,7 +4087,7 @@ export default function App() {
     const optimisticAt = Date.now();
     const optimisticMessage: OptimisticUserMessage = {
       id: `local:${optimisticAt}`,
-      text: payloadPrompt,
+      text: payloadPrompt || '(image)',
       createdAt: optimisticAt
     };
     try {
@@ -3795,15 +4109,28 @@ export default function App() {
       upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
       appendOptimisticTurnAndStick(optimisticMessage);
       setPrompt('');
+      setSlashOpen(false);
+      setImageAttachments([]);
       startStream(targetSessionId);
       pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'}`);
+      const parts = [
+        { id: `prt_${Date.now()}_text`, type: 'text' as const, text: payloadPrompt },
+        ...images.map((img, idx) => ({
+          id: `prt_${Date.now()}_${idx}`,
+        type: 'file' as const,
+        mime: img.mime,
+        url: img.dataUrl,
+        filename: img.filename
+        }))
+      ];
       const res = await sendPrompt({
         baseUrl: serverUrl,
         token,
         repoPath,
         prompt: payloadPrompt,
         sessionId: targetSessionId,
-        model: requestModel
+        model: requestModel,
+        parts: parts.length > 0 ? parts : undefined
       });
       setActiveSession(res.sessionId);
       void syncSessionMessages(res.sessionId, {
@@ -3833,7 +4160,7 @@ export default function App() {
           setStatus(String(retryErr));
         }
       } else {
-        setStatus(msg);
+        setStatus(`发送失败: ${msg}`);
       }
     } finally {
       setBusy(false);
@@ -4273,8 +4600,7 @@ export default function App() {
             <FlashList
               key={`chat-list-${sessionId || 'draft'}-${chatListResetKey}`}
               ref={messageScrollRef}
-              style={styles.msgScroll}
-              contentContainerStyle={{ ...styles.msgList, paddingBottom: messageBottomInset }}
+              contentContainerStyle={{ paddingTop: 8, paddingBottom: messageBottomInset, backgroundColor: 'transparent' }}
               onLayout={(evt) => {
                 messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
               }}
@@ -4285,8 +4611,7 @@ export default function App() {
               overScrollMode="always"
               scrollEventThrottle={16}
               maintainVisibleContentPosition={{
-                autoscrollToBottomThreshold: 0.35,
-                animateAutoScrollToBottom: false
+                minIndexForVisible: 0
               }}
               onScrollBeginDrag={() => {
                 forceScrollToLatestUntilRef.current = 0;
@@ -4497,6 +4822,13 @@ export default function App() {
         </View>
       ) : null}
 
+      {attachmentPanelVisible ? (
+        <Pressable
+          style={styles.attachmentBackdrop}
+          onPress={() => setAttachmentMenuOpen(false)}
+        />
+      ) : null}
+
       <View
         style={styles.inputDock}
         onLayout={(evt) => {
@@ -4504,25 +4836,154 @@ export default function App() {
           if (h > 0 && Math.abs(h - inputDockHeight) > 2) setInputDockHeight(h);
         }}
       >
+        {imageAttachments.length > 0 ? (
+          <View style={styles.attachmentRow}>
+            {imageAttachments.map((img) => (
+              <View key={img.id} style={styles.attachmentChip}>
+                <Image source={{ uri: img.uri }} style={styles.attachmentThumb} resizeMode="cover" />
+                <Text style={styles.attachmentName} numberOfLines={1}>{img.filename}</Text>
+                <Pressable
+                  style={styles.attachmentRemove}
+                  onPress={() => setImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
+                >
+                  <Text style={styles.attachmentRemoveTxt}>×</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
         <View style={styles.inputRow}>
-            <TextInput
-              style={styles.inputMain}
-              value={toText(prompt)}
-              onChangeText={setPrompt}
-              placeholder="发消息..."
-              placeholderTextColor="#9aa5b3"
-              multiline
+          <TextInput
+            style={styles.inputMain}
+            value={toText(prompt)}
+            onChangeText={(value) => {
+              if (attachmentMenuOpen) setAttachmentMenuOpen(false);
+              setPrompt(value);
+              const isSlash = /^\//.test(value) && !value.includes(' ');
+              setSlashOpen(isSlash);
+              setSlashActiveIndex(0);
+            }}
+            placeholder="发消息..."
+            placeholderTextColor="#9aa5b3"
+            multiline
           />
-            <Pressable
-              style={composerWillAbort ? styles.actionBtnStop : styles.actionBtnSend}
-              onPress={composerWillAbort ? onAbort : () => void onSendPrompt()}
-              disabled={composerWillAbort ? !toText(sessionIdRef.current).trim() : busy || !promptText}
+          <Pressable
+            style={styles.cameraBtn}
+            onPress={() => setAttachmentMenuOpen((prev) => !prev)}
+          >
+            <Animated.View
+              style={{
+                transform: [{
+                  rotate: attachmentToggleAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ['0deg', '90deg']
+                  })
+                }]
+              }}
             >
-              <Text style={composerWillAbort ? styles.actionBtnStopTxt : styles.actionBtnSendTxt}>
-                {composerWillAbort ? '■' : '→'}
-              </Text>
-            </Pressable>
+              <Feather name={attachmentMenuOpen ? 'x' : 'plus'} size={18} color="#1f2937" />
+            </Animated.View>
+          </Pressable>
+          <Pressable
+            style={canSendNow ? styles.actionBtnSend : styles.actionBtnDisabled}
+            onPress={() => {
+              if (!canSendNow) return;
+              void onSendPrompt();
+            }}
+            disabled={!canSendNow}
+          >
+            <Animated.View
+              style={{
+                opacity: actionIconAnim,
+                transform: [{ scale: actionIconAnim }]
+              }}
+            >
+              <Feather name="arrow-up" size={20} color={canSendNow ? '#ffffff' : '#94a3b8'} />
+            </Animated.View>
+          </Pressable>
         </View>
+        {slashOpen && slashSuggestions.length > 0 ? (
+          <View style={styles.slashPopover}>
+            {slashSuggestions.map((cmd, idx) => (
+              <Pressable
+                key={cmd.id}
+                style={[
+                  styles.slashItem,
+                  idx === slashActiveIndex ? styles.slashItemActive : null
+                ]}
+                onPress={() => {
+                  setPrompt(`/${cmd.trigger} `);
+                  setSlashOpen(false);
+                }}
+              >
+                <Text style={styles.slashTrigger}>/{cmd.trigger}</Text>
+                <Text style={styles.slashTitle}>{cmd.title}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        {attachmentPanelVisible ? (
+          <Animated.View style={[styles.attachmentPanel, attachmentPanelStyle]}>
+            <View style={styles.attachmentMenuRow}>
+              <Pressable
+                style={styles.attachmentMenuCard}
+              onPress={() => {
+                  setAttachmentMenuOpen(false);
+                  void captureWithCamera();
+                }}
+              >
+                <View style={styles.attachmentMenuIconShell}>
+                  <Feather name="camera" size={22} color="#1f2937" />
+                </View>
+                 <Text style={styles.attachmentMenuLabel}>拍照</Text>
+              </Pressable>
+              <Pressable
+                style={styles.attachmentMenuCard}
+              onPress={() => {
+                  setAttachmentMenuOpen(false);
+                  void pickImageFromLibrary('album');
+                }}
+              >
+                <View style={styles.attachmentMenuIconShell}>
+                  <Feather name="image" size={22} color="#1f2937" />
+                </View>
+                <Text style={styles.attachmentMenuLabel}>相册</Text>
+              </Pressable>
+              <Pressable
+                style={styles.attachmentMenuCard}
+              onPress={() => {
+                  setAttachmentMenuOpen(false);
+                  void pickImageFromLibrary('file');
+                }}
+              >
+                <View style={styles.attachmentMenuIconShell}>
+                  <Feather name="folder" size={22} color="#1f2937" />
+                </View>
+                <Text style={styles.attachmentMenuLabel}>本地文件</Text>
+              </Pressable>
+            </View>
+            <View style={styles.recentHeaderRow}>
+              <Text style={styles.recentHeaderTitle}>最近图片</Text>
+            </View>
+            <View style={styles.recentGrid}>
+              {recentImages.map((item, index) => (
+                <Pressable
+                  key={item.id}
+                  style={styles.recentThumbCard}
+                  onPress={() => void attachRecentImage(item)}
+                >
+                  <Image source={{ uri: item.uri }} style={styles.recentThumbImage} resizeMode="cover" />
+                </Pressable>
+              ))}
+              {!recentImagesLoading && recentImages.length === 0 ? (
+                <View style={styles.recentEmptyState}>
+                  <Feather name="image" size={18} color="#94a3b8" />
+                  <Text style={styles.recentEmptyText}>暂无最近图片</Text>
+                </View>
+              ) : null}
+            </View>
+          </Animated.View>
+        ) : null}
       </View>
 
           </Drawer>
@@ -5115,8 +5576,6 @@ const styles = StyleSheet.create({
   },
   suggestText: { color: '#545f6f', fontSize: 14 },
 
-  msgScroll: { flex: 1 },
-  msgList: { gap: 14, paddingTop: 8 },
   latestJumpBtn: {
     position: 'absolute',
     bottom: 14,
@@ -5774,7 +6233,20 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     flexDirection: 'column',
     alignItems: 'stretch',
-    gap: 6
+    gap: 6,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
+    zIndex: 3
+  },
+  attachmentBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    top: 58,
+    bottom: 86,
+    backgroundColor: 'rgba(248,250,252,0.55)',
+    zIndex: 2
   },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   inputMain: {
@@ -5804,8 +6276,145 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#1f2937'
   },
+  actionBtnDisabled: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#eef2f7',
+    borderWidth: 1,
+    borderColor: '#dbe3ee'
+  },
   actionBtnStopTxt: { color: '#5c6779', fontSize: 12, fontWeight: '700' },
   actionBtnSendTxt: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  actionBtnGhost: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  actionBtnGhostTxt: { color: '#1f2937', fontSize: 22, lineHeight: 22, fontWeight: '500' },
+  slashPopover: {
+    marginTop: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e7edf5',
+    overflow: 'hidden',
+    shadowColor: '#c8d2df',
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2
+  },
+  slashItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12
+  },
+  slashItemActive: { backgroundColor: '#f2f6fb' },
+  slashTrigger: { color: '#1f2937', fontSize: 15, fontWeight: '600' },
+  slashTitle: { color: '#64748b', fontSize: 13 },
+
+  attachmentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 4 },
+  attachmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 4,
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  attachmentThumb: { width: 28, height: 28, borderRadius: 6 },
+  attachmentName: { fontSize: 11, color: '#334155', maxWidth: 100 },
+  attachmentRemove: {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  attachmentRemoveTxt: { color: '#64748b', fontSize: 14, lineHeight: 14 },
+  imagePickBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  imagePickBtnTxt: { color: '#334155', fontSize: 18, fontWeight: '600', lineHeight: 20 },
+  cameraBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0'
+  },
+  cameraBtnTxt: { fontSize: 16 },
+  attachmentPanel: {
+    paddingTop: 12,
+    gap: 12
+  },
+  attachmentMenuRow: { flexDirection: 'row', gap: 8 },
+  attachmentMenuCard: {
+    flex: 1,
+    minHeight: 88,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e7edf5',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6
+  },
+  attachmentMenuIcon: { fontSize: 24 },
+  attachmentMenuIconShell: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e7edf5'
+  },
+  attachmentMenuLabel: { color: '#334155', fontSize: 14, fontWeight: '500' },
+  recentHeaderRow: { flexDirection: 'row', alignItems: 'center' },
+  recentHeaderTitle: { color: '#64748b', fontSize: 13, fontWeight: '500' },
+  recentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 4 },
+  recentThumbCard: {
+    width: '23.5%',
+    aspectRatio: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#f1f5f9'
+  },
+  recentThumbImage: { width: '100%', height: '100%' },
+  recentEmptyState: {
+    width: '100%',
+    minHeight: 80,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4
+  },
+  recentEmptyText: { color: '#94a3b8', fontSize: 12 },
 
   drawerPanelLeft: {
     flex: 1,

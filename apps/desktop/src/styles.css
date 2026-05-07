@@ -5794,12 +5794,44 @@ pre.gt-terminal-output {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  overflow-anchor: none;
+}
+
+.gt-chat-stream * {
+  overflow-anchor: none;
 }
 
 .gt-chat-composer-wrap {
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
+}
+
+.opencode-jump-latest-btn {
+  position: absolute;
+  left: 50%;
+  top: -58px;
+  transform: translateX(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  margin: 0;
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 10%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 45;
+}
+
+.opencode-jump-latest-btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
 }
 
 .opencode-thread {
@@ -5812,6 +5844,7 @@ pre.gt-terminal-output {
   width: 100%;
   align-self: stretch;
   padding: 18px 28px 12px;
+  overflow-anchor: none;
 }
 
 .wb-editor-content,
@@ -6190,11 +6223,26 @@ pre.gt-terminal-output {
   background: color-mix(in srgb, var(--bg) 96%, transparent);
 }
 
-.opencode-composer-body-inline {
-  min-height: 64px;
-  padding: 10px 12px 10px 18px;
+.opencode-composer-main {
+  position: relative;
+  min-height: 38px;
+  padding: 12px 20px 0;
+}
+
+.opencode-composer-actions {
+  min-height: 44px;
+  padding: 0 14px 10px;
+  display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+}
+
+.opencode-composer-body-inline {
+  min-height: 90px;
+  padding: 0;
+  align-items: center;
+  gap: 0;
+  flex-direction: column;
 }
 
 .opencode-composer-toolbar {
@@ -6202,7 +6250,8 @@ pre.gt-terminal-output {
 }
 
 .opencode-composer-editor {
-  min-height: 56px;
+  min-height: 34px;
+  width: 100%;
 }
 
 .opencode-composer-body .opencode-input-shell,
@@ -6212,10 +6261,12 @@ pre.gt-terminal-output {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .opencode-input {
-  min-height: 40px;
+  min-height: 34px;
   max-height: 132px;
   font-size: 16px;
   line-height: 1.55;
@@ -6229,6 +6280,7 @@ pre.gt-terminal-output {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  margin-left: auto;
 }
 
 .opencode-composer-model {
@@ -6457,6 +6509,244 @@ pre.gt-terminal-output {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.opencode-attachments {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 0;
+  flex-wrap: wrap;
+}
+
+.opencode-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-soft) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  font-size: 12px;
+}
+
+.opencode-attachment-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.opencode-attachment-name {
+  color: var(--text);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-attachment-remove {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.opencode-attachment-remove:hover {
+  background: var(--danger-weak);
+  color: var(--danger);
+}
+
+.opencode-attachment-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.opencode-image-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 0;
+  background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
+  color: color-mix(in srgb, var(--muted) 86%, var(--text));
+  cursor: pointer;
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.opencode-image-btn:hover,
+.opencode-image-btn.open {
+  background: color-mix(in srgb, var(--bg-soft) 92%, var(--bg));
+  color: var(--text);
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 8%, transparent);
+}
+
+.opencode-image-btn-icon {
+  display: inline-block;
+  transform: translateY(-2px);
+}
+
+.opencode-image-btn.open .opencode-image-btn-icon {
+  transform: translateY(-2px) rotate(0deg);
+}
+
+.opencode-attachment-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  min-width: 164px;
+  padding: 8px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  background: color-mix(in srgb, var(--bg) 98%, transparent);
+  box-shadow: 0 18px 44px color-mix(in srgb, #000 16%, transparent);
+  z-index: 60;
+}
+
+.opencode-attachment-menu-item {
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.opencode-attachment-menu-item:hover {
+  background: color-mix(in srgb, var(--bg-soft) 78%, transparent);
+}
+
+.opencode-attachment-menu-icon {
+  width: 20px;
+  color: color-mix(in srgb, var(--text) 86%, var(--muted));
+  font-size: 17px;
+  line-height: 1;
+}
+
+.opencode-slash-popover {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-height: min(280px, 38vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  overscroll-behavior: contain;
+}
+
+.opencode-slash-item {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "trigger title badge"
+    "trigger desc badge";
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.opencode-slash-item.active,
+.opencode-slash-item:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-soft));
+}
+
+.opencode-slash-trigger {
+  grid-area: trigger;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.opencode-slash-title {
+  grid-area: title;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-slash-desc {
+  grid-area: desc;
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-slash-badge {
+  grid-area: badge;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 40%, transparent);
+  color: var(--muted);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.opencode-slash-badge.builtin {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.opencode-slash-badge.skill {
+  background: color-mix(in srgb, #8b5cf6 16%, transparent);
+  color: #8b5cf6;
+}
+
+.opencode-slash-badge.mcp {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: #f59e0b;
 }
 
 @media (max-width: 1400px) {

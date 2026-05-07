@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -79,6 +79,164 @@ struct ManagedRepoTerminalSession {
 
 static REPO_TERMINAL_SESSIONS: OnceLock<Mutex<HashMap<String, ManagedRepoTerminalSession>>> =
     OnceLock::new();
+
+fn terminal_completion_builtins() -> &'static [&'static str] {
+    &[
+        "cd", "ls", "pwd", "cat", "cp", "mv", "rm", "mkdir", "touch", "echo", "git", "npm",
+        "node", "pnpm", "yarn", "bun", "python", "python3", "cargo", "rustc", "go", "make", "vim",
+        "nvim", "code", "open", "which", "grep", "rg", "sed", "awk", "find", "clear", "exit",
+    ]
+}
+
+fn is_executable_path(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn escape_terminal_completion(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-') {
+            out.push(ch);
+        } else {
+            out.push('\\');
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn shared_prefix(values: &[String]) -> String {
+    let Some(first) = values.first() else {
+        return String::new();
+    };
+    let mut prefix = first.clone();
+    for value in values.iter().skip(1) {
+        let mut bytes = 0usize;
+        for ((idx_a, ch_a), (_idx_b, ch_b)) in prefix.char_indices().zip(value.char_indices()) {
+            if ch_a != ch_b {
+                break;
+            }
+            bytes = idx_a + ch_a.len_utf8();
+        }
+        prefix.truncate(bytes);
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix
+}
+
+fn complete_command_name(prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in terminal_completion_builtins() {
+        if item.starts_with(prefix) {
+            out.push((*item).to_string());
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with(prefix) {
+                    continue;
+                }
+                if !is_executable_path(&entry.path()) {
+                    continue;
+                }
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
+    let home_dir = std::env::var("HOME").ok();
+    let (display_dir, raw_prefix) = match token.rsplit_once('/') {
+        Some((dir, prefix)) => (format!("{dir}/"), prefix),
+        None => (String::new(), token),
+    };
+    let base_dir = if token.starts_with("~/") {
+        home_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(repo_path))
+            .join(display_dir.trim_start_matches("~/"))
+    } else if token == "~" {
+        home_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(repo_path))
+    } else if token.starts_with('/') {
+        if display_dir.is_empty() {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(display_dir.as_str())
+        }
+    } else {
+        let root = if cwd.trim().is_empty() { repo_path } else { cwd };
+        PathBuf::from(root).join(display_dir.as_str())
+    };
+    let Ok(entries) = fs::read_dir(base_dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(raw_prefix) {
+            continue;
+        }
+        let mut display = format!("{display_dir}{name}");
+        if entry.path().is_dir() {
+            display.push('/');
+        }
+        out.push(display);
+    }
+    out.sort();
+    out
+}
+
+fn apply_completion_to_input(input: &str, token: &str, candidates: &[String]) -> String {
+    if candidates.is_empty() {
+        return input.to_string();
+    }
+    let replacement = if candidates.len() == 1 {
+        let only = &candidates[0];
+        let escaped = escape_terminal_completion(only);
+        if only.ends_with('/') {
+            escaped
+        } else {
+            format!("{escaped} ")
+        }
+    } else {
+        let prefix = shared_prefix(candidates);
+        if prefix.len() <= token.len() {
+            return input.to_string();
+        }
+        escape_terminal_completion(&prefix)
+    };
+    let keep = input.len().saturating_sub(token.len());
+    format!("{}{}", &input[..keep], replacement)
+}
 
 fn terminal_sessions() -> &'static Mutex<HashMap<String, ManagedRepoTerminalSession>> {
     REPO_TERMINAL_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -1360,6 +1518,37 @@ pub fn read_repo_terminal_output(
     after_seq: u64,
 ) -> Result<RepoTerminalSnapshot, String> {
     read_terminal_snapshot(repo_path, session_id.as_deref(), after_seq)
+}
+
+#[tauri::command]
+pub fn complete_repo_terminal_input(repo_path: &str, input: &str, cwd: Option<String>) -> Result<String, String> {
+    let trimmed_repo = repo_path.trim();
+    if trimmed_repo.is_empty() {
+        return Err("repo path is empty".to_string());
+    }
+    if input.is_empty() {
+        return Ok(String::new());
+    }
+    let token_start = input
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    let token = &input[token_start..];
+    if token.is_empty() {
+        return Ok(input.to_string());
+    }
+    let candidates = if !input[..token_start].trim().contains(' ')
+        && !token.contains('/')
+        && !token.starts_with('.')
+        && !token.starts_with('~')
+    {
+        complete_command_name(token)
+    } else {
+        complete_path_token(trimmed_repo, cwd.as_deref().unwrap_or(trimmed_repo), token)
+    };
+    Ok(apply_completion_to_input(input, token, &candidates))
 }
 
 #[tauri::command]

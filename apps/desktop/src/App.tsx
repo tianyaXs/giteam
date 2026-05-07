@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { DiffEditor, loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,6 +13,7 @@ import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./li
 import { parseExplainCommit } from "./lib/explainParser";
 import {
   closeRepoTerminalSession,
+  completeRepoTerminalInput,
   clearRepoTerminalSession,
   createGitBranch,
   createGitDetachedWorktree,
@@ -79,6 +80,19 @@ loader.config({ monaco });
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
 type RightPaneTab = "worktree" | "changes" | "terminal";
+type OpencodeImageAttachment = {
+  id: string;
+  filename: string;
+  mime: string;
+  dataUrl: string;
+};
+type OpencodeSlashCommand = {
+  id: string;
+  trigger: string;
+  title: string;
+  description?: string;
+  source: "builtin" | "command" | "skill" | "mcp";
+};
 type TerminalTabState = {
   id: string;
   title: string;
@@ -86,8 +100,10 @@ type TerminalTabState = {
   output: string;
   seq: number;
   alive: boolean;
+  cwd: string;
   history: string[];
   historyIndex: number;
+  historyDraft: string;
 };
 
 function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
@@ -891,6 +907,29 @@ function loadCachedWidth(key: string, fallback: number, min: number, max: number
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
+}
+
+function readImageFileAsAttachment(file: File): Promise<OpencodeImageAttachment | null> {
+  if (!file.type.startsWith("image/")) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.addEventListener("error", () => resolve(null));
+    reader.addEventListener("load", () => {
+      const raw = typeof reader.result === "string" ? reader.result : "";
+      const comma = raw.indexOf(",");
+      if (!raw || comma < 0) {
+        resolve(null);
+        return;
+      }
+      resolve({
+        id: `img-${makeId()}`,
+        filename: file.name || `image-${Date.now()}.png`,
+        mime: file.type || "image/png",
+        dataUrl: `data:${file.type || "image/png"};base64,${raw.slice(comma + 1)}`
+      });
+    });
+    reader.readAsDataURL(file);
+  });
 }
 
 function opencodeSavedModelsStorageKey(): string {
@@ -2213,6 +2252,13 @@ export function App() {
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
+  const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeImageAttachment[]>([]);
+  const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
+  const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
+  const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
+  const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
+  const [opencodeAutoFollowLatest, setOpencodeAutoFollowLatest] = useState(true);
+  const [opencodeShowJumpLatest, setOpencodeShowJumpLatest] = useState(false);
   const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
   const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -2241,6 +2287,7 @@ export function App() {
   const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
   const commitMessageInputRef = useRef<HTMLInputElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
@@ -2256,6 +2303,16 @@ export function App() {
   const opencodeMessagePageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
   const opencodeMessagePageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
   const opencodePassiveSyncSeqRef = useRef(0);
+  const opencodePrevScrollTopRef = useRef(0);
+  const opencodeAutoFollowLatestRef = useRef(true);
+  const opencodeAutoScrollTokenRef = useRef(0);
+  const opencodeScrollModeRef = useRef<"follow" | "paused">("follow");
+  const opencodeUserScrollPauseUntilRef = useRef(0);
+  const opencodeUserScrollUpUntilRef = useRef(0);
+  const opencodeUserScrollDownUntilRef = useRef(0);
+  const opencodePausedScrollSnapshotRef = useRef<{ top: number; height: number } | null>(null);
+  const opencodeForceScrollLatestSessionRef = useRef("");
+  const opencodeProgrammaticScrollUntilRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
@@ -2287,8 +2344,10 @@ export function App() {
       output: "",
       seq: 0,
       alive: false,
+      cwd: "",
       history: [],
-      historyIndex: -1
+      historyIndex: -1,
+      historyDraft: ""
     }
   ]);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState("terminal-1");
@@ -2297,6 +2356,35 @@ export function App() {
   const terminalSeqRef = useRef<Record<string, number>>({ "terminal-1": 0 });
   const terminalLogRef = useRef<HTMLDivElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
+  const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
+  const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
+  const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
+
+  const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
+    { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
+    { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
+    { id: "builtin-model", trigger: "model", title: "Model", description: "切换当前模型", source: "builtin" },
+    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" }
+  ], []);
+
+  const opencodeSlashQuery = useMemo(() => {
+    const match = opencodePromptInput.match(/^\/(\S*)$/);
+    return match ? match[1].toLowerCase() : "";
+  }, [opencodePromptInput]);
+
+  const opencodeSlashSuggestions = useMemo(() => {
+    if (!opencodeSlashOpen) return [];
+    const all = [...builtinOpencodeSlashCommands, ...opencodeSlashCommands];
+    const seen = new Set<string>();
+    return all
+      .filter((cmd) => {
+        const key = cmd.trigger.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return !opencodeSlashQuery || key.includes(opencodeSlashQuery) || cmd.title.toLowerCase().includes(opencodeSlashQuery);
+      })
+      .slice(0, 8);
+  }, [builtinOpencodeSlashCommands, opencodeSlashCommands, opencodeSlashOpen, opencodeSlashQuery]);
 
   useEffect(() => {
     void import("@tauri-apps/api/window")
@@ -2319,6 +2407,49 @@ export function App() {
   const gitAutoRefreshBlockedRef = useRef(false);
   const gitAutoRefreshTimerRef = useRef<number | null>(null);
   const workspacePath = normalizeWorkspacePath(repoPath);
+
+  useEffect(() => {
+    if (!repoPath.trim()) {
+      setOpencodeSlashCommands([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const resp = await fetch(`${base}/command?directory=${encodeURIComponent(repoPath)}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const rows = await resp.json();
+        if (cancelled) return;
+        const commands: OpencodeSlashCommand[] = (Array.isArray(rows) ? rows : [])
+          .map((item: any): OpencodeSlashCommand | null => {
+            const name = String(item?.name || item?.command || item?.id || "").replace(/^\//, "").trim();
+            if (!name) return null;
+            const sourceRaw = String(item?.source || item?.type || "command").toLowerCase();
+            const source: OpencodeSlashCommand["source"] = sourceRaw.includes("skill")
+              ? "skill"
+              : sourceRaw.includes("mcp")
+                ? "mcp"
+                : "command";
+            return {
+              id: `opencode-${source}-${name}`,
+              trigger: name,
+              title: String(item?.title || item?.description || name),
+              description: String(item?.description || ""),
+              source
+            };
+          })
+          .filter(Boolean) as OpencodeSlashCommand[];
+        setOpencodeSlashCommands(commands);
+      } catch (e) {
+        appendOpencodeDebugLog(`command.list.warn ${String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath]);
+
   const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? terminalTabs[0],
@@ -3077,6 +3208,21 @@ export function App() {
       const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT);
       const mapped = result.mapped;
       const turnStart = getInitialOpencodeTurnStart(result.turnCount);
+      const currentSession = opencodeSessions.find((s) => s.id === id);
+      // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
+      if (currentSession && currentSession.loaded && currentSession.messages.length > 0) {
+        const current = currentSession.messages;
+        if (current.length === mapped.length) {
+          const isSame = current.every((msg, idx) => {
+            const next = mapped[idx];
+            return msg.id === next.id && msg.role === next.role && msg.content === next.content;
+          });
+          if (isSame) {
+            appendOpencodeDebugLog(`session.messages load ${id} skipped (unchanged)`);
+            return;
+          }
+        }
+      }
       updateOpencodeSessionById(id, (session) => ({
         ...session,
         messages: mapped,
@@ -3229,11 +3375,7 @@ export function App() {
     setDraftOpencodeSession(false);
     setOpencodePromptInput("");
     appendOpencodeDebugLog(`session.created ${created.id}`);
-    requestAnimationFrame(() => {
-      const el = opencodeThreadRef.current;
-      if (!el) return;
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-    });
+    resumeOpencodeFollowFromUserAction(created.id);
     return created.id;
   }
 
@@ -4146,10 +4288,11 @@ export function App() {
   async function runOpencodePrompt() {
     if (!ensureRepoSelected()) return;
     const prompt = opencodePromptInput.trim();
-    if (!prompt) return;
+    const images = opencodeImageAttachments;
+    if (!prompt && images.length === 0) return;
     let sessionId = ensureActiveOpencodeSession();
     if (!sessionId || draftOpencodeSession) {
-      sessionId = await createPersistedOpencodeSession(prompt);
+      sessionId = await createPersistedOpencodeSession(prompt || "(image)");
     }
     if (!sessionId) return;
     bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
@@ -4158,32 +4301,34 @@ export function App() {
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
-    const scrollToBottom = () => {
+    const scrollToBottom = (options?: { force?: boolean }) => {
       if (activeOpencodeSessionId !== sessionId) return;
-      const el = opencodeThreadRef.current;
-      if (!el) return;
-      requestAnimationFrame(() => {
-        el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      });
+      if (options?.force) {
+        resumeOpencodeFollowFromUserAction(sessionId);
+        return;
+      }
+      scheduleOpencodeScrollToBottom({ source: "system" });
     };
     updateOpencodeSessionById(sessionId, (session) => {
       const nextMessages: OpencodeChatMessage[] = [
         ...session.messages,
-        { id: `user-${makeId()}`, role: "user", content: prompt },
+        { id: `user-${makeId()}`, role: "user", content: prompt || "(image)" },
         { id: assistantId, role: "assistant", content: "" }
       ];
       const nextTurnCount = buildOpencodeTurnRanges(nextMessages).length;
       const nextTurnStart = getInitialOpencodeTurnStart(nextTurnCount);
       return {
         ...session,
-        title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt) : session.title,
+        title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt || "(image)") : session.title,
         messages: nextMessages,
         turnStart: nextTurnStart,
         updatedAt: Date.now()
       };
     });
-    scrollToBottom();
+    scrollToBottom({ force: true });
+    recordOpencodePromptHistoryEntry(sessionId, prompt);
     setOpencodePromptInput("");
+    setOpencodeImageAttachments([]);
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
     const activeModel = normalizeModelRef(activeOpencodeModel || "");
@@ -4631,8 +4776,12 @@ export function App() {
         finalize();
       }, 600_000);
 
+      const promptParts: Record<string, unknown>[] = [{ id: `prt_${makeId()}`, type: "text", text: prompt }];
+      for (const img of images) {
+        promptParts.push({ id: `prt_${makeId()}`, type: "file", mime: img.mime, url: img.dataUrl, filename: img.filename });
+      }
       const promptBody: Record<string, unknown> = {
-        parts: [{ type: "text", text: prompt }]
+        parts: promptParts
       };
       const mr = parseModelRef(model);
       if (mr) {
@@ -4698,9 +4847,102 @@ export function App() {
   function resizeOpencodeInput() {
     const el = opencodeInputRef.current;
     if (!el) return;
-    el.style.height = "0px";
+    el.style.height = "auto";
     const next = Math.min(140, Math.max(38, el.scrollHeight));
     el.style.height = `${next}px`;
+    el.scrollTop = 0;
+  }
+
+  function setOpencodePromptInputFromHistory(value: string) {
+    setOpencodePromptInput(value);
+    setOpencodeSlashOpen(false);
+    requestAnimationFrame(() => {
+      resizeOpencodeInput();
+      const el = opencodeInputRef.current;
+      if (!el) return;
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    });
+  }
+
+  function getOpencodePromptHistorySessionKey() {
+    return activeOpencodeSessionId.trim() || "__draft__";
+  }
+
+  function recordOpencodePromptHistoryEntry(sessionId: string, prompt: string) {
+    const key = sessionId.trim() || "__draft__";
+    const value = prompt.trim();
+    if (!value) return;
+    const prev = opencodePromptHistoryBySessionRef.current[key] || [];
+    opencodePromptHistoryBySessionRef.current[key] = [value, ...prev.filter((item) => item !== value)].slice(0, 80);
+    opencodePromptHistoryIndexBySessionRef.current[key] = -1;
+    opencodePromptHistoryDraftBySessionRef.current[key] = "";
+  }
+
+  function browseOpencodePromptHistory(direction: "older" | "newer") {
+    const key = getOpencodePromptHistorySessionKey();
+    const history = opencodePromptHistoryBySessionRef.current[key] || [];
+    if (history.length === 0) return;
+    const currentIndex = opencodePromptHistoryIndexBySessionRef.current[key] ?? -1;
+    if (direction === "older") {
+      if (currentIndex < 0) {
+        opencodePromptHistoryDraftBySessionRef.current[key] = opencodePromptInput;
+      }
+      const nextIndex = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, history.length - 1);
+      opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
+      setOpencodePromptInputFromHistory(history[nextIndex] || "");
+      return;
+    }
+    if (currentIndex <= 0) {
+      opencodePromptHistoryIndexBySessionRef.current[key] = -1;
+      setOpencodePromptInputFromHistory(opencodePromptHistoryDraftBySessionRef.current[key] || "");
+      return;
+    }
+    const nextIndex = currentIndex - 1;
+    opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
+    setOpencodePromptInputFromHistory(history[nextIndex] || "");
+  }
+
+  function shouldUsePromptHistoryKey(event: React.KeyboardEvent<HTMLTextAreaElement>, direction: "older" | "newer") {
+    const target = event.currentTarget;
+    const start = target.selectionStart ?? 0;
+    const end = target.selectionEnd ?? 0;
+    if (start !== end) return false;
+    if (direction === "older") {
+      return start === 0;
+    }
+    return end === target.value.length;
+  }
+
+  function browseTerminalHistory(tabId: string, direction: "older" | "newer") {
+    updateTerminalTabById(tabId, (prev) => {
+      if (prev.history.length === 0) return prev;
+      if (direction === "older") {
+        const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
+        return {
+          ...prev,
+          historyIndex: next,
+          historyDraft: prev.historyIndex < 0 ? prev.input : prev.historyDraft,
+          input: prev.history[next] || ""
+        };
+      }
+      if (prev.historyIndex <= 0) {
+        return { ...prev, historyIndex: -1, input: prev.historyDraft };
+      }
+      const next = prev.historyIndex - 1;
+      return { ...prev, historyIndex: next, input: prev.history[next] || "" };
+    });
+  }
+
+  async function applyTerminalTabCompletion(tab: TerminalTabState) {
+    if (!repoPath) return;
+    try {
+      const nextInput = await completeRepoTerminalInput(repoPath, tab.input, tab.cwd || repoPath);
+      if (nextInput === tab.input) return;
+      updateTerminalTabById(tab.id, { input: nextInput, historyIndex: -1, historyDraft: nextInput });
+    } catch {
+      // ignore completion failures to keep typing smooth
+    }
   }
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
@@ -5782,7 +6024,7 @@ export function App() {
     terminalSeqRef.current[id] = 0;
     setTerminalTabs((prev) => [
       ...prev,
-      { id, title: `终端 ${n}`, input: "", output: "", seq: 0, alive: false, history: [], historyIndex: -1 }
+      { id, title: `终端 ${n}`, input: "", output: "", seq: 0, alive: false, cwd: selectedRepo?.path || repoPath || "", history: [], historyIndex: -1, historyDraft: "" }
     ]);
     setActiveTerminalTabId(id);
   }
@@ -5817,6 +6059,7 @@ export function App() {
         ...prev,
         history: [script, ...prev.history.filter((x) => x !== script)].slice(0, 80),
         historyIndex: -1,
+        historyDraft: "",
         input: ""
       }));
     } catch (e) {
@@ -6588,6 +6831,7 @@ export function App() {
         updateTerminalTabById(tabId, {
           seq: snapshot.seq,
           alive: snapshot.alive,
+          cwd: snapshot.cwd || repo,
           output: sanitizeTerminalOutput(snapshot.output || "")
         });
       } catch (e) {
@@ -6609,13 +6853,14 @@ export function App() {
               ...prev,
               seq: snapshot.seq,
               alive: snapshot.alive,
+              cwd: snapshot.cwd || prev.cwd,
               output: `${prev.output}${chunk}`
             }));
           } else {
-            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
           }
         } else {
-          updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+          updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
         }
       } catch {
         if (stopped) return;
@@ -6669,8 +6914,10 @@ export function App() {
         output: "",
         seq: 0,
         alive: false,
+        cwd: "",
         history: [],
-        historyIndex: -1
+        historyIndex: -1,
+        historyDraft: ""
       }
     ]);
     setActiveTerminalTabId("terminal-1");
@@ -6679,9 +6926,22 @@ export function App() {
     setGitUserIdentity(EMPTY_GIT_IDENTITY);
   }, [selectedRepo?.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const shouldKeepLatest = opencodeScrollModeRef.current === "follow" && opencodeAutoFollowLatestRef.current;
+    if (shouldKeepLatest) {
+      opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    }
     resizeOpencodeInput();
-  }, [opencodePromptInput]);
+    if (!shouldKeepLatest) return;
+    if (activeOpencodeSessionId) {
+      opencodeForceScrollLatestSessionRef.current = activeOpencodeSessionId;
+    }
+    scrollOpencodeThreadToBottomNow();
+    requestAnimationFrame(() => {
+      if (opencodeScrollModeRef.current !== "follow") return;
+      scrollOpencodeThreadToBottomNow();
+    });
+  }, [activeOpencodeSessionId, opencodePromptInput, opencodeImageAttachments.length]);
 
   useEffect(() => {
     const sid = activeOpencodeSessionId;
@@ -6692,6 +6952,8 @@ export function App() {
       opencodePrevScrollHeightRef.current = 0;
       opencodePendingAnchorSessionIdRef.current = sid;
       opencodeStickToBottomSessionRef.current = sid;
+      setOpencodeAutoFollow(true);
+      setOpencodeShowJumpLatest(false);
     }
     const session = opencodeSessions.find((s) => s.id === sid);
     if (session && !session.loaded && runtimeStatus.opencode.installed && selectedRepo) {
@@ -6744,11 +7006,15 @@ export function App() {
       }
       if (typ === "message.part.delta") return;
       if (typ === "session.idle") {
-        scheduleRefresh(80);
+        const session = opencodeSessions.find((s) => s.id === sessionId);
+        const hasContent = session && session.loaded && session.messages.length > 0;
+        scheduleRefresh(hasContent ? 1500 : 80);
         return;
       }
       if (typ === "session.status" && String(props?.status?.type || "") === "idle") {
-        scheduleRefresh(80);
+        const session = opencodeSessions.find((s) => s.id === sessionId);
+        const hasContent = session && session.loaded && session.messages.length > 0;
+        scheduleRefresh(hasContent ? 1500 : 80);
       }
     };
     void (async () => {
@@ -6812,7 +7078,11 @@ export function App() {
       const detail = opencodeDetailsByMessageId[msg.id];
       const loading = opencodeDetailsLoadingByMessageId[msg.id];
       if (detail === undefined || loading) return true;
-      return msg.id === streamingId && running;
+      // 保留：当前正在流式输出的消息，或已经有内容的非流式消息
+      if (msg.id === streamingId && running) return true;
+      // 新增：如果消息有 detail.parts 内容，也保留（避免流式结束后短暂消失）
+      if (detail && Array.isArray(detail.parts) && detail.parts.length > 0) return true;
+      return false;
     });
   }, [opencodeVisibleWindow.visible, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
@@ -7028,6 +7298,77 @@ export function App() {
 
   const opencodeHasHiddenHistory = opencodeTurnStart > 0;
 
+  function opencodeIsNearBottom(el: HTMLDivElement, threshold = 24) {
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    return maxScroll - el.scrollTop <= threshold;
+  }
+
+  function setOpencodeAutoFollow(enabled: boolean) {
+    opencodeScrollModeRef.current = enabled ? "follow" : "paused";
+    opencodeAutoFollowLatestRef.current = enabled;
+    setOpencodeAutoFollowLatest(enabled);
+    if (enabled) {
+      opencodePausedScrollSnapshotRef.current = null;
+    } else {
+      const el = opencodeThreadRef.current;
+      opencodePausedScrollSnapshotRef.current = el ? { top: el.scrollTop, height: el.scrollHeight } : null;
+    }
+  }
+
+  function cancelPendingOpencodeAutoScroll() {
+    opencodeAutoScrollTokenRef.current += 1;
+  }
+
+  function scrollOpencodeThreadToBottomNow(options?: { hideJump?: boolean }) {
+    const current = opencodeThreadRef.current;
+    if (!current) return;
+    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+    opencodePrevScrollTopRef.current = current.scrollTop;
+    if (options?.hideJump !== false) {
+      setOpencodeShowJumpLatest(false);
+    }
+  }
+
+  function scheduleOpencodeScrollToBottom(options?: { force?: boolean; hideJump?: boolean; source?: "system" | "user" }) {
+    const token = opencodeAutoScrollTokenRef.current + 1;
+    opencodeAutoScrollTokenRef.current = token;
+    requestAnimationFrame(() => {
+      if (opencodeAutoScrollTokenRef.current !== token) return;
+      const current = opencodeThreadRef.current;
+      if (!current) return;
+      const source = options?.source || "system";
+      const forceLatest = opencodeForceScrollLatestSessionRef.current === activeOpencodeSessionId;
+      if (opencodeScrollModeRef.current === "paused" && source !== "user" && !forceLatest) return;
+      if (source !== "user" && Date.now() < opencodeUserScrollPauseUntilRef.current && !forceLatest) return;
+      if (!options?.force && !opencodeAutoFollowLatestRef.current && !forceLatest) return;
+      scrollOpencodeThreadToBottomNow({ hideJump: options?.hideJump });
+    });
+  }
+
+  function preserveOpencodePausedViewport() {
+    if (opencodeScrollModeRef.current !== "paused") return;
+    if (opencodeLoadingOlderRef.current) return;
+    const el = opencodeThreadRef.current;
+    const snapshot = opencodePausedScrollSnapshotRef.current;
+    if (!el || !snapshot) return;
+    const nextTop = Math.min(snapshot.top, Math.max(0, el.scrollHeight - el.clientHeight));
+    opencodeAutoScrollTokenRef.current += 1;
+    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    el.scrollTop = nextTop;
+    opencodePrevScrollTopRef.current = el.scrollTop;
+    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+  }
+
+  function resumeOpencodeFollowFromUserAction(sessionId: string) {
+    opencodeUserScrollPauseUntilRef.current = 0;
+    opencodeStickToBottomSessionRef.current = sessionId;
+    opencodeForceScrollLatestSessionRef.current = sessionId;
+    setOpencodeAutoFollow(true);
+    setOpencodeShowJumpLatest(false);
+    scheduleOpencodeScrollToBottom({ force: true, source: "user" });
+  }
+
   useEffect(() => {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
@@ -7035,10 +7376,13 @@ export function App() {
     if (!activeOpencodeSession?.loaded || opencodeMessages.length <= 0) return;
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (opencodeScrollModeRef.current === "paused") {
+      opencodePendingAnchorSessionIdRef.current = "";
+      return;
+    }
+    if (opencodeScrollModeRef.current !== "follow") return;
+    scheduleOpencodeScrollToBottom({ force: true, source: "system" });
     requestAnimationFrame(() => {
-      const current = opencodeThreadRef.current;
-      if (!current) return;
-      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
       opencodePendingAnchorSessionIdRef.current = "";
     });
   }, [activeOpencodeSessionId, activeOpencodeSession?.loaded, opencodeMessages.length]);
@@ -7047,20 +7391,47 @@ export function App() {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
     if (opencodeStickToBottomSessionRef.current !== sid) return;
+    if (!opencodeAutoFollowLatestRef.current) return;
     if (opencodeSessionLoading) return;
     const el = opencodeThreadRef.current;
     if (!el) return;
-    requestAnimationFrame(() => {
-      const current = opencodeThreadRef.current;
-      if (!current) return;
-      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
-    });
+    if (opencodeScrollModeRef.current !== "follow") return;
+    // 如果当前不在底部附近，不自动滚动（避免流式结束后闪动）
+    if (!opencodeIsNearBottom(el, 120)) return;
+    scheduleOpencodeScrollToBottom();
   }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  useLayoutEffect(() => {
+    const sid = activeOpencodeSessionId.trim();
+    if (
+      sid &&
+      opencodeForceScrollLatestSessionRef.current === sid &&
+      opencodeScrollModeRef.current === "follow" &&
+      !opencodeSessionLoading
+    ) {
+      scrollOpencodeThreadToBottomNow();
+      return;
+    }
+    preserveOpencodePausedViewport();
+  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeMessages.length, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  useEffect(() => {
+    cancelPendingOpencodeAutoScroll();
+    setOpencodeAutoFollow(true);
+    setOpencodeShowJumpLatest(false);
+    opencodePrevScrollTopRef.current = 0;
+    opencodeForceScrollLatestSessionRef.current = "";
+  }, [activeOpencodeSessionId]);
 
   function loadOlderOpencodeHistory() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     if (opencodeLoadingOlderRef.current) return;
+    cancelPendingOpencodeAutoScroll();
+    opencodeStickToBottomSessionRef.current = "";
+    setOpencodeAutoFollow(false);
+    setOpencodeShowJumpLatest(true);
+    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
     opencodeLoadingOlderRef.current = true;
     opencodePrevScrollHeightRef.current = el.scrollHeight;
     if (opencodeHasHiddenHistory) {
@@ -7083,11 +7454,48 @@ export function App() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    const nearBottom = maxScroll - el.scrollTop <= 24;
-    if (nearBottom) {
-      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-    } else {
+    const nearBottom = opencodeIsNearBottom(el, 24);
+    const now = Date.now();
+    if (now < opencodeProgrammaticScrollUntilRef.current) {
+      opencodePrevScrollTopRef.current = el.scrollTop;
+      if (nearBottom && opencodeScrollModeRef.current === "follow") {
+        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+        setOpencodeShowJumpLatest(false);
+      }
+      return;
+    }
+    const prevTop = opencodePrevScrollTopRef.current;
+    const movedUp = el.scrollTop < prevTop - 2;
+    const movedDown = el.scrollTop > prevTop + 2;
+    opencodePrevScrollTopRef.current = el.scrollTop;
+    const userScrollingUp = now < opencodeUserScrollUpUntilRef.current;
+    const userScrollingDown = now < opencodeUserScrollDownUntilRef.current;
+    if (movedUp && userScrollingUp) {
+      cancelPendingOpencodeAutoScroll();
       opencodeStickToBottomSessionRef.current = "";
+      setOpencodeAutoFollow(false);
+      setOpencodeShowJumpLatest(true);
+      opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+    } else if (movedUp && opencodeScrollModeRef.current === "follow") {
+      scheduleOpencodeScrollToBottom({ force: true, source: "system" });
+    } else if (opencodeScrollModeRef.current === "paused") {
+      if (userScrollingDown && movedDown) {
+        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+      }
+      if (nearBottom && userScrollingDown) {
+        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+        setOpencodeAutoFollow(true);
+        setOpencodeShowJumpLatest(false);
+      } else {
+        setOpencodeShowJumpLatest(true);
+        if (movedDown && !userScrollingDown) {
+          preserveOpencodePausedViewport();
+        }
+      }
+    } else if (nearBottom) {
+      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+      setOpencodeAutoFollow(true);
+      setOpencodeShowJumpLatest(false);
     }
     if (maxScroll <= 0) return;
     const topProgress = el.scrollTop / maxScroll;
@@ -7104,9 +7512,31 @@ export function App() {
     }
   }
 
+  function jumpOpencodeToLatest() {
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    resumeOpencodeFollowFromUserAction(activeOpencodeSessionId);
+  }
+
   function onOpencodeThreadWheel(event: React.WheelEvent<HTMLDivElement>) {
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (event.deltaY !== 0) {
+      opencodeUserScrollPauseUntilRef.current = Date.now() + 800;
+    }
+    if (event.deltaY < 0) {
+      opencodeUserScrollUpUntilRef.current = Date.now() + 800;
+    }
+    if (event.deltaY < 0 && opencodeScrollModeRef.current === "follow") {
+      opencodeForceScrollLatestSessionRef.current = "";
+      cancelPendingOpencodeAutoScroll();
+      opencodeStickToBottomSessionRef.current = "";
+      setOpencodeAutoFollow(false);
+      setOpencodeShowJumpLatest(true);
+    }
+    if (event.deltaY > 0) {
+      opencodeUserScrollDownUntilRef.current = Date.now() + 800;
+    }
     if (event.deltaY >= 0) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     if (maxScroll <= 0) return;
@@ -7128,6 +7558,10 @@ export function App() {
       const delta = el.scrollHeight - prevHeight;
       if (delta > 0) {
         el.scrollTop += delta;
+      }
+      opencodePrevScrollTopRef.current = el.scrollTop;
+      if (opencodeScrollModeRef.current === "paused") {
+        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
       }
       opencodeLoadingOlderRef.current = false;
       opencodePrevScrollHeightRef.current = 0;
@@ -7555,24 +7989,169 @@ export function App() {
               />
             ))}
             <div className="opencode-composer">
-              <div className="opencode-composer-body opencode-composer-body-inline">
+              {opencodeShowJumpLatest ? (
+                <button
+                  type="button"
+                  className="opencode-jump-latest-btn"
+                  onClick={jumpOpencodeToLatest}
+                  aria-label="拉到最新"
+                  title="拉到最新"
+                >
+                  ↓
+                </button>
+              ) : null}
+              {opencodeImageAttachments.length > 0 ? (
+                <div className="opencode-attachments">
+                  {opencodeImageAttachments.map((img) => (
+                    <div key={img.id} className="opencode-attachment-chip">
+                      <img src={img.dataUrl} alt={img.filename} className="opencode-attachment-thumb" />
+                      <span className="opencode-attachment-name">{img.filename}</span>
+                      <button
+                        type="button"
+                        className="opencode-attachment-remove"
+                        onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
+                        aria-label="移除图片"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="opencode-composer-main">
+                {opencodeSlashOpen && opencodeSlashSuggestions.length > 0 ? (
+                  <div className="opencode-slash-popover">
+                    {opencodeSlashSuggestions.map((cmd, idx) => (
+                      <button
+                        key={cmd.id}
+                        type="button"
+                        className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
+                        onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
+                        onClick={() => {
+                          setOpencodePromptInput(`/${cmd.trigger} `);
+                          setOpencodeSlashOpen(false);
+                          opencodeInputRef.current?.focus();
+                        }}
+                      >
+                        <span className="opencode-slash-trigger">/{cmd.trigger}</span>
+                        <span className="opencode-slash-title">{cmd.title}</span>
+                        {cmd.description ? <span className="opencode-slash-desc">{cmd.description}</span> : null}
+                        <span className={`opencode-slash-badge ${cmd.source}`}>{cmd.source}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="opencode-input-shell opencode-composer-editor">
                   <textarea
                     ref={opencodeInputRef}
                     className="opencode-input"
                     placeholder="Ask OpenCode to code, inspect, or fix..."
                     value={opencodePromptInput}
-                    onChange={(e) => setOpencodePromptInput(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      const historyKey = getOpencodePromptHistorySessionKey();
+                      opencodePromptHistoryIndexBySessionRef.current[historyKey] = -1;
+                      opencodePromptHistoryDraftBySessionRef.current[historyKey] = value;
+                      setOpencodePromptInput(value);
+                      const isSlash = /^\//.test(value) && !value.includes(" ");
+                      setOpencodeSlashOpen(isSlash);
+                      setOpencodeSlashActiveIndex(0);
+                    }}
                     onKeyDown={(e) => {
                       if (activeOpencodeSessionBusy) return;
+                      if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setOpencodeSlashActiveIndex((i) => (i + 1) % opencodeSlashSuggestions.length);
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setOpencodeSlashActiveIndex((i) => (i - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
+                          return;
+                        }
+                        if (e.key === "Enter" || e.key === "Tab") {
+                          e.preventDefault();
+                          const cmd = opencodeSlashSuggestions[opencodeSlashActiveIndex];
+                          if (cmd) {
+                            setOpencodePromptInput(`/${cmd.trigger} `);
+                            setOpencodeSlashOpen(false);
+                          }
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          setOpencodeSlashOpen(false);
+                          return;
+                        }
+                      }
+                      if (e.key === "ArrowUp" && shouldUsePromptHistoryKey(e, "older")) {
+                        e.preventDefault();
+                        browseOpencodePromptHistory("older");
+                        return;
+                      }
+                      if (e.key === "ArrowDown" && shouldUsePromptHistoryKey(e, "newer")) {
+                        e.preventDefault();
+                        browseOpencodePromptHistory("newer");
+                        return;
+                      }
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         void runOpencodePrompt();
                       }
                     }}
+                    onPaste={async (e) => {
+                      const files = Array.from(e.clipboardData?.files || []);
+                      if (files.length === 0) return;
+                      e.preventDefault();
+                      const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
+                      setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+                    }}
                     rows={1}
                   />
                 </div>
+              </div>
+              <div className="opencode-composer-actions">
+                <div className="opencode-attachment-menu-wrap">
+                  <button
+                    type="button"
+                    className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
+                    onClick={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
+                    aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
+                    aria-expanded={opencodeAttachmentMenuOpen}
+                    title="添加附件"
+                  >
+                    <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
+                  </button>
+                  {opencodeAttachmentMenuOpen ? (
+                    <div className="opencode-attachment-menu">
+                      <button
+                        type="button"
+                        className="opencode-attachment-menu-item"
+                        onClick={() => {
+                          setOpencodeAttachmentMenuOpen(false);
+                          opencodeImageInputRef.current?.click();
+                        }}
+                      >
+                        <span className="opencode-attachment-menu-icon" aria-hidden="true">▧</span>
+                        <span>上传图片</span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <input
+                  ref={opencodeImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
+                    setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+                    e.currentTarget.value = "";
+                  }}
+                />
                 <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
                   <button
                     type="button"
@@ -7657,7 +8236,7 @@ export function App() {
                 </div>
                 <button
                   className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
+                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeImageAttachments.length === 0}
                   onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
                   aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
                 >
@@ -8430,7 +9009,12 @@ branches.forEach((b) => {
                     value={activeTerminalTab?.input || ""}
                     onChange={(e) => {
                       if (!activeTerminalTab) return;
-                      updateTerminalTabById(activeTerminalTab.id, { input: e.target.value });
+                      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+                        ...prev,
+                        input: e.target.value,
+                        historyIndex: -1,
+                        historyDraft: e.target.value
+                      }));
                     }}
                     onKeyDown={(e) => {
                       if (!activeTerminalTab) return;
@@ -8441,23 +9025,17 @@ branches.forEach((b) => {
                       }
                       if (e.key === "ArrowUp") {
                         e.preventDefault();
-                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
-                          if (prev.history.length === 0) return prev;
-                          const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
-                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
-                        });
+                        browseTerminalHistory(activeTerminalTab.id, "older");
                         return;
                       }
                       if (e.key === "ArrowDown") {
                         e.preventDefault();
-                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
-                          if (prev.history.length === 0) return prev;
-                          if (prev.historyIndex <= 0) {
-                            return { ...prev, historyIndex: -1, input: "" };
-                          }
-                          const next = prev.historyIndex - 1;
-                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
-                        });
+                        browseTerminalHistory(activeTerminalTab.id, "newer");
+                        return;
+                      }
+                      if (e.key === "Tab") {
+                        e.preventDefault();
+                        void applyTerminalTabCompletion(activeTerminalTab);
                         return;
                       }
                       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {

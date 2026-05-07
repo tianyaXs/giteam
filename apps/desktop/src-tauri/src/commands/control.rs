@@ -91,6 +91,7 @@ struct PromptRequest {
     repo_path: String,
     session_id: Option<String>,
     prompt: String,
+    parts: Option<Value>,
     model: Option<String>,
     title: Option<String>,
 }
@@ -111,10 +112,12 @@ fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
 }
 
 fn pair_state_cell() -> &'static Mutex<PairState> {
-    CONTROL_PAIR_STATE.get_or_init(|| Mutex::new(PairState {
-        code: generate_pair_code(),
-        expires_at: now_unix_secs() + 24 * 60 * 60,
-    }))
+    CONTROL_PAIR_STATE.get_or_init(|| {
+        Mutex::new(PairState {
+            code: generate_pair_code(),
+            expires_at: now_unix_secs() + 24 * 60 * 60,
+        })
+    })
 }
 
 fn token_cell() -> &'static Mutex<String> {
@@ -167,7 +170,12 @@ fn control_server_settings_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            return Some(PathBuf::from(h).join(".config").join("giteam").join("control-server.json"));
+            return Some(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join("control-server.json"),
+            );
         }
     }
     None
@@ -198,7 +206,12 @@ fn control_auth_token_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            return Some(PathBuf::from(h).join(".config").join("giteam").join("control-auth.json"));
+            return Some(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join("control-auth.json"),
+            );
         }
     }
     None
@@ -214,7 +227,11 @@ fn read_persisted_bearer_token() -> String {
     };
     let parsed = serde_json::from_str::<Value>(&raw).ok();
     parsed
-        .and_then(|v| v.get("token").and_then(|x| x.as_str()).map(|s| s.trim().to_string()))
+        .and_then(|v| {
+            v.get("token")
+                .and_then(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(generate_token)
 }
@@ -263,8 +280,8 @@ fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(),
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create control config dir failed: {e}"))?;
     }
-    let text =
-        serde_json::to_string_pretty(settings).map_err(|e| format!("serialize control settings failed: {e}"))?;
+    let text = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("serialize control settings failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write control settings failed: {e}"))?;
     Ok(())
 }
@@ -429,13 +446,24 @@ fn candidate_client_db_paths() -> Vec<PathBuf> {
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
-            out.push(PathBuf::from(p).join("giteam").join(".giteam").join("client.db"));
+            out.push(
+                PathBuf::from(p)
+                    .join("giteam")
+                    .join(".giteam")
+                    .join("client.db"),
+            );
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            out.push(PathBuf::from(h).join(".config").join("giteam").join(".giteam").join("client.db"));
+            out.push(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join(".giteam")
+                    .join("client.db"),
+            );
         }
     }
     // 3) Last-resort fallback: workspace-local legacy db.
@@ -502,11 +530,10 @@ fn detect_primary_lan_ip() -> Option<String> {
     }
     if let IpAddr::V4(v4) = ip {
         let oct = v4.octets();
-        let is_private =
-            oct[0] == 10
-                || (oct[0] == 172 && (16..=31).contains(&oct[1]))
-                || (oct[0] == 192 && oct[1] == 168)
-                || (oct[0] == 100 && (64..=127).contains(&oct[1]));
+        let is_private = oct[0] == 10
+            || (oct[0] == 172 && (16..=31).contains(&oct[1]))
+            || (oct[0] == 192 && oct[1] == 168)
+            || (oct[0] == 100 && (64..=127).contains(&oct[1]));
         let is_reserved_benchmark = oct[0] == 198 && (oct[1] == 18 || oct[1] == 19);
         if is_private && !is_reserved_benchmark {
             return Some(v4.to_string());
@@ -525,8 +552,12 @@ fn parse_query(q: &str) -> HashMap<String, String> {
             continue;
         }
         let v = p.next().unwrap_or("").trim();
-        let key = urlencoding::decode(k).map(|v| v.into_owned()).unwrap_or_else(|_| k.to_string());
-        let value = urlencoding::decode(v).map(|v| v.into_owned()).unwrap_or_else(|_| v.to_string());
+        let key = urlencoding::decode(k)
+            .map(|v| v.into_owned())
+            .unwrap_or_else(|_| k.to_string());
+        let value = urlencoding::decode(v)
+            .map(|v| v.into_owned())
+            .unwrap_or_else(|_| v.to_string());
         out.insert(key, value);
     }
     out
@@ -669,7 +700,9 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
     write_stream_all(stream, head.as_bytes(), "write response headers")?;
     write_stream_all(stream, &payload, "write response body")?;
-    stream.flush().map_err(|e| format!("write response failed: {e}"))
+    stream
+        .flush()
+        .map_err(|e| format!("write response failed: {e}"))
 }
 
 fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), String> {
@@ -680,7 +713,9 @@ fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), Stri
     );
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
     write_stream_all(stream, head.as_bytes(), "write response headers")?;
-    stream.flush().map_err(|e| format!("write response failed: {e}"))
+    stream
+        .flush()
+        .map_err(|e| format!("write response failed: {e}"))
 }
 
 fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
@@ -690,10 +725,13 @@ fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
 }
 
 fn write_sse_event(stream: &mut TcpStream, event: &str, payload: &Value) -> Result<(), String> {
-    let body = serde_json::to_string(payload).map_err(|e| format!("encode sse payload failed: {e}"))?;
+    let body =
+        serde_json::to_string(payload).map_err(|e| format!("encode sse payload failed: {e}"))?;
     let chunk = format!("event: {event}\ndata: {body}\n\n");
     write_stream_all(stream, chunk.as_bytes(), "write sse event")?;
-    stream.flush().map_err(|e| format!("write sse event failed: {e}"))
+    stream
+        .flush()
+        .map_err(|e| format!("write sse event failed: {e}"))
 }
 
 fn extract_bearer(req: &HttpRequest) -> String {
@@ -768,9 +806,16 @@ fn analyze_session_loop_stats(messages: &Value) -> SessionLoopStats {
             .unwrap_or("")
             .trim()
             .to_string();
-        let summary = info.and_then(|x| x.get("summary")).and_then(|x| x.as_bool()).unwrap_or(false);
+        let summary = info
+            .and_then(|x| x.get("summary"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         let is_compaction = mode == "compaction" || agent == "compaction" || summary;
-        let parts = item.get("parts").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let parts = item
+            .get("parts")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         if role == "user" {
             for p in &parts {
@@ -778,7 +823,10 @@ fn analyze_session_loop_stats(messages: &Value) -> SessionLoopStats {
                 if ptype != "text" {
                     continue;
                 }
-                let synthetic = p.get("synthetic").and_then(|x| x.as_bool()).unwrap_or(false);
+                let synthetic = p
+                    .get("synthetic")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
                 if !synthetic {
                     continue;
                 }
@@ -895,7 +943,15 @@ fn compact_mobile_tool_input(input: Option<&Map<String, Value>>) -> Option<Value
         return None;
     };
     let mut out = Map::new();
-    for key in ["description", "filePath", "pattern", "query", "url", "path", "subagent_type"] {
+    for key in [
+        "description",
+        "filePath",
+        "pattern",
+        "query",
+        "url",
+        "path",
+        "subagent_type",
+    ] {
         if let Some(v) = input.get(key).cloned() {
             out.insert(key.to_string(), v);
         }
@@ -948,10 +1004,18 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
         let Some(part_obj) = part.as_object() else {
             continue;
         };
-        let part_type = part_obj.get("type").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let part_type = part_obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         match part_type {
             "text" => {
-                let text = part_obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let text = part_obj
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if text.is_empty() {
                     continue;
                 }
@@ -967,7 +1031,11 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                 out.push(Value::Object(node));
             }
             "reasoning" if role == "assistant" => {
-                let text = part_obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let text = part_obj
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if text.is_empty() {
                     continue;
                 }
@@ -980,7 +1048,11 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                 out.push(Value::Object(node));
             }
             "tool" if role == "assistant" => {
-                let tool = part_obj.get("tool").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let tool = part_obj
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if tool.is_empty() {
                     continue;
                 }
@@ -990,7 +1062,9 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                 if let Some(id) = part_obj.get("id").cloned() {
                     node.insert("id".to_string(), id);
                 }
-                if let Some(metadata) = compact_mobile_tool_metadata(part_obj.get("metadata").and_then(|v| v.as_object())) {
+                if let Some(metadata) = compact_mobile_tool_metadata(
+                    part_obj.get("metadata").and_then(|v| v.as_object()),
+                ) {
                     node.insert("metadata".to_string(), metadata);
                 }
                 if let Some(state) = part_obj.get("state").and_then(|v| v.as_object()) {
@@ -1001,15 +1075,17 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                     if let Some(v) = state.get("title").cloned() {
                         compact_state.insert("title".to_string(), v);
                     }
-                    if let Some(input) = compact_mobile_tool_input(state.get("input").and_then(|v| v.as_object())) {
+                    if let Some(input) =
+                        compact_mobile_tool_input(state.get("input").and_then(|v| v.as_object()))
+                    {
                         compact_state.insert("input".to_string(), input);
                     }
                     if let Some(output) = compact_mobile_tool_output(state.get("output")) {
                         compact_state.insert("output".to_string(), output);
                     }
-                    if let Some(metadata) =
-                        compact_mobile_tool_metadata(state.get("metadata").and_then(|v| v.as_object()))
-                    {
+                    if let Some(metadata) = compact_mobile_tool_metadata(
+                        state.get("metadata").and_then(|v| v.as_object()),
+                    ) {
                         compact_state.insert("metadata".to_string(), metadata);
                     }
                     if !compact_state.is_empty() {
@@ -1023,7 +1099,12 @@ fn compact_mobile_message_parts(role: &str, parts: &[Value]) -> Vec<Value> {
                 node.insert("type".to_string(), Value::String("compaction".to_string()));
                 node.insert(
                     "auto".to_string(),
-                    Value::Bool(part_obj.get("auto").and_then(|v| v.as_bool()).unwrap_or(false)),
+                    Value::Bool(
+                        part_obj
+                            .get("auto")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    ),
                 );
                 out.push(Value::Object(node));
             }
@@ -1093,8 +1174,8 @@ fn parse_model_ref(model: &str) -> Option<(String, String)> {
 }
 
 fn validate_prompt_model(repo_path: &str, model: &str) -> Result<(), String> {
-    let (provider_id, model_id) =
-        parse_model_ref(model).ok_or_else(|| "model must be in format provider/model".to_string())?;
+    let (provider_id, model_id) = parse_model_ref(model)
+        .ok_or_else(|| "model must be in format provider/model".to_string())?;
     let provider_key = normalize_provider_key(&provider_id);
 
     // Keep behavior aligned with OpenCode/client: disabled providers are matched
@@ -1124,7 +1205,12 @@ fn validate_prompt_model(repo_path: &str, model: &str) -> Result<(), String> {
         .providers
         .iter()
         .find(|p| normalize_provider_key(p.id.as_str()) == provider_key)
-        .ok_or_else(|| format!("model provider '{}' not found in server provider catalog", provider_id))?;
+        .ok_or_else(|| {
+            format!(
+                "model provider '{}' not found in server provider catalog",
+                provider_id
+            )
+        })?;
 
     let model_exists = provider
         .models
@@ -1190,11 +1276,17 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
     let start = now_unix_secs();
     let mut unchanged_since = now_unix_secs();
     loop {
-        match opencode::get_opencode_session_messages_detailed(repo.as_str(), session_id.as_str(), None, Some(80)) {
+        match opencode::get_opencode_session_messages_detailed(
+            repo.as_str(),
+            session_id.as_str(),
+            None,
+            Some(80),
+        ) {
             Ok(v) => {
                 let stats = analyze_session_loop_stats(&v);
                 if is_size_limit_compaction_loop(stats) {
-                    let _ = opencode::abort_opencode_session(repo.as_str(), session_id.as_str(), None);
+                    let _ =
+                        opencode::abort_opencode_session(repo.as_str(), session_id.as_str(), None);
                     let _ = write_sse_event(
                         &mut stream,
                         "error",
@@ -1220,7 +1312,13 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
                     if write_sse_event(&mut stream, "messages", &v).is_err() {
                         break;
                     }
-                } else if write_sse_event(&mut stream, "heartbeat", &serde_json::json!({"ts": now_unix_secs()})).is_err() {
+                } else if write_sse_event(
+                    &mut stream,
+                    "heartbeat",
+                    &serde_json::json!({"ts": now_unix_secs()}),
+                )
+                .is_err()
+                {
                     break;
                 }
             }
@@ -1277,7 +1375,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         // Safety belt: require this request to originate from loopback.
         if let Some(ip) = remote_ip {
             if !ip.is_loopback() {
-                return (403, serde_json::json!({"error":"pair.request only allowed from loopback"}));
+                return (
+                    403,
+                    serde_json::json!({"error":"pair.request only allowed from loopback"}),
+                );
             }
         }
         let info = refresh_pair_code();
@@ -1298,13 +1399,21 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         let payload: PairAuthRequest = match serde_json::from_value(raw) {
             Ok(v) => v,
-            Err(e) => return (400, serde_json::json!({ "error": format!("invalid payload: {e}") })),
+            Err(e) => {
+                return (
+                    400,
+                    serde_json::json!({ "error": format!("invalid payload: {e}") }),
+                )
+            }
         };
         if let Err(reason) = verify_pair_code(payload.code.as_str()) {
             return (401, serde_json::json!({ "error": reason }));
         }
         let token = current_bearer_token();
-        return (200, serde_json::json!({ "token": token, "tokenType": "Bearer" }));
+        return (
+            200,
+            serde_json::json!({ "token": token, "tokenType": "Bearer" }),
+        );
     }
 
     if let Err(e) = ensure_authorized(&req) {
@@ -1364,7 +1473,12 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         let payload: CreateSessionRequest = match serde_json::from_value(raw) {
             Ok(v) => v,
-            Err(e) => return (400, serde_json::json!({ "error": format!("invalid payload: {e}") })),
+            Err(e) => {
+                return (
+                    400,
+                    serde_json::json!({ "error": format!("invalid payload: {e}") }),
+                )
+            }
         };
         return match opencode::create_opencode_session(payload.repo_path.as_str(), payload.title) {
             Ok(v) => (
@@ -1413,16 +1527,34 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         let payload: PromptRequest = match serde_json::from_value(raw) {
             Ok(v) => v,
-            Err(e) => return (400, serde_json::json!({ "error": format!("invalid payload: {e}") })),
+            Err(e) => {
+                return (
+                    400,
+                    serde_json::json!({ "error": format!("invalid payload: {e}") }),
+                )
+            }
         };
-        if let Some(model) = payload.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        if let Some(model) = payload
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
             if let Err(e) = validate_prompt_model(payload.repo_path.as_str(), model) {
                 return (400, serde_json::json!({ "error": e }));
             }
         }
-        let mut session_id = payload.session_id.clone().unwrap_or_default().trim().to_string();
+        let mut session_id = payload
+            .session_id
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if session_id.is_empty() {
-            let created = match opencode::create_opencode_session(payload.repo_path.as_str(), payload.title.clone()) {
+            let created = match opencode::create_opencode_session(
+                payload.repo_path.as_str(),
+                payload.title.clone(),
+            ) {
                 Ok(s) => s,
                 Err(e) => return (500, serde_json::json!({ "error": e })),
             };
@@ -1432,6 +1564,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             payload.repo_path.as_str(),
             session_id.as_str(),
             payload.prompt.as_str(),
+            payload.parts.clone(),
             payload.model.clone(),
         ) {
             Ok(_) => (
@@ -1451,14 +1584,17 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                     (500, serde_json::json!({ "error": e }))
                 }
             }
-        }
+        };
     }
 
     if req.method == "GET" && req.path == "/api/v1/opencode/messages" {
         let repo = req.query.get("repoPath").cloned().unwrap_or_default();
         let sid = req.query.get("sessionId").cloned().unwrap_or_default();
         if repo.trim().is_empty() || sid.trim().is_empty() {
-            return (400, serde_json::json!({ "error": "repoPath and sessionId are required" }));
+            return (
+                400,
+                serde_json::json!({ "error": "repoPath and sessionId are required" }),
+            );
         }
         let limit = req.query.get("limit").and_then(|v| v.parse::<u32>().ok());
         let before = req.query.get("before").cloned();
@@ -1497,9 +1633,18 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         let payload: AbortRequest = match serde_json::from_value(raw) {
             Ok(v) => v,
-            Err(e) => return (400, serde_json::json!({ "error": format!("invalid payload: {e}") })),
+            Err(e) => {
+                return (
+                    400,
+                    serde_json::json!({ "error": format!("invalid payload: {e}") }),
+                )
+            }
         };
-        return match opencode::abort_opencode_session(payload.repo_path.as_str(), payload.session_id.as_str(), None) {
+        return match opencode::abort_opencode_session(
+            payload.repo_path.as_str(),
+            payload.session_id.as_str(),
+            None,
+        ) {
             Ok(v) => (200, serde_json::json!({ "ok": v })),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
@@ -1510,16 +1655,17 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if repo.trim().is_empty() {
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
-        let limit = req.query.get("limit").and_then(|v| v.parse::<u32>().ok()).unwrap_or(50);
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(50);
         let safe_limit = limit.clamp(1, 200);
         return match opencode::list_opencode_sessions(repo.as_str(), Some(safe_limit)) {
             Ok(sessions) => {
                 let mut result = serde_json::Map::new();
                 for s in sessions {
-                    result.insert(
-                        s.id.clone(),
-                        serde_json::json!({ "type": "idle" }),
-                    );
+                    result.insert(s.id.clone(), serde_json::json!({ "type": "idle" }));
                 }
                 (200, Value::Object(result))
             }
@@ -1605,7 +1751,10 @@ pub fn start_control_server() {
     }
     if let Ok(mut guard) = runtime_cell().lock() {
         if let Some(current) = guard.as_ref() {
-            if current.settings.host == settings.host && current.settings.port == settings.port && current.settings.enabled == settings.enabled {
+            if current.settings.host == settings.host
+                && current.settings.port == settings.port
+                && current.settings.enabled == settings.enabled
+            {
                 return;
             }
         }
@@ -1633,7 +1782,9 @@ pub fn get_control_server_settings() -> Result<ControlServerSettings, String> {
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn set_control_server_settings(settings: ControlServerSettings) -> Result<ControlServerSettings, String> {
+pub fn set_control_server_settings(
+    settings: ControlServerSettings,
+) -> Result<ControlServerSettings, String> {
     let mut next = settings.clone();
     if next.host.trim().is_empty() {
         next.host = DEFAULT_CONTROL_SERVER_HOST.to_string();
@@ -1643,7 +1794,11 @@ pub fn set_control_server_settings(settings: ControlServerSettings) -> Result<Co
     if next.port == 0 {
         return Err("control server port must be between 1 and 65535".to_string());
     }
-    next.public_base_url = next.public_base_url.trim().trim_end_matches('/').to_string();
+    next.public_base_url = next
+        .public_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
     next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
     write_control_server_settings(&next)?;
     {

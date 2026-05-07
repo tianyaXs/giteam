@@ -134,6 +134,7 @@ struct PromptRequest {
     repo_path: String,
     session_id: Option<String>,
     prompt: String,
+    parts: Option<Value>,
     model: Option<String>,
     title: Option<String>,
 }
@@ -2265,6 +2266,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             payload.repo_path.as_str(),
             session_id.as_str(),
             payload.prompt.as_str(),
+            payload.parts.clone(),
             payload.model.clone(),
         ) {
             Ok(_) => (

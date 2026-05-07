@@ -84,21 +84,26 @@ export async function sendPrompt(args: {
   prompt: string;
   sessionId?: string;
   model?: string;
+  parts?: { type: string; mime?: string; url?: string; filename?: string; text?: string }[];
 }): Promise<PromptResponse> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/opencode/prompt`;
+  const body: Record<string, unknown> = {
+    repoPath: args.repoPath,
+    prompt: args.prompt,
+    sessionId: args.sessionId || undefined,
+    model: args.model || undefined
+  };
+  if (args.parts && args.parts.length > 0) {
+    body.parts = args.parts;
+  }
   const result = await fetchTextWithTrace(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders(args.token)
     },
-    body: JSON.stringify({
-      repoPath: args.repoPath,
-      prompt: args.prompt,
-      sessionId: args.sessionId || undefined,
-      model: args.model || undefined
-    })
+    body: JSON.stringify(body)
   });
   const raw = ensureOk('prompt', 'POST', url, result.status, result.ok, result.text);
   return JSON.parse(raw) as PromptResponse;
@@ -211,6 +216,21 @@ export async function getSessionStatus(args: {
   const parsed = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
   return parsed as Record<string, SessionStatusInfo>;
+}
+
+export async function getOpencodeCommands(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<any[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const url = `${baseUrl}/command?directory=${encodeURIComponent(args.repoPath)}`;
+  const result = await fetchTextWithTrace(url, {
+    headers: authHeaders(args.token)
+  });
+  const raw = ensureOk('command.list', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 export async function getOpencodeConfig(args: {
