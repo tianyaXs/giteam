@@ -10622,11 +10622,6 @@ branches.forEach((b) => {
         {opencodePreviewImage ? (
           <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
             <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
-              <div className="opencode-image-preview-toolbar">
-                <span className="opencode-image-preview-name">{opencodePreviewImage.filename || "图片"}</span>
-                <button className="btn ghost" onClick={() => void copyText(opencodePreviewImage.uri)}>复制</button>
-                <button className="btn ghost" onClick={() => setOpencodePreviewImage(null)}>关闭</button>
-              </div>
               <img className="opencode-image-preview-img" src={opencodePreviewImage.uri} alt={opencodePreviewImage.filename || "preview"} />
             </div>
           </div>
