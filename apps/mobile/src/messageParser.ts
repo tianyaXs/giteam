@@ -10,6 +10,8 @@ import type {
   ParsedConversation
 } from './types';
 
+type MobileImageAttachment = NonNullable<MobileChatMessage['attachments']>[number];
+
 function normalizeText(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
@@ -45,6 +47,25 @@ function collectVisibleTexts(parts: any[]): string[] {
     .filter((p: any) => p?.synthetic !== true)
     .map((p: any) => normalizeText(p?.text))
     .filter(Boolean);
+}
+
+function collectUserImageAttachments(parts: any[]): MobileImageAttachment[] {
+  const out: MobileImageAttachment[] = [];
+  collectParts(parts, 'file').forEach((p: any, index: number) => {
+      const mime = normalizeText(p?.mime);
+      const url = normalizeText(p?.url) || normalizeText(p?.source);
+      const filename = normalizeText(p?.filename);
+      const looksLikeImage = mime.startsWith('image/') || url.startsWith('data:image/') || /\.(png|jpe?g|webp|gif|heic)$/i.test(filename);
+      if (!looksLikeImage || !url) return;
+      out.push({
+        id: normalizeText(p?.id) || `image:${index}`,
+        kind: 'image' as const,
+        uri: url,
+        mime: mime || undefined,
+        filename: filename || undefined,
+      });
+    });
+  return out;
 }
 
 function hasCompactionPart(parts: any[]): boolean {
@@ -371,10 +392,11 @@ export function parseConversation(raw: unknown): ParsedConversation {
         }
       }
       const text = collectVisibleTexts(parts).join('\n\n').trim();
-      if (!text) continue;
+      const attachments = collectUserImageAttachments(parts);
+      if (!text && attachments.length === 0) continue;
       timelineRows.push({
         order: seq++,
-        item: { kind: 'chat', createdAt, message: { id, role: 'user', text, createdAt } }
+        item: { kind: 'chat', createdAt, message: { id, role: 'user', text, createdAt, attachments } }
       });
       continue;
     }

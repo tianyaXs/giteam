@@ -2229,6 +2229,7 @@ body {
 }
 
 .gt-right-tab {
+  position: relative;
   min-height: 42px;
   border: 0;
   background: transparent;
@@ -2240,6 +2241,23 @@ body {
 .gt-right-tab.active {
   color: var(--text);
   background: color-mix(in srgb, var(--accent-soft) 34%, transparent);
+}
+
+.gt-right-tab:first-child.active {
+  background: color-mix(in srgb, var(--accent-soft) 34%, transparent);
+}
+
+.gt-right-tab-img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  opacity: 0.78;
+  filter: grayscale(1);
+}
+
+.gt-right-tab.active .gt-right-tab-img,
+.gt-right-tab:hover .gt-right-tab-img {
+  opacity: 1;
 }
 
 .gt-right-panel {
@@ -5051,6 +5069,12 @@ pre.gt-terminal-output {
   margin-top: 2px;
 }
 
+.gt-terminal-input-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
 .gt-terminal-prompt {
   flex: 0 0 auto;
   font-size: 11.5px;
@@ -5076,6 +5100,68 @@ pre.gt-terminal-output {
   outline: none;
   padding: 0;
   caret-color: var(--text);
+  position: relative;
+  z-index: 2;
+}
+
+.gt-terminal-ghost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  color: color-mix(in srgb, var(--muted) 76%, transparent);
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+}
+
+.gt-terminal-completion-popover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  min-width: min(420px, 100%);
+  max-width: min(560px, 100%);
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 97%, transparent);
+  box-shadow: 0 18px 40px rgba(15,23,42,0.16);
+  z-index: 9;
+}
+
+.gt-terminal-completion-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+}
+
+.gt-terminal-completion-item:hover,
+.gt-terminal-completion-item.active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel));
+}
+
+.gt-terminal-completion-item kbd {
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-family: inherit;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
 }
 
 .gt-terminal-input::placeholder {
@@ -5676,6 +5762,12 @@ pre.gt-terminal-output {
 .gt-right-tab svg {
   width: 15px;
   height: 15px;
+}
+
+.gt-right-tabs-titlebar .gt-right-tab-img {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 .opencode-composer-send {
@@ -6747,6 +6839,72 @@ pre.gt-terminal-output {
 .opencode-slash-badge.mcp {
   background: color-mix(in srgb, #f59e0b 16%, transparent);
   color: #f59e0b;
+}
+
+.opencode-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.opencode-msg-image-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 12px;
+  cursor: zoom-in;
+}
+
+.opencode-msg-image {
+  display: block;
+  width: 74px;
+  height: 74px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  background: var(--bg-soft);
+}
+
+.opencode-image-preview-mask {
+  z-index: 2000;
+}
+
+.opencode-image-preview-card {
+  width: min(920px, 88vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--bg);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+}
+
+.opencode-image-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.opencode-image-preview-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.opencode-image-preview-img {
+  max-width: 100%;
+  max-height: calc(88vh - 82px);
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--bg-soft);
 }
 
 @media (max-width: 1400px) {

@@ -18,6 +18,14 @@ pub struct RepoTerminalSnapshot {
     pub cwd: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoTerminalCompletion {
+    pub next_input: String,
+    pub candidates: Vec<String>,
+    pub token: String,
+}
+
 #[derive(Debug)]
 struct TerminalChunk {
     seq: u64,
@@ -213,6 +221,60 @@ fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+fn unescape_terminal_path_token(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
+}
+
+fn resolve_terminal_cd_target(current_cwd: &str, line: &str) -> Option<String> {
+    let trimmed = line.trim_matches(|ch| ch == '\r' || ch == '\n').trim();
+    if trimmed.is_empty() || trimmed.contains(';') || trimmed.contains('&') || trimmed.contains('|') {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    if parts.next()? != "cd" {
+        return None;
+    }
+    let raw_target = parts.next().unwrap_or("~");
+    if parts.next().is_some() {
+        return None;
+    }
+    let target = unescape_terminal_path_token(raw_target.trim_matches(|ch| ch == '"' || ch == '\''));
+    let path = if target == "~" {
+        std::env::var("HOME").ok().map(PathBuf::from)?
+    } else if let Some(rest) = target.strip_prefix("~/") {
+        std::env::var("HOME").ok().map(PathBuf::from)?.join(rest)
+    } else if target == "-" {
+        return None;
+    } else if target.starts_with('/') {
+        PathBuf::from(target)
+    } else {
+        PathBuf::from(current_cwd).join(target)
+    };
+    let Ok(canonical) = path.canonicalize() else {
+        return None;
+    };
+    if canonical.is_dir() {
+        Some(canonical.to_string_lossy().to_string())
+    } else {
+        None
+    }
 }
 
 fn apply_completion_to_input(input: &str, token: &str, candidates: &[String]) -> String {
@@ -1500,6 +1562,7 @@ pub fn send_repo_terminal_input(
     let Some(session) = sessions.get_mut(&key) else {
         return Err("terminal session not found".to_string());
     };
+    let next_cwd = resolve_terminal_cd_target(&session.cwd, input);
     session
         .stdin
         .write_all(input.as_bytes())
@@ -1508,6 +1571,9 @@ pub fn send_repo_terminal_input(
         .stdin
         .flush()
         .map_err(|e| format!("failed flushing terminal input: {e}"))?;
+    if let Some(next_cwd) = next_cwd {
+        session.cwd = next_cwd;
+    }
     Ok(())
 }
 
@@ -1522,12 +1588,25 @@ pub fn read_repo_terminal_output(
 
 #[tauri::command]
 pub fn complete_repo_terminal_input(repo_path: &str, input: &str, cwd: Option<String>) -> Result<String, String> {
+    Ok(list_repo_terminal_completions(repo_path, input, cwd)?.next_input)
+}
+
+#[tauri::command]
+pub fn list_repo_terminal_completions(
+    repo_path: &str,
+    input: &str,
+    cwd: Option<String>,
+) -> Result<RepoTerminalCompletion, String> {
     let trimmed_repo = repo_path.trim();
     if trimmed_repo.is_empty() {
         return Err("repo path is empty".to_string());
     }
     if input.is_empty() {
-        return Ok(String::new());
+        return Ok(RepoTerminalCompletion {
+            next_input: String::new(),
+            candidates: Vec::new(),
+            token: String::new(),
+        });
     }
     let token_start = input
         .char_indices()
@@ -1537,9 +1616,13 @@ pub fn complete_repo_terminal_input(repo_path: &str, input: &str, cwd: Option<St
         .unwrap_or(0);
     let token = &input[token_start..];
     if token.is_empty() {
-        return Ok(input.to_string());
+        return Ok(RepoTerminalCompletion {
+            next_input: input.to_string(),
+            candidates: Vec::new(),
+            token: String::new(),
+        });
     }
-    let candidates = if !input[..token_start].trim().contains(' ')
+    let candidates = if token_start == 0
         && !token.contains('/')
         && !token.starts_with('.')
         && !token.starts_with('~')
@@ -1548,7 +1631,11 @@ pub fn complete_repo_terminal_input(repo_path: &str, input: &str, cwd: Option<St
     } else {
         complete_path_token(trimmed_repo, cwd.as_deref().unwrap_or(trimmed_repo), token)
     };
-    Ok(apply_completion_to_input(input, token, &candidates))
+    Ok(RepoTerminalCompletion {
+        next_input: apply_completion_to_input(input, token, &candidates),
+        candidates,
+        token: token.to_string(),
+    })
 }
 
 #[tauri::command]

@@ -109,6 +109,7 @@ fn main() {
             commands::git::send_repo_terminal_input,
             commands::git::read_repo_terminal_output,
             commands::git::complete_repo_terminal_input,
+            commands::git::list_repo_terminal_completions,
             commands::git::clear_repo_terminal_session,
             commands::git::close_repo_terminal_session,
             commands::git::run_git_user_identity,
@@ -163,6 +164,7 @@ fn main() {
             commands::giteam_cli::giteam_cli_get_pair_code,
             commands::giteam_cli::giteam_cli_refresh_pair_code,
             commands::giteam_cli::giteam_cli_get_access_info,
+            commands::control::set_mobile_model_state_from_desktop,
             commands::watch::start_git_worktree_watcher,
             commands::watch::stop_git_worktree_watcher
         ])

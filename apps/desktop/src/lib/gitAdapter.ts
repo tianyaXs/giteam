@@ -124,6 +124,12 @@ export type RepoTerminalSnapshot = {
   cwd: string;
 };
 
+export type RepoTerminalCompletion = {
+  nextInput: string;
+  candidates: string[];
+  token: string;
+};
+
 export async function startRepoTerminalSession(repoPath: string, sessionId?: string): Promise<RepoTerminalSnapshot> {
   return invoke<RepoTerminalSnapshot>("start_repo_terminal_session", { repoPath, sessionId });
 }
@@ -138,6 +144,10 @@ export async function readRepoTerminalOutput(repoPath: string, afterSeq: number,
 
 export async function completeRepoTerminalInput(repoPath: string, input: string, cwd?: string): Promise<string> {
   return invoke<string>("complete_repo_terminal_input", { repoPath, input, cwd });
+}
+
+export async function listRepoTerminalCompletions(repoPath: string, input: string, cwd?: string): Promise<RepoTerminalCompletion> {
+  return invoke<RepoTerminalCompletion>("list_repo_terminal_completions", { repoPath, input, cwd });
 }
 
 export async function clearRepoTerminalSession(repoPath: string, sessionId?: string): Promise<void> {

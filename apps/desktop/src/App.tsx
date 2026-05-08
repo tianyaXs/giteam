@@ -7,6 +7,7 @@ import { Component, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useSt
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import gitTreeIconUrl from "../gittree.png";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
@@ -15,6 +16,7 @@ import {
   closeRepoTerminalSession,
   completeRepoTerminalInput,
   clearRepoTerminalSession,
+  listRepoTerminalCompletions,
   createGitBranch,
   createGitDetachedWorktree,
   createGitWorktreeFromBranch,
@@ -104,7 +106,41 @@ type TerminalTabState = {
   history: string[];
   historyIndex: number;
   historyDraft: string;
+  completionItems: string[];
+  completionIndex: number;
+  completionToken: string;
 };
+
+function createTerminalTabState(id: string, title: string, cwd = ""): TerminalTabState {
+  return {
+    id,
+    title,
+    input: "",
+    output: "",
+    seq: 0,
+    alive: false,
+    cwd,
+    history: [],
+    historyIndex: -1,
+    historyDraft: "",
+    completionItems: [],
+    completionIndex: 0,
+    completionToken: ""
+  };
+}
+
+function escapeTerminalCompletionValue(value: string): string {
+  return value.replace(/([\s\\"'`$])/g, "\\$1");
+}
+
+function applyTerminalCompletionCandidate(input: string, token: string, candidate: string): string {
+  if (!token) return input;
+  const replacement = candidate.endsWith("/")
+    ? escapeTerminalCompletionValue(candidate)
+    : `${escapeTerminalCompletionValue(candidate)} `;
+  const keep = input.length - token.length;
+  return `${input.slice(0, Math.max(0, keep))}${replacement}`;
+}
 
 function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
   const dividerX = props.side === "left" ? 9 : 15;
@@ -129,16 +165,7 @@ function SendIcon(props: { busy: boolean }) {
 function RightPaneTabIcon(props: { tab: RightPaneTab; active: boolean }) {
   const stroke = props.active ? "currentColor" : "currentColor";
   if (props.tab === "worktree") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
-        <path d="M7 5v6a3 3 0 0 0 3 3h6" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M7 5v-1" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-        <path d="M7 14v5" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-        <circle cx="7" cy="4" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
-        <circle cx="7" cy="19" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
-        <circle cx="18" cy="14" r="1.9" fill="currentColor" opacity={props.active ? 0.95 : 0.62} />
-      </svg>
-    );
+    return <img className="gt-right-tab-img" src={gitTreeIconUrl} alt="" aria-hidden="true" />;
   }
   if (props.tab === "changes") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 12H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 17H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="5" cy="7" r="1.2" fill="currentColor" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="5" cy="17" r="1.2" fill="currentColor" /></svg>;
@@ -335,6 +362,7 @@ type OpencodeChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }>;
 };
 type OpencodeChatSession = {
   id: string;
@@ -667,6 +695,45 @@ function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | 
     if (text) chunks.push(text);
   }
   return chunks.join("\n\n");
+}
+
+function buildOpencodeImageAttachmentsFromParts(parts: OpencodeDetailedPart[] | undefined | null) {
+  const rows = Array.isArray(parts) ? parts : [];
+  const out: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }> = [];
+  rows.forEach((p, index) => {
+    const part: any = p || {};
+    const type = String(part.type || "");
+    if (type !== "file") return;
+    const mime = String(part.mime || "").trim();
+    const url = String(part.url || part.source || "").trim();
+    const filename = String(part.filename || "").trim();
+    const image = mime.startsWith("image/") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(filename);
+    if (!image || !url) return;
+    out.push({
+      id: String(part.id || `image:${index}`),
+      kind: "image",
+      uri: url,
+      mime: mime || undefined,
+      filename: filename || undefined,
+    });
+  });
+  return out;
+}
+
+function mergeOpencodeMessageAttachments(prev: OpencodeChatMessage[] | undefined, next: OpencodeChatMessage[]) {
+  const prevById = new Map<string, NonNullable<OpencodeChatMessage["attachments"]>>();
+  const prevByContent = new Map<string, NonNullable<OpencodeChatMessage["attachments"]>>();
+  (Array.isArray(prev) ? prev : []).forEach((msg) => {
+    if (msg.role !== "user" || !msg.attachments?.length) return;
+    if (msg.id) prevById.set(msg.id, msg.attachments);
+    const text = msg.content.trim();
+    if (text) prevByContent.set(text, msg.attachments);
+  });
+  return next.map((msg) => {
+    if (msg.role !== "user" || msg.attachments?.length) return msg;
+    const attachments = prevById.get(msg.id) || prevByContent.get(msg.content.trim());
+    return attachments?.length ? { ...msg, attachments } : msg;
+  });
 }
 
 function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
@@ -2053,6 +2120,7 @@ function buildTopologyModel(input: {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
+  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ uri: string; filename?: string } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
@@ -2337,18 +2405,7 @@ export function App() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
   const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>([
-    {
-      id: "terminal-1",
-      title: "终端 1",
-      input: "",
-      output: "",
-      seq: 0,
-      alive: false,
-      cwd: "",
-      history: [],
-      historyIndex: -1,
-      historyDraft: ""
-    }
+    createTerminalTabState("terminal-1", "终端 1")
   ]);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState("terminal-1");
   const [terminalSidebarVisible, setTerminalSidebarVisible] = useState(true);
@@ -2364,7 +2421,13 @@ export function App() {
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
     { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
     { id: "builtin-model", trigger: "model", title: "Model", description: "切换当前模型", source: "builtin" },
-    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" }
+    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" },
+    { id: "builtin-open", trigger: "open", title: "Open", description: "搜索文件、命令和会话", source: "builtin" },
+    { id: "builtin-terminal", trigger: "terminal", title: "Terminal", description: "打开或聚焦终端", source: "builtin" },
+    { id: "builtin-mcp", trigger: "mcp", title: "MCP", description: "切换 MCPs", source: "builtin" },
+    { id: "builtin-workspace", trigger: "workspace", title: "Workspace", description: "在侧边栏启用或禁用多个工作区", source: "builtin" },
+    { id: "builtin-init", trigger: "init", title: "Init", description: "create/update AGENTS.md", source: "builtin" },
+    { id: "builtin-review", trigger: "review", title: "Review", description: "review changes [commit|branch|pr]", source: "builtin" }
   ], []);
 
   const opencodeSlashQuery = useMemo(() => {
@@ -2382,8 +2445,7 @@ export function App() {
         if (seen.has(key)) return false;
         seen.add(key);
         return !opencodeSlashQuery || key.includes(opencodeSlashQuery) || cmd.title.toLowerCase().includes(opencodeSlashQuery);
-      })
-      .slice(0, 8);
+      });
   }, [builtinOpencodeSlashCommands, opencodeSlashCommands, opencodeSlashOpen, opencodeSlashQuery]);
 
   useEffect(() => {
@@ -2500,10 +2562,32 @@ export function App() {
     rightPaneTabRef.current = rightPaneTab;
     gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
   }, [repoPath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+
+  useEffect(() => {
+    if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
+    const input = activeTerminalTab.input;
+    if (!input.trim()) {
+      updateTerminalTabById(activeTerminalTab.id, (prev) => (
+        prev.completionItems.length === 0 && !prev.completionToken ? prev : { ...prev, completionItems: [], completionIndex: 0, completionToken: "" }
+      ));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshTerminalCompletions(activeTerminalTab, input);
+    }, 90);
+    return () => window.clearTimeout(timer);
+  }, [activeTerminalTab?.id, activeTerminalTab?.input, activeTerminalTab?.cwd, repoPath, rightPaneTab]);
   const activeTerminalView = useMemo(
     () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
     [activeTerminalTab?.output]
   );
+  const activeTerminalGhostText = useMemo(() => {
+    const tab = activeTerminalTab;
+    if (!tab?.completionItems?.length || !tab.completionToken) return "";
+    const candidate = tab.completionItems[tab.completionIndex] || tab.completionItems[0] || "";
+    if (!candidate || !candidate.startsWith(tab.completionToken)) return "";
+    return candidate.slice(tab.completionToken.length);
+  }, [activeTerminalTab]);
   const topologyModel = useMemo(
     () => buildTopologyModel({
       repoName: selectedRepo?.name || "Current Repo",
@@ -2772,6 +2856,42 @@ export function App() {
     opencodeProviderNames
   ]);
 
+  const opencodeSyncModelRefs = useMemo(() => {
+    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
+    const out = new Set<string>();
+    for (const pid of opencodeConfiguredProviders) {
+      const resolvedProvider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
+      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
+      const models = opencodeConfiguredModelsByProvider[pid] ?? [];
+      for (const mid of models) {
+        const full = normalizeModelRef(`${pid}/${mid}`);
+        if (!full || opencodeHiddenModels.has(full)) continue;
+        out.add(full);
+      }
+    }
+    for (const full of opencodeEnabledModels) {
+      if (!full || opencodeHiddenModels.has(full)) continue;
+      const parsed = parseModelRef(full);
+      if (!parsed) continue;
+      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
+      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
+      out.add(full);
+    }
+    const active = normalizeModelRef(activeOpencodeModel || opencodeConfig?.configuredModel || "");
+    if (active && !opencodeHiddenModels.has(active)) out.add(active);
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
+  }, [
+    activeOpencodeModel,
+    opencodeConfig?.configuredModel,
+    opencodeConfiguredModelsByProvider,
+    opencodeConfiguredProviders,
+    opencodeConnectedProviders,
+    opencodeEnabledModels,
+    opencodeHiddenModels,
+    opencodeModelsByProvider,
+    opencodeProviderNames
+  ]);
+
   const opencodeProviderPickerCandidates = useMemo(() => {
     const q = opencodeProviderPickerSearch.trim().toLowerCase();
     // Provider list for enable/disable should be "all known providers":
@@ -3033,7 +3153,12 @@ export function App() {
         const role = String(info.role || "").trim();
         if (role !== "user" && role !== "assistant") continue;
         detailsById[msgId] = item;
-        mapped.push({ id: msgId, role: role as "user" | "assistant", content: buildOpencodeMainLineMarkdownFromParts(parts) });
+        mapped.push({
+          id: msgId,
+          role: role as "user" | "assistant",
+          content: buildOpencodeMainLineMarkdownFromParts(parts),
+          attachments: role === "user" ? buildOpencodeImageAttachmentsFromParts(parts) : undefined,
+        });
       }
       const nextCursor = res.headers.get("x-next-cursor")?.trim() || undefined;
       const entry: OpencodeMessagePageCacheEntry = {
@@ -3070,7 +3195,8 @@ export function App() {
       };
     }
     const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt);
-    const mapped = page.items;
+      const existingSession = opencodeSessions.find((session) => session.id === id);
+      const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
     const turnCount = buildOpencodeTurnRanges(mapped).length;
     setOpencodeMessageCacheEntry(repoPath, id, {
       limit,
@@ -4312,7 +4438,12 @@ export function App() {
     updateOpencodeSessionById(sessionId, (session) => {
       const nextMessages: OpencodeChatMessage[] = [
         ...session.messages,
-        { id: `user-${makeId()}`, role: "user", content: prompt || "(image)" },
+        {
+          id: `user-${makeId()}`,
+          role: "user",
+          content: prompt,
+          attachments: images.map((img) => ({ id: img.id, kind: "image" as const, uri: img.dataUrl, mime: img.mime, filename: img.filename })),
+        },
         { id: assistantId, role: "assistant", content: "" }
       ];
       const nextTurnCount = buildOpencodeTurnRanges(nextMessages).length;
@@ -4934,12 +5065,58 @@ export function App() {
     });
   }
 
+  async function refreshTerminalCompletions(tab: TerminalTabState, nextInput: string) {
+    if (!repoPath.trim()) return;
+    const currentInput = nextInput;
+    try {
+      const result = await listRepoTerminalCompletions(repoPath, currentInput, tab.cwd || repoPath);
+      updateTerminalTabById(tab.id, (prev) => {
+        if (prev.input !== currentInput) return prev;
+        return {
+          ...prev,
+          completionItems: result.candidates.slice(0, 24),
+          completionIndex: 0,
+          completionToken: result.token || ""
+        };
+      });
+    } catch {
+      updateTerminalTabById(tab.id, (prev) => prev.input === currentInput ? { ...prev, completionItems: [], completionIndex: 0, completionToken: "" } : prev);
+    }
+  }
+
+  function selectTerminalCompletion(tab: TerminalTabState, index = tab.completionIndex) {
+    const candidate = tab.completionItems[index];
+    if (!candidate || !tab.completionToken) return;
+    const nextInput = applyTerminalCompletionCandidate(tab.input, tab.completionToken, candidate);
+    updateTerminalTabById(tab.id, {
+      input: nextInput,
+      historyIndex: -1,
+      historyDraft: nextInput,
+      completionItems: [],
+      completionIndex: 0,
+      completionToken: ""
+    });
+    void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
+  }
+
   async function applyTerminalTabCompletion(tab: TerminalTabState) {
+    if (tab.completionItems.length > 0 && tab.completionToken) {
+      selectTerminalCompletion(tab);
+      return;
+    }
     if (!repoPath) return;
     try {
       const nextInput = await completeRepoTerminalInput(repoPath, tab.input, tab.cwd || repoPath);
       if (nextInput === tab.input) return;
-      updateTerminalTabById(tab.id, { input: nextInput, historyIndex: -1, historyDraft: nextInput });
+      updateTerminalTabById(tab.id, {
+        input: nextInput,
+        historyIndex: -1,
+        historyDraft: nextInput,
+        completionItems: [],
+        completionIndex: 0,
+        completionToken: ""
+      });
+      void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
     } catch {
       // ignore completion failures to keep typing smooth
     }
@@ -6024,7 +6201,7 @@ export function App() {
     terminalSeqRef.current[id] = 0;
     setTerminalTabs((prev) => [
       ...prev,
-      { id, title: `终端 ${n}`, input: "", output: "", seq: 0, alive: false, cwd: selectedRepo?.path || repoPath || "", history: [], historyIndex: -1, historyDraft: "" }
+      createTerminalTabState(id, `终端 ${n}`, selectedRepo?.path || repoPath || "")
     ]);
     setActiveTerminalTabId(id);
   }
@@ -6060,7 +6237,10 @@ export function App() {
         history: [script, ...prev.history.filter((x) => x !== script)].slice(0, 80),
         historyIndex: -1,
         historyDraft: "",
-        input: ""
+        input: "",
+        completionItems: [],
+        completionIndex: 0,
+        completionToken: ""
       }));
     } catch (e) {
       const msg = String(e);
@@ -6630,30 +6810,46 @@ export function App() {
   }, [opencodeEnabledModels, selectedRepo?.id]);
 
   useEffect(() => {
-    if (!controlAccessInfo?.port || !selectedRepo?.id) return;
+    if (!selectedRepo?.id && !repoPath) return;
+    const availableModels = opencodeSyncModelRefs;
+    const modelLabels: Record<string, string> = {};
+    for (const full of availableModels) {
+      const parsed = parseModelRef(full);
+      if (!parsed) continue;
+      modelLabels[full] = opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model]
+        || opencodeModelNamesByProvider[parsed.provider]?.[parsed.model]
+        || parsed.model;
+    }
     const payload = {
-      repoId: selectedRepo.id,
+      repoId: selectedRepo?.id || "global",
       repoPath,
+      availableModels,
+      modelLabels,
       enabledModels: Array.from(opencodeEnabledModels),
       hiddenModels: Array.from(opencodeHiddenModels),
       activeModel: activeOpencodeModel || opencodeConfig?.configuredModel || "",
       updatedAt: Date.now(),
     };
-    const url = `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state`;
+    const url = controlAccessInfo?.port ? `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state` : "";
     const timer = window.setTimeout(() => {
-      void fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
+      void invoke("set_mobile_model_state_from_desktop", { state: payload }).catch(() => {});
+      if (url) {
+        void fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch(() => {});
+      }
     }, 150);
     return () => window.clearTimeout(timer);
   }, [
     activeOpencodeModel,
     controlAccessInfo?.port,
     opencodeConfig?.configuredModel,
-    opencodeEnabledModels,
+    opencodeConfiguredModelNamesByProvider,
     opencodeHiddenModels,
+    opencodeModelNamesByProvider,
+    opencodeSyncModelRefs,
     repoPath,
     selectedRepo?.id,
   ]);
@@ -6906,20 +7102,7 @@ export function App() {
     setOpencodeLivePartsByServerMessageId({});
     setOpencodePromptInput("");
     opencodeSessionsRepoIdRef.current = "";
-    setTerminalTabs([
-      {
-        id: "terminal-1",
-        title: "终端 1",
-        input: "",
-        output: "",
-        seq: 0,
-        alive: false,
-        cwd: "",
-        history: [],
-        historyIndex: -1,
-        historyDraft: ""
-      }
-    ]);
+    setTerminalTabs([createTerminalTabState("terminal-1", "终端 1")]);
     setActiveTerminalTabId("terminal-1");
     terminalTabCounterRef.current = 2;
     terminalSeqRef.current = { "terminal-1": 0 };
@@ -7893,9 +8076,28 @@ export function App() {
                           </div>
                         </div>
                       )
-                    ) : msg.content.trim() ? (
+                    ) : msg.content.trim() || (msg.attachments && msg.attachments.length > 0) ? (
                       <div className="opencode-msg-body">
-                        <MarkdownLite source={msg.content} />
+                        {msg.attachments && msg.attachments.length > 0 ? (
+                          <div className="opencode-msg-attachments">
+                            {msg.attachments.map((img) => (
+                              <button
+                                key={img.id}
+                                type="button"
+                                className="opencode-msg-image-btn"
+                                onClick={() => setOpencodePreviewImage({ uri: img.uri, filename: img.filename })}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  void copyText(img.uri);
+                                }}
+                                title="点击查看，右键复制图片数据"
+                              >
+                                <img className="opencode-msg-image" src={img.uri} alt={img.filename || "attachment"} />
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {msg.content.trim() ? <MarkdownLite source={msg.content} /> : null}
                       </div>
                     ) : null}
                     {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
@@ -9003,54 +9205,97 @@ branches.forEach((b) => {
                 <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
                 <div className="gt-terminal-inline-input">
                   <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
-                  <input
-                    ref={terminalInputRef}
-                    className="gt-terminal-input"
-                    value={activeTerminalTab?.input || ""}
-                    onChange={(e) => {
-                      if (!activeTerminalTab) return;
-                      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
-                        ...prev,
-                        input: e.target.value,
-                        historyIndex: -1,
-                        historyDraft: e.target.value
-                      }));
-                    }}
-                    onKeyDown={(e) => {
-                      if (!activeTerminalTab) return;
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void runTerminalCommand();
-                        return;
-                      }
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        browseTerminalHistory(activeTerminalTab.id, "older");
-                        return;
-                      }
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        browseTerminalHistory(activeTerminalTab.id, "newer");
-                        return;
-                      }
-                      if (e.key === "Tab") {
-                        e.preventDefault();
-                        void applyTerminalTabCompletion(activeTerminalTab);
-                        return;
-                      }
-                      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
-                        e.preventDefault();
-                        void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
-                          // ignore
-                        });
-                      }
-                    }}
-                    placeholder=""
-                    spellCheck={false}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                  />
+                  <div className="gt-terminal-input-shell">
+                    <input
+                      ref={terminalInputRef}
+                      className="gt-terminal-input"
+                      value={activeTerminalTab?.input || ""}
+                      onChange={(e) => {
+                        if (!activeTerminalTab) return;
+                        updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+                          ...prev,
+                          input: e.target.value,
+                          historyIndex: -1,
+                          historyDraft: e.target.value,
+                          completionItems: [],
+                          completionIndex: 0,
+                          completionToken: ""
+                        }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (!activeTerminalTab) return;
+                        if (e.key === "Escape") {
+                          updateTerminalTabById(activeTerminalTab.id, { completionItems: [], completionIndex: 0, completionToken: "" });
+                          return;
+                        }
+                        if (activeTerminalTab.completionItems.length > 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                          e.preventDefault();
+                          updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+                            ...prev,
+                            completionIndex: e.key === "ArrowUp"
+                              ? (prev.completionIndex - 1 + prev.completionItems.length) % prev.completionItems.length
+                              : (prev.completionIndex + 1) % prev.completionItems.length
+                          }));
+                          return;
+                        }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void runTerminalCommand();
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          browseTerminalHistory(activeTerminalTab.id, "older");
+                          return;
+                        }
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          browseTerminalHistory(activeTerminalTab.id, "newer");
+                          return;
+                        }
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          void applyTerminalTabCompletion(activeTerminalTab);
+                          return;
+                        }
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
+                          e.preventDefault();
+                          void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
+                            // ignore
+                          });
+                        }
+                      }}
+                      placeholder=""
+                      spellCheck={false}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                    />
+                    {activeTerminalGhostText ? (
+                      <span
+                        className="gt-terminal-ghost"
+                        style={{ left: `${Math.max(0, (activeTerminalTab?.input || "").length) * 7.05}px` }}
+                      >
+                        {activeTerminalGhostText}
+                      </span>
+                    ) : null}
+                    {activeTerminalTab?.completionItems?.length ? (
+                      <div className="gt-terminal-completion-popover">
+                        {activeTerminalTab.completionItems.map((item, idx) => (
+                          <button
+                            key={`terminal-completion-${item}-${idx}`}
+                            type="button"
+                            className={idx === activeTerminalTab.completionIndex ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => selectTerminalCompletion(activeTerminalTab, idx)}
+                          >
+                            <span>{item}</span>
+                            {idx === activeTerminalTab.completionIndex ? <kbd>TAB</kbd> : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
                 </div>
               </div>
@@ -10370,6 +10615,19 @@ branches.forEach((b) => {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {opencodePreviewImage ? (
+          <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
+            <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
+              <div className="opencode-image-preview-toolbar">
+                <span className="opencode-image-preview-name">{opencodePreviewImage.filename || "图片"}</span>
+                <button className="btn ghost" onClick={() => void copyText(opencodePreviewImage.uri)}>复制</button>
+                <button className="btn ghost" onClick={() => setOpencodePreviewImage(null)}>关闭</button>
+              </div>
+              <img className="opencode-image-preview-img" src={opencodePreviewImage.uri} alt={opencodePreviewImage.filename || "preview"} />
             </div>
           </div>
         ) : null}

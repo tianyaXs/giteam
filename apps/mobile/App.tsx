@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Easing,
   Image,
   InteractionManager,
   LayoutChangeEvent,
+  Modal,
   PanResponder,
   Platform,
   Pressable,
@@ -16,6 +18,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   Vibration,
   View
 } from 'react-native';
@@ -24,6 +27,8 @@ import { Drawer } from 'react-native-drawer-layout';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as Network from 'expo-network';
@@ -93,6 +98,8 @@ const INITIAL_SESSION_LIMIT = 1;
 const OLDER_SESSION_LIMIT = 1;
 const INITIAL_MESSAGE_FETCH_LIMIT = 8;
 const OLDER_MESSAGE_FETCH_LIMIT = 8;
+const IMAGE_SEND_TARGET_BASE64_LENGTH = 1_100_000;
+const IMAGE_SEND_TIMEOUT_MS = 180000;
 const DISCOVER_OFFLINE_AFTER_MS = 45000;
 const DISCOVER_OFFLINE_MISS_THRESHOLD = 3;
 const DISCOVER_KEEPALIVE_HOSTS_PER_SWEEP = 48;
@@ -115,6 +122,13 @@ type OptimisticUserMessage = {
   id: string;
   text: string;
   createdAt: number;
+  attachments?: Array<{
+    id: string;
+    kind: 'image';
+    uri: string;
+    mime?: string;
+    filename?: string;
+  }>;
 };
 
 type ComposerAttachment = {
@@ -408,28 +422,6 @@ function ThinkPreviewLines(props: { text: string; active: boolean }) {
     return () => loop.stop();
   }, [dotAnim, progressAnim, props.active]);
 
-  useEffect(() => {
-    if (!props.active || visible.length <= 1) return;
-    const timer = setInterval(() => {
-      Animated.timing(lineAnim, {
-        toValue: 0,
-        duration: 180,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true
-      }).start(() => {
-        setLineIndex((value) => (value + 1) % visible.length);
-        lineAnim.setValue(0);
-        Animated.timing(lineAnim, {
-          toValue: 1,
-          duration: 260,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true
-        }).start();
-      });
-    }, 1050);
-    return () => clearInterval(timer);
-  }, [lineAnim, props.active, visible.length]);
-
   const currentLine = props.active
     ? (visible[Math.min(lineIndex, visible.length - 1)] || '正在整理思路...')
     : '已完成思考';
@@ -479,6 +471,29 @@ function ThinkPreviewLines(props: { text: string; active: boolean }) {
           </Animated.View>
         ) : null}
       </View>
+    </View>
+  );
+}
+
+function UserAttachmentStrip(props: {
+  attachments?: Array<{ id: string; kind: 'image'; uri: string; filename?: string }>;
+  onOpen: (item: { id: string; uri: string; filename?: string }) => void;
+  onCopy: (uri: string) => void;
+}) {
+  const items = Array.isArray(props.attachments) ? props.attachments : [];
+  if (items.length <= 0) return null;
+  return (
+    <View style={styles.userAttachmentStrip}>
+      {items.map((item) => (
+        <Pressable
+          key={item.id}
+          onPress={() => props.onOpen(item)}
+          onLongPress={() => props.onCopy(item.uri)}
+          delayLongPress={260}
+        >
+          <Image source={{ uri: item.uri }} style={styles.userAttachmentImage} resizeMode="cover" />
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -613,6 +628,8 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   liveQuestions: MobileQuestionCard[];
   onQuestionReply: (requestId: string, answers: string[][]) => void;
   onCopyMessage: (text: string) => void;
+  onOpenImage: (item: { id: string; uri: string; filename?: string }) => void;
+  onCopyImage: (uri: string) => void;
   expandedTimelineQuestions: Set<string>;
   onToggleTimelineQuestion: (id: string) => void;
   expandedThinkCards: Set<string>;
@@ -620,7 +637,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   timelineQuestionTabs: Map<string, number>;
   onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
 }) {
-  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, onOpenImage, onCopyImage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab } = props;
   const [, setMeasuredHeight] = useState(0);
   return (
     <View
@@ -633,7 +650,10 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
       {turn.userMessage ? (
         <View style={styles.bubbleUserWrap}>
           <Pressable style={styles.bubbleUser} onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))} delayLongPress={280}>
-            <Text style={styles.bubbleUserText}>{toText(turn.userMessage.text || '...')}</Text>
+            <UserAttachmentStrip attachments={turn.userMessage.attachments} onOpen={onOpenImage} onCopy={onCopyImage} />
+            {toText(turn.userMessage.text).trim() ? (
+              <Text style={styles.bubbleUserText}>{toText(turn.userMessage.text || '...')}</Text>
+            ) : null}
           </Pressable>
         </View>
       ) : null}
@@ -889,7 +909,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
                       <View style={styles.bubbleContent}>{renderMarkdown(contentText, 'think')}</View>
                     </>
                   ) : (
-                    <ThinkPreviewLines text={contentText} active={streaming && isLastTurn} />
+                    <ThinkPreviewLines text={contentText} active={streaming && isLastTurn && !card.finished} />
                   )}
                 </Pressable>
             </View>
@@ -988,6 +1008,25 @@ function pickRandomQuestions(pool: string[], count: number): string[] {
 
 function extractModelOptionsFromConfig(raw: any): ModelOption[] {
   const out = new Map<string, ModelOption>();
+  const mobileState = raw?.giteamMobileModelState && typeof raw.giteamMobileModelState === 'object' ? raw.giteamMobileModelState : {};
+  const hiddenModels = new Set<string>(
+    Array.isArray(mobileState?.hiddenModels) ? mobileState.hiddenModels.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+  );
+  const modelLabels = mobileState?.modelLabels && typeof mobileState.modelLabels === 'object' ? mobileState.modelLabels : {};
+  const addMobileModel = (value: any) => {
+    const id = String(value || '').trim();
+    if (!id || !id.includes('/') || hiddenModels.has(id) || out.has(id)) return;
+    const idx = id.indexOf('/');
+    const label = String((modelLabels as any)?.[id] || id.slice(idx + 1) || id).trim();
+    out.set(id, { id, provider: id.slice(0, idx), label });
+  };
+  const availableModels = Array.isArray(mobileState?.availableModels) ? mobileState.availableModels : [];
+  const enabledModels = Array.isArray(mobileState?.enabledModels) ? mobileState.enabledModels : [];
+  for (const item of availableModels) addMobileModel(item);
+  for (const item of enabledModels) addMobileModel(item);
+  addMobileModel(mobileState?.activeModel);
+  if (out.size > 0) return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+
   const providerMap = raw && typeof raw === 'object' && raw.provider && typeof raw.provider === 'object' ? raw.provider : {};
   const disabled = new Set(
     Array.isArray(raw?.disabled_providers) ? raw.disabled_providers.map((x: any) => String(x || '').trim()).filter(Boolean) : []
@@ -1010,22 +1049,6 @@ function extractModelOptionsFromConfig(raw: any): ModelOption[] {
   if (configured && configured.includes('/') && !out.has(configured)) {
     const idx = configured.indexOf('/');
     out.set(configured, { id: configured, provider: configured.slice(0, idx), label: configured.slice(idx + 1) || configured });
-  }
-  const mobileState = raw?.giteamMobileModelState && typeof raw.giteamMobileModelState === 'object' ? raw.giteamMobileModelState : {};
-  const hiddenModels = new Set<string>(
-    Array.isArray(mobileState?.hiddenModels) ? mobileState.hiddenModels.map((x: any) => String(x || '').trim()).filter(Boolean) : []
-  );
-  const enabledModels = Array.isArray(mobileState?.enabledModels) ? mobileState.enabledModels : [];
-  for (const item of enabledModels) {
-    const id = String(item || '').trim();
-    if (!id || !id.includes('/') || hiddenModels.has(id)) continue;
-    const idx = id.indexOf('/');
-    if (!out.has(id)) out.set(id, { id, provider: id.slice(0, idx), label: id.slice(idx + 1) || id });
-  }
-  const activeModel = String(mobileState?.activeModel || '').trim();
-  if (activeModel && activeModel.includes('/') && !hiddenModels.has(activeModel) && !out.has(activeModel)) {
-    const idx = activeModel.indexOf('/');
-    out.set(activeModel, { id: activeModel, provider: activeModel.slice(0, idx), label: activeModel.slice(idx + 1) || activeModel });
   }
   for (const hidden of hiddenModels) out.delete(hidden);
   return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -1113,6 +1136,7 @@ function isSameDiscoverRenderList(prev: DiscoverCacheDevice[], next: DiscoverCac
 }
 
 export default function App() {
+  const { width: windowWidth } = useWindowDimensions();
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('准备就绪');
@@ -1161,6 +1185,22 @@ export default function App() {
   const [attachmentPanelVisible, setAttachmentPanelVisible] = useState(false);
   const [recentImages, setRecentImages] = useState<RecentImageItem[]>([]);
   const [recentImagesLoading, setRecentImagesLoading] = useState(false);
+  const [recentImagesLoadingMore, setRecentImagesLoadingMore] = useState(false);
+  const [recentImagesCursor, setRecentImagesCursor] = useState<string | undefined>(undefined);
+  const [recentImagesHasNext, setRecentImagesHasNext] = useState(false);
+  const [albumPickerOpen, setAlbumPickerOpen] = useState(false);
+  const [albumImages, setAlbumImages] = useState<RecentImageItem[]>([]);
+  const [albumImagesLoading, setAlbumImagesLoading] = useState(false);
+  const [albumImagesLoadingMore, setAlbumImagesLoadingMore] = useState(false);
+  const [albumCursor, setAlbumCursor] = useState<string | undefined>(undefined);
+  const [albumHasNext, setAlbumHasNext] = useState(false);
+  const [mediaAlbums, setMediaAlbums] = useState<Array<{ id: string; title: string; assetCount?: number }>>([]);
+  const [selectedMediaAlbumId, setSelectedMediaAlbumId] = useState<string>('all');
+  const [albumSelectedIds, setAlbumSelectedIds] = useState<string[]>([]);
+  const [previewImage, setPreviewImage] = useState<{ uri: string; filename?: string } | null>(null);
+  const [photoCameraOpen, setPhotoCameraOpen] = useState(false);
+  const [photoCameraReady, setPhotoCameraReady] = useState(false);
+  const [photoCameraBusy, setPhotoCameraBusy] = useState(false);
   const [messages, setMessages] = useState<MobileChatMessage[]>([]);
   const [renderedTurns, setRenderedTurns] = useState<MobileRenderedTurn[]>([]);
   const [sessionStatusMap, setSessionStatusMap] = useState<Record<string, SessionStatusInfo>>({});
@@ -1187,6 +1227,7 @@ export default function App() {
   const [showLatestJump, setShowLatestJump] = useState(false);
   const [inputDockHeight, setInputDockHeight] = useState(88);
   const [chatListResetKey, setChatListResetKey] = useState(0);
+  const [startupSessionHydrating, setStartupSessionHydrating] = useState(false);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
@@ -1203,6 +1244,8 @@ export default function App() {
   const sessionRawMapRef = useRef<Record<string, any[]>>({});
   const sessionOptimisticUserMapRef = useRef<Record<string, OptimisticUserMessage[]>>({});
   const optimisticUserIdAliasRef = useRef<Record<string, Record<string, string>>>({});
+  const sentAttachmentCacheRef = useRef<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>({});
+  const pendingPromptSessionRef = useRef<Record<string, { id: string; startedAt: number }>>({});
   const streamDeltaTextRef = useRef<Record<string, string>>({});
   const streamPartMapRef = useRef<Record<string, Record<string, any>>>({});
   const streamPartTypeRef = useRef<Record<string, 'text' | 'reasoning'>>({});
@@ -1218,6 +1261,10 @@ export default function App() {
   const messageUserScrollingRef = useRef(false);
   const streamRunIdRef = useRef(0);
   const sessionStatusEpochRef = useRef(0);
+  const busySinceRef = useRef(0);
+  const appStateRef = useRef(AppState.currentState);
+  const recentImagesLoadingRef = useRef(false);
+  const albumImagesLoadingRef = useRef(false);
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
   const discoveringRef = useRef(false);
@@ -1253,10 +1300,15 @@ export default function App() {
   const actionIconAnim = useRef(new Animated.Value(1)).current;
   const attachmentPanelAnim = useRef(new Animated.Value(0)).current;
   const attachmentToggleAnim = useRef(new Animated.Value(0)).current;
+  const photoCameraRef = useRef<any>(null);
   const [launchOverlayVisible, setLaunchOverlayVisible] = useState(true);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
+  const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
+  const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || (recentImagesLoading ? 12 : 0) || 1) / 4)));
+  const recentScrollerHeight = recentVisibleRows * recentTileSize + Math.max(0, recentVisibleRows - 1) * 6 + 8;
+  const albumSelectedSet = useMemo(() => new Set(albumSelectedIds), [albumSelectedIds]);
   const streamTopGlowRequested = false;
   const showStreamTopGlow = false;
 
@@ -1310,7 +1362,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!loaded || !launchOverlayVisible) return;
+    if (!loaded || !launchOverlayVisible || startupSessionHydrating) return;
     const timer = setTimeout(() => {
       Animated.timing(launchOverlayOpacity, {
         toValue: 0,
@@ -1320,7 +1372,13 @@ export default function App() {
       }).start(() => setLaunchOverlayVisible(false));
     }, 260);
     return () => clearTimeout(timer);
-  }, [launchOverlayOpacity, launchOverlayVisible, loaded]);
+  }, [launchOverlayOpacity, launchOverlayVisible, loaded, startupSessionHydrating]);
+
+  useEffect(() => {
+    if (!startupSessionHydrating) return;
+    const timer = setTimeout(() => setStartupSessionHydrating(false), 4500);
+    return () => clearTimeout(timer);
+  }, [startupSessionHydrating]);
 
   const statusText = toText(status);
   const filteredSessions = useMemo(() => {
@@ -1468,6 +1526,7 @@ export default function App() {
       setToken(prefs.token);
       setSessionId(prefs.sessionId);
       sessionIdRef.current = prefs.sessionId;
+      setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId));
       setModel(prefs.model || '');
       setLoaded(true);
       const pname = projectNameFromPath(toText(prefs.repoPath));
@@ -1817,13 +1876,24 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded || !authed || !sessionId || !repoPath) return;
-    void syncSessionMessages(sessionId, {
-      limit: INITIAL_SESSION_LIMIT,
-      fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
-    });
-    void syncSessionStatus(sessionId);
+    void (async () => {
+      try {
+        await syncSessionMessages(sessionId, {
+          limit: INITIAL_SESSION_LIMIT,
+          fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+        });
+        await syncSessionStatus(sessionId);
+      } finally {
+        setStartupSessionHydrating(false);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, authed, sessionId, repoPath]);
+
+  useEffect(() => {
+    if (!loaded || !authed || !repoPath || sessionId) return;
+    setStartupSessionHydrating(false);
+  }, [loaded, authed, repoPath, sessionId]);
 
   useEffect(() => {
     if (!loaded || !authed || !repoPath) return;
@@ -1843,6 +1913,41 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, authed, serverUrl, token, projects.length]);
 
+  useEffect(() => {
+    busySinceRef.current = busy ? Date.now() : 0;
+  }, [busy]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const prevState = appStateRef.current;
+      appStateRef.current = nextState;
+      if (!prevState.match(/inactive|background/) || nextState !== 'active') return;
+      const sid = toText(sessionIdRef.current).trim();
+      if (!sid || !authed || !repoPath) {
+        setBusy(false);
+        return;
+      }
+      const pending = pendingPromptSessionRef.current[sid];
+      const busyForMs = busySinceRef.current ? Date.now() - busySinceRef.current : 0;
+      if (pending && Date.now() - pending.startedAt > 15000) {
+        delete pendingPromptSessionRef.current[sid];
+      }
+      if (busyForMs > 8000 || pending || streaming) {
+        setBusy(false);
+        void syncSessionMessages(sid, {
+          limit: INITIAL_SESSION_LIMIT,
+          fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+        });
+        void syncSessionStatus(sid).then((info) => {
+          if (info?.type === 'busy' || info?.type === 'retry') startStream(sid);
+          else setStreaming(false);
+        });
+      }
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authed, repoPath, streaming]);
+
   function stopStream() {
     streamRunIdRef.current += 1;
     sessionStatusEpochRef.current += 1;
@@ -1852,6 +1957,10 @@ export default function App() {
       streamRef.current = null;
     }
     streamSessionRef.current = '';
+    streamDeltaTextRef.current = {};
+    streamPartMapRef.current = {};
+    streamPartTypeRef.current = {};
+    streamPartDeltaKeyRef.current = {};
     setStreaming(false);
   }
 
@@ -1950,6 +2059,14 @@ export default function App() {
           ...(optimisticUserIdAliasRef.current[sid] || {}),
           [matched.id]: local.id,
         };
+        if (local.attachments?.length) {
+          sentAttachmentCacheRef.current[sid] = {
+            ...(sentAttachmentCacheRef.current[sid] || {}),
+            [`id:${matched.id}`]: { at: Date.now(), attachments: local.attachments },
+            [`id:${local.id}`]: { at: Date.now(), attachments: local.attachments },
+            [`text:${text}`]: { at: Date.now(), attachments: local.attachments },
+          };
+        }
         usedIds.add(matched.id);
         continue;
       }
@@ -1992,21 +2109,13 @@ export default function App() {
     const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
     const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
     for (const item of optimistic) {
-      nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt });
-      const streamedItems = keepBaseTurns ? [] : base.renderedTurns.flatMap((turn) => turn.items);
+      nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt, attachments: item.attachments });
       nextTurns.push({
         id: `turn:optimistic:${item.id}`,
         createdAt: item.createdAt,
-        userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt },
-        items: streamedItems,
-        signature: `optimistic:${item.id}:${item.text.length}:${streamedItems.map((streamed: any) => {
-          if (streamed.kind === 'chat') return `${streamed.kind}:${streamed.message?.id}:${toText(streamed.message?.text).length}`;
-          if (streamed.kind === 'event') return `${streamed.kind}:${streamed.event?.id}:${toText(streamed.event?.status)}`;
-          if (streamed.kind === 'think') return `${streamed.kind}:${streamed.card?.id}:${toText(streamed.card?.text).length}`;
-          if (streamed.kind === 'todo') return `${streamed.kind}:${streamed.todo?.id}:${streamed.todo?.finished ? 1 : 0}`;
-          if (streamed.kind === 'question') return `${streamed.kind}:${streamed.question?.id}:${toText(streamed.question?.status)}`;
-          return `${streamed.kind}:${streamed.createdAt || 0}`;
-        }).join('|')}`
+        userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt, attachments: item.attachments },
+        items: [],
+        signature: `optimistic:${item.id}:${item.text.length}:${item.attachments?.length || 0}`
       });
     }
     return {
@@ -2021,14 +2130,15 @@ export default function App() {
   }
 
   function appendOptimisticTurnAndStick(message: OptimisticUserMessage) {
-    setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt }]);
+    forceScrollToLatestUntilRef.current = Date.now() + 45000;
+    setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt, attachments: message.attachments }]);
     setRenderedTurns([
       {
         id: `turn:optimistic:${message.id}`,
         createdAt: message.createdAt,
-        userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt },
+        userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt, attachments: message.attachments },
         items: [],
-        signature: `optimistic:${message.id}:${message.text.length}`
+        signature: `optimistic:${message.id}:${message.text.length}:${message.attachments?.length || 0}`
       }
     ]);
     sessionVisibleTurnCountRef.current[sessionIdRef.current] = INITIAL_SESSION_LIMIT;
@@ -2049,6 +2159,7 @@ export default function App() {
   }
 
   function scrollToLatest(animated: boolean) {
+    if (messageUserScrollingRef.current) return;
     const list = messageScrollRef.current;
     const bottomInset = Math.max(140, inputDockHeight + 44);
     const maxOffset = Math.max(0, messageContentHRef.current - messageViewportHRef.current + bottomInset);
@@ -2336,9 +2447,32 @@ export default function App() {
     const rendered = overlayOptimisticTurns(stableBaseRendered, optimistic);
     sessionVisibleTurnCountRef.current[targetSessionId] = rendered.visibleTurnCount;
     sessionTotalTurnCountRef.current[targetSessionId] = rendered.totalTurnCount;
-    setMessages(rendered.chatMessages);
-    setRenderedTurns(rendered.renderedTurns);
-    upsertSession(targetSessionId, rendered.chatMessages);
+    const cacheNow = Date.now();
+    const nextCache = { ...(sentAttachmentCacheRef.current[targetSessionId] || {}) };
+    for (const message of rendered.chatMessages) {
+      if (message.role !== 'user' || !message.attachments?.length) continue;
+      const text = toText(message.text).trim();
+      nextCache[`id:${message.id}`] = { at: cacheNow, attachments: message.attachments };
+      if (text) nextCache[`text:${text}`] = { at: cacheNow, attachments: message.attachments };
+    }
+    sentAttachmentCacheRef.current[targetSessionId] = nextCache;
+    const cachedAttachments = sentAttachmentCacheRef.current[targetSessionId] || {};
+    const now = Date.now();
+    const withPersistedAttachments = (message: MobileChatMessage): MobileChatMessage => {
+      if (message.role !== 'user') return message;
+      const key = toText(message.text).trim();
+      const cached = cachedAttachments[`id:${message.id}`] || cachedAttachments[`text:${key}`];
+      if (cached && now - cached.at < 24 * 60 * 60 * 1000 && cached.attachments.length) {
+        return { ...message, attachments: cached.attachments };
+      }
+      if (message.attachments?.length) return message;
+      return message;
+    };
+    const nextMessages = rendered.chatMessages.map(withPersistedAttachments);
+    const nextTurns = rendered.renderedTurns.map((turn) => turn.userMessage ? ({ ...turn, userMessage: withPersistedAttachments(turn.userMessage) }) : turn);
+    setMessages(nextMessages);
+    setRenderedTurns(nextTurns);
+    upsertSession(targetSessionId, nextMessages);
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
     setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
@@ -2398,6 +2532,10 @@ export default function App() {
       text: nextText
     }, now);
     renderStreamWindow(targetSessionId);
+    if (!messageUserScrollingRef.current) {
+      forceScrollToLatestUntilRef.current = Date.now() + 45000;
+      requestAnimationFrame(() => scrollToLatest(false));
+    }
     streamDebug('delta.applied', { sid: targetSessionId, messageId, partId, kind, totalLen: nextText.length });
     setStreaming(true);
   }
@@ -2488,6 +2626,10 @@ export default function App() {
     }
     upsertStreamPart(targetSessionId, messageId, part);
     renderStreamWindow(targetSessionId);
+    if (!messageUserScrollingRef.current) {
+      forceScrollToLatestUntilRef.current = Date.now() + 45000;
+      requestAnimationFrame(() => scrollToLatest(false));
+    }
     setStreaming(true);
   }
 
@@ -2626,6 +2768,10 @@ export default function App() {
 
         const incoming = Array.isArray(res.items) ? res.items : [];
         if (targetSessionId !== sessionIdRef.current) {
+          return;
+        }
+        if (!before && pendingPromptSessionRef.current[targetSessionId]) {
+          pushConnLog(`GET messages skip sid=${targetSessionId} reason=pending prompt`);
           return;
         }
         const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
@@ -2953,6 +3099,7 @@ export default function App() {
     const current = toText(repoPath).trim();
     if (current === next) return;
     stopStream();
+    setStartupSessionHydrating(false);
     setRepoPath(next);
     setActiveSession('');
     setMessages([]);
@@ -3295,10 +3442,16 @@ export default function App() {
   const activeQuestionRequest = useMemo(() => questionRequests[0] || null, [questionRequests]);
 
   const builtinSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
-    { id: 'builtin-new', trigger: 'new', title: 'New session', source: 'builtin' },
-    { id: 'builtin-compact', trigger: 'compact', title: 'Compact', source: 'builtin' },
-    { id: 'builtin-model', trigger: 'model', title: 'Model', source: 'builtin' },
-    { id: 'builtin-agent', trigger: 'agent', title: 'Agent', source: 'builtin' }
+    { id: 'builtin-new', trigger: 'new', title: 'New session', description: '开始一个新会话', source: 'builtin' },
+    { id: 'builtin-compact', trigger: 'compact', title: 'Compact', description: '压缩当前会话上下文', source: 'builtin' },
+    { id: 'builtin-model', trigger: 'model', title: 'Model', description: '切换当前模型', source: 'builtin' },
+    { id: 'builtin-agent', trigger: 'agent', title: 'Agent', description: '切换 agent', source: 'builtin' },
+    { id: 'builtin-open', trigger: 'open', title: 'Open', description: '搜索文件、命令和会话', source: 'builtin' },
+    { id: 'builtin-terminal', trigger: 'terminal', title: 'Terminal', description: '打开或聚焦终端', source: 'builtin' },
+    { id: 'builtin-mcp', trigger: 'mcp', title: 'MCP', description: '切换 MCPs', source: 'builtin' },
+    { id: 'builtin-workspace', trigger: 'workspace', title: 'Workspace', description: '在侧边栏启用或禁用多个工作区', source: 'builtin' },
+    { id: 'builtin-init', trigger: 'init', title: 'Init', description: 'create/update AGENTS.md', source: 'builtin' },
+    { id: 'builtin-review', trigger: 'review', title: 'Review', description: 'review changes [commit|branch|pr]', source: 'builtin' }
   ], []);
 
   const slashQuery = useMemo(() => {
@@ -3316,14 +3469,15 @@ export default function App() {
         if (seen.has(key)) return false;
         seen.add(key);
         return !slashQuery || key.includes(slashQuery) || cmd.title.toLowerCase().includes(slashQuery);
-      })
-      .slice(0, 8);
+      });
   }, [builtinSlashCommands, slashCommands, slashOpen, slashQuery]);
 
   const promptText = toText(prompt).trim();
   const hasPromptText = promptText.length > 0;
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
+  const composerWillAbort = sessionWorking && !hasSendAction;
   const canSendNow = !busy && hasSendAction;
+  const canAbortNow = !busy && composerWillAbort;
 
   const attachmentPanelStyle = {
     opacity: attachmentPanelAnim,
@@ -3399,27 +3553,67 @@ export default function App() {
   }
 
   async function fileUriToDataUrl(uri: string, fallbackMime: string): Promise<string> {
-    const res = await fetch(uri);
-    const blob = await res.blob();
-    const mime = blob.type || fallbackMime;
-    const reader = new FileReader();
-    return await new Promise<string>((resolve, reject) => {
-      reader.onerror = () => reject(new Error('read file failed'));
-      reader.onloadend = () => resolve(toText(reader.result));
-      reader.readAsDataURL(blob);
-    });
+    try {
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (!base64 || base64.length < 20) {
+        throw new Error('empty base64');
+      }
+      return `data:${fallbackMime};base64,${base64}`;
+    } catch (e) {
+      setStatus(`读取文件失败: ${String(e)}`);
+      throw e;
+    }
+  }
+
+  async function compressImageForSend(item: { uri: string; filename: string; mime?: string; dataUrl?: string }) {
+    const mime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
+    const sourceUri = toText(item.uri).trim();
+    if (!mime.startsWith('image/') || !sourceUri) {
+      return { ...item, mime, dataUrl: item.dataUrl || '' };
+    }
+
+    const attempts = [
+      { width: 1280, compress: 0.62 },
+      { width: 1024, compress: 0.5 },
+      { width: 896, compress: 0.42 },
+      { width: 768, compress: 0.34 },
+      { width: 640, compress: 0.28 },
+      { width: 512, compress: 0.22 }
+    ];
+    let best: { uri: string; dataUrl: string; mime: string } | null = null;
+    for (const attempt of attempts) {
+      try {
+        const result = await ImageManipulator.manipulateAsync(
+          sourceUri,
+          [{ resize: { width: attempt.width } }],
+          { compress: attempt.compress, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        );
+        const base64 = toText(result.base64);
+        if (!base64 || base64.length <= 20) continue;
+        const next = { uri: result.uri || sourceUri, dataUrl: `data:image/jpeg;base64,${base64}`, mime: 'image/jpeg' };
+        best = next;
+        if (base64.length <= IMAGE_SEND_TARGET_BASE64_LENGTH) break;
+      } catch {}
+    }
+    if (best) return { ...item, uri: best.uri, mime: best.mime, dataUrl: best.dataUrl };
+    const fallback = item.dataUrl || await fileUriToDataUrl(sourceUri, mime);
+    return { ...item, mime, dataUrl: fallback };
   }
 
   async function appendAssetsAsAttachments(items: Array<{ uri: string; filename: string; mime?: string; dataUrl?: string }>) {
     try {
+      if (items.length > 0) setStatus('正在处理图片...');
       const mapped = await Promise.all(items.map(async (item, idx) => {
-        const mime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
-        const dataUrl = item.dataUrl || await fileUriToDataUrl(item.uri, mime);
+        const prepared = await compressImageForSend(item);
+        const mime = toText(prepared.mime).trim() || inferMimeFromFilename(prepared.filename);
+        const dataUrl = prepared.dataUrl || await fileUriToDataUrl(prepared.uri, mime);
         if (!dataUrl || dataUrl.length <= 20) return null;
         return {
           id: `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
-          uri: item.uri,
-          filename: item.filename,
+          uri: prepared.uri,
+          filename: prepared.filename,
           mime,
           dataUrl
         } satisfies ComposerAttachment;
@@ -3427,39 +3621,59 @@ export default function App() {
       const valid = mapped.filter((item): item is ComposerAttachment => Boolean(item));
       if (valid.length > 0) {
         setImageAttachments((prev) => [...prev, ...valid]);
+        setStatus(valid.some((img) => img.dataUrl.length > IMAGE_SEND_TARGET_BASE64_LENGTH) ? '图片已压缩，发送可能稍慢' : '图片已添加');
       }
     } catch (e) {
       setStatus(`处理图片失败: ${String(e)}`);
     }
   }
 
-  async function loadRecentImages() {
+  function mediaAssetsToRecentItems(assets: MediaLibrary.Asset[]): RecentImageItem[] {
+    return assets.map((asset) => ({
+      id: asset.id,
+      uri: asset.uri,
+      filename: asset.filename || `photo-${asset.id}.jpg`,
+      mediaType: String(asset.mediaType || '')
+    }));
+  }
+
+  async function loadRecentImages(opts?: { append?: boolean }) {
+    const append = Boolean(opts?.append);
+    if (recentImagesLoadingRef.current) return;
+    if (append && !recentImagesHasNext) return;
     try {
-      setRecentImagesLoading(true);
+      recentImagesLoadingRef.current = true;
+      if (append) setRecentImagesLoadingMore(true);
+      else setRecentImagesLoading(true);
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (!perm.granted) {
-        setRecentImages([]);
+        if (!append) setRecentImages([]);
         setStatus('相册权限被拒绝');
         return;
       }
       const page = await MediaLibrary.getAssetsAsync({
-        first: 18,
+        first: 12,
+        after: append ? recentImagesCursor : undefined,
         mediaType: [MediaLibrary.MediaType.photo],
         sortBy: [MediaLibrary.SortBy.creationTime]
       });
-      const items = page.assets.map((asset) => ({
-        id: asset.id,
-        uri: asset.uri,
-        filename: asset.filename || `photo-${asset.id}.jpg`,
-        mediaType: String(asset.mediaType || '')
-      }));
-      setRecentImages(items);
+      const items = mediaAssetsToRecentItems(page.assets);
+      setRecentImages((prev) => append ? [...prev, ...items.filter((item) => !prev.some((old) => old.id === item.id))] : items);
+      setRecentImagesCursor(page.endCursor || undefined);
+      setRecentImagesHasNext(Boolean(page.hasNextPage));
     } catch (e) {
-      setRecentImages([]);
+      if (!append) setRecentImages([]);
       setStatus(`读取最近图片失败: ${String(e)}`);
     } finally {
+      recentImagesLoadingRef.current = false;
       setRecentImagesLoading(false);
+      setRecentImagesLoadingMore(false);
     }
+  }
+
+  function maybeLoadMoreRecentImages(y: number, viewportH: number, contentH: number) {
+    if (!recentImagesHasNext || recentImagesLoadingRef.current) return;
+    if (contentH - viewportH - y < 80) void loadRecentImages({ append: true });
   }
 
   async function pickImageFromLibrary(kind: 'album' | 'file') {
@@ -3487,40 +3701,151 @@ export default function App() {
       const pick = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
-        quality: 1,
-        base64: true
+        quality: 0.35,
+        base64: false
       });
       if (pick.canceled || !pick.assets?.length) return;
-      await appendAssetsAsAttachments(pick.assets.map((asset, idx) => ({
-        uri: asset.uri,
-        filename: asset.fileName || `image-${idx}.png`,
-        mime: asset.mimeType || 'image/png',
-        dataUrl: `data:${asset.mimeType || 'image/png'};base64,${asset.base64 || ''}`
-      })));
+      await appendAssetsAsAttachments(pick.assets.map((asset, idx) => {
+        const base64 = asset.base64;
+        const mime = asset.mimeType || 'image/png';
+        return {
+          uri: asset.uri,
+          filename: asset.fileName || `image-${idx}.png`,
+          mime,
+          dataUrl: base64 && base64.length > 20 ? `data:${mime};base64,${base64}` : ''
+        };
+      }));
     } catch (e) {
       setStatus(kind === 'album' ? `选择图片失败: ${String(e)}` : `选择文件失败: ${String(e)}`);
     }
   }
 
+  async function openAlbumPicker() {
+    try {
+      setAttachmentMenuOpen(false);
+      setAlbumPickerOpen(true);
+      setAlbumSelectedIds([]);
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if (!perm.granted) {
+        setAlbumPickerOpen(false);
+        setStatus('相册权限被拒绝');
+        return;
+      }
+      const albums = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
+      const mappedAlbums = albums
+        .filter((album) => (album.assetCount || 0) > 0)
+        .map((album) => ({ id: album.id, title: album.title || '相册', assetCount: album.assetCount }));
+      setMediaAlbums([{ id: 'all', title: '图片和视频' }, ...mappedAlbums]);
+      setSelectedMediaAlbumId('all');
+      await loadAlbumImages({ albumId: 'all' });
+    } catch (e) {
+      setAlbumPickerOpen(false);
+      setStatus(`读取相册失败: ${String(e)}`);
+    }
+  }
+
+  async function loadAlbumImages(opts?: { albumId?: string; append?: boolean }) {
+    const albumId = opts?.albumId ?? selectedMediaAlbumId;
+    const append = Boolean(opts?.append);
+    if (albumImagesLoadingRef.current) return;
+    if (append && !albumHasNext) return;
+    try {
+      albumImagesLoadingRef.current = true;
+      if (append) setAlbumImagesLoadingMore(true);
+      else {
+        setAlbumImagesLoading(true);
+        setAlbumImages([]);
+        setAlbumCursor(undefined);
+      }
+      const album = albumId === 'all' ? undefined : albumId;
+      const page = await MediaLibrary.getAssetsAsync({
+        first: 80,
+        after: append ? albumCursor : undefined,
+        album,
+        mediaType: [MediaLibrary.MediaType.photo],
+        sortBy: [MediaLibrary.SortBy.creationTime]
+      });
+      const items = mediaAssetsToRecentItems(page.assets);
+      setAlbumImages((prev) => append ? [...prev, ...items.filter((item) => !prev.some((old) => old.id === item.id))] : items);
+      setAlbumCursor(page.endCursor || undefined);
+      setAlbumHasNext(Boolean(page.hasNextPage));
+    } catch (e) {
+      if (!append) setAlbumImages([]);
+      setStatus(`读取相册失败: ${String(e)}`);
+    } finally {
+      albumImagesLoadingRef.current = false;
+      setAlbumImagesLoading(false);
+      setAlbumImagesLoadingMore(false);
+    }
+  }
+
+  function selectMediaAlbum(albumId: string) {
+    setSelectedMediaAlbumId(albumId);
+    setAlbumSelectedIds([]);
+    void loadAlbumImages({ albumId });
+  }
+
+  function toggleAlbumImage(id: string) {
+    setAlbumSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
+  }
+
+  async function confirmAlbumSelection() {
+    const selected = albumImages.filter((item) => albumSelectedIds.includes(item.id));
+    setAlbumPickerOpen(false);
+    setAlbumSelectedIds([]);
+    if (selected.length === 0) return;
+    await appendAssetsAsAttachments(selected.map((item) => ({
+      uri: item.uri,
+      filename: item.filename,
+      mime: inferMimeFromFilename(item.filename)
+    })));
+  }
+
   async function captureWithCamera() {
     try {
+      setPhotoCameraOpen(false);
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) { setStatus('相机权限被拒绝'); return; }
       const pick = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 1,
-        base64: true
+        base64: false
       });
       if (pick.canceled || !pick.assets?.[0]) return;
       const asset = pick.assets[0];
       await appendAssetsAsAttachments([{
         uri: asset.uri,
-        filename: asset.fileName || `camera-${Date.now()}.png`,
-        mime: asset.mimeType || 'image/png',
-        dataUrl: `data:${asset.mimeType || 'image/png'};base64,${asset.base64 || ''}`
+        filename: asset.fileName || `camera-${Date.now()}.jpg`,
+        mime: asset.mimeType || 'image/jpeg'
       }]);
     } catch (e) {
       setStatus(`拍照失败: ${String(e)}`);
+    }
+  }
+
+  async function takePhotoFromInlineCamera() {
+    if (photoCameraBusy) return;
+    try {
+      setPhotoCameraBusy(true);
+      const photo = await photoCameraRef.current?.takePictureAsync?.({
+        quality: 0.6,
+        base64: false,
+        skipProcessing: false
+      });
+      if (!photo?.uri) return;
+      setPhotoCameraOpen(false);
+      const base64 = photo.base64;
+      const mime = 'image/jpeg';
+      await appendAssetsAsAttachments([{
+        uri: photo.uri,
+        filename: `camera-${Date.now()}.jpg`,
+        mime,
+        dataUrl: base64 && base64.length > 20 ? `data:${mime};base64,${base64}` : ''
+      }]);
+    } catch (e) {
+      setStatus(`拍照失败: ${String(e)}`);
+    } finally {
+      setPhotoCameraBusy(false);
     }
   }
 
@@ -4087,8 +4412,15 @@ export default function App() {
     const optimisticAt = Date.now();
     const optimisticMessage: OptimisticUserMessage = {
       id: `local:${optimisticAt}`,
-      text: payloadPrompt || '(image)',
-      createdAt: optimisticAt
+      text: payloadPrompt,
+      createdAt: optimisticAt,
+      attachments: images.map((img) => ({
+        id: img.id,
+        kind: 'image' as const,
+        uri: img.dataUrl || img.uri,
+        mime: img.mime,
+        filename: img.filename,
+      }))
     };
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
@@ -4106,13 +4438,33 @@ export default function App() {
         setActiveSession(targetSessionId);
       }
       setChatListResetKey((value) => value + 1);
+      if (optimisticMessage.attachments?.length) {
+        sentAttachmentCacheRef.current[targetSessionId] = {
+          ...(sentAttachmentCacheRef.current[targetSessionId] || {}),
+          [`id:${optimisticMessage.id}`]: {
+            at: Date.now(),
+            attachments: optimisticMessage.attachments,
+          },
+          [`text:${toText(payloadPrompt).trim()}`]: {
+            at: Date.now(),
+            attachments: optimisticMessage.attachments,
+          }
+        };
+      }
       upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
       appendOptimisticTurnAndStick(optimisticMessage);
       setPrompt('');
       setSlashOpen(false);
       setImageAttachments([]);
+      pendingPromptSessionRef.current[targetSessionId] = {
+        id: optimisticMessage.id,
+        startedAt: Date.now()
+      };
       startStream(targetSessionId);
-      pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'}`);
+      pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'} images=${images.length}`);
+      images.forEach((img, idx) => {
+        pushConnLog(`  image[${idx}] mime=${img.mime} filename=${img.filename} dataUrlLength=${img.dataUrl?.length || 0}`);
+      });
       const parts = [
         { id: `prt_${Date.now()}_text`, type: 'text' as const, text: payloadPrompt },
         ...images.map((img, idx) => ({
@@ -4123,6 +4475,7 @@ export default function App() {
         filename: img.filename
         }))
       ];
+      pushConnLog(`sendPrompt start, parts count=${parts.length}, timeout=${images.length > 0 ? IMAGE_SEND_TIMEOUT_MS : 12000}ms`);
       const res = await sendPrompt({
         baseUrl: serverUrl,
         token,
@@ -4130,8 +4483,11 @@ export default function App() {
         prompt: payloadPrompt,
         sessionId: targetSessionId,
         model: requestModel,
-        parts: parts.length > 0 ? parts : undefined
+        parts: parts.length > 0 ? parts : undefined,
+        timeoutMs: images.length > 0 ? IMAGE_SEND_TIMEOUT_MS : undefined
       });
+      delete pendingPromptSessionRef.current[targetSessionId];
+      pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
       setActiveSession(res.sessionId);
       void syncSessionMessages(res.sessionId, {
         limit: INITIAL_SESSION_LIMIT,
@@ -4143,11 +4499,16 @@ export default function App() {
     } catch (e) {
       const currentSessionId = toText(sessionIdRef.current).trim();
       if (currentSessionId) {
+        delete pendingPromptSessionRef.current[currentSessionId];
         dropOptimisticUserMessage(currentSessionId, optimisticMessage.id);
       }
-      if (customPrompt === undefined) setPrompt((prev) => prev || payloadPrompt);
+      if (customPrompt === undefined) {
+        setPrompt((prev) => prev || payloadPrompt);
+        setImageAttachments(images);
+      }
       const msg = String(e);
-      pushConnLog(`POST prompt error ${msg}`, 'error');
+      pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
+      console.error('[onSendPrompt] error:', msg, 'images:', images.length, 'dataUrl lengths:', images.map(i => i.dataUrl?.length || 0));
       if (msg.includes('invalid bearer token') && pairCode.trim()) {
         try {
           pushConnLog('prompt auto pairAuth retry');
@@ -4266,6 +4627,7 @@ export default function App() {
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
     setAuthAsciiBrand(pickRandomAuthAsciiBrand());
+    setStartupSessionHydrating(false);
     setStatus('已退出授权');
     pushConnLog('reset auth');
   }
@@ -4609,6 +4971,8 @@ export default function App() {
               alwaysBounceVertical
               bounces
               overScrollMode="always"
+              showsVerticalScrollIndicator={false}
+              showsHorizontalScrollIndicator={false}
               scrollEventThrottle={16}
               maintainVisibleContentPosition={{
                 minIndexForVisible: 0
@@ -4668,7 +5032,7 @@ export default function App() {
               renderItem={({ item, index }) => (
                 <MobileTurnCell
                   turn={item}
-                  streaming={streaming}
+                  streaming={sessionWorking}
                   isLastTurn={item.id === displayedTurns[displayedTurns.length - 1]?.id}
                   thinkingPulse={thinkingPulse}
                   hasLiveQuestion={liveQuestionTurnId === item.id}
@@ -4706,6 +5070,8 @@ export default function App() {
                     });
                   }}
                   onCopyMessage={copyMessageText}
+                  onOpenImage={(img) => setPreviewImage({ uri: img.uri, filename: img.filename })}
+                  onCopyImage={(uri) => void copyMessageText(uri)}
                   expandedTimelineQuestions={expandedTimelineQuestions}
                   onToggleTimelineQuestion={(id) => {
                     setExpandedTimelineQuestions((prev) => {
@@ -4837,20 +5203,26 @@ export default function App() {
         }}
       >
         {imageAttachments.length > 0 ? (
-          <View style={styles.attachmentRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.attachmentRow}
+            style={styles.attachmentScroller}
+          >
             {imageAttachments.map((img) => (
-              <View key={img.id} style={styles.attachmentChip}>
+              <Pressable key={img.id} style={styles.attachmentTile} onPress={() => setPreviewImage({ uri: img.uri, filename: img.filename })}>
                 <Image source={{ uri: img.uri }} style={styles.attachmentThumb} resizeMode="cover" />
-                <Text style={styles.attachmentName} numberOfLines={1}>{img.filename}</Text>
                 <Pressable
                   style={styles.attachmentRemove}
                   onPress={() => setImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
+                  hitSlop={8}
                 >
                   <Text style={styles.attachmentRemoveTxt}>×</Text>
                 </Pressable>
-              </View>
+              </Pressable>
             ))}
-          </View>
+          </ScrollView>
         ) : null}
         <View style={styles.inputRow}>
           <TextInput
@@ -4885,12 +5257,16 @@ export default function App() {
             </Animated.View>
           </Pressable>
           <Pressable
-            style={canSendNow ? styles.actionBtnSend : styles.actionBtnDisabled}
+            style={canSendNow || canAbortNow ? styles.actionBtnSend : styles.actionBtnDisabled}
             onPress={() => {
+              if (canAbortNow) {
+                void onAbort();
+                return;
+              }
               if (!canSendNow) return;
               void onSendPrompt();
             }}
-            disabled={!canSendNow}
+            disabled={!canSendNow && !canAbortNow}
           >
             <Animated.View
               style={{
@@ -4898,12 +5274,16 @@ export default function App() {
                 transform: [{ scale: actionIconAnim }]
               }}
             >
-              <Feather name="arrow-up" size={20} color={canSendNow ? '#ffffff' : '#94a3b8'} />
+              <Feather
+                name={canAbortNow ? 'square' : 'arrow-up'}
+                size={canAbortNow ? 16 : 20}
+                color={canSendNow || canAbortNow ? '#ffffff' : '#94a3b8'}
+              />
             </Animated.View>
           </Pressable>
         </View>
         {slashOpen && slashSuggestions.length > 0 ? (
-          <View style={styles.slashPopover}>
+          <ScrollView style={styles.slashPopover} keyboardShouldPersistTaps="handled">
             {slashSuggestions.map((cmd, idx) => (
               <Pressable
                 key={cmd.id}
@@ -4916,11 +5296,17 @@ export default function App() {
                   setSlashOpen(false);
                 }}
               >
-                <Text style={styles.slashTrigger}>/{cmd.trigger}</Text>
-                <Text style={styles.slashTitle}>{cmd.title}</Text>
+                <View style={styles.slashItemMain}>
+                  <View style={styles.slashItemTopRow}>
+                    <Text style={styles.slashTrigger}>/{cmd.trigger}</Text>
+                    <Text style={styles.slashSource}>{cmd.source}</Text>
+                  </View>
+                  <Text style={styles.slashTitle}>{cmd.title}</Text>
+                  {cmd.description ? <Text numberOfLines={1} style={styles.slashDesc}>{cmd.description}</Text> : null}
+                </View>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         ) : null}
         {attachmentPanelVisible ? (
           <Animated.View style={[styles.attachmentPanel, attachmentPanelStyle]}>
@@ -4941,7 +5327,7 @@ export default function App() {
                 style={styles.attachmentMenuCard}
               onPress={() => {
                   setAttachmentMenuOpen(false);
-                  void pickImageFromLibrary('album');
+                  void openAlbumPicker();
                 }}
               >
                 <View style={styles.attachmentMenuIconShell}>
@@ -4965,23 +5351,38 @@ export default function App() {
             <View style={styles.recentHeaderRow}>
               <Text style={styles.recentHeaderTitle}>最近图片</Text>
             </View>
-            <View style={styles.recentGrid}>
-              {recentImages.map((item, index) => (
-                <Pressable
-                  key={item.id}
-                  style={styles.recentThumbCard}
-                  onPress={() => void attachRecentImage(item)}
-                >
-                  <Image source={{ uri: item.uri }} style={styles.recentThumbImage} resizeMode="cover" />
-                </Pressable>
-              ))}
-              {!recentImagesLoading && recentImages.length === 0 ? (
-                <View style={styles.recentEmptyState}>
-                  <Feather name="image" size={18} color="#94a3b8" />
-                  <Text style={styles.recentEmptyText}>暂无最近图片</Text>
-                </View>
-              ) : null}
-            </View>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              style={[styles.recentScroller, { height: recentScrollerHeight }]}
+              contentContainerStyle={styles.recentScrollerContent}
+              scrollEventThrottle={16}
+              onScroll={(evt) => {
+                const y = Number(evt.nativeEvent.contentOffset?.y || 0);
+                const viewportH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
+                const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
+                maybeLoadMoreRecentImages(y, viewportH, contentH);
+              }}
+            >
+              <View style={styles.recentGrid}>
+                {recentImages.map((item) => (
+                  <Pressable key={item.id} style={styles.recentThumbCard} onPress={() => void attachRecentImage(item)}>
+                    <Image source={{ uri: item.uri }} style={styles.recentThumbImage} resizeMode="cover" />
+                  </Pressable>
+                ))}
+                {recentImages.length === 0 && recentImagesLoading ? (
+                  Array.from({ length: 12 }).map((_, idx) => <View key={`recent-skeleton-${idx}`} style={styles.recentThumbSkeleton} />)
+                ) : null}
+                {recentImages.length === 0 && !recentImagesLoading ? (
+                  <View style={styles.recentEmptyState}>
+                    <Feather name="image" size={18} color="#94a3b8" />
+                    <Text style={styles.recentEmptyText}>暂无最近图片</Text>
+                  </View>
+                ) : null}
+                {recentImagesLoadingMore ? <View style={styles.recentLoadingMore}><ActivityIndicator size="small" /></View> : null}
+                {recentImagesHasNext && !recentImagesLoadingMore ? <View style={styles.recentLoadHint}><Text style={styles.recentLoadHintText}>继续滑动加载</Text></View> : null}
+              </View>
+            </ScrollView>
           </Animated.View>
         ) : null}
       </View>
@@ -4989,6 +5390,83 @@ export default function App() {
           </Drawer>
         </Drawer>
         </RenderBoundary>
+        {albumPickerOpen ? (
+          <View style={styles.albumOverlay}>
+            <Pressable style={styles.albumBackdrop} onPress={() => setAlbumPickerOpen(false)} />
+            <View style={styles.albumSheet}>
+              <View style={styles.albumHeaderRow}>
+                <Pressable style={styles.albumHeaderBtn} onPress={() => setAlbumPickerOpen(false)}>
+                  <Text style={styles.albumHeaderBtnText}>取消</Text>
+                </Pressable>
+                <Text style={styles.albumTitle}>相册</Text>
+                <Pressable style={[styles.albumHeaderBtn, albumSelectedIds.length === 0 ? styles.albumHeaderBtnDisabled : null]} onPress={() => void confirmAlbumSelection()} disabled={albumSelectedIds.length === 0}>
+                  <Text style={[styles.albumHeaderBtnText, albumSelectedIds.length === 0 ? styles.albumHeaderBtnTextDisabled : null]}>{albumSelectedIds.length > 0 ? `添加 ${albumSelectedIds.length}` : '添加'}</Text>
+                </Pressable>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.albumPickerBar} contentContainerStyle={styles.albumPickerBarContent}>
+                {mediaAlbums.map((album) => (
+                  <Pressable
+                    key={album.id}
+                    style={album.id === selectedMediaAlbumId ? [styles.albumPickerChip, styles.albumPickerChipActive] : styles.albumPickerChip}
+                    onPress={() => selectMediaAlbum(album.id)}
+                  >
+                    <Text style={album.id === selectedMediaAlbumId ? [styles.albumPickerChipText, styles.albumPickerChipTextActive] : styles.albumPickerChipText} numberOfLines={1}>
+                      {album.title}{album.assetCount ? ` ${album.assetCount}` : ''}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              {albumImagesLoading ? (
+                <View style={styles.albumLoadingWrap}>
+                  <ActivityIndicator />
+                  <Text style={styles.albumLoadingText}>正在读取照片...</Text>
+                </View>
+              ) : albumImages.length === 0 ? (
+                <Text style={styles.albumEmptyText}>暂无照片</Text>
+              ) : (
+                <FlashList
+                  data={albumImages}
+                  numColumns={3}
+                  keyExtractor={(item) => item.id}
+                  estimatedItemSize={120}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.albumGrid}
+                  extraData={albumSelectedIds}
+                  onEndReached={() => void loadAlbumImages({ append: true })}
+                  onEndReachedThreshold={0.7}
+                  ListFooterComponent={albumImagesLoadingMore ? <View style={styles.albumLoadingMore}><ActivityIndicator size="small" /></View> : null}
+                  renderItem={({ item }) => {
+                    const selectedIndex = albumSelectedIds.indexOf(item.id);
+                    const selected = albumSelectedSet.has(item.id);
+                    return (
+                      <Pressable style={styles.albumThumbCell} onPress={() => toggleAlbumImage(item.id)}>
+                        <View style={styles.albumThumbCard}>
+                          <Image source={{ uri: item.uri }} style={styles.albumThumbImage} resizeMode="cover" />
+                          <View style={[styles.albumSelectBadge, selected ? styles.albumSelectBadgeOn : null]}>
+                            <Text style={[styles.albumSelectText, selected ? styles.albumSelectTextOn : null]}>{selected ? selectedIndex + 1 : ''}</Text>
+                          </View>
+                        </View>
+                      </Pressable>
+                    );
+                  }}
+                />
+              )}
+            </View>
+          </View>
+        ) : null}
+        {previewImage ? (
+          <View style={styles.imagePreviewOverlay}>
+            <Pressable style={styles.imagePreviewBackdrop} onPress={() => setPreviewImage(null)} />
+            <View style={styles.imagePreviewCard}>
+              <View style={styles.imagePreviewToolbar}>
+                <Pressable style={styles.imagePreviewButton} onPress={() => setPreviewImage(null)}>
+                  <Text style={styles.imagePreviewButtonText}>关闭</Text>
+                </Pressable>
+              </View>
+              {previewImage ? <Image source={{ uri: previewImage.uri }} style={styles.imagePreviewImage} resizeMode="contain" /> : null}
+            </View>
+          </View>
+        ) : null}
         {launchOverlay}
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -6154,6 +6632,116 @@ const styles = StyleSheet.create({
     backgroundColor: '#1f2937',
     overflow: 'hidden'
   },
+  userAttachmentStrip: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6, marginBottom: 8 },
+  userAttachmentImage: { width: 74, height: 74, borderRadius: 10, backgroundColor: '#334155' },
+  albumOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    justifyContent: 'flex-end'
+  },
+  albumBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.36)' },
+  albumSheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 86,
+    bottom: 0,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    backgroundColor: '#ffffff',
+    paddingTop: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 18,
+    overflow: 'hidden'
+  },
+  albumHeaderRow: { height: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  albumHeaderBtn: { minWidth: 62, minHeight: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 999 },
+  albumHeaderBtnDisabled: { opacity: 0.45 },
+  albumHeaderBtnText: { color: '#1f2937', fontSize: 15, fontWeight: '700' },
+  albumHeaderBtnTextDisabled: { color: '#94a3b8' },
+  albumTitle: { color: '#111827', fontSize: 17, fontWeight: '800' },
+  albumPickerBar: { maxHeight: 42, marginHorizontal: -2, marginBottom: 4 },
+  albumPickerBarContent: { gap: 8, paddingHorizontal: 2, paddingVertical: 4 },
+  albumPickerChip: { height: 30, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc', alignItems: 'center', justifyContent: 'center' },
+  albumPickerChipActive: { backgroundColor: '#111827', borderColor: '#111827' },
+  albumPickerChipText: { maxWidth: 160, color: '#64748b', fontSize: 13, fontWeight: '700' },
+  albumPickerChipTextActive: { color: '#ffffff' },
+  albumLoadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  albumLoadingText: { color: '#64748b', fontSize: 13 },
+  albumGrid: { paddingTop: 8, paddingBottom: 18 },
+  albumLoadingMore: { height: 36, alignItems: 'center', justifyContent: 'center' },
+  albumThumbCell: { flex: 1, padding: 3 },
+  albumThumbCard: { width: '100%', aspectRatio: 1, borderRadius: 10, overflow: 'hidden', backgroundColor: '#eef2f7' },
+  albumThumbImage: { width: '100%', height: '100%' },
+  albumSelectBadge: {
+    position: 'absolute',
+    right: 6,
+    top: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15,23,42,0.34)',
+    borderWidth: 1.5,
+    borderColor: '#ffffff'
+  },
+  albumSelectBadgeOn: { backgroundColor: '#1f2937' },
+  albumSelectText: { color: '#ffffff', fontSize: 12, fontWeight: '800' },
+  albumSelectTextOn: { color: '#ffffff' },
+  albumEmptyText: { width: '100%', paddingVertical: 40, textAlign: 'center', color: '#94a3b8', fontSize: 14 },
+  imagePreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10000,
+    elevation: 10000
+  },
+  imagePreviewBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.72)' },
+  imagePreviewCard: { width: '92%', maxHeight: '86%', borderRadius: 18, backgroundColor: '#ffffff', padding: 12, gap: 10 },
+  imagePreviewToolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+  imagePreviewButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: '#f1f5f9' },
+  imagePreviewButtonText: { color: '#1f2937', fontSize: 13, fontWeight: '600' },
+  imagePreviewImage: { width: '100%', height: 520, borderRadius: 12, backgroundColor: '#f8fafc' },
+  photoCameraScreen: { flex: 1, width: '100%', height: '100%', backgroundColor: '#000' },
+  photoCameraOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: -80,
+    bottom: 0,
+    zIndex: 9998,
+    elevation: 9998,
+    backgroundColor: '#000'
+  },
+  photoCameraView: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  photoCameraControls: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: 128,
+    paddingBottom: 28,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0,0,0,0.32)'
+  },
+  photoCameraTextButton: { width: 76, alignItems: 'center', justifyContent: 'center' },
+  photoCameraText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
+  photoCameraShutter: {
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    borderWidth: 4,
+    borderColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  photoCameraShutterDisabled: { opacity: 0.45 },
+  photoCameraShutterInner: { width: 54, height: 54, borderRadius: 999, backgroundColor: '#ffffff' },
   bubbleAssistant: {
     width: '96%',
     maxWidth: '96%',
@@ -6306,6 +6894,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e7edf5',
     overflow: 'hidden',
+    maxHeight: 320,
     shadowColor: '#c8d2df',
     shadowOpacity: 0.18,
     shadowRadius: 12,
@@ -6314,36 +6903,51 @@ const styles = StyleSheet.create({
   },
   slashItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    alignItems: 'flex-start',
     paddingHorizontal: 14,
     paddingVertical: 12
   },
   slashItemActive: { backgroundColor: '#f2f6fb' },
+  slashItemMain: { flex: 1, minWidth: 0, gap: 2 },
+  slashItemTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   slashTrigger: { color: '#1f2937', fontSize: 15, fontWeight: '600' },
-  slashTitle: { color: '#64748b', fontSize: 13 },
+  slashTitle: { color: '#475569', fontSize: 13 },
+  slashDesc: { color: '#94a3b8', fontSize: 12 },
+  slashSource: { color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' },
 
-  attachmentRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 4 },
-  attachmentChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    padding: 4,
-    borderRadius: 10,
-    backgroundColor: '#f1f5f9',
+  attachmentScroller: { maxHeight: 70, marginLeft: -2, marginRight: -2, marginBottom: 1 },
+  attachmentRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 2, paddingTop: 2, paddingBottom: 4 },
+  attachmentTile: {
+    width: 62,
+    height: 62,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: '#e2e8f0'
+    borderColor: '#d7dee8',
+    overflow: 'hidden',
+    shadowColor: '#334155',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1
   },
-  attachmentThumb: { width: 28, height: 28, borderRadius: 6 },
-  attachmentName: { fontSize: 11, color: '#334155', maxWidth: 100 },
+  attachmentThumb: { width: '100%', height: '100%', borderRadius: 11 },
+  attachmentChip: {},
+  attachmentName: { display: 'none' },
   attachmentRemove: {
-    width: 18,
-    height: 18,
+    position: 'absolute',
+    right: 4,
+    top: 4,
+    width: 20,
+    height: 20,
     borderRadius: 999,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15,23,42,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.7)'
   },
-  attachmentRemoveTxt: { color: '#64748b', fontSize: 14, lineHeight: 14 },
+  attachmentRemoveTxt: { color: '#ffffff', fontSize: 14, lineHeight: 14, fontWeight: '700' },
   imagePickBtn: {
     width: 32,
     height: 32,
@@ -6396,7 +7000,9 @@ const styles = StyleSheet.create({
   attachmentMenuLabel: { color: '#334155', fontSize: 14, fontWeight: '500' },
   recentHeaderRow: { flexDirection: 'row', alignItems: 'center' },
   recentHeaderTitle: { color: '#64748b', fontSize: 13, fontWeight: '500' },
-  recentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 4 },
+  recentScroller: { maxHeight: 300 },
+  recentScrollerContent: { paddingTop: 4, paddingBottom: 0 },
+  recentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignContent: 'flex-start', paddingBottom: 10 },
   recentThumbCard: {
     width: '23.5%',
     aspectRatio: 1,
@@ -6404,7 +7010,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#f1f5f9'
   },
+  recentThumbSkeleton: {
+    width: '23.5%',
+    aspectRatio: 1,
+    borderRadius: 12,
+    backgroundColor: '#eef2f7',
+    borderWidth: 1,
+    borderColor: '#e7edf5'
+  },
   recentThumbImage: { width: '100%', height: '100%' },
+  recentLoadingMore: { width: '100%', height: 28, alignItems: 'center', justifyContent: 'center' },
+  recentLoadHint: { width: '100%', height: 24, alignItems: 'center', justifyContent: 'center' },
+  recentLoadHintText: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
   recentEmptyState: {
     width: '100%',
     minHeight: 80,

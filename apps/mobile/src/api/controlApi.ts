@@ -85,6 +85,7 @@ export async function sendPrompt(args: {
   sessionId?: string;
   model?: string;
   parts?: { type: string; mime?: string; url?: string; filename?: string; text?: string }[];
+  timeoutMs?: number;
 }): Promise<PromptResponse> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/opencode/prompt`;
@@ -104,7 +105,7 @@ export async function sendPrompt(args: {
       ...authHeaders(args.token)
     },
     body: JSON.stringify(body)
-  });
+  }, args.timeoutMs);
   const raw = ensureOk('prompt', 'POST', url, result.status, result.ok, result.text);
   return JSON.parse(raw) as PromptResponse;
 }
