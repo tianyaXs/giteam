@@ -2487,6 +2487,7 @@ export function App() {
   const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
   const opencodeModelConfigLoadedRef = useRef(false);
   const opencodeConfiguredModelsLoadedRef = useRef(false);
+  const opencodeModelPrefsLoadedRef = useRef(false);
   const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
   const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
   const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
@@ -2990,7 +2991,14 @@ export function App() {
       out.add(full);
     }
     const active = normalizeModelRef(activeOpencodeModel || opencodeConfig?.configuredModel || "");
-    if (active && !opencodeHiddenModels.has(active)) out.add(active);
+    if (active && !opencodeHiddenModels.has(active)) {
+      const parsed = parseModelRef(active);
+      const resolvedProvider = parsed ? (resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider) : "";
+      const providerModels = parsed ? (opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? []) : [];
+      if (parsed && (!resolvedProvider || connected.has(resolvedProvider)) && (providerModels.length === 0 || providerModels.includes(parsed.model))) {
+        out.add(active);
+      }
+    }
     return Array.from(out).sort((a, b) => a.localeCompare(b));
   }, [
     activeOpencodeModel,
@@ -7064,23 +7072,31 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
+    const hiddenKey = `${OPENCODE_MODEL_VIS_KEY}:global`;
+    const enabledKey = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
     try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        setOpencodeHiddenModels(new Set());
-        return;
-      }
-      const parsed = JSON.parse(raw) as { hidden?: string[] } | null;
+      const raw = window.localStorage.getItem(hiddenKey);
+      const parsed = raw ? JSON.parse(raw) as { hidden?: string[] } | null : null;
       const hidden = Array.isArray(parsed?.hidden) ? parsed!.hidden : [];
       const normalized = hidden.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
       setOpencodeHiddenModels(new Set(normalized));
     } catch {
       setOpencodeHiddenModels(new Set());
     }
+    try {
+      const raw = window.localStorage.getItem(enabledKey);
+      const parsed = raw ? JSON.parse(raw) as { enabled?: string[] } | null : null;
+      const enabled = Array.isArray(parsed?.enabled) ? parsed!.enabled : [];
+      const normalized = enabled.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
+      setOpencodeEnabledModels(new Set(normalized));
+    } catch {
+      setOpencodeEnabledModels(new Set());
+    }
+    opencodeModelPrefsLoadedRef.current = true;
   }, []);
 
   useEffect(() => {
+    if (!opencodeModelPrefsLoadedRef.current) return;
     const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
     const hidden = Array.from(opencodeHiddenModels);
     try {
@@ -7091,23 +7107,7 @@ export function App() {
   }, [opencodeHiddenModels]);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        setOpencodeEnabledModels(new Set());
-        return;
-      }
-      const parsed = JSON.parse(raw) as { enabled?: string[] } | null;
-      const enabled = Array.isArray(parsed?.enabled) ? parsed!.enabled : [];
-      const normalized = enabled.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
-      setOpencodeEnabledModels(new Set(normalized));
-    } catch {
-      setOpencodeEnabledModels(new Set());
-    }
-  }, []);
-
-  useEffect(() => {
+    if (!opencodeModelPrefsLoadedRef.current) return;
     const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
     const enabled = Array.from(opencodeEnabledModels);
     try {
@@ -8345,7 +8345,8 @@ export function App() {
             ) : opencodeMessages.length === 0 ? null : (
               opencodeRenderedMessages.map((msg) => {
                 const isAssistant = msg.role === "assistant";
-                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;
+                const latestAssistantId = [...opencodeMessages].reverse().find((row) => row.role === "assistant")?.id || "";
+                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && msg.id === latestAssistantId && activeOpencodeSessionBusy;
                 const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
                 const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
                 const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
@@ -9329,6 +9330,7 @@ branches.forEach((b) => {
               <div className="gt-right-card-head gt-changes-pane-head">
                 <div className="gt-changes-header">
                   <strong>Changes</strong>
+                  <span className="gt-changes-context"><span>Local</span>{worktreeOverview.branch || selectedBranch || "no branch"}</span>
                 </div>
                 <div className="toolbar" style={{ gap: 6 }}>
                   {worktreeChangeStats.total > 0 ? (
