@@ -1,18 +1,70 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { DiffEditor, loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import gitTreeIconUrl from "../gittree.png";
+import {
+  loadCachedRuntimeStatus,
+  loadCachedWidth,
+  RIGHT_PANE_WIDTH_CACHE_KEY,
+  saveCachedRuntimeStatus,
+  saveCachedWidth,
+  SIDEBAR_WIDTH_CACHE_KEY,
+  type RuntimeActionJobStatus,
+  type RuntimeDepName,
+  type RuntimeDependencyStatus,
+  type RuntimeRequirementsStatus
+} from "./lib/appCache";
+import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
+import {
+  buildConfiguredModelCandidates,
+  buildSyncModelRefs,
+  isModelRefAvailable,
+  loadModelRefSet,
+  normalizeModelRef,
+  normalizeProviderId,
+  parseModelRef,
+  resolveProviderAliasWithNames,
+  saveModelRefSet
+} from "./lib/opencodeModels";
+import {
+  buildOpencodeTurnRanges,
+  getInitialOpencodeTurnStart,
+  newOpencodeSession,
+  opencodeSessionFromSummary,
+  sliceOpencodeMessagesByTurnStart,
+  sortOpencodeSessionSummaries,
+  toOpencodeSessionTitle,
+  type OpencodeChatMessage,
+  type OpencodeChatSession,
+  type OpencodeDetailedMessage,
+  type OpencodeDetailedPart,
+  type OpencodeMessagePageCacheEntry,
+  type OpencodeMessageWindowCacheEntry,
+  type OpencodeSessionMessage,
+  type OpencodeSessionSummary,
+  type OpencodeTodoItem
+} from "./lib/opencodeSessions";
+import {
+  buildOpencodeAssistantRenderGroups,
+  buildOpencodeImageAttachmentsFromParts,
+  buildOpencodeMainLineMarkdownFromParts,
+  buildOpencodeReplyMarkdownFromParts,
+  isOpencodeContextTool,
+  isOpencodeRenderablePart,
+  mergeOpencodeMessageAttachments,
+  mergeOpencodeStreamText,
+  parseOpencodeTaskSessionId,
+  readOpencodeTodosFromPart,
+  summarizeOpencodeContextProgress,
+  summarizeOpencodeContextToolCounts,
+  toDisplayJson
+} from "./lib/opencodeParts";
 import {
   closeRepoTerminalSession,
   completeRepoTerminalInput,
@@ -60,6 +112,49 @@ import {
   saveReviewAction,
   saveReviewRecord
 } from "./lib/storage";
+import {
+  applyTerminalCompletionCandidate,
+  createTerminalTabState,
+  getTerminalCompletionGroup,
+  readTerminalTabSnapshot,
+  sanitizeTerminalOutput,
+  splitTerminalOutputForInput,
+  type TerminalTabState,
+  writeTerminalTabSnapshot
+} from "./lib/terminalState";
+import {
+  normalizeWorkspacePath,
+  readBranchParentMap,
+  readWorkspaceAgentBindings,
+  readWorktreeParentMap,
+  type WorkspaceAgentBinding,
+  writeBranchParentMap,
+  writeWorkspaceAgentBindings,
+  writeWorktreeParentMap
+} from "./lib/workspaceBindings";
+import {
+  buildSplitDiffRows,
+  buildWorktreeTree,
+  collectWorktreeDirPaths,
+  collectWorktreeNodeEntries,
+  collectWorktreeNodeFilePaths,
+  getMonacoLanguage,
+  getWorktreeDisplayStatus,
+  getWorktreeFileKindLabel,
+  getWorktreeStatusText,
+  toDiffRows,
+  type DiffRow,
+  type WorktreeTreeNode
+} from "./lib/worktreeDiff";
+import {
+  branchTone,
+  buildTopologyModel,
+  parseRefs,
+  pathLeaf,
+  shortSha,
+  type TopologyGraphModel,
+  type TopologyNode
+} from "./lib/worktreeTopology";
 import type {
   GitBranchSummary,
   GitCommitSummary,
@@ -76,15 +171,24 @@ import type {
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
+import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
+import { MarkdownLite } from "./components/common/MarkdownLite";
+import { BranchGraphLanes } from "./components/git/BranchGraphLanes";
+import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
+import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
+import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
+import { OpenCodeProviderList } from "./components/opencode/OpenCodeProviderList";
+import { OpenCodeProviderModelList } from "./components/opencode/OpenCodeProviderModelList";
 import { QuestionDock } from "./components/QuestionDock";
+import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
+import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
 import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 
-loader.config({ monaco });
+const MonacoDiffViewer = lazy(() => import("./components/git/MonacoDiffViewer"));
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
-type RightPaneTab = "worktree" | "changes" | "terminal";
 type OpencodeImageAttachment = {
   id: string;
   filename: string;
@@ -98,113 +202,6 @@ type OpencodeSlashCommand = {
   description?: string;
   source: "builtin" | "command" | "skill" | "mcp";
 };
-type TerminalTabState = {
-  id: string;
-  title: string;
-  input: string;
-  output: string;
-  seq: number;
-  alive: boolean;
-  cwd: string;
-  history: string[];
-  historyIndex: number;
-  historyDraft: string;
-  completionItems: string[];
-  completionIndex: number;
-  completionToken: string;
-};
-
-const TERMINAL_TABS_STORAGE_KEY = "giteam.terminal-tabs.v1";
-
-function readTerminalTabSnapshot(): { tabs: TerminalTabState[]; activeId: string; counter: number } | null {
-  try {
-    const raw = window.localStorage.getItem(TERMINAL_TABS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { tabs?: Array<Partial<TerminalTabState>>; activeId?: string; counter?: number };
-    const tabs = (Array.isArray(parsed.tabs) ? parsed.tabs : [])
-      .filter((tab) => typeof tab.id === "string" && tab.id.trim())
-      .slice(0, 8)
-      .map((tab, idx) => ({
-        ...createTerminalTabState(String(tab.id), String(tab.title || `终端 ${idx + 1}`), String(tab.cwd || "")),
-        input: String(tab.input || ""),
-        history: Array.isArray(tab.history) ? tab.history.map(String).slice(0, 80) : []
-      }));
-    if (tabs.length === 0) return null;
-    const activeId = tabs.some((tab) => tab.id === parsed.activeId) ? String(parsed.activeId) : tabs[0].id;
-    const counter = Math.max(Number(parsed.counter || tabs.length + 1), tabs.length + 1, 2);
-    return { tabs, activeId, counter };
-  } catch {
-    return null;
-  }
-}
-
-function createTerminalTabState(id: string, title: string, cwd = ""): TerminalTabState {
-  return {
-    id,
-    title,
-    input: "",
-    output: "",
-    seq: 0,
-    alive: false,
-    cwd,
-    history: [],
-    historyIndex: -1,
-    historyDraft: "",
-    completionItems: [],
-    completionIndex: 0,
-    completionToken: ""
-  };
-}
-
-function escapeTerminalCompletionValue(value: string): string {
-  return value.replace(/([\s\\"'`$])/g, "\\$1");
-}
-
-function applyTerminalCompletionCandidate(input: string, token: string, candidate: string): string {
-  if (!token) return input;
-  const replacement = candidate.endsWith("/")
-    ? escapeTerminalCompletionValue(candidate)
-    : `${escapeTerminalCompletionValue(candidate)} `;
-  const keep = input.length - token.length;
-  return `${input.slice(0, Math.max(0, keep))}${replacement}`;
-}
-
-function getTerminalCompletionGroup(input: string, item: string): "Directories" | "Files" | "Commands" {
-  const beforeToken = input.slice(0, Math.max(0, input.length - (input.split(/\s+/).pop() || "").length)).trim();
-  if (!beforeToken) return "Commands";
-  return item.endsWith("/") ? "Directories" : "Files";
-}
-
-function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
-  const dividerX = props.side === "left" ? 9 : 15;
-  const hiddenPanelX = props.side === "left" ? 4 : 12;
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="4" y="5" width="16" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d={`M${dividerX} 6.5V17.5`} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      {props.collapsed ? <rect x={hiddenPanelX} y="6.5" width="5" height="11" rx="1.5" fill="currentColor" opacity="0.16" /> : null}
-    </svg>
-  );
-}
-
-function SendIcon(props: { busy: boolean }) {
-  return props.busy ? (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" /></svg>
-  ) : (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /><path d="M7.5 10.5L12 5L16.5 10.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-  );
-}
-
-function RightPaneTabIcon(props: { tab: RightPaneTab; active: boolean }) {
-  const stroke = props.active ? "currentColor" : "currentColor";
-  if (props.tab === "worktree") {
-    return <img className="gt-right-tab-img" src={gitTreeIconUrl} alt="" aria-hidden="true" />;
-  }
-  if (props.tab === "changes") {
-    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 12H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 17H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="5" cy="7" r="1.2" fill="currentColor" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="5" cy="17" r="1.2" fill="currentColor" /></svg>;
-  }
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5H19.5V18.5H4.5V5.5Z" fill="none" stroke={stroke} strokeWidth="1.6" /><path d="M8 10L10.6 12L8 14" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M13 14H16" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" /></svg>;
-}
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -228,73 +225,6 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
     return this.props.children;
   }
 }
-type DiffRowKind = "meta" | "add" | "del" | "ctx";
-type DiffRow = { kind: DiffRowKind; left: string; right: string };
-type WorktreePatchRow = {
-  kind: DiffRowKind;
-  text: string;
-  marker: string;
-  oldLine: number | null;
-  newLine: number | null;
-  tone: "meta" | "hunk" | "add" | "del" | "ctx";
-};
-
-type SplitDiffSide = {
-  line: number | null;
-  text: string;
-  marker: string;
-  tone: "del" | "add" | "ctx" | "empty";
-};
-
-type SplitDiffRow = {
-  kind: "hunk" | "meta" | "line";
-  left: SplitDiffSide;
-  right: SplitDiffSide;
-};
-type StatusSession = { title: string; quote?: string; meta?: string };
-type ParsedStatus = { headline?: string; project?: string; sessions: StatusSession[] };
-type TranscriptMessage = { role: "User" | "Assistant"; content: string };
-type ParsedAgentContext = {
-  checkpoint?: string;
-  session?: string;
-  created?: string;
-  author?: string;
-  commits?: string;
-  intent?: string;
-  outcome?: string;
-  filesRaw?: string;
-  files: string[];
-  transcript: TranscriptMessage[];
-};
-type RuntimeDependencyStatus = {
-  name: string;
-  checked: boolean;
-  installed: boolean;
-  path?: string;
-  version?: string;
-  latestVersion?: string;
-  updateAvailable: boolean;
-  installHint: string;
-};
-type RuntimeRequirementsStatus = {
-  platform: string;
-  homebrewInstalled: boolean;
-  git: RuntimeDependencyStatus;
-  entire: RuntimeDependencyStatus;
-  opencode: RuntimeDependencyStatus;
-  giteam: RuntimeDependencyStatus;
-};
-type RuntimeActionJobStatus = {
-  jobId: string;
-  name: string;
-  action: "install" | "uninstall";
-  status: "running" | "succeeded" | "failed";
-  log: string;
-  startedAtMs: number;
-  finishedAtMs?: number;
-  exitCode?: number;
-  error?: string;
-};
 type OpencodeModelConfig = {
   configPath: string;
   configuredModel: string;
@@ -391,70 +321,6 @@ type GiteamMobileServiceStatus = {
 
 type OpencodeAuthPayload = { type: "api"; key: string };
 type OpencodeProviderAuthMethod = { type: string; label?: string };
-type OpencodeChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  attachments?: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }>;
-};
-type OpencodeChatSession = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: OpencodeChatMessage[];
-  turnStart: number;
-  loaded: boolean;
-  nextCursor?: string;
-  hasMore?: boolean;
-};
-type WorkspaceAgentBinding = {
-  workspacePath: string;
-  branch: string;
-  activeSessionId: string;
-  sessionIds: string[];
-  updatedAt: number;
-};
-type OpencodeSessionSummary = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-};
-type OpencodeSessionMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-};
-type OpencodeDetailedPart = Record<string, unknown> & { type?: string };
-type OpencodeDetailedMessage = {
-  info?: Record<string, unknown>;
-  parts?: OpencodeDetailedPart[];
-};
-type OpencodeTodoItem = {
-  id: string;
-  content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
-  priority?: string;
-};
-
-type OpencodeMessageWindowCacheEntry = {
-  limit: number;
-  mapped: OpencodeChatMessage[];
-  turnCount: number;
-  hasMore: boolean;
-  fetchedAt: number;
-};
-
-type OpencodeMessagePageCacheEntry = {
-  before: string;
-  limit: number;
-  items: OpencodeChatMessage[];
-  detailsById: Record<string, OpencodeDetailedMessage>;
-  nextCursor?: string;
-  hasMore: boolean;
-  fetchedAt: number;
-};
 
 const EMPTY_WORKTREE: GitWorktreeOverview = {
   branch: "",
@@ -478,212 +344,6 @@ const EMPTY_WORKTREE_FILE_CONTENT: GitWorktreeFileContent = {
   original: "",
   modified: ""
 };
-
-type WorktreeTreeNode = {
-  name: string;
-  path: string;
-  kind: "dir" | "file";
-  children: WorktreeTreeNode[];
-  entry?: GitWorktreeEntry;
-};
-
-function buildWorktreeTree(entries: GitWorktreeEntry[]): WorktreeTreeNode[] {
-  const root: WorktreeTreeNode[] = [];
-  const dirMap = new Map<string, WorktreeTreeNode>();
-
-  for (const entry of entries) {
-    const parts = entry.path.split("/").filter(Boolean);
-    let parentPath = "";
-    let level = root;
-
-    parts.forEach((part, index) => {
-      const nextPath = parentPath ? `${parentPath}/${part}` : part;
-      const isFile = index === parts.length - 1;
-      let node = level.find((item) => item.path === nextPath);
-      if (!node && !isFile) node = dirMap.get(nextPath);
-      if (!node) {
-        node = {
-          name: part,
-          path: nextPath,
-          kind: isFile ? "file" : "dir",
-          children: [],
-          entry: isFile ? entry : undefined
-        };
-        level.push(node);
-        if (!isFile) dirMap.set(nextPath, node);
-      }
-      parentPath = nextPath;
-      level = node.children;
-    });
-  }
-
-  const sortNodes = (nodes: WorktreeTreeNode[]): WorktreeTreeNode[] => nodes
-    .sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    })
-    .map((node) => ({
-      ...node,
-      children: sortNodes(node.children)
-    }));
-
-  return sortNodes(root);
-}
-
-function collectWorktreeDirPaths(nodes: WorktreeTreeNode[]): string[] {
-  return nodes.flatMap((node) => {
-    if (node.kind !== "dir") return [];
-    return [node.path, ...collectWorktreeDirPaths(node.children)];
-  });
-}
-
-function collectWorktreeNodeFilePaths(node: WorktreeTreeNode): string[] {
-  if (node.kind === "file") return node.entry?.path ? [node.entry.path] : [];
-  return node.children.flatMap(collectWorktreeNodeFilePaths);
-}
-
-function collectWorktreeNodeEntries(node: WorktreeTreeNode): GitWorktreeEntry[] {
-  if (node.kind === "file") return node.entry ? [node.entry] : [];
-  return node.children.flatMap(collectWorktreeNodeEntries);
-}
-
-function getWorktreeDisplayStatus(entry: GitWorktreeEntry): string {
-  const flags = `${entry.indexStatus}${entry.worktreeStatus}`;
-  if (flags.includes("?")) return "A";
-  if (flags.includes("A")) return "A";
-  if (flags.includes("D")) return "D";
-  if (flags.includes("R")) return "R";
-  if (flags.includes("C")) return "C";
-  if (flags.includes("M")) return "M";
-  return flags.trim() || "-";
-}
-
-function getWorktreeFileKindLabel(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() || "file";
-  if (ext === "tsx" || ext === "jsx") return "tsx";
-  if (ext === "ts" || ext === "js") return ext;
-  if (ext === "css" || ext === "html" || ext === "rs") return ext;
-  return ext.slice(0, 4);
-}
-
-function getMonacoLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() || "";
-  if (ext === "ts" || ext === "tsx") return "typescript";
-  if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") return "javascript";
-  if (ext === "rs") return "rust";
-  if (ext === "css") return "css";
-  if (ext === "html") return "html";
-  if (ext === "json") return "json";
-  if (ext === "md" || ext === "markdown") return "markdown";
-  if (ext === "toml") return "toml";
-  if (ext === "yaml" || ext === "yml") return "yaml";
-  return "plaintext";
-}
-
-function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
-  if (!entry) return "未选择文件";
-  if (entry.untracked) return "新文件";
-  if (entry.staged && entry.unstaged) return "暂存 + 未暂存";
-  if (entry.staged) return "已暂存";
-  if (entry.unstaged) return "未暂存";
-  return "已修改";
-}
-
-function buildSplitDiffRows(patch: string): SplitDiffRow[] {
-  if (!patch.trim()) return [];
-  const rows: WorktreePatchRow[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-      if (match) {
-        oldLine = Number(match[1]);
-        newLine = Number(match[2]);
-      }
-      rows.push({ kind: "meta", text: line, marker: "@@", oldLine: null, newLine: null, tone: "hunk" });
-      continue;
-    }
-    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
-      rows.push({ kind: "meta", text: line, marker: "•", oldLine: null, newLine: null, tone: "meta" });
-      continue;
-    }
-    if (line.startsWith("+")) {
-      rows.push({ kind: "add", text: line.slice(1), marker: "+", oldLine: null, newLine, tone: "add" });
-      newLine += 1;
-      continue;
-    }
-    if (line.startsWith("-")) {
-      rows.push({ kind: "del", text: line.slice(1), marker: "-", oldLine, newLine: null, tone: "del" });
-      oldLine += 1;
-      continue;
-    }
-    const text = line.startsWith(" ") ? line.slice(1) : line;
-    rows.push({ kind: "ctx", text, marker: " ", oldLine, newLine, tone: "ctx" });
-    oldLine += 1;
-    newLine += 1;
-  }
-
-  const splitRows: SplitDiffRow[] = [];
-  const delBuffer: WorktreePatchRow[] = [];
-
-  function flushDelBuffer() {
-    for (const row of delBuffer) {
-      splitRows.push({
-        kind: "line",
-        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "del" },
-        right: { line: null, text: "", marker: "", tone: "empty" },
-      });
-    }
-    delBuffer.length = 0;
-  }
-
-  for (const row of rows) {
-    if (row.tone === "meta" || row.tone === "hunk") {
-      flushDelBuffer();
-      splitRows.push({
-        kind: row.tone === "hunk" ? "hunk" : "meta",
-        left: { line: null, text: row.text, marker: row.marker, tone: "empty" },
-        right: { line: null, text: row.text, marker: row.marker, tone: "empty" },
-      });
-      continue;
-    }
-    if (row.tone === "del") {
-      delBuffer.push(row);
-      continue;
-    }
-    if (row.tone === "add") {
-      if (delBuffer.length > 0) {
-        const delRow = delBuffer.shift()!;
-        splitRows.push({
-          kind: "line",
-          left: { line: delRow.oldLine, text: delRow.text, marker: delRow.marker, tone: "del" },
-          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
-        });
-      } else {
-        splitRows.push({
-          kind: "line",
-          left: { line: null, text: "", marker: "", tone: "empty" },
-          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
-        });
-      }
-      continue;
-    }
-    if (row.tone === "ctx") {
-      flushDelBuffer();
-      splitRows.push({
-        kind: "line",
-        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "ctx" },
-        right: { line: row.newLine, text: row.text, marker: row.marker, tone: "ctx" },
-      });
-      continue;
-    }
-  }
-
-  flushDelBuffer();
-  return splitRows;
-}
 
 function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
   const v = String(raw || "").trim().toLowerCase();
@@ -712,253 +372,6 @@ function withLineNumbers(text: string, maxLines = 400): string {
   return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
 }
 
-function parseOpencodeTaskSessionId(part: OpencodeDetailedPart | undefined | null): string {
-  if (!part) return "";
-  const state = (part as any)?.state || {};
-  const metadata = state?.metadata || {};
-  const raw =
-    String(metadata?.sessionId || metadata?.sessionID || "").trim() ||
-    String((part as any)?.metadata?.sessionId || "").trim();
-  if (raw) return raw;
-  const output = typeof state?.output === "string" ? state.output : "";
-  if (!output) return "";
-  const m = output.match(/task_id:\s*(ses[^\s)]+)/i);
-  return (m?.[1] || "").trim();
-}
-
-/** Assistant reply text (exclude reasoning/tool traces). */
-function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
-  const rows = Array.isArray(parts) ? parts : [];
-  const chunks: string[] = [];
-  for (const p of rows) {
-    if (!p) continue;
-    const t = String((p as any)?.type || "");
-    if (t !== "text") continue;
-    const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
-    if (text) chunks.push(text);
-  }
-  return chunks.join("\n\n");
-}
-
-function buildOpencodeImageAttachmentsFromParts(parts: OpencodeDetailedPart[] | undefined | null) {
-  const rows = Array.isArray(parts) ? parts : [];
-  const out: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }> = [];
-  rows.forEach((p, index) => {
-    const part: any = p || {};
-    const type = String(part.type || "");
-    if (type !== "file") return;
-    const mime = String(part.mime || "").trim();
-    const url = String(part.url || part.source || "").trim();
-    const filename = String(part.filename || "").trim();
-    const image = mime.startsWith("image/") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(filename);
-    if (!image || !url) return;
-    out.push({
-      id: String(part.id || `image:${index}`),
-      kind: "image",
-      uri: url,
-      mime: mime || undefined,
-      filename: filename || undefined,
-    });
-  });
-  return out;
-}
-
-function mergeOpencodeMessageAttachments(prev: OpencodeChatMessage[] | undefined, next: OpencodeChatMessage[]) {
-  const prevById = new Map<string, NonNullable<OpencodeChatMessage["attachments"]>>();
-  const prevByContent = new Map<string, NonNullable<OpencodeChatMessage["attachments"]>>();
-  (Array.isArray(prev) ? prev : []).forEach((msg) => {
-    if (msg.role !== "user" || !msg.attachments?.length) return;
-    if (msg.id) prevById.set(msg.id, msg.attachments);
-    const text = msg.content.trim();
-    if (text) prevByContent.set(text, msg.attachments);
-  });
-  return next.map((msg) => {
-    if (msg.role !== "user" || msg.attachments?.length) return msg;
-    const attachments = prevById.get(msg.id) || prevByContent.get(msg.content.trim());
-    return attachments?.length ? { ...msg, attachments } : msg;
-  });
-}
-
-function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
-  if (!p) return false;
-  const t = String((p as any)?.type || "");
-  if (t === "text") return !!String((p as any)?.text ?? "").trim();
-  if (t === "reasoning") return !!String((p as any)?.text ?? "").trim();
-  if (t === "step-start" || t === "step-finish" || t === "patch") return false;
-  if (t === "tool") {
-    const tool = String((p as any)?.tool || "");
-    if (tool === "todowrite") return false;
-    return true;
-  }
-  return false;
-}
-
-function parseOpencodeTodoItems(input: unknown): OpencodeTodoItem[] {
-  if (!Array.isArray(input)) return [];
-  const items: OpencodeTodoItem[] = [];
-  input.forEach((item, index) => {
-    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
-    if (!row) return;
-    const content = String(row.content ?? "").trim();
-    const rawStatus = String(row.status ?? "pending").trim().toLowerCase();
-    if (!content) return;
-    const status: OpencodeTodoItem["status"] =
-      rawStatus === "completed" || rawStatus === "cancelled" || rawStatus === "in_progress"
-        ? rawStatus
-        : "pending";
-    items.push({
-      id: String(row.id ?? `todo-${index + 1}`).trim() || `todo-${index + 1}`,
-      content,
-      status,
-      priority: String(row.priority ?? "").trim() || undefined
-    });
-  });
-  return items;
-}
-
-function readOpencodeTodosFromPart(part: OpencodeDetailedPart | undefined | null): OpencodeTodoItem[] {
-  if (!part || String((part as any)?.type || "") !== "tool") return [];
-  if (String((part as any)?.tool || "") !== "todowrite") return [];
-  const state = ((part as any)?.state || {}) as Record<string, unknown>;
-  const metadata = ((part as any)?.metadata || state.metadata || {}) as Record<string, unknown>;
-  const input = (state.input || {}) as Record<string, unknown>;
-  const metaTodos = parseOpencodeTodoItems(metadata.todos);
-  if (metaTodos.length > 0) return metaTodos;
-  return parseOpencodeTodoItems(input.todos);
-}
-
-function isOpencodeContextTool(tool: string): boolean {
-  return tool === "read" || tool === "glob" || tool === "grep" || tool === "list";
-}
-
-function summarizeOpencodeContextToolCounts(parts: OpencodeDetailedPart[] | undefined | null): {
-  read: number;
-  search: number;
-  list: number;
-} {
-  const rows = Array.isArray(parts) ? parts : [];
-  let read = 0;
-  let search = 0;
-  let list = 0;
-  for (const p of rows) {
-    if (String((p as any)?.type || "") !== "tool") continue;
-    const tool = String((p as any)?.tool || "");
-    if (tool === "read") read += 1;
-    else if (tool === "glob" || tool === "grep") search += 1;
-    else if (tool === "list") list += 1;
-  }
-  return { read, search, list };
-}
-
-function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] | undefined | null): {
-  active: boolean;
-  mode: string;
-  detail: string;
-} {
-  const rows = Array.isArray(parts) ? parts : [];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const p = rows[i] as any;
-    if (!p || String(p?.type || "") !== "tool") continue;
-    const st = String(p?.state?.status || "").trim().toLowerCase();
-    if (st !== "running" && st !== "pending") continue;
-    const title = String(p?.state?.title || "").trim();
-    const tool = String(p?.tool || "").trim();
-    const input = p?.state?.input || {};
-    const subtitle = String(input?.description || input?.filePath || input?.pattern || input?.path || "").trim();
-    const detail = [tool, title || subtitle].filter(Boolean).join(" · ");
-    const mode =
-      tool === "read" || tool === "list" || tool === "glob" || tool === "grep"
-        ? "读取"
-        : tool === "write" || tool === "edit" || tool === "apply_patch"
-          ? "写入"
-          : "处理中";
-    return { active: true, mode, detail };
-  }
-  return { active: false, mode: "", detail: "" };
-}
-
-function mergeOpencodeStreamText(existingRaw: unknown, incomingRaw: unknown): string {
-  const existing = String(existingRaw || "");
-  const incoming = String(incomingRaw || "");
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-  if (incoming === existing) return existing;
-  if (incoming.startsWith(existing)) return incoming;
-  if (existing.startsWith(incoming)) return existing;
-  if (existing.endsWith(incoming)) return existing;
-  if (incoming.includes(existing)) return incoming;
-  return existing + incoming;
-}
-
-function buildOpencodeReplyMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
-  const rows = Array.isArray(parts) ? parts : [];
-  const out: string[] = [];
-  for (const p of rows) {
-    if (!p) continue;
-    if (String((p as any)?.type || "") !== "text") continue;
-    const text = String((p as any)?.text ?? "").trim();
-    if (text) out.push(text);
-  }
-  return out.join("\n\n");
-}
-
-type OpencodeAssistantRenderGroup =
-  | { kind: "context"; key: string; parts: OpencodeDetailedPart[] }
-  | { kind: "reasoning"; key: string; parts: OpencodeDetailedPart[] }
-  | { kind: "part"; key: string; part: OpencodeDetailedPart };
-
-function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | undefined | null): OpencodeAssistantRenderGroup[] {
-  const rows = Array.isArray(parts) ? parts : [];
-  const out: OpencodeAssistantRenderGroup[] = [];
-  let i = 0;
-  while (i < rows.length) {
-    const cur = rows[i];
-    const t = String((cur as any)?.type || "");
-    const tool = String((cur as any)?.tool || "");
-    if (t === "tool" && isOpencodeContextTool(tool)) {
-      const batch: OpencodeDetailedPart[] = [cur];
-      i += 1;
-      while (i < rows.length) {
-        const nxt = rows[i];
-        const nt = String((nxt as any)?.type || "");
-        const ntool = String((nxt as any)?.tool || "");
-        if (nt === "tool" && isOpencodeContextTool(ntool)) {
-          batch.push(nxt);
-          i += 1;
-          continue;
-        }
-        break;
-      }
-      const firstId = String((batch[0] as any)?.id || "");
-      const lastId = String((batch[batch.length - 1] as any)?.id || "");
-      out.push({ kind: "context", key: `context:${firstId || i}:${lastId || i}`, parts: batch });
-      continue;
-    }
-    if (t === "reasoning") {
-      const batch: OpencodeDetailedPart[] = [cur];
-      i += 1;
-      while (i < rows.length) {
-        const nxt = rows[i];
-        const nt = String((nxt as any)?.type || "");
-        if (nt === "reasoning") {
-          batch.push(nxt);
-          i += 1;
-          continue;
-        }
-        break;
-      }
-      const firstId = String((batch[0] as any)?.id || "");
-      const lastId = String((batch[batch.length - 1] as any)?.id || "");
-      out.push({ kind: "reasoning", key: `reasoning:${firstId || i}:${lastId || i}`, parts: batch });
-      continue;
-    }
-    const pid = String((cur as any)?.id || "");
-    out.push({ kind: "part", key: `part:${pid || i}`, part: cur });
-    i += 1;
-  }
-  return out;
-}
-
 type OnboardingStep = {
   title: string;
   body: string;
@@ -966,73 +379,16 @@ type OnboardingStep = {
 
 const ONBOARDING_DONE_KEY = "giteam.onboarding.done.v1";
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
-const RUNTIME_STATUS_CACHE_KEY = "giteam.runtime.status.v1";
-const SIDEBAR_WIDTH_CACHE_KEY = "giteam.layout.sidebar.width.v1";
-const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v1";
 const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
-const WORKSPACE_AGENT_BINDINGS_KEY = "giteam.workspace-agent-bindings.v1";
-const BRANCH_PARENT_MAP_KEY = "giteam.branch-parent-map.v1";
-const WORKTREE_PARENT_MAP_KEY = "giteam.worktree-parent-map.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
-const OPENCODE_RECENT_VISIBLE = 2;
 const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
 const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
-const OPENCODE_SESSION_TITLE_MAX = 42;
-
-const EMPTY_DEP = (name: "git" | "entire" | "opencode" | "giteam", installHint: string): RuntimeDependencyStatus => ({
-  name,
-  checked: false,
-  installed: false,
-  path: undefined,
-  version: undefined,
-  latestVersion: undefined,
-  updateAvailable: false,
-  installHint
-});
-
-const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
-  platform: "macos",
-  homebrewInstalled: false,
-  git: EMPTY_DEP("git", "brew install git"),
-  entire: EMPTY_DEP("entire", "brew tap entireio/tap && brew install entireio/tap/entire"),
-  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode"),
-  giteam: EMPTY_DEP("giteam", "npm install -g giteam")
-};
-
-function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
-  try {
-    const raw = window.localStorage.getItem(RUNTIME_STATUS_CACHE_KEY);
-    if (!raw) return DEFAULT_RUNTIME_STATUS;
-    const parsed = JSON.parse(raw) as Partial<RuntimeRequirementsStatus>;
-    return {
-      platform: parsed.platform || DEFAULT_RUNTIME_STATUS.platform,
-      homebrewInstalled: Boolean(parsed.homebrewInstalled),
-      git: parsed.git ? { ...DEFAULT_RUNTIME_STATUS.git, ...parsed.git } : DEFAULT_RUNTIME_STATUS.git,
-      entire: parsed.entire ? { ...DEFAULT_RUNTIME_STATUS.entire, ...parsed.entire } : DEFAULT_RUNTIME_STATUS.entire,
-      opencode: parsed.opencode ? { ...DEFAULT_RUNTIME_STATUS.opencode, ...parsed.opencode } : DEFAULT_RUNTIME_STATUS.opencode,
-      giteam: parsed.giteam ? { ...DEFAULT_RUNTIME_STATUS.giteam, ...parsed.giteam } : DEFAULT_RUNTIME_STATUS.giteam
-    };
-  } catch {
-    return DEFAULT_RUNTIME_STATUS;
-  }
-}
-
-function loadCachedWidth(key: string, fallback: number, min: number, max: number): number {
-  try {
-    const raw = window.localStorage.getItem(key);
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(max, Math.max(min, Math.round(parsed)));
-  } catch {
-    return fallback;
-  }
-}
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
@@ -1065,323 +421,12 @@ function opencodeSavedModelsStorageKey(): string {
   return OPENCODE_SAVED_MODELS_KEY;
 }
 
-function normalizeModelRef(input: string): string {
-  const model = (input || "").trim();
-  if (!model) return "";
-  const idx = model.indexOf("/");
-  if (idx <= 0 || idx >= model.length - 1) return "";
-  const provider = model.slice(0, idx).trim();
-  const modelId = model.slice(idx + 1).trim();
-  if (!provider || !modelId) return "";
-  return `${provider}/${modelId}`;
-}
-
-function parseModelRef(input: string): { provider: string; model: string } | null {
-  const full = normalizeModelRef(input);
-  if (!full) return null;
-  const idx = full.indexOf("/");
-  return {
-    provider: full.slice(0, idx),
-    model: full.slice(idx + 1)
-  };
-}
-
-function sanitizeTerminalOutput(text: string): string {
-  const cleaned = text
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
-    .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
-    .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
-
-  // Handle terminal backspace semantics so "l\bls" becomes "ls".
-  let out = "";
-  for (const ch of cleaned) {
-    if (ch === "\b" || ch === "\u007f") {
-      out = out.slice(0, -1);
-      continue;
-    }
-    out += ch;
-  }
-  return out;
-}
-
-function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
-  const source = text || "";
-  const lines = source.split("\n");
-  let idx = lines.length - 1;
-  while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
-  if (idx < 0) return { body: "", prompt: "" };
-  const last = lines[idx] || "";
-  const looksLikePrompt = /[#$%]\s*$/.test(last) || /\)\s+[^\n]*\s[%#$]\s*$/.test(last);
-  if (!looksLikePrompt) return { body: source, prompt: "" };
-  // Drop dangling standalone prompt fragments like `%` left by stream chunk boundaries.
-  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*%\s*$/.test(line || ""));
-  const body = bodyLines.join("\n");
-  return { body, prompt: last };
-}
-
-/** Config keys that share the same resolved provider + model id (hide/disable stays consistent across refs). */
-function expandConfiguredModelRefVariants(
-  full: string,
-  configuredProviders: string[],
-  configuredModels: Record<string, string[]>,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): string[] {
-  const parsed = parseModelRef(full);
-  if (!parsed) return [];
-  const mid = parsed.model;
-  const pRes = resolveProviderAliasWithNames(parsed.provider, catalog, providerNames) || parsed.provider;
-  const out = new Set<string>();
-  for (const cfgPid of configuredProviders) {
-    if (!cfgPid) continue;
-    if (!(configuredModels[cfgPid] ?? []).includes(mid)) continue;
-    const cRes = resolveProviderAliasWithNames(cfgPid, catalog, providerNames) || cfgPid;
-    if (cRes !== pRes) continue;
-    const n = normalizeModelRef(`${cfgPid}/${mid}`);
-    if (n) out.add(n);
-  }
-  if (out.size === 0) {
-    const n = normalizeModelRef(full);
-    if (n) out.add(n);
-  }
-  return Array.from(out);
-}
-
-function hiddenCoversConfiguredModelRef(
-  hidden: Set<string>,
-  full: string,
-  configuredProviders: string[],
-  configuredModels: Record<string, string[]>,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): boolean {
-  return expandConfiguredModelRefVariants(full, configuredProviders, configuredModels, catalog, providerNames).some((v) =>
-    hidden.has(v)
-  );
-}
-
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-function toOpencodeSessionTitle(prompt?: string, indexHint?: number): string {
-  const trimmed = (prompt || "").replace(/\s+/g, " ").trim();
-  if (!trimmed) return `New Session ${indexHint ?? ""}`.trim();
-  return trimmed.length > OPENCODE_SESSION_TITLE_MAX ? `${trimmed.slice(0, OPENCODE_SESSION_TITLE_MAX - 1)}…` : trimmed;
-}
-
-function newOpencodeSession(seedPrompt?: string, indexHint?: number): OpencodeChatSession {
-  const now = Date.now();
-  return {
-    id: `sess-${makeId()}`,
-    title: toOpencodeSessionTitle(seedPrompt, indexHint),
-    createdAt: now,
-    updatedAt: now,
-    messages: [],
-    turnStart: 0,
-    loaded: true,
-    nextCursor: undefined
-  };
-}
-
-function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?: number): OpencodeChatSession {
-  return {
-    id: summary.id,
-    title: summary.title || `Session ${indexHint ?? ""}`.trim(),
-    createdAt: summary.createdAt || Date.now(),
-    updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
-    messages: [],
-    turnStart: 0,
-    loaded: false,
-    nextCursor: undefined
-  };
-}
-
-function normalizeWorkspacePath(path: string): string {
-  return path.trim();
-}
-
-function readWorkspaceAgentBindings(): Record<string, WorkspaceAgentBinding> {
-  try {
-    const raw = window.localStorage.getItem(WORKSPACE_AGENT_BINDINGS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, WorkspaceAgentBinding> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, WorkspaceAgentBinding> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const workspacePath = normalizeWorkspacePath(value?.workspacePath || key);
-      const activeSessionId = String(value?.activeSessionId || "").trim();
-      if (!workspacePath || !activeSessionId) continue;
-      out[workspacePath] = {
-        workspacePath,
-        branch: String(value?.branch || "").trim(),
-        activeSessionId,
-        sessionIds: Array.isArray(value?.sessionIds) ? value.sessionIds.map((id) => String(id || "").trim()).filter(Boolean) : [activeSessionId],
-        updatedAt: Number(value?.updatedAt || Date.now())
-      };
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeWorkspaceAgentBindings(bindings: Record<string, WorkspaceAgentBinding>) {
-  try {
-    window.localStorage.setItem(WORKSPACE_AGENT_BINDINGS_KEY, JSON.stringify(bindings));
-  } catch {
-    // localStorage may be unavailable in restricted WebViews.
-  }
-}
-
-function readBranchParentMap(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(BRANCH_PARENT_MAP_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, string> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [child, parent] of Object.entries(parsed)) {
-      const c = child.trim();
-      const p = String(parent || "").trim();
-      if (c && p && c !== p) out[c] = p;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeBranchParentMap(map: Record<string, string>) {
-  try {
-    window.localStorage.setItem(BRANCH_PARENT_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function readWorktreeParentMap(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(WORKTREE_PARENT_MAP_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, string> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [path, branch] of Object.entries(parsed)) {
-      const p = normalizeWorkspacePath(path);
-      const b = String(branch || "").trim();
-      if (p && b) out[p] = b;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeWorktreeParentMap(map: Record<string, string>) {
-  try {
-    window.localStorage.setItem(WORKTREE_PARENT_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  let currentStart = 0;
-  for (let i = 0; i < messages.length; i += 1) {
-    const msg = messages[i];
-    if (msg?.role === "user") {
-      if (i > currentStart) {
-        out.push({ start: currentStart, end: i });
-      }
-      currentStart = i;
-    }
-  }
-  if (messages.length > currentStart) {
-    out.push({ start: currentStart, end: messages.length });
-  }
-  return out;
-}
-
-function getInitialOpencodeTurnStart(totalTurns: number) {
-  return totalTurns > OPENCODE_RECENT_VISIBLE ? totalTurns - OPENCODE_RECENT_VISIBLE : 0;
-}
-
-function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[], turnStart: number) {
-  const turns = buildOpencodeTurnRanges(messages);
-  if (turns.length === 0) {
-    return { visible: [] as OpencodeChatMessage[], hidden: [] as OpencodeChatMessage[], totalTurns: turns.length };
-  }
-  const startTurnIndex = Math.max(0, Math.min(Math.floor(turnStart || 0), turns.length - 1));
-  const startMessageIndex = turns[startTurnIndex]?.start ?? 0;
-  return {
-    visible: messages.slice(startMessageIndex),
-    hidden: messages.slice(0, startMessageIndex),
-    totalTurns: turns.length
-  };
-}
-
-function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return [...rows].sort((a, b) => {
-    const byCreated = (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
-    if (byCreated !== 0) return byCreated;
-    const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
-    if (byUpdated !== 0) return byUpdated;
-    return String(a.id || "").localeCompare(String(b.id || ""));
-  });
-}
-
 function firstLetter(name: string): string {
   return (name.trim()[0] ?? "?").toUpperCase();
-}
-
-function toDiffRows(patch: string): DiffRow[] {
-  if (!patch.trim()) return [];
-  const rows: DiffRow[] = [];
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("@@")) {
-      rows.push({ kind: "meta", left: line, right: line });
-      continue;
-    }
-    if (line.startsWith("---") || line.startsWith("+++")) {
-      rows.push({ kind: "meta", left: line, right: line });
-      continue;
-    }
-    if (line.startsWith("+")) {
-      rows.push({ kind: "add", left: "", right: line.slice(1) });
-      continue;
-    }
-    if (line.startsWith("-")) {
-      rows.push({ kind: "del", left: line.slice(1), right: "" });
-      continue;
-    }
-    rows.push({
-      kind: "ctx",
-      left: line.startsWith(" ") ? line.slice(1) : line,
-      right: line.startsWith(" ") ? line.slice(1) : line
-    });
-  }
-  return rows;
-}
-
-function isPlainObject(input: unknown): input is Record<string, unknown> {
-  return !!input && typeof input === "object" && !Array.isArray(input);
-}
-
-function toDisplayJson(input: unknown, maxLen = 2400): string {
-  try {
-    const raw = typeof input === "string" ? input : JSON.stringify(input, null, 2);
-    if (!raw) return "";
-    return raw.length > maxLen ? `${raw.slice(0, maxLen)}\n…(truncated)` : raw;
-  } catch {
-    return String(input ?? "");
-  }
 }
 
 function applyOpencodeCatalog(
@@ -1399,47 +444,6 @@ function applyOpencodeCatalog(
   const models = provider ? (catalog[provider] ?? []) : [];
   const model = currentModel && models.includes(currentModel) ? currentModel : "";
   return { providers, provider, models, model };
-}
-
-function normalizeProviderId(input: string): string {
-  return (input || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function resolveProviderAlias(provider: string, catalog: Record<string, string[]>): string {
-  if (!provider) return provider;
-  const norm = normalizeProviderId(provider);
-  if (!norm) return provider;
-  const matches = Object.keys(catalog).filter((k) => normalizeProviderId(k) === norm);
-  if (matches.length === 0) return provider;
-  let best = matches[0];
-  for (const id of matches) {
-    const bestCount = (catalog[best] || []).length;
-    const curCount = (catalog[id] || []).length;
-    if (curCount > bestCount) {
-      best = id;
-      continue;
-    }
-    if (curCount === bestCount) {
-      const bestClean = normalizeProviderId(best) === best;
-      const curClean = normalizeProviderId(id) === id;
-      if (curClean && !bestClean) best = id;
-    }
-  }
-  return best;
-}
-
-function resolveProviderAliasWithNames(
-  provider: string,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): string {
-  const byId = resolveProviderAlias(provider, catalog);
-  if (byId && ((catalog[byId] || []).length > 0 || !provider)) return byId;
-  const norm = normalizeProviderId(provider);
-  if (!norm) return provider;
-  const byName = Object.keys(providerNames).find((id) => normalizeProviderId(providerNames[id] || "") === norm);
-  if (!byName) return provider;
-  return resolveProviderAlias(byName, catalog);
 }
 
 type ProviderPreset = {
@@ -1479,160 +483,6 @@ function isPresetProviderId(providerId: string): boolean {
   return PROVIDER_PRESETS.some((p) => p.id === pid);
 }
 
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const regex = /(`[^`\n]+`)|(\[[^\]]+\]\([^)]+\))|(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(_[^_\n]+_)/g;
-  let last = 0;
-  let i = 0;
-  for (const match of text.matchAll(regex)) {
-    const start = match.index ?? 0;
-    if (start > last) {
-      nodes.push(text.slice(last, start));
-    }
-    const token = match[0];
-    if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(<code key={`code-${i++}`}>{token.slice(1, -1)}</code>);
-    } else if (token.startsWith("[")) {
-      const split = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      if (split) {
-        nodes.push(
-          <a key={`link-${i++}`} href={split[2]} target="_blank" rel="noreferrer">
-            {split[1]}
-          </a>
-        );
-      } else {
-        nodes.push(token);
-      }
-    } else if (token.startsWith("**") && token.endsWith("**")) {
-      nodes.push(<strong key={`strong-${i++}`}>{token.slice(2, -2)}</strong>);
-    } else if (token.startsWith("~~") && token.endsWith("~~")) {
-      nodes.push(<del key={`del-${i++}`}>{token.slice(2, -2)}</del>);
-    } else if ((token.startsWith("*") && token.endsWith("*")) || (token.startsWith("_") && token.endsWith("_"))) {
-      nodes.push(<em key={`em-${i++}`}>{token.slice(1, -1)}</em>);
-    } else {
-      nodes.push(token);
-    }
-    last = start + token.length;
-  }
-  if (last < text.length) {
-    nodes.push(text.slice(last));
-  }
-  return nodes.length > 0 ? nodes : [text];
-}
-
-function MarkdownLite(props: { source: string }) {
-  const text = props.source.replace(/\r\n/g, "\n").replace(/\\n/g, "\n").trim();
-  if (!text) return <p className="muted">等待上下文加载...</p>;
-
-  return (
-    <div className="markdown-lite">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function parseStatusText(raw: string): ParsedStatus {
-  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
-  const out: ParsedStatus = { sessions: [] };
-  out.headline = lines.find((l) => l.startsWith("●")) ?? undefined;
-  out.project = lines.find((l) => l.startsWith("Project")) ?? undefined;
-
-  const activeIdx = lines.findIndex((l) => /Active Sessions/i.test(l));
-  if (activeIdx >= 0) {
-    const sessionLines = lines.slice(activeIdx + 1);
-    let current: StatusSession | null = null;
-    const uuidLike = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
-    for (const line of sessionLines) {
-      if (uuidLike.test(line)) {
-        if (current) out.sessions.push(current);
-        current = { title: line };
-        continue;
-      }
-      if (!current) continue;
-      if (line.startsWith(">")) {
-        current.quote = line.replace(/^>\s*/, "").replace(/^"|"$/g, "");
-      } else if (/started|active|tokens/i.test(line)) {
-        current.meta = line;
-      }
-    }
-    if (current) out.sessions.push(current);
-  }
-  return out;
-}
-
-function pickSegment(raw: string, label: string, nextLabels: string[]): string | undefined {
-  const start = raw.indexOf(`${label}:`);
-  if (start < 0) return undefined;
-  const from = start + label.length + 1;
-  let end = raw.length;
-  for (const n of nextLabels) {
-    const idx = raw.indexOf(`${n}:`, from);
-    if (idx >= 0 && idx < end) end = idx;
-  }
-  return raw.slice(from, end).trim() || undefined;
-}
-
-function parseTranscript(raw: string): TranscriptMessage[] {
-  const out: TranscriptMessage[] = [];
-  const source = raw.replace(/\r\n/g, "\n");
-  const marker = /(?:^|\n)\s*(?:\[(User|Assistant)\]|(User|Assistant)\s*:)\s*/gi;
-  const matches = [...source.matchAll(marker)];
-  for (let i = 0; i < matches.length; i += 1) {
-    const m = matches[i];
-    const roleRaw = (m[1] || m[2] || "").toLowerCase();
-    const role: "User" | "Assistant" = roleRaw === "user" ? "User" : "Assistant";
-    const start = (m.index ?? 0) + m[0].length;
-    const end = i + 1 < matches.length ? (matches[i + 1].index ?? source.length) : source.length;
-    const content = source.slice(start, end).trim();
-    if (content) out.push({ role, content });
-  }
-  return out;
-}
-
-function parseAgentContextText(raw: string): ParsedAgentContext {
-  const lines = raw.split("\n");
-  const header = lines.find((l) => /Checkpoint:|Session:|Created:|Author:/i.test(l)) ?? "";
-  const field = (name: string) => {
-    const labels = ["Checkpoint", "Session", "Created", "Author"];
-    const idx = header.indexOf(`${name}:`);
-    if (idx < 0) return undefined;
-    const from = idx + name.length + 1;
-    let end = header.length;
-    for (const l of labels) {
-      if (l === name) continue;
-      const p = header.indexOf(`${l}:`, from);
-      if (p >= 0 && p < end) end = p;
-    }
-    return header.slice(from, end).trim() || undefined;
-  };
-
-  const commits = pickSegment(raw, "Commits", ["Intent", "Outcome", "Files", "Transcript (checkpoint scope)"]);
-  const intent = pickSegment(raw, "Intent", ["Outcome", "Files", "Transcript (checkpoint scope)"]);
-  const outcome = pickSegment(raw, "Outcome", ["Files", "Transcript (checkpoint scope)"]);
-  const filesSeg = pickSegment(raw, "Files", ["Transcript (checkpoint scope)"]) ?? "";
-  const filesRaw = filesSeg.trim();
-  const transcriptSeg = pickSegment(raw, "Transcript (checkpoint scope)", []) ?? "";
-  const files = filesSeg
-    .split("\n")
-    .map((l) => l.replace(/^\(\d+\)\s*/, "").replace(/^-\s*/, "").trim())
-    .filter((l) => l && !/^\(\d+\)$/.test(l) && !/^\(\d+\)\s*$/.test(l) && !/^Files?$/i.test(l));
-
-  return {
-    checkpoint: field("Checkpoint"),
-    session: field("Session"),
-    created: field("Created"),
-    author: field("Author"),
-    commits,
-    intent,
-    outcome,
-    filesRaw,
-    files,
-    transcript: parseTranscript(transcriptSeg)
-  };
-}
-
 function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() => {
     const value = window.localStorage.getItem("giteam.theme");
@@ -1649,535 +499,6 @@ function useTheme(): [Theme, () => void] {
   }, [theme]);
 
   return [theme, () => setTheme((prev) => (prev === "dark" ? "light" : "dark"))];
-}
-
-function parseRefs(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const inner = trimmed.startsWith("(") && trimmed.endsWith(")")
-    ? trimmed.slice(1, -1)
-    : trimmed;
-  return inner
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-}
-
-function branchFromRef(ref: string, branches: GitBranchSummary[]): string | null {
-  const r = ref.trim();
-  if (!r) return null;
-  if (r.startsWith("tag:")) return null;
-  if (r.includes("->")) {
-    const rhs = r.split("->")[1]?.trim();
-    if (rhs && branches.some((b) => b.name === rhs)) return rhs;
-    return null;
-  }
-  if (branches.some((b) => b.name === r)) return r;
-  return null;
-}
-
-type LaneLayoutRow = {
-  sha: string;
-  parents: string[];
-  col: number;
-  colorIdx: number;
-};
-
-const LANE_COLORS = [
-  "#F6C445", // yellow
-  "#8A5CF6", // purple
-  "#2DD4BF", // teal
-  "#60A5FA", // blue
-  "#FB7185", // pink
-  "#34D399", // green
-  "#F97316" // orange
-];
-
-function laneColor(col: number): string {
-  return LANE_COLORS[col % LANE_COLORS.length];
-}
-
-type LaneSnapshot = Array<{ sha: string; colorIdx: number }>;
-type LaneLayout = {
-  rows: LaneLayoutRow[];
-  // Lanes before applying row's commit->parents transition.
-  before: LaneSnapshot[];
-  // Lanes after applying row's commit->parents transition (used for edges to next row).
-  after: LaneSnapshot[];
-  maxLanes: number;
-};
-
-function computeLaneLayout(rows: GitGraphNode[]): LaneLayout {
-  const commits = rows.filter((r) => !r.isConnector && !!r.sha);
-  const remaining = new Set(commits.map((c) => c.sha));
-
-  const lanes: Array<{ sha: string; colorIdx: number }> = [];
-  let nextColor = 0;
-
-  const outRows: LaneLayoutRow[] = [];
-  const before: LaneSnapshot[] = [];
-  const after: LaneSnapshot[] = [];
-  let maxLanes = 0;
-
-  for (const c of commits) {
-    remaining.delete(c.sha);
-
-    // Snapshot BEFORE mutation: used for rails at this row and to locate current commit lane.
-    before.push(lanes.map((l) => ({ sha: l.sha, colorIdx: l.colorIdx })));
-    maxLanes = Math.max(maxLanes, lanes.length);
-
-    let col = lanes.findIndex((l) => l.sha === c.sha);
-    if (col < 0) {
-      // Append new lanes at the end to keep layout stable (less "jumping").
-      lanes.push({ sha: c.sha, colorIdx: nextColor++ });
-      col = lanes.length - 1;
-    }
-
-    const colorIdx = lanes[col]?.colorIdx ?? 0;
-    outRows.push({ sha: c.sha, parents: c.parents ?? [], col, colorIdx });
-
-    // Update lanes for next rows:
-    // - Keep the same lane/color when flowing into first parent.
-    // - Allocate new lanes/colors for secondary parents (merge).
-    const parents = (c.parents ?? []).filter(Boolean);
-    if (parents.length === 0) {
-      lanes.splice(col, 1);
-    } else {
-      lanes[col] = { sha: parents[0], colorIdx };
-      for (let i = 1; i < parents.length; i += 1) {
-        lanes.splice(col + i, 0, { sha: parents[i], colorIdx: nextColor++ });
-      }
-    }
-
-    // Drop lanes that will never appear again (keeps graph compact but not jumpy).
-    for (let i = lanes.length - 1; i >= 0; i -= 1) {
-      const s = lanes[i]?.sha ?? "";
-      if (!remaining.has(s)) lanes.splice(i, 1);
-    }
-
-    // Snapshot AFTER mutation: used to draw edges from this row to the next row.
-    after.push(lanes.map((l) => ({ sha: l.sha, colorIdx: l.colorIdx })));
-    maxLanes = Math.max(maxLanes, lanes.length);
-  }
-
-  return { rows: outRows, before, after, maxLanes };
-}
-
-function BranchGraphLanes(props: {
-  rows: GitGraphNode[];
-  rowHeight: number;
-  laneGap: number;
-  selectedSha: string;
-}) {
-  const commits = props.rows.filter((r) => !r.isConnector && !!r.sha);
-  const layout = useMemo(() => computeLaneLayout(commits), [commits]);
-  const rowH = props.rowHeight;
-  const laneAreaW = 140; // keep in sync with CSS placeholder width
-  const maxCol = Math.max(0, ...layout.rows.map((r) => r.col));
-  const laneCount = Math.max(1, maxCol + 1);
-  // Always fit lanes into the left gutter so it never overlaps text.
-  const laneGap = Math.max(8, Math.floor((laneAreaW - 20) / laneCount));
-
-  const width = laneAreaW;
-  const height = Math.max(1, commits.length * rowH);
-
-  // Edges should be drawn as local transitions between adjacent rows:
-  // commit at row i connects to its parent lanes at row i+1 (after snapshot).
-  // To reduce visual noise (match VSCode/gitk), we only draw:
-  // - first-parent edge when it changes columns
-  // - merge edges (2nd+ parent) always
-  const edges: Array<{ d: string; colorIdx: number; kind: "first" | "merge"; toX: number; toY: number }> = [];
-  layout.rows.forEach((r, rowIdx) => {
-    const fromX = r.col * laneGap + 10;
-    const fromY = rowIdx * rowH + rowH / 2;
-    const next = layout.after[rowIdx] ?? [];
-    const parents = (r.parents ?? []).filter(Boolean);
-    parents.forEach((p, i) => {
-      const toCol = next.findIndex((l) => l.sha === p);
-      if (toCol < 0) return;
-      const toX = toCol * laneGap + 10;
-      const toY = (rowIdx + 1) * rowH + rowH / 2;
-      const kind: "first" | "merge" = i === 0 ? "first" : "merge";
-      if (kind === "first" && toCol === r.col) {
-        // Vertical continuation is already implied by rails; don't draw extra curve.
-        return;
-      }
-      const dx = toX - fromX;
-      // Softer, more "gitk-like" curves.
-      const c1x = fromX + dx * 0.35;
-      const c2x = toX - dx * 0.35;
-      const c1y = fromY + rowH * 0.55;
-      const c2y = toY - rowH * 0.55;
-      const d = `M ${fromX} ${fromY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${toX} ${toY}`;
-      edges.push({ d, colorIdx: r.colorIdx, kind, toX, toY });
-    });
-  });
-
-  return (
-    <svg className="branch-lanes" width={width} height={height} aria-hidden="true">
-      <g className="branch-lanes-rails">
-        {layout.before.slice(0, commits.length).map((snap, rowIdx) => {
-          const y0 = rowIdx * rowH;
-          return snap.map((l, colIdx) => {
-            const x = colIdx * laneGap + 10;
-            return (
-              <line
-                key={`rail-${rowIdx}-${colIdx}-${l.sha}`}
-                x1={x}
-                y1={y0}
-                x2={x}
-                y2={y0 + rowH}
-                style={{ stroke: laneColor(l.colorIdx), opacity: 0.18, strokeWidth: 2 }}
-              />
-            );
-          });
-        })}
-      </g>
-      <g className="branch-lanes-edges">
-        {edges.map((e, idx) => {
-          const color = laneColor(e.colorIdx);
-          return (
-            <path
-              key={`e-${idx}`}
-              d={e.d}
-              fill="none"
-              style={{
-                stroke: color,
-                opacity: e.kind === "merge" ? 0.3 : 0.85,
-                strokeWidth: e.kind === "merge" ? 1.5 : 2.4
-              }}
-            />
-          );
-        })}
-      </g>
-      <g className="branch-lanes-junctions">
-        {edges.map((e, idx) => {
-          const color = laneColor(e.colorIdx);
-          const r = e.kind === "merge" ? 2.8 : 3.2;
-          return (
-            <circle
-              key={`j-${idx}`}
-              cx={e.toX}
-              cy={e.toY}
-              r={r}
-              style={{
-                fill: color,
-                opacity: e.kind === "merge" ? 0.55 : 0.75
-              }}
-            />
-          );
-        })}
-      </g>
-      <g className="branch-lanes-nodes">
-        {layout.rows.map((r, idx) => {
-          const x = r.col * laneGap + 10;
-          const y = idx * rowH + rowH / 2;
-          const color = laneColor(r.colorIdx);
-          const selected = props.selectedSha === r.sha;
-          return (
-            <circle
-              key={`n-${r.sha}`}
-              cx={x}
-              cy={y}
-              r={selected ? 6 : 5}
-              style={{
-                stroke: color,
-                fill: color,
-                strokeWidth: selected ? 2.5 : 2
-              }}
-            />
-          );
-        })}
-      </g>
-    </svg>
-  );
-}
-
-type TopologyNodeKind = "repo" | "worktree" | "branch" | "commit";
-
-type TopologyNode = {
-  id: string;
-  kind: TopologyNodeKind;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
-  meta: string;
-  accent: string;
-  accentSoft: string;
-  border: string;
-  branch?: string;
-  sha?: string;
-  path?: string;
-  refs?: string[];
-  isCurrent?: boolean;
-  dirtyCount?: number;
-  author?: string;
-  date?: string;
-  rank?: number;
-};
-
-type TopologyEdge = {
-  id: string;
-  from: string;
-  to: string;
-  color: string;
-  dashed?: boolean;
-};
-
-type TopologySection = {
-  id: string;
-  label: string;
-  hint: string;
-  x: number;
-  y: number;
-  width: number;
-};
-
-type TopologyGraphModel = {
-  nodes: TopologyNode[];
-  nodeById: Record<string, TopologyNode>;
-  edges: TopologyEdge[];
-  sections: TopologySection[];
-  primaryNodeId: string;
-  nearbyNodeIds: Record<string, boolean>;
-  width: number;
-  height: number;
-};
-
-function clampLabel(text: string, max = 14): string {
-  const value = text.trim();
-  if (!value) return "-";
-  return value.length > max ? `${value.slice(0, Math.max(1, max - 2))}..` : value;
-}
-
-function wtLabelFromPath(path: string): string {
-  const parts = path.split(/[\/]/).filter(Boolean);
-  if (parts.length === 0) return "WT";
-  const leaf = parts[parts.length - 1];
-  return clampLabel(leaf, 8);
-}
-
-function pathLeaf(path: string): string {
-  return path.split(/[\/]/).filter(Boolean).pop() || path.trim() || "workspace";
-}
-
-function shortSha(value: string, size = 8): string {
-  const text = value.trim();
-  if (!text) return "-";
-  return text.slice(0, size);
-}
-
-function branchTone(branchName: string) {
-  const branch = branchName.trim() || "unknown";
-  const prefix = branch.split("/")[0]?.toLowerCase() || branch.toLowerCase();
-  const preset: Record<string, { accent: string; soft: string; border: string }> = {
-    main: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
-    master: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
-    feature: { accent: "#22c55e", soft: "rgba(34,197,94,0.16)", border: "rgba(34,197,94,0.34)" },
-    hotfix: { accent: "#ef4444", soft: "rgba(239,68,68,0.16)", border: "rgba(239,68,68,0.34)" },
-    develop: { accent: "#a855f7", soft: "rgba(168,85,247,0.16)", border: "rgba(168,85,247,0.34)" },
-    release: { accent: "#f59e0b", soft: "rgba(245,158,11,0.16)", border: "rgba(245,158,11,0.34)" },
-    fix: { accent: "#ec4899", soft: "rgba(236,72,153,0.16)", border: "rgba(236,72,153,0.34)" },
-    chore: { accent: "#64748b", soft: "rgba(100,116,139,0.18)", border: "rgba(100,116,139,0.34)" },
-    docs: { accent: "#0ea5e9", soft: "rgba(14,165,233,0.16)", border: "rgba(14,165,233,0.34)" },
-    test: { accent: "#14b8a6", soft: "rgba(20,184,166,0.16)", border: "rgba(20,184,166,0.34)" },
-    refactor: { accent: "#f97316", soft: "rgba(249,115,22,0.16)", border: "rgba(249,115,22,0.34)" }
-  };
-  if (preset[prefix]) return preset[prefix];
-  const hue = Array.from(branch).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 360;
-  return {
-    accent: `hsl(${hue} 72% 56%)`,
-    soft: `hsl(${hue} 72% 56% / 0.16)`,
-    border: `hsl(${hue} 72% 56% / 0.34)`
-  };
-}
-
-function topologyEdgePath(from: TopologyNode, to: TopologyNode): string {
-  const startX = from.x + from.width / 2;
-  const startY = from.y + from.height;
-  const endX = to.x + to.width / 2;
-  const endY = to.y;
-  if (from.kind === "branch" && to.kind === "branch") {
-    const bend = Math.max(48, Math.min(110, (endY - startY) * 0.62));
-    return `M ${startX} ${startY} C ${startX} ${startY + bend}, ${endX} ${endY - bend}, ${endX} ${endY}`;
-  }
-  const midY = Math.round(startY + Math.max(26, (endY - startY) * 0.52));
-  if (Math.abs(startX - endX) < 2) {
-    return `M ${startX} ${startY} L ${endX} ${endY}`;
-  }
-  return `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
-}
-
-function buildTopologyModel(input: {
-  repoName: string;
-  repoPath: string;
-  currentBranch: string;
-  branches: GitBranchSummary[];
-  worktrees: GitLinkedWorktree[];
-  branchCommits: GitCommitSummary[];
-  commitGraph: GitGraphNode[];
-  branchParentMap: Record<string, string>;
-}): TopologyGraphModel {
-  const branchNames = Array.from(new Set(input.branches.map((row) => row.name).filter(Boolean)));
-  const currentBranch = input.currentBranch || branchNames.find((name) => name === "main") || branchNames[0] || "main";
-  const normalizeBranchName = (name: string): string => name.replace(/^refs\/heads\//, "");
-  const worktrees = input.worktrees
-    .filter((wt) => wt.path.trim())
-    .map((wt) => ({ ...wt, branch: normalizeBranchName(wt.branch || currentBranch) }));
-  const currentWorktree = worktrees.find((wt) => wt.isCurrent)
-    || worktrees.find((wt) => wt.path.trim() === input.repoPath.trim())
-    || null;
-  const workspaceBranchNames = new Set(worktrees.map((wt) => wt.branch).filter(Boolean));
-  const graphCommits = input.commitGraph.filter((row) => !row.isConnector && !!row.sha);
-  const branchHeadByName = new Map<string, string>();
-  const parseAllRefs = (text: string): string[] => {
-    const trimmed = text.trim();
-    if (!trimmed) return [];
-    const inner = trimmed.startsWith("(") && trimmed.endsWith(")") ? trimmed.slice(1, -1) : trimmed;
-    return inner.split(",").map((part) => part.trim()).filter(Boolean);
-  };
-  for (const row of graphCommits) {
-    const refs = parseAllRefs(row.refs);
-    for (const ref of refs) {
-      const branch = branchFromRef(ref, input.branches);
-      if (branch && !branchHeadByName.has(branch)) {
-        branchHeadByName.set(branch, row.sha);
-      }
-    }
-  }
-
-  const currentWidth = 320;
-  const currentHeight = 112;
-  const workspaceWidth = 176;
-  const workspaceHeight = 86;
-  const branchWidth = 156;
-  const branchHeight = 72;
-  const colGap = 24;
-  const rowGap = 24;
-  const marginX = 92;
-  const topY = 96;
-  const sectionGap = 76;
-  const currentWorkspace = currentWorktree || {
-    path: input.repoPath,
-    branch: currentBranch,
-    head: branchHeadByName.get(currentBranch) || "",
-    isCurrent: true,
-    isMainWorktree: true,
-    isDetached: false,
-    clean: true,
-    stagedCount: 0,
-    unstagedCount: 0,
-    untrackedCount: 0,
-    locked: "",
-    prunable: ""
-  };
-  const activeWorkspaces = worktrees
-    .filter((wt) => wt.path !== currentWorkspace.path)
-    .sort((a, b) => Number(b.stagedCount + b.unstagedCount + b.untrackedCount > 0) - Number(a.stagedCount + a.unstagedCount + a.untrackedCount > 0) || a.branch.localeCompare(b.branch));
-  const availableBranches = branchNames
-    .filter((name) => !workspaceBranchNames.has(name))
-    .sort((a, b) => a.localeCompare(b));
-  const activeCols = Math.min(4, Math.max(1, activeWorkspaces.length));
-  const branchCols = Math.min(5, Math.max(1, availableBranches.length));
-  const boardWidth = Math.max(
-    currentWidth,
-    activeCols * workspaceWidth + (activeCols - 1) * colGap,
-    branchCols * branchWidth + (branchCols - 1) * colGap
-  );
-  const sceneWidth = Math.max(1280, boardWidth + marginX * 2);
-  const centerX = sceneWidth / 2;
-
-  const nodes: TopologyNode[] = [];
-  const nodeById: Record<string, TopologyNode> = {};
-  const edges: TopologyEdge[] = [];
-  const sections: TopologySection[] = [];
-  const pushNode = (node: TopologyNode) => {
-    nodes.push(node);
-    nodeById[node.id] = node;
-  };
-  const workspaceMeta = (wt: GitLinkedWorktree, current = false): string => {
-    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-    const flags = [wt.isMainWorktree ? "MAIN" : "WT", current ? "CURRENT" : "", dirtyCount > 0 ? `${dirtyCount} changes` : "clean"].filter(Boolean);
-    return flags.join(" · ");
-  };
-  const makeWorkspaceNode = (wt: GitLinkedWorktree, x: number, y: number, width: number, height: number, current = false): TopologyNode => {
-    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-    return {
-      id: `worktree:${wt.path || wt.branch}`,
-      kind: "worktree",
-      x,
-      y,
-      width,
-      height,
-      label: clampLabel(wt.branch || pathLeaf(wt.path), current ? 22 : 14),
-      meta: workspaceMeta(wt, current),
-      accent: "#64748b",
-      accentSoft: "rgba(100,116,139,0.12)",
-      border: "rgba(100,116,139,0.30)",
-      branch: wt.branch,
-      isCurrent: current || wt.isCurrent,
-      path: wt.path,
-      sha: wt.head,
-      dirtyCount,
-      rank: 0
-    };
-  };
-
-  const currentY = topY;
-  sections.push({ id: "current", label: "Current Workspace", hint: "当前正在工作的目录", x: centerX - boardWidth / 2, y: currentY - 34, width: boardWidth });
-  const currentNode = makeWorkspaceNode(currentWorkspace, centerX - currentWidth / 2, currentY, currentWidth, currentHeight, true);
-  pushNode(currentNode);
-
-  const activeY = currentY + currentHeight + sectionGap;
-  sections.push({ id: "active", label: "Active Workspaces", hint: "已创建 worktree 的工作现场", x: centerX - boardWidth / 2, y: activeY - 34, width: boardWidth });
-  activeWorkspaces.forEach((wt, index) => {
-    const row = Math.floor(index / activeCols);
-    const col = index % activeCols;
-    const rowCount = index >= activeWorkspaces.length - activeCols ? Math.min(activeCols, activeWorkspaces.length - row * activeCols) : activeCols;
-    const rowWidth = rowCount * workspaceWidth + (rowCount - 1) * colGap;
-    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (workspaceWidth + colGap);
-    const y = activeY + row * (workspaceHeight + rowGap);
-    pushNode(makeWorkspaceNode(wt, x, y, workspaceWidth, workspaceHeight, false));
-  });
-
-  const activeRows = Math.max(1, Math.ceil(activeWorkspaces.length / activeCols));
-  const branchY = activeY + activeRows * (workspaceHeight + rowGap) + sectionGap;
-  sections.push({ id: "branches", label: "Available Branches", hint: "还没有激活为工作空间的分支", x: centerX - boardWidth / 2, y: branchY - 34, width: boardWidth });
-  availableBranches.forEach((branchName, index) => {
-    const row = Math.floor(index / branchCols);
-    const col = index % branchCols;
-    const rowCount = index >= availableBranches.length - branchCols ? Math.min(branchCols, availableBranches.length - row * branchCols) : branchCols;
-    const rowWidth = rowCount * branchWidth + (rowCount - 1) * colGap;
-    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (branchWidth + colGap);
-    const y = branchY + row * (branchHeight + rowGap);
-    const tone = branchTone(branchName);
-    pushNode({
-      id: `branch:${branchName}`,
-      kind: "branch",
-      x,
-      y,
-      width: branchWidth,
-      height: branchHeight,
-      label: clampLabel(branchName, 12),
-      meta: "BR only",
-      accent: tone.accent,
-      accentSoft: tone.soft,
-      border: tone.border,
-      branch: branchName,
-      isCurrent: false,
-      sha: branchHeadByName.get(branchName),
-      rank: index + 1
-    });
-  });
-
-  const primaryNodeId = currentNode.id;
-  const nearbyNodeIds = Object.fromEntries(nodes.map((node) => [node.id, true]));
-  const maxNodeY = Math.max(...nodes.map((n) => n.y + n.height), branchY + branchHeight);
-  const height = Math.max(400, maxNodeY + 80);
-  return { nodes, nodeById, edges, sections, primaryNodeId, nearbyNodeIds, width: sceneWidth, height };
 }
 
 export function App() {
@@ -2277,7 +598,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
-  const [checkingDeps, setCheckingDeps] = useState<Record<"git" | "entire" | "opencode" | "giteam", boolean>>({
+  const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
     opencode: false,
@@ -2287,7 +608,7 @@ export function App() {
   const [installingElapsed, setInstallingElapsed] = useState(0);
   const [runtimeJobId, setRuntimeJobId] = useState("");
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
-  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | "opencode" | "giteam" | null>(null);
+  const [expandedLogDep, setExpandedLogDep] = useState<RuntimeDepName | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(() => loadCachedRuntimeStatus());
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [opencodeProviders, setOpencodeProviders] = useState<string[]>([]);
@@ -2707,14 +1028,11 @@ export function App() {
     return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
   }, [opencodeSessions, activeOpencodeSessionId]);
   const activeOpencodeModel = useMemo(() => {
-    const isAvailableModel = (full: string) => {
-      const parsed = parseModelRef(full);
-      if (!parsed) return false;
-      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
-      if (opencodeConnectedProviders.length > 0 && resolvedProvider && !opencodeConnectedProviders.includes(resolvedProvider)) return false;
-      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
-      return providerModels.length === 0 || providerModels.includes(parsed.model);
-    };
+    const isAvailableModel = (full: string) => isModelRefAvailable(full, {
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames
+    });
     const sessionId = activeOpencodeSessionId.trim();
     const fromSession = sessionId ? normalizeModelRef(opencodeSessionModel[sessionId] || "") : "";
     if (fromSession && isAvailableModel(fromSession)) return fromSession;
@@ -2911,47 +1229,18 @@ export function App() {
 
   const opencodeConfiguredModelCandidates = useMemo(() => {
     // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
-    const q = opencodeModelPickerSearch.trim().toLowerCase();
-    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const out = new Set<string>();
-    for (const pid of opencodeConfiguredProviders) {
-      const resolvedProvider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      const models = opencodeConfiguredModelsByProvider[pid] ?? [];
-      for (const mid of models) {
-        const full = normalizeModelRef(`${pid}/${mid}`);
-        if (!full) continue;
-        const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[pid] ?? [];
-        if (providerModels.length > 0 && !providerModels.includes(mid)) continue;
-        if (opencodeHiddenModels.has(full)) continue;
-        if (q) {
-          const provider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
-          const name = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") || "";
-          const hay = `${full} ${name}`.toLowerCase();
-          if (!hay.includes(q)) continue;
-        }
-        out.add(full);
-      }
-    }
-    for (const full of opencodeEnabledModels) {
-      if (!full || opencodeHiddenModels.has(full)) continue;
-      const parsed = parseModelRef(full);
-      if (!parsed) continue;
-      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
-      if (providerModels.length > 0 && !providerModels.includes(parsed.model)) continue;
-      if (q) {
-        const name =
-          opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model] ||
-          opencodeModelNamesByProvider[resolvedProvider]?.[parsed.model] ||
-          "";
-        const hay = `${full} ${name}`.toLowerCase();
-        if (!hay.includes(q)) continue;
-      }
-      out.add(full);
-    }
-    return Array.from(out).sort((a, b) => a.localeCompare(b));
+    return buildConfiguredModelCandidates({
+      configuredProviders: opencodeConfiguredProviders,
+      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
+      configuredModelNamesByProvider: opencodeConfiguredModelNamesByProvider,
+      liveModelNamesByProvider: opencodeModelNamesByProvider,
+      enabledModels: opencodeEnabledModels,
+      hiddenModels: opencodeHiddenModels,
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames,
+      search: opencodeModelPickerSearch
+    });
   }, [
     opencodeConfiguredProviders,
     opencodeConfiguredModelsByProvider,
@@ -2966,40 +1255,17 @@ export function App() {
   ]);
 
   const opencodeSyncModelRefs = useMemo(() => {
-    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const out = new Set<string>();
-    for (const pid of opencodeConfiguredProviders) {
-      const resolvedProvider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      const models = opencodeConfiguredModelsByProvider[pid] ?? [];
-      for (const mid of models) {
-        const full = normalizeModelRef(`${pid}/${mid}`);
-        if (!full || opencodeHiddenModels.has(full)) continue;
-        const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[pid] ?? [];
-        if (providerModels.length > 0 && !providerModels.includes(mid)) continue;
-        out.add(full);
-      }
-    }
-    for (const full of opencodeEnabledModels) {
-      if (!full || opencodeHiddenModels.has(full)) continue;
-      const parsed = parseModelRef(full);
-      if (!parsed) continue;
-      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
-      if (providerModels.length > 0 && !providerModels.includes(parsed.model)) continue;
-      out.add(full);
-    }
-    const active = normalizeModelRef(activeOpencodeModel || opencodeConfig?.configuredModel || "");
-    if (active && !opencodeHiddenModels.has(active)) {
-      const parsed = parseModelRef(active);
-      const resolvedProvider = parsed ? (resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider) : "";
-      const providerModels = parsed ? (opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? []) : [];
-      if (parsed && (!resolvedProvider || connected.has(resolvedProvider)) && (providerModels.length === 0 || providerModels.includes(parsed.model))) {
-        out.add(active);
-      }
-    }
-    return Array.from(out).sort((a, b) => a.localeCompare(b));
+    return buildSyncModelRefs({
+      configuredProviders: opencodeConfiguredProviders,
+      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
+      enabledModels: opencodeEnabledModels,
+      hiddenModels: opencodeHiddenModels,
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames,
+      activeModel: activeOpencodeModel,
+      configuredModel: opencodeConfig?.configuredModel || ""
+    });
   }, [
     activeOpencodeModel,
     opencodeConfig?.configuredModel,
@@ -4008,7 +2274,7 @@ export function App() {
     }
   }
 
-  async function runDependencyAction(name: "git" | "entire" | "opencode" | "giteam", action: "install" | "uninstall") {
+  async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall") {
     flushSync(() => {
       setShowEnvSetup(true);
       setInstallingDep(name);
@@ -5771,10 +4037,8 @@ export function App() {
           targetPath = "";
         }
         setMessage(`基于 ${startPoint || baseBranch} 创建工作空间: ${workspaceName}...`);
-        console.log("Creating detached workspace:", { repoPath, baseBranch, startPoint, targetPath: targetPath || "auto-generated" });
         const created = await createGitDetachedWorktree(repoPath, startPoint || baseBranch, targetPath || undefined);
         rememberWorktreeParent(created.path, baseBranch);
-        console.log("Worktree created:", created);
         await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
         const newBranchCommits = baseBranch ? await getBranchCommits(repoPath, baseBranch, 80) : [];
         if (newBranchCommits.length > 0) {
@@ -5825,7 +4089,6 @@ export function App() {
     setError("");
     setMessage(`正在删除 worktree: ${target}...`);
     try {
-      console.log("Removing worktree:", { repoPath, target });
       await removeGitWorktree(repoPath, target);
       unbindWorkspaceAgent(target);
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
@@ -6866,15 +5129,15 @@ export function App() {
   }, [runtimeJobId]);
 
   useEffect(() => {
-    window.localStorage.setItem(RUNTIME_STATUS_CACHE_KEY, JSON.stringify(runtimeStatus));
+    saveCachedRuntimeStatus(runtimeStatus);
   }, [runtimeStatus]);
 
   useEffect(() => {
-    window.localStorage.setItem(SIDEBAR_WIDTH_CACHE_KEY, String(sidebarWidth));
+    saveCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, sidebarWidth);
   }, [sidebarWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem(RIGHT_PANE_WIDTH_CACHE_KEY, String(rightPaneWidth));
+    saveCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, rightPaneWidth);
   }, [rightPaneWidth]);
 
   useEffect(() => {
@@ -7099,47 +5362,21 @@ export function App() {
   useEffect(() => {
     const hiddenKey = `${OPENCODE_MODEL_VIS_KEY}:global`;
     const enabledKey = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
-    try {
-      const raw = window.localStorage.getItem(hiddenKey);
-      const parsed = raw ? JSON.parse(raw) as { hidden?: string[] } | null : null;
-      const hidden = Array.isArray(parsed?.hidden) ? parsed!.hidden : [];
-      const normalized = hidden.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
-      setOpencodeHiddenModels(new Set(normalized));
-    } catch {
-      setOpencodeHiddenModels(new Set());
-    }
-    try {
-      const raw = window.localStorage.getItem(enabledKey);
-      const parsed = raw ? JSON.parse(raw) as { enabled?: string[] } | null : null;
-      const enabled = Array.isArray(parsed?.enabled) ? parsed!.enabled : [];
-      const normalized = enabled.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
-      setOpencodeEnabledModels(new Set(normalized));
-    } catch {
-      setOpencodeEnabledModels(new Set());
-    }
+    setOpencodeHiddenModels(loadModelRefSet(hiddenKey, "hidden"));
+    setOpencodeEnabledModels(loadModelRefSet(enabledKey, "enabled"));
     opencodeModelPrefsLoadedRef.current = true;
   }, []);
 
   useEffect(() => {
     if (!opencodeModelPrefsLoadedRef.current) return;
     const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
-    const hidden = Array.from(opencodeHiddenModels);
-    try {
-      window.localStorage.setItem(key, JSON.stringify({ hidden }));
-    } catch {
-      // ignore
-    }
+    saveModelRefSet(key, "hidden", opencodeHiddenModels);
   }, [opencodeHiddenModels]);
 
   useEffect(() => {
     if (!opencodeModelPrefsLoadedRef.current) return;
     const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
-    const enabled = Array.from(opencodeEnabledModels);
-    try {
-      window.localStorage.setItem(key, JSON.stringify({ enabled }));
-    } catch {
-      // ignore
-    }
+    saveModelRefSet(key, "enabled", opencodeEnabledModels);
   }, [opencodeEnabledModels]);
 
   useEffect(() => {
@@ -7403,21 +5640,7 @@ export function App() {
   }, [selectedRepo?.id, activeTerminalTabId, rightPaneTab]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(TERMINAL_TABS_STORAGE_KEY, JSON.stringify({
-        activeId: activeTerminalTabId,
-        counter: terminalTabCounterRef.current,
-        tabs: terminalTabs.map((tab) => ({
-          id: tab.id,
-          title: tab.title,
-          cwd: tab.cwd,
-          input: tab.input,
-          history: tab.history.slice(0, 80)
-        }))
-      }));
-    } catch {
-      // ignore terminal snapshot persistence failures
-    }
+    writeTerminalTabSnapshot(activeTerminalTabId, terminalTabCounterRef.current, terminalTabs);
   }, [terminalTabs, activeTerminalTabId]);
 
   useEffect(() => {
@@ -9538,32 +7761,15 @@ branches.forEach((b) => {
               </div>
               {selectedWorktreeFile ? (
                 <div className="gt-monaco-diff-shell">
-                  <DiffEditor
-                    key={selectedWorktreeFile}
-                    height="100%"
-                    width="100%"
-                    original={selectedWorktreeContent.original}
-                    modified={selectedWorktreeContent.modified}
-                    language={getMonacoLanguage(selectedWorktreeFile)}
-                    theme={theme === "light" ? "light" : "vs-dark"}
-                    options={{
-                      readOnly: true,
-                      renderSideBySide: true,
-                      automaticLayout: true,
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      renderOverviewRuler: false,
-                      folding: true,
-                      fontSize: 12,
-                      lineHeight: 18,
-                      wordWrap: "off",
-                      scrollbar: {
-                        alwaysConsumeMouseWheel: false,
-                        horizontalScrollbarSize: 10,
-                        verticalScrollbarSize: 10
-                      }
-                    }}
-                  />
+                  <Suspense fallback={<div className="gt-worktree-patch-empty">Loading diff viewer...</div>}>
+                    <MonacoDiffViewer
+                      filePath={selectedWorktreeFile}
+                      original={selectedWorktreeContent.original}
+                      modified={selectedWorktreeContent.modified}
+                      language={getMonacoLanguage(selectedWorktreeFile)}
+                      theme={theme}
+                    />
+                  </Suspense>
                 </div>
               ) : (
                 <div className="gt-worktree-patch-empty">选择左侧文件后查看 patch。</div>
@@ -9854,6 +8060,92 @@ branches.forEach((b) => {
     if (mobileServiceStatusError) return { color: "var(--danger)", label: `Mobile service: error (${mobileServiceStatusError})` };
     return { color: "color-mix(in srgb, var(--accent) 30%, orange)", label: "Mobile service: starting" };
   })();
+  const opencodeProviderPickerModelCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const provider of opencodeProviderPickerCandidates) {
+      out[provider] = (opencodeModelsByProvider[provider] || []).length;
+    }
+    return out;
+  }, [opencodeProviderPickerCandidates, opencodeModelsByProvider]);
+
+  async function saveOpencodeCustomProvider() {
+    try {
+      setOpencodeProviderConfigBusy(true);
+      setOpencodeConfigBusy(true);
+      const pid = opencodeProviderConfig.provider.trim();
+      const mid = opencodeSelectedModel.trim();
+      const full = `${pid}/${mid}`;
+      const key = opencodeProviderConfig.apiKey?.trim() || "";
+      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
+        repoPath,
+        provider: pid,
+        npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
+        name: opencodeProviderConfig.name || pid,
+        baseUrl: opencodeProviderConfig.baseUrl,
+        apiKey: key,
+        headers: opencodeProviderConfig.headers || {},
+        endpoint: opencodeProviderConfig.endpoint || "",
+        region: opencodeProviderConfig.region || "",
+        profile: opencodeProviderConfig.profile || "",
+        project: opencodeProviderConfig.project || "",
+        location: opencodeProviderConfig.location || "",
+        resourceName: opencodeProviderConfig.resourceName || "",
+        enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
+        timeout: opencodeProviderConfig.timeout || "",
+        chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
+        modelId: mid,
+        modelName: mid
+      });
+      await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
+      const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+      const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
+      const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
+      if (!hasProvider || !hasModel) {
+        appendOpencodeDebugLog(
+          `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
+        );
+        appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
+        throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
+      }
+      await refreshOpencodeCatalog();
+      await refreshOpencodeServerConfig();
+      setShowOpencodeCustomProvider(false);
+      setShowOpencodeModelPicker(true);
+      setOpencodeModelPickerSearch("");
+      setMessage(`Saved configuration: ${full}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("Save configuration failed");
+    } finally {
+      setOpencodeConfigBusy(false);
+      setOpencodeProviderConfigBusy(false);
+    }
+  }
+
+  async function saveOpencodeAuthKey(providerId: string) {
+    if (!ensureRepoSelected()) return;
+    const authPid = providerId.trim();
+    const key = opencodeConnectApiKey.trim();
+    if (!authPid || !key) return;
+    setOpencodeConnectBusy(true);
+    setError("");
+    try {
+      await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+      await refreshOpencodeCatalog();
+      if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+        await fetchOpencodeModels(authPid);
+      }
+      setOpencodeProviderPickerProvider(authPid);
+      setMessage(`已更新密钥: ${authPid}`);
+      setOpencodeConnectApiKey("");
+      setShowOpencodeAuthDialogFor("");
+    } catch (e) {
+      setError(String(e));
+      setMessage("更新密钥失败");
+    } finally {
+      setOpencodeConnectBusy(false);
+    }
+  }
 
   const panel = <div className="wb-panel-inner" />;
 
@@ -10122,105 +8414,27 @@ branches.forEach((b) => {
         ) : null}
 
         {showSettings ? (
-          <div className="modal-mask" onClick={() => void closeSettingsModal()}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Settings</h3>
-              <p className="small muted">Theme and layout preferences</p>
-
-              <div className="settings-grid">
-                <div className="settings-row">
-                  <div className="settings-label">Theme</div>
-                  <div className="toolbar">
-                    <button className="chip" onClick={toggleTheme} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
-                      {theme === "dark" ? "Light" : "Dark"}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-label">Plugins</div>
-                  <div className="toolbar">
-                    <button
-                      className="chip"
-                      onClick={() => {
-                        setShowEnvSetup(true);
-                        const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
-                          (d) => !d.checked
-                        );
-                        if (unchecked) void refreshRuntimeRequirements();
-                      }}
-                    >
-                      Manage plugins
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-label">Mobile Control API</div>
-                  <div className="settings-config-btn-wrap">
-                    <button
-                      className="chip"
-                      disabled={!runtimeStatus.giteam.installed}
-                      title={runtimeStatus.giteam.installed ? "Configure Mobile Control API" : "Install giteam plugin first"}
-                      onClick={openMobileControlDialog}
-                    >
-                      Configure
-                    </button>
-                  </div>
-                </div>
-                {runtimeStatus.giteam.installed ? null : (
-                  <div className="settings-row">
-                    <div className="settings-label">Mobile Control API</div>
-                    <div className="small muted">Install giteam plugin first. This feature is provided by giteam CLI.</div>
-                  </div>
-                )}
-
-                {runtimeStatus.opencode.installed ? (
-                  <div className="settings-row">
-                    <div className="settings-label">OpenCode API</div>
-                    <div className="settings-config-btn-wrap">
-                      <button className="chip" onClick={() => setShowOpencodeApiDialog(true)}>
-                        Configure
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {runtimeStatus.opencode.installed ? (
-                  <>
-                    <div className="settings-row">
-                      <div className="settings-label">Model management</div>
-                      <div className="toolbar">
-                        <button
-                          className="chip"
-                          onClick={() => {
-                            setOpencodeProviderPickerProvider(
-                              parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
-                            );
-                            setShowOpencodeProviderPicker(true);
-                          }}
-                        >
-                          Open manager
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : null}
-                {runtimeStatus.opencode.installed ? null : (
-                  <div className="settings-row">
-                    <div className="settings-label">Model management</div>
-                    <div className="small muted">Install OpenCode plugin first.</div>
-                  </div>
-                )}
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-                <button className="chip" onClick={() => void closeSettingsModal()}>
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
+          <SettingsDialog
+            theme={theme}
+            runtimeStatus={runtimeStatus}
+            onClose={() => void closeSettingsModal()}
+            onToggleTheme={toggleTheme}
+            onOpenRuntimeSetup={() => {
+              setShowEnvSetup(true);
+              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
+                (d) => !d.checked
+              );
+              if (unchecked) void refreshRuntimeRequirements();
+            }}
+            onOpenMobileControl={openMobileControlDialog}
+            onOpenOpenCodeApi={() => setShowOpencodeApiDialog(true)}
+            onOpenModelManager={() => {
+              setOpencodeProviderPickerProvider(
+                parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
+              );
+              setShowOpencodeProviderPicker(true);
+            }}
+          />
         ) : null}
 
         {showMobileControlDialog && runtimeStatus.giteam.installed ? (
@@ -10365,33 +8579,11 @@ branches.forEach((b) => {
         ) : null}
 
         {showOpencodeApiDialog ? (
-          <div className="modal-mask" onClick={() => void closeOpencodeApiDialog()}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-              <div className="env-setup-head">
-                <h3>OpenCode API</h3>
-              </div>
-              <div className="settings-provider-form">
-                <div className="mobile-control-field">
-                  <div className="small muted">Service port</div>
-                  <input
-                    className="path-input"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="Service port"
-                    value={String(opencodeServiceSettings.port)}
-                    onChange={(e) => {
-                      const next = Number(e.target.value || "0");
-                      setOpencodeServiceSettings((prev) => ({
-                        ...prev,
-                        port: next
-                      }));
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+          <OpenCodeApiDialog
+            port={opencodeServiceSettings.port}
+            onClose={() => void closeOpencodeApiDialog()}
+            onPortChange={(port) => setOpencodeServiceSettings((prev) => ({ ...prev, port }))}
+          />
         ) : null}
 
         {showOpencodeProviderPicker ? (
@@ -10438,55 +8630,25 @@ branches.forEach((b) => {
             </div>
               <div className="settings-model-lists opencode-provider-picker-grid">
                 <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                  {opencodeProviderPickerCandidates.length === 0 ? (
-                    <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>
-                  ) : null}
-                  {opencodeProviderPickerCandidates.map((provider, idx) => {
-                    const connected = opencodeConnectedProviders.includes(provider);
-                    const tag = getOpencodeProviderTag(provider);
-                    const prev = idx > 0 ? opencodeProviderPickerCandidates[idx - 1] : "";
-                    const prevConnected = prev ? opencodeConnectedProviders.includes(prev) : connected;
-                    const shouldSplit = idx > 0 && prevConnected && !connected;
-                    const modelCount = (opencodeModelsByProvider[provider] || []).length;
-                    return (
-                      <Fragment key={`provider-pick-wrap-${provider}`}>
-                        {shouldSplit ? (
-                          <div className="opencode-provider-divider small muted">
-                            未连接
-                          </div>
-                        ) : null}
-                        <button
-                          key={`provider-pick-${provider}`}
-                          className={opencodeProviderPickerProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setOpencodeProviderPickerProvider(provider);
-                            if (!connected) {
-                              // Show inline connect UI on the right column (matches OpenCode "connect" UX).
-                              setOpencodeConnectProviderId(provider);
-                              setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
-                              setOpencodeConnectApiKey("");
-                              return;
-                            }
-                            setShowOpencodeAuthDialogFor("");
-                          }}
-                          title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
-                        >
-                          <span className="opencode-provider-row-main">
-                            {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                            <small>{`${provider} · ${tag}`}</small>
-                          </span>
-                          <span className="opencode-provider-row-side">
-                            <small className="small muted">{modelCount} models</small>
-                            <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
-                              {connected ? "已连接" : "未连接"}
-                            </span>
-                          </span>
-                        </button>
-                      </Fragment>
-                    );
-                  })}
+                  <OpenCodeProviderList
+                    providers={opencodeProviderPickerCandidates}
+                    selectedProvider={opencodeProviderPickerProvider}
+                    connectedProviders={opencodeConnectedProviders}
+                    providerNames={opencodeProviderNames}
+                    modelCountsByProvider={opencodeProviderPickerModelCounts}
+                    getProviderTag={getOpencodeProviderTag}
+                    getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
+                    onSelectProvider={(provider, connected) => {
+                      setOpencodeProviderPickerProvider(provider);
+                      if (!connected) {
+                        setOpencodeConnectProviderId(provider);
+                        setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
+                        setOpencodeConnectApiKey("");
+                        return;
+                      }
+                      setShowOpencodeAuthDialogFor("");
+                    }}
+                  />
                 </div>
                 <div className="settings-model-col" style={{ maxHeight: 420 }}>
                   {(() => {
@@ -10630,85 +8792,46 @@ branches.forEach((b) => {
                         </div>
                       );
                     }
-                    if (filtered.length === 0) {
-                      return (
-                        <div className="opencode-provider-right-panel">
-                          {providerHeader}
-                          {authBlock}
-                          <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>
-                        </div>
-                      );
-                    }
                     return (
                       <div className="opencode-provider-right-panel">
                         {providerHeader}
                         {authBlock}
-                        {filtered.map((mid) => {
-                          const ref = `${cfgPid}/${mid}`;
-                          const refNorm = normalizeModelRef(ref);
-                          const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
-                          const locallyEnabled = !!refNorm && opencodeEnabledModels.has(refNorm);
-                          const enabled = !!refNorm && !opencodeHiddenModels.has(refNorm) && (configured || locallyEnabled);
-                          const modelDisplay =
-                            opencodeModelNamesByProvider[pid]?.[mid] ||
-                            opencodeConfiguredModelNamesByProvider[cfgPid]?.[mid] ||
-                            mid;
-                          return (
-                            <div
-                              key={`provider-model-pick-${refNorm || ref}`}
-                              className={
-                                normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"
-                              }
-                            >
-                              <button
-                                className="opencode-provider-model-main"
-                                onClick={() => {
-                                  if (!refNorm) return;
-                                  void applyOpencodeModel(refNorm);
-                                }}
-                                title={refNorm || ref}
-                              >
-                                <span>{modelDisplay}</span>
-                                {modelDisplay !== mid ? <small>{mid}</small> : null}
-                              </button>
-                              <button
-                                type="button"
-                                className={enabled ? "opencode-switch is-on" : "opencode-switch"}
-                                aria-pressed={enabled}
-                                aria-label={enabled ? "隐藏模型" : "启用模型"}
-                                onClick={async (e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (!refNorm) return;
-                                  if (enabled) {
-                                    setOpencodeHiddenModels((prev) => {
-                                      const next = new Set(prev);
-                                      next.add(refNorm);
-                                      return next;
-                                    });
-                                    setOpencodeEnabledModels((prev) => {
-                                      const next = new Set(prev);
-                                      next.delete(refNorm);
-                                      return next;
-                                    });
-                                    return;
-                                  }
-                                  // Local enable semantics: unhide + mark enabled immediately.
-                                  setOpencodeHiddenModels((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(refNorm);
-                                    return next;
-                                  });
-                                  setOpencodeEnabledModels((prev) => {
-                                    const next = new Set(prev);
-                                    next.add(refNorm);
-                                    return next;
-                                  });
-                                }}
-                              />
-                            </div>
-                          );
-                        })}
+                        <OpenCodeProviderModelList
+                          models={filtered}
+                          providerId={pid}
+                          configuredProviderId={cfgPid}
+                          activeModel={activeOpencodeModel}
+                          configuredModelsByProvider={opencodeConfiguredModelsByProvider}
+                          configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
+                          modelNamesByProvider={opencodeModelNamesByProvider}
+                          hiddenModels={opencodeHiddenModels}
+                          enabledModels={opencodeEnabledModels}
+                          onSelectModel={(ref) => void applyOpencodeModel(ref)}
+                          onHideModel={(ref) => {
+                            setOpencodeHiddenModels((prev) => {
+                              const next = new Set(prev);
+                              next.add(ref);
+                              return next;
+                            });
+                            setOpencodeEnabledModels((prev) => {
+                              const next = new Set(prev);
+                              next.delete(ref);
+                              return next;
+                            });
+                          }}
+                          onEnableModel={(ref) => {
+                            setOpencodeHiddenModels((prev) => {
+                              const next = new Set(prev);
+                              next.delete(ref);
+                              return next;
+                            });
+                            setOpencodeEnabledModels((prev) => {
+                              const next = new Set(prev);
+                              next.add(ref);
+                              return next;
+                            });
+                          }}
+                        />
                       </div>
                     );
                   })()}
@@ -10718,304 +8841,62 @@ branches.forEach((b) => {
           </div>
         ) : null}
 
-        {showOpencodeAuthDialogFor ? (
-          <div className="modal-mask" onClick={() => setShowOpencodeAuthDialogFor("")}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-              {(() => {
-                const pid = showOpencodeAuthDialogFor.trim();
-                const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                const tag = getOpencodeProviderTag(pid);
-                const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                return (
-                  <>
-                    <div className="env-setup-head">
-                      <h3>{`更新 API Key · ${pretty}`}</h3>
-                      <button className="chip" onClick={() => setShowOpencodeAuthDialogFor("")}>Close</button>
-                    </div>
-                    <p className="small muted">{`${tag} provider`}</p>
-                    <div className="settings-provider-form" style={{ marginTop: 8 }}>
-                      <input
-                        className="path-input"
-                        placeholder="输入新的 API 密钥"
-                        value={keyValue}
-                        onChange={(e) => {
-                          setOpencodeConnectProviderId(pid);
-                          setOpencodeConnectProviderName(pretty);
-                          setOpencodeConnectApiKey(e.target.value);
-                        }}
-                      />
-                    </div>
-                    <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
-                      <button
-                        className="chip"
-                        disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                        onClick={async () => {
-                          if (!ensureRepoSelected()) return;
-                          const authPid = pid.trim();
-                          const key = opencodeConnectApiKey.trim();
-                          if (!authPid || !key) return;
-                          setOpencodeConnectBusy(true);
-                          setError("");
-                          try {
-                            await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                            await refreshOpencodeCatalog();
-                            if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                              await fetchOpencodeModels(authPid);
-                            }
-                            setOpencodeProviderPickerProvider(authPid);
-                            setMessage(`已更新密钥: ${authPid}`);
-                            setOpencodeConnectApiKey("");
-                            setShowOpencodeAuthDialogFor("");
-                          } catch (e) {
-                            setError(String(e));
-                            setMessage("更新密钥失败");
-                          } finally {
-                            setOpencodeConnectBusy(false);
-                          }
-                        }}
-                      >
-                        {opencodeConnectBusy ? "Saving..." : "更新 API Key"}
-                      </button>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        ) : null}
+        {showOpencodeAuthDialogFor ? (() => {
+          const pid = showOpencodeAuthDialogFor.trim();
+          const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+          const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+          return (
+            <OpenCodeAuthDialog
+              providerId={opencodeConnectProviderId === pid ? pid : ""}
+              providerName={pretty}
+              providerTag={getOpencodeProviderTag(pid)}
+              apiKey={keyValue}
+              busy={opencodeConnectBusy}
+              onClose={() => setShowOpencodeAuthDialogFor("")}
+              onApiKeyChange={(value) => {
+                setOpencodeConnectProviderId(pid);
+                setOpencodeConnectProviderName(pretty);
+                setOpencodeConnectApiKey(value);
+              }}
+              onSave={() => void saveOpencodeAuthKey(pid)}
+            />
+          );
+        })() : null}
 
         {showOpencodeCustomProvider ? (
-          <div className="modal-mask" onClick={() => setShowOpencodeCustomProvider(false)}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
-              <div className="env-setup-head">
-                <h3>自定义提供商</h3>
-                <button className="chip" onClick={() => setShowOpencodeCustomProvider(false)}>Close</button>
-              </div>
-              <p className="small muted">
-                OpenAI 兼容提供商（参考 `https://opencode.ai/docs/providers/#custom-provider`）。
-              </p>
-              <div className="settings-provider-form">
-                <input
-                  className="path-input"
-                  placeholder="provider id（例如 vllm / myprovider）"
-                  value={opencodeProviderConfig.provider}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, provider: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="显示名称（可选）"
-                  value={opencodeProviderConfig.name}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, name: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="baseURL（例如 http://127.0.0.1:8000/v1）"
-                  value={opencodeProviderConfig.baseUrl}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, baseUrl: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="API Key（可空；支持 {env:ENV_NAME}）"
-                  value={opencodeProviderConfig.apiKey}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="model id（例如 qwen3.5_35b_a3b）"
-                  value={opencodeSelectedModel}
-                  onChange={(e) => setOpencodeSelectedModel(e.target.value)}
-                />
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    disabled={opencodeProviderConfigBusy || opencodeConfigBusy || !opencodeProviderConfig.provider.trim() || !opencodeSelectedModel.trim()}
-                    onClick={async () => {
-                      try {
-                        setOpencodeProviderConfigBusy(true);
-                        setOpencodeConfigBusy(true);
-                        const pid = opencodeProviderConfig.provider.trim();
-                        const mid = opencodeSelectedModel.trim();
-                        const full = `${pid}/${mid}`;
-                        // OpenCode web flow:
-                        // 1) PUT /auth/:id with {type:"api", key:"..."} when apiKey provided
-                        // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers),
-                        //    and only re-enable current provider from disabled_providers.
-                        const key = opencodeProviderConfig.apiKey?.trim() || "";
-                        await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-                          repoPath,
-                          provider: pid,
-                          npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
-                          name: opencodeProviderConfig.name || pid,
-                          baseUrl: opencodeProviderConfig.baseUrl,
-                          apiKey: key,
-                          headers: opencodeProviderConfig.headers || {},
-                          endpoint: opencodeProviderConfig.endpoint || "",
-                          region: opencodeProviderConfig.region || "",
-                          profile: opencodeProviderConfig.profile || "",
-                          project: opencodeProviderConfig.project || "",
-                          location: opencodeProviderConfig.location || "",
-                          resourceName: opencodeProviderConfig.resourceName || "",
-                          enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
-                          timeout: opencodeProviderConfig.timeout || "",
-                          chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
-                          modelId: mid,
-                          modelName: mid
-                        });
-                        await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
-                        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-                        const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
-                        const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
-                        if (!hasProvider || !hasModel) {
-                          appendOpencodeDebugLog(
-                            `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
-                          );
-                          appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
-                          throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
-                        }
-                        await refreshOpencodeCatalog();
-                        await refreshOpencodeServerConfig();
-                        setShowOpencodeCustomProvider(false);
-                        setShowOpencodeModelPicker(true);
-                        setOpencodeModelPickerSearch("");
-                        setMessage(`Saved configuration: ${full}`);
-                      } catch (e) {
-                        setError(String(e));
-                        setMessage("Save configuration failed");
-                      } finally {
-                        setOpencodeConfigBusy(false);
-                        setOpencodeProviderConfigBusy(false);
-                      }
-                    }}
-                  >
-                    {opencodeProviderConfigBusy || opencodeConfigBusy ? "Saving..." : "Save"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <OpenCodeCustomProviderDialog
+            config={opencodeProviderConfig}
+            modelId={opencodeSelectedModel}
+            busy={opencodeProviderConfigBusy || opencodeConfigBusy}
+            onClose={() => setShowOpencodeCustomProvider(false)}
+            onConfigChange={(patch) => setOpencodeProviderConfig((prev) => ({ ...prev, ...patch }))}
+            onModelChange={setOpencodeSelectedModel}
+            onSave={() => void saveOpencodeCustomProvider()}
+          />
         ) : null}
 
         {/* inline connect UI lives inside provider picker right column */}
 
         {showEnvSetup ? (
-          <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
-            <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
-              <div className="env-setup-head">
-                <h3>Runtime Setup</h3>
-                <button
-                  className="env-refresh-circle"
-                  title="Refresh runtime check"
-                  aria-label="Refresh runtime check"
-                  disabled={runtimeChecking || Boolean(installingDep)}
-                  onClick={() => void refreshRuntimeRequirements()}
-                >
-                  <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
-                </button>
-              </div>
-              <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
-
-              <div className="env-check-list">
-                {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam]
-                  .filter((d): d is RuntimeDependencyStatus => Boolean(d))
-                  .map((dep) => (
-                    <div className="env-check-row" key={dep.name}>
-                      <div>
-                        <strong>{dep.name}</strong>{" "}
-                        <span
-                          className={
-                            checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? "muted" : dep.installed ? "env-ok" : "env-missing"
-                          }
-                        >
-                          {checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]
-                            ? "Checking..."
-                            : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
-                        </span>
-                        {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? (
-                          <div className="small muted">{dep.version}</div>
-                        ) : null}
-                        {dep.path ? <div className="small muted">{dep.path}</div> : null}
-                        {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
-                      </div>
-                      <div className="toolbar">
-                        {!dep.installed ? (
-                          <button
-                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "install")}
-                          >
-                            {installingDep === dep.name ? (
-                              <>
-                                <span className="env-btn-spinner" aria-hidden="true" />
-                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                              </>
-                            ) : (
-                              `Install ${dep.name}`
-                            )}
-                          </button>
-                        ) : (
-                          <button
-                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "uninstall")}
-                          >
-                            {installingDep === dep.name ? (
-                              <>
-                                <span className="env-btn-spinner" aria-hidden="true" />
-                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                              </>
-                            ) : (
-                              `Uninstall ${dep.name}`
-                            )}
-                          </button>
-                        )}
-                      </div>
-                      {runtimeJob && runtimeJob.name === dep.name ? (
-                        <div className="env-inline-status">
-                          <button
-                            className="env-progress-button"
-                            onClick={() =>
-                              setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode" | "giteam")))
-                            }
-                            title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
-                          >
-                            <span className="env-progress-track-inline" aria-hidden="true">
-                              <span className={runtimeJob.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
-                            </span>
-                            <span className="env-progress-label">
-                              {runtimeJob.action} · {runtimeJob.status} {installingDep === dep.name ? `· ${installingElapsed}s` : ""}
-                            </span>
-                          </button>
-                          <div className="env-log-tail" title={runtimeLogTail || "No logs yet"}>
-                            {runtimeLogTail || "Waiting for logs..."}
-                          </div>
-                          {expandedLogDep === dep.name ? (
-                            <pre className="env-install-log">{runtimeInstallLog || "No logs yet."}</pre>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "space-between" }}>
-                <div />
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    onClick={() => {
-                      window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
-                      setShowEnvSetup(false);
-                    }}
-                  >
-                    Continue anyway
-                  </button>
-                  <button className="chip" onClick={() => setShowEnvSetup(false)}>
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <RuntimeSetupDialog
+            runtimeStatus={runtimeStatus}
+            runtimeChecking={runtimeChecking}
+            checkingDeps={checkingDeps}
+            installingDep={installingDep}
+            installingElapsed={installingElapsed}
+            runtimeJob={runtimeJob}
+            runtimeInstallLog={runtimeInstallLog}
+            runtimeLogTail={runtimeLogTail}
+            expandedLogDep={expandedLogDep}
+            onClose={() => setShowEnvSetup(false)}
+            onDismiss={() => {
+              window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
+              setShowEnvSetup(false);
+            }}
+            onRefresh={() => void refreshRuntimeRequirements()}
+            onRunDependencyAction={(name, action) => void runDependencyAction(name, action)}
+            onToggleLog={(name) => setExpandedLogDep((prev) => (prev === name ? null : name))}
+          />
         ) : null}
 
         {showOnboarding ? (
