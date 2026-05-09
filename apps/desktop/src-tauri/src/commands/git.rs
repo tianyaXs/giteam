@@ -206,7 +206,7 @@ fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
     let Ok(entries) = fs::read_dir(base_dir) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let mut out: Vec<(String, bool)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -214,13 +214,14 @@ fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
             continue;
         }
         let mut display = format!("{display_dir}{name}");
-        if entry.path().is_dir() {
+        let is_dir = entry.path().is_dir();
+        if is_dir {
             display.push('/');
         }
-        out.push(display);
+        out.push((display, is_dir));
     }
-    out.sort();
-    out
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out.into_iter().map(|(value, _)| value).collect()
 }
 
 fn unescape_terminal_path_token(value: &str) -> String {
@@ -1265,6 +1266,29 @@ pub fn run_git_discard_changes(
             repo_path,
         )
     }
+}
+
+fn validate_commit_ref(commit_sha: &str) -> Result<String, String> {
+    let sha = commit_sha.trim();
+    if sha.is_empty() {
+        return Err("commit sha is empty".to_string());
+    }
+    if sha.contains(|c: char| c.is_whitespace()) || sha.contains([';', '&', '|', '`', '$', '\'', '"']) {
+        return Err("commit sha contains invalid characters".to_string());
+    }
+    Ok(sha.to_string())
+}
+
+#[tauri::command]
+pub fn run_git_cherry_pick_commit(repo_path: &str, commit_sha: &str) -> Result<String, String> {
+    let sha = validate_commit_ref(commit_sha)?;
+    run_git_with_timeout(&["cherry-pick", &sha], repo_path, 120)
+}
+
+#[tauri::command]
+pub fn run_git_revert_commit(repo_path: &str, commit_sha: &str) -> Result<String, String> {
+    let sha = validate_commit_ref(commit_sha)?;
+    run_git_with_timeout(&["revert", "--no-edit", &sha], repo_path, 120)
 }
 
 #[tauri::command]

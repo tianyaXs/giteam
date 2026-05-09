@@ -17,6 +17,14 @@ export async function gitCommit(repoPath: string, message: string): Promise<stri
   return invoke<string>("run_git_commit", { repoPath, message });
 }
 
+export async function gitCherryPickCommit(repoPath: string, commitSha: string): Promise<string> {
+  return invoke<string>("run_git_cherry_pick_commit", { repoPath, commitSha });
+}
+
+export async function gitRevertCommit(repoPath: string, commitSha: string): Promise<string> {
+  return invoke<string>("run_git_revert_commit", { repoPath, commitSha });
+}
+
 export async function gitStageFile(repoPath: string, filePath: string): Promise<string> {
   return invoke<string>("run_git_stage_file", { repoPath, filePath });
 }

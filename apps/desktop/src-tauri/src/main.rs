@@ -97,6 +97,8 @@ fn main() {
             commands::git::run_git_checkout_branch,
             commands::git::run_git_checkout_remote_branch,
             commands::git::run_git_discard_changes,
+            commands::git::run_git_cherry_pick_commit,
+            commands::git::run_git_revert_commit,
             commands::git::run_git_stage_file,
             commands::git::run_git_unstage_file,
             commands::git::run_git_create_branch,

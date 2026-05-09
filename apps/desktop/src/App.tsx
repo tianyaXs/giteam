@@ -5,6 +5,7 @@ import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import gitTreeIconUrl from "../gittree.png";
@@ -33,7 +34,9 @@ import {
   getLocalBranches,
   gitCheckoutBranch,
   gitCheckoutRemoteBranch,
+  gitCherryPickCommit,
   gitDiscardChanges,
+  gitRevertCommit,
   gitStageFile,
   gitUnstageFile,
   removeGitWorktree,
@@ -111,6 +114,30 @@ type TerminalTabState = {
   completionToken: string;
 };
 
+const TERMINAL_TABS_STORAGE_KEY = "giteam.terminal-tabs.v1";
+
+function readTerminalTabSnapshot(): { tabs: TerminalTabState[]; activeId: string; counter: number } | null {
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_TABS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { tabs?: Array<Partial<TerminalTabState>>; activeId?: string; counter?: number };
+    const tabs = (Array.isArray(parsed.tabs) ? parsed.tabs : [])
+      .filter((tab) => typeof tab.id === "string" && tab.id.trim())
+      .slice(0, 8)
+      .map((tab, idx) => ({
+        ...createTerminalTabState(String(tab.id), String(tab.title || `终端 ${idx + 1}`), String(tab.cwd || "")),
+        input: String(tab.input || ""),
+        history: Array.isArray(tab.history) ? tab.history.map(String).slice(0, 80) : []
+      }));
+    if (tabs.length === 0) return null;
+    const activeId = tabs.some((tab) => tab.id === parsed.activeId) ? String(parsed.activeId) : tabs[0].id;
+    const counter = Math.max(Number(parsed.counter || tabs.length + 1), tabs.length + 1, 2);
+    return { tabs, activeId, counter };
+  } catch {
+    return null;
+  }
+}
+
 function createTerminalTabState(id: string, title: string, cwd = ""): TerminalTabState {
   return {
     id,
@@ -140,6 +167,12 @@ function applyTerminalCompletionCandidate(input: string, token: string, candidat
     : `${escapeTerminalCompletionValue(candidate)} `;
   const keep = input.length - token.length;
   return `${input.slice(0, Math.max(0, keep))}${replacement}`;
+}
+
+function getTerminalCompletionGroup(input: string, item: string): "Directories" | "Files" | "Commands" {
+  const beforeToken = input.slice(0, Math.max(0, input.length - (input.split(/\s+/).pop() || "").length)).trim();
+  if (!beforeToken) return "Commands";
+  return item.endsWith("/") ? "Directories" : "Files";
 }
 
 function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
@@ -502,6 +535,16 @@ function collectWorktreeDirPaths(nodes: WorktreeTreeNode[]): string[] {
     if (node.kind !== "dir") return [];
     return [node.path, ...collectWorktreeDirPaths(node.children)];
   });
+}
+
+function collectWorktreeNodeFilePaths(node: WorktreeTreeNode): string[] {
+  if (node.kind === "file") return node.entry?.path ? [node.entry.path] : [];
+  return node.children.flatMap(collectWorktreeNodeFilePaths);
+}
+
+function collectWorktreeNodeEntries(node: WorktreeTreeNode): GitWorktreeEntry[] {
+  if (node.kind === "file") return node.entry ? [node.entry] : [];
+  return node.children.flatMap(collectWorktreeNodeEntries);
 }
 
 function getWorktreeDisplayStatus(entry: GitWorktreeEntry): string {
@@ -2120,7 +2163,7 @@ function buildTopologyModel(input: {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
-  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ uri: string; filename?: string } | null>(null);
+  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
@@ -2142,6 +2185,7 @@ export function App() {
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string; branch?: string; subject?: string } | null>(null);
+  const [commitHoverCard, setCommitHoverCard] = useState<{ x: number; y: number; sha: string; subject?: string; author?: string; date?: string; branch?: string } | null>(null);
   const [topologyContextMenu, setTopologyContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [topologyCreateSourceNodeId, setTopologyCreateSourceNodeId] = useState("");
   const [topologyInspectNodeId, setTopologyInspectNodeId] = useState("");
@@ -2197,7 +2241,7 @@ export function App() {
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
-  const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | null>(null);
+  const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [discardingFile, setDiscardingFile] = useState("");
@@ -2404,15 +2448,22 @@ export function App() {
   });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>([
-    createTerminalTabState("terminal-1", "终端 1")
-  ]);
-  const [activeTerminalTabId, setActiveTerminalTabId] = useState("terminal-1");
+  const terminalInitialSnapshot = useMemo(() => readTerminalTabSnapshot(), []);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>(() =>
+    terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]
+  );
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState(() => terminalInitialSnapshot?.activeId || "terminal-1");
   const [terminalSidebarVisible, setTerminalSidebarVisible] = useState(true);
-  const terminalTabCounterRef = useRef(2);
-  const terminalSeqRef = useRef<Record<string, number>>({ "terminal-1": 0 });
+  const terminalTabCounterRef = useRef(terminalInitialSnapshot?.counter || 2);
+  const terminalSeqRef = useRef<Record<string, number>>(
+    Object.fromEntries((terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]).map((tab) => [tab.id, 0]))
+  );
+  const terminalRepoResetReadyRef = useRef(false);
   const terminalLogRef = useRef<HTMLDivElement | null>(null);
+  const terminalBodyRef = useRef<HTMLDivElement | null>(null);
+  const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
+  const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
   const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
   const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
   const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
@@ -2554,6 +2605,10 @@ export function App() {
           ? "Commit & Sync..."
           : gitOperation === "commit"
             ? "Committing..."
+            : gitOperation === "cherryPick"
+              ? "Cherry-picking..."
+              : gitOperation === "revert"
+                ? "Reverting..."
             : "";
 
   useEffect(() => {
@@ -5402,9 +5457,43 @@ export function App() {
 
   function inspectCommitFromTopology(sha: string) {
     setTopologyContextMenu(null);
+    setCommitContextMenu(null);
     setSelectedCommit(sha);
     setDetailTab("context");
     setMessage(`查看 Entire agent 上下文: ${sha.slice(0, 8)}`);
+  }
+
+  async function applyCommitFromContextMenu(action: "cherryPick" | "revert") {
+    if (!ensureRepoSelected() || !commitContextMenu?.sha) return;
+    const sha = commitContextMenu.sha;
+    const label = shortSha(sha, 8);
+    const isRevert = action === "revert";
+    const ok = window.confirm(
+      isRevert
+        ? `确定要 revert ${label} 吗？\n\n这会在当前分支创建一个反向提交。`
+        : `确定要 cherry-pick ${label} 到当前分支吗？\n\n如果有冲突，需要手动解决。`
+    );
+    if (!ok) return;
+    setCommitContextMenu(null);
+    setBusy(true);
+    setGitOperation(action);
+    setError("");
+    setMessage(isRevert ? `正在 revert: ${label}...` : `正在 cherry-pick: ${label}...`);
+    try {
+      const result = isRevert ? await gitRevertCommit(repoPath, sha) : await gitCherryPickCommit(repoPath, sha);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+      setSelectedCommit(sha);
+      setMessage(isRevert ? `已 revert: ${label}` : `已 cherry-pick: ${label}`);
+      appendOpencodeDebugLog(`git.${isRevert ? "revert" : "cherry-pick"} ${result.trim() || label}`);
+    } catch (e) {
+      const text = String(e);
+      setError(text);
+      setMessage(isRevert ? `Revert 失败: ${label}` : `Cherry-pick 失败: ${label}`);
+      await refreshWorktreeData(selectedWorktreeFile).catch(() => undefined);
+    } finally {
+      setBusy(false);
+      setGitOperation(null);
+    }
   }
 
   function currentTopologyBaseBranch(): string {
@@ -5975,6 +6064,26 @@ export function App() {
     }
   }
 
+  async function handleDiscardEntries(entries: GitWorktreeEntry[], label: string) {
+    if (!ensureRepoSelected() || entries.length === 0) return;
+    const ok = window.confirm(`确定要丢弃目录「${label}」下的 ${entries.length} 个变更吗？\n\n这会删除未跟踪文件，并恢复已跟踪文件到 HEAD。`);
+    if (!ok) return;
+    setDiscardingFile(label);
+    setError("");
+    try {
+      for (const entry of entries) {
+        await gitDiscardChanges(repoPath, entry.path, entry.untracked);
+      }
+      setMessage(`已丢弃 ${entries.length} 个变更: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录丢弃失败");
+    } finally {
+      setDiscardingFile("");
+    }
+  }
+
   async function handleStageFile(filePath: string) {
     if (!ensureRepoSelected() || !filePath) return;
     setStagingFile(filePath);
@@ -5991,6 +6100,24 @@ export function App() {
     }
   }
 
+  async function handleStagePaths(paths: string[], label: string) {
+    if (!ensureRepoSelected() || paths.length === 0) return;
+    setStagingFile(label);
+    setError("");
+    try {
+      for (const file of paths) {
+        await gitStageFile(repoPath, file);
+      }
+      setMessage(`已暂存 ${paths.length} 个文件: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录暂存失败");
+    } finally {
+      setStagingFile("");
+    }
+  }
+
   async function handleUnstageFile(filePath: string) {
     if (!ensureRepoSelected() || !filePath) return;
     setUnstagingFile(filePath);
@@ -6002,6 +6129,24 @@ export function App() {
     } catch (e) {
       setError(String(e));
       setMessage("取消暂存失败");
+    } finally {
+      setUnstagingFile("");
+    }
+  }
+
+  async function handleUnstagePaths(paths: string[], label: string) {
+    if (!ensureRepoSelected() || paths.length === 0) return;
+    setUnstagingFile(label);
+    setError("");
+    try {
+      for (const file of paths) {
+        await gitUnstageFile(repoPath, file);
+      }
+      setMessage(`已取消暂存 ${paths.length} 个文件: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录取消暂存失败");
     } finally {
       setUnstagingFile("");
     }
@@ -6091,23 +6236,65 @@ export function App() {
     setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
   }
 
-  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0): ReactNode {
+  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0, mode: "stage" | "unstage" = "stage"): ReactNode {
     return nodes.map((node) => {
       if (node.kind === "dir") {
         const expanded = expandedWorktreeDirs.includes(node.path);
+        const filePaths = collectWorktreeNodeFilePaths(node);
+        const entries = collectWorktreeNodeEntries(node);
+        const busyPath = mode === "stage" ? stagingFile : unstagingFile;
+        const canDiscardDir = entries.some((entry) => entry.staged || entry.unstaged || entry.untracked);
         return (
           <div key={node.path} className="gt-worktree-tree-group">
-            <button
-              type="button"
-              className="gt-worktree-tree-row gt-worktree-tree-dir"
-              style={{ paddingLeft: `${depth * 14 + 6}px` }}
-              onClick={() => toggleWorktreeDir(node.path)}
-            >
-              <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
-              <span className="gt-worktree-tree-name">{node.name}</span>
-              <span className="gt-worktree-tree-dot" aria-hidden="true" />
-            </button>
-            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1)}</div> : null}
+            <div className="gt-worktree-tree-row gt-worktree-tree-dir" style={{ paddingLeft: `${depth * 14 + 6}px` }}>
+              <button type="button" className="gt-worktree-dir-main-btn" onClick={() => toggleWorktreeDir(node.path)}>
+                <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
+                <span className="gt-worktree-tree-name">{node.name}</span>
+              </button>
+              <div className="gt-worktree-row-tail">
+                <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
+                <div className="gt-worktree-file-actions">
+                  <button
+                    type="button"
+                    className={mode === "unstage" ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+                    title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
+                    aria-pressed={mode === "unstage"}
+                    disabled={busyPath === node.path || filePaths.length === 0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (mode === "unstage") void handleUnstagePaths(filePaths, node.path);
+                      else void handleStagePaths(filePaths, node.path);
+                    }}
+                  >
+                    {mode === "unstage" ? (
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4 8.2 6.7 11 12 5" />
+                      </svg>
+                    ) : null}
+                  </button>
+                  {canDiscardDir ? (
+                    <button
+                      type="button"
+                      className="gt-worktree-action-btn is-discard"
+                      title="丢弃此目录变更"
+                      disabled={discardingFile === node.path}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDiscardEntries(entries, node.path);
+                      }}
+                    >
+                      {discardingFile === node.path ? "..." : (
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M6 4 3 7l3 3" />
+                          <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
+                        </svg>
+                      )}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1, mode)}</div> : null}
           </div>
         );
       }
@@ -7072,6 +7259,24 @@ export function App() {
   }, [selectedRepo?.id, activeTerminalTabId]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(TERMINAL_TABS_STORAGE_KEY, JSON.stringify({
+        activeId: activeTerminalTabId,
+        counter: terminalTabCounterRef.current,
+        tabs: terminalTabs.map((tab) => ({
+          id: tab.id,
+          title: tab.title,
+          cwd: tab.cwd,
+          input: tab.input,
+          history: tab.history.slice(0, 80)
+        }))
+      }));
+    } catch {
+      // ignore terminal snapshot persistence failures
+    }
+  }, [terminalTabs, activeTerminalTabId]);
+
+  useEffect(() => {
     const el = terminalLogRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -7086,6 +7291,28 @@ export function App() {
   }, [rightPaneTab, rightDrawerOpen, activeTerminalTabId]);
 
   useEffect(() => {
+    const terminalBody = terminalBodyRef.current;
+    const consoleEl = terminalLogRef.current;
+    if (!terminalBody || !consoleEl) return;
+    const updateNearTop = () => {
+      const noScroll = consoleEl.scrollHeight <= consoleEl.clientHeight + 2;
+      setTerminalInputNearTop(noScroll);
+    };
+    updateNearTop();
+    const ro = new ResizeObserver(updateNearTop);
+    ro.observe(terminalBody);
+    consoleEl.addEventListener("scroll", updateNearTop);
+    return () => {
+      ro.disconnect();
+      consoleEl.removeEventListener("scroll", updateNearTop);
+    };
+  }, [rightPaneTab, terminalLogRef.current, terminalBodyRef.current]);
+
+  useEffect(() => {
+    if (!terminalRepoResetReadyRef.current) {
+      terminalRepoResetReadyRef.current = true;
+      return;
+    }
     Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
       try {
         ctl.abort();
@@ -7791,6 +8018,24 @@ export function App() {
   }, [showCommitActionMenu]);
 
   useEffect(() => {
+    if (!opencodePreviewImage) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpencodePreviewImage(null);
+        return;
+      }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      setOpencodePreviewImage((prev) => {
+        if (!prev || prev.images.length <= 1) return prev;
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        return { ...prev, index: (prev.index + delta + prev.images.length) % prev.images.length };
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [opencodePreviewImage]);
+
+  useEffect(() => {
     if (!showTopologyCreateDialog) return;
     const sourceId = topologyCreateSourceNodeId || topologySelectionId || topologyModel.primaryNodeId;
     if (!sourceId) return;
@@ -8080,12 +8325,15 @@ export function App() {
                       <div className="opencode-msg-body">
                         {msg.attachments && msg.attachments.length > 0 ? (
                           <div className="opencode-msg-attachments">
-                            {msg.attachments.map((img) => (
+                            {msg.attachments.map((img, imageIndex) => (
                               <button
                                 key={img.id}
                                 type="button"
                                 className="opencode-msg-image-btn"
-                                onClick={() => setOpencodePreviewImage({ uri: img.uri, filename: img.filename })}
+                                onClick={() => setOpencodePreviewImage({
+                                  images: msg.attachments?.map((item) => ({ uri: item.uri, filename: item.filename })) || [],
+                                  index: imageIndex
+                                })}
                                 onContextMenu={(e) => {
                                   e.preventDefault();
                                   void copyText(img.uri);
@@ -8815,6 +9063,9 @@ branches.forEach((b) => {
                               e.preventDefault();
                               setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject });
                             }}
+                            onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject, author: commit.author, date: commit.date })}
+                            onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === commit.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
+                            onMouseLeave={() => setCommitHoverCard(null)}
                           >
                             <span className="gt-gittree-commit-index">{index === 0 ? "HEAD" : index + 1}</span>
                             <span className="gt-gittree-commit-dot" style={{ background: activeTone.accent }} />
@@ -9017,7 +9268,7 @@ branches.forEach((b) => {
                           <span className="gt-changes-group-count">{worktreeChangeStats.staged}</span>
                         </div>
                         <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(stagedTree)}
+                          {renderWorktreeNodes(stagedTree, 0, "unstage")}
                         </div>
                       </div>
                     )}
@@ -9030,7 +9281,7 @@ branches.forEach((b) => {
                           <span className="gt-changes-group-count">{worktreeChangeStats.unstaged}</span>
                         </div>
                         <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(unstagedTree)}
+                          {renderWorktreeNodes(unstagedTree, 0, "stage")}
                         </div>
                       </div>
                     )}
@@ -9200,12 +9451,12 @@ branches.forEach((b) => {
                   </div>
                 </aside>
               ) : null}
-              <div className="gt-terminal-body" onClick={() => terminalInputRef.current?.focus()}>
+              <div className="gt-terminal-body" ref={terminalBodyRef} onClick={() => terminalInputRef.current?.focus()}>
                 <div ref={terminalLogRef} className="gt-terminal-console">
                 <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
                 <div className="gt-terminal-inline-input">
                   <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
-                  <div className="gt-terminal-input-shell">
+                  <div className="gt-terminal-input-shell" ref={terminalInputShellRef}>
                     <input
                       ref={terminalInputRef}
                       className="gt-terminal-input"
@@ -9279,22 +9530,48 @@ branches.forEach((b) => {
                         {activeTerminalGhostText}
                       </span>
                     ) : null}
-                    {activeTerminalTab?.completionItems?.length ? (
-                      <div className="gt-terminal-completion-popover">
-                        {activeTerminalTab.completionItems.map((item, idx) => (
-                          <button
-                            key={`terminal-completion-${item}-${idx}`}
-                            type="button"
-                            className={idx === activeTerminalTab.completionIndex ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => selectTerminalCompletion(activeTerminalTab, idx)}
-                          >
-                            <span>{item}</span>
-                            {idx === activeTerminalTab.completionIndex ? <kbd>TAB</kbd> : null}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
+                    {activeTerminalTab?.completionItems?.length ? (() => {
+                      const items = activeTerminalTab.completionItems;
+                      const idx = activeTerminalTab.completionIndex;
+                      const popoverContent = (
+                        <div className={`gt-terminal-completion-popover${terminalInputNearTop ? " is-below" : ""}`}>
+                          {items.map((item, i) => {
+                            const group = getTerminalCompletionGroup(activeTerminalTab.input, item);
+                            const prev = i > 0 ? getTerminalCompletionGroup(activeTerminalTab.input, items[i - 1]) : "";
+                            return (
+                              <Fragment key={`terminal-completion-wrap-${item}-${i}`}>
+                                {group !== prev ? <div className="gt-terminal-completion-group">{group}</div> : null}
+                                <button
+                                  type="button"
+                                  className={i === idx ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectTerminalCompletion(activeTerminalTab, i)}
+                                >
+                                  <span>{item}</span>
+                                  {i === idx ? <kbd>TAB</kbd> : null}
+                                </button>
+                              </Fragment>
+                            );
+                          })}
+                        </div>
+                      );
+                      if (terminalInputNearTop) {
+                        const inputRect = terminalInputShellRef.current?.getBoundingClientRect();
+                        const style: CSSProperties = inputRect ? {
+                          position: "fixed",
+                          left: inputRect.left,
+                          top: inputRect.bottom + 6,
+                          minWidth: Math.min(420, inputRect.width),
+                          maxWidth: Math.min(560, inputRect.width),
+                          zIndex: 9999
+                        } : {};
+                        return createPortal(
+                          <div style={style}>{popoverContent}</div>,
+                          document.body
+                        );
+                      }
+                      return popoverContent;
+                    })() : null}
                   </div>
                 </div>
                 </div>
@@ -9508,6 +9785,13 @@ branches.forEach((b) => {
                       key={`${g.sha}-${idx}`}
                       className={selectedCommit === g.sha ? "graph-row selected" : "graph-row"}
                       onClick={() => setSelectedCommit(g.sha)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject });
+                      }}
+                      onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject, author: g.author, date: g.date })}
+                      onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === g.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
+                      onMouseLeave={() => setCommitHoverCard(null)}
                     >
                       <span className="graph-ascii graph-ascii-placeholder" aria-hidden="true" />
                       <span className="graph-main">
@@ -10619,13 +10903,27 @@ branches.forEach((b) => {
           </div>
         ) : null}
 
-        {opencodePreviewImage ? (
-          <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
-            <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
-              <img className="opencode-image-preview-img" src={opencodePreviewImage.uri} alt={opencodePreviewImage.filename || "preview"} />
+        {opencodePreviewImage ? (() => {
+          const image = opencodePreviewImage.images[opencodePreviewImage.index] || opencodePreviewImage.images[0];
+          if (!image) return null;
+          return (
+            <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
+              <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
+                <img
+                  className="opencode-image-preview-img"
+                  src={image.uri}
+                  alt={image.filename || "preview"}
+                  onClick={(e) => {
+                    if (opencodePreviewImage.images.length <= 1) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const next = e.clientX >= rect.left + rect.width / 2 ? 1 : -1;
+                    setOpencodePreviewImage((prev) => prev ? { ...prev, index: (prev.index + next + prev.images.length) % prev.images.length } : prev);
+                  }}
+                />
+              </div>
             </div>
-          </div>
-        ) : null}
+          );
+        })() : null}
 
         {repoContextMenu ? (
           <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>
@@ -10672,10 +10970,36 @@ branches.forEach((b) => {
               >
                 Create branch from commit
               </button>
+              <button
+                className="repo-context-item"
+                onClick={() => {
+                  setCommitContextMenu(null);
+                  void inspectCommitFromTopology(commitContextMenu.sha);
+                }}
+              >
+                Explain / inspect commit
+              </button>
+              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
+                Cherry-pick to current branch
+              </button>
+              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
+                Revert on current branch
+              </button>
               <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
                 Copy commit id
               </button>
             </div>
+          </div>
+        ) : null}
+
+        {commitHoverCard && !commitContextMenu ? (
+          <div
+            className="gt-commit-hover-card"
+            style={{ left: Math.min(commitHoverCard.x + 14, window.innerWidth - 320), top: Math.min(commitHoverCard.y + 14, window.innerHeight - 150) }}
+          >
+            <strong>{commitHoverCard.subject || "(no subject)"}</strong>
+            <span>{shortSha(commitHoverCard.sha, 12)}{commitHoverCard.branch ? ` · ${commitHoverCard.branch}` : ""}</span>
+            <small>{commitHoverCard.author || "unknown"} · {commitHoverCard.date || "unknown date"}</small>
           </div>
         ) : null}
 

@@ -137,6 +137,8 @@ type ComposerAttachment = {
   filename: string;
   mime: string;
   dataUrl: string;
+  status?: 'processing' | 'ready' | 'uploading' | 'failed';
+  statusText?: string;
 };
 
 type RecentImageItem = {
@@ -1933,14 +1935,20 @@ export default function App() {
         delete pendingPromptSessionRef.current[sid];
       }
       if (busyForMs > 8000 || pending || streaming) {
+        setStatus('正在恢复会话状态...');
         setBusy(false);
         void syncSessionMessages(sid, {
           limit: INITIAL_SESSION_LIMIT,
           fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
         });
         void syncSessionStatus(sid).then((info) => {
-          if (info?.type === 'busy' || info?.type === 'retry') startStream(sid);
-          else setStreaming(false);
+          if (info?.type === 'busy' || info?.type === 'retry') {
+            setStatus('服务端仍在处理，正在接回流式输出...');
+            startStream(sid);
+          } else {
+            setStreaming(false);
+            setStatus('会话已恢复');
+          }
         });
       }
     });
@@ -3475,8 +3483,10 @@ export default function App() {
   const promptText = toText(prompt).trim();
   const hasPromptText = promptText.length > 0;
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
+  const imageQueueBusy = imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading');
+  const imageQueueFailed = imageAttachments.some((img) => img.status === 'failed');
   const composerWillAbort = sessionWorking && !hasSendAction;
-  const canSendNow = !busy && hasSendAction;
+  const canSendNow = !busy && hasSendAction && !imageQueueBusy && !imageQueueFailed;
   const canAbortNow = !busy && composerWillAbort;
 
   const attachmentPanelStyle = {
@@ -3605,24 +3615,39 @@ export default function App() {
   async function appendAssetsAsAttachments(items: Array<{ uri: string; filename: string; mime?: string; dataUrl?: string }>) {
     try {
       if (items.length > 0) setStatus('正在处理图片...');
-      const mapped = await Promise.all(items.map(async (item, idx) => {
+      await Promise.all(items.map(async (item, idx) => {
+        const id = `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`;
+        const initialMime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
+        setImageAttachments((prev) => [...prev, {
+          id,
+          uri: item.uri,
+          filename: item.filename,
+          mime: initialMime,
+          dataUrl: item.dataUrl || '',
+          status: 'processing',
+          statusText: '压缩中'
+        }]);
+        try {
         const prepared = await compressImageForSend(item);
         const mime = toText(prepared.mime).trim() || inferMimeFromFilename(prepared.filename);
         const dataUrl = prepared.dataUrl || await fileUriToDataUrl(prepared.uri, mime);
-        if (!dataUrl || dataUrl.length <= 20) return null;
-        return {
-          id: `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+        if (!dataUrl || dataUrl.length <= 20) throw new Error('empty image data');
+        const next = {
+          id,
           uri: prepared.uri,
           filename: prepared.filename,
           mime,
-          dataUrl
+          dataUrl,
+          status: 'ready' as const,
+          statusText: '就绪'
         } satisfies ComposerAttachment;
+        setImageAttachments((prev) => prev.map((img) => img.id === id ? next : img));
+        } catch (e) {
+          setImageAttachments((prev) => prev.map((img) => img.id === id ? { ...img, status: 'failed', statusText: '处理失败' } : img));
+          throw e;
+        }
       }));
-      const valid = mapped.filter((item): item is ComposerAttachment => Boolean(item));
-      if (valid.length > 0) {
-        setImageAttachments((prev) => [...prev, ...valid]);
-        setStatus(valid.some((img) => img.dataUrl.length > IMAGE_SEND_TARGET_BASE64_LENGTH) ? '图片已压缩，发送可能稍慢' : '图片已添加');
-      }
+      setStatus('图片已添加');
     } catch (e) {
       setStatus(`处理图片失败: ${String(e)}`);
     }
@@ -4395,7 +4420,7 @@ export default function App() {
 
   async function onSendPrompt(customPrompt?: string) {
     const payloadPrompt = (customPrompt ?? prompt).trim();
-    const images = imageAttachments;
+    const images = imageAttachments.filter((img) => img.status !== 'failed');
     if (!authed) {
       setStatus('请先授权');
       return;
@@ -4408,7 +4433,18 @@ export default function App() {
       setStatus('请输入消息');
       return;
     }
+    if (imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading')) {
+      setStatus('图片还在处理中，请稍等');
+      return;
+    }
+    if (imageAttachments.some((img) => img.status === 'failed')) {
+      setStatus('有图片处理失败，请删除后重试');
+      return;
+    }
     setBusy(true);
+    if (images.length > 0) {
+      setImageAttachments((prev) => prev.map((img) => ({ ...img, status: 'uploading', statusText: '发送中' })));
+    }
     const optimisticAt = Date.now();
     const optimisticMessage: OptimisticUserMessage = {
       id: `local:${optimisticAt}`,
@@ -4504,7 +4540,7 @@ export default function App() {
       }
       if (customPrompt === undefined) {
         setPrompt((prev) => prev || payloadPrompt);
-        setImageAttachments(images);
+        setImageAttachments(images.map((img) => ({ ...img, status: 'ready', statusText: '就绪' })));
       }
       const msg = String(e);
       pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
@@ -5213,6 +5249,12 @@ export default function App() {
             {imageAttachments.map((img) => (
               <Pressable key={img.id} style={styles.attachmentTile} onPress={() => setPreviewImage({ uri: img.uri, filename: img.filename })}>
                 <Image source={{ uri: img.uri }} style={styles.attachmentThumb} resizeMode="cover" />
+                {img.status && img.status !== 'ready' ? (
+                  <View style={img.status === 'failed' ? [styles.attachmentStateOverlay, styles.attachmentStateFailed] : styles.attachmentStateOverlay}>
+                    {img.status === 'processing' || img.status === 'uploading' ? <ActivityIndicator size="small" color="#ffffff" /> : null}
+                    <Text style={styles.attachmentStateText}>{img.statusText || (img.status === 'failed' ? '失败' : '处理中')}</Text>
+                  </View>
+                ) : null}
                 <Pressable
                   style={styles.attachmentRemove}
                   onPress={() => setImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
@@ -6932,6 +6974,15 @@ const styles = StyleSheet.create({
     elevation: 1
   },
   attachmentThumb: { width: '100%', height: '100%', borderRadius: 11 },
+  attachmentStateOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(15,23,42,0.58)'
+  },
+  attachmentStateFailed: { backgroundColor: 'rgba(185,28,28,0.68)' },
+  attachmentStateText: { color: '#ffffff', fontSize: 10, fontWeight: '700' },
   attachmentChip: {},
   attachmentName: { display: 'none' },
   attachmentRemove: {
