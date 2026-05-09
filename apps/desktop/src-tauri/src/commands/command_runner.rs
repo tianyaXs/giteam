@@ -212,11 +212,7 @@ pub fn validate_repo_path(repo_path: &str) -> Result<(), String> {
     if !p.is_dir() {
         return Err(format!("repo path does not exist or is not a directory: {repo_path}"));
     }
-    let git_dir = p.join(".git");
-    if !git_dir.exists() {
-        return Err(format!("not a git repository: {repo_path}"));
-    }
     fs::canonicalize(p)
         .map(|_| ())
-        .map_err(|e| format!("failed to resolve repo path: {e}"))
+        .map_err(|e| format!("failed to resolve workspace path: {e}"))
 }

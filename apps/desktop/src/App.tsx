@@ -904,6 +904,7 @@ function buildOpencodeReplyMarkdownFromParts(parts: OpencodeDetailedPart[] | und
 
 type OpencodeAssistantRenderGroup =
   | { kind: "context"; key: string; parts: OpencodeDetailedPart[] }
+  | { kind: "reasoning"; key: string; parts: OpencodeDetailedPart[] }
   | { kind: "part"; key: string; part: OpencodeDetailedPart };
 
 function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | undefined | null): OpencodeAssistantRenderGroup[] {
@@ -931,6 +932,24 @@ function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | unde
       const firstId = String((batch[0] as any)?.id || "");
       const lastId = String((batch[batch.length - 1] as any)?.id || "");
       out.push({ kind: "context", key: `context:${firstId || i}:${lastId || i}`, parts: batch });
+      continue;
+    }
+    if (t === "reasoning") {
+      const batch: OpencodeDetailedPart[] = [cur];
+      i += 1;
+      while (i < rows.length) {
+        const nxt = rows[i];
+        const nt = String((nxt as any)?.type || "");
+        if (nt === "reasoning") {
+          batch.push(nxt);
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      const firstId = String((batch[0] as any)?.id || "");
+      const lastId = String((batch[batch.length - 1] as any)?.id || "");
+      out.push({ kind: "reasoning", key: `reasoning:${firstId || i}:${lastId || i}`, parts: batch });
       continue;
     }
     const pid = String((cur as any)?.id || "");
@@ -2195,6 +2214,8 @@ export function App() {
 
   const [repos, setRepos] = useState<RepositoryEntry[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<RepositoryEntry | null>(null);
+  const [gitPaneRepo, setGitPaneRepo] = useState<RepositoryEntry | null>(null);
+  const [newSessionTargetRepoId, setNewSessionTargetRepoId] = useState("");
 
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [commitGraph, setCommitGraph] = useState<GitGraphNode[]>([]);
@@ -2238,7 +2259,7 @@ export function App() {
   const [actions, setActions] = useState<ReviewAction[]>([]);
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
-  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
@@ -2464,6 +2485,8 @@ export function App() {
   const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
+  const opencodeModelConfigLoadedRef = useRef(false);
+  const opencodeConfiguredModelsLoadedRef = useRef(false);
   const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
   const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
   const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
@@ -2514,7 +2537,9 @@ export function App() {
   }, []);
 
   const repoPath = selectedRepo?.path ?? "";
+  const gitPanePath = gitPaneRepo?.path ?? repoPath;
   const repoPathRef = useRef(repoPath);
+  const gitPanePathRef = useRef(gitPanePath);
   const selectedWorktreeFileRef = useRef(selectedWorktreeFile);
   const rightPaneTabRef = useRef(rightPaneTab);
   const gitAutoRefreshBlockedRef = useRef(false);
@@ -2613,10 +2638,11 @@ export function App() {
 
   useEffect(() => {
     repoPathRef.current = repoPath;
+    gitPanePathRef.current = gitPanePath;
     selectedWorktreeFileRef.current = selectedWorktreeFile;
     rightPaneTabRef.current = rightPaneTab;
     gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
-  }, [repoPath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+  }, [repoPath, gitPanePath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
 
   useEffect(() => {
     if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
@@ -2680,15 +2706,23 @@ export function App() {
     return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
   }, [opencodeSessions, activeOpencodeSessionId]);
   const activeOpencodeModel = useMemo(() => {
+    const isAvailableModel = (full: string) => {
+      const parsed = parseModelRef(full);
+      if (!parsed) return false;
+      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
+      if (opencodeConnectedProviders.length > 0 && resolvedProvider && !opencodeConnectedProviders.includes(resolvedProvider)) return false;
+      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
+      return providerModels.length === 0 || providerModels.includes(parsed.model);
+    };
     const sessionId = activeOpencodeSessionId.trim();
     const fromSession = sessionId ? normalizeModelRef(opencodeSessionModel[sessionId] || "") : "";
-    if (fromSession) return fromSession;
+    if (fromSession && isAvailableModel(fromSession)) return fromSession;
     const fromDraft = normalizeModelRef(opencodeDraftModel || "");
-    if (fromDraft) return fromDraft;
+    if (fromDraft && isAvailableModel(fromDraft)) return fromDraft;
     const configured = normalizeModelRef(opencodeConfig?.configuredModel || "");
-    if (configured) return configured;
+    if (configured && isAvailableModel(configured)) return configured;
     const recent = normalizeModelRef(opencodeSavedModels[0] || "");
-    if (recent) return recent;
+    if (recent && isAvailableModel(recent)) return recent;
     for (const pid of opencodeConnectedProviders) {
       const models = opencodeModelsByProvider[pid] ?? [];
       const mid = models[0] || "";
@@ -2703,7 +2737,8 @@ export function App() {
     opencodeConfig?.configuredModel,
     opencodeSavedModels,
     opencodeConnectedProviders,
-    opencodeModelsByProvider
+    opencodeModelsByProvider,
+    opencodeProviderNames
   ]);
   const opencodeMessages = activeOpencodeSession?.messages ?? [];
   const opencodeTurnStart = activeOpencodeSession?.turnStart ?? 0;
@@ -2848,10 +2883,24 @@ export function App() {
 
   function toggleRepoSessions(repo: RepositoryEntry) {
     const expanded = expandedProjectIds.includes(repo.id);
+    setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
     if (!expanded && runtimeStatus.opencode.installed) {
       void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
     }
+  }
+
+  function startDraftSessionForRepo(repo: RepositoryEntry) {
+    setNewSessionTargetRepoId(repo.id);
+    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
+    opencodeSessionsRepoIdRef.current = repo.id;
+    if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+    if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    setDraftOpencodeSession(true);
+    setActiveOpencodeSessionId("");
+    setOpencodePromptInput("");
+    requestAnimationFrame(() => opencodeInputRef.current?.focus());
   }
   const opencodeSavedModelCandidates = useMemo(() => {
     const q = opencodeModelPickerSearch.trim().toLowerCase();
@@ -2871,6 +2920,8 @@ export function App() {
       for (const mid of models) {
         const full = normalizeModelRef(`${pid}/${mid}`);
         if (!full) continue;
+        const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[pid] ?? [];
+        if (providerModels.length > 0 && !providerModels.includes(mid)) continue;
         if (opencodeHiddenModels.has(full)) continue;
         if (q) {
           const provider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
@@ -2887,6 +2938,8 @@ export function App() {
       if (!parsed) continue;
       const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
       if (resolvedProvider && !connected.has(resolvedProvider)) continue;
+      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
+      if (providerModels.length > 0 && !providerModels.includes(parsed.model)) continue;
       if (q) {
         const name =
           opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model] ||
@@ -2921,6 +2974,8 @@ export function App() {
       for (const mid of models) {
         const full = normalizeModelRef(`${pid}/${mid}`);
         if (!full || opencodeHiddenModels.has(full)) continue;
+        const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[pid] ?? [];
+        if (providerModels.length > 0 && !providerModels.includes(mid)) continue;
         out.add(full);
       }
     }
@@ -2930,6 +2985,8 @@ export function App() {
       if (!parsed) continue;
       const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
       if (resolvedProvider && !connected.has(resolvedProvider)) continue;
+      const providerModels = opencodeModelsByProvider[resolvedProvider] ?? opencodeModelsByProvider[parsed.provider] ?? [];
+      if (providerModels.length > 0 && !providerModels.includes(parsed.model)) continue;
       out.add(full);
     }
     const active = normalizeModelRef(activeOpencodeModel || opencodeConfig?.configuredModel || "");
@@ -2990,7 +3047,7 @@ export function App() {
     const parsed = normalized ? parseModelRef(normalized) : null;
     const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
     const modelId = parsed?.model || "";
-    const label = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[modelId] || opencodeModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
+    const label = (provider ? (opencodeModelNamesByProvider[provider]?.[modelId] || opencodeConfiguredModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
     return {
       ref: normalized || "",
       provider: provider || "Auto",
@@ -3570,6 +3627,25 @@ export function App() {
     });
   }
 
+  async function createAndSwitchOpencodeSessionForSidebar(seedPrompt?: string) {
+    const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
+    if (!targetRepo) {
+      setError("请先导入并选择一个工作区。");
+      return;
+    }
+    opencodeSessionsRepoIdRef.current = targetRepo.id;
+    if (selectedRepo?.id !== targetRepo.id) setSelectedRepo(targetRepo);
+    if (gitPaneRepo?.id !== targetRepo.id) setGitPaneRepo(targetRepo);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(targetRepo.id));
+    setExpandedProjectIds((prev) => (prev.includes(targetRepo.id) ? prev : [...prev, targetRepo.id]));
+    setDraftOpencodeSession(true);
+    setActiveOpencodeSessionId("");
+    setOpencodePromptInput(seedPrompt?.trim() || "");
+    requestAnimationFrame(() => {
+      opencodeInputRef.current?.focus();
+    });
+  }
+
   async function openOpencodeChildSession(childSessionId: string, titleHint?: string) {
     const id = childSessionId.trim();
     if (!id) return;
@@ -3753,7 +3829,15 @@ export function App() {
   }, [draggingSplit]);
   function ensureRepoSelected(): boolean {
     if (!selectedRepo) {
-      setError("请先导入并选择一个仓库。");
+      setError("请先导入并选择一个工作区。");
+      return false;
+    }
+    return true;
+  }
+
+  function ensureGitPaneSelected(): boolean {
+    if (!gitPanePath.trim()) {
+      setError("请先选择一个目录。");
       return false;
     }
     return true;
@@ -3763,6 +3847,7 @@ export function App() {
     const all = await listRepositories();
     setRepos(all);
     if (all.length > 0 && !selectedRepo) setSelectedRepo(all[0]);
+    if (all.length > 0 && !gitPaneRepo) setGitPaneRepo(all[0]);
   }
 
   async function importRepository(pathFromPrompt: string): Promise<boolean> {
@@ -3779,6 +3864,7 @@ export function App() {
       const entry = await addRepository(path);
       await refreshRepositories();
       setSelectedRepo(entry);
+      setGitPaneRepo(entry);
       setMessage(`已导入仓库: ${entry.name}`);
       return true;
     } catch (e) {
@@ -3821,6 +3907,11 @@ export function App() {
         setSelectedRepo(all[0] ?? null);
       } else if (selectedRepo && !all.some((r) => r.id === selectedRepo.id)) {
         setSelectedRepo(all[0] ?? null);
+      }
+      if (gitPaneRepo?.id === entry.id) {
+        setGitPaneRepo(all[0] ?? null);
+      } else if (gitPaneRepo && !all.some((r) => r.id === gitPaneRepo.id)) {
+        setGitPaneRepo(all[0] ?? null);
       }
       setMessage(`Closed: ${entry.name}`);
     } catch (e) {
@@ -5761,12 +5852,14 @@ export function App() {
   }
 
   async function refreshBranchesAndCommits() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     setError("");
     setMessage("加载分支与提交...");
     try {
-      const branchList = await getLocalBranches(repoPath);
-      const graphRows = await getCommitGraph(repoPath, 600);
+      const branchList = await getLocalBranches(gitPanePath);
+      const graphRows = await getCommitGraph(gitPanePath, 600);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setBranches(branchList);
       setCommitGraph(graphRows);
       setBranchParentMap((prev) => {
@@ -5792,33 +5885,39 @@ export function App() {
         setMessage("未找到可用本地分支");
         return;
       }
-      const rows = await getBranchCommits(repoPath, target, 80);
+      const rows = await getBranchCommits(gitPanePath, target, 80);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setCommits(rows);
       setSelectedCommit(rows[0]?.sha ?? "");
       setMessage(rows.length > 0 ? "分支与提交已更新" : `分支 ${target} 暂无提交可显示`);
     } catch (e) {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setError(String(e));
       setMessage("加载分支/提交失败");
     }
   }
 
   async function refreshReviewData() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     const [reviewRows, actionRows] = await Promise.all([
-      loadReviewRecords(repoPath),
-      loadReviewActions(repoPath)
+      loadReviewRecords(gitPanePath),
+      loadReviewActions(gitPanePath)
     ]);
+    if (gitPanePathRef.current !== requestRepoPath) return;
     setRecords(reviewRows);
     setActions(actionRows);
   }
 
   async function refreshWorktreeData(preferredFile?: string) {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     try {
       const [overview, worktrees] = await Promise.all([
-        getGitWorktreeOverview(repoPath),
-        getGitWorktreeList(repoPath)
+        getGitWorktreeOverview(gitPanePath),
+        getGitWorktreeList(gitPanePath)
       ]);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setWorktreeOverview(overview);
       setLinkedWorktrees(worktrees);
       const target = preferredFile && overview.entries.some((entry) => entry.path === preferredFile)
@@ -5831,12 +5930,14 @@ export function App() {
         return;
       }
       const [patch, content] = await Promise.all([
-        getGitWorktreeFilePatch(repoPath, target),
-        getGitWorktreeFileContent(repoPath, target)
+        getGitWorktreeFilePatch(gitPanePath, target),
+        getGitWorktreeFileContent(gitPanePath, target)
       ]);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setSelectedWorktreePatch(patch);
       setSelectedWorktreeContent(content);
     } catch (e) {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setError(String(e));
       setWorktreeOverview(EMPTY_WORKTREE);
       setLinkedWorktrees([]);
@@ -5846,11 +5947,14 @@ export function App() {
   }
 
   async function refreshGitUserIdentity() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     try {
-      const identity = await getGitUserIdentity(repoPath);
+      const identity = await getGitUserIdentity(gitPanePath);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setGitUserIdentity(identity);
     } catch {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setGitUserIdentity(EMPTY_GIT_IDENTITY);
     }
   }
@@ -6771,29 +6875,43 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedRepo) return;
+    if (!gitPaneRepo) return;
     setError("");
-    setMessage(`已选择仓库: ${selectedRepo.name}`);
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
-    void Promise.all([refreshStatus(), refreshBranchesAndCommits(), refreshReviewData(), refreshWorktreeData(), refreshGitUserIdentity()]).catch((e) => {
+    setMessage(`Git 目录: ${gitPaneRepo.name}`);
+    const tasks = [refreshWorktreeData(), refreshGitUserIdentity()];
+    if (rightPaneTabRef.current === "worktree") {
+      tasks.push(refreshBranchesAndCommits(), refreshReviewData());
+    }
+    void Promise.all(tasks).catch((e) => {
       setError(String(e));
-      setMessage("仓库数据加载失败");
+      setMessage("目录 Git 数据加载失败");
     });
+  }, [gitPaneRepo?.id]);
+
+  useEffect(() => {
+    if (!gitPaneRepo || rightPaneTab !== "worktree") return;
+    void Promise.all([refreshBranchesAndCommits(), refreshReviewData()]).catch((e) => setError(String(e)));
+  }, [gitPaneRepo?.id, rightPaneTab]);
+
+  useEffect(() => {
+    if (!selectedRepo) return;
+    setNewSessionTargetRepoId((prev) => prev || selectedRepo.id);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
   }, [selectedRepo?.id]);
 
   useEffect(() => {
-    if (!repoPath) {
+    if (!gitPanePath) {
       void stopGitWorktreeWatcher().catch(() => {});
       return;
     }
-    void startGitWorktreeWatcher(repoPath).catch((e) => setError(String(e)));
+    void startGitWorktreeWatcher(gitPanePath).catch((e) => setError(String(e)));
     return () => {
       if (gitAutoRefreshTimerRef.current !== null) {
         window.clearTimeout(gitAutoRefreshTimerRef.current);
         gitAutoRefreshTimerRef.current = null;
       }
     };
-  }, [repoPath]);
+  }, [gitPanePath]);
 
   useEffect(() => {
     const scheduleRefresh = (delay = 600) => {
@@ -6802,18 +6920,17 @@ export function App() {
       }
       gitAutoRefreshTimerRef.current = window.setTimeout(() => {
         gitAutoRefreshTimerRef.current = null;
-        if (!repoPathRef.current) return;
+        if (!gitPanePathRef.current) return;
         if (document.visibilityState === "hidden") return;
         if (gitAutoRefreshBlockedRef.current) return;
-        void Promise.all([
-          refreshBranchesAndCommits(),
-          refreshWorktreeData(selectedWorktreeFileRef.current)
-        ]).catch((e) => setError(String(e)));
+        const tasks = [refreshWorktreeData(selectedWorktreeFileRef.current)];
+        if (rightPaneTabRef.current === "worktree") tasks.push(refreshBranchesAndCommits());
+        void Promise.all(tasks).catch((e) => setError(String(e)));
       }, delay);
     };
 
     const unlistenPromise = listen<{ repo_path: string }>("git-worktree-changed", (event) => {
-      if (event.payload?.repo_path !== repoPathRef.current) return;
+      if (event.payload?.repo_path !== gitPanePathRef.current) return;
       scheduleRefresh();
     });
 
@@ -6872,7 +6989,7 @@ export function App() {
 
   useEffect(() => {
     setTopologyZoom(1);
-  }, [selectedRepo?.id]);
+  }, [gitPaneRepo?.id]);
 
   useEffect(() => {
     const viewport = topologyViewportRef.current;
@@ -6881,7 +6998,7 @@ export function App() {
     const nextLeft = Math.max(0, (node.x + node.width / 2) * topologyZoom - viewport.clientWidth / 2);
     const nextTop = Math.max(0, (node.y + node.height / 2) * topologyZoom - viewport.clientHeight / 2);
     viewport.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
-  }, [selectedRepo?.id, topologyModel.primaryNodeId]);
+  }, [gitPaneRepo?.id, topologyModel.primaryNodeId]);
 
   useEffect(() => {
     const onMove = (evt: MouseEvent) => {
@@ -6919,18 +7036,23 @@ export function App() {
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeSessionsRepoIdRef.current === selectedRepo.id && opencodeSessions.length > 0) return;
     void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch((e) => setError(String(e)));
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings]);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings, opencodeSessions.length]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeModelConfigLoadedRef.current) return;
+    opencodeModelConfigLoadedRef.current = true;
     void loadOpencodeModelConfig();
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeConfiguredModelsLoadedRef.current) return;
+    opencodeConfiguredModelsLoadedRef.current = true;
     void refreshOpencodeConfiguredModels();
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed) return;
@@ -6942,8 +7064,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // Per repo visibility preferences (OpenCode "Manage models" equivalent).
-    const key = `${OPENCODE_MODEL_VIS_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
     try {
       const raw = window.localStorage.getItem(key);
       if (!raw) {
@@ -6957,20 +7078,20 @@ export function App() {
     } catch {
       setOpencodeHiddenModels(new Set());
     }
-  }, [selectedRepo?.id]);
+  }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_VIS_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
     const hidden = Array.from(opencodeHiddenModels);
     try {
       window.localStorage.setItem(key, JSON.stringify({ hidden }));
     } catch {
       // ignore
     }
-  }, [opencodeHiddenModels, selectedRepo?.id]);
+  }, [opencodeHiddenModels]);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
     try {
       const raw = window.localStorage.getItem(key);
       if (!raw) {
@@ -6984,17 +7105,17 @@ export function App() {
     } catch {
       setOpencodeEnabledModels(new Set());
     }
-  }, [selectedRepo?.id]);
+  }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
     const enabled = Array.from(opencodeEnabledModels);
     try {
       window.localStorage.setItem(key, JSON.stringify({ enabled }));
     } catch {
       // ignore
     }
-  }, [opencodeEnabledModels, selectedRepo?.id]);
+  }, [opencodeEnabledModels]);
 
   useEffect(() => {
     if (!selectedRepo?.id && !repoPath) return;
@@ -7008,7 +7129,7 @@ export function App() {
         || parsed.model;
     }
     const payload = {
-      repoId: selectedRepo?.id || "global",
+      repoId: "global",
       repoPath,
       availableModels,
       modelLabels,
@@ -7038,12 +7159,11 @@ export function App() {
     opencodeModelNamesByProvider,
     opencodeSyncModelRefs,
     repoPath,
-    selectedRepo?.id,
   ]);
 
   useEffect(() => {
-    // Per repo model selection (OpenCode-like): draft + per-session overrides.
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:${selectedRepo?.id || "global"}`;
+    // Global model selection; session-specific overrides are keyed by session id.
+    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
     try {
       const raw = window.localStorage.getItem(key);
       if (!raw) {
@@ -7064,10 +7184,10 @@ export function App() {
       setOpencodeDraftModel("");
       setOpencodeSessionModel({});
     }
-  }, [selectedRepo?.id]);
+  }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
     try {
       window.localStorage.setItem(
         key,
@@ -7079,16 +7199,14 @@ export function App() {
     } catch {
       // ignore
     }
-  }, [opencodeDraftModel, opencodeSessionModel, selectedRepo?.id]);
+  }, [opencodeDraftModel, opencodeSessionModel]);
 
   useEffect(() => {
     if (!showSettings || !runtimeStatus.opencode.installed || !selectedRepo) return;
     if (opencodeProviders.length === 0) {
       void refreshOpencodeCatalog();
     }
-    void loadOpencodeModelConfig();
-    void refreshOpencodeConfiguredModels();
-  }, [showSettings, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [showSettings, runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
@@ -7197,6 +7315,7 @@ export function App() {
   }, [showOpencodeModelPicker]);
 
   useEffect(() => {
+    if (rightPaneTab !== "terminal") return;
     if (!selectedRepo?.path) {
       setTerminalTabs((prev) => prev.map((tab) => ({ ...tab, output: "", seq: 0, alive: false })));
       terminalSeqRef.current = Object.fromEntries(Object.keys(terminalSeqRef.current).map((id) => [id, 0]));
@@ -7256,7 +7375,7 @@ export function App() {
       stopped = true;
       window.clearInterval(t);
     };
-  }, [selectedRepo?.id, activeTerminalTabId]);
+  }, [selectedRepo?.id, activeTerminalTabId, rightPaneTab]);
 
   useEffect(() => {
     try {
@@ -7309,31 +7428,7 @@ export function App() {
   }, [rightPaneTab, terminalLogRef.current, terminalBodyRef.current]);
 
   useEffect(() => {
-    if (!terminalRepoResetReadyRef.current) {
-      terminalRepoResetReadyRef.current = true;
-      return;
-    }
-    Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
-      try {
-        ctl.abort();
-      } catch {
-        // ignore
-      }
-    });
-    opencodeRunAbortBySessionRef.current = {};
-    setOpencodeSessions([]);
-    setActiveOpencodeSessionId("");
-    setDraftOpencodeSession(false);
-    setOpencodeRunBusyBySession({});
-    setOpencodeStreamingAssistantIdBySession({});
-    setOpencodeLivePartsByServerMessageId({});
-    setOpencodePromptInput("");
-    opencodeSessionsRepoIdRef.current = "";
-    setTerminalTabs([createTerminalTabState("terminal-1", "终端 1")]);
-    setActiveTerminalTabId("terminal-1");
-    terminalTabCounterRef.current = 2;
-    terminalSeqRef.current = { "terminal-1": 0 };
-    setGitUserIdentity(EMPTY_GIT_IDENTITY);
+    terminalRepoResetReadyRef.current = true;
   }, [selectedRepo?.id]);
 
   useLayoutEffect(() => {
@@ -7386,6 +7481,7 @@ export function App() {
     opencodePassiveSyncSeqRef.current = seq;
     const abort = new AbortController();
     let refreshTimer: number | null = null;
+    let connectTimer: number | null = null;
     let stopped = false;
     const scheduleRefresh = (delay = 700) => {
       if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
@@ -7427,7 +7523,7 @@ export function App() {
         scheduleRefresh(hasContent ? 1500 : 80);
       }
     };
-    void (async () => {
+    const connect = async () => {
       try {
         const base = await invoke<string>("get_opencode_service_base", { repoPath });
         if (stopped || abort.signal.aborted) return;
@@ -7468,13 +7564,18 @@ export function App() {
       } catch (e) {
         if (!abort.signal.aborted && !stopped) appendOpencodeDebugLog(`session.passiveSync.warn ${String(e)}`);
       }
-    })();
+    };
+    connectTimer = window.setTimeout(() => {
+      connectTimer = null;
+      if (!stopped && opencodePassiveSyncSeqRef.current === seq) void connect();
+    }, 600);
     return () => {
       stopped = true;
       abort.abort();
+      if (connectTimer !== null) window.clearTimeout(connectTimer);
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
     };
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
+  }, [runtimeStatus.opencode.installed, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
 
   const opencodeVisibleWindow = useMemo(() => sliceOpencodeMessagesByTurnStart(opencodeMessages, opencodeTurnStart), [opencodeMessages, opencodeTurnStart]);
 
@@ -8077,19 +8178,21 @@ export function App() {
   const sideBar = (
     <div className="wb-sidebar-inner gt-sidebar-inner">
       <div className="gt-sidebar-top">
-        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSession()} disabled={!selectedRepo || !runtimeStatus.opencode.installed}>
+        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSessionForSidebar()} disabled={repos.length === 0 || !runtimeStatus.opencode.installed}>
           <span>＋</span>
           <span>New Session</span>
         </button>
       </div>
 
       <div className="gt-project-stack">
-        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地 Git 仓库。</div> : null}
+        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地工作区。</div> : null}
         {repos.map((repo) => {
           const expanded = expandedProjectIds.includes(repo.id);
           const repoSessions = getVisibleRepoSessions(repo.id);
           const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
           const repoSessionsLoading = isRepoSessionsLoading(repo.id);
+          const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
+          const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
           return (
             <div key={repo.id} className="gt-tree-group">
               <div
@@ -8112,6 +8215,20 @@ export function App() {
                   <span className={expanded ? "gt-tree-chevron is-open" : "gt-tree-chevron"} aria-hidden="true" />
                 </button>
                 <button
+                  className="gt-tree-add"
+                  aria-label={`在 ${repo.name} 新建会话`}
+                  title="新建会话"
+                  disabled={!runtimeStatus.opencode.installed}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (busy || !runtimeStatus.opencode.installed) return;
+                    startDraftSessionForRepo(repo);
+                  }}
+                >
+                  ＋
+                </button>
+                <button
                   className="gt-tree-toggle"
                   aria-label={expanded ? "收起项目" : "展开项目"}
                   onClick={() => toggleRepoSessions(repo)}
@@ -8120,9 +8237,9 @@ export function App() {
                 </button>
               </div>
 
-              {expanded ? (
+              {shouldRenderChildren ? (
                 <div className="gt-tree-children">
-                  {draftOpencodeSession && repo.id === selectedRepo?.id ? (
+                  {hasDraftForRepo ? (
                     <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
                       <span className="gt-session-title">New Session</span>
                       <span className="gt-session-meta">待输入，发送第一条消息后创建</span>
@@ -8135,9 +8252,6 @@ export function App() {
                       <span className="gt-tree-loading-row" />
                       <span className="gt-tree-loading-row short" />
                     </div>
-                  ) : null}
-                  {runtimeStatus.opencode.installed && !repoSessionsLoading && repoSessions.length === 0 ? (
-                    <div className="gt-empty-hint gt-tree-empty">当前项目还没有会话。</div>
                   ) : null}
                   {runtimeStatus.opencode.installed
                     ? repoSessions.map((session) => (
@@ -8170,7 +8284,10 @@ export function App() {
                             ];
                           });
                           setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                          setSelectedRepo(repo);
+                          setNewSessionTargetRepoId(repo.id);
+                          opencodeSessionsRepoIdRef.current = repo.id;
+                          if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+                          if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
                           setDraftOpencodeSession(false);
                           setActiveOpencodeSessionId(session.id);
                           bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
@@ -8249,10 +8366,11 @@ export function App() {
                       hasTimeline ? (
                         <div className="opencode-assistant-timeline">
                           {(() => {
-                            const reasoningIndexes = timelineGroups
-                              .map((item, groupIdx) => item.kind === "part" && String((item.part as { type?: string }).type || "") === "reasoning" ? groupIdx : -1)
-                              .filter((groupIdx) => groupIdx >= 0);
-                            const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
+                            const activeReasoningPartId = isStreaming
+                              ? [...renderParts]
+                                .reverse()
+                                .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
+                              : "";
                             return timelineGroups.map((g, idx) => {
                               if (g.kind === "context") {
                                 const c = summarizeOpencodeContextToolCounts(g.parts);
@@ -8275,6 +8393,51 @@ export function App() {
                                   </div>
                                 );
                               }
+                              if (g.kind === "reasoning") {
+                                const text = g.parts
+                                  .map((part) => String((part as { text?: string }).text || "").trim())
+                                  .filter(Boolean)
+                                  .join("\n\n");
+                                if (!text) return null;
+                                const activeThink = isStreaming && g.parts.some((part) => String(part.id || "") === activeReasoningPartId);
+                                const thinkPreviewLines = text
+                                  .split(/\n+/)
+                                  .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
+                                  .filter(Boolean)
+                                  .slice(-4);
+                                const thinkPreview = thinkPreviewLines.length > 0
+                                  ? thinkPreviewLines
+                                  : ["Reading context", "Tracing changes", "Composing answer"];
+                                return (
+                                  <details key={`${msg.id}:${g.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}>
+                                    <summary className="opencode-think-card-summary">
+                                      <span className="opencode-think-label">
+                                        <span className="opencode-think-spark" aria-hidden="true" />
+                                        Think
+                                      </span>
+                                      {thinkPreview.length > 0 ? (
+                                        <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
+                                          <span className="opencode-think-carousel-track" style={{ ["--think-count" as any]: thinkPreview.length }}>
+                                            {thinkPreview.map((line, lineIdx) => (
+                                              <span
+                                                key={`${g.key}:think-preview:${lineIdx}`}
+                                                className="opencode-think-carousel-line"
+                                                style={{ ["--think-index" as any]: lineIdx }}
+                                              >
+                                                {line}
+                                              </span>
+                                            ))}
+                                          </span>
+                                        </span>
+                                      ) : null}
+                                    </summary>
+                                    <div className="opencode-msg-body">
+                                      <MarkdownLite source={text} />
+                                    </div>
+                                  </details>
+                                );
+                              }
+                              if (g.kind !== "part") return null;
                               const part = g.part;
                               const t = String((part as { type?: string }).type || "");
                               if (t === "text") {
@@ -8285,21 +8448,6 @@ export function App() {
                                     <MarkdownLite source={text} />
                                     {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
                                   </div>
-                                );
-                              }
-                              if (t === "reasoning") {
-                                const text = String((part as { text?: string }).text || "").trim();
-                                if (!text) return null;
-                                const keepOpen = !isStreaming || idx === lastReasoningIndex;
-                                return (
-                                  <details key={`${msg.id}:${g.key}`} className="opencode-think-card" open={keepOpen}>
-                                    <summary className="opencode-think-card-summary">
-                                      <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
-                                    </summary>
-                                    <div className="opencode-msg-body">
-                                      <MarkdownLite source={text} />
-                                    </div>
-                                  </details>
                                 );
                               }
                               return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
@@ -9625,11 +9773,11 @@ branches.forEach((b) => {
         <div className="wb-editor-rail__head-right" data-tauri-drag-region aria-hidden={!rightDrawerOpen}>
           <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
             <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
-              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="Worktree" aria-label="Worktree">
-                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
-              </button>
               <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
                 <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
+              </button>
+              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
+                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
               </button>
               <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
                 <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
@@ -9699,9 +9847,9 @@ branches.forEach((b) => {
               <div className="wb-status-group">
                 <button className="wb-status-btn" title="当前仓库/分支">
                   {(() => {
-                    const mainRepo = repos.find(r => r.id === selectedRepo?.id);
-                    const isWorktree = mainRepo && selectedRepo && mainRepo.path !== selectedRepo.path;
-                    return (selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
+                    const mainRepo = repos.find(r => r.id === gitPaneRepo?.id);
+                    const isWorktree = mainRepo && gitPaneRepo && mainRepo.path !== gitPaneRepo.path;
+                    return (gitPaneRepo?.name ?? selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
                   })()}
                 </button>
                 <button
@@ -10330,9 +10478,8 @@ branches.forEach((b) => {
                     const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
                   const configuredPool = cfgPid ? (opencodeConfiguredModelsByProvider[cfgPid] ?? []) : [];
                   const providerPool = pid ? (opencodeModelsByProvider[pid] ?? []) : [];
-                  // Keep full provider list visible while preserving configured entries.
-                  // This avoids list shrinking after enabling one model.
-                  const pool = Array.from(new Set([...providerPool, ...configuredPool])).sort((a, b) => a.localeCompare(b));
+                  // Prefer live /provider models. Config-only rows are shown only before the provider catalog is available.
+                  const pool = (providerPool.length > 0 ? providerPool : configuredPool).slice().sort((a, b) => a.localeCompare(b));
                     const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
                     const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
                     if (!opencodeProviderPickerProvider) {

@@ -1042,23 +1042,116 @@ body {
 }
 
 .opencode-think-card {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.opencode-think-card[open] {
   border: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
   border-radius: 14px;
   background: var(--message-surface);
-  padding: 10px 12px 12px;
+  padding: 8px 12px 12px;
 }
 
 .opencode-think-card-summary {
   list-style: none;
   cursor: pointer;
   user-select: none;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  width: fit-content;
+  max-width: min(360px, 100%);
   font-size: 12px;
   color: var(--muted);
+  margin-bottom: 0;
+  border-radius: 999px;
+}
+
+.opencode-think-card[open] .opencode-think-card-summary {
   margin-bottom: 4px;
+}
+
+.opencode-think-label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--text) 58%, var(--muted));
+}
+
+.opencode-think-spark {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 65%, var(--text));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.opencode-think-carousel {
+  position: relative;
+  display: block;
+  flex: 0 1 230px;
+  min-width: 0;
+  width: min(230px, 42vw);
+  height: 24px;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 48%, var(--muted));
+  mask-image: linear-gradient(90deg, transparent 0, #000 18px, #000 calc(100% - 28px), transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 18px, #000 calc(100% - 28px), transparent 100%);
+}
+
+.opencode-think-carousel-track {
+  --think-count: 3;
+  position: relative;
+  display: block;
+  height: 24px;
+}
+
+.opencode-think-carousel-line {
+  position: absolute;
+  inset: 0;
+  height: 24px;
+  line-height: 24px;
+  width: 100%;
+  padding: 0 12px 0 4px;
+  color: currentColor;
+  font-size: 12px;
+  font-weight: 520;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: translateX(-8px);
+}
+
+.opencode-think-carousel:not(.is-active) .opencode-think-carousel-line:first-child {
+  opacity: 0.9;
+  transform: translateX(0);
+}
+
+.opencode-think-carousel.is-active .opencode-think-carousel-line {
+  animation: opencode-think-line-fade calc(max(var(--think-count), 1) * 1.55s) ease-in-out infinite;
+  animation-delay: calc(var(--think-index, 0) * 1.55s);
+}
+
+@keyframes opencode-think-line-fade {
+  0%, 12% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  20%, 45% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  62%, 100% {
+    opacity: 0;
+    transform: translateX(8px);
+  }
 }
 
 .opencode-think-card-summary::-webkit-details-marker {
@@ -5369,6 +5462,12 @@ pre.gt-terminal-output {
   padding: 0;
 }
 
+.gt-tree-row .gt-tree-add {
+  order: 2;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .gt-tree-row.active {
   background: transparent;
 }
@@ -5556,6 +5655,30 @@ pre.gt-terminal-output {
   transition: opacity 120ms ease, background-color 120ms ease;
 }
 
+.gt-tree-add {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 1;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.gt-tree-add:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.gt-tree-add:disabled {
+  cursor: default;
+  opacity: 0;
+}
+
 .gt-tree-chevron {
   display: inline-block;
   width: 7px;
@@ -5583,6 +5706,23 @@ pre.gt-terminal-output {
 .gt-tree-group:hover .gt-tree-toggle {
   opacity: 1;
   pointer-events: auto;
+}
+
+.gt-tree-row:hover .gt-tree-add,
+.gt-tree-group:focus-within .gt-tree-add,
+.gt-tree-group:hover .gt-tree-add {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gt-tree-chevron {
+  opacity: 0;
+}
+
+.gt-tree-row:hover .gt-tree-chevron,
+.gt-tree-group:focus-within .gt-tree-chevron,
+.gt-tree-group:hover .gt-tree-chevron {
+  opacity: 1;
 }
 
 .gt-tree-label {
@@ -6969,8 +7109,20 @@ pre.gt-terminal-output {
   flex: 0 0 auto;
 }
 
+.gt-tree-add {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
 .gt-tree-toggle:hover,
-.gt-tree-label:hover {
+.gt-tree-label:hover,
+.gt-tree-add:hover {
   background: transparent;
 }
 

@@ -110,15 +110,6 @@ pub struct OpencodeServiceSettings {
     pub port: u16,
 }
 
-fn normalize_provider_key(input: &str) -> String {
-    input
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-}
-
 fn merge_server_provider_catalog(
     mut base: Vec<OpencodeServerProviderCatalog>,
     extra: Vec<OpencodeServerProviderCatalog>,
@@ -131,10 +122,10 @@ fn merge_server_provider_catalog(
     }
     let mut extra_by_key: HashMap<String, OpencodeServerProviderCatalog> = HashMap::new();
     for p in extra {
-        extra_by_key.insert(normalize_provider_key(&p.id), p);
+        extra_by_key.insert(p.id.trim().to_string(), p);
     }
     for b in &mut base {
-        let key = normalize_provider_key(&b.id);
+        let key = b.id.trim().to_string();
         if let Some(e) = extra_by_key.get(&key) {
             if b.name.trim().is_empty() {
                 b.name = e.name.clone();
@@ -986,7 +977,10 @@ fn stream_prompt_via_opencode_service(
             }
             sid.to_string()
         } else {
-            let create_url = format!("{base}/session");
+            let create_url = format!(
+                "{base}/session?directory={}",
+                urlencoding::encode(repo_path)
+            );
             let created_raw = run_curl_json(repo_path, "POST", create_url.as_str(), Some("{}"), 8)?;
             let created_json: Value = serde_json::from_str(&created_raw)
                 .map_err(|e| format!("parse session create response failed: {e}"))?;
@@ -1570,12 +1564,13 @@ pub fn list_opencode_sessions(
 ) -> Result<Vec<OpencodeSessionSummary>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let mut url = format!("{base}/session");
+        let mut qs = vec![format!("directory={}", urlencoding::encode(repo_path))];
         if let Some(l) = limit {
             if l > 0 {
-                url.push_str(format!("?limit={}", l).as_str());
+                qs.push(format!("limit={}", l));
             }
         }
+        let url = format!("{base}/session?{}", qs.join("&"));
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 10)?;
         let json: Value =
             serde_json::from_str(&raw).map_err(|e| format!("parse session list failed: {e}"))?;
@@ -1640,7 +1635,11 @@ pub fn create_opencode_session(
         let raw = run_curl_json(
             repo_path,
             "POST",
-            format!("{base}/session").as_str(),
+            format!(
+                "{base}/session?directory={}",
+                urlencoding::encode(repo_path)
+            )
+            .as_str(),
             Some(body.as_str()),
             10,
         )?;
@@ -1661,7 +1660,11 @@ pub fn delete_opencode_session(repo_path: &str, session_id: &str) -> Result<bool
         let _ = run_curl_json(
             repo_path,
             "DELETE",
-            format!("{base}/session/{sid}").as_str(),
+            format!(
+                "{base}/session/{sid}?directory={}",
+                urlencoding::encode(repo_path)
+            )
+            .as_str(),
             None,
             10,
         )?;

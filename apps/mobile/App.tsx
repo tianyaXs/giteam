@@ -49,6 +49,7 @@ import { loadDiscoverCache, saveDiscoverCache } from './src/storage/discoverCach
 import type { DiscoverCacheDevice } from './src/storage/discoverCache';
 import { loadPairCodeMap, savePairCodeMap } from './src/storage/pairCodeMap';
 import { loadSessionCache, saveSessionCache } from './src/storage/sessionCache';
+import { loadChatSnapshot, saveChatSnapshot } from './src/storage/chatSnapshot';
 import { loadQuestionDismissals, saveQuestionDismissal } from './src/storage/questionDismissals';
 import {
   abortSession,
@@ -968,6 +969,25 @@ function summarizePreview(messages: MobileChatMessage[]): string {
   return user ? user.text.slice(0, 42) : '新会话';
 }
 
+function assistantTextWeight(messages: MobileChatMessage[]): number {
+  return messages
+    .filter((m) => m.role === 'assistant')
+    .reduce((sum, m) => sum + toText(m.text).length, 0);
+}
+
+function losesRenderedAssistant(prev: MobileChatMessage[], next: MobileChatMessage[]): boolean {
+  const prevAssistant = assistantTextWeight(prev);
+  if (prevAssistant <= 0) return false;
+  const nextAssistant = assistantTextWeight(next);
+  if (nextAssistant >= prevAssistant) return false;
+  const prevLastUserIndex = Math.max(...prev.map((m, index) => (m.role === 'user' ? index : -1)));
+  const nextLastUserIndex = Math.max(...next.map((m, index) => (m.role === 'user' ? index : -1)));
+  if (prevLastUserIndex < 0 || nextLastUserIndex < 0) return false;
+  const prevTailAssistant = prev.slice(prevLastUserIndex + 1).some((m) => m.role === 'assistant' && toText(m.text));
+  const nextTailAssistant = next.slice(nextLastUserIndex + 1).some((m) => m.role === 'assistant' && toText(m.text));
+  return prevTailAssistant && !nextTailAssistant;
+}
+
 function formatRetryDelay(ms: number): string {
   const sec = Math.max(1, Math.ceil(ms / 1000));
   return `${sec}s 后重试`;
@@ -1240,6 +1260,8 @@ export default function App() {
   const latestJumpLastChangeRef = useRef(0);
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
+  const messagesRef = useRef<MobileChatMessage[]>([]);
+  const renderedTurnsRef = useRef<MobileRenderedTurn[]>([]);
   const sessionCacheRef = useRef<Record<string, SessionItem[]>>({});
   const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
@@ -1248,6 +1270,7 @@ export default function App() {
   const optimisticUserIdAliasRef = useRef<Record<string, Record<string, string>>>({});
   const sentAttachmentCacheRef = useRef<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>({});
   const pendingPromptSessionRef = useRef<Record<string, { id: string; startedAt: number }>>({});
+  const renderRegressionRetryRef = useRef<Record<string, number>>({});
   const streamDeltaTextRef = useRef<Record<string, string>>({});
   const streamPartMapRef = useRef<Record<string, Record<string, any>>>({});
   const streamPartTypeRef = useRef<Record<string, 'text' | 'reasoning'>>({});
@@ -1308,7 +1331,7 @@ export default function App() {
 
   const authed = useMemo(() => token.trim().length > 0, [token]);
   const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
-  const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || (recentImagesLoading ? 12 : 0) || 1) / 4)));
+  const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || 1) / 4)));
   const recentScrollerHeight = recentVisibleRows * recentTileSize + Math.max(0, recentVisibleRows - 1) * 6 + 8;
   const albumSelectedSet = useMemo(() => new Set(albumSelectedIds), [albumSelectedIds]);
   const streamTopGlowRequested = false;
@@ -1517,7 +1540,12 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    loadPrefs().then((prefs) => {
+    void (async () => {
+      const prefs = await loadPrefs();
+      if (!alive) return;
+      const cachedChat = prefs.token && prefs.repoPath && prefs.sessionId
+        ? await loadChatSnapshot(prefs.repoPath, prefs.sessionId)
+        : null;
       if (!alive) return;
       setServerUrl(prefs.serverUrl);
       setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
@@ -1528,12 +1556,18 @@ export default function App() {
       setToken(prefs.token);
       setSessionId(prefs.sessionId);
       sessionIdRef.current = prefs.sessionId;
-      setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId));
+      if (cachedChat) {
+        setMessages(cachedChat.messages);
+        setRenderedTurns(cachedChat.renderedTurns);
+        messagesRef.current = cachedChat.messages;
+        renderedTurnsRef.current = cachedChat.renderedTurns;
+      }
+      setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId && !cachedChat));
       setModel(prefs.model || '');
       setLoaded(true);
       const pname = projectNameFromPath(toText(prefs.repoPath));
       setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
-    });
+    })();
     loadPairCodeMap().then((m) => {
       if (!alive) return;
       pairCodeMapRef.current = m || {};
@@ -1861,6 +1895,14 @@ export default function App() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    renderedTurnsRef.current = renderedTurns;
+  }, [renderedTurns]);
 
   useEffect(() => {
     discoverDevicesRef.current = discoverDevices;
@@ -2476,10 +2518,36 @@ export default function App() {
       if (message.attachments?.length) return message;
       return message;
     };
-    const nextMessages = rendered.chatMessages.map(withPersistedAttachments);
-    const nextTurns = rendered.renderedTurns.map((turn) => turn.userMessage ? ({ ...turn, userMessage: withPersistedAttachments(turn.userMessage) }) : turn);
+    let nextMessages = rendered.chatMessages.map(withPersistedAttachments);
+    let nextTurns = rendered.renderedTurns.map((turn) => turn.userMessage ? ({ ...turn, userMessage: withPersistedAttachments(turn.userMessage) }) : turn);
+    if (targetSessionId === sessionIdRef.current && losesRenderedAssistant(messagesRef.current, nextMessages)) {
+      pushConnLog(`render guard sid=${targetSessionId} reason=assistant regression prev=${assistantTextWeight(messagesRef.current)} next=${assistantTextWeight(nextMessages)}`);
+      nextMessages = messagesRef.current;
+      nextTurns = renderedTurnsRef.current;
+      const lastRetryAt = renderRegressionRetryRef.current[targetSessionId] || 0;
+      if (Date.now() - lastRetryAt > 5000) {
+        renderRegressionRetryRef.current[targetSessionId] = Date.now();
+        setTimeout(() => {
+          if (targetSessionId === sessionIdRef.current) {
+            void syncSessionMessages(targetSessionId, {
+              limit: Math.max(INITIAL_SESSION_LIMIT, sessionVisibleTurnCountRef.current[targetSessionId] || 0),
+              fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+            });
+          }
+        }, 1200);
+      }
+    }
     setMessages(nextMessages);
     setRenderedTurns(nextTurns);
+    if (targetSessionId === sessionIdRef.current && repoPath.trim() && nextTurns.length > 0) {
+      void saveChatSnapshot({
+        repoPath,
+        sessionId: targetSessionId,
+        messages: nextMessages,
+        renderedTurns: nextTurns,
+        updatedAt: Date.now()
+      });
+    }
     upsertSession(targetSessionId, nextMessages);
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
@@ -3125,6 +3193,7 @@ export default function App() {
     streamPartDeltaKeyRef.current = {};
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
+    renderRegressionRetryRef.current = {};
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
     const pname = projectNameFromPath(next);
@@ -3672,7 +3741,6 @@ export default function App() {
       else setRecentImagesLoading(true);
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (!perm.granted) {
-        if (!append) setRecentImages([]);
         setStatus('相册权限被拒绝');
         return;
       }
@@ -3687,7 +3755,6 @@ export default function App() {
       setRecentImagesCursor(page.endCursor || undefined);
       setRecentImagesHasNext(Boolean(page.hasNextPage));
     } catch (e) {
-      if (!append) setRecentImages([]);
       setStatus(`读取最近图片失败: ${String(e)}`);
     } finally {
       recentImagesLoadingRef.current = false;
@@ -4660,6 +4727,7 @@ export default function App() {
     streamPartDeltaKeyRef.current = {};
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
+    renderRegressionRetryRef.current = {};
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
     setAuthAsciiBrand(pickRandomAuthAsciiBrand());
@@ -5413,7 +5481,10 @@ export default function App() {
                   </Pressable>
                 ))}
                 {recentImages.length === 0 && recentImagesLoading ? (
-                  Array.from({ length: 12 }).map((_, idx) => <View key={`recent-skeleton-${idx}`} style={styles.recentThumbSkeleton} />)
+                  <View style={styles.recentLoadingState}>
+                    <ActivityIndicator size="small" color="#64748b" />
+                    <Text style={styles.recentLoadingText}>正在读取最近图片</Text>
+                  </View>
                 ) : null}
                 {recentImages.length === 0 && !recentImagesLoading ? (
                   <View style={styles.recentEmptyState}>
@@ -7061,14 +7132,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#f1f5f9'
   },
-  recentThumbSkeleton: {
-    width: '23.5%',
-    aspectRatio: 1,
-    borderRadius: 12,
-    backgroundColor: '#eef2f7',
+  recentLoadingState: {
+    width: '100%',
+    minHeight: 74,
+    borderRadius: 14,
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: '#e7edf5'
+    borderColor: '#edf2f7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
   },
+  recentLoadingText: { color: '#64748b', fontSize: 12, fontWeight: '500' },
   recentThumbImage: { width: '100%', height: '100%' },
   recentLoadingMore: { width: '100%', height: 28, alignItems: 'center', justifyContent: 'center' },
   recentLoadHint: { width: '100%', height: 24, alignItems: 'center', justifyContent: 'center' },

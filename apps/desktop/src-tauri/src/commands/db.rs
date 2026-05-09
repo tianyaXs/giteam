@@ -231,10 +231,6 @@ pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<Repository
     if !p.is_dir() {
         return Err(format!("repository directory does not exist: {path}"));
     }
-    if !p.join(".git").exists() {
-        return Err(format!("not a git repository: {path}"));
-    }
-
     let canonical =
         fs::canonicalize(p).map_err(|e| format!("failed to resolve repository path: {e}"))?;
     let canonical_str = canonical
@@ -311,7 +307,7 @@ pub fn db_remove_repository(app_handle: AppHandle, id: &str) -> Result<(), Strin
 #[tauri::command]
 pub fn pick_repository_folder() -> Result<Option<String>, String> {
     let picked = rfd::FileDialog::new()
-        .set_title("Select Git Repository Folder")
+        .set_title("Select Workspace Folder")
         .pick_folder();
     Ok(picked.map(|p| p.to_string_lossy().to_string()))
 }
