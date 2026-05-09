@@ -3851,6 +3851,24 @@ export function App() {
     return true;
   }
 
+  function resetGitPaneState() {
+    setBranches([]);
+    setCommitGraph([]);
+    setCommits([]);
+    setSelectedBranch("");
+    setSelectedCommit("");
+    setBranchParentMap({});
+    setRecords([]);
+    setActions([]);
+    setWorktreeOverview(EMPTY_WORKTREE);
+    setLinkedWorktrees([]);
+    setSelectedWorktreePath("");
+    setSelectedWorktreeFile("");
+    setSelectedWorktreePatch("");
+    setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
+    setGitUserIdentity(EMPTY_GIT_IDENTITY);
+  }
+
   async function refreshRepositories() {
     const all = await listRepositories();
     setRepos(all);
@@ -5901,6 +5919,12 @@ export function App() {
     } catch (e) {
       if (gitPanePathRef.current !== requestRepoPath) return;
       setError(String(e));
+      setBranches([]);
+      setCommitGraph([]);
+      setCommits([]);
+      setSelectedBranch("");
+      setSelectedCommit("");
+      setBranchParentMap({});
       setMessage("加载分支/提交失败");
     }
   }
@@ -6884,6 +6908,7 @@ export function App() {
 
   useEffect(() => {
     if (!gitPaneRepo) return;
+    resetGitPaneState();
     setError("");
     setMessage(`Git 目录: ${gitPaneRepo.name}`);
     const tasks = [refreshWorktreeData(), refreshGitUserIdentity()];
