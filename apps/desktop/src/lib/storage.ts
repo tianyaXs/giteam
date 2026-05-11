@@ -1,5 +1,5 @@
 import type { RepositoryEntry, ReviewAction, ReviewRecord } from "./types";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, pickFolder } from "./platform";
 
 export async function loadReviewRecords(repoPath: string, limit = 100): Promise<ReviewRecord[]> {
   return invoke<ReviewRecord[]>("db_list_review_records", { repoPath, limit });
@@ -34,5 +34,5 @@ export async function removeRepository(id: string): Promise<void> {
 }
 
 export async function pickRepositoryFolder(): Promise<string | null> {
-  return invoke<string | null>("pick_repository_folder");
+  return pickFolder();
 }

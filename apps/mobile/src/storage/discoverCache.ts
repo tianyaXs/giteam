@@ -27,7 +27,7 @@ export async function loadDiscoverCache(): Promise<DiscoverCacheDevice[]> {
           id: toText(r?.id),
           baseUrl: toText(r?.baseUrl),
           host: toText(r?.host),
-          port: Number(r?.port || 0) || 4100,
+          port: Number(r?.port || 0) || 5100,
           noAuth: Boolean(r?.noAuth),
           x: Number(r?.x || 0),
           y: Number(r?.y || 0),

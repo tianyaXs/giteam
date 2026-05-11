@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./platform";
 import type { EntireStatusResult, ExplainCommitResult } from "./types";
 
 export async function getEntireStatusDetailed(repoPath: string): Promise<EntireStatusResult> {

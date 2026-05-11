@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/desktop",
+    "apps/mobile"
   ],
   "scripts": {
     "dev": "npm --prefix apps/desktop run dev",

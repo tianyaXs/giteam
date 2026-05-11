@@ -1,3 +1,4 @@
+use super::desktop_rpc;
 use super::opencode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CONTROL_SERVER_HOST: &str = "0.0.0.0";
-const DEFAULT_CONTROL_SERVER_PORT: u16 = 4100;
+const DEFAULT_CONTROL_SERVER_PORT: u16 = 5100;
 const DEFAULT_PAIR_TTL_MODE: &str = "24h";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +149,7 @@ struct AbortRequest {
 static CONTROL_RUNTIME: OnceLock<Mutex<Option<ControlRuntime>>> = OnceLock::new();
 static CONTROL_PAIR_STATE: OnceLock<Mutex<PairState>> = OnceLock::new();
 static CONTROL_BEARER_TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
+static WEB_STATIC_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
     CONTROL_RUNTIME.get_or_init(|| Mutex::new(None))
@@ -794,6 +796,103 @@ fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), Stri
     stream
         .flush()
         .map_err(|e| format!("write response failed: {e}"))
+}
+
+fn guess_content_type(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html",
+        Some("js") => "application/javascript",
+        Some("mjs") => "application/javascript",
+        Some("css") => "text/css",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("wasm") => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn write_http_file(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        status, reason, content_type, body.len()
+    );
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    write_stream_all(stream, head.as_bytes(), "write file headers")?;
+    write_stream_all(stream, body, "write file body")?;
+    stream.flush().map_err(|e| format!("write file response failed: {e}"))
+}
+
+fn serve_static_file(stream: &mut TcpStream, req: &HttpRequest) -> bool {
+    let Some(static_dir) = WEB_STATIC_DIR.get().and_then(|d| d.as_ref()) else {
+        return false;
+    };
+    // Only serve GET requests for static files
+    if req.method != "GET" {
+        return false;
+    }
+    // Don't serve API routes as static files
+    if req.path.starts_with("/api/") {
+        return false;
+    }
+
+    let sanitized = req.path.trim_start_matches('/').replace("..", "");
+    let file_path = if sanitized.is_empty() || sanitized.ends_with('/') {
+        static_dir.join("index.html")
+    } else {
+        static_dir.join(&sanitized)
+    };
+
+    // Security: ensure the resolved path is within static_dir
+    let canonical_file = match std::fs::canonicalize(&file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            // File doesn't exist; try SPA fallback
+            let index_path = static_dir.join("index.html");
+            if let Ok(bytes) = std::fs::read(&index_path) {
+                let ct = guess_content_type(&index_path);
+                let _ = write_http_file(stream, 200, ct, &bytes);
+                return true;
+            }
+            return false;
+        }
+    };
+    let Ok(canonical_dir) = std::fs::canonicalize(static_dir) else {
+        return false;
+    };
+    if !canonical_file.starts_with(&canonical_dir) {
+        return false;
+    }
+
+    if canonical_file.is_file() {
+        if let Ok(bytes) = std::fs::read(&canonical_file) {
+            let ct = guess_content_type(&canonical_file);
+            let _ = write_http_file(stream, 200, ct, &bytes);
+            return true;
+        }
+    }
+
+    // Directory or missing file: SPA fallback
+    let index_path = static_dir.join("index.html");
+    if let Ok(bytes) = std::fs::read(&index_path) {
+        let ct = guess_content_type(&index_path);
+        let _ = write_http_file(stream, 200, ct, &bytes);
+        return true;
+    }
+
+    false
 }
 
 fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
@@ -2528,6 +2627,23 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         }
     }
 
+    // Desktop RPC endpoint (used by giteam web)
+    if req.method == "POST" && req.path == "/api/v1/desktop/rpc" {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let command = raw
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let args = raw.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        return match desktop_rpc::handle_desktop_rpc(command, args) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
     (404, serde_json::json!({ "error": "not found" }))
 }
 
@@ -2538,6 +2654,10 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
     let _ = stream.set_nonblocking(false);
     let response = match read_http_request(&mut stream) {
         Ok(req) => {
+            // Try static file serving first (for giteam web)
+            if serve_static_file(&mut stream, &req) {
+                return;
+            }
             if req.method == "GET" && req.path == "/api/v1/opencode/stream" {
                 handle_stream_messages_sse(stream, &req);
                 return;
@@ -2592,6 +2712,10 @@ pub fn stop_control_server() {
             }
         }
     }
+}
+
+pub fn set_web_static_dir(dir: Option<PathBuf>) {
+    let _ = WEB_STATIC_DIR.set(dir);
 }
 
 pub fn start_control_server() -> Result<(), String> {

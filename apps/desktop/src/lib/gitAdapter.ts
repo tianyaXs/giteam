@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./platform";
 import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitLinkedWorktree, GitUserIdentity, GitWorktreeCreateResult, GitWorktreeFileContent, GitWorktreeOverview, GitWorktreeRemoveResult } from "./types";
 
 export async function getHeadCommit(repoPath: string): Promise<string> {

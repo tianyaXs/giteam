@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen } from "./lib/platform";
 import { DiffEditor, loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
@@ -2162,14 +2161,14 @@ export function App() {
   const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>({
     enabled: false,
     host: "0.0.0.0",
-    port: 4100,
+    port: 5100,
     publicBaseUrl: "",
     pairCodeTtlMode: "24h"
   });
   const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>({
     enabled: false,
     host: "0.0.0.0",
-    port: 4100,
+    port: 5100,
     publicBaseUrl: "",
     pairCodeTtlMode: "24h"
   });
@@ -3718,7 +3717,7 @@ export function App() {
       const next: ControlServerSettings = {
         enabled: Boolean(cfg.enabled),
         host: (cfg.host || "0.0.0.0").trim() || "0.0.0.0",
-        port: Number(cfg.port) > 0 ? Number(cfg.port) : 4100,
+        port: Number(cfg.port) > 0 ? Number(cfg.port) : 5100,
         publicBaseUrl: String(cfg.publicBaseUrl || "").trim().replace(/\/+$/, ""),
         pairCodeTtlMode: normalizeControlPairMode((cfg as any).pairCodeTtlMode)
       };
@@ -3872,7 +3871,7 @@ export function App() {
         const parsed = new URL(publicBaseUrl);
         publicBaseUrl = `${parsed.protocol}//${parsed.host}`;
       } catch {
-        setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
+        setError("Public URL 格式无效（示例: http://192.168.1.23:5100）");
         return false;
       }
     }

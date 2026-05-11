@@ -84,7 +84,7 @@ export function inferSeedLastSegment(seed: string): number {
   }
 }
 
-export function resolvePortFromSeed(seed: string, fallback = 4100): number {
+export function resolvePortFromSeed(seed: string, fallback = 5100): number {
   const text = String(seed || '').trim();
   if (!text) return fallback;
   try {

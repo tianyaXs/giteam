@@ -3372,7 +3372,7 @@ export default function App() {
     })();
     const chosenPrefix = local?.prefix || prefixFromSeed || prefixFromCache || inferDiscoveryPrefixes(serverUrl)[0] || '';
     const prefixes = chosenPrefix ? [chosenPrefix] : [];
-    const port = resolvePortFromSeed(serverUrl, 4100);
+    const port = resolvePortFromSeed(serverUrl, 5100);
     const seedLast = inferSeedLastSegment(serverUrl);
     const hostOrder = buildHostOrder(seedLast);
     pushDiscoverLog(
@@ -4085,7 +4085,7 @@ export default function App() {
                       value={serverUrl}
                       onChangeText={onChangeServerUrl}
                       autoCapitalize="none"
-                      placeholder="输入 IP:端口（如 192.168.1.8:4100）"
+                      placeholder="输入 IP:端口（如 192.168.1.8:5100）"
                       placeholderTextColor="#9aa6b6"
                     />
                     <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
