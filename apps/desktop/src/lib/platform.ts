@@ -1,10 +1,50 @@
 // Platform abstraction layer for giteam desktop
 // Automatically switches between Tauri native APIs and HTTP RPC in browser
 
-const IS_TAURI = typeof window !== "undefined" && !!(window as any).__TAURI__;
+export const IS_TAURI = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 // In web mode, all API calls go through the same-origin control server
 const RPC_BASE = "/api/v1/desktop/rpc";
+
+function summarizeRpcValue(value: unknown, depth = 0): unknown {
+  if (value == null) return value;
+  if (depth >= 2) {
+    if (Array.isArray(value)) return `[array:${value.length}]`;
+    if (typeof value === "object") return "[object]";
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 6).map((item) => summarizeRpcValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const lower = key.toLowerCase();
+      if (lower.includes("key") || lower.includes("token") || lower.includes("secret") || lower.includes("password")) {
+        out[key] = "[redacted]";
+        continue;
+      }
+      if ((lower === "prompt" || lower === "message" || lower === "log" || lower === "output") && typeof raw === "string") {
+        out[key] = raw.length > 160 ? `${raw.slice(0, 160)}…` : raw;
+        continue;
+      }
+      out[key] = summarizeRpcValue(raw, depth + 1);
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    return value.length > 160 ? `${value.slice(0, 160)}…` : value;
+  }
+  return value;
+}
+
+function summarizeRpcArgs(args?: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(summarizeRpcValue(args ?? {}));
+  } catch {
+    return "[unserializable args]";
+  }
+}
 
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (IS_TAURI) {
@@ -21,7 +61,14 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
 
   if (!resp.ok) {
     const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-    throw new Error(errBody.error || `RPC failed: ${resp.status}`);
+    const message = errBody.error || `RPC failed: ${resp.status}`;
+    console.error("[rpc:web] command failed", {
+      command,
+      status: resp.status,
+      args: summarizeRpcArgs(args),
+      error: message
+    });
+    throw new Error(`[${command}] ${message}`);
   }
 
   const data = await resp.json();

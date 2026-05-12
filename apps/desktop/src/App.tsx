@@ -1,4 +1,4 @@
-import { invoke, listen } from "./lib/platform";
+import { invoke, listen, IS_TAURI } from "./lib/platform";
 import { DiffEditor, loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
@@ -353,6 +353,10 @@ type OpencodeDetailedMessage = {
   info?: Record<string, unknown>;
   parts?: OpencodeDetailedPart[];
 };
+type OpencodeControlMessagesPage = {
+  items?: unknown[];
+  nextCursor?: string | null;
+};
 type OpencodeTodoItem = {
   id: string;
   content: string;
@@ -377,6 +381,8 @@ type OpencodeMessagePageCacheEntry = {
   hasMore: boolean;
   fetchedAt: number;
 };
+
+const OPENCODE_CONTROL_BASE = "/api/v1/opencode";
 
 const EMPTY_WORKTREE: GitWorktreeOverview = {
   branch: "",
@@ -650,6 +656,48 @@ function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | 
     if (text) chunks.push(text);
   }
   return chunks.join("\n\n");
+}
+
+function mapOpencodeDetailedMessages(items: OpencodeDetailedMessage[]): {
+  mapped: OpencodeChatMessage[];
+  detailsById: Record<string, OpencodeDetailedMessage>;
+} {
+  const detailsById: Record<string, OpencodeDetailedMessage> = {};
+  const mapped: OpencodeChatMessage[] = [];
+  for (const item of items) {
+    const info = item?.info as Record<string, unknown> | undefined;
+    const parts = item?.parts as OpencodeDetailedPart[] | undefined;
+    if (!info) continue;
+    const msgId = String(info.id || "").trim();
+    if (!msgId) continue;
+    const role = String(info.role || "").trim();
+    if (role !== "user" && role !== "assistant") continue;
+    detailsById[msgId] = item;
+    mapped.push({
+      id: msgId,
+      role: role as "user" | "assistant",
+      content: buildOpencodeMainLineMarkdownFromParts(parts)
+    });
+  }
+  return { mapped, detailsById };
+}
+
+function parseSseFrame(frame: string): { event: string; data: string } | null {
+  if (!frame.trim()) return null;
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const rawLine of frame.split(/\r?\n/)) {
+    if (!rawLine || rawLine.startsWith(":")) continue;
+    if (rawLine.startsWith("event:")) {
+      event = rawLine.slice(6).trim() || "message";
+      continue;
+    }
+    if (rawLine.startsWith("data:")) {
+      dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
+    }
+  }
+  if (dataLines.length <= 0) return null;
+  return { event, data: dataLines.join("\n") };
 }
 
 function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
@@ -938,6 +986,15 @@ function sanitizeTerminalOutput(text: string): string {
     out += ch;
   }
   return out;
+}
+
+function isMissingRepositoryError(error: unknown): boolean {
+  const message = String(error || "").toLowerCase();
+  return (
+    message.includes("repo path does not exist") ||
+    message.includes("repository directory does not exist") ||
+    message.includes("not a git repository")
+  );
 }
 
 function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
@@ -2866,6 +2923,74 @@ export function App() {
     };
   }
 
+  function buildOpencodeControlUrl(path: string, params?: Record<string, string | number | undefined>) {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value === undefined || value === null) continue;
+      const text = String(value).trim();
+      if (!text) continue;
+      qs.set(key, text);
+    }
+    const query = qs.toString();
+    return query ? `${OPENCODE_CONTROL_BASE}${path}?${query}` : `${OPENCODE_CONTROL_BASE}${path}`;
+  }
+
+  async function fetchWebOpencodeJson<T>(
+    path: string,
+    init?: RequestInit,
+    params?: Record<string, string | number | undefined>
+  ): Promise<T> {
+    const res = await fetch(buildOpencodeControlUrl(path, params), init);
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(String((errBody as any)?.error || `HTTP ${res.status}`));
+    }
+    return res.json() as Promise<T>;
+  }
+
+  async function fetchOpencodeDetailedMessagesSnapshot(sessionId: string, limit: number, before = ""): Promise<{
+    items: OpencodeDetailedMessage[];
+    nextCursor?: string;
+  }> {
+    const id = sessionId.trim();
+    const safeBefore = before.trim();
+    const safeLimit = Math.max(2, limit);
+    if (IS_TAURI) {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qs = new URLSearchParams();
+      qs.set("limit", String(safeLimit));
+      qs.set("directory", repoPath);
+      if (safeBefore) qs.set("before", safeBefore);
+      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
+      if (!res.ok) {
+        throw new Error(`fetch message page failed: ${res.status}`);
+      }
+      const raw = (await res.json()) as unknown[];
+      return {
+        items: (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[],
+        nextCursor: res.headers.get("x-next-cursor")?.trim() || undefined
+      };
+    }
+
+    const body = await fetchWebOpencodeJson<OpencodeControlMessagesPage>("/messages", undefined, {
+      repoPath,
+      sessionId: id,
+      limit: safeLimit,
+      before: safeBefore || undefined
+    });
+    return {
+      items: (Array.isArray(body?.items) ? body.items : []).filter(Boolean) as OpencodeDetailedMessage[],
+      nextCursor: String(body?.nextCursor || "").trim() || undefined
+    };
+  }
+
+  async function fetchOpencodeServerConfigForChat(): Promise<OpencodeServerConfig> {
+    if (IS_TAURI) {
+      return invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+    }
+    return fetchWebOpencodeJson<OpencodeServerConfig>("/config", undefined, { repoPath });
+  }
+
   async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0) {
     const id = sessionId.trim();
     const safeBefore = before.trim();
@@ -2879,38 +3004,15 @@ export function App() {
     const inflight = opencodeMessagePageInflightRef.current[cacheKey];
     if (inflight) return inflight;
     const task = (async () => {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qs = new URLSearchParams();
-      qs.set("limit", String(safeLimit));
-      qs.set("directory", repoPath);
-      if (safeBefore) qs.set("before", safeBefore);
-      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
-      if (!res.ok) {
-        throw new Error(`fetch message page failed: ${res.status}`);
-      }
-      const raw = (await res.json()) as unknown[];
-      const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
-      const detailsById: Record<string, OpencodeDetailedMessage> = {};
-      const mapped: OpencodeChatMessage[] = [];
-      for (const item of items) {
-        const info = item?.info as Record<string, unknown> | undefined;
-        const parts = item?.parts as OpencodeDetailedPart[] | undefined;
-        if (!info) continue;
-        const msgId = String(info.id || "").trim();
-        if (!msgId) continue;
-        const role = String(info.role || "").trim();
-        if (role !== "user" && role !== "assistant") continue;
-        detailsById[msgId] = item;
-        mapped.push({ id: msgId, role: role as "user" | "assistant", content: buildOpencodeMainLineMarkdownFromParts(parts) });
-      }
-      const nextCursor = res.headers.get("x-next-cursor")?.trim() || undefined;
+      const snapshot = await fetchOpencodeDetailedMessagesSnapshot(id, safeLimit, safeBefore);
+      const { mapped, detailsById } = mapOpencodeDetailedMessages(snapshot.items);
       const entry: OpencodeMessagePageCacheEntry = {
         before: safeBefore,
         limit: safeLimit,
         items: mapped,
         detailsById,
-        nextCursor,
-        hasMore: Boolean(nextCursor),
+        nextCursor: snapshot.nextCursor,
+        hasMore: Boolean(snapshot.nextCursor),
         fetchedAt: Date.now()
       };
       setOpencodeMessagePageCacheEntry(repoPath, id, entry);
@@ -3183,13 +3285,8 @@ export function App() {
     setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: true }));
     appendOpencodeDebugLog(`session.messages detailed load ${id} message=${serverMid}`);
     try {
-      const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
-        repoPath,
-        sessionId: id,
-        directory: repoPath,
-        limit
-      });
-      const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+      const snapshot = await fetchOpencodeDetailedMessagesSnapshot(id, limit);
+      const rows = snapshot.items;
       const hit = rows.find((m) => String((m as any)?.info?.id || "") === serverMid) ?? null;
       setOpencodeDetailsByMessageId((prev) => {
         const cur = prev[mid];
@@ -3438,7 +3535,11 @@ export function App() {
   async function refreshRepositories() {
     const all = await listRepositories();
     setRepos(all);
-    if (all.length > 0 && !selectedRepo) setSelectedRepo(all[0]);
+    setSelectedRepo((current) => {
+      if (all.length <= 0) return null;
+      if (!current) return all[0];
+      return all.some((repo) => repo.id === current.id) ? current : all[0];
+    });
   }
 
   async function importRepository(pathFromPrompt: string): Promise<boolean> {
@@ -4056,7 +4157,7 @@ export function App() {
       setOpencodeConfiguredProviders(configuredProviders.sort((a, b) => a.localeCompare(b)));
 
       if (includeCurrentModel) {
-        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+        const effective = await fetchOpencodeServerConfigForChat();
         const currentModel = normalizeModelRef(effective?.model || "");
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
@@ -4229,13 +4330,8 @@ export function App() {
     const bufferedAssistantDeltaByLocalId = new Map<string, string>();
     const hydrateFinalAssistantText = async (localId: string, serverMessageId: string) => {
       try {
-        const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
-          repoPath,
-          sessionId,
-          directory: repoPath,
-          limit: 200
-        });
-        const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+        const snapshot = await fetchOpencodeDetailedMessagesSnapshot(sessionId, 200);
+        const rows = snapshot.items;
         const targetId = serverMessageId.trim();
         let hit: OpencodeDetailedMessage | null = null;
         if (targetId) {
@@ -4317,7 +4413,7 @@ export function App() {
       // matches the OpenCode server truth (not local files).
       let serverModel = "";
       try {
-        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+        const effective = await fetchOpencodeServerConfigForChat();
         serverModel = normalizeModelRef(effective?.model || "");
         if (serverModel) {
           setOpencodeConfig((prev) => ({
@@ -4338,6 +4434,247 @@ export function App() {
         "";
       if (serverModel && model && serverModel !== model) {
         appendOpencodeDebugLog(`prompt.model.override local=${model} server=${serverModel} (kept local)`);
+      }
+      if (!IS_TAURI) {
+        const eventUrl = buildOpencodeControlUrl("/stream", { repoPath, sessionId });
+        const promptUrl = buildOpencodeControlUrl("/prompt");
+        appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
+
+        let seenAssistantActivity = false;
+        let promptPosted = false;
+        streamAbort = new AbortController();
+        opencodeRunAbortBySessionRef.current[sessionId] = streamAbort;
+        const streamSignal = streamAbort.signal;
+        const bindServerToLocalAssistant = (messageID: string, localId: string) => {
+          const mid = messageID.trim();
+          const lid = localId.trim();
+          if (!mid || !lid) return;
+          localAssistantByServerMessageId.set(mid, lid);
+          serverMessageByLocalAssistantId.set(lid, mid);
+          setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [lid]: mid }));
+          setOpencodeLivePartsByServerMessageId((prev) => (prev[mid] ? prev : { ...prev, [mid]: [] }));
+        };
+        const ensureLocalAssistantForServerMessage = (messageID: string): string => {
+          const mid = messageID.trim();
+          if (!mid) return "";
+          const cached = localAssistantByServerMessageId.get(mid);
+          if (cached) return cached;
+          if (localAssistantByServerMessageId.size === 0) {
+            bindServerToLocalAssistant(mid, assistantId);
+            currentStreamingLocalAssistantId = assistantId;
+            return assistantId;
+          }
+          const localId = `assistant-${makeId()}`;
+          localAssistantIds.push(localId);
+          bindServerToLocalAssistant(mid, localId);
+          currentStreamingLocalAssistantId = localId;
+          setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: localId }));
+          updateOpencodeSessionById(sessionId, (session) => {
+            if (session.messages.some((m) => m.id === localId)) return session;
+            return {
+              ...session,
+              messages: [...session.messages, { id: localId, role: "assistant" as const, content: "" }],
+              updatedAt: Date.now()
+            };
+          });
+          scrollToBottom();
+          return localId;
+        };
+        const flushAssistantTextDelta = (targetLocalId?: string) => {
+          if (done) return;
+          const localId = (targetLocalId || "").trim();
+          if (!localId) {
+            for (const [lid, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
+              if (!chunk) continue;
+              updateOpencodeSessionById(sessionId, (session) => ({
+                ...session,
+                messages: session.messages.map((msg) =>
+                  msg.id === lid ? { ...msg, content: (msg.content || "") + chunk } : msg
+                ),
+                updatedAt: Date.now()
+              }));
+            }
+            bufferedAssistantDeltaByLocalId.clear();
+            scrollToBottom();
+            return;
+          }
+          const chunk = bufferedAssistantDeltaByLocalId.get(localId) || "";
+          if (!chunk) return;
+          bufferedAssistantDeltaByLocalId.set(localId, "");
+          updateOpencodeSessionById(sessionId, (session) => ({
+            ...session,
+            messages: session.messages.map((msg) =>
+              msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
+            ),
+            updatedAt: Date.now()
+          }));
+          scrollToBottom();
+        };
+        const scheduleAssistantTextFlush = () => {
+          if (textFlushTimer || done) return;
+          textFlushTimer = window.setTimeout(() => {
+            textFlushTimer = null;
+            flushAssistantTextDelta();
+          }, 16);
+        };
+        const applySnapshotMessages = (items: OpencodeDetailedMessage[]) => {
+          const { mapped, detailsById } = mapOpencodeDetailedMessages(items);
+          if (mapped.length <= 0) return;
+          const turnStart = getInitialOpencodeTurnStart(buildOpencodeTurnRanges(mapped).length);
+          setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...detailsById }));
+          updateOpencodeSessionById(sessionId, (session) => ({
+            ...session,
+            messages: mapped,
+            turnStart,
+            loaded: true,
+            updatedAt: Date.now()
+          }));
+          const lastAssistant = [...mapped].reverse().find((msg) => msg.role === "assistant");
+          if (lastAssistant) {
+            currentStreamingLocalAssistantId = lastAssistant.id;
+            setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: lastAssistant.id }));
+          }
+          scrollToBottom();
+        };
+        const handleControlStreamEvent = (eventName: string, raw: string) => {
+          let payload: any;
+          try {
+            payload = JSON.parse(raw);
+          } catch {
+            return;
+          }
+          if (eventName === "ready" || eventName === "heartbeat") return;
+          if (eventName === "stream_fallback") {
+            appendOpencodeDebugLog(`prompt.stream.fallback ${toDisplayJson(payload, 300)}`);
+            return;
+          }
+          if (eventName === "assistant_message") {
+            const messageID = String(payload?.messageId || "");
+            if (!messageID) return;
+            seenAssistantActivity = true;
+            const localId = ensureLocalAssistantForServerMessage(messageID);
+            currentStreamingLocalAssistantId = localId || currentStreamingLocalAssistantId;
+            return;
+          }
+          if (eventName === "delta") {
+            const messageID = String(payload?.messageId || "");
+            const localId = ensureLocalAssistantForServerMessage(messageID);
+            if (!localId) return;
+            seenAssistantActivity = true;
+            const delta = String(payload?.delta || "");
+            const partID = String(payload?.partId || "");
+            const partType = String(payload?.type || "text");
+            if (!delta) return;
+            if (partType === "reasoning" || partType === "text") {
+              patchOpencodeLivePartDelta(messageID, partID, partType, delta);
+            }
+            if (partType === "text") {
+              const cur = bufferedAssistantDeltaByLocalId.get(localId) || "";
+              bufferedAssistantDeltaByLocalId.set(localId, cur + delta);
+              scheduleAssistantTextFlush();
+            }
+            return;
+          }
+          if (eventName === "part") {
+            const messageID = String(payload?.messageId || "");
+            const localId = ensureLocalAssistantForServerMessage(messageID);
+            if (!localId) return;
+            const part = payload?.part || {};
+            seenAssistantActivity = true;
+            upsertOpencodeLivePart(messageID, part);
+            if (String(part?.type || "") === "text") flushAssistantTextDelta(localId);
+            return;
+          }
+          if (eventName === "messages") {
+            const rows = (Array.isArray(payload) ? payload : []).filter(Boolean) as OpencodeDetailedMessage[];
+            if (rows.length <= 0) return;
+            seenAssistantActivity = rows.some((row) => String((row as any)?.info?.role || "") === "assistant");
+            applySnapshotMessages(rows);
+            return;
+          }
+          if (eventName === "error") {
+            const err = toDisplayJson(payload?.error ?? payload, 1200);
+            updateOpencodeSessionById(sessionId, (session) => ({
+              ...session,
+              messages: session.messages.map((msg) =>
+                msg.id === currentStreamingLocalAssistantId ? { ...msg, content: `Run failed\n${err}` } : msg
+              ),
+              updatedAt: Date.now()
+            }));
+            scrollToBottom();
+            finalize();
+            return;
+          }
+          if (eventName === "end") {
+            finalize();
+          }
+        };
+
+        void (async () => {
+          try {
+            const resp = await fetch(eventUrl, {
+              method: "GET",
+              headers: { Accept: "text/event-stream" },
+              signal: streamSignal
+            });
+            if (!resp.ok || !resp.body) throw new Error(`SSE connect failed: HTTP ${resp.status}`);
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = "";
+            while (!done) {
+              const { value, done: rdDone } = await reader.read();
+              if (rdDone) break;
+              buf += decoder.decode(value, { stream: true });
+              while (true) {
+                const m = buf.match(/\r?\n\r?\n/);
+                if (!m || m.index == null) break;
+                const frame = parseSseFrame(buf.slice(0, m.index));
+                buf = buf.slice(m.index + m[0].length);
+                if (!frame) continue;
+                handleControlStreamEvent(frame.event, frame.data);
+              }
+            }
+            const tail = parseSseFrame(buf);
+            if (tail) handleControlStreamEvent(tail.event, tail.data);
+          } catch (streamErr) {
+            if (done) return;
+            appendOpencodeDebugLog(`prompt.sse.error ${String(streamErr)}`);
+            updateOpencodeSessionById(sessionId, (session) => ({
+              ...session,
+              messages: session.messages.map((msg) =>
+                msg.id === assistantId ? { ...msg, content: `Run failed\n${String(streamErr)}` } : msg
+              ),
+              updatedAt: Date.now()
+            }));
+            scrollToBottom();
+            finalize();
+          }
+        })();
+
+        fallbackTimer = window.setTimeout(() => {
+          if (done) return;
+          appendOpencodeDebugLog("prompt.safetyFinalize 600s without done");
+          finalize();
+        }, 600_000);
+
+        const promptBody: Record<string, unknown> = {
+          repoPath,
+          sessionId,
+          prompt
+        };
+        if (model) promptBody.model = model;
+        const postResp = await fetch(promptUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(promptBody)
+        });
+        if (!postResp.ok) {
+          const bodyText = await postResp.text().catch(() => "");
+          throw new Error(`prompt failed: HTTP ${postResp.status} ${bodyText}`);
+        }
+        promptPosted = true;
+        appendOpencodeDebugLog(`prompt.invoke.ok request=${requestId} controlProxy`);
+        return;
       }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
@@ -4682,12 +5019,20 @@ export function App() {
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
+      if (IS_TAURI) {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const qdir = encodeURIComponent(repoPath);
+        await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+      } else {
+        await fetchWebOpencodeJson<{ ok: boolean }>("/abort", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repoPath, sessionId: sid })
+        });
+      }
       appendOpencodeDebugLog(`prompt.abort session=${sid}`);
     } catch (e) {
       appendOpencodeDebugLog(`prompt.abort.error session=${sid} ${String(e)}`);
@@ -4704,15 +5049,23 @@ export function App() {
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers })
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (IS_TAURI) {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const qdir = encodeURIComponent(repoPath);
+        const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answers })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } else {
+        await fetchWebOpencodeJson<{ ok: boolean }>(`/question/${encodeURIComponent(requestId)}/reply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repoPath, answers })
+        });
+      }
       appendOpencodeDebugLog(`question.reply ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -4731,24 +5084,28 @@ export function App() {
     }
     setOpencodeQuestionLoading(true);
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
       let raw: unknown = [];
-      let lastError = "";
-      for (const path of ["/question", "/question/"]) {
-        try {
-          const res = await fetch(`${base}${path}?directory=${qdir}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const text = await res.text();
-          if (!text.trim()) throw new Error("empty response");
-          raw = JSON.parse(text);
-          lastError = "";
-          break;
-        } catch (e) {
-          lastError = `${path}: ${String(e)}`;
+      if (IS_TAURI) {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const qdir = encodeURIComponent(repoPath);
+        let lastError = "";
+        for (const path of ["/question", "/question/"]) {
+          try {
+            const res = await fetch(`${base}${path}?directory=${qdir}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const text = await res.text();
+            if (!text.trim()) throw new Error("empty response");
+            raw = JSON.parse(text);
+            lastError = "";
+            break;
+          } catch (e) {
+            lastError = `${path}: ${String(e)}`;
+          }
         }
+        if (lastError) throw new Error(lastError);
+      } else {
+        raw = await fetchWebOpencodeJson<unknown[]>("/question", undefined, { repoPath, sessionId: sid });
       }
-      if (lastError) throw new Error(lastError);
       const rows = Array.isArray(raw) ? raw : [];
       const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
       setOpencodeQuestionRequests(requests);
@@ -4761,14 +5118,22 @@ export function App() {
 
   async function sendQuestionReject(requestId: string) {
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (IS_TAURI) {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const qdir = encodeURIComponent(repoPath);
+        const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } else {
+        await fetchWebOpencodeJson<{ ok: boolean }>(`/question/${encodeURIComponent(requestId)}/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repoPath })
+        });
+      }
       appendOpencodeDebugLog(`question.reject ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -6577,8 +6942,20 @@ export function App() {
     }
     if (!activeTerminalTab) return;
     let stopped = false;
+    let intervalId = 0;
     const repo = selectedRepo.path;
     const tabId = activeTerminalTab.id;
+    const handleTerminalPollError = (error: unknown, expose = false) => {
+      if (stopped) return;
+      const message = String(error);
+      updateTerminalTabById(tabId, { alive: false });
+      if (expose) setError(message);
+      if (!isMissingRepositoryError(message)) return;
+      stopped = true;
+      if (intervalId) window.clearInterval(intervalId);
+      setError(message);
+      void refreshRepositories().catch((refreshError) => setError(String(refreshError)));
+    };
     const boot = async () => {
       try {
         const snapshot = await startRepoTerminalSession(repo, tabId);
@@ -6590,9 +6967,7 @@ export function App() {
           output: sanitizeTerminalOutput(snapshot.output || "")
         });
       } catch (e) {
-        if (stopped) return;
-        updateTerminalTabById(tabId, { alive: false });
-        setError(String(e));
+        handleTerminalPollError(e, true);
       }
     };
     const poll = async () => {
@@ -6616,16 +6991,15 @@ export function App() {
         } else {
           updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
         }
-      } catch {
-        if (stopped) return;
-        updateTerminalTabById(tabId, { alive: false });
+      } catch (e) {
+        handleTerminalPollError(e);
       }
     };
     void boot();
-    const t = window.setInterval(() => void poll(), 320);
+    intervalId = window.setInterval(() => void poll(), 320);
     return () => {
       stopped = true;
-      window.clearInterval(t);
+      if (intervalId) window.clearInterval(intervalId);
     };
   }, [selectedRepo?.id, activeTerminalTabId]);
 
@@ -6752,9 +7126,10 @@ export function App() {
     };
     void (async () => {
       try {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
         if (stopped || abort.signal.aborted) return;
-        const url = `${base}/global/event?directory=${encodeURIComponent(repoPath)}`;
+        const url = IS_TAURI
+          ? `${await invoke<string>("get_opencode_service_base", { repoPath })}/global/event?directory=${encodeURIComponent(repoPath)}`
+          : buildOpencodeControlUrl("/stream", { repoPath, sessionId });
         appendOpencodeDebugLog(`session.passiveSync.connect ${sessionId}`);
         const resp = await fetch(url, {
           method: "GET",
@@ -6766,14 +7141,15 @@ export function App() {
         const decoder = new TextDecoder();
         let buf = "";
         const processFrame = (frame: string) => {
-          if (!frame.trim()) return;
-          const dataLines: string[] = [];
-          for (const rawLine of frame.split(/\r?\n/)) {
-            if (!rawLine || rawLine.startsWith(":")) continue;
-            if (!rawLine.startsWith("data:")) continue;
-            dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
+          const parsed = parseSseFrame(frame);
+          if (!parsed) return;
+          if (!IS_TAURI) {
+            if (parsed.event === "messages" || parsed.event === "assistant_message" || parsed.event === "part" || parsed.event === "delta" || parsed.event === "end") {
+              scheduleRefresh(parsed.event === "end" ? 80 : 350);
+            }
+            return;
           }
-          if (dataLines.length > 0) handleRawEvent(dataLines.join("\n"));
+          handleRawEvent(parsed.data);
         };
         while (!stopped && !abort.signal.aborted) {
           const { value, done } = await reader.read();
@@ -9580,7 +9956,7 @@ branches.forEach((b) => {
                           modelName: mid
                         });
                         await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
-                        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+                        const effective = await fetchOpencodeServerConfigForChat();
                         const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
                         const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
                         if (!hasProvider || !hasModel) {

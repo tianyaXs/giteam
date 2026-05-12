@@ -1195,6 +1195,67 @@ fn parse_body_json(req: &HttpRequest) -> Result<Value, String> {
     serde_json::from_slice::<Value>(&req.body).map_err(|e| format!("invalid json body: {e}"))
 }
 
+fn summarize_rpc_log_value(value: &Value, depth: usize) -> Value {
+    if depth >= 2 {
+        return match value {
+            Value::Array(arr) => Value::String(format!("[array:{}]", arr.len())),
+            Value::Object(_) => Value::String("[object]".to_string()),
+            _ => value.clone(),
+        };
+    }
+    match value {
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .take(6)
+                .map(|item| summarize_rpc_log_value(item, depth + 1))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, raw) in map {
+                let lower = key.to_lowercase();
+                if lower.contains("key")
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                {
+                    out.insert(key.clone(), Value::String("[redacted]".to_string()));
+                    continue;
+                }
+                if matches!(lower.as_str(), "prompt" | "message" | "log" | "output") {
+                    if let Some(text) = raw.as_str() {
+                        let short = if text.chars().count() > 160 {
+                            format!("{}…", text.chars().take(160).collect::<String>())
+                        } else {
+                            text.to_string()
+                        };
+                        out.insert(key.clone(), Value::String(short));
+                        continue;
+                    }
+                }
+                out.insert(key.clone(), summarize_rpc_log_value(raw, depth + 1));
+            }
+            Value::Object(out)
+        }
+        Value::String(text) => {
+            if text.chars().count() > 160 {
+                Value::String(format!(
+                    "{}…",
+                    text.chars().take(160).collect::<String>()
+                ))
+            } else {
+                Value::String(text.clone())
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn summarize_desktop_rpc_args(args: &Value) -> String {
+    serde_json::to_string(&summarize_rpc_log_value(args, 0))
+        .unwrap_or_else(|_| "\"[unserializable args]\"".to_string())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SessionLoopStats {
     synthetic_size_limit_user: usize,
@@ -2638,9 +2699,16 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let args = raw.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let args_summary = summarize_desktop_rpc_args(&args);
         return match desktop_rpc::handle_desktop_rpc(command, args) {
             Ok(v) => (200, v),
-            Err(e) => (500, serde_json::json!({ "error": e })),
+            Err(e) => {
+                eprintln!(
+                    "[desktop-rpc] command failed command={} args={} error={}",
+                    command, args_summary, e
+                );
+                (500, serde_json::json!({ "error": e }))
+            }
         };
     }
 

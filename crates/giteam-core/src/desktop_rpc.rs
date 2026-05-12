@@ -1523,7 +1523,20 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 Ok(RepositoryEntry { id: row.get(0)?, path: row.get(1)?, name: row.get(2)?, added_at: row.get(3)? })
             }).map_err(|e| format!("query list repositories failed: {e}"))?;
             let mut out = Vec::new();
-            for row in rows { out.push(row.map_err(|e| format!("decode repository row failed: {e}"))?); }
+            let mut stale_ids = Vec::new();
+            for row in rows {
+                let entry = row.map_err(|e| format!("decode repository row failed: {e}"))?;
+                let repo_path = std::path::Path::new(&entry.path);
+                if repo_path.is_dir() && repo_path.join(".git").exists() {
+                    out.push(entry);
+                } else {
+                    stale_ids.push(entry.id);
+                }
+            }
+            drop(stmt);
+            for id in stale_ids {
+                let _ = conn.execute("DELETE FROM repositories WHERE id = ?1", params![id]);
+            }
             serde_json::to_value(out).map_err(|e| e.to_string())
         }
         "db_remove_repository" => {
