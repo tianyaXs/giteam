@@ -77,6 +77,19 @@ loader.config({ monaco });
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
+type OpencodeImageAttachment = {
+  id: string;
+  filename: string;
+  mime: string;
+  dataUrl: string;
+};
+type OpencodeSlashCommand = {
+  id: string;
+  trigger: string;
+  title: string;
+  description?: string;
+  source: "builtin" | "command" | "skill" | "mcp";
+};
 type RightPaneTab = "worktree" | "changes" | "terminal";
 type TerminalTabState = {
   id: string;
@@ -938,6 +951,29 @@ function loadCachedWidth(key: string, fallback: number, min: number, max: number
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
+}
+
+function readImageFileAsAttachment(file: File): Promise<OpencodeImageAttachment | null> {
+  if (!file.type.startsWith("image/")) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.addEventListener("error", () => resolve(null));
+    reader.addEventListener("load", () => {
+      const raw = typeof reader.result === "string" ? reader.result : "";
+      const comma = raw.indexOf(",");
+      if (!raw || comma < 0) {
+        resolve(null);
+        return;
+      }
+      resolve({
+        id: `img-${makeId()}`,
+        filename: file.name || `image-${Date.now()}.png`,
+        mime: file.type || "image/png",
+        dataUrl: `data:${file.type || "image/png"};base64,${raw.slice(comma + 1)}`
+      });
+    });
+    reader.readAsDataURL(file);
+  });
 }
 
 function opencodeSavedModelsStorageKey(): string {
@@ -2289,6 +2325,12 @@ export function App() {
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
+  const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeImageAttachment[]>([]);
+  const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
+  const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
+  const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
+  const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
+  const [opencodeShowJumpLatest, setOpencodeShowJumpLatest] = useState(false);
   const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
   const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -2395,6 +2437,82 @@ export function App() {
   const gitAutoRefreshBlockedRef = useRef(false);
   const gitAutoRefreshTimerRef = useRef<number | null>(null);
   const workspacePath = normalizeWorkspacePath(repoPath);
+
+  const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
+    { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
+    { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
+    { id: "builtin-model", trigger: "model", title: "Model", description: "切换当前模型", source: "builtin" },
+    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" },
+    { id: "builtin-open", trigger: "open", title: "Open", description: "搜索文件、命令和会话", source: "builtin" },
+    { id: "builtin-terminal", trigger: "terminal", title: "Terminal", description: "打开或聚焦终端", source: "builtin" },
+    { id: "builtin-mcp", trigger: "mcp", title: "MCP", description: "切换 MCPs", source: "builtin" },
+    { id: "builtin-workspace", trigger: "workspace", title: "Workspace", description: "在侧边栏启用或禁用多个工作区", source: "builtin" },
+    { id: "builtin-init", trigger: "init", title: "Init", description: "create/update AGENTS.md", source: "builtin" },
+    { id: "builtin-review", trigger: "review", title: "Review", description: "review changes [commit|branch|pr]", source: "builtin" }
+  ], []);
+
+  const opencodeSlashQuery = useMemo(() => {
+    const match = opencodePromptInput.match(/^\/(\S*)$/);
+    return match ? match[1].toLowerCase() : "";
+  }, [opencodePromptInput]);
+
+  const opencodeSlashSuggestions = useMemo(() => {
+    if (!opencodeSlashOpen) return [];
+    const all = [...builtinOpencodeSlashCommands, ...opencodeSlashCommands];
+    const seen = new Set<string>();
+    return all
+      .filter((cmd) => {
+        const key = cmd.trigger.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return !opencodeSlashQuery || key.includes(opencodeSlashQuery) || cmd.title.toLowerCase().includes(opencodeSlashQuery);
+      });
+  }, [builtinOpencodeSlashCommands, opencodeSlashCommands, opencodeSlashOpen, opencodeSlashQuery]);
+
+  useEffect(() => {
+    if (!repoPath.trim()) {
+      setOpencodeSlashCommands([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const resp = await fetch(`${base}/command?directory=${encodeURIComponent(repoPath)}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const rows = await resp.json();
+        if (cancelled) return;
+        const commands: OpencodeSlashCommand[] = (Array.isArray(rows) ? rows : [])
+          .map((item: any): OpencodeSlashCommand | null => {
+            const name = String(item?.name || item?.command || item?.id || "").replace(/^\//, "").trim();
+            if (!name) return null;
+            const sourceRaw = String(item?.source || item?.type || "command").toLowerCase();
+            const source: OpencodeSlashCommand["source"] = sourceRaw.includes("skill")
+              ? "skill"
+              : sourceRaw.includes("mcp")
+              ? "mcp"
+              : sourceRaw.includes("builtin")
+              ? "builtin"
+              : "command";
+            return {
+              id: `cmd-${name}`,
+              trigger: name,
+              title: String(item?.title || item?.description || name),
+              description: item?.description ? String(item.description) : undefined,
+              source
+            };
+          })
+          .filter(Boolean) as OpencodeSlashCommand[];
+        setOpencodeSlashCommands(commands);
+      } catch {
+        if (!cancelled) setOpencodeSlashCommands([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath]);
+
   const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? terminalTabs[0],
@@ -4266,7 +4384,7 @@ export function App() {
   async function runOpencodePrompt() {
     if (!ensureRepoSelected()) return;
     const prompt = opencodePromptInput.trim();
-    if (!prompt) return;
+    if (!prompt && opencodeImageAttachments.length === 0) return;
     let sessionId = ensureActiveOpencodeSession();
     if (!sessionId || draftOpencodeSession) {
       sessionId = await createPersistedOpencodeSession(prompt);
@@ -4304,6 +4422,8 @@ export function App() {
     });
     scrollToBottom();
     setOpencodePromptInput("");
+    setOpencodeImageAttachments([]);
+    setOpencodeAttachmentMenuOpen(false);
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
     const activeModel = normalizeModelRef(activeOpencodeModel || "");
@@ -4680,7 +4800,8 @@ export function App() {
         const promptBody: Record<string, unknown> = {
           repoPath,
           sessionId,
-          prompt
+          prompt,
+          attachments: opencodeImageAttachments.map((a) => ({ id: a.id, filename: a.filename, mime: a.mime, dataUrl: a.dataUrl }))
         };
         if (model) promptBody.model = model;
         const postResp = await fetch(promptUrl, {
@@ -4988,7 +5109,13 @@ export function App() {
       }, 600_000);
 
       const promptBody: Record<string, unknown> = {
-        parts: [{ type: "text", text: prompt }]
+        parts: [
+          { type: "text", text: prompt },
+          ...opencodeImageAttachments.map((a) => ({
+            type: "image",
+            source: { type: "base64", media_type: a.mime, data: a.dataUrl.replace(/^data:image\/[^;]+;base64,/, "") }
+          }))
+        ]
       };
       const mr = parseModelRef(model);
       if (mr) {
@@ -7499,9 +7626,25 @@ export function App() {
     }
   }
 
+  function resumeOpencodeFollowFromUserAction(_sessionId: string) {
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+  }
+
+  function jumpOpencodeToLatest() {
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    resumeOpencodeFollowFromUserAction(activeOpencodeSessionId);
+    setOpencodeShowJumpLatest(false);
+  }
+
   function onOpencodeThreadWheel(event: React.WheelEvent<HTMLDivElement>) {
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (event.deltaY < 0) {
+      setOpencodeShowJumpLatest(true);
+    }
     if (event.deltaY >= 0) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     if (maxScroll <= 0) return;
@@ -7786,6 +7929,11 @@ export function App() {
                               .map((item, groupIdx) => item.kind === "part" && String((item.part as { type?: string }).type || "") === "reasoning" ? groupIdx : -1)
                               .filter((groupIdx) => groupIdx >= 0);
                             const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
+                            const activeReasoningPartId = isStreaming
+                              ? [...renderParts]
+                                .reverse()
+                                .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
+                              : "";
                             return timelineGroups.map((g, idx) => {
                               if (g.kind === "context") {
                                 const c = summarizeOpencodeContextToolCounts(g.parts);
@@ -7824,13 +7972,33 @@ export function App() {
                                 const text = String((part as { text?: string }).text || "").trim();
                                 if (!text) return null;
                                 const keepOpen = !isStreaming || idx === lastReasoningIndex;
+                                const activeThink = isStreaming && String((g.part as { id?: string }).id || "") === activeReasoningPartId;
+                                const thinkPreviewLines = text
+                                  .split(/\n+/)
+                                  .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
+                                  .filter(Boolean)
+                                  .slice(-4);
+                                const thinkPreview = thinkPreviewLines.length > 0
+                                  ? thinkPreviewLines
+                                  : ["Reading context", "Tracing changes", "Composing answer"];
                                 return (
-                                  <details key={`${msg.id}:${g.key}`} className={isStreaming && keepOpen ? "opencode-think-card is-active" : "opencode-think-card"} open={keepOpen}>
+                                  <details key={`${msg.id}:${g.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"} open={keepOpen}>
                                     <summary className="opencode-think-card-summary">
                                       <span className="opencode-think-label">
                                         <span className="opencode-think-spark" aria-hidden="true" />
                                         <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
                                       </span>
+                                      {thinkPreview.length > 0 ? (
+                                        <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
+                                          <span className="opencode-think-carousel-track" style={{ ["--think-count" as any]: thinkPreview.length }}>
+                                            {thinkPreview.map((line, lineIdx) => (
+                                              <span key={`${g.key}:think-preview:${lineIdx}`} className="opencode-think-carousel-line" style={{ ["--think-index" as any]: lineIdx }}>
+                                                {line}
+                                              </span>
+                                            ))}
+                                          </span>
+                                        </span>
+                                      ) : null}
                                     </summary>
                                     <div className="opencode-msg-body">
                                       <MarkdownLite source={text} />
@@ -7953,20 +8121,109 @@ export function App() {
               />
             ))}
             <div className="opencode-composer">
+              {opencodeShowJumpLatest ? (
+                <button
+                  type="button"
+                  className="opencode-jump-latest-btn"
+                  onClick={jumpOpencodeToLatest}
+                  aria-label="拉到最新"
+                  title="拉到最新"
+                >
+                  ↓
+                </button>
+              ) : null}
+              {opencodeImageAttachments.length > 0 ? (
+                <div className="opencode-attachments">
+                  {opencodeImageAttachments.map((img) => (
+                    <div key={img.id} className="opencode-attachment-chip">
+                      <img src={img.dataUrl} alt={img.filename} className="opencode-attachment-thumb" />
+                      <span className="opencode-attachment-name">{img.filename}</span>
+                      <button
+                        type="button"
+                        className="opencode-attachment-remove"
+                        onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
+                        aria-label="移除图片"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="opencode-composer-body opencode-composer-body-inline">
                 <div className="opencode-input-shell opencode-composer-editor">
+                  {opencodeSlashOpen && opencodeSlashSuggestions.length > 0 ? (
+                    <div className="opencode-slash-popover">
+                      {opencodeSlashSuggestions.map((cmd, idx) => (
+                        <button
+                          key={cmd.id}
+                          type="button"
+                          className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
+                          onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
+                          onClick={() => {
+                            setOpencodePromptInput(`/${cmd.trigger} `);
+                            setOpencodeSlashOpen(false);
+                            opencodeInputRef.current?.focus();
+                          }}
+                        >
+                          <span className="opencode-slash-trigger">/{cmd.trigger}</span>
+                          <span className="opencode-slash-title">{cmd.title}</span>
+                          {cmd.description ? <span className="opencode-slash-desc">{cmd.description}</span> : null}
+                          <span className={`opencode-slash-badge ${cmd.source}`}>{cmd.source}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <textarea
                     ref={opencodeInputRef}
                     className="opencode-input"
                     placeholder="Ask OpenCode to code, inspect, or fix..."
                     value={opencodePromptInput}
-                    onChange={(e) => setOpencodePromptInput(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setOpencodePromptInput(value);
+                      const isSlash = /^\//.test(value) && !value.includes(" ");
+                      setOpencodeSlashOpen(isSlash);
+                      setOpencodeSlashActiveIndex(0);
+                    }}
                     onKeyDown={(e) => {
                       if (activeOpencodeSessionBusy) return;
+                      if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setOpencodeSlashActiveIndex((i) => (i + 1) % opencodeSlashSuggestions.length);
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setOpencodeSlashActiveIndex((i) => (i - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
+                          return;
+                        }
+                        if (e.key === "Enter" || e.key === "Tab") {
+                          e.preventDefault();
+                          const cmd = opencodeSlashSuggestions[opencodeSlashActiveIndex];
+                          if (cmd) {
+                            setOpencodePromptInput(`/${cmd.trigger} `);
+                            setOpencodeSlashOpen(false);
+                          }
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          setOpencodeSlashOpen(false);
+                          return;
+                        }
+                      }
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         void runOpencodePrompt();
                       }
+                    }}
+                    onPaste={async (e) => {
+                      const files = Array.from(e.clipboardData?.files || []);
+                      if (files.length === 0) return;
+                      e.preventDefault();
+                      const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
+                      setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
                     }}
                     rows={1}
                   />
@@ -8053,9 +8310,25 @@ export function App() {
                     </div>
                   ) : null}
                 </div>
+                <div className="opencode-attachment-menu-wrap">
+                  <button
+                    type="button"
+                    className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
+                    onClick={() => setOpencodeAttachmentMenuOpen((v) => !v)}
+                    aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
+                    aria-expanded={opencodeAttachmentMenuOpen}
+                  >
+                    <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
+                  </button>
+                  {opencodeAttachmentMenuOpen ? (
+                    <div className="opencode-attachment-menu">
+                      <div className="opencode-attachment-menu-hint">粘贴图片到输入框即可添加附件</div>
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim()}
+                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeImageAttachments.length === 0}
                   onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
                   aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
                 >
