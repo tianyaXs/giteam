@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { cliRoot } from './platform-manifest.js';
 
@@ -14,6 +14,10 @@ mkdirSync(join(outputRoot, 'crates', 'giteam-core'), { recursive: true });
 
 cpSync(join(cliRoot, 'Cargo.toml'), join(outputRoot, 'apps', 'cli', 'Cargo.toml'));
 cpSync(join(cliRoot, 'src'), join(outputRoot, 'apps', 'cli', 'src'), { recursive: true });
+const asciiArtPath = join(cliRoot, '字符画.txt');
+if (existsSync(asciiArtPath)) {
+  cpSync(asciiArtPath, join(outputRoot, 'apps', 'cli', '字符画.txt'));
+}
 cpSync(
   join(repoRoot, 'crates', 'giteam-core', 'Cargo.toml'),
   join(outputRoot, 'crates', 'giteam-core', 'Cargo.toml')

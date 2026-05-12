@@ -34,6 +34,13 @@ export type MobileChatMessage = {
   role: 'user' | 'assistant';
   text: string;
   createdAt?: number;
+  attachments?: Array<{
+    id: string;
+    kind: 'image';
+    uri: string;
+    mime?: string;
+    filename?: string;
+  }>;
 };
 
 export type MobileThinkCard = {

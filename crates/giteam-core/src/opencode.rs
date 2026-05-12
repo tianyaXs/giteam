@@ -109,15 +109,6 @@ pub struct OpencodeServiceSettings {
     pub port: u16,
 }
 
-fn normalize_provider_key(input: &str) -> String {
-    input
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-}
-
 fn merge_server_provider_catalog(
     mut base: Vec<OpencodeServerProviderCatalog>,
     extra: Vec<OpencodeServerProviderCatalog>,
@@ -130,10 +121,10 @@ fn merge_server_provider_catalog(
     }
     let mut extra_by_key: HashMap<String, OpencodeServerProviderCatalog> = HashMap::new();
     for p in extra {
-        extra_by_key.insert(normalize_provider_key(&p.id), p);
+        extra_by_key.insert(p.id.trim().to_string(), p);
     }
     for b in &mut base {
-        let key = normalize_provider_key(&b.id);
+        let key = b.id.trim().to_string();
         if let Some(e) = extra_by_key.get(&key) {
             if b.name.trim().is_empty() {
                 b.name = e.name.clone();
@@ -978,7 +969,10 @@ fn stream_prompt_via_opencode_service(
             }
             sid.to_string()
         } else {
-            let create_url = format!("{base}/session");
+            let create_url = format!(
+                "{base}/session?directory={}",
+                urlencoding::encode(repo_path)
+            );
             let created_raw = run_curl_json(repo_path, "POST", create_url.as_str(), Some("{}"), 8)?;
             let created_json: Value = serde_json::from_str(&created_raw)
                 .map_err(|e| format!("parse session create response failed: {e}"))?;
@@ -1562,12 +1556,13 @@ pub fn list_opencode_sessions(
 ) -> Result<Vec<OpencodeSessionSummary>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let mut url = format!("{base}/session");
+        let mut qs = vec![format!("directory={}", urlencoding::encode(repo_path))];
         if let Some(l) = limit {
             if l > 0 {
-                url.push_str(format!("?limit={}", l).as_str());
+                qs.push(format!("limit={}", l));
             }
         }
+        let url = format!("{base}/session?{}", qs.join("&"));
         let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 10)?;
         let json: Value =
             serde_json::from_str(&raw).map_err(|e| format!("parse session list failed: {e}"))?;
@@ -1632,7 +1627,11 @@ pub fn create_opencode_session(
         let raw = run_curl_json(
             repo_path,
             "POST",
-            format!("{base}/session").as_str(),
+            format!(
+                "{base}/session?directory={}",
+                urlencoding::encode(repo_path)
+            )
+            .as_str(),
             Some(body.as_str()),
             10,
         )?;
@@ -1653,7 +1652,11 @@ pub fn delete_opencode_session(repo_path: &str, session_id: &str) -> Result<bool
         let _ = run_curl_json(
             repo_path,
             "DELETE",
-            format!("{base}/session/{sid}").as_str(),
+            format!(
+                "{base}/session/{sid}?directory={}",
+                urlencoding::encode(repo_path)
+            )
+            .as_str(),
             None,
             10,
         )?;
@@ -1832,6 +1835,7 @@ pub fn post_opencode_session_prompt_async(
     repo_path: &str,
     session_id: &str,
     prompt: &str,
+    parts: Option<Value>,
     model: Option<String>,
 ) -> Result<bool, String> {
     command_runner::validate_repo_path(repo_path)?;
@@ -1840,11 +1844,19 @@ pub fn post_opencode_session_prompt_async(
         return Err("session_id must not be empty".to_string());
     }
     let text = prompt.trim();
-    if text.is_empty() {
-        return Err("prompt must not be empty".to_string());
-    }
+    let request_parts = match parts {
+        Some(Value::Array(items)) if !items.is_empty() => Value::Array(items),
+        Some(Value::Array(_)) => return Err("parts must not be empty".to_string()),
+        Some(_) => return Err("parts must be an array".to_string()),
+        None => {
+            if text.is_empty() {
+                return Err("prompt must not be empty".to_string());
+            }
+            serde_json::json!([{ "type": "text", "text": text }])
+        }
+    };
     let mut body = serde_json::json!({
-        "parts": [{ "type": "text", "text": text }]
+        "parts": request_parts
     });
     if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         if let Some(obj) = body.as_object_mut() {
@@ -1912,7 +1924,13 @@ pub fn post_opencode_question_reply(
         let url = format!("{base}/question/{}/reply", urlencoding::encode(request_id));
         // run_curl_json already sends x-opencode-directory with the full path.
         // A directory query with only the repo name makes opencode resolve a different cwd.
-        let _ = run_curl_json(repo_path, "POST", url.as_str(), Some(body.to_string().as_str()), 12)?;
+        let _ = run_curl_json(
+            repo_path,
+            "POST",
+            url.as_str(),
+            Some(body.to_string().as_str()),
+            12,
+        )?;
         Ok(true)
     })
 }
@@ -2025,36 +2043,36 @@ pub fn capture_opencode_question_events(
 }
 
 fn parse_question_sse_frame(frame: &str, sid: &str) -> Option<Value> {
-            let mut data = String::new();
-            for line in frame.lines() {
-                let line = line.trim_end();
-                if let Some(rest) = line.strip_prefix("data:") {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(rest.trim_start());
-                }
+    let mut data = String::new();
+    for line in frame.lines() {
+        let line = line.trim_end();
+        if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
             }
-            if data.trim().is_empty() {
-                return None;
-            }
-            let Ok(json) = serde_json::from_str::<Value>(data.trim()) else {
-                return None;
-            };
-            let wrapped = json.get("payload").unwrap_or(&json);
-            let typ = wrapped.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if typ != "question.asked" {
-                return None;
-            }
-            let props = wrapped.get("properties").cloned().unwrap_or(Value::Null);
-            if props
-                .get("sessionID")
-                .and_then(|v| v.as_str())
-                .map(|v| v == sid)
-                .unwrap_or(false)
-            {
-                return Some(props);
-            }
+            data.push_str(rest.trim_start());
+        }
+    }
+    if data.trim().is_empty() {
+        return None;
+    }
+    let Ok(json) = serde_json::from_str::<Value>(data.trim()) else {
+        return None;
+    };
+    let wrapped = json.get("payload").unwrap_or(&json);
+    let typ = wrapped.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if typ != "question.asked" {
+        return None;
+    }
+    let props = wrapped.get("properties").cloned().unwrap_or(Value::Null);
+    if props
+        .get("sessionID")
+        .and_then(|v| v.as_str())
+        .map(|v| v == sid)
+        .unwrap_or(false)
+    {
+        return Some(props);
+    }
     None
 }
 

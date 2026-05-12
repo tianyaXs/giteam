@@ -1,18 +1,74 @@
 import { invoke, listen, IS_TAURI } from "./lib/platform";
-import { DiffEditor, loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { createPortal } from "react-dom";
+import {
+  loadCachedRuntimeStatus,
+  loadCachedWidth,
+  RIGHT_PANE_WIDTH_CACHE_KEY,
+  saveCachedRuntimeStatus,
+  saveCachedWidth,
+  SIDEBAR_WIDTH_CACHE_KEY,
+  type RuntimeActionJobStatus,
+  type RuntimeDepName,
+  type RuntimeDependencyStatus,
+  type RuntimeRequirementsStatus
+} from "./lib/appCache";
+import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
 import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
+  buildConfiguredModelCandidates,
+  buildSyncModelRefs,
+  isModelRefAvailable,
+  loadModelRefSet,
+  normalizeModelRef,
+  normalizeProviderId,
+  parseModelRef,
+  resolveProviderAliasWithNames,
+  saveModelRefSet
+} from "./lib/opencodeModels";
+import {
+  buildOpencodeTurnRanges,
+  getInitialOpencodeTurnStart,
+  newOpencodeSession,
+  opencodeSessionFromSummary,
+  sliceOpencodeMessagesByTurnStart,
+  sortOpencodeSessionSummaries,
+  toOpencodeSessionTitle,
+  type OpencodeChatMessage,
+  type OpencodeChatSession,
+  type OpencodeDetailedMessage,
+  type OpencodeDetailedPart,
+  type OpencodeMessagePageCacheEntry,
+  type OpencodeMessageWindowCacheEntry,
+  type OpencodeSessionMessage,
+  type OpencodeSessionSummary,
+  type OpencodeTodoItem
+} from "./lib/opencodeSessions";
+import {
+  buildOpencodeAssistantRenderGroups,
+  buildOpencodeImageAttachmentsFromParts,
+  buildOpencodeMainLineMarkdownFromParts,
+  buildOpencodeReplyMarkdownFromParts,
+  isOpencodeContextTool,
+  isOpencodeRenderablePart,
+  mergeOpencodeMessageAttachments,
+  mergeOpencodeStreamText,
+  parseOpencodeTaskSessionId,
+  readOpencodeTodosFromPart,
+  summarizeOpencodeContextProgress,
+  summarizeOpencodeContextToolCounts,
+  toDisplayJson
+} from "./lib/opencodeParts";
+import {
   closeRepoTerminalSession,
+  completeRepoTerminalInput,
   clearRepoTerminalSession,
+  listRepoTerminalCompletions,
   createGitBranch,
   createGitDetachedWorktree,
   createGitWorktreeFromBranch,
@@ -29,7 +85,9 @@ import {
   getLocalBranches,
   gitCheckoutBranch,
   gitCheckoutRemoteBranch,
+  gitCherryPickCommit,
   gitDiscardChanges,
+  gitRevertCommit,
   gitStageFile,
   gitUnstageFile,
   removeGitWorktree,
@@ -53,6 +111,49 @@ import {
   saveReviewAction,
   saveReviewRecord
 } from "./lib/storage";
+import {
+  applyTerminalCompletionCandidate,
+  createTerminalTabState,
+  getTerminalCompletionGroup,
+  readTerminalTabSnapshot,
+  sanitizeTerminalOutput,
+  splitTerminalOutputForInput,
+  type TerminalTabState,
+  writeTerminalTabSnapshot
+} from "./lib/terminalState";
+import {
+  normalizeWorkspacePath,
+  readBranchParentMap,
+  readWorkspaceAgentBindings,
+  readWorktreeParentMap,
+  type WorkspaceAgentBinding,
+  writeBranchParentMap,
+  writeWorkspaceAgentBindings,
+  writeWorktreeParentMap
+} from "./lib/workspaceBindings";
+import {
+  buildSplitDiffRows,
+  buildWorktreeTree,
+  collectWorktreeDirPaths,
+  collectWorktreeNodeEntries,
+  collectWorktreeNodeFilePaths,
+  getMonacoLanguage,
+  getWorktreeDisplayStatus,
+  getWorktreeFileKindLabel,
+  getWorktreeStatusText,
+  toDiffRows,
+  type DiffRow,
+  type WorktreeTreeNode
+} from "./lib/worktreeDiff";
+import {
+  branchTone,
+  buildTopologyModel,
+  parseRefs,
+  pathLeaf,
+  shortSha,
+  type TopologyGraphModel,
+  type TopologyNode
+} from "./lib/worktreeTopology";
 import type {
   GitBranchSummary,
   GitCommitSummary,
@@ -69,11 +170,21 @@ import type {
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
+import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
+import { MarkdownLite } from "./components/common/MarkdownLite";
+import { BranchGraphLanes } from "./components/git/BranchGraphLanes";
+import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
+import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
+import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
+import { OpenCodeProviderList } from "./components/opencode/OpenCodeProviderList";
+import { OpenCodeProviderModelList } from "./components/opencode/OpenCodeProviderModelList";
 import { QuestionDock } from "./components/QuestionDock";
+import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
+import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
 import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 
-loader.config({ monaco });
+const MonacoDiffViewer = lazy(() => import("./components/git/MonacoDiffViewer"));
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
@@ -90,57 +201,6 @@ type OpencodeSlashCommand = {
   description?: string;
   source: "builtin" | "command" | "skill" | "mcp";
 };
-type RightPaneTab = "worktree" | "changes" | "terminal";
-type TerminalTabState = {
-  id: string;
-  title: string;
-  input: string;
-  output: string;
-  seq: number;
-  alive: boolean;
-  history: string[];
-  historyIndex: number;
-};
-
-function PanelToggleIcon(props: { side: "left" | "right"; collapsed: boolean }) {
-  const dividerX = props.side === "left" ? 9 : 15;
-  const hiddenPanelX = props.side === "left" ? 4 : 12;
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="4" y="5" width="16" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d={`M${dividerX} 6.5V17.5`} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      {props.collapsed ? <rect x={hiddenPanelX} y="6.5" width="5" height="11" rx="1.5" fill="currentColor" opacity="0.16" /> : null}
-    </svg>
-  );
-}
-
-function SendIcon(props: { busy: boolean }) {
-  return props.busy ? (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" /></svg>
-  ) : (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /><path d="M7.5 10.5L12 5L16.5 10.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-  );
-}
-
-function RightPaneTabIcon(props: { tab: RightPaneTab; active: boolean }) {
-  const stroke = props.active ? "currentColor" : "currentColor";
-  if (props.tab === "worktree") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
-        <path d="M7 5v6a3 3 0 0 0 3 3h6" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M7 5v-1" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-        <path d="M7 14v5" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-        <circle cx="7" cy="4" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
-        <circle cx="7" cy="19" r="1.9" fill="none" stroke={stroke} strokeWidth="1.6" />
-        <circle cx="18" cy="14" r="1.9" fill="currentColor" opacity={props.active ? 0.95 : 0.62} />
-      </svg>
-    );
-  }
-  if (props.tab === "changes") {
-    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 12H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 17H19" fill="none" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="5" cy="7" r="1.2" fill="currentColor" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="5" cy="17" r="1.2" fill="currentColor" /></svg>;
-  }
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5H19.5V18.5H4.5V5.5Z" fill="none" stroke={stroke} strokeWidth="1.6" /><path d="M8 10L10.6 12L8 14" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M13 14H16" fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" /></svg>;
-}
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -164,73 +224,6 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
     return this.props.children;
   }
 }
-type DiffRowKind = "meta" | "add" | "del" | "ctx";
-type DiffRow = { kind: DiffRowKind; left: string; right: string };
-type WorktreePatchRow = {
-  kind: DiffRowKind;
-  text: string;
-  marker: string;
-  oldLine: number | null;
-  newLine: number | null;
-  tone: "meta" | "hunk" | "add" | "del" | "ctx";
-};
-
-type SplitDiffSide = {
-  line: number | null;
-  text: string;
-  marker: string;
-  tone: "del" | "add" | "ctx" | "empty";
-};
-
-type SplitDiffRow = {
-  kind: "hunk" | "meta" | "line";
-  left: SplitDiffSide;
-  right: SplitDiffSide;
-};
-type StatusSession = { title: string; quote?: string; meta?: string };
-type ParsedStatus = { headline?: string; project?: string; sessions: StatusSession[] };
-type TranscriptMessage = { role: "User" | "Assistant"; content: string };
-type ParsedAgentContext = {
-  checkpoint?: string;
-  session?: string;
-  created?: string;
-  author?: string;
-  commits?: string;
-  intent?: string;
-  outcome?: string;
-  filesRaw?: string;
-  files: string[];
-  transcript: TranscriptMessage[];
-};
-type RuntimeDependencyStatus = {
-  name: string;
-  checked: boolean;
-  installed: boolean;
-  path?: string;
-  version?: string;
-  latestVersion?: string;
-  updateAvailable: boolean;
-  installHint: string;
-};
-type RuntimeRequirementsStatus = {
-  platform: string;
-  homebrewInstalled: boolean;
-  git: RuntimeDependencyStatus;
-  entire: RuntimeDependencyStatus;
-  opencode: RuntimeDependencyStatus;
-  giteam: RuntimeDependencyStatus;
-};
-type RuntimeActionJobStatus = {
-  jobId: string;
-  name: string;
-  action: "install" | "uninstall";
-  status: "running" | "succeeded" | "failed";
-  log: string;
-  startedAtMs: number;
-  finishedAtMs?: number;
-  exitCode?: number;
-  error?: string;
-};
 type OpencodeModelConfig = {
   configPath: string;
   configuredModel: string;
@@ -327,76 +320,6 @@ type GiteamMobileServiceStatus = {
 
 type OpencodeAuthPayload = { type: "api"; key: string };
 type OpencodeProviderAuthMethod = { type: string; label?: string };
-type OpencodeChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  attachments?: Array<{ id: string; uri: string; filename?: string }>;
-};
-type OpencodeChatSession = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: OpencodeChatMessage[];
-  turnStart: number;
-  loaded: boolean;
-  nextCursor?: string;
-  hasMore?: boolean;
-};
-type WorkspaceAgentBinding = {
-  workspacePath: string;
-  branch: string;
-  activeSessionId: string;
-  sessionIds: string[];
-  updatedAt: number;
-};
-type OpencodeSessionSummary = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-};
-type OpencodeSessionMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-};
-type OpencodeDetailedPart = Record<string, unknown> & { type?: string };
-type OpencodeDetailedMessage = {
-  info?: Record<string, unknown>;
-  parts?: OpencodeDetailedPart[];
-};
-type OpencodeControlMessagesPage = {
-  items?: unknown[];
-  nextCursor?: string | null;
-};
-type OpencodeTodoItem = {
-  id: string;
-  content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
-  priority?: string;
-};
-
-type OpencodeMessageWindowCacheEntry = {
-  limit: number;
-  mapped: OpencodeChatMessage[];
-  turnCount: number;
-  hasMore: boolean;
-  fetchedAt: number;
-};
-
-type OpencodeMessagePageCacheEntry = {
-  before: string;
-  limit: number;
-  items: OpencodeChatMessage[];
-  detailsById: Record<string, OpencodeDetailedMessage>;
-  nextCursor?: string;
-  hasMore: boolean;
-  fetchedAt: number;
-};
-
-const OPENCODE_CONTROL_BASE = "/api/v1/opencode";
 
 const EMPTY_WORKTREE: GitWorktreeOverview = {
   branch: "",
@@ -420,202 +343,6 @@ const EMPTY_WORKTREE_FILE_CONTENT: GitWorktreeFileContent = {
   original: "",
   modified: ""
 };
-
-type WorktreeTreeNode = {
-  name: string;
-  path: string;
-  kind: "dir" | "file";
-  children: WorktreeTreeNode[];
-  entry?: GitWorktreeEntry;
-};
-
-function buildWorktreeTree(entries: GitWorktreeEntry[]): WorktreeTreeNode[] {
-  const root: WorktreeTreeNode[] = [];
-  const dirMap = new Map<string, WorktreeTreeNode>();
-
-  for (const entry of entries) {
-    const parts = entry.path.split("/").filter(Boolean);
-    let parentPath = "";
-    let level = root;
-
-    parts.forEach((part, index) => {
-      const nextPath = parentPath ? `${parentPath}/${part}` : part;
-      const isFile = index === parts.length - 1;
-      let node = level.find((item) => item.path === nextPath);
-      if (!node && !isFile) node = dirMap.get(nextPath);
-      if (!node) {
-        node = {
-          name: part,
-          path: nextPath,
-          kind: isFile ? "file" : "dir",
-          children: [],
-          entry: isFile ? entry : undefined
-        };
-        level.push(node);
-        if (!isFile) dirMap.set(nextPath, node);
-      }
-      parentPath = nextPath;
-      level = node.children;
-    });
-  }
-
-  const sortNodes = (nodes: WorktreeTreeNode[]): WorktreeTreeNode[] => nodes
-    .sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    })
-    .map((node) => ({
-      ...node,
-      children: sortNodes(node.children)
-    }));
-
-  return sortNodes(root);
-}
-
-function collectWorktreeDirPaths(nodes: WorktreeTreeNode[]): string[] {
-  return nodes.flatMap((node) => {
-    if (node.kind !== "dir") return [];
-    return [node.path, ...collectWorktreeDirPaths(node.children)];
-  });
-}
-
-function getWorktreeDisplayStatus(entry: GitWorktreeEntry): string {
-  const flags = `${entry.indexStatus}${entry.worktreeStatus}`;
-  if (flags.includes("?")) return "A";
-  if (flags.includes("A")) return "A";
-  if (flags.includes("D")) return "D";
-  if (flags.includes("R")) return "R";
-  if (flags.includes("C")) return "C";
-  if (flags.includes("M")) return "M";
-  return flags.trim() || "-";
-}
-
-function getWorktreeFileKindLabel(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() || "file";
-  if (ext === "tsx" || ext === "jsx") return "tsx";
-  if (ext === "ts" || ext === "js") return ext;
-  if (ext === "css" || ext === "html" || ext === "rs") return ext;
-  return ext.slice(0, 4);
-}
-
-function getMonacoLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() || "";
-  if (ext === "ts" || ext === "tsx") return "typescript";
-  if (ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") return "javascript";
-  if (ext === "rs") return "rust";
-  if (ext === "css") return "css";
-  if (ext === "html") return "html";
-  if (ext === "json") return "json";
-  if (ext === "md" || ext === "markdown") return "markdown";
-  if (ext === "toml") return "toml";
-  if (ext === "yaml" || ext === "yml") return "yaml";
-  return "plaintext";
-}
-
-function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
-  if (!entry) return "未选择文件";
-  if (entry.untracked) return "新文件";
-  if (entry.staged && entry.unstaged) return "暂存 + 未暂存";
-  if (entry.staged) return "已暂存";
-  if (entry.unstaged) return "未暂存";
-  return "已修改";
-}
-
-function buildSplitDiffRows(patch: string): SplitDiffRow[] {
-  if (!patch.trim()) return [];
-  const rows: WorktreePatchRow[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-      if (match) {
-        oldLine = Number(match[1]);
-        newLine = Number(match[2]);
-      }
-      rows.push({ kind: "meta", text: line, marker: "@@", oldLine: null, newLine: null, tone: "hunk" });
-      continue;
-    }
-    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
-      rows.push({ kind: "meta", text: line, marker: "•", oldLine: null, newLine: null, tone: "meta" });
-      continue;
-    }
-    if (line.startsWith("+")) {
-      rows.push({ kind: "add", text: line.slice(1), marker: "+", oldLine: null, newLine, tone: "add" });
-      newLine += 1;
-      continue;
-    }
-    if (line.startsWith("-")) {
-      rows.push({ kind: "del", text: line.slice(1), marker: "-", oldLine, newLine: null, tone: "del" });
-      oldLine += 1;
-      continue;
-    }
-    const text = line.startsWith(" ") ? line.slice(1) : line;
-    rows.push({ kind: "ctx", text, marker: " ", oldLine, newLine, tone: "ctx" });
-    oldLine += 1;
-    newLine += 1;
-  }
-
-  const splitRows: SplitDiffRow[] = [];
-  const delBuffer: WorktreePatchRow[] = [];
-
-  function flushDelBuffer() {
-    for (const row of delBuffer) {
-      splitRows.push({
-        kind: "line",
-        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "del" },
-        right: { line: null, text: "", marker: "", tone: "empty" },
-      });
-    }
-    delBuffer.length = 0;
-  }
-
-  for (const row of rows) {
-    if (row.tone === "meta" || row.tone === "hunk") {
-      flushDelBuffer();
-      splitRows.push({
-        kind: row.tone === "hunk" ? "hunk" : "meta",
-        left: { line: null, text: row.text, marker: row.marker, tone: "empty" },
-        right: { line: null, text: row.text, marker: row.marker, tone: "empty" },
-      });
-      continue;
-    }
-    if (row.tone === "del") {
-      delBuffer.push(row);
-      continue;
-    }
-    if (row.tone === "add") {
-      if (delBuffer.length > 0) {
-        const delRow = delBuffer.shift()!;
-        splitRows.push({
-          kind: "line",
-          left: { line: delRow.oldLine, text: delRow.text, marker: delRow.marker, tone: "del" },
-          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
-        });
-      } else {
-        splitRows.push({
-          kind: "line",
-          left: { line: null, text: "", marker: "", tone: "empty" },
-          right: { line: row.newLine, text: row.text, marker: row.marker, tone: "add" },
-        });
-      }
-      continue;
-    }
-    if (row.tone === "ctx") {
-      flushDelBuffer();
-      splitRows.push({
-        kind: "line",
-        left: { line: row.oldLine, text: row.text, marker: row.marker, tone: "ctx" },
-        right: { line: row.newLine, text: row.text, marker: row.marker, tone: "ctx" },
-      });
-      continue;
-    }
-  }
-
-  flushDelBuffer();
-  return splitRows;
-}
 
 function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
   const v = String(raw || "").trim().toLowerCase();
@@ -644,237 +371,6 @@ function withLineNumbers(text: string, maxLines = 400): string {
   return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
 }
 
-function parseOpencodeTaskSessionId(part: OpencodeDetailedPart | undefined | null): string {
-  if (!part) return "";
-  const state = (part as any)?.state || {};
-  const metadata = state?.metadata || {};
-  const raw =
-    String(metadata?.sessionId || metadata?.sessionID || "").trim() ||
-    String((part as any)?.metadata?.sessionId || "").trim();
-  if (raw) return raw;
-  const output = typeof state?.output === "string" ? state.output : "";
-  if (!output) return "";
-  const m = output.match(/task_id:\s*(ses[^\s)]+)/i);
-  return (m?.[1] || "").trim();
-}
-
-/** Assistant reply text (exclude reasoning/tool traces). */
-function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
-  const rows = Array.isArray(parts) ? parts : [];
-  const chunks: string[] = [];
-  for (const p of rows) {
-    if (!p) continue;
-    const t = String((p as any)?.type || "");
-    if (t !== "text") continue;
-    const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
-    if (text) chunks.push(text);
-  }
-  return chunks.join("\n\n");
-}
-
-function mapOpencodeDetailedMessages(items: OpencodeDetailedMessage[]): {
-  mapped: OpencodeChatMessage[];
-  detailsById: Record<string, OpencodeDetailedMessage>;
-} {
-  const detailsById: Record<string, OpencodeDetailedMessage> = {};
-  const mapped: OpencodeChatMessage[] = [];
-  for (const item of items) {
-    const info = item?.info as Record<string, unknown> | undefined;
-    const parts = item?.parts as OpencodeDetailedPart[] | undefined;
-    if (!info) continue;
-    const msgId = String(info.id || "").trim();
-    if (!msgId) continue;
-    const role = String(info.role || "").trim();
-    if (role !== "user" && role !== "assistant") continue;
-    detailsById[msgId] = item;
-    mapped.push({
-      id: msgId,
-      role: role as "user" | "assistant",
-      content: buildOpencodeMainLineMarkdownFromParts(parts)
-    });
-  }
-  return { mapped, detailsById };
-}
-
-function parseSseFrame(frame: string): { event: string; data: string } | null {
-  if (!frame.trim()) return null;
-  let event = "message";
-  const dataLines: string[] = [];
-  for (const rawLine of frame.split(/\r?\n/)) {
-    if (!rawLine || rawLine.startsWith(":")) continue;
-    if (rawLine.startsWith("event:")) {
-      event = rawLine.slice(6).trim() || "message";
-      continue;
-    }
-    if (rawLine.startsWith("data:")) {
-      dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
-    }
-  }
-  if (dataLines.length <= 0) return null;
-  return { event, data: dataLines.join("\n") };
-}
-
-function isOpencodeRenderablePart(p: OpencodeDetailedPart | undefined | null): boolean {
-  if (!p) return false;
-  const t = String((p as any)?.type || "");
-  if (t === "text") return !!String((p as any)?.text ?? "").trim();
-  if (t === "reasoning") return !!String((p as any)?.text ?? "").trim();
-  if (t === "step-start" || t === "step-finish" || t === "patch") return false;
-  if (t === "tool") {
-    const tool = String((p as any)?.tool || "");
-    if (tool === "todowrite") return false;
-    return true;
-  }
-  return false;
-}
-
-function parseOpencodeTodoItems(input: unknown): OpencodeTodoItem[] {
-  if (!Array.isArray(input)) return [];
-  const items: OpencodeTodoItem[] = [];
-  input.forEach((item, index) => {
-    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
-    if (!row) return;
-    const content = String(row.content ?? "").trim();
-    const rawStatus = String(row.status ?? "pending").trim().toLowerCase();
-    if (!content) return;
-    const status: OpencodeTodoItem["status"] =
-      rawStatus === "completed" || rawStatus === "cancelled" || rawStatus === "in_progress"
-        ? rawStatus
-        : "pending";
-    items.push({
-      id: String(row.id ?? `todo-${index + 1}`).trim() || `todo-${index + 1}`,
-      content,
-      status,
-      priority: String(row.priority ?? "").trim() || undefined
-    });
-  });
-  return items;
-}
-
-function readOpencodeTodosFromPart(part: OpencodeDetailedPart | undefined | null): OpencodeTodoItem[] {
-  if (!part || String((part as any)?.type || "") !== "tool") return [];
-  if (String((part as any)?.tool || "") !== "todowrite") return [];
-  const state = ((part as any)?.state || {}) as Record<string, unknown>;
-  const metadata = ((part as any)?.metadata || state.metadata || {}) as Record<string, unknown>;
-  const input = (state.input || {}) as Record<string, unknown>;
-  const metaTodos = parseOpencodeTodoItems(metadata.todos);
-  if (metaTodos.length > 0) return metaTodos;
-  return parseOpencodeTodoItems(input.todos);
-}
-
-function isOpencodeContextTool(tool: string): boolean {
-  return tool === "read" || tool === "glob" || tool === "grep" || tool === "list";
-}
-
-function summarizeOpencodeContextToolCounts(parts: OpencodeDetailedPart[] | undefined | null): {
-  read: number;
-  search: number;
-  list: number;
-} {
-  const rows = Array.isArray(parts) ? parts : [];
-  let read = 0;
-  let search = 0;
-  let list = 0;
-  for (const p of rows) {
-    if (String((p as any)?.type || "") !== "tool") continue;
-    const tool = String((p as any)?.tool || "");
-    if (tool === "read") read += 1;
-    else if (tool === "glob" || tool === "grep") search += 1;
-    else if (tool === "list") list += 1;
-  }
-  return { read, search, list };
-}
-
-function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] | undefined | null): {
-  active: boolean;
-  mode: string;
-  detail: string;
-} {
-  const rows = Array.isArray(parts) ? parts : [];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const p = rows[i] as any;
-    if (!p || String(p?.type || "") !== "tool") continue;
-    const st = String(p?.state?.status || "").trim().toLowerCase();
-    if (st !== "running" && st !== "pending") continue;
-    const title = String(p?.state?.title || "").trim();
-    const tool = String(p?.tool || "").trim();
-    const input = p?.state?.input || {};
-    const subtitle = String(input?.description || input?.filePath || input?.pattern || input?.path || "").trim();
-    const detail = [tool, title || subtitle].filter(Boolean).join(" · ");
-    const mode =
-      tool === "read" || tool === "list" || tool === "glob" || tool === "grep"
-        ? "读取"
-        : tool === "write" || tool === "edit" || tool === "apply_patch"
-          ? "写入"
-          : "处理中";
-    return { active: true, mode, detail };
-  }
-  return { active: false, mode: "", detail: "" };
-}
-
-function mergeOpencodeStreamText(existingRaw: unknown, incomingRaw: unknown): string {
-  const existing = String(existingRaw || "");
-  const incoming = String(incomingRaw || "");
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-  if (incoming === existing) return existing;
-  if (incoming.startsWith(existing)) return incoming;
-  if (existing.startsWith(incoming)) return existing;
-  if (existing.endsWith(incoming)) return existing;
-  if (incoming.includes(existing)) return incoming;
-  return existing + incoming;
-}
-
-function buildOpencodeReplyMarkdownFromParts(parts: OpencodeDetailedPart[] | undefined | null): string {
-  const rows = Array.isArray(parts) ? parts : [];
-  const out: string[] = [];
-  for (const p of rows) {
-    if (!p) continue;
-    if (String((p as any)?.type || "") !== "text") continue;
-    const text = String((p as any)?.text ?? "").trim();
-    if (text) out.push(text);
-  }
-  return out.join("\n\n");
-}
-
-type OpencodeAssistantRenderGroup =
-  | { kind: "context"; key: string; parts: OpencodeDetailedPart[] }
-  | { kind: "part"; key: string; part: OpencodeDetailedPart };
-
-function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | undefined | null): OpencodeAssistantRenderGroup[] {
-  const rows = Array.isArray(parts) ? parts : [];
-  const out: OpencodeAssistantRenderGroup[] = [];
-  let i = 0;
-  while (i < rows.length) {
-    const cur = rows[i];
-    const t = String((cur as any)?.type || "");
-    const tool = String((cur as any)?.tool || "");
-    if (t === "tool" && isOpencodeContextTool(tool)) {
-      const batch: OpencodeDetailedPart[] = [cur];
-      i += 1;
-      while (i < rows.length) {
-        const nxt = rows[i];
-        const nt = String((nxt as any)?.type || "");
-        const ntool = String((nxt as any)?.tool || "");
-        if (nt === "tool" && isOpencodeContextTool(ntool)) {
-          batch.push(nxt);
-          i += 1;
-          continue;
-        }
-        break;
-      }
-      const firstId = String((batch[0] as any)?.id || "");
-      const lastId = String((batch[batch.length - 1] as any)?.id || "");
-      out.push({ kind: "context", key: `context:${firstId || i}:${lastId || i}`, parts: batch });
-      continue;
-    }
-    const pid = String((cur as any)?.id || "");
-    out.push({ kind: "part", key: `part:${pid || i}`, part: cur });
-    i += 1;
-  }
-  return out;
-}
-
 type OnboardingStep = {
   title: string;
   body: string;
@@ -882,73 +378,16 @@ type OnboardingStep = {
 
 const ONBOARDING_DONE_KEY = "giteam.onboarding.done.v1";
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
-const RUNTIME_STATUS_CACHE_KEY = "giteam.runtime.status.v1";
-const SIDEBAR_WIDTH_CACHE_KEY = "giteam.layout.sidebar.width.v1";
-const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v1";
 const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
-const WORKSPACE_AGENT_BINDINGS_KEY = "giteam.workspace-agent-bindings.v1";
-const BRANCH_PARENT_MAP_KEY = "giteam.branch-parent-map.v1";
-const WORKTREE_PARENT_MAP_KEY = "giteam.worktree-parent-map.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
-const OPENCODE_RECENT_VISIBLE = 2;
 const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
 const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
-const OPENCODE_SESSION_TITLE_MAX = 42;
-
-const EMPTY_DEP = (name: "git" | "entire" | "opencode" | "giteam", installHint: string): RuntimeDependencyStatus => ({
-  name,
-  checked: false,
-  installed: false,
-  path: undefined,
-  version: undefined,
-  latestVersion: undefined,
-  updateAvailable: false,
-  installHint
-});
-
-const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
-  platform: "macos",
-  homebrewInstalled: false,
-  git: EMPTY_DEP("git", "brew install git"),
-  entire: EMPTY_DEP("entire", "brew tap entireio/tap && brew install entireio/tap/entire"),
-  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode"),
-  giteam: EMPTY_DEP("giteam", "npm install -g giteam")
-};
-
-function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
-  try {
-    const raw = window.localStorage.getItem(RUNTIME_STATUS_CACHE_KEY);
-    if (!raw) return DEFAULT_RUNTIME_STATUS;
-    const parsed = JSON.parse(raw) as Partial<RuntimeRequirementsStatus>;
-    return {
-      platform: parsed.platform || DEFAULT_RUNTIME_STATUS.platform,
-      homebrewInstalled: Boolean(parsed.homebrewInstalled),
-      git: parsed.git ? { ...DEFAULT_RUNTIME_STATUS.git, ...parsed.git } : DEFAULT_RUNTIME_STATUS.git,
-      entire: parsed.entire ? { ...DEFAULT_RUNTIME_STATUS.entire, ...parsed.entire } : DEFAULT_RUNTIME_STATUS.entire,
-      opencode: parsed.opencode ? { ...DEFAULT_RUNTIME_STATUS.opencode, ...parsed.opencode } : DEFAULT_RUNTIME_STATUS.opencode,
-      giteam: parsed.giteam ? { ...DEFAULT_RUNTIME_STATUS.giteam, ...parsed.giteam } : DEFAULT_RUNTIME_STATUS.giteam
-    };
-  } catch {
-    return DEFAULT_RUNTIME_STATUS;
-  }
-}
-
-function loadCachedWidth(key: string, fallback: number, min: number, max: number): number {
-  try {
-    const raw = window.localStorage.getItem(key);
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(max, Math.max(min, Math.round(parsed)));
-  } catch {
-    return fallback;
-  }
-}
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
@@ -981,352 +420,12 @@ function opencodeSavedModelsStorageKey(): string {
   return OPENCODE_SAVED_MODELS_KEY;
 }
 
-function normalizeModelRef(input: string): string {
-  const model = (input || "").trim();
-  if (!model) return "";
-  const idx = model.indexOf("/");
-  if (idx <= 0 || idx >= model.length - 1) return "";
-  const provider = model.slice(0, idx).trim();
-  const modelId = model.slice(idx + 1).trim();
-  if (!provider || !modelId) return "";
-  return `${provider}/${modelId}`;
-}
-
-function parseModelRef(input: string): { provider: string; model: string } | null {
-  const full = normalizeModelRef(input);
-  if (!full) return null;
-  const idx = full.indexOf("/");
-  return {
-    provider: full.slice(0, idx),
-    model: full.slice(idx + 1)
-  };
-}
-
-function sanitizeTerminalOutput(text: string): string {
-  const cleaned = text
-    .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
-    .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B[@-Z\\-_]/g, "")
-    .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u0007/g, "")
-    .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
-
-  // Apply basic terminal cursor semantics so prompt redraws don't leak into the text view.
-  const lines = [""];
-  let row = 0;
-  let col = 0;
-  const trimTrailingWhitespace = (value: string) => value.replace(/[ \t]+$/g, "");
-  for (const ch of cleaned.replace(/\r\n/g, "\n")) {
-    if (ch === "\n") {
-      lines[row] = trimTrailingWhitespace(lines[row] || "");
-      lines.push("");
-      row += 1;
-      col = 0;
-      continue;
-    }
-    if (ch === "\r") {
-      col = 0;
-      continue;
-    }
-    if (ch === "\b" || ch === "\u007f") {
-      col = Math.max(0, col - 1);
-      continue;
-    }
-    if (ch.charCodeAt(0) < 32 && ch !== "\t") continue;
-    const current = (lines[row] || "").split("");
-    while (current.length < col) current.push(" ");
-    current[col] = ch;
-    lines[row] = current.join("");
-    col += 1;
-  }
-  lines[row] = trimTrailingWhitespace(lines[row] || "");
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
-}
-
-function isMissingRepositoryError(error: unknown): boolean {
-  const message = String(error || "").toLowerCase();
-  return (
-    message.includes("repo path does not exist") ||
-    message.includes("repository directory does not exist") ||
-    message.includes("not a git repository")
-  );
-}
-
-function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
-  const source = text || "";
-  const lines = source.split("\n");
-  let idx = lines.length - 1;
-  while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
-  if (idx < 0) return { body: "", prompt: "" };
-  const last = lines[idx] || "";
-  const looksLikePrompt = /[#$>%]\s*$/.test(last) || /\)\s+[^\n]*\s[>%#$]\s*$/.test(last);
-  if (!looksLikePrompt) return { body: source, prompt: "" };
-  // Drop dangling standalone prompt fragments left by stream chunk boundaries.
-  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*[%>]\s*$/.test(line || ""));
-  const body = bodyLines.join("\n");
-  return { body, prompt: last };
-}
-
-/** Config keys that share the same resolved provider + model id (hide/disable stays consistent across refs). */
-function expandConfiguredModelRefVariants(
-  full: string,
-  configuredProviders: string[],
-  configuredModels: Record<string, string[]>,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): string[] {
-  const parsed = parseModelRef(full);
-  if (!parsed) return [];
-  const mid = parsed.model;
-  const pRes = resolveProviderAliasWithNames(parsed.provider, catalog, providerNames) || parsed.provider;
-  const out = new Set<string>();
-  for (const cfgPid of configuredProviders) {
-    if (!cfgPid) continue;
-    if (!(configuredModels[cfgPid] ?? []).includes(mid)) continue;
-    const cRes = resolveProviderAliasWithNames(cfgPid, catalog, providerNames) || cfgPid;
-    if (cRes !== pRes) continue;
-    const n = normalizeModelRef(`${cfgPid}/${mid}`);
-    if (n) out.add(n);
-  }
-  if (out.size === 0) {
-    const n = normalizeModelRef(full);
-    if (n) out.add(n);
-  }
-  return Array.from(out);
-}
-
-function hiddenCoversConfiguredModelRef(
-  hidden: Set<string>,
-  full: string,
-  configuredProviders: string[],
-  configuredModels: Record<string, string[]>,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): boolean {
-  return expandConfiguredModelRefVariants(full, configuredProviders, configuredModels, catalog, providerNames).some((v) =>
-    hidden.has(v)
-  );
-}
-
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-function toOpencodeSessionTitle(prompt?: string, indexHint?: number): string {
-  const trimmed = (prompt || "").replace(/\s+/g, " ").trim();
-  if (!trimmed) return `New Session ${indexHint ?? ""}`.trim();
-  return trimmed.length > OPENCODE_SESSION_TITLE_MAX ? `${trimmed.slice(0, OPENCODE_SESSION_TITLE_MAX - 1)}…` : trimmed;
-}
-
-function newOpencodeSession(seedPrompt?: string, indexHint?: number): OpencodeChatSession {
-  const now = Date.now();
-  return {
-    id: `sess-${makeId()}`,
-    title: toOpencodeSessionTitle(seedPrompt, indexHint),
-    createdAt: now,
-    updatedAt: now,
-    messages: [],
-    turnStart: 0,
-    loaded: true,
-    nextCursor: undefined
-  };
-}
-
-function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?: number): OpencodeChatSession {
-  return {
-    id: summary.id,
-    title: summary.title || `Session ${indexHint ?? ""}`.trim(),
-    createdAt: summary.createdAt || Date.now(),
-    updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
-    messages: [],
-    turnStart: 0,
-    loaded: false,
-    nextCursor: undefined
-  };
-}
-
-function normalizeWorkspacePath(path: string): string {
-  return path.trim();
-}
-
-function readWorkspaceAgentBindings(): Record<string, WorkspaceAgentBinding> {
-  try {
-    const raw = window.localStorage.getItem(WORKSPACE_AGENT_BINDINGS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, WorkspaceAgentBinding> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, WorkspaceAgentBinding> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const workspacePath = normalizeWorkspacePath(value?.workspacePath || key);
-      const activeSessionId = String(value?.activeSessionId || "").trim();
-      if (!workspacePath || !activeSessionId) continue;
-      out[workspacePath] = {
-        workspacePath,
-        branch: String(value?.branch || "").trim(),
-        activeSessionId,
-        sessionIds: Array.isArray(value?.sessionIds) ? value.sessionIds.map((id) => String(id || "").trim()).filter(Boolean) : [activeSessionId],
-        updatedAt: Number(value?.updatedAt || Date.now())
-      };
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeWorkspaceAgentBindings(bindings: Record<string, WorkspaceAgentBinding>) {
-  try {
-    window.localStorage.setItem(WORKSPACE_AGENT_BINDINGS_KEY, JSON.stringify(bindings));
-  } catch {
-    // localStorage may be unavailable in restricted WebViews.
-  }
-}
-
-function readBranchParentMap(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(BRANCH_PARENT_MAP_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, string> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [child, parent] of Object.entries(parsed)) {
-      const c = child.trim();
-      const p = String(parent || "").trim();
-      if (c && p && c !== p) out[c] = p;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeBranchParentMap(map: Record<string, string>) {
-  try {
-    window.localStorage.setItem(BRANCH_PARENT_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function readWorktreeParentMap(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(WORKTREE_PARENT_MAP_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, string> | null;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [path, branch] of Object.entries(parsed)) {
-      const p = normalizeWorkspacePath(path);
-      const b = String(branch || "").trim();
-      if (p && b) out[p] = b;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeWorktreeParentMap(map: Record<string, string>) {
-  try {
-    window.localStorage.setItem(WORKTREE_PARENT_MAP_KEY, JSON.stringify(map));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  let currentStart = 0;
-  for (let i = 0; i < messages.length; i += 1) {
-    const msg = messages[i];
-    if (msg?.role === "user") {
-      if (i > currentStart) {
-        out.push({ start: currentStart, end: i });
-      }
-      currentStart = i;
-    }
-  }
-  if (messages.length > currentStart) {
-    out.push({ start: currentStart, end: messages.length });
-  }
-  return out;
-}
-
-function getInitialOpencodeTurnStart(totalTurns: number) {
-  return totalTurns > OPENCODE_RECENT_VISIBLE ? totalTurns - OPENCODE_RECENT_VISIBLE : 0;
-}
-
-function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[], turnStart: number) {
-  const turns = buildOpencodeTurnRanges(messages);
-  if (turns.length === 0) {
-    return { visible: [] as OpencodeChatMessage[], hidden: [] as OpencodeChatMessage[], totalTurns: turns.length };
-  }
-  const startTurnIndex = Math.max(0, Math.min(Math.floor(turnStart || 0), turns.length - 1));
-  const startMessageIndex = turns[startTurnIndex]?.start ?? 0;
-  return {
-    visible: messages.slice(startMessageIndex),
-    hidden: messages.slice(0, startMessageIndex),
-    totalTurns: turns.length
-  };
-}
-
-function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return [...rows].sort((a, b) => {
-    const byCreated = (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
-    if (byCreated !== 0) return byCreated;
-    const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
-    if (byUpdated !== 0) return byUpdated;
-    return String(a.id || "").localeCompare(String(b.id || ""));
-  });
-}
-
 function firstLetter(name: string): string {
   return (name.trim()[0] ?? "?").toUpperCase();
-}
-
-function toDiffRows(patch: string): DiffRow[] {
-  if (!patch.trim()) return [];
-  const rows: DiffRow[] = [];
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("@@")) {
-      rows.push({ kind: "meta", left: line, right: line });
-      continue;
-    }
-    if (line.startsWith("---") || line.startsWith("+++")) {
-      rows.push({ kind: "meta", left: line, right: line });
-      continue;
-    }
-    if (line.startsWith("+")) {
-      rows.push({ kind: "add", left: "", right: line.slice(1) });
-      continue;
-    }
-    if (line.startsWith("-")) {
-      rows.push({ kind: "del", left: line.slice(1), right: "" });
-      continue;
-    }
-    rows.push({
-      kind: "ctx",
-      left: line.startsWith(" ") ? line.slice(1) : line,
-      right: line.startsWith(" ") ? line.slice(1) : line
-    });
-  }
-  return rows;
-}
-
-function isPlainObject(input: unknown): input is Record<string, unknown> {
-  return !!input && typeof input === "object" && !Array.isArray(input);
-}
-
-function toDisplayJson(input: unknown, maxLen = 2400): string {
-  try {
-    const raw = typeof input === "string" ? input : JSON.stringify(input, null, 2);
-    if (!raw) return "";
-    return raw.length > maxLen ? `${raw.slice(0, maxLen)}\n…(truncated)` : raw;
-  } catch {
-    return String(input ?? "");
-  }
 }
 
 function applyOpencodeCatalog(
@@ -1344,47 +443,6 @@ function applyOpencodeCatalog(
   const models = provider ? (catalog[provider] ?? []) : [];
   const model = currentModel && models.includes(currentModel) ? currentModel : "";
   return { providers, provider, models, model };
-}
-
-function normalizeProviderId(input: string): string {
-  return (input || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function resolveProviderAlias(provider: string, catalog: Record<string, string[]>): string {
-  if (!provider) return provider;
-  const norm = normalizeProviderId(provider);
-  if (!norm) return provider;
-  const matches = Object.keys(catalog).filter((k) => normalizeProviderId(k) === norm);
-  if (matches.length === 0) return provider;
-  let best = matches[0];
-  for (const id of matches) {
-    const bestCount = (catalog[best] || []).length;
-    const curCount = (catalog[id] || []).length;
-    if (curCount > bestCount) {
-      best = id;
-      continue;
-    }
-    if (curCount === bestCount) {
-      const bestClean = normalizeProviderId(best) === best;
-      const curClean = normalizeProviderId(id) === id;
-      if (curClean && !bestClean) best = id;
-    }
-  }
-  return best;
-}
-
-function resolveProviderAliasWithNames(
-  provider: string,
-  catalog: Record<string, string[]>,
-  providerNames: Record<string, string>
-): string {
-  const byId = resolveProviderAlias(provider, catalog);
-  if (byId && ((catalog[byId] || []).length > 0 || !provider)) return byId;
-  const norm = normalizeProviderId(provider);
-  if (!norm) return provider;
-  const byName = Object.keys(providerNames).find((id) => normalizeProviderId(providerNames[id] || "") === norm);
-  if (!byName) return provider;
-  return resolveProviderAlias(byName, catalog);
 }
 
 type ProviderPreset = {
@@ -1424,160 +482,6 @@ function isPresetProviderId(providerId: string): boolean {
   return PROVIDER_PRESETS.some((p) => p.id === pid);
 }
 
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const regex = /(`[^`\n]+`)|(\[[^\]]+\]\([^)]+\))|(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\*[^*\n]+\*)|(_[^_\n]+_)/g;
-  let last = 0;
-  let i = 0;
-  for (const match of text.matchAll(regex)) {
-    const start = match.index ?? 0;
-    if (start > last) {
-      nodes.push(text.slice(last, start));
-    }
-    const token = match[0];
-    if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(<code key={`code-${i++}`}>{token.slice(1, -1)}</code>);
-    } else if (token.startsWith("[")) {
-      const split = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      if (split) {
-        nodes.push(
-          <a key={`link-${i++}`} href={split[2]} target="_blank" rel="noreferrer">
-            {split[1]}
-          </a>
-        );
-      } else {
-        nodes.push(token);
-      }
-    } else if (token.startsWith("**") && token.endsWith("**")) {
-      nodes.push(<strong key={`strong-${i++}`}>{token.slice(2, -2)}</strong>);
-    } else if (token.startsWith("~~") && token.endsWith("~~")) {
-      nodes.push(<del key={`del-${i++}`}>{token.slice(2, -2)}</del>);
-    } else if ((token.startsWith("*") && token.endsWith("*")) || (token.startsWith("_") && token.endsWith("_"))) {
-      nodes.push(<em key={`em-${i++}`}>{token.slice(1, -1)}</em>);
-    } else {
-      nodes.push(token);
-    }
-    last = start + token.length;
-  }
-  if (last < text.length) {
-    nodes.push(text.slice(last));
-  }
-  return nodes.length > 0 ? nodes : [text];
-}
-
-function MarkdownLite(props: { source: string }) {
-  const text = props.source.replace(/\r\n/g, "\n").replace(/\\n/g, "\n").trim();
-  if (!text) return <p className="muted">等待上下文加载...</p>;
-
-  return (
-    <div className="markdown-lite">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function parseStatusText(raw: string): ParsedStatus {
-  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
-  const out: ParsedStatus = { sessions: [] };
-  out.headline = lines.find((l) => l.startsWith("●")) ?? undefined;
-  out.project = lines.find((l) => l.startsWith("Project")) ?? undefined;
-
-  const activeIdx = lines.findIndex((l) => /Active Sessions/i.test(l));
-  if (activeIdx >= 0) {
-    const sessionLines = lines.slice(activeIdx + 1);
-    let current: StatusSession | null = null;
-    const uuidLike = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
-    for (const line of sessionLines) {
-      if (uuidLike.test(line)) {
-        if (current) out.sessions.push(current);
-        current = { title: line };
-        continue;
-      }
-      if (!current) continue;
-      if (line.startsWith(">")) {
-        current.quote = line.replace(/^>\s*/, "").replace(/^"|"$/g, "");
-      } else if (/started|active|tokens/i.test(line)) {
-        current.meta = line;
-      }
-    }
-    if (current) out.sessions.push(current);
-  }
-  return out;
-}
-
-function pickSegment(raw: string, label: string, nextLabels: string[]): string | undefined {
-  const start = raw.indexOf(`${label}:`);
-  if (start < 0) return undefined;
-  const from = start + label.length + 1;
-  let end = raw.length;
-  for (const n of nextLabels) {
-    const idx = raw.indexOf(`${n}:`, from);
-    if (idx >= 0 && idx < end) end = idx;
-  }
-  return raw.slice(from, end).trim() || undefined;
-}
-
-function parseTranscript(raw: string): TranscriptMessage[] {
-  const out: TranscriptMessage[] = [];
-  const source = raw.replace(/\r\n/g, "\n");
-  const marker = /(?:^|\n)\s*(?:\[(User|Assistant)\]|(User|Assistant)\s*:)\s*/gi;
-  const matches = [...source.matchAll(marker)];
-  for (let i = 0; i < matches.length; i += 1) {
-    const m = matches[i];
-    const roleRaw = (m[1] || m[2] || "").toLowerCase();
-    const role: "User" | "Assistant" = roleRaw === "user" ? "User" : "Assistant";
-    const start = (m.index ?? 0) + m[0].length;
-    const end = i + 1 < matches.length ? (matches[i + 1].index ?? source.length) : source.length;
-    const content = source.slice(start, end).trim();
-    if (content) out.push({ role, content });
-  }
-  return out;
-}
-
-function parseAgentContextText(raw: string): ParsedAgentContext {
-  const lines = raw.split("\n");
-  const header = lines.find((l) => /Checkpoint:|Session:|Created:|Author:/i.test(l)) ?? "";
-  const field = (name: string) => {
-    const labels = ["Checkpoint", "Session", "Created", "Author"];
-    const idx = header.indexOf(`${name}:`);
-    if (idx < 0) return undefined;
-    const from = idx + name.length + 1;
-    let end = header.length;
-    for (const l of labels) {
-      if (l === name) continue;
-      const p = header.indexOf(`${l}:`, from);
-      if (p >= 0 && p < end) end = p;
-    }
-    return header.slice(from, end).trim() || undefined;
-  };
-
-  const commits = pickSegment(raw, "Commits", ["Intent", "Outcome", "Files", "Transcript (checkpoint scope)"]);
-  const intent = pickSegment(raw, "Intent", ["Outcome", "Files", "Transcript (checkpoint scope)"]);
-  const outcome = pickSegment(raw, "Outcome", ["Files", "Transcript (checkpoint scope)"]);
-  const filesSeg = pickSegment(raw, "Files", ["Transcript (checkpoint scope)"]) ?? "";
-  const filesRaw = filesSeg.trim();
-  const transcriptSeg = pickSegment(raw, "Transcript (checkpoint scope)", []) ?? "";
-  const files = filesSeg
-    .split("\n")
-    .map((l) => l.replace(/^\(\d+\)\s*/, "").replace(/^-\s*/, "").trim())
-    .filter((l) => l && !/^\(\d+\)$/.test(l) && !/^\(\d+\)\s*$/.test(l) && !/^Files?$/i.test(l));
-
-  return {
-    checkpoint: field("Checkpoint"),
-    session: field("Session"),
-    created: field("Created"),
-    author: field("Author"),
-    commits,
-    intent,
-    outcome,
-    filesRaw,
-    files,
-    transcript: parseTranscript(transcriptSeg)
-  };
-}
-
 function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() => {
     const value = window.localStorage.getItem("giteam.theme");
@@ -1596,537 +500,9 @@ function useTheme(): [Theme, () => void] {
   return [theme, () => setTheme((prev) => (prev === "dark" ? "light" : "dark"))];
 }
 
-function parseRefs(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const inner = trimmed.startsWith("(") && trimmed.endsWith(")")
-    ? trimmed.slice(1, -1)
-    : trimmed;
-  return inner
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-}
-
-function branchFromRef(ref: string, branches: GitBranchSummary[]): string | null {
-  const r = ref.trim();
-  if (!r) return null;
-  if (r.startsWith("tag:")) return null;
-  if (r.includes("->")) {
-    const rhs = r.split("->")[1]?.trim();
-    if (rhs && branches.some((b) => b.name === rhs)) return rhs;
-    return null;
-  }
-  if (branches.some((b) => b.name === r)) return r;
-  return null;
-}
-
-type LaneLayoutRow = {
-  sha: string;
-  parents: string[];
-  col: number;
-  colorIdx: number;
-};
-
-const LANE_COLORS = [
-  "#F6C445", // yellow
-  "#8A5CF6", // purple
-  "#2DD4BF", // teal
-  "#60A5FA", // blue
-  "#FB7185", // pink
-  "#34D399", // green
-  "#F97316" // orange
-];
-
-function laneColor(col: number): string {
-  return LANE_COLORS[col % LANE_COLORS.length];
-}
-
-type LaneSnapshot = Array<{ sha: string; colorIdx: number }>;
-type LaneLayout = {
-  rows: LaneLayoutRow[];
-  // Lanes before applying row's commit->parents transition.
-  before: LaneSnapshot[];
-  // Lanes after applying row's commit->parents transition (used for edges to next row).
-  after: LaneSnapshot[];
-  maxLanes: number;
-};
-
-function computeLaneLayout(rows: GitGraphNode[]): LaneLayout {
-  const commits = rows.filter((r) => !r.isConnector && !!r.sha);
-  const remaining = new Set(commits.map((c) => c.sha));
-
-  const lanes: Array<{ sha: string; colorIdx: number }> = [];
-  let nextColor = 0;
-
-  const outRows: LaneLayoutRow[] = [];
-  const before: LaneSnapshot[] = [];
-  const after: LaneSnapshot[] = [];
-  let maxLanes = 0;
-
-  for (const c of commits) {
-    remaining.delete(c.sha);
-
-    // Snapshot BEFORE mutation: used for rails at this row and to locate current commit lane.
-    before.push(lanes.map((l) => ({ sha: l.sha, colorIdx: l.colorIdx })));
-    maxLanes = Math.max(maxLanes, lanes.length);
-
-    let col = lanes.findIndex((l) => l.sha === c.sha);
-    if (col < 0) {
-      // Append new lanes at the end to keep layout stable (less "jumping").
-      lanes.push({ sha: c.sha, colorIdx: nextColor++ });
-      col = lanes.length - 1;
-    }
-
-    const colorIdx = lanes[col]?.colorIdx ?? 0;
-    outRows.push({ sha: c.sha, parents: c.parents ?? [], col, colorIdx });
-
-    // Update lanes for next rows:
-    // - Keep the same lane/color when flowing into first parent.
-    // - Allocate new lanes/colors for secondary parents (merge).
-    const parents = (c.parents ?? []).filter(Boolean);
-    if (parents.length === 0) {
-      lanes.splice(col, 1);
-    } else {
-      lanes[col] = { sha: parents[0], colorIdx };
-      for (let i = 1; i < parents.length; i += 1) {
-        lanes.splice(col + i, 0, { sha: parents[i], colorIdx: nextColor++ });
-      }
-    }
-
-    // Drop lanes that will never appear again (keeps graph compact but not jumpy).
-    for (let i = lanes.length - 1; i >= 0; i -= 1) {
-      const s = lanes[i]?.sha ?? "";
-      if (!remaining.has(s)) lanes.splice(i, 1);
-    }
-
-    // Snapshot AFTER mutation: used to draw edges from this row to the next row.
-    after.push(lanes.map((l) => ({ sha: l.sha, colorIdx: l.colorIdx })));
-    maxLanes = Math.max(maxLanes, lanes.length);
-  }
-
-  return { rows: outRows, before, after, maxLanes };
-}
-
-function BranchGraphLanes(props: {
-  rows: GitGraphNode[];
-  rowHeight: number;
-  laneGap: number;
-  selectedSha: string;
-}) {
-  const commits = props.rows.filter((r) => !r.isConnector && !!r.sha);
-  const layout = useMemo(() => computeLaneLayout(commits), [commits]);
-  const rowH = props.rowHeight;
-  const laneAreaW = 140; // keep in sync with CSS placeholder width
-  const maxCol = Math.max(0, ...layout.rows.map((r) => r.col));
-  const laneCount = Math.max(1, maxCol + 1);
-  // Always fit lanes into the left gutter so it never overlaps text.
-  const laneGap = Math.max(8, Math.floor((laneAreaW - 20) / laneCount));
-
-  const width = laneAreaW;
-  const height = Math.max(1, commits.length * rowH);
-
-  // Edges should be drawn as local transitions between adjacent rows:
-  // commit at row i connects to its parent lanes at row i+1 (after snapshot).
-  // To reduce visual noise (match VSCode/gitk), we only draw:
-  // - first-parent edge when it changes columns
-  // - merge edges (2nd+ parent) always
-  const edges: Array<{ d: string; colorIdx: number; kind: "first" | "merge"; toX: number; toY: number }> = [];
-  layout.rows.forEach((r, rowIdx) => {
-    const fromX = r.col * laneGap + 10;
-    const fromY = rowIdx * rowH + rowH / 2;
-    const next = layout.after[rowIdx] ?? [];
-    const parents = (r.parents ?? []).filter(Boolean);
-    parents.forEach((p, i) => {
-      const toCol = next.findIndex((l) => l.sha === p);
-      if (toCol < 0) return;
-      const toX = toCol * laneGap + 10;
-      const toY = (rowIdx + 1) * rowH + rowH / 2;
-      const kind: "first" | "merge" = i === 0 ? "first" : "merge";
-      if (kind === "first" && toCol === r.col) {
-        // Vertical continuation is already implied by rails; don't draw extra curve.
-        return;
-      }
-      const dx = toX - fromX;
-      // Softer, more "gitk-like" curves.
-      const c1x = fromX + dx * 0.35;
-      const c2x = toX - dx * 0.35;
-      const c1y = fromY + rowH * 0.55;
-      const c2y = toY - rowH * 0.55;
-      const d = `M ${fromX} ${fromY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${toX} ${toY}`;
-      edges.push({ d, colorIdx: r.colorIdx, kind, toX, toY });
-    });
-  });
-
-  return (
-    <svg className="branch-lanes" width={width} height={height} aria-hidden="true">
-      <g className="branch-lanes-rails">
-        {layout.before.slice(0, commits.length).map((snap, rowIdx) => {
-          const y0 = rowIdx * rowH;
-          return snap.map((l, colIdx) => {
-            const x = colIdx * laneGap + 10;
-            return (
-              <line
-                key={`rail-${rowIdx}-${colIdx}-${l.sha}`}
-                x1={x}
-                y1={y0}
-                x2={x}
-                y2={y0 + rowH}
-                style={{ stroke: laneColor(l.colorIdx), opacity: 0.18, strokeWidth: 2 }}
-              />
-            );
-          });
-        })}
-      </g>
-      <g className="branch-lanes-edges">
-        {edges.map((e, idx) => {
-          const color = laneColor(e.colorIdx);
-          return (
-            <path
-              key={`e-${idx}`}
-              d={e.d}
-              fill="none"
-              style={{
-                stroke: color,
-                opacity: e.kind === "merge" ? 0.3 : 0.85,
-                strokeWidth: e.kind === "merge" ? 1.5 : 2.4
-              }}
-            />
-          );
-        })}
-      </g>
-      <g className="branch-lanes-junctions">
-        {edges.map((e, idx) => {
-          const color = laneColor(e.colorIdx);
-          const r = e.kind === "merge" ? 2.8 : 3.2;
-          return (
-            <circle
-              key={`j-${idx}`}
-              cx={e.toX}
-              cy={e.toY}
-              r={r}
-              style={{
-                fill: color,
-                opacity: e.kind === "merge" ? 0.55 : 0.75
-              }}
-            />
-          );
-        })}
-      </g>
-      <g className="branch-lanes-nodes">
-        {layout.rows.map((r, idx) => {
-          const x = r.col * laneGap + 10;
-          const y = idx * rowH + rowH / 2;
-          const color = laneColor(r.colorIdx);
-          const selected = props.selectedSha === r.sha;
-          return (
-            <circle
-              key={`n-${r.sha}`}
-              cx={x}
-              cy={y}
-              r={selected ? 6 : 5}
-              style={{
-                stroke: color,
-                fill: color,
-                strokeWidth: selected ? 2.5 : 2
-              }}
-            />
-          );
-        })}
-      </g>
-    </svg>
-  );
-}
-
-type TopologyNodeKind = "repo" | "worktree" | "branch" | "commit";
-
-type TopologyNode = {
-  id: string;
-  kind: TopologyNodeKind;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
-  meta: string;
-  accent: string;
-  accentSoft: string;
-  border: string;
-  branch?: string;
-  sha?: string;
-  path?: string;
-  refs?: string[];
-  isCurrent?: boolean;
-  dirtyCount?: number;
-  author?: string;
-  date?: string;
-  rank?: number;
-};
-
-type TopologyEdge = {
-  id: string;
-  from: string;
-  to: string;
-  color: string;
-  dashed?: boolean;
-};
-
-type TopologySection = {
-  id: string;
-  label: string;
-  hint: string;
-  x: number;
-  y: number;
-  width: number;
-};
-
-type TopologyGraphModel = {
-  nodes: TopologyNode[];
-  nodeById: Record<string, TopologyNode>;
-  edges: TopologyEdge[];
-  sections: TopologySection[];
-  primaryNodeId: string;
-  nearbyNodeIds: Record<string, boolean>;
-  width: number;
-  height: number;
-};
-
-function clampLabel(text: string, max = 14): string {
-  const value = text.trim();
-  if (!value) return "-";
-  return value.length > max ? `${value.slice(0, Math.max(1, max - 2))}..` : value;
-}
-
-function wtLabelFromPath(path: string): string {
-  const parts = path.split(/[\/]/).filter(Boolean);
-  if (parts.length === 0) return "WT";
-  const leaf = parts[parts.length - 1];
-  return clampLabel(leaf, 8);
-}
-
-function pathLeaf(path: string): string {
-  return path.split(/[\/]/).filter(Boolean).pop() || path.trim() || "workspace";
-}
-
-function shortSha(value: string, size = 8): string {
-  const text = value.trim();
-  if (!text) return "-";
-  return text.slice(0, size);
-}
-
-function branchTone(branchName: string) {
-  const branch = branchName.trim() || "unknown";
-  const prefix = branch.split("/")[0]?.toLowerCase() || branch.toLowerCase();
-  const preset: Record<string, { accent: string; soft: string; border: string }> = {
-    main: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
-    master: { accent: "#3b82f6", soft: "rgba(59,130,246,0.16)", border: "rgba(59,130,246,0.34)" },
-    feature: { accent: "#22c55e", soft: "rgba(34,197,94,0.16)", border: "rgba(34,197,94,0.34)" },
-    hotfix: { accent: "#ef4444", soft: "rgba(239,68,68,0.16)", border: "rgba(239,68,68,0.34)" },
-    develop: { accent: "#a855f7", soft: "rgba(168,85,247,0.16)", border: "rgba(168,85,247,0.34)" },
-    release: { accent: "#f59e0b", soft: "rgba(245,158,11,0.16)", border: "rgba(245,158,11,0.34)" },
-    fix: { accent: "#ec4899", soft: "rgba(236,72,153,0.16)", border: "rgba(236,72,153,0.34)" },
-    chore: { accent: "#64748b", soft: "rgba(100,116,139,0.18)", border: "rgba(100,116,139,0.34)" },
-    docs: { accent: "#0ea5e9", soft: "rgba(14,165,233,0.16)", border: "rgba(14,165,233,0.34)" },
-    test: { accent: "#14b8a6", soft: "rgba(20,184,166,0.16)", border: "rgba(20,184,166,0.34)" },
-    refactor: { accent: "#f97316", soft: "rgba(249,115,22,0.16)", border: "rgba(249,115,22,0.34)" }
-  };
-  if (preset[prefix]) return preset[prefix];
-  const hue = Array.from(branch).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 360;
-  return {
-    accent: `hsl(${hue} 72% 56%)`,
-    soft: `hsl(${hue} 72% 56% / 0.16)`,
-    border: `hsl(${hue} 72% 56% / 0.34)`
-  };
-}
-
-function topologyEdgePath(from: TopologyNode, to: TopologyNode): string {
-  const startX = from.x + from.width / 2;
-  const startY = from.y + from.height;
-  const endX = to.x + to.width / 2;
-  const endY = to.y;
-  if (from.kind === "branch" && to.kind === "branch") {
-    const bend = Math.max(48, Math.min(110, (endY - startY) * 0.62));
-    return `M ${startX} ${startY} C ${startX} ${startY + bend}, ${endX} ${endY - bend}, ${endX} ${endY}`;
-  }
-  const midY = Math.round(startY + Math.max(26, (endY - startY) * 0.52));
-  if (Math.abs(startX - endX) < 2) {
-    return `M ${startX} ${startY} L ${endX} ${endY}`;
-  }
-  return `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
-}
-
-function buildTopologyModel(input: {
-  repoName: string;
-  repoPath: string;
-  currentBranch: string;
-  branches: GitBranchSummary[];
-  worktrees: GitLinkedWorktree[];
-  branchCommits: GitCommitSummary[];
-  commitGraph: GitGraphNode[];
-  branchParentMap: Record<string, string>;
-}): TopologyGraphModel {
-  const branchNames = Array.from(new Set(input.branches.map((row) => row.name).filter(Boolean)));
-  const currentBranch = input.currentBranch || branchNames.find((name) => name === "main") || branchNames[0] || "main";
-  const normalizeBranchName = (name: string): string => name.replace(/^refs\/heads\//, "");
-  const worktrees = input.worktrees
-    .filter((wt) => wt.path.trim())
-    .map((wt) => ({ ...wt, branch: normalizeBranchName(wt.branch || currentBranch) }));
-  const currentWorktree = worktrees.find((wt) => wt.isCurrent)
-    || worktrees.find((wt) => wt.path.trim() === input.repoPath.trim())
-    || null;
-  const workspaceBranchNames = new Set(worktrees.map((wt) => wt.branch).filter(Boolean));
-  const graphCommits = input.commitGraph.filter((row) => !row.isConnector && !!row.sha);
-  const branchHeadByName = new Map<string, string>();
-  const parseAllRefs = (text: string): string[] => {
-    const trimmed = text.trim();
-    if (!trimmed) return [];
-    const inner = trimmed.startsWith("(") && trimmed.endsWith(")") ? trimmed.slice(1, -1) : trimmed;
-    return inner.split(",").map((part) => part.trim()).filter(Boolean);
-  };
-  for (const row of graphCommits) {
-    const refs = parseAllRefs(row.refs);
-    for (const ref of refs) {
-      const branch = branchFromRef(ref, input.branches);
-      if (branch && !branchHeadByName.has(branch)) {
-        branchHeadByName.set(branch, row.sha);
-      }
-    }
-  }
-
-  const currentWidth = 320;
-  const currentHeight = 112;
-  const workspaceWidth = 176;
-  const workspaceHeight = 86;
-  const branchWidth = 156;
-  const branchHeight = 72;
-  const colGap = 24;
-  const rowGap = 24;
-  const marginX = 92;
-  const topY = 96;
-  const sectionGap = 76;
-  const currentWorkspace = currentWorktree || {
-    path: input.repoPath,
-    branch: currentBranch,
-    head: branchHeadByName.get(currentBranch) || "",
-    isCurrent: true,
-    isMainWorktree: true,
-    isDetached: false,
-    clean: true,
-    stagedCount: 0,
-    unstagedCount: 0,
-    untrackedCount: 0,
-    locked: "",
-    prunable: ""
-  };
-  const activeWorkspaces = worktrees
-    .filter((wt) => wt.path !== currentWorkspace.path)
-    .sort((a, b) => Number(b.stagedCount + b.unstagedCount + b.untrackedCount > 0) - Number(a.stagedCount + a.unstagedCount + a.untrackedCount > 0) || a.branch.localeCompare(b.branch));
-  const availableBranches = branchNames
-    .filter((name) => !workspaceBranchNames.has(name))
-    .sort((a, b) => a.localeCompare(b));
-  const activeCols = Math.min(4, Math.max(1, activeWorkspaces.length));
-  const branchCols = Math.min(5, Math.max(1, availableBranches.length));
-  const boardWidth = Math.max(
-    currentWidth,
-    activeCols * workspaceWidth + (activeCols - 1) * colGap,
-    branchCols * branchWidth + (branchCols - 1) * colGap
-  );
-  const sceneWidth = Math.max(1280, boardWidth + marginX * 2);
-  const centerX = sceneWidth / 2;
-
-  const nodes: TopologyNode[] = [];
-  const nodeById: Record<string, TopologyNode> = {};
-  const edges: TopologyEdge[] = [];
-  const sections: TopologySection[] = [];
-  const pushNode = (node: TopologyNode) => {
-    nodes.push(node);
-    nodeById[node.id] = node;
-  };
-  const workspaceMeta = (wt: GitLinkedWorktree, current = false): string => {
-    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-    const flags = [wt.isMainWorktree ? "MAIN" : "WT", current ? "CURRENT" : "", dirtyCount > 0 ? `${dirtyCount} changes` : "clean"].filter(Boolean);
-    return flags.join(" · ");
-  };
-  const makeWorkspaceNode = (wt: GitLinkedWorktree, x: number, y: number, width: number, height: number, current = false): TopologyNode => {
-    const dirtyCount = wt.stagedCount + wt.unstagedCount + wt.untrackedCount;
-    return {
-      id: `worktree:${wt.path || wt.branch}`,
-      kind: "worktree",
-      x,
-      y,
-      width,
-      height,
-      label: clampLabel(wt.branch || pathLeaf(wt.path), current ? 22 : 14),
-      meta: workspaceMeta(wt, current),
-      accent: "#64748b",
-      accentSoft: "rgba(100,116,139,0.12)",
-      border: "rgba(100,116,139,0.30)",
-      branch: wt.branch,
-      isCurrent: current || wt.isCurrent,
-      path: wt.path,
-      sha: wt.head,
-      dirtyCount,
-      rank: 0
-    };
-  };
-
-  const currentY = topY;
-  sections.push({ id: "current", label: "Current Workspace", hint: "当前正在工作的目录", x: centerX - boardWidth / 2, y: currentY - 34, width: boardWidth });
-  const currentNode = makeWorkspaceNode(currentWorkspace, centerX - currentWidth / 2, currentY, currentWidth, currentHeight, true);
-  pushNode(currentNode);
-
-  const activeY = currentY + currentHeight + sectionGap;
-  sections.push({ id: "active", label: "Active Workspaces", hint: "已创建 worktree 的工作现场", x: centerX - boardWidth / 2, y: activeY - 34, width: boardWidth });
-  activeWorkspaces.forEach((wt, index) => {
-    const row = Math.floor(index / activeCols);
-    const col = index % activeCols;
-    const rowCount = index >= activeWorkspaces.length - activeCols ? Math.min(activeCols, activeWorkspaces.length - row * activeCols) : activeCols;
-    const rowWidth = rowCount * workspaceWidth + (rowCount - 1) * colGap;
-    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (workspaceWidth + colGap);
-    const y = activeY + row * (workspaceHeight + rowGap);
-    pushNode(makeWorkspaceNode(wt, x, y, workspaceWidth, workspaceHeight, false));
-  });
-
-  const activeRows = Math.max(1, Math.ceil(activeWorkspaces.length / activeCols));
-  const branchY = activeY + activeRows * (workspaceHeight + rowGap) + sectionGap;
-  sections.push({ id: "branches", label: "Available Branches", hint: "还没有激活为工作空间的分支", x: centerX - boardWidth / 2, y: branchY - 34, width: boardWidth });
-  availableBranches.forEach((branchName, index) => {
-    const row = Math.floor(index / branchCols);
-    const col = index % branchCols;
-    const rowCount = index >= availableBranches.length - branchCols ? Math.min(branchCols, availableBranches.length - row * branchCols) : branchCols;
-    const rowWidth = rowCount * branchWidth + (rowCount - 1) * colGap;
-    const x = centerX - rowWidth / 2 + Math.min(col, rowCount - 1) * (branchWidth + colGap);
-    const y = branchY + row * (branchHeight + rowGap);
-    const tone = branchTone(branchName);
-    pushNode({
-      id: `branch:${branchName}`,
-      kind: "branch",
-      x,
-      y,
-      width: branchWidth,
-      height: branchHeight,
-      label: clampLabel(branchName, 12),
-      meta: "BR only",
-      accent: tone.accent,
-      accentSoft: tone.soft,
-      border: tone.border,
-      branch: branchName,
-      isCurrent: false,
-      sha: branchHeadByName.get(branchName),
-      rank: index + 1
-    });
-  });
-
-  const primaryNodeId = currentNode.id;
-  const nearbyNodeIds = Object.fromEntries(nodes.map((node) => [node.id, true]));
-  const maxNodeY = Math.max(...nodes.map((n) => n.y + n.height), branchY + branchHeight);
-  const height = Math.max(400, maxNodeY + 80);
-  return { nodes, nodeById, edges, sections, primaryNodeId, nearbyNodeIds, width: sceneWidth, height };
-}
-
 export function App() {
   const [theme, toggleTheme] = useTheme();
+  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
@@ -2148,6 +524,7 @@ export function App() {
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string; branch?: string; subject?: string } | null>(null);
+  const [commitHoverCard, setCommitHoverCard] = useState<{ x: number; y: number; sha: string; subject?: string; author?: string; date?: string; branch?: string } | null>(null);
   const [topologyContextMenu, setTopologyContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [topologyCreateSourceNodeId, setTopologyCreateSourceNodeId] = useState("");
   const [topologyInspectNodeId, setTopologyInspectNodeId] = useState("");
@@ -2157,6 +534,8 @@ export function App() {
 
   const [repos, setRepos] = useState<RepositoryEntry[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<RepositoryEntry | null>(null);
+  const [gitPaneRepo, setGitPaneRepo] = useState<RepositoryEntry | null>(null);
+  const [newSessionTargetRepoId, setNewSessionTargetRepoId] = useState("");
 
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [commitGraph, setCommitGraph] = useState<GitGraphNode[]>([]);
@@ -2200,10 +579,10 @@ export function App() {
   const [actions, setActions] = useState<ReviewAction[]>([]);
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
-  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("worktree");
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
-  const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | null>(null);
+  const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [discardingFile, setDiscardingFile] = useState("");
@@ -2218,7 +597,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
-  const [checkingDeps, setCheckingDeps] = useState<Record<"git" | "entire" | "opencode" | "giteam", boolean>>({
+  const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
     opencode: false,
@@ -2228,7 +607,7 @@ export function App() {
   const [installingElapsed, setInstallingElapsed] = useState(0);
   const [runtimeJobId, setRuntimeJobId] = useState("");
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
-  const [expandedLogDep, setExpandedLogDep] = useState<"git" | "entire" | "opencode" | "giteam" | null>(null);
+  const [expandedLogDep, setExpandedLogDep] = useState<RuntimeDepName | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(() => loadCachedRuntimeStatus());
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [opencodeProviders, setOpencodeProviders] = useState<string[]>([]);
@@ -2275,14 +654,14 @@ export function App() {
   const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>({
     enabled: false,
     host: "0.0.0.0",
-    port: 5100,
+    port: 4100,
     publicBaseUrl: "",
     pairCodeTtlMode: "24h"
   });
   const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>({
     enabled: false,
     host: "0.0.0.0",
-    port: 5100,
+    port: 4100,
     publicBaseUrl: "",
     pairCodeTtlMode: "24h"
   });
@@ -2331,8 +710,8 @@ export function App() {
   const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
+  const [opencodeAutoFollowLatest, setOpencodeAutoFollowLatest] = useState(true);
   const [opencodeShowJumpLatest, setOpencodeShowJumpLatest] = useState(false);
-  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
   const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -2361,6 +740,7 @@ export function App() {
   const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
   const commitMessageInputRef = useRef<HTMLInputElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
@@ -2376,6 +756,16 @@ export function App() {
   const opencodeMessagePageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
   const opencodeMessagePageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
   const opencodePassiveSyncSeqRef = useRef(0);
+  const opencodePrevScrollTopRef = useRef(0);
+  const opencodeAutoFollowLatestRef = useRef(true);
+  const opencodeAutoScrollTokenRef = useRef(0);
+  const opencodeScrollModeRef = useRef<"follow" | "paused">("follow");
+  const opencodeUserScrollPauseUntilRef = useRef(0);
+  const opencodeUserScrollUpUntilRef = useRef(0);
+  const opencodeUserScrollDownUntilRef = useRef(0);
+  const opencodePausedScrollSnapshotRef = useRef<{ top: number; height: number } | null>(null);
+  const opencodeForceScrollLatestSessionRef = useRef("");
+  const opencodeProgrammaticScrollUntilRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
@@ -2399,46 +789,28 @@ export function App() {
   });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("Ready");
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>([
-    {
-      id: "terminal-1",
-      title: "终端 1",
-      input: "",
-      output: "",
-      seq: 0,
-      alive: false,
-      history: [],
-      historyIndex: -1
-    }
-  ]);
-  const [activeTerminalTabId, setActiveTerminalTabId] = useState("terminal-1");
+  const terminalInitialSnapshot = useMemo(() => readTerminalTabSnapshot(), []);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>(() =>
+    terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]
+  );
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState(() => terminalInitialSnapshot?.activeId || "terminal-1");
   const [terminalSidebarVisible, setTerminalSidebarVisible] = useState(true);
-  const terminalTabCounterRef = useRef(2);
-  const terminalSeqRef = useRef<Record<string, number>>({ "terminal-1": 0 });
+  const terminalTabCounterRef = useRef(terminalInitialSnapshot?.counter || 2);
+  const terminalSeqRef = useRef<Record<string, number>>(
+    Object.fromEntries((terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]).map((tab) => [tab.id, 0]))
+  );
+  const terminalRepoResetReadyRef = useRef(false);
   const terminalLogRef = useRef<HTMLDivElement | null>(null);
+  const terminalBodyRef = useRef<HTMLDivElement | null>(null);
+  const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => {
-        const win = getCurrentWindow() as unknown as { setTitleBarStyle?: (style: string) => Promise<void> | void };
-        if (typeof win.setTitleBarStyle === "function") {
-          return win.setTitleBarStyle("Overlay");
-        }
-        return undefined;
-      })
-      .catch(() => {
-        /* noop */
-      });
-  }, []);
-
-  const repoPath = selectedRepo?.path ?? "";
-  const repoPathRef = useRef(repoPath);
-  const selectedWorktreeFileRef = useRef(selectedWorktreeFile);
-  const rightPaneTabRef = useRef(rightPaneTab);
-  const gitAutoRefreshBlockedRef = useRef(false);
-  const gitAutoRefreshTimerRef = useRef<number | null>(null);
-  const workspacePath = normalizeWorkspacePath(repoPath);
+  const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
+  const opencodeModelConfigLoadedRef = useRef(false);
+  const opencodeConfiguredModelsLoadedRef = useRef(false);
+  const opencodeModelPrefsLoadedRef = useRef(false);
+  const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
+  const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
+  const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
 
   const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
@@ -2472,6 +844,31 @@ export function App() {
   }, [builtinOpencodeSlashCommands, opencodeSlashCommands, opencodeSlashOpen, opencodeSlashQuery]);
 
   useEffect(() => {
+    if (!IS_TAURI) return;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        const win = getCurrentWindow() as unknown as { setTitleBarStyle?: (style: string) => Promise<void> | void };
+        if (typeof win.setTitleBarStyle === "function") {
+          return win.setTitleBarStyle("Overlay");
+        }
+        return undefined;
+      })
+      .catch(() => {
+        /* noop */
+      });
+  }, []);
+
+  const repoPath = selectedRepo?.path ?? "";
+  const gitPanePath = gitPaneRepo?.path ?? repoPath;
+  const repoPathRef = useRef(repoPath);
+  const gitPanePathRef = useRef(gitPanePath);
+  const selectedWorktreeFileRef = useRef(selectedWorktreeFile);
+  const rightPaneTabRef = useRef(rightPaneTab);
+  const gitAutoRefreshBlockedRef = useRef(false);
+  const gitAutoRefreshTimerRef = useRef<number | null>(null);
+  const workspacePath = normalizeWorkspacePath(repoPath);
+
+  useEffect(() => {
     if (!repoPath.trim()) {
       setOpencodeSlashCommands([]);
       return;
@@ -2492,22 +889,20 @@ export function App() {
             const source: OpencodeSlashCommand["source"] = sourceRaw.includes("skill")
               ? "skill"
               : sourceRaw.includes("mcp")
-              ? "mcp"
-              : sourceRaw.includes("builtin")
-              ? "builtin"
-              : "command";
+                ? "mcp"
+                : "command";
             return {
-              id: `cmd-${name}`,
+              id: `opencode-${source}-${name}`,
               trigger: name,
               title: String(item?.title || item?.description || name),
-              description: item?.description ? String(item.description) : undefined,
+              description: String(item?.description || ""),
               source
             };
           })
           .filter(Boolean) as OpencodeSlashCommand[];
         setOpencodeSlashCommands(commands);
-      } catch {
-        if (!cancelled) setOpencodeSlashCommands([]);
+      } catch (e) {
+        appendOpencodeDebugLog(`command.list.warn ${String(e)}`);
       }
     })();
     return () => {
@@ -2557,18 +952,45 @@ export function App() {
           ? "Commit & Sync..."
           : gitOperation === "commit"
             ? "Committing..."
+            : gitOperation === "cherryPick"
+              ? "Cherry-picking..."
+              : gitOperation === "revert"
+                ? "Reverting..."
             : "";
 
   useEffect(() => {
     repoPathRef.current = repoPath;
+    gitPanePathRef.current = gitPanePath;
     selectedWorktreeFileRef.current = selectedWorktreeFile;
     rightPaneTabRef.current = rightPaneTab;
     gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
-  }, [repoPath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+  }, [repoPath, gitPanePath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+
+  useEffect(() => {
+    if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
+    const input = activeTerminalTab.input;
+    if (!input.trim()) {
+      updateTerminalTabById(activeTerminalTab.id, (prev) => (
+        prev.completionItems.length === 0 && !prev.completionToken ? prev : { ...prev, completionItems: [], completionIndex: 0, completionToken: "" }
+      ));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshTerminalCompletions(activeTerminalTab, input);
+    }, 90);
+    return () => window.clearTimeout(timer);
+  }, [activeTerminalTab?.id, activeTerminalTab?.input, activeTerminalTab?.cwd, repoPath, rightPaneTab]);
   const activeTerminalView = useMemo(
     () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
     [activeTerminalTab?.output]
   );
+  const activeTerminalGhostText = useMemo(() => {
+    const tab = activeTerminalTab;
+    if (!tab?.completionItems?.length || !tab.completionToken) return "";
+    const candidate = tab.completionItems[tab.completionIndex] || tab.completionItems[0] || "";
+    if (!candidate || !candidate.startsWith(tab.completionToken)) return "";
+    return candidate.slice(tab.completionToken.length);
+  }, [activeTerminalTab]);
   const topologyModel = useMemo(
     () => buildTopologyModel({
       repoName: selectedRepo?.name || "Current Repo",
@@ -2606,15 +1028,20 @@ export function App() {
     return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
   }, [opencodeSessions, activeOpencodeSessionId]);
   const activeOpencodeModel = useMemo(() => {
+    const isAvailableModel = (full: string) => isModelRefAvailable(full, {
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames
+    });
     const sessionId = activeOpencodeSessionId.trim();
     const fromSession = sessionId ? normalizeModelRef(opencodeSessionModel[sessionId] || "") : "";
-    if (fromSession) return fromSession;
+    if (fromSession && isAvailableModel(fromSession)) return fromSession;
     const fromDraft = normalizeModelRef(opencodeDraftModel || "");
-    if (fromDraft) return fromDraft;
+    if (fromDraft && isAvailableModel(fromDraft)) return fromDraft;
     const configured = normalizeModelRef(opencodeConfig?.configuredModel || "");
-    if (configured) return configured;
+    if (configured && isAvailableModel(configured)) return configured;
     const recent = normalizeModelRef(opencodeSavedModels[0] || "");
-    if (recent) return recent;
+    if (recent && isAvailableModel(recent)) return recent;
     for (const pid of opencodeConnectedProviders) {
       const models = opencodeModelsByProvider[pid] ?? [];
       const mid = models[0] || "";
@@ -2629,7 +1056,8 @@ export function App() {
     opencodeConfig?.configuredModel,
     opencodeSavedModels,
     opencodeConnectedProviders,
-    opencodeModelsByProvider
+    opencodeModelsByProvider,
+    opencodeProviderNames
   ]);
   const opencodeMessages = activeOpencodeSession?.messages ?? [];
   const opencodeTurnStart = activeOpencodeSession?.turnStart ?? 0;
@@ -2774,10 +1202,24 @@ export function App() {
 
   function toggleRepoSessions(repo: RepositoryEntry) {
     const expanded = expandedProjectIds.includes(repo.id);
+    setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
     if (!expanded && runtimeStatus.opencode.installed) {
       void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
     }
+  }
+
+  function startDraftSessionForRepo(repo: RepositoryEntry) {
+    setNewSessionTargetRepoId(repo.id);
+    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
+    opencodeSessionsRepoIdRef.current = repo.id;
+    if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+    if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    setDraftOpencodeSession(true);
+    setActiveOpencodeSessionId("");
+    setOpencodePromptInput("");
+    requestAnimationFrame(() => opencodeInputRef.current?.focus());
   }
   const opencodeSavedModelCandidates = useMemo(() => {
     const q = opencodeModelPickerSearch.trim().toLowerCase();
@@ -2787,43 +1229,18 @@ export function App() {
 
   const opencodeConfiguredModelCandidates = useMemo(() => {
     // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
-    const q = opencodeModelPickerSearch.trim().toLowerCase();
-    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const out = new Set<string>();
-    for (const pid of opencodeConfiguredProviders) {
-      const resolvedProvider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      const models = opencodeConfiguredModelsByProvider[pid] ?? [];
-      for (const mid of models) {
-        const full = normalizeModelRef(`${pid}/${mid}`);
-        if (!full) continue;
-        if (opencodeHiddenModels.has(full)) continue;
-        if (q) {
-          const provider = resolveProviderAliasWithNames(pid, opencodeModelsByProvider, opencodeProviderNames) || pid;
-          const name = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[mid] || opencodeModelNamesByProvider[provider]?.[mid]) : "") || "";
-          const hay = `${full} ${name}`.toLowerCase();
-          if (!hay.includes(q)) continue;
-        }
-        out.add(full);
-      }
-    }
-    for (const full of opencodeEnabledModels) {
-      if (!full || opencodeHiddenModels.has(full)) continue;
-      const parsed = parseModelRef(full);
-      if (!parsed) continue;
-      const resolvedProvider = resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider;
-      if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-      if (q) {
-        const name =
-          opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model] ||
-          opencodeModelNamesByProvider[resolvedProvider]?.[parsed.model] ||
-          "";
-        const hay = `${full} ${name}`.toLowerCase();
-        if (!hay.includes(q)) continue;
-      }
-      out.add(full);
-    }
-    return Array.from(out).sort((a, b) => a.localeCompare(b));
+    return buildConfiguredModelCandidates({
+      configuredProviders: opencodeConfiguredProviders,
+      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
+      configuredModelNamesByProvider: opencodeConfiguredModelNamesByProvider,
+      liveModelNamesByProvider: opencodeModelNamesByProvider,
+      enabledModels: opencodeEnabledModels,
+      hiddenModels: opencodeHiddenModels,
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames,
+      search: opencodeModelPickerSearch
+    });
   }, [
     opencodeConfiguredProviders,
     opencodeConfiguredModelsByProvider,
@@ -2834,6 +1251,30 @@ export function App() {
     opencodeConfiguredModelNamesByProvider,
     opencodeModelsByProvider,
     opencodeModelNamesByProvider,
+    opencodeProviderNames
+  ]);
+
+  const opencodeSyncModelRefs = useMemo(() => {
+    return buildSyncModelRefs({
+      configuredProviders: opencodeConfiguredProviders,
+      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
+      enabledModels: opencodeEnabledModels,
+      hiddenModels: opencodeHiddenModels,
+      connectedProviders: opencodeConnectedProviders,
+      liveModelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames,
+      activeModel: activeOpencodeModel,
+      configuredModel: opencodeConfig?.configuredModel || ""
+    });
+  }, [
+    activeOpencodeModel,
+    opencodeConfig?.configuredModel,
+    opencodeConfiguredModelsByProvider,
+    opencodeConfiguredProviders,
+    opencodeConnectedProviders,
+    opencodeEnabledModels,
+    opencodeHiddenModels,
+    opencodeModelsByProvider,
     opencodeProviderNames
   ]);
 
@@ -2880,7 +1321,7 @@ export function App() {
     const parsed = normalized ? parseModelRef(normalized) : null;
     const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
     const modelId = parsed?.model || "";
-    const label = (provider ? (opencodeConfiguredModelNamesByProvider[provider]?.[modelId] || opencodeModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
+    const label = (provider ? (opencodeModelNamesByProvider[provider]?.[modelId] || opencodeConfiguredModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
     return {
       ref: normalized || "",
       provider: provider || "Auto",
@@ -3063,74 +1504,6 @@ export function App() {
     };
   }
 
-  function buildOpencodeControlUrl(path: string, params?: Record<string, string | number | undefined>) {
-    const qs = new URLSearchParams();
-    for (const [key, value] of Object.entries(params || {})) {
-      if (value === undefined || value === null) continue;
-      const text = String(value).trim();
-      if (!text) continue;
-      qs.set(key, text);
-    }
-    const query = qs.toString();
-    return query ? `${OPENCODE_CONTROL_BASE}${path}?${query}` : `${OPENCODE_CONTROL_BASE}${path}`;
-  }
-
-  async function fetchWebOpencodeJson<T>(
-    path: string,
-    init?: RequestInit,
-    params?: Record<string, string | number | undefined>
-  ): Promise<T> {
-    const res = await fetch(buildOpencodeControlUrl(path, params), init);
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-      throw new Error(String((errBody as any)?.error || `HTTP ${res.status}`));
-    }
-    return res.json() as Promise<T>;
-  }
-
-  async function fetchOpencodeDetailedMessagesSnapshot(sessionId: string, limit: number, before = ""): Promise<{
-    items: OpencodeDetailedMessage[];
-    nextCursor?: string;
-  }> {
-    const id = sessionId.trim();
-    const safeBefore = before.trim();
-    const safeLimit = Math.max(2, limit);
-    if (IS_TAURI) {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qs = new URLSearchParams();
-      qs.set("limit", String(safeLimit));
-      qs.set("directory", repoPath);
-      if (safeBefore) qs.set("before", safeBefore);
-      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
-      if (!res.ok) {
-        throw new Error(`fetch message page failed: ${res.status}`);
-      }
-      const raw = (await res.json()) as unknown[];
-      return {
-        items: (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[],
-        nextCursor: res.headers.get("x-next-cursor")?.trim() || undefined
-      };
-    }
-
-    const body = await fetchWebOpencodeJson<OpencodeControlMessagesPage>("/messages", undefined, {
-      repoPath,
-      sessionId: id,
-      limit: safeLimit,
-      before: safeBefore || undefined
-    });
-    return {
-      items: (Array.isArray(body?.items) ? body.items : []).filter(Boolean) as OpencodeDetailedMessage[],
-      nextCursor: String(body?.nextCursor || "").trim() || undefined
-    };
-  }
-
-  async function fetchOpencodeServerConfigForChat(): Promise<OpencodeServerConfig> {
-    if (IS_TAURI) {
-      return invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-    }
-    return fetchWebOpencodeJson<OpencodeServerConfig>("/config", undefined, { repoPath });
-  }
-
   async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0) {
     const id = sessionId.trim();
     const safeBefore = before.trim();
@@ -3144,15 +1517,43 @@ export function App() {
     const inflight = opencodeMessagePageInflightRef.current[cacheKey];
     if (inflight) return inflight;
     const task = (async () => {
-      const snapshot = await fetchOpencodeDetailedMessagesSnapshot(id, safeLimit, safeBefore);
-      const { mapped, detailsById } = mapOpencodeDetailedMessages(snapshot.items);
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qs = new URLSearchParams();
+      qs.set("limit", String(safeLimit));
+      qs.set("directory", repoPath);
+      if (safeBefore) qs.set("before", safeBefore);
+      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
+      if (!res.ok) {
+        throw new Error(`fetch message page failed: ${res.status}`);
+      }
+      const raw = (await res.json()) as unknown[];
+      const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
+      const detailsById: Record<string, OpencodeDetailedMessage> = {};
+      const mapped: OpencodeChatMessage[] = [];
+      for (const item of items) {
+        const info = item?.info as Record<string, unknown> | undefined;
+        const parts = item?.parts as OpencodeDetailedPart[] | undefined;
+        if (!info) continue;
+        const msgId = String(info.id || "").trim();
+        if (!msgId) continue;
+        const role = String(info.role || "").trim();
+        if (role !== "user" && role !== "assistant") continue;
+        detailsById[msgId] = item;
+        mapped.push({
+          id: msgId,
+          role: role as "user" | "assistant",
+          content: buildOpencodeMainLineMarkdownFromParts(parts),
+          attachments: role === "user" ? buildOpencodeImageAttachmentsFromParts(parts) : undefined,
+        });
+      }
+      const nextCursor = res.headers.get("x-next-cursor")?.trim() || undefined;
       const entry: OpencodeMessagePageCacheEntry = {
         before: safeBefore,
         limit: safeLimit,
         items: mapped,
         detailsById,
-        nextCursor: snapshot.nextCursor,
-        hasMore: Boolean(snapshot.nextCursor),
+        nextCursor,
+        hasMore: Boolean(nextCursor),
         fetchedAt: Date.now()
       };
       setOpencodeMessagePageCacheEntry(repoPath, id, entry);
@@ -3180,7 +1581,8 @@ export function App() {
       };
     }
     const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt);
-    const mapped = page.items;
+      const existingSession = opencodeSessions.find((session) => session.id === id);
+      const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
     const turnCount = buildOpencodeTurnRanges(mapped).length;
     setOpencodeMessageCacheEntry(repoPath, id, {
       limit,
@@ -3318,6 +1720,21 @@ export function App() {
       const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT);
       const mapped = result.mapped;
       const turnStart = getInitialOpencodeTurnStart(result.turnCount);
+      const currentSession = opencodeSessions.find((s) => s.id === id);
+      // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
+      if (currentSession && currentSession.loaded && currentSession.messages.length > 0) {
+        const current = currentSession.messages;
+        if (current.length === mapped.length) {
+          const isSame = current.every((msg, idx) => {
+            const next = mapped[idx];
+            return msg.id === next.id && msg.role === next.role && msg.content === next.content;
+          });
+          if (isSame) {
+            appendOpencodeDebugLog(`session.messages load ${id} skipped (unchanged)`);
+            return;
+          }
+        }
+      }
       updateOpencodeSessionById(id, (session) => ({
         ...session,
         messages: mapped,
@@ -3425,8 +1842,13 @@ export function App() {
     setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: true }));
     appendOpencodeDebugLog(`session.messages detailed load ${id} message=${serverMid}`);
     try {
-      const snapshot = await fetchOpencodeDetailedMessagesSnapshot(id, limit);
-      const rows = snapshot.items;
+      const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
+        repoPath,
+        sessionId: id,
+        directory: repoPath,
+        limit
+      });
+      const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
       const hit = rows.find((m) => String((m as any)?.info?.id || "") === serverMid) ?? null;
       setOpencodeDetailsByMessageId((prev) => {
         const cur = prev[mid];
@@ -3465,16 +1887,31 @@ export function App() {
     setDraftOpencodeSession(false);
     setOpencodePromptInput("");
     appendOpencodeDebugLog(`session.created ${created.id}`);
-    requestAnimationFrame(() => {
-      const el = opencodeThreadRef.current;
-      if (!el) return;
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-    });
+    resumeOpencodeFollowFromUserAction(created.id);
     return created.id;
   }
 
   async function createAndSwitchOpencodeSession(seedPrompt?: string) {
     if (!ensureRepoSelected()) return;
+    setDraftOpencodeSession(true);
+    setActiveOpencodeSessionId("");
+    setOpencodePromptInput(seedPrompt?.trim() || "");
+    requestAnimationFrame(() => {
+      opencodeInputRef.current?.focus();
+    });
+  }
+
+  async function createAndSwitchOpencodeSessionForSidebar(seedPrompt?: string) {
+    const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
+    if (!targetRepo) {
+      setError("请先导入并选择一个工作区。");
+      return;
+    }
+    opencodeSessionsRepoIdRef.current = targetRepo.id;
+    if (selectedRepo?.id !== targetRepo.id) setSelectedRepo(targetRepo);
+    if (gitPaneRepo?.id !== targetRepo.id) setGitPaneRepo(targetRepo);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(targetRepo.id));
+    setExpandedProjectIds((prev) => (prev.includes(targetRepo.id) ? prev : [...prev, targetRepo.id]));
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
     setOpencodePromptInput(seedPrompt?.trim() || "");
@@ -3666,20 +2103,43 @@ export function App() {
   }, [draggingSplit]);
   function ensureRepoSelected(): boolean {
     if (!selectedRepo) {
-      setError("请先导入并选择一个仓库。");
+      setError("请先导入并选择一个工作区。");
       return false;
     }
     return true;
   }
 
+  function ensureGitPaneSelected(): boolean {
+    if (!gitPanePath.trim()) {
+      setError("请先选择一个目录。");
+      return false;
+    }
+    return true;
+  }
+
+  function resetGitPaneState() {
+    setBranches([]);
+    setCommitGraph([]);
+    setCommits([]);
+    setSelectedBranch("");
+    setSelectedCommit("");
+    setBranchParentMap({});
+    setRecords([]);
+    setActions([]);
+    setWorktreeOverview(EMPTY_WORKTREE);
+    setLinkedWorktrees([]);
+    setSelectedWorktreePath("");
+    setSelectedWorktreeFile("");
+    setSelectedWorktreePatch("");
+    setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
+    setGitUserIdentity(EMPTY_GIT_IDENTITY);
+  }
+
   async function refreshRepositories() {
     const all = await listRepositories();
     setRepos(all);
-    setSelectedRepo((current) => {
-      if (all.length <= 0) return null;
-      if (!current) return all[0];
-      return all.some((repo) => repo.id === current.id) ? current : all[0];
-    });
+    if (all.length > 0 && !selectedRepo) setSelectedRepo(all[0]);
+    if (all.length > 0 && !gitPaneRepo) setGitPaneRepo(all[0]);
   }
 
   async function importRepository(pathFromPrompt: string): Promise<boolean> {
@@ -3696,6 +2156,7 @@ export function App() {
       const entry = await addRepository(path);
       await refreshRepositories();
       setSelectedRepo(entry);
+      setGitPaneRepo(entry);
       setMessage(`已导入仓库: ${entry.name}`);
       return true;
     } catch (e) {
@@ -3738,6 +2199,11 @@ export function App() {
         setSelectedRepo(all[0] ?? null);
       } else if (selectedRepo && !all.some((r) => r.id === selectedRepo.id)) {
         setSelectedRepo(all[0] ?? null);
+      }
+      if (gitPaneRepo?.id === entry.id) {
+        setGitPaneRepo(all[0] ?? null);
+      } else if (gitPaneRepo && !all.some((r) => r.id === gitPaneRepo.id)) {
+        setGitPaneRepo(all[0] ?? null);
       }
       setMessage(`Closed: ${entry.name}`);
     } catch (e) {
@@ -3808,7 +2274,7 @@ export function App() {
     }
   }
 
-  async function runDependencyAction(name: "git" | "entire" | "opencode" | "giteam", action: "install" | "uninstall") {
+  async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall") {
     flushSync(() => {
       setShowEnvSetup(true);
       setInstallingDep(name);
@@ -3958,7 +2424,7 @@ export function App() {
       const next: ControlServerSettings = {
         enabled: Boolean(cfg.enabled),
         host: (cfg.host || "0.0.0.0").trim() || "0.0.0.0",
-        port: Number(cfg.port) > 0 ? Number(cfg.port) : 5100,
+        port: Number(cfg.port) > 0 ? Number(cfg.port) : 4100,
         publicBaseUrl: String(cfg.publicBaseUrl || "").trim().replace(/\/+$/, ""),
         pairCodeTtlMode: normalizeControlPairMode((cfg as any).pairCodeTtlMode)
       };
@@ -4112,7 +2578,7 @@ export function App() {
         const parsed = new URL(publicBaseUrl);
         publicBaseUrl = `${parsed.protocol}//${parsed.host}`;
       } catch {
-        setError("Public URL 格式无效（示例: http://192.168.1.23:5100）");
+        setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
         return false;
       }
     }
@@ -4297,7 +2763,7 @@ export function App() {
       setOpencodeConfiguredProviders(configuredProviders.sort((a, b) => a.localeCompare(b)));
 
       if (includeCurrentModel) {
-        const effective = await fetchOpencodeServerConfigForChat();
+        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
         const currentModel = normalizeModelRef(effective?.model || "");
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
@@ -4386,10 +2852,11 @@ export function App() {
   async function runOpencodePrompt() {
     if (!ensureRepoSelected()) return;
     const prompt = opencodePromptInput.trim();
-    if (!prompt && opencodeImageAttachments.length === 0) return;
+    const images = opencodeImageAttachments;
+    if (!prompt && images.length === 0) return;
     let sessionId = ensureActiveOpencodeSession();
     if (!sessionId || draftOpencodeSession) {
-      sessionId = await createPersistedOpencodeSession(prompt);
+      sessionId = await createPersistedOpencodeSession(prompt || "(image)");
     }
     if (!sessionId) return;
     bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
@@ -4398,13 +2865,13 @@ export function App() {
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
-    const scrollToBottom = () => {
+    const scrollToBottom = (options?: { force?: boolean }) => {
       if (activeOpencodeSessionId !== sessionId) return;
-      const el = opencodeThreadRef.current;
-      if (!el) return;
-      requestAnimationFrame(() => {
-        el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      });
+      if (options?.force) {
+        resumeOpencodeFollowFromUserAction(sessionId);
+        return;
+      }
+      scheduleOpencodeScrollToBottom({ source: "system" });
     };
     updateOpencodeSessionById(sessionId, (session) => {
       const nextMessages: OpencodeChatMessage[] = [
@@ -4413,9 +2880,7 @@ export function App() {
           id: `user-${makeId()}`,
           role: "user",
           content: prompt,
-          attachments: opencodeImageAttachments.length > 0
-            ? opencodeImageAttachments.map((a) => ({ id: a.id, uri: a.dataUrl, filename: a.filename }))
-            : undefined
+          attachments: images.map((img) => ({ id: img.id, kind: "image" as const, uri: img.dataUrl, mime: img.mime, filename: img.filename })),
         },
         { id: assistantId, role: "assistant", content: "" }
       ];
@@ -4423,16 +2888,16 @@ export function App() {
       const nextTurnStart = getInitialOpencodeTurnStart(nextTurnCount);
       return {
         ...session,
-        title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt) : session.title,
+        title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt || "(image)") : session.title,
         messages: nextMessages,
         turnStart: nextTurnStart,
         updatedAt: Date.now()
       };
     });
-    scrollToBottom();
+    scrollToBottom({ force: true });
+    recordOpencodePromptHistoryEntry(sessionId, prompt);
     setOpencodePromptInput("");
     setOpencodeImageAttachments([]);
-    setOpencodeAttachmentMenuOpen(false);
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
     const activeModel = normalizeModelRef(activeOpencodeModel || "");
@@ -4479,8 +2944,13 @@ export function App() {
     const bufferedAssistantDeltaByLocalId = new Map<string, string>();
     const hydrateFinalAssistantText = async (localId: string, serverMessageId: string) => {
       try {
-        const snapshot = await fetchOpencodeDetailedMessagesSnapshot(sessionId, 200);
-        const rows = snapshot.items;
+        const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
+          repoPath,
+          sessionId,
+          directory: repoPath,
+          limit: 200
+        });
+        const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
         const targetId = serverMessageId.trim();
         let hit: OpencodeDetailedMessage | null = null;
         if (targetId) {
@@ -4562,7 +3032,7 @@ export function App() {
       // matches the OpenCode server truth (not local files).
       let serverModel = "";
       try {
-        const effective = await fetchOpencodeServerConfigForChat();
+        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
         serverModel = normalizeModelRef(effective?.model || "");
         if (serverModel) {
           setOpencodeConfig((prev) => ({
@@ -4583,248 +3053,6 @@ export function App() {
         "";
       if (serverModel && model && serverModel !== model) {
         appendOpencodeDebugLog(`prompt.model.override local=${model} server=${serverModel} (kept local)`);
-      }
-      if (!IS_TAURI) {
-        const eventUrl = buildOpencodeControlUrl("/stream", { repoPath, sessionId });
-        const promptUrl = buildOpencodeControlUrl("/prompt");
-        appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
-
-        let seenAssistantActivity = false;
-        let promptPosted = false;
-        streamAbort = new AbortController();
-        opencodeRunAbortBySessionRef.current[sessionId] = streamAbort;
-        const streamSignal = streamAbort.signal;
-        const bindServerToLocalAssistant = (messageID: string, localId: string) => {
-          const mid = messageID.trim();
-          const lid = localId.trim();
-          if (!mid || !lid) return;
-          localAssistantByServerMessageId.set(mid, lid);
-          serverMessageByLocalAssistantId.set(lid, mid);
-          setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [lid]: mid }));
-          setOpencodeLivePartsByServerMessageId((prev) => (prev[mid] ? prev : { ...prev, [mid]: [] }));
-        };
-        const ensureLocalAssistantForServerMessage = (messageID: string): string => {
-          const mid = messageID.trim();
-          if (!mid) return "";
-          const cached = localAssistantByServerMessageId.get(mid);
-          if (cached) return cached;
-          if (localAssistantByServerMessageId.size === 0) {
-            bindServerToLocalAssistant(mid, assistantId);
-            currentStreamingLocalAssistantId = assistantId;
-            return assistantId;
-          }
-          const localId = `assistant-${makeId()}`;
-          localAssistantIds.push(localId);
-          bindServerToLocalAssistant(mid, localId);
-          currentStreamingLocalAssistantId = localId;
-          setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: localId }));
-          updateOpencodeSessionById(sessionId, (session) => {
-            if (session.messages.some((m) => m.id === localId)) return session;
-            return {
-              ...session,
-              messages: [...session.messages, { id: localId, role: "assistant" as const, content: "" }],
-              updatedAt: Date.now()
-            };
-          });
-          scrollToBottom();
-          return localId;
-        };
-        const flushAssistantTextDelta = (targetLocalId?: string) => {
-          if (done) return;
-          const localId = (targetLocalId || "").trim();
-          if (!localId) {
-            for (const [lid, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
-              if (!chunk) continue;
-              updateOpencodeSessionById(sessionId, (session) => ({
-                ...session,
-                messages: session.messages.map((msg) =>
-                  msg.id === lid ? { ...msg, content: (msg.content || "") + chunk } : msg
-                ),
-                updatedAt: Date.now()
-              }));
-            }
-            bufferedAssistantDeltaByLocalId.clear();
-            scrollToBottom();
-            return;
-          }
-          const chunk = bufferedAssistantDeltaByLocalId.get(localId) || "";
-          if (!chunk) return;
-          bufferedAssistantDeltaByLocalId.set(localId, "");
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: session.messages.map((msg) =>
-              msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
-            ),
-            updatedAt: Date.now()
-          }));
-          scrollToBottom();
-        };
-        const scheduleAssistantTextFlush = () => {
-          if (textFlushTimer || done) return;
-          textFlushTimer = window.setTimeout(() => {
-            textFlushTimer = null;
-            flushAssistantTextDelta();
-          }, 16);
-        };
-        const applySnapshotMessages = (items: OpencodeDetailedMessage[]) => {
-          const { mapped, detailsById } = mapOpencodeDetailedMessages(items);
-          if (mapped.length <= 0) return;
-          const turnStart = getInitialOpencodeTurnStart(buildOpencodeTurnRanges(mapped).length);
-          setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...detailsById }));
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: mapped,
-            turnStart,
-            loaded: true,
-            updatedAt: Date.now()
-          }));
-          const lastAssistant = [...mapped].reverse().find((msg) => msg.role === "assistant");
-          if (lastAssistant) {
-            currentStreamingLocalAssistantId = lastAssistant.id;
-            setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: lastAssistant.id }));
-          }
-          scrollToBottom();
-        };
-        const handleControlStreamEvent = (eventName: string, raw: string) => {
-          let payload: any;
-          try {
-            payload = JSON.parse(raw);
-          } catch {
-            return;
-          }
-          if (eventName === "ready" || eventName === "heartbeat") return;
-          if (eventName === "stream_fallback") {
-            appendOpencodeDebugLog(`prompt.stream.fallback ${toDisplayJson(payload, 300)}`);
-            return;
-          }
-          if (eventName === "assistant_message") {
-            const messageID = String(payload?.messageId || "");
-            if (!messageID) return;
-            seenAssistantActivity = true;
-            const localId = ensureLocalAssistantForServerMessage(messageID);
-            currentStreamingLocalAssistantId = localId || currentStreamingLocalAssistantId;
-            return;
-          }
-          if (eventName === "delta") {
-            const messageID = String(payload?.messageId || "");
-            const localId = ensureLocalAssistantForServerMessage(messageID);
-            if (!localId) return;
-            seenAssistantActivity = true;
-            const delta = String(payload?.delta || "");
-            const partID = String(payload?.partId || "");
-            const partType = String(payload?.type || "text");
-            if (!delta) return;
-            if (partType === "reasoning" || partType === "text") {
-              patchOpencodeLivePartDelta(messageID, partID, partType, delta);
-            }
-            if (partType === "text") {
-              const cur = bufferedAssistantDeltaByLocalId.get(localId) || "";
-              bufferedAssistantDeltaByLocalId.set(localId, cur + delta);
-              scheduleAssistantTextFlush();
-            }
-            return;
-          }
-          if (eventName === "part") {
-            const messageID = String(payload?.messageId || "");
-            const localId = ensureLocalAssistantForServerMessage(messageID);
-            if (!localId) return;
-            const part = payload?.part || {};
-            seenAssistantActivity = true;
-            upsertOpencodeLivePart(messageID, part);
-            if (String(part?.type || "") === "text") flushAssistantTextDelta(localId);
-            return;
-          }
-          if (eventName === "messages") {
-            const rows = (Array.isArray(payload) ? payload : []).filter(Boolean) as OpencodeDetailedMessage[];
-            if (rows.length <= 0) return;
-            seenAssistantActivity = rows.some((row) => String((row as any)?.info?.role || "") === "assistant");
-            applySnapshotMessages(rows);
-            return;
-          }
-          if (eventName === "error") {
-            const err = toDisplayJson(payload?.error ?? payload, 1200);
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) =>
-                msg.id === currentStreamingLocalAssistantId ? { ...msg, content: `Run failed\n${err}` } : msg
-              ),
-              updatedAt: Date.now()
-            }));
-            scrollToBottom();
-            finalize();
-            return;
-          }
-          if (eventName === "end") {
-            finalize();
-          }
-        };
-
-        void (async () => {
-          try {
-            const resp = await fetch(eventUrl, {
-              method: "GET",
-              headers: { Accept: "text/event-stream" },
-              signal: streamSignal
-            });
-            if (!resp.ok || !resp.body) throw new Error(`SSE connect failed: HTTP ${resp.status}`);
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = "";
-            while (!done) {
-              const { value, done: rdDone } = await reader.read();
-              if (rdDone) break;
-              buf += decoder.decode(value, { stream: true });
-              while (true) {
-                const m = buf.match(/\r?\n\r?\n/);
-                if (!m || m.index == null) break;
-                const frame = parseSseFrame(buf.slice(0, m.index));
-                buf = buf.slice(m.index + m[0].length);
-                if (!frame) continue;
-                handleControlStreamEvent(frame.event, frame.data);
-              }
-            }
-            const tail = parseSseFrame(buf);
-            if (tail) handleControlStreamEvent(tail.event, tail.data);
-          } catch (streamErr) {
-            if (done) return;
-            appendOpencodeDebugLog(`prompt.sse.error ${String(streamErr)}`);
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) =>
-                msg.id === assistantId ? { ...msg, content: `Run failed\n${String(streamErr)}` } : msg
-              ),
-              updatedAt: Date.now()
-            }));
-            scrollToBottom();
-            finalize();
-          }
-        })();
-
-        fallbackTimer = window.setTimeout(() => {
-          if (done) return;
-          appendOpencodeDebugLog("prompt.safetyFinalize 600s without done");
-          finalize();
-        }, 600_000);
-
-        const promptBody: Record<string, unknown> = {
-          repoPath,
-          sessionId,
-          prompt,
-          attachments: opencodeImageAttachments.map((a) => ({ id: a.id, filename: a.filename, mime: a.mime, dataUrl: a.dataUrl }))
-        };
-        if (model) promptBody.model = model;
-        const postResp = await fetch(promptUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(promptBody)
-        });
-        if (!postResp.ok) {
-          const bodyText = await postResp.text().catch(() => "");
-          throw new Error(`prompt failed: HTTP ${postResp.status} ${bodyText}`);
-        }
-        promptPosted = true;
-        appendOpencodeDebugLog(`prompt.invoke.ok request=${requestId} controlProxy`);
-        return;
       }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
@@ -5117,14 +3345,12 @@ export function App() {
         finalize();
       }, 600_000);
 
+      const promptParts: Record<string, unknown>[] = [{ id: `prt_${makeId()}`, type: "text", text: prompt }];
+      for (const img of images) {
+        promptParts.push({ id: `prt_${makeId()}`, type: "file", mime: img.mime, url: img.dataUrl, filename: img.filename });
+      }
       const promptBody: Record<string, unknown> = {
-        parts: [
-          { type: "text", text: prompt },
-          ...opencodeImageAttachments.map((a) => ({
-            type: "image",
-            source: { type: "base64", media_type: a.mime, data: a.dataUrl.replace(/^data:image\/[^;]+;base64,/, "") }
-          }))
-        ]
+        parts: promptParts
       };
       const mr = parseModelRef(model);
       if (mr) {
@@ -5175,20 +3401,12 @@ export function App() {
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
     try {
-      if (IS_TAURI) {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const qdir = encodeURIComponent(repoPath);
-        await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" }
-        });
-      } else {
-        await fetchWebOpencodeJson<{ ok: boolean }>("/abort", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repoPath, sessionId: sid })
-        });
-      }
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
       appendOpencodeDebugLog(`prompt.abort session=${sid}`);
     } catch (e) {
       appendOpencodeDebugLog(`prompt.abort.error session=${sid} ${String(e)}`);
@@ -5198,30 +3416,161 @@ export function App() {
   function resizeOpencodeInput() {
     const el = opencodeInputRef.current;
     if (!el) return;
-    el.style.height = "0px";
+    el.style.height = "auto";
     const next = Math.min(140, Math.max(38, el.scrollHeight));
     el.style.height = `${next}px`;
+    el.scrollTop = 0;
+  }
+
+  function setOpencodePromptInputFromHistory(value: string) {
+    setOpencodePromptInput(value);
+    setOpencodeSlashOpen(false);
+    requestAnimationFrame(() => {
+      resizeOpencodeInput();
+      const el = opencodeInputRef.current;
+      if (!el) return;
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    });
+  }
+
+  function getOpencodePromptHistorySessionKey() {
+    return activeOpencodeSessionId.trim() || "__draft__";
+  }
+
+  function recordOpencodePromptHistoryEntry(sessionId: string, prompt: string) {
+    const key = sessionId.trim() || "__draft__";
+    const value = prompt.trim();
+    if (!value) return;
+    const prev = opencodePromptHistoryBySessionRef.current[key] || [];
+    opencodePromptHistoryBySessionRef.current[key] = [value, ...prev.filter((item) => item !== value)].slice(0, 80);
+    opencodePromptHistoryIndexBySessionRef.current[key] = -1;
+    opencodePromptHistoryDraftBySessionRef.current[key] = "";
+  }
+
+  function browseOpencodePromptHistory(direction: "older" | "newer") {
+    const key = getOpencodePromptHistorySessionKey();
+    const history = opencodePromptHistoryBySessionRef.current[key] || [];
+    if (history.length === 0) return;
+    const currentIndex = opencodePromptHistoryIndexBySessionRef.current[key] ?? -1;
+    if (direction === "older") {
+      if (currentIndex < 0) {
+        opencodePromptHistoryDraftBySessionRef.current[key] = opencodePromptInput;
+      }
+      const nextIndex = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, history.length - 1);
+      opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
+      setOpencodePromptInputFromHistory(history[nextIndex] || "");
+      return;
+    }
+    if (currentIndex <= 0) {
+      opencodePromptHistoryIndexBySessionRef.current[key] = -1;
+      setOpencodePromptInputFromHistory(opencodePromptHistoryDraftBySessionRef.current[key] || "");
+      return;
+    }
+    const nextIndex = currentIndex - 1;
+    opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
+    setOpencodePromptInputFromHistory(history[nextIndex] || "");
+  }
+
+  function shouldUsePromptHistoryKey(event: React.KeyboardEvent<HTMLTextAreaElement>, direction: "older" | "newer") {
+    const target = event.currentTarget;
+    const start = target.selectionStart ?? 0;
+    const end = target.selectionEnd ?? 0;
+    if (start !== end) return false;
+    if (direction === "older") {
+      return start === 0;
+    }
+    return end === target.value.length;
+  }
+
+  function browseTerminalHistory(tabId: string, direction: "older" | "newer") {
+    updateTerminalTabById(tabId, (prev) => {
+      if (prev.history.length === 0) return prev;
+      if (direction === "older") {
+        const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
+        return {
+          ...prev,
+          historyIndex: next,
+          historyDraft: prev.historyIndex < 0 ? prev.input : prev.historyDraft,
+          input: prev.history[next] || ""
+        };
+      }
+      if (prev.historyIndex <= 0) {
+        return { ...prev, historyIndex: -1, input: prev.historyDraft };
+      }
+      const next = prev.historyIndex - 1;
+      return { ...prev, historyIndex: next, input: prev.history[next] || "" };
+    });
+  }
+
+  async function refreshTerminalCompletions(tab: TerminalTabState, nextInput: string) {
+    if (!repoPath.trim()) return;
+    const currentInput = nextInput;
+    try {
+      const result = await listRepoTerminalCompletions(repoPath, currentInput, tab.cwd || repoPath);
+      updateTerminalTabById(tab.id, (prev) => {
+        if (prev.input !== currentInput) return prev;
+        return {
+          ...prev,
+          completionItems: result.candidates.slice(0, 24),
+          completionIndex: 0,
+          completionToken: result.token || ""
+        };
+      });
+    } catch {
+      updateTerminalTabById(tab.id, (prev) => prev.input === currentInput ? { ...prev, completionItems: [], completionIndex: 0, completionToken: "" } : prev);
+    }
+  }
+
+  function selectTerminalCompletion(tab: TerminalTabState, index = tab.completionIndex) {
+    const candidate = tab.completionItems[index];
+    if (!candidate || !tab.completionToken) return;
+    const nextInput = applyTerminalCompletionCandidate(tab.input, tab.completionToken, candidate);
+    updateTerminalTabById(tab.id, {
+      input: nextInput,
+      historyIndex: -1,
+      historyDraft: nextInput,
+      completionItems: [],
+      completionIndex: 0,
+      completionToken: ""
+    });
+    void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
+  }
+
+  async function applyTerminalTabCompletion(tab: TerminalTabState) {
+    if (tab.completionItems.length > 0 && tab.completionToken) {
+      selectTerminalCompletion(tab);
+      return;
+    }
+    if (!repoPath) return;
+    try {
+      const nextInput = await completeRepoTerminalInput(repoPath, tab.input, tab.cwd || repoPath);
+      if (nextInput === tab.input) return;
+      updateTerminalTabById(tab.id, {
+        input: nextInput,
+        historyIndex: -1,
+        historyDraft: nextInput,
+        completionItems: [],
+        completionIndex: 0,
+        completionToken: ""
+      });
+      void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
+    } catch {
+      // ignore completion failures to keep typing smooth
+    }
   }
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
-      if (IS_TAURI) {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const qdir = encodeURIComponent(repoPath);
-        const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answers })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        await fetchWebOpencodeJson<{ ok: boolean }>(`/question/${encodeURIComponent(requestId)}/reply`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repoPath, answers })
-        });
-      }
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       appendOpencodeDebugLog(`question.reply ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -5240,28 +3589,24 @@ export function App() {
     }
     setOpencodeQuestionLoading(true);
     try {
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
       let raw: unknown = [];
-      if (IS_TAURI) {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const qdir = encodeURIComponent(repoPath);
-        let lastError = "";
-        for (const path of ["/question", "/question/"]) {
-          try {
-            const res = await fetch(`${base}${path}?directory=${qdir}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const text = await res.text();
-            if (!text.trim()) throw new Error("empty response");
-            raw = JSON.parse(text);
-            lastError = "";
-            break;
-          } catch (e) {
-            lastError = `${path}: ${String(e)}`;
-          }
+      let lastError = "";
+      for (const path of ["/question", "/question/"]) {
+        try {
+          const res = await fetch(`${base}${path}?directory=${qdir}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          if (!text.trim()) throw new Error("empty response");
+          raw = JSON.parse(text);
+          lastError = "";
+          break;
+        } catch (e) {
+          lastError = `${path}: ${String(e)}`;
         }
-        if (lastError) throw new Error(lastError);
-      } else {
-        raw = await fetchWebOpencodeJson<unknown[]>("/question", undefined, { repoPath, sessionId: sid });
       }
+      if (lastError) throw new Error(lastError);
       const rows = Array.isArray(raw) ? raw : [];
       const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
       setOpencodeQuestionRequests(requests);
@@ -5274,22 +3619,14 @@ export function App() {
 
   async function sendQuestionReject(requestId: string) {
     try {
-      if (IS_TAURI) {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const qdir = encodeURIComponent(repoPath);
-        const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" }
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        await fetchWebOpencodeJson<{ ok: boolean }>(`/question/${encodeURIComponent(requestId)}/reject`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repoPath })
-        });
-      }
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       appendOpencodeDebugLog(`question.reject ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -5503,9 +3840,43 @@ export function App() {
 
   function inspectCommitFromTopology(sha: string) {
     setTopologyContextMenu(null);
+    setCommitContextMenu(null);
     setSelectedCommit(sha);
     setDetailTab("context");
     setMessage(`查看 Entire agent 上下文: ${sha.slice(0, 8)}`);
+  }
+
+  async function applyCommitFromContextMenu(action: "cherryPick" | "revert") {
+    if (!ensureRepoSelected() || !commitContextMenu?.sha) return;
+    const sha = commitContextMenu.sha;
+    const label = shortSha(sha, 8);
+    const isRevert = action === "revert";
+    const ok = window.confirm(
+      isRevert
+        ? `确定要 revert ${label} 吗？\n\n这会在当前分支创建一个反向提交。`
+        : `确定要 cherry-pick ${label} 到当前分支吗？\n\n如果有冲突，需要手动解决。`
+    );
+    if (!ok) return;
+    setCommitContextMenu(null);
+    setBusy(true);
+    setGitOperation(action);
+    setError("");
+    setMessage(isRevert ? `正在 revert: ${label}...` : `正在 cherry-pick: ${label}...`);
+    try {
+      const result = isRevert ? await gitRevertCommit(repoPath, sha) : await gitCherryPickCommit(repoPath, sha);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+      setSelectedCommit(sha);
+      setMessage(isRevert ? `已 revert: ${label}` : `已 cherry-pick: ${label}`);
+      appendOpencodeDebugLog(`git.${isRevert ? "revert" : "cherry-pick"} ${result.trim() || label}`);
+    } catch (e) {
+      const text = String(e);
+      setError(text);
+      setMessage(isRevert ? `Revert 失败: ${label}` : `Cherry-pick 失败: ${label}`);
+      await refreshWorktreeData(selectedWorktreeFile).catch(() => undefined);
+    } finally {
+      setBusy(false);
+      setGitOperation(null);
+    }
   }
 
   function currentTopologyBaseBranch(): string {
@@ -5666,10 +4037,8 @@ export function App() {
           targetPath = "";
         }
         setMessage(`基于 ${startPoint || baseBranch} 创建工作空间: ${workspaceName}...`);
-        console.log("Creating detached workspace:", { repoPath, baseBranch, startPoint, targetPath: targetPath || "auto-generated" });
         const created = await createGitDetachedWorktree(repoPath, startPoint || baseBranch, targetPath || undefined);
         rememberWorktreeParent(created.path, baseBranch);
-        console.log("Worktree created:", created);
         await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
         const newBranchCommits = baseBranch ? await getBranchCommits(repoPath, baseBranch, 80) : [];
         if (newBranchCommits.length > 0) {
@@ -5720,7 +4089,6 @@ export function App() {
     setError("");
     setMessage(`正在删除 worktree: ${target}...`);
     try {
-      console.log("Removing worktree:", { repoPath, target });
       await removeGitWorktree(repoPath, target);
       unbindWorkspaceAgent(target);
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
@@ -5773,12 +4141,14 @@ export function App() {
   }
 
   async function refreshBranchesAndCommits() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     setError("");
     setMessage("加载分支与提交...");
     try {
-      const branchList = await getLocalBranches(repoPath);
-      const graphRows = await getCommitGraph(repoPath, 600);
+      const branchList = await getLocalBranches(gitPanePath);
+      const graphRows = await getCommitGraph(gitPanePath, 600);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setBranches(branchList);
       setCommitGraph(graphRows);
       setBranchParentMap((prev) => {
@@ -5804,33 +4174,45 @@ export function App() {
         setMessage("未找到可用本地分支");
         return;
       }
-      const rows = await getBranchCommits(repoPath, target, 80);
+      const rows = await getBranchCommits(gitPanePath, target, 80);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setCommits(rows);
       setSelectedCommit(rows[0]?.sha ?? "");
       setMessage(rows.length > 0 ? "分支与提交已更新" : `分支 ${target} 暂无提交可显示`);
     } catch (e) {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setError(String(e));
+      setBranches([]);
+      setCommitGraph([]);
+      setCommits([]);
+      setSelectedBranch("");
+      setSelectedCommit("");
+      setBranchParentMap({});
       setMessage("加载分支/提交失败");
     }
   }
 
   async function refreshReviewData() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     const [reviewRows, actionRows] = await Promise.all([
-      loadReviewRecords(repoPath),
-      loadReviewActions(repoPath)
+      loadReviewRecords(gitPanePath),
+      loadReviewActions(gitPanePath)
     ]);
+    if (gitPanePathRef.current !== requestRepoPath) return;
     setRecords(reviewRows);
     setActions(actionRows);
   }
 
   async function refreshWorktreeData(preferredFile?: string) {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     try {
       const [overview, worktrees] = await Promise.all([
-        getGitWorktreeOverview(repoPath),
-        getGitWorktreeList(repoPath)
+        getGitWorktreeOverview(gitPanePath),
+        getGitWorktreeList(gitPanePath)
       ]);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setWorktreeOverview(overview);
       setLinkedWorktrees(worktrees);
       const target = preferredFile && overview.entries.some((entry) => entry.path === preferredFile)
@@ -5843,12 +4225,14 @@ export function App() {
         return;
       }
       const [patch, content] = await Promise.all([
-        getGitWorktreeFilePatch(repoPath, target),
-        getGitWorktreeFileContent(repoPath, target)
+        getGitWorktreeFilePatch(gitPanePath, target),
+        getGitWorktreeFileContent(gitPanePath, target)
       ]);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setSelectedWorktreePatch(patch);
       setSelectedWorktreeContent(content);
     } catch (e) {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setError(String(e));
       setWorktreeOverview(EMPTY_WORKTREE);
       setLinkedWorktrees([]);
@@ -5858,11 +4242,14 @@ export function App() {
   }
 
   async function refreshGitUserIdentity() {
-    if (!ensureRepoSelected()) return;
+    if (!ensureGitPaneSelected()) return;
+    const requestRepoPath = gitPanePath;
     try {
-      const identity = await getGitUserIdentity(repoPath);
+      const identity = await getGitUserIdentity(gitPanePath);
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setGitUserIdentity(identity);
     } catch {
+      if (gitPanePathRef.current !== requestRepoPath) return;
       setGitUserIdentity(EMPTY_GIT_IDENTITY);
     }
   }
@@ -6076,6 +4463,26 @@ export function App() {
     }
   }
 
+  async function handleDiscardEntries(entries: GitWorktreeEntry[], label: string) {
+    if (!ensureRepoSelected() || entries.length === 0) return;
+    const ok = window.confirm(`确定要丢弃目录「${label}」下的 ${entries.length} 个变更吗？\n\n这会删除未跟踪文件，并恢复已跟踪文件到 HEAD。`);
+    if (!ok) return;
+    setDiscardingFile(label);
+    setError("");
+    try {
+      for (const entry of entries) {
+        await gitDiscardChanges(repoPath, entry.path, entry.untracked);
+      }
+      setMessage(`已丢弃 ${entries.length} 个变更: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录丢弃失败");
+    } finally {
+      setDiscardingFile("");
+    }
+  }
+
   async function handleStageFile(filePath: string) {
     if (!ensureRepoSelected() || !filePath) return;
     setStagingFile(filePath);
@@ -6092,6 +4499,24 @@ export function App() {
     }
   }
 
+  async function handleStagePaths(paths: string[], label: string) {
+    if (!ensureRepoSelected() || paths.length === 0) return;
+    setStagingFile(label);
+    setError("");
+    try {
+      for (const file of paths) {
+        await gitStageFile(repoPath, file);
+      }
+      setMessage(`已暂存 ${paths.length} 个文件: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录暂存失败");
+    } finally {
+      setStagingFile("");
+    }
+  }
+
   async function handleUnstageFile(filePath: string) {
     if (!ensureRepoSelected() || !filePath) return;
     setUnstagingFile(filePath);
@@ -6103,6 +4528,24 @@ export function App() {
     } catch (e) {
       setError(String(e));
       setMessage("取消暂存失败");
+    } finally {
+      setUnstagingFile("");
+    }
+  }
+
+  async function handleUnstagePaths(paths: string[], label: string) {
+    if (!ensureRepoSelected() || paths.length === 0) return;
+    setUnstagingFile(label);
+    setError("");
+    try {
+      for (const file of paths) {
+        await gitUnstageFile(repoPath, file);
+      }
+      setMessage(`已取消暂存 ${paths.length} 个文件: ${label}`);
+      await refreshWorktreeData();
+    } catch (e) {
+      setError(String(e));
+      setMessage("目录取消暂存失败");
     } finally {
       setUnstagingFile("");
     }
@@ -6192,23 +4635,65 @@ export function App() {
     setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
   }
 
-  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0): ReactNode {
+  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0, mode: "stage" | "unstage" = "stage"): ReactNode {
     return nodes.map((node) => {
       if (node.kind === "dir") {
         const expanded = expandedWorktreeDirs.includes(node.path);
+        const filePaths = collectWorktreeNodeFilePaths(node);
+        const entries = collectWorktreeNodeEntries(node);
+        const busyPath = mode === "stage" ? stagingFile : unstagingFile;
+        const canDiscardDir = entries.some((entry) => entry.staged || entry.unstaged || entry.untracked);
         return (
           <div key={node.path} className="gt-worktree-tree-group">
-            <button
-              type="button"
-              className="gt-worktree-tree-row gt-worktree-tree-dir"
-              style={{ paddingLeft: `${depth * 14 + 6}px` }}
-              onClick={() => toggleWorktreeDir(node.path)}
-            >
-              <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
-              <span className="gt-worktree-tree-name">{node.name}</span>
-              <span className="gt-worktree-tree-dot" aria-hidden="true" />
-            </button>
-            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1)}</div> : null}
+            <div className="gt-worktree-tree-row gt-worktree-tree-dir" style={{ paddingLeft: `${depth * 14 + 6}px` }}>
+              <button type="button" className="gt-worktree-dir-main-btn" onClick={() => toggleWorktreeDir(node.path)}>
+                <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
+                <span className="gt-worktree-tree-name">{node.name}</span>
+              </button>
+              <div className="gt-worktree-row-tail">
+                <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
+                <div className="gt-worktree-file-actions">
+                  <button
+                    type="button"
+                    className={mode === "unstage" ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+                    title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
+                    aria-pressed={mode === "unstage"}
+                    disabled={busyPath === node.path || filePaths.length === 0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (mode === "unstage") void handleUnstagePaths(filePaths, node.path);
+                      else void handleStagePaths(filePaths, node.path);
+                    }}
+                  >
+                    {mode === "unstage" ? (
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4 8.2 6.7 11 12 5" />
+                      </svg>
+                    ) : null}
+                  </button>
+                  {canDiscardDir ? (
+                    <button
+                      type="button"
+                      className="gt-worktree-action-btn is-discard"
+                      title="丢弃此目录变更"
+                      disabled={discardingFile === node.path}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDiscardEntries(entries, node.path);
+                      }}
+                    >
+                      {discardingFile === node.path ? "..." : (
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M6 4 3 7l3 3" />
+                          <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
+                        </svg>
+                      )}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1, mode)}</div> : null}
           </div>
         );
       }
@@ -6302,7 +4787,7 @@ export function App() {
     terminalSeqRef.current[id] = 0;
     setTerminalTabs((prev) => [
       ...prev,
-      { id, title: `终端 ${n}`, input: "", output: "", seq: 0, alive: false, history: [], historyIndex: -1 }
+      createTerminalTabState(id, `终端 ${n}`, selectedRepo?.path || repoPath || "")
     ]);
     setActiveTerminalTabId(id);
   }
@@ -6337,7 +4822,11 @@ export function App() {
         ...prev,
         history: [script, ...prev.history.filter((x) => x !== script)].slice(0, 80),
         historyIndex: -1,
-        input: ""
+        historyDraft: "",
+        input: "",
+        completionItems: [],
+        completionIndex: 0,
+        completionToken: ""
       }));
     } catch (e) {
       const msg = String(e);
@@ -6640,15 +5129,15 @@ export function App() {
   }, [runtimeJobId]);
 
   useEffect(() => {
-    window.localStorage.setItem(RUNTIME_STATUS_CACHE_KEY, JSON.stringify(runtimeStatus));
+    saveCachedRuntimeStatus(runtimeStatus);
   }, [runtimeStatus]);
 
   useEffect(() => {
-    window.localStorage.setItem(SIDEBAR_WIDTH_CACHE_KEY, String(sidebarWidth));
+    saveCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, sidebarWidth);
   }, [sidebarWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem(RIGHT_PANE_WIDTH_CACHE_KEY, String(rightPaneWidth));
+    saveCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, rightPaneWidth);
   }, [rightPaneWidth]);
 
   useEffect(() => {
@@ -6681,29 +5170,44 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedRepo) return;
+    if (!gitPaneRepo) return;
+    resetGitPaneState();
     setError("");
-    setMessage(`已选择仓库: ${selectedRepo.name}`);
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
-    void Promise.all([refreshStatus(), refreshBranchesAndCommits(), refreshReviewData(), refreshWorktreeData(), refreshGitUserIdentity()]).catch((e) => {
+    setMessage(`Git 目录: ${gitPaneRepo.name}`);
+    const tasks = [refreshWorktreeData(), refreshGitUserIdentity()];
+    if (rightPaneTabRef.current === "worktree") {
+      tasks.push(refreshBranchesAndCommits(), refreshReviewData());
+    }
+    void Promise.all(tasks).catch((e) => {
       setError(String(e));
-      setMessage("仓库数据加载失败");
+      setMessage("目录 Git 数据加载失败");
     });
+  }, [gitPaneRepo?.id]);
+
+  useEffect(() => {
+    if (!gitPaneRepo || rightPaneTab !== "worktree") return;
+    void Promise.all([refreshBranchesAndCommits(), refreshReviewData()]).catch((e) => setError(String(e)));
+  }, [gitPaneRepo?.id, rightPaneTab]);
+
+  useEffect(() => {
+    if (!selectedRepo) return;
+    setNewSessionTargetRepoId((prev) => prev || selectedRepo.id);
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
   }, [selectedRepo?.id]);
 
   useEffect(() => {
-    if (!repoPath) {
+    if (!gitPanePath) {
       void stopGitWorktreeWatcher().catch(() => {});
       return;
     }
-    void startGitWorktreeWatcher(repoPath).catch((e) => setError(String(e)));
+    void startGitWorktreeWatcher(gitPanePath).catch((e) => setError(String(e)));
     return () => {
       if (gitAutoRefreshTimerRef.current !== null) {
         window.clearTimeout(gitAutoRefreshTimerRef.current);
         gitAutoRefreshTimerRef.current = null;
       }
     };
-  }, [repoPath]);
+  }, [gitPanePath]);
 
   useEffect(() => {
     const scheduleRefresh = (delay = 600) => {
@@ -6712,18 +5216,17 @@ export function App() {
       }
       gitAutoRefreshTimerRef.current = window.setTimeout(() => {
         gitAutoRefreshTimerRef.current = null;
-        if (!repoPathRef.current) return;
+        if (!gitPanePathRef.current) return;
         if (document.visibilityState === "hidden") return;
         if (gitAutoRefreshBlockedRef.current) return;
-        void Promise.all([
-          refreshBranchesAndCommits(),
-          refreshWorktreeData(selectedWorktreeFileRef.current)
-        ]).catch((e) => setError(String(e)));
+        const tasks = [refreshWorktreeData(selectedWorktreeFileRef.current)];
+        if (rightPaneTabRef.current === "worktree") tasks.push(refreshBranchesAndCommits());
+        void Promise.all(tasks).catch((e) => setError(String(e)));
       }, delay);
     };
 
     const unlistenPromise = listen<{ repo_path: string }>("git-worktree-changed", (event) => {
-      if (event.payload?.repo_path !== repoPathRef.current) return;
+      if (event.payload?.repo_path !== gitPanePathRef.current) return;
       scheduleRefresh();
     });
 
@@ -6782,7 +5285,7 @@ export function App() {
 
   useEffect(() => {
     setTopologyZoom(1);
-  }, [selectedRepo?.id]);
+  }, [gitPaneRepo?.id]);
 
   useEffect(() => {
     const viewport = topologyViewportRef.current;
@@ -6791,7 +5294,7 @@ export function App() {
     const nextLeft = Math.max(0, (node.x + node.width / 2) * topologyZoom - viewport.clientWidth / 2);
     const nextTop = Math.max(0, (node.y + node.height / 2) * topologyZoom - viewport.clientHeight / 2);
     viewport.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
-  }, [selectedRepo?.id, topologyModel.primaryNodeId]);
+  }, [gitPaneRepo?.id, topologyModel.primaryNodeId]);
 
   useEffect(() => {
     const onMove = (evt: MouseEvent) => {
@@ -6829,18 +5332,23 @@ export function App() {
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeSessionsRepoIdRef.current === selectedRepo.id && opencodeSessions.length > 0) return;
     void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch((e) => setError(String(e)));
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings]);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings, opencodeSessions.length]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeModelConfigLoadedRef.current) return;
+    opencodeModelConfigLoadedRef.current = true;
     void loadOpencodeModelConfig();
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
+    if (opencodeConfiguredModelsLoadedRef.current) return;
+    opencodeConfiguredModelsLoadedRef.current = true;
     void refreshOpencodeConfiguredModels();
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed) return;
@@ -6852,92 +5360,72 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // Per repo visibility preferences (OpenCode "Manage models" equivalent).
-    const key = `${OPENCODE_MODEL_VIS_KEY}:${selectedRepo?.id || "global"}`;
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        setOpencodeHiddenModels(new Set());
-        return;
-      }
-      const parsed = JSON.parse(raw) as { hidden?: string[] } | null;
-      const hidden = Array.isArray(parsed?.hidden) ? parsed!.hidden : [];
-      const normalized = hidden.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
-      setOpencodeHiddenModels(new Set(normalized));
-    } catch {
-      setOpencodeHiddenModels(new Set());
-    }
-  }, [selectedRepo?.id]);
+    const hiddenKey = `${OPENCODE_MODEL_VIS_KEY}:global`;
+    const enabledKey = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
+    setOpencodeHiddenModels(loadModelRefSet(hiddenKey, "hidden"));
+    setOpencodeEnabledModels(loadModelRefSet(enabledKey, "enabled"));
+    opencodeModelPrefsLoadedRef.current = true;
+  }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_VIS_KEY}:${selectedRepo?.id || "global"}`;
-    const hidden = Array.from(opencodeHiddenModels);
-    try {
-      window.localStorage.setItem(key, JSON.stringify({ hidden }));
-    } catch {
-      // ignore
-    }
-  }, [opencodeHiddenModels, selectedRepo?.id]);
+    if (!opencodeModelPrefsLoadedRef.current) return;
+    const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
+    saveModelRefSet(key, "hidden", opencodeHiddenModels);
+  }, [opencodeHiddenModels]);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        setOpencodeEnabledModels(new Set());
-        return;
-      }
-      const parsed = JSON.parse(raw) as { enabled?: string[] } | null;
-      const enabled = Array.isArray(parsed?.enabled) ? parsed!.enabled : [];
-      const normalized = enabled.map((x) => normalizeModelRef(String(x || ""))).filter(Boolean);
-      setOpencodeEnabledModels(new Set(normalized));
-    } catch {
-      setOpencodeEnabledModels(new Set());
-    }
-  }, [selectedRepo?.id]);
+    if (!opencodeModelPrefsLoadedRef.current) return;
+    const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
+    saveModelRefSet(key, "enabled", opencodeEnabledModels);
+  }, [opencodeEnabledModels]);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:${selectedRepo?.id || "global"}`;
-    const enabled = Array.from(opencodeEnabledModels);
-    try {
-      window.localStorage.setItem(key, JSON.stringify({ enabled }));
-    } catch {
-      // ignore
+    if (!selectedRepo?.id && !repoPath) return;
+    const availableModels = opencodeSyncModelRefs;
+    const modelLabels: Record<string, string> = {};
+    for (const full of availableModels) {
+      const parsed = parseModelRef(full);
+      if (!parsed) continue;
+      modelLabels[full] = opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model]
+        || opencodeModelNamesByProvider[parsed.provider]?.[parsed.model]
+        || parsed.model;
     }
-  }, [opencodeEnabledModels, selectedRepo?.id]);
-
-  useEffect(() => {
-    if (!controlAccessInfo?.port || !selectedRepo?.id) return;
     const payload = {
-      repoId: selectedRepo.id,
+      repoId: "global",
       repoPath,
+      availableModels,
+      modelLabels,
       enabledModels: Array.from(opencodeEnabledModels),
       hiddenModels: Array.from(opencodeHiddenModels),
       activeModel: activeOpencodeModel || opencodeConfig?.configuredModel || "",
       updatedAt: Date.now(),
     };
-    const url = `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state`;
+    const url = controlAccessInfo?.port ? `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state` : "";
     const timer = window.setTimeout(() => {
-      void fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
+      void invoke("set_mobile_model_state_from_desktop", { state: payload }).catch(() => {});
+      if (url) {
+        void fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch(() => {});
+      }
     }, 150);
     return () => window.clearTimeout(timer);
   }, [
     activeOpencodeModel,
     controlAccessInfo?.port,
     opencodeConfig?.configuredModel,
-    opencodeEnabledModels,
+    opencodeConfiguredModelNamesByProvider,
     opencodeHiddenModels,
+    opencodeModelNamesByProvider,
+    opencodeSyncModelRefs,
     repoPath,
-    selectedRepo?.id,
   ]);
 
   useEffect(() => {
-    // Per repo model selection (OpenCode-like): draft + per-session overrides.
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:${selectedRepo?.id || "global"}`;
+    // Global model selection; session-specific overrides are keyed by session id.
+    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
     try {
       const raw = window.localStorage.getItem(key);
       if (!raw) {
@@ -6958,10 +5446,10 @@ export function App() {
       setOpencodeDraftModel("");
       setOpencodeSessionModel({});
     }
-  }, [selectedRepo?.id]);
+  }, []);
 
   useEffect(() => {
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:${selectedRepo?.id || "global"}`;
+    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
     try {
       window.localStorage.setItem(
         key,
@@ -6973,16 +5461,14 @@ export function App() {
     } catch {
       // ignore
     }
-  }, [opencodeDraftModel, opencodeSessionModel, selectedRepo?.id]);
+  }, [opencodeDraftModel, opencodeSessionModel]);
 
   useEffect(() => {
     if (!showSettings || !runtimeStatus.opencode.installed || !selectedRepo) return;
     if (opencodeProviders.length === 0) {
       void refreshOpencodeCatalog();
     }
-    void loadOpencodeModelConfig();
-    void refreshOpencodeConfiguredModels();
-  }, [showSettings, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [showSettings, runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
@@ -7091,6 +5577,7 @@ export function App() {
   }, [showOpencodeModelPicker]);
 
   useEffect(() => {
+    if (rightPaneTab !== "terminal") return;
     if (!selectedRepo?.path) {
       setTerminalTabs((prev) => prev.map((tab) => ({ ...tab, output: "", seq: 0, alive: false })));
       terminalSeqRef.current = Object.fromEntries(Object.keys(terminalSeqRef.current).map((id) => [id, 0]));
@@ -7098,20 +5585,8 @@ export function App() {
     }
     if (!activeTerminalTab) return;
     let stopped = false;
-    let intervalId = 0;
     const repo = selectedRepo.path;
     const tabId = activeTerminalTab.id;
-    const handleTerminalPollError = (error: unknown, expose = false) => {
-      if (stopped) return;
-      const message = String(error);
-      updateTerminalTabById(tabId, { alive: false });
-      if (expose) setError(message);
-      if (!isMissingRepositoryError(message)) return;
-      stopped = true;
-      if (intervalId) window.clearInterval(intervalId);
-      setError(message);
-      void refreshRepositories().catch((refreshError) => setError(String(refreshError)));
-    };
     const boot = async () => {
       try {
         const snapshot = await startRepoTerminalSession(repo, tabId);
@@ -7120,10 +5595,13 @@ export function App() {
         updateTerminalTabById(tabId, {
           seq: snapshot.seq,
           alive: snapshot.alive,
+          cwd: snapshot.cwd || repo,
           output: sanitizeTerminalOutput(snapshot.output || "")
         });
       } catch (e) {
-        handleTerminalPollError(e, true);
+        if (stopped) return;
+        updateTerminalTabById(tabId, { alive: false });
+        setError(String(e));
       }
     };
     const poll = async () => {
@@ -7139,25 +5617,31 @@ export function App() {
               ...prev,
               seq: snapshot.seq,
               alive: snapshot.alive,
+              cwd: snapshot.cwd || prev.cwd,
               output: `${prev.output}${chunk}`
             }));
           } else {
-            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
           }
         } else {
-          updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive });
+          updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
         }
-      } catch (e) {
-        handleTerminalPollError(e);
+      } catch {
+        if (stopped) return;
+        updateTerminalTabById(tabId, { alive: false });
       }
     };
     void boot();
-    intervalId = window.setInterval(() => void poll(), 320);
+    const t = window.setInterval(() => void poll(), 320);
     return () => {
       stopped = true;
-      if (intervalId) window.clearInterval(intervalId);
+      window.clearInterval(t);
     };
-  }, [selectedRepo?.id, activeTerminalTabId]);
+  }, [selectedRepo?.id, activeTerminalTabId, rightPaneTab]);
+
+  useEffect(() => {
+    writeTerminalTabSnapshot(activeTerminalTabId, terminalTabCounterRef.current, terminalTabs);
+  }, [terminalTabs, activeTerminalTabId]);
 
   useEffect(() => {
     const el = terminalLogRef.current;
@@ -7174,43 +5658,43 @@ export function App() {
   }, [rightPaneTab, rightDrawerOpen, activeTerminalTabId]);
 
   useEffect(() => {
-    Object.values(opencodeRunAbortBySessionRef.current).forEach((ctl) => {
-      try {
-        ctl.abort();
-      } catch {
-        // ignore
-      }
-    });
-    opencodeRunAbortBySessionRef.current = {};
-    setOpencodeSessions([]);
-    setActiveOpencodeSessionId("");
-    setDraftOpencodeSession(false);
-    setOpencodeRunBusyBySession({});
-    setOpencodeStreamingAssistantIdBySession({});
-    setOpencodeLivePartsByServerMessageId({});
-    setOpencodePromptInput("");
-    opencodeSessionsRepoIdRef.current = "";
-    setTerminalTabs([
-      {
-        id: "terminal-1",
-        title: "终端 1",
-        input: "",
-        output: "",
-        seq: 0,
-        alive: false,
-        history: [],
-        historyIndex: -1
-      }
-    ]);
-    setActiveTerminalTabId("terminal-1");
-    terminalTabCounterRef.current = 2;
-    terminalSeqRef.current = { "terminal-1": 0 };
-    setGitUserIdentity(EMPTY_GIT_IDENTITY);
-  }, [selectedRepo?.id]);
+    const terminalBody = terminalBodyRef.current;
+    const consoleEl = terminalLogRef.current;
+    if (!terminalBody || !consoleEl) return;
+    const updateNearTop = () => {
+      const noScroll = consoleEl.scrollHeight <= consoleEl.clientHeight + 2;
+      setTerminalInputNearTop(noScroll);
+    };
+    updateNearTop();
+    const ro = new ResizeObserver(updateNearTop);
+    ro.observe(terminalBody);
+    consoleEl.addEventListener("scroll", updateNearTop);
+    return () => {
+      ro.disconnect();
+      consoleEl.removeEventListener("scroll", updateNearTop);
+    };
+  }, [rightPaneTab, terminalLogRef.current, terminalBodyRef.current]);
 
   useEffect(() => {
+    terminalRepoResetReadyRef.current = true;
+  }, [selectedRepo?.id]);
+
+  useLayoutEffect(() => {
+    const shouldKeepLatest = opencodeScrollModeRef.current === "follow" && opencodeAutoFollowLatestRef.current;
+    if (shouldKeepLatest) {
+      opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    }
     resizeOpencodeInput();
-  }, [opencodePromptInput]);
+    if (!shouldKeepLatest) return;
+    if (activeOpencodeSessionId) {
+      opencodeForceScrollLatestSessionRef.current = activeOpencodeSessionId;
+    }
+    scrollOpencodeThreadToBottomNow();
+    requestAnimationFrame(() => {
+      if (opencodeScrollModeRef.current !== "follow") return;
+      scrollOpencodeThreadToBottomNow();
+    });
+  }, [activeOpencodeSessionId, opencodePromptInput, opencodeImageAttachments.length]);
 
   useEffect(() => {
     const sid = activeOpencodeSessionId;
@@ -7221,6 +5705,8 @@ export function App() {
       opencodePrevScrollHeightRef.current = 0;
       opencodePendingAnchorSessionIdRef.current = sid;
       opencodeStickToBottomSessionRef.current = sid;
+      setOpencodeAutoFollow(true);
+      setOpencodeShowJumpLatest(false);
     }
     const session = opencodeSessions.find((s) => s.id === sid);
     if (session && !session.loaded && runtimeStatus.opencode.installed && selectedRepo) {
@@ -7243,6 +5729,7 @@ export function App() {
     opencodePassiveSyncSeqRef.current = seq;
     const abort = new AbortController();
     let refreshTimer: number | null = null;
+    let connectTimer: number | null = null;
     let stopped = false;
     const scheduleRefresh = (delay = 700) => {
       if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
@@ -7273,19 +5760,22 @@ export function App() {
       }
       if (typ === "message.part.delta") return;
       if (typ === "session.idle") {
-        scheduleRefresh(80);
+        const session = opencodeSessions.find((s) => s.id === sessionId);
+        const hasContent = session && session.loaded && session.messages.length > 0;
+        scheduleRefresh(hasContent ? 1500 : 80);
         return;
       }
       if (typ === "session.status" && String(props?.status?.type || "") === "idle") {
-        scheduleRefresh(80);
+        const session = opencodeSessions.find((s) => s.id === sessionId);
+        const hasContent = session && session.loaded && session.messages.length > 0;
+        scheduleRefresh(hasContent ? 1500 : 80);
       }
     };
-    void (async () => {
+    const connect = async () => {
       try {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
         if (stopped || abort.signal.aborted) return;
-        const url = IS_TAURI
-          ? `${await invoke<string>("get_opencode_service_base", { repoPath })}/global/event?directory=${encodeURIComponent(repoPath)}`
-          : buildOpencodeControlUrl("/stream", { repoPath, sessionId });
+        const url = `${base}/global/event?directory=${encodeURIComponent(repoPath)}`;
         appendOpencodeDebugLog(`session.passiveSync.connect ${sessionId}`);
         const resp = await fetch(url, {
           method: "GET",
@@ -7297,15 +5787,14 @@ export function App() {
         const decoder = new TextDecoder();
         let buf = "";
         const processFrame = (frame: string) => {
-          const parsed = parseSseFrame(frame);
-          if (!parsed) return;
-          if (!IS_TAURI) {
-            if (parsed.event === "messages" || parsed.event === "assistant_message" || parsed.event === "part" || parsed.event === "delta" || parsed.event === "end") {
-              scheduleRefresh(parsed.event === "end" ? 80 : 350);
-            }
-            return;
+          if (!frame.trim()) return;
+          const dataLines: string[] = [];
+          for (const rawLine of frame.split(/\r?\n/)) {
+            if (!rawLine || rawLine.startsWith(":")) continue;
+            if (!rawLine.startsWith("data:")) continue;
+            dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
           }
-          handleRawEvent(parsed.data);
+          if (dataLines.length > 0) handleRawEvent(dataLines.join("\n"));
         };
         while (!stopped && !abort.signal.aborted) {
           const { value, done } = await reader.read();
@@ -7323,13 +5812,18 @@ export function App() {
       } catch (e) {
         if (!abort.signal.aborted && !stopped) appendOpencodeDebugLog(`session.passiveSync.warn ${String(e)}`);
       }
-    })();
+    };
+    connectTimer = window.setTimeout(() => {
+      connectTimer = null;
+      if (!stopped && opencodePassiveSyncSeqRef.current === seq) void connect();
+    }, 600);
     return () => {
       stopped = true;
       abort.abort();
+      if (connectTimer !== null) window.clearTimeout(connectTimer);
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
     };
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
+  }, [runtimeStatus.opencode.installed, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
 
   const opencodeVisibleWindow = useMemo(() => sliceOpencodeMessagesByTurnStart(opencodeMessages, opencodeTurnStart), [opencodeMessages, opencodeTurnStart]);
 
@@ -7343,7 +5837,11 @@ export function App() {
       const detail = opencodeDetailsByMessageId[msg.id];
       const loading = opencodeDetailsLoadingByMessageId[msg.id];
       if (detail === undefined || loading) return true;
-      return msg.id === streamingId && running;
+      // 保留：当前正在流式输出的消息，或已经有内容的非流式消息
+      if (msg.id === streamingId && running) return true;
+      // 新增：如果消息有 detail.parts 内容，也保留（避免流式结束后短暂消失）
+      if (detail && Array.isArray(detail.parts) && detail.parts.length > 0) return true;
+      return false;
     });
   }, [opencodeVisibleWindow.visible, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
@@ -7559,6 +6057,77 @@ export function App() {
 
   const opencodeHasHiddenHistory = opencodeTurnStart > 0;
 
+  function opencodeIsNearBottom(el: HTMLDivElement, threshold = 24) {
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    return maxScroll - el.scrollTop <= threshold;
+  }
+
+  function setOpencodeAutoFollow(enabled: boolean) {
+    opencodeScrollModeRef.current = enabled ? "follow" : "paused";
+    opencodeAutoFollowLatestRef.current = enabled;
+    setOpencodeAutoFollowLatest(enabled);
+    if (enabled) {
+      opencodePausedScrollSnapshotRef.current = null;
+    } else {
+      const el = opencodeThreadRef.current;
+      opencodePausedScrollSnapshotRef.current = el ? { top: el.scrollTop, height: el.scrollHeight } : null;
+    }
+  }
+
+  function cancelPendingOpencodeAutoScroll() {
+    opencodeAutoScrollTokenRef.current += 1;
+  }
+
+  function scrollOpencodeThreadToBottomNow(options?: { hideJump?: boolean }) {
+    const current = opencodeThreadRef.current;
+    if (!current) return;
+    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+    opencodePrevScrollTopRef.current = current.scrollTop;
+    if (options?.hideJump !== false) {
+      setOpencodeShowJumpLatest(false);
+    }
+  }
+
+  function scheduleOpencodeScrollToBottom(options?: { force?: boolean; hideJump?: boolean; source?: "system" | "user" }) {
+    const token = opencodeAutoScrollTokenRef.current + 1;
+    opencodeAutoScrollTokenRef.current = token;
+    requestAnimationFrame(() => {
+      if (opencodeAutoScrollTokenRef.current !== token) return;
+      const current = opencodeThreadRef.current;
+      if (!current) return;
+      const source = options?.source || "system";
+      const forceLatest = opencodeForceScrollLatestSessionRef.current === activeOpencodeSessionId;
+      if (opencodeScrollModeRef.current === "paused" && source !== "user" && !forceLatest) return;
+      if (source !== "user" && Date.now() < opencodeUserScrollPauseUntilRef.current && !forceLatest) return;
+      if (!options?.force && !opencodeAutoFollowLatestRef.current && !forceLatest) return;
+      scrollOpencodeThreadToBottomNow({ hideJump: options?.hideJump });
+    });
+  }
+
+  function preserveOpencodePausedViewport() {
+    if (opencodeScrollModeRef.current !== "paused") return;
+    if (opencodeLoadingOlderRef.current) return;
+    const el = opencodeThreadRef.current;
+    const snapshot = opencodePausedScrollSnapshotRef.current;
+    if (!el || !snapshot) return;
+    const nextTop = Math.min(snapshot.top, Math.max(0, el.scrollHeight - el.clientHeight));
+    opencodeAutoScrollTokenRef.current += 1;
+    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
+    el.scrollTop = nextTop;
+    opencodePrevScrollTopRef.current = el.scrollTop;
+    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+  }
+
+  function resumeOpencodeFollowFromUserAction(sessionId: string) {
+    opencodeUserScrollPauseUntilRef.current = 0;
+    opencodeStickToBottomSessionRef.current = sessionId;
+    opencodeForceScrollLatestSessionRef.current = sessionId;
+    setOpencodeAutoFollow(true);
+    setOpencodeShowJumpLatest(false);
+    scheduleOpencodeScrollToBottom({ force: true, source: "user" });
+  }
+
   useEffect(() => {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
@@ -7566,10 +6135,13 @@ export function App() {
     if (!activeOpencodeSession?.loaded || opencodeMessages.length <= 0) return;
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (opencodeScrollModeRef.current === "paused") {
+      opencodePendingAnchorSessionIdRef.current = "";
+      return;
+    }
+    if (opencodeScrollModeRef.current !== "follow") return;
+    scheduleOpencodeScrollToBottom({ force: true, source: "system" });
     requestAnimationFrame(() => {
-      const current = opencodeThreadRef.current;
-      if (!current) return;
-      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
       opencodePendingAnchorSessionIdRef.current = "";
     });
   }, [activeOpencodeSessionId, activeOpencodeSession?.loaded, opencodeMessages.length]);
@@ -7578,20 +6150,47 @@ export function App() {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
     if (opencodeStickToBottomSessionRef.current !== sid) return;
+    if (!opencodeAutoFollowLatestRef.current) return;
     if (opencodeSessionLoading) return;
     const el = opencodeThreadRef.current;
     if (!el) return;
-    requestAnimationFrame(() => {
-      const current = opencodeThreadRef.current;
-      if (!current) return;
-      current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
-    });
+    if (opencodeScrollModeRef.current !== "follow") return;
+    // 如果当前不在底部附近，不自动滚动（避免流式结束后闪动）
+    if (!opencodeIsNearBottom(el, 120)) return;
+    scheduleOpencodeScrollToBottom();
   }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  useLayoutEffect(() => {
+    const sid = activeOpencodeSessionId.trim();
+    if (
+      sid &&
+      opencodeForceScrollLatestSessionRef.current === sid &&
+      opencodeScrollModeRef.current === "follow" &&
+      !opencodeSessionLoading
+    ) {
+      scrollOpencodeThreadToBottomNow();
+      return;
+    }
+    preserveOpencodePausedViewport();
+  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeMessages.length, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+
+  useEffect(() => {
+    cancelPendingOpencodeAutoScroll();
+    setOpencodeAutoFollow(true);
+    setOpencodeShowJumpLatest(false);
+    opencodePrevScrollTopRef.current = 0;
+    opencodeForceScrollLatestSessionRef.current = "";
+  }, [activeOpencodeSessionId]);
 
   function loadOlderOpencodeHistory() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     if (opencodeLoadingOlderRef.current) return;
+    cancelPendingOpencodeAutoScroll();
+    opencodeStickToBottomSessionRef.current = "";
+    setOpencodeAutoFollow(false);
+    setOpencodeShowJumpLatest(true);
+    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
     opencodeLoadingOlderRef.current = true;
     opencodePrevScrollHeightRef.current = el.scrollHeight;
     if (opencodeHasHiddenHistory) {
@@ -7614,11 +6213,48 @@ export function App() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    const nearBottom = maxScroll - el.scrollTop <= 24;
-    if (nearBottom) {
-      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-    } else {
+    const nearBottom = opencodeIsNearBottom(el, 24);
+    const now = Date.now();
+    if (now < opencodeProgrammaticScrollUntilRef.current) {
+      opencodePrevScrollTopRef.current = el.scrollTop;
+      if (nearBottom && opencodeScrollModeRef.current === "follow") {
+        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+        setOpencodeShowJumpLatest(false);
+      }
+      return;
+    }
+    const prevTop = opencodePrevScrollTopRef.current;
+    const movedUp = el.scrollTop < prevTop - 2;
+    const movedDown = el.scrollTop > prevTop + 2;
+    opencodePrevScrollTopRef.current = el.scrollTop;
+    const userScrollingUp = now < opencodeUserScrollUpUntilRef.current;
+    const userScrollingDown = now < opencodeUserScrollDownUntilRef.current;
+    if (movedUp && userScrollingUp) {
+      cancelPendingOpencodeAutoScroll();
       opencodeStickToBottomSessionRef.current = "";
+      setOpencodeAutoFollow(false);
+      setOpencodeShowJumpLatest(true);
+      opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+    } else if (movedUp && opencodeScrollModeRef.current === "follow") {
+      scheduleOpencodeScrollToBottom({ force: true, source: "system" });
+    } else if (opencodeScrollModeRef.current === "paused") {
+      if (userScrollingDown && movedDown) {
+        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
+      }
+      if (nearBottom && userScrollingDown) {
+        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+        setOpencodeAutoFollow(true);
+        setOpencodeShowJumpLatest(false);
+      } else {
+        setOpencodeShowJumpLatest(true);
+        if (movedDown && !userScrollingDown) {
+          preserveOpencodePausedViewport();
+        }
+      }
+    } else if (nearBottom) {
+      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
+      setOpencodeAutoFollow(true);
+      setOpencodeShowJumpLatest(false);
     }
     if (maxScroll <= 0) return;
     const topProgress = el.scrollTop / maxScroll;
@@ -7635,24 +6271,30 @@ export function App() {
     }
   }
 
-  function resumeOpencodeFollowFromUserAction(_sessionId: string) {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-  }
-
   function jumpOpencodeToLatest() {
     const el = opencodeThreadRef.current;
     if (!el) return;
     resumeOpencodeFollowFromUserAction(activeOpencodeSessionId);
-    setOpencodeShowJumpLatest(false);
   }
 
   function onOpencodeThreadWheel(event: React.WheelEvent<HTMLDivElement>) {
     const el = opencodeThreadRef.current;
     if (!el) return;
+    if (event.deltaY !== 0) {
+      opencodeUserScrollPauseUntilRef.current = Date.now() + 800;
+    }
     if (event.deltaY < 0) {
+      opencodeUserScrollUpUntilRef.current = Date.now() + 800;
+    }
+    if (event.deltaY < 0 && opencodeScrollModeRef.current === "follow") {
+      opencodeForceScrollLatestSessionRef.current = "";
+      cancelPendingOpencodeAutoScroll();
+      opencodeStickToBottomSessionRef.current = "";
+      setOpencodeAutoFollow(false);
       setOpencodeShowJumpLatest(true);
+    }
+    if (event.deltaY > 0) {
+      opencodeUserScrollDownUntilRef.current = Date.now() + 800;
     }
     if (event.deltaY >= 0) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -7675,6 +6317,10 @@ export function App() {
       const delta = el.scrollHeight - prevHeight;
       if (delta > 0) {
         el.scrollTop += delta;
+      }
+      opencodePrevScrollTopRef.current = el.scrollTop;
+      if (opencodeScrollModeRef.current === "paused") {
+        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
       }
       opencodeLoadingOlderRef.current = false;
       opencodePrevScrollHeightRef.current = 0;
@@ -7721,6 +6367,24 @@ export function App() {
   }, [showCommitActionMenu]);
 
   useEffect(() => {
+    if (!opencodePreviewImage) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpencodePreviewImage(null);
+        return;
+      }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      setOpencodePreviewImage((prev) => {
+        if (!prev || prev.images.length <= 1) return prev;
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        return { ...prev, index: (prev.index + delta + prev.images.length) % prev.images.length };
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [opencodePreviewImage]);
+
+  useEffect(() => {
     if (!showTopologyCreateDialog) return;
     const sourceId = topologyCreateSourceNodeId || topologySelectionId || topologyModel.primaryNodeId;
     if (!sourceId) return;
@@ -7762,19 +6426,21 @@ export function App() {
   const sideBar = (
     <div className="wb-sidebar-inner gt-sidebar-inner">
       <div className="gt-sidebar-top">
-        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSession()} disabled={!selectedRepo || !runtimeStatus.opencode.installed}>
+        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSessionForSidebar()} disabled={repos.length === 0 || !runtimeStatus.opencode.installed}>
           <span>＋</span>
           <span>New Session</span>
         </button>
       </div>
 
       <div className="gt-project-stack">
-        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地 Git 仓库。</div> : null}
+        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地工作区。</div> : null}
         {repos.map((repo) => {
           const expanded = expandedProjectIds.includes(repo.id);
           const repoSessions = getVisibleRepoSessions(repo.id);
           const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
           const repoSessionsLoading = isRepoSessionsLoading(repo.id);
+          const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
+          const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
           return (
             <div key={repo.id} className="gt-tree-group">
               <div
@@ -7797,6 +6463,20 @@ export function App() {
                   <span className={expanded ? "gt-tree-chevron is-open" : "gt-tree-chevron"} aria-hidden="true" />
                 </button>
                 <button
+                  className="gt-tree-add"
+                  aria-label={`在 ${repo.name} 新建会话`}
+                  title="新建会话"
+                  disabled={!runtimeStatus.opencode.installed}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (busy || !runtimeStatus.opencode.installed) return;
+                    startDraftSessionForRepo(repo);
+                  }}
+                >
+                  ＋
+                </button>
+                <button
                   className="gt-tree-toggle"
                   aria-label={expanded ? "收起项目" : "展开项目"}
                   onClick={() => toggleRepoSessions(repo)}
@@ -7805,9 +6485,9 @@ export function App() {
                 </button>
               </div>
 
-              {expanded ? (
+              {shouldRenderChildren ? (
                 <div className="gt-tree-children">
-                  {draftOpencodeSession && repo.id === selectedRepo?.id ? (
+                  {hasDraftForRepo ? (
                     <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
                       <span className="gt-session-title">New Session</span>
                       <span className="gt-session-meta">待输入，发送第一条消息后创建</span>
@@ -7820,9 +6500,6 @@ export function App() {
                       <span className="gt-tree-loading-row" />
                       <span className="gt-tree-loading-row short" />
                     </div>
-                  ) : null}
-                  {runtimeStatus.opencode.installed && !repoSessionsLoading && repoSessions.length === 0 ? (
-                    <div className="gt-empty-hint gt-tree-empty">当前项目还没有会话。</div>
                   ) : null}
                   {runtimeStatus.opencode.installed
                     ? repoSessions.map((session) => (
@@ -7855,7 +6532,10 @@ export function App() {
                             ];
                           });
                           setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                          setSelectedRepo(repo);
+                          setNewSessionTargetRepoId(repo.id);
+                          opencodeSessionsRepoIdRef.current = repo.id;
+                          if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+                          if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
                           setDraftOpencodeSession(false);
                           setActiveOpencodeSessionId(session.id);
                           bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
@@ -7913,7 +6593,8 @@ export function App() {
             ) : opencodeMessages.length === 0 ? null : (
               opencodeRenderedMessages.map((msg) => {
                 const isAssistant = msg.role === "assistant";
-                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && activeOpencodeSessionBusy;
+                const latestAssistantId = [...opencodeMessages].reverse().find((row) => row.role === "assistant")?.id || "";
+                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && msg.id === latestAssistantId && activeOpencodeSessionBusy;
                 const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
                 const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
                 const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
@@ -7934,10 +6615,6 @@ export function App() {
                       hasTimeline ? (
                         <div className="opencode-assistant-timeline">
                           {(() => {
-                            const reasoningIndexes = timelineGroups
-                              .map((item, groupIdx) => item.kind === "part" && String((item.part as { type?: string }).type || "") === "reasoning" ? groupIdx : -1)
-                              .filter((groupIdx) => groupIdx >= 0);
-                            const lastReasoningIndex = reasoningIndexes.length > 0 ? reasoningIndexes[reasoningIndexes.length - 1] : -1;
                             const activeReasoningPartId = isStreaming
                               ? [...renderParts]
                                 .reverse()
@@ -7965,23 +6642,13 @@ export function App() {
                                   </div>
                                 );
                               }
-                              const part = g.part;
-                              const t = String((part as { type?: string }).type || "");
-                              if (t === "text") {
-                                const text = String((part as { text?: string }).text || "").trim();
+                              if (g.kind === "reasoning") {
+                                const text = g.parts
+                                  .map((part) => String((part as { text?: string }).text || "").trim())
+                                  .filter(Boolean)
+                                  .join("\n\n");
                                 if (!text) return null;
-                                return (
-                                  <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                                    <MarkdownLite source={text} />
-                                    {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                                  </div>
-                                );
-                              }
-                              if (t === "reasoning") {
-                                const text = String((part as { text?: string }).text || "").trim();
-                                if (!text) return null;
-                                const keepOpen = !isStreaming || idx === lastReasoningIndex;
-                                const activeThink = isStreaming && String((g.part as { id?: string }).id || "") === activeReasoningPartId;
+                                const activeThink = isStreaming && g.parts.some((part) => String(part.id || "") === activeReasoningPartId);
                                 const thinkPreviewLines = text
                                   .split(/\n+/)
                                   .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
@@ -7991,17 +6658,21 @@ export function App() {
                                   ? thinkPreviewLines
                                   : ["Reading context", "Tracing changes", "Composing answer"];
                                 return (
-                                  <details key={`${msg.id}:${g.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"} open={keepOpen}>
+                                  <details key={`${msg.id}:${g.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}>
                                     <summary className="opencode-think-card-summary">
                                       <span className="opencode-think-label">
                                         <span className="opencode-think-spark" aria-hidden="true" />
-                                        <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
+                                        Think
                                       </span>
                                       {thinkPreview.length > 0 ? (
                                         <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
                                           <span className="opencode-think-carousel-track" style={{ ["--think-count" as any]: thinkPreview.length }}>
                                             {thinkPreview.map((line, lineIdx) => (
-                                              <span key={`${g.key}:think-preview:${lineIdx}`} className="opencode-think-carousel-line" style={{ ["--think-index" as any]: lineIdx }}>
+                                              <span
+                                                key={`${g.key}:think-preview:${lineIdx}`}
+                                                className="opencode-think-carousel-line"
+                                                style={{ ["--think-index" as any]: lineIdx }}
+                                              >
                                                 {line}
                                               </span>
                                             ))}
@@ -8013,6 +6684,19 @@ export function App() {
                                       <MarkdownLite source={text} />
                                     </div>
                                   </details>
+                                );
+                              }
+                              if (g.kind !== "part") return null;
+                              const part = g.part;
+                              const t = String((part as { type?: string }).type || "");
+                              if (t === "text") {
+                                const text = String((part as { text?: string }).text || "").trim();
+                                if (!text) return null;
+                                return (
+                                  <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
+                                    <MarkdownLite source={text} />
+                                    {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
+                                  </div>
                                 );
                               }
                               return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
@@ -8181,30 +6865,30 @@ export function App() {
                   ))}
                 </div>
               ) : null}
-              <div className="opencode-composer-body opencode-composer-body-inline">
+              <div className="opencode-composer-main">
+                {opencodeSlashOpen && opencodeSlashSuggestions.length > 0 ? (
+                  <div className="opencode-slash-popover">
+                    {opencodeSlashSuggestions.map((cmd, idx) => (
+                      <button
+                        key={cmd.id}
+                        type="button"
+                        className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
+                        onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
+                        onClick={() => {
+                          setOpencodePromptInput(`/${cmd.trigger} `);
+                          setOpencodeSlashOpen(false);
+                          opencodeInputRef.current?.focus();
+                        }}
+                      >
+                        <span className="opencode-slash-trigger">/{cmd.trigger}</span>
+                        <span className="opencode-slash-title">{cmd.title}</span>
+                        {cmd.description ? <span className="opencode-slash-desc">{cmd.description}</span> : null}
+                        <span className={`opencode-slash-badge ${cmd.source}`}>{cmd.source}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="opencode-input-shell opencode-composer-editor">
-                  {opencodeSlashOpen && opencodeSlashSuggestions.length > 0 ? (
-                    <div className="opencode-slash-popover">
-                      {opencodeSlashSuggestions.map((cmd, idx) => (
-                        <button
-                          key={cmd.id}
-                          type="button"
-                          className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
-                          onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
-                          onClick={() => {
-                            setOpencodePromptInput(`/${cmd.trigger} `);
-                            setOpencodeSlashOpen(false);
-                            opencodeInputRef.current?.focus();
-                          }}
-                        >
-                          <span className="opencode-slash-trigger">/{cmd.trigger}</span>
-                          <span className="opencode-slash-title">{cmd.title}</span>
-                          {cmd.description ? <span className="opencode-slash-desc">{cmd.description}</span> : null}
-                          <span className={`opencode-slash-badge ${cmd.source}`}>{cmd.source}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
                   <textarea
                     ref={opencodeInputRef}
                     className="opencode-input"
@@ -8212,6 +6896,9 @@ export function App() {
                     value={opencodePromptInput}
                     onChange={(e) => {
                       const value = e.target.value;
+                      const historyKey = getOpencodePromptHistorySessionKey();
+                      opencodePromptHistoryIndexBySessionRef.current[historyKey] = -1;
+                      opencodePromptHistoryDraftBySessionRef.current[historyKey] = value;
                       setOpencodePromptInput(value);
                       const isSlash = /^\//.test(value) && !value.includes(" ");
                       setOpencodeSlashOpen(isSlash);
@@ -8244,6 +6931,16 @@ export function App() {
                           return;
                         }
                       }
+                      if (e.key === "ArrowUp" && shouldUsePromptHistoryKey(e, "older")) {
+                        e.preventDefault();
+                        browseOpencodePromptHistory("older");
+                        return;
+                      }
+                      if (e.key === "ArrowDown" && shouldUsePromptHistoryKey(e, "newer")) {
+                        e.preventDefault();
+                        browseOpencodePromptHistory("newer");
+                        return;
+                      }
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         void runOpencodePrompt();
@@ -8259,6 +6956,49 @@ export function App() {
                     rows={1}
                   />
                 </div>
+              </div>
+              <div className="opencode-composer-actions">
+                <div className="opencode-attachment-menu-wrap">
+                  <button
+                    type="button"
+                    className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
+                    onClick={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
+                    aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
+                    aria-expanded={opencodeAttachmentMenuOpen}
+                    title="添加附件"
+                  >
+                    <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
+                  </button>
+                  {opencodeAttachmentMenuOpen ? (
+                    <div className="opencode-attachment-menu">
+                      <button
+                        type="button"
+                        className="opencode-attachment-menu-item"
+                        onClick={() => {
+                          setOpencodeAttachmentMenuOpen(false);
+                          opencodeImageInputRef.current?.click();
+                        }}
+                      >
+                        <span className="opencode-attachment-menu-icon" aria-hidden="true">▧</span>
+                        <span>上传图片</span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <input
+                  ref={opencodeImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
+                    setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+                    e.currentTarget.value = "";
+                  }}
+                />
                 <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
                   <button
                     type="button"
@@ -8338,22 +7078,6 @@ export function App() {
                           <span className="opencode-model-picker-config-tail">⌘</span>
                         </button>
                       </div>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="opencode-attachment-menu-wrap">
-                  <button
-                    type="button"
-                    className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
-                    onClick={() => setOpencodeAttachmentMenuOpen((v) => !v)}
-                    aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
-                    aria-expanded={opencodeAttachmentMenuOpen}
-                  >
-                    <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
-                  </button>
-                  {opencodeAttachmentMenuOpen ? (
-                    <div className="opencode-attachment-menu">
-                      <div className="opencode-attachment-menu-hint">粘贴图片到输入框即可添加附件</div>
                     </div>
                   ) : null}
                 </div>
@@ -8736,6 +7460,9 @@ branches.forEach((b) => {
                               e.preventDefault();
                               setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject });
                             }}
+                            onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject, author: commit.author, date: commit.date })}
+                            onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === commit.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
+                            onMouseLeave={() => setCommitHoverCard(null)}
                           >
                             <span className="gt-gittree-commit-index">{index === 0 ? "HEAD" : index + 1}</span>
                             <span className="gt-gittree-commit-dot" style={{ background: activeTone.accent }} />
@@ -8851,6 +7578,7 @@ branches.forEach((b) => {
               <div className="gt-right-card-head gt-changes-pane-head">
                 <div className="gt-changes-header">
                   <strong>Changes</strong>
+                  <span className="gt-changes-context"><span>Local</span>{worktreeOverview.branch || selectedBranch || "no branch"}</span>
                 </div>
                 <div className="toolbar" style={{ gap: 6 }}>
                   {worktreeChangeStats.total > 0 ? (
@@ -8938,7 +7666,7 @@ branches.forEach((b) => {
                           <span className="gt-changes-group-count">{worktreeChangeStats.staged}</span>
                         </div>
                         <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(stagedTree)}
+                          {renderWorktreeNodes(stagedTree, 0, "unstage")}
                         </div>
                       </div>
                     )}
@@ -8951,7 +7679,7 @@ branches.forEach((b) => {
                           <span className="gt-changes-group-count">{worktreeChangeStats.unstaged}</span>
                         </div>
                         <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(unstagedTree)}
+                          {renderWorktreeNodes(unstagedTree, 0, "stage")}
                         </div>
                       </div>
                     )}
@@ -9033,32 +7761,15 @@ branches.forEach((b) => {
               </div>
               {selectedWorktreeFile ? (
                 <div className="gt-monaco-diff-shell">
-                  <DiffEditor
-                    key={selectedWorktreeFile}
-                    height="100%"
-                    width="100%"
-                    original={selectedWorktreeContent.original}
-                    modified={selectedWorktreeContent.modified}
-                    language={getMonacoLanguage(selectedWorktreeFile)}
-                    theme={theme === "light" ? "light" : "vs-dark"}
-                    options={{
-                      readOnly: true,
-                      renderSideBySide: true,
-                      automaticLayout: true,
-                      minimap: { enabled: false },
-                      scrollBeyondLastLine: false,
-                      renderOverviewRuler: false,
-                      folding: true,
-                      fontSize: 12,
-                      lineHeight: 18,
-                      wordWrap: "off",
-                      scrollbar: {
-                        alwaysConsumeMouseWheel: false,
-                        horizontalScrollbarSize: 10,
-                        verticalScrollbarSize: 10
-                      }
-                    }}
-                  />
+                  <Suspense fallback={<div className="gt-worktree-patch-empty">Loading diff viewer...</div>}>
+                    <MonacoDiffViewer
+                      filePath={selectedWorktreeFile}
+                      original={selectedWorktreeContent.original}
+                      modified={selectedWorktreeContent.modified}
+                      language={getMonacoLanguage(selectedWorktreeFile)}
+                      theme={theme}
+                    />
+                  </Suspense>
                 </div>
               ) : (
                 <div className="gt-worktree-patch-empty">选择左侧文件后查看 patch。</div>
@@ -9121,60 +7832,128 @@ branches.forEach((b) => {
                   </div>
                 </aside>
               ) : null}
-              <div className="gt-terminal-body" onClick={() => terminalInputRef.current?.focus()}>
+              <div className="gt-terminal-body" ref={terminalBodyRef} onClick={() => terminalInputRef.current?.focus()}>
                 <div ref={terminalLogRef} className="gt-terminal-console">
                 <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
                 <div className="gt-terminal-inline-input">
                   <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
-                  <input
-                    ref={terminalInputRef}
-                    className="gt-terminal-input"
-                    value={activeTerminalTab?.input || ""}
-                    onChange={(e) => {
-                      if (!activeTerminalTab) return;
-                      updateTerminalTabById(activeTerminalTab.id, { input: e.target.value });
-                    }}
-                    onKeyDown={(e) => {
-                      if (!activeTerminalTab) return;
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void runTerminalCommand();
-                        return;
+                  <div className="gt-terminal-input-shell" ref={terminalInputShellRef}>
+                    <input
+                      ref={terminalInputRef}
+                      className="gt-terminal-input"
+                      value={activeTerminalTab?.input || ""}
+                      onChange={(e) => {
+                        if (!activeTerminalTab) return;
+                        updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+                          ...prev,
+                          input: e.target.value,
+                          historyIndex: -1,
+                          historyDraft: e.target.value,
+                          completionItems: [],
+                          completionIndex: 0,
+                          completionToken: ""
+                        }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (!activeTerminalTab) return;
+                        if (e.key === "Escape") {
+                          updateTerminalTabById(activeTerminalTab.id, { completionItems: [], completionIndex: 0, completionToken: "" });
+                          return;
+                        }
+                        if (activeTerminalTab.completionItems.length > 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                          e.preventDefault();
+                          updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+                            ...prev,
+                            completionIndex: e.key === "ArrowUp"
+                              ? (prev.completionIndex - 1 + prev.completionItems.length) % prev.completionItems.length
+                              : (prev.completionIndex + 1) % prev.completionItems.length
+                          }));
+                          return;
+                        }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void runTerminalCommand();
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          browseTerminalHistory(activeTerminalTab.id, "older");
+                          return;
+                        }
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          browseTerminalHistory(activeTerminalTab.id, "newer");
+                          return;
+                        }
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          void applyTerminalTabCompletion(activeTerminalTab);
+                          return;
+                        }
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
+                          e.preventDefault();
+                          void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
+                            // ignore
+                          });
+                        }
+                      }}
+                      placeholder=""
+                      spellCheck={false}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                    />
+                    {activeTerminalGhostText ? (
+                      <span
+                        className="gt-terminal-ghost"
+                        style={{ left: `${Math.max(0, (activeTerminalTab?.input || "").length) * 7.05}px` }}
+                      >
+                        {activeTerminalGhostText}
+                      </span>
+                    ) : null}
+                    {activeTerminalTab?.completionItems?.length ? (() => {
+                      const items = activeTerminalTab.completionItems;
+                      const idx = activeTerminalTab.completionIndex;
+                      const popoverContent = (
+                        <div className={`gt-terminal-completion-popover${terminalInputNearTop ? " is-below" : ""}`}>
+                          {items.map((item, i) => {
+                            const group = getTerminalCompletionGroup(activeTerminalTab.input, item);
+                            const prev = i > 0 ? getTerminalCompletionGroup(activeTerminalTab.input, items[i - 1]) : "";
+                            return (
+                              <Fragment key={`terminal-completion-wrap-${item}-${i}`}>
+                                {group !== prev ? <div className="gt-terminal-completion-group">{group}</div> : null}
+                                <button
+                                  type="button"
+                                  className={i === idx ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectTerminalCompletion(activeTerminalTab, i)}
+                                >
+                                  <span>{item}</span>
+                                  {i === idx ? <kbd>TAB</kbd> : null}
+                                </button>
+                              </Fragment>
+                            );
+                          })}
+                        </div>
+                      );
+                      if (terminalInputNearTop) {
+                        const inputRect = terminalInputShellRef.current?.getBoundingClientRect();
+                        const style: CSSProperties = inputRect ? {
+                          position: "fixed",
+                          left: inputRect.left,
+                          top: inputRect.bottom + 6,
+                          minWidth: Math.min(420, inputRect.width),
+                          maxWidth: Math.min(560, inputRect.width),
+                          zIndex: 9999
+                        } : {};
+                        return createPortal(
+                          <div style={style}>{popoverContent}</div>,
+                          document.body
+                        );
                       }
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
-                          if (prev.history.length === 0) return prev;
-                          const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
-                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
-                        });
-                        return;
-                      }
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        updateTerminalTabById(activeTerminalTab.id, (prev) => {
-                          if (prev.history.length === 0) return prev;
-                          if (prev.historyIndex <= 0) {
-                            return { ...prev, historyIndex: -1, input: "" };
-                          }
-                          const next = prev.historyIndex - 1;
-                          return { ...prev, historyIndex: next, input: prev.history[next] || "" };
-                        });
-                        return;
-                      }
-                      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
-                        e.preventDefault();
-                        void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
-                          // ignore
-                        });
-                      }
-                    }}
-                    placeholder=""
-                    spellCheck={false}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                  />
+                      return popoverContent;
+                    })() : null}
+                  </div>
                 </div>
                 </div>
               </div>
@@ -9227,11 +8006,11 @@ branches.forEach((b) => {
         <div className="wb-editor-rail__head-right" data-tauri-drag-region aria-hidden={!rightDrawerOpen}>
           <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
             <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
-              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="Worktree" aria-label="Worktree">
-                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
-              </button>
               <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
                 <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
+              </button>
+              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
+                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
               </button>
               <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
                 <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
@@ -9281,6 +8060,92 @@ branches.forEach((b) => {
     if (mobileServiceStatusError) return { color: "var(--danger)", label: `Mobile service: error (${mobileServiceStatusError})` };
     return { color: "color-mix(in srgb, var(--accent) 30%, orange)", label: "Mobile service: starting" };
   })();
+  const opencodeProviderPickerModelCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const provider of opencodeProviderPickerCandidates) {
+      out[provider] = (opencodeModelsByProvider[provider] || []).length;
+    }
+    return out;
+  }, [opencodeProviderPickerCandidates, opencodeModelsByProvider]);
+
+  async function saveOpencodeCustomProvider() {
+    try {
+      setOpencodeProviderConfigBusy(true);
+      setOpencodeConfigBusy(true);
+      const pid = opencodeProviderConfig.provider.trim();
+      const mid = opencodeSelectedModel.trim();
+      const full = `${pid}/${mid}`;
+      const key = opencodeProviderConfig.apiKey?.trim() || "";
+      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
+        repoPath,
+        provider: pid,
+        npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
+        name: opencodeProviderConfig.name || pid,
+        baseUrl: opencodeProviderConfig.baseUrl,
+        apiKey: key,
+        headers: opencodeProviderConfig.headers || {},
+        endpoint: opencodeProviderConfig.endpoint || "",
+        region: opencodeProviderConfig.region || "",
+        profile: opencodeProviderConfig.profile || "",
+        project: opencodeProviderConfig.project || "",
+        location: opencodeProviderConfig.location || "",
+        resourceName: opencodeProviderConfig.resourceName || "",
+        enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
+        timeout: opencodeProviderConfig.timeout || "",
+        chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
+        modelId: mid,
+        modelName: mid
+      });
+      await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
+      const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
+      const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
+      const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
+      if (!hasProvider || !hasModel) {
+        appendOpencodeDebugLog(
+          `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
+        );
+        appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
+        throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
+      }
+      await refreshOpencodeCatalog();
+      await refreshOpencodeServerConfig();
+      setShowOpencodeCustomProvider(false);
+      setShowOpencodeModelPicker(true);
+      setOpencodeModelPickerSearch("");
+      setMessage(`Saved configuration: ${full}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("Save configuration failed");
+    } finally {
+      setOpencodeConfigBusy(false);
+      setOpencodeProviderConfigBusy(false);
+    }
+  }
+
+  async function saveOpencodeAuthKey(providerId: string) {
+    if (!ensureRepoSelected()) return;
+    const authPid = providerId.trim();
+    const key = opencodeConnectApiKey.trim();
+    if (!authPid || !key) return;
+    setOpencodeConnectBusy(true);
+    setError("");
+    try {
+      await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+      await refreshOpencodeCatalog();
+      if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+        await fetchOpencodeModels(authPid);
+      }
+      setOpencodeProviderPickerProvider(authPid);
+      setMessage(`已更新密钥: ${authPid}`);
+      setOpencodeConnectApiKey("");
+      setShowOpencodeAuthDialogFor("");
+    } catch (e) {
+      setError(String(e));
+      setMessage("更新密钥失败");
+    } finally {
+      setOpencodeConnectBusy(false);
+    }
+  }
 
   const panel = <div className="wb-panel-inner" />;
 
@@ -9301,9 +8166,9 @@ branches.forEach((b) => {
               <div className="wb-status-group">
                 <button className="wb-status-btn" title="当前仓库/分支">
                   {(() => {
-                    const mainRepo = repos.find(r => r.id === selectedRepo?.id);
-                    const isWorktree = mainRepo && selectedRepo && mainRepo.path !== selectedRepo.path;
-                    return (selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
+                    const mainRepo = repos.find(r => r.id === gitPaneRepo?.id);
+                    const isWorktree = mainRepo && gitPaneRepo && mainRepo.path !== gitPaneRepo.path;
+                    return (gitPaneRepo?.name ?? selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
                   })()}
                 </button>
                 <button
@@ -9387,6 +8252,13 @@ branches.forEach((b) => {
                       key={`${g.sha}-${idx}`}
                       className={selectedCommit === g.sha ? "graph-row selected" : "graph-row"}
                       onClick={() => setSelectedCommit(g.sha)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject });
+                      }}
+                      onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject, author: g.author, date: g.date })}
+                      onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === g.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
+                      onMouseLeave={() => setCommitHoverCard(null)}
                     >
                       <span className="graph-ascii graph-ascii-placeholder" aria-hidden="true" />
                       <span className="graph-main">
@@ -9542,105 +8414,27 @@ branches.forEach((b) => {
         ) : null}
 
         {showSettings ? (
-          <div className="modal-mask" onClick={() => void closeSettingsModal()}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Settings</h3>
-              <p className="small muted">Theme and layout preferences</p>
-
-              <div className="settings-grid">
-                <div className="settings-row">
-                  <div className="settings-label">Theme</div>
-                  <div className="toolbar">
-                    <button className="chip" onClick={toggleTheme} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
-                      {theme === "dark" ? "Light" : "Dark"}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-label">Plugins</div>
-                  <div className="toolbar">
-                    <button
-                      className="chip"
-                      onClick={() => {
-                        setShowEnvSetup(true);
-                        const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
-                          (d) => !d.checked
-                        );
-                        if (unchecked) void refreshRuntimeRequirements();
-                      }}
-                    >
-                      Manage plugins
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-label">Mobile Control API</div>
-                  <div className="settings-config-btn-wrap">
-                    <button
-                      className="chip"
-                      disabled={!runtimeStatus.giteam.installed}
-                      title={runtimeStatus.giteam.installed ? "Configure Mobile Control API" : "Install giteam plugin first"}
-                      onClick={openMobileControlDialog}
-                    >
-                      Configure
-                    </button>
-                  </div>
-                </div>
-                {runtimeStatus.giteam.installed ? null : (
-                  <div className="settings-row">
-                    <div className="settings-label">Mobile Control API</div>
-                    <div className="small muted">Install giteam plugin first. This feature is provided by giteam CLI.</div>
-                  </div>
-                )}
-
-                {runtimeStatus.opencode.installed ? (
-                  <div className="settings-row">
-                    <div className="settings-label">OpenCode API</div>
-                    <div className="settings-config-btn-wrap">
-                      <button className="chip" onClick={() => setShowOpencodeApiDialog(true)}>
-                        Configure
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {runtimeStatus.opencode.installed ? (
-                  <>
-                    <div className="settings-row">
-                      <div className="settings-label">Model management</div>
-                      <div className="toolbar">
-                        <button
-                          className="chip"
-                          onClick={() => {
-                            setOpencodeProviderPickerProvider(
-                              parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
-                            );
-                            setShowOpencodeProviderPicker(true);
-                          }}
-                        >
-                          Open manager
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : null}
-                {runtimeStatus.opencode.installed ? null : (
-                  <div className="settings-row">
-                    <div className="settings-label">Model management</div>
-                    <div className="small muted">Install OpenCode plugin first.</div>
-                  </div>
-                )}
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-                <button className="chip" onClick={() => void closeSettingsModal()}>
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
+          <SettingsDialog
+            theme={theme}
+            runtimeStatus={runtimeStatus}
+            onClose={() => void closeSettingsModal()}
+            onToggleTheme={toggleTheme}
+            onOpenRuntimeSetup={() => {
+              setShowEnvSetup(true);
+              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
+                (d) => !d.checked
+              );
+              if (unchecked) void refreshRuntimeRequirements();
+            }}
+            onOpenMobileControl={openMobileControlDialog}
+            onOpenOpenCodeApi={() => setShowOpencodeApiDialog(true)}
+            onOpenModelManager={() => {
+              setOpencodeProviderPickerProvider(
+                parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
+              );
+              setShowOpencodeProviderPicker(true);
+            }}
+          />
         ) : null}
 
         {showMobileControlDialog && runtimeStatus.giteam.installed ? (
@@ -9785,33 +8579,11 @@ branches.forEach((b) => {
         ) : null}
 
         {showOpencodeApiDialog ? (
-          <div className="modal-mask" onClick={() => void closeOpencodeApiDialog()}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-              <div className="env-setup-head">
-                <h3>OpenCode API</h3>
-              </div>
-              <div className="settings-provider-form">
-                <div className="mobile-control-field">
-                  <div className="small muted">Service port</div>
-                  <input
-                    className="path-input"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    placeholder="Service port"
-                    value={String(opencodeServiceSettings.port)}
-                    onChange={(e) => {
-                      const next = Number(e.target.value || "0");
-                      setOpencodeServiceSettings((prev) => ({
-                        ...prev,
-                        port: next
-                      }));
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+          <OpenCodeApiDialog
+            port={opencodeServiceSettings.port}
+            onClose={() => void closeOpencodeApiDialog()}
+            onPortChange={(port) => setOpencodeServiceSettings((prev) => ({ ...prev, port }))}
+          />
         ) : null}
 
         {showOpencodeProviderPicker ? (
@@ -9858,55 +8630,25 @@ branches.forEach((b) => {
             </div>
               <div className="settings-model-lists opencode-provider-picker-grid">
                 <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                  {opencodeProviderPickerCandidates.length === 0 ? (
-                    <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>
-                  ) : null}
-                  {opencodeProviderPickerCandidates.map((provider, idx) => {
-                    const connected = opencodeConnectedProviders.includes(provider);
-                    const tag = getOpencodeProviderTag(provider);
-                    const prev = idx > 0 ? opencodeProviderPickerCandidates[idx - 1] : "";
-                    const prevConnected = prev ? opencodeConnectedProviders.includes(prev) : connected;
-                    const shouldSplit = idx > 0 && prevConnected && !connected;
-                    const modelCount = (opencodeModelsByProvider[provider] || []).length;
-                    return (
-                      <Fragment key={`provider-pick-wrap-${provider}`}>
-                        {shouldSplit ? (
-                          <div className="opencode-provider-divider small muted">
-                            未连接
-                          </div>
-                        ) : null}
-                        <button
-                          key={`provider-pick-${provider}`}
-                          className={opencodeProviderPickerProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setOpencodeProviderPickerProvider(provider);
-                            if (!connected) {
-                              // Show inline connect UI on the right column (matches OpenCode "connect" UX).
-                              setOpencodeConnectProviderId(provider);
-                              setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
-                              setOpencodeConnectApiKey("");
-                              return;
-                            }
-                            setShowOpencodeAuthDialogFor("");
-                          }}
-                          title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
-                        >
-                          <span className="opencode-provider-row-main">
-                            {opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                            <small>{`${provider} · ${tag}`}</small>
-                          </span>
-                          <span className="opencode-provider-row-side">
-                            <small className="small muted">{modelCount} models</small>
-                            <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
-                              {connected ? "已连接" : "未连接"}
-                            </span>
-                          </span>
-                        </button>
-                      </Fragment>
-                    );
-                  })}
+                  <OpenCodeProviderList
+                    providers={opencodeProviderPickerCandidates}
+                    selectedProvider={opencodeProviderPickerProvider}
+                    connectedProviders={opencodeConnectedProviders}
+                    providerNames={opencodeProviderNames}
+                    modelCountsByProvider={opencodeProviderPickerModelCounts}
+                    getProviderTag={getOpencodeProviderTag}
+                    getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
+                    onSelectProvider={(provider, connected) => {
+                      setOpencodeProviderPickerProvider(provider);
+                      if (!connected) {
+                        setOpencodeConnectProviderId(provider);
+                        setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
+                        setOpencodeConnectApiKey("");
+                        return;
+                      }
+                      setShowOpencodeAuthDialogFor("");
+                    }}
+                  />
                 </div>
                 <div className="settings-model-col" style={{ maxHeight: 420 }}>
                   {(() => {
@@ -9925,9 +8667,8 @@ branches.forEach((b) => {
                     const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
                   const configuredPool = cfgPid ? (opencodeConfiguredModelsByProvider[cfgPid] ?? []) : [];
                   const providerPool = pid ? (opencodeModelsByProvider[pid] ?? []) : [];
-                  // Keep full provider list visible while preserving configured entries.
-                  // This avoids list shrinking after enabling one model.
-                  const pool = Array.from(new Set([...providerPool, ...configuredPool])).sort((a, b) => a.localeCompare(b));
+                  // Prefer live /provider models. Config-only rows are shown only before the provider catalog is available.
+                  const pool = (providerPool.length > 0 ? providerPool : configuredPool).slice().sort((a, b) => a.localeCompare(b));
                     const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
                     const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
                     if (!opencodeProviderPickerProvider) {
@@ -10051,85 +8792,46 @@ branches.forEach((b) => {
                         </div>
                       );
                     }
-                    if (filtered.length === 0) {
-                      return (
-                        <div className="opencode-provider-right-panel">
-                          {providerHeader}
-                          {authBlock}
-                          <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>
-                        </div>
-                      );
-                    }
                     return (
                       <div className="opencode-provider-right-panel">
                         {providerHeader}
                         {authBlock}
-                        {filtered.map((mid) => {
-                          const ref = `${cfgPid}/${mid}`;
-                          const refNorm = normalizeModelRef(ref);
-                          const configured = (opencodeConfiguredModelsByProvider[cfgPid] ?? []).includes(mid);
-                          const locallyEnabled = !!refNorm && opencodeEnabledModels.has(refNorm);
-                          const enabled = !!refNorm && !opencodeHiddenModels.has(refNorm) && (configured || locallyEnabled);
-                          const modelDisplay =
-                            opencodeModelNamesByProvider[pid]?.[mid] ||
-                            opencodeConfiguredModelNamesByProvider[cfgPid]?.[mid] ||
-                            mid;
-                          return (
-                            <div
-                              key={`provider-model-pick-${refNorm || ref}`}
-                              className={
-                                normalizeModelRef(activeOpencodeModel) === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"
-                              }
-                            >
-                              <button
-                                className="opencode-provider-model-main"
-                                onClick={() => {
-                                  if (!refNorm) return;
-                                  void applyOpencodeModel(refNorm);
-                                }}
-                                title={refNorm || ref}
-                              >
-                                <span>{modelDisplay}</span>
-                                {modelDisplay !== mid ? <small>{mid}</small> : null}
-                              </button>
-                              <button
-                                type="button"
-                                className={enabled ? "opencode-switch is-on" : "opencode-switch"}
-                                aria-pressed={enabled}
-                                aria-label={enabled ? "隐藏模型" : "启用模型"}
-                                onClick={async (e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (!refNorm) return;
-                                  if (enabled) {
-                                    setOpencodeHiddenModels((prev) => {
-                                      const next = new Set(prev);
-                                      next.add(refNorm);
-                                      return next;
-                                    });
-                                    setOpencodeEnabledModels((prev) => {
-                                      const next = new Set(prev);
-                                      next.delete(refNorm);
-                                      return next;
-                                    });
-                                    return;
-                                  }
-                                  // Local enable semantics: unhide + mark enabled immediately.
-                                  setOpencodeHiddenModels((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(refNorm);
-                                    return next;
-                                  });
-                                  setOpencodeEnabledModels((prev) => {
-                                    const next = new Set(prev);
-                                    next.add(refNorm);
-                                    return next;
-                                  });
-                                }}
-                              />
-                            </div>
-                          );
-                        })}
+                        <OpenCodeProviderModelList
+                          models={filtered}
+                          providerId={pid}
+                          configuredProviderId={cfgPid}
+                          activeModel={activeOpencodeModel}
+                          configuredModelsByProvider={opencodeConfiguredModelsByProvider}
+                          configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
+                          modelNamesByProvider={opencodeModelNamesByProvider}
+                          hiddenModels={opencodeHiddenModels}
+                          enabledModels={opencodeEnabledModels}
+                          onSelectModel={(ref) => void applyOpencodeModel(ref)}
+                          onHideModel={(ref) => {
+                            setOpencodeHiddenModels((prev) => {
+                              const next = new Set(prev);
+                              next.add(ref);
+                              return next;
+                            });
+                            setOpencodeEnabledModels((prev) => {
+                              const next = new Set(prev);
+                              next.delete(ref);
+                              return next;
+                            });
+                          }}
+                          onEnableModel={(ref) => {
+                            setOpencodeHiddenModels((prev) => {
+                              const next = new Set(prev);
+                              next.delete(ref);
+                              return next;
+                            });
+                            setOpencodeEnabledModels((prev) => {
+                              const next = new Set(prev);
+                              next.add(ref);
+                              return next;
+                            });
+                          }}
+                        />
                       </div>
                     );
                   })()}
@@ -10139,304 +8841,62 @@ branches.forEach((b) => {
           </div>
         ) : null}
 
-        {showOpencodeAuthDialogFor ? (
-          <div className="modal-mask" onClick={() => setShowOpencodeAuthDialogFor("")}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
-              {(() => {
-                const pid = showOpencodeAuthDialogFor.trim();
-                const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                const tag = getOpencodeProviderTag(pid);
-                const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                return (
-                  <>
-                    <div className="env-setup-head">
-                      <h3>{`更新 API Key · ${pretty}`}</h3>
-                      <button className="chip" onClick={() => setShowOpencodeAuthDialogFor("")}>Close</button>
-                    </div>
-                    <p className="small muted">{`${tag} provider`}</p>
-                    <div className="settings-provider-form" style={{ marginTop: 8 }}>
-                      <input
-                        className="path-input"
-                        placeholder="输入新的 API 密钥"
-                        value={keyValue}
-                        onChange={(e) => {
-                          setOpencodeConnectProviderId(pid);
-                          setOpencodeConnectProviderName(pretty);
-                          setOpencodeConnectApiKey(e.target.value);
-                        }}
-                      />
-                    </div>
-                    <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
-                      <button
-                        className="chip"
-                        disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                        onClick={async () => {
-                          if (!ensureRepoSelected()) return;
-                          const authPid = pid.trim();
-                          const key = opencodeConnectApiKey.trim();
-                          if (!authPid || !key) return;
-                          setOpencodeConnectBusy(true);
-                          setError("");
-                          try {
-                            await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                            await refreshOpencodeCatalog();
-                            if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                              await fetchOpencodeModels(authPid);
-                            }
-                            setOpencodeProviderPickerProvider(authPid);
-                            setMessage(`已更新密钥: ${authPid}`);
-                            setOpencodeConnectApiKey("");
-                            setShowOpencodeAuthDialogFor("");
-                          } catch (e) {
-                            setError(String(e));
-                            setMessage("更新密钥失败");
-                          } finally {
-                            setOpencodeConnectBusy(false);
-                          }
-                        }}
-                      >
-                        {opencodeConnectBusy ? "Saving..." : "更新 API Key"}
-                      </button>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        ) : null}
+        {showOpencodeAuthDialogFor ? (() => {
+          const pid = showOpencodeAuthDialogFor.trim();
+          const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+          const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+          return (
+            <OpenCodeAuthDialog
+              providerId={opencodeConnectProviderId === pid ? pid : ""}
+              providerName={pretty}
+              providerTag={getOpencodeProviderTag(pid)}
+              apiKey={keyValue}
+              busy={opencodeConnectBusy}
+              onClose={() => setShowOpencodeAuthDialogFor("")}
+              onApiKeyChange={(value) => {
+                setOpencodeConnectProviderId(pid);
+                setOpencodeConnectProviderName(pretty);
+                setOpencodeConnectApiKey(value);
+              }}
+              onSave={() => void saveOpencodeAuthKey(pid)}
+            />
+          );
+        })() : null}
 
         {showOpencodeCustomProvider ? (
-          <div className="modal-mask" onClick={() => setShowOpencodeCustomProvider(false)}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
-              <div className="env-setup-head">
-                <h3>自定义提供商</h3>
-                <button className="chip" onClick={() => setShowOpencodeCustomProvider(false)}>Close</button>
-              </div>
-              <p className="small muted">
-                OpenAI 兼容提供商（参考 `https://opencode.ai/docs/providers/#custom-provider`）。
-              </p>
-              <div className="settings-provider-form">
-                <input
-                  className="path-input"
-                  placeholder="provider id（例如 vllm / myprovider）"
-                  value={opencodeProviderConfig.provider}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, provider: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="显示名称（可选）"
-                  value={opencodeProviderConfig.name}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, name: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="baseURL（例如 http://127.0.0.1:8000/v1）"
-                  value={opencodeProviderConfig.baseUrl}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, baseUrl: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="API Key（可空；支持 {env:ENV_NAME}）"
-                  value={opencodeProviderConfig.apiKey}
-                  onChange={(e) => setOpencodeProviderConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
-                />
-                <input
-                  className="path-input"
-                  placeholder="model id（例如 qwen3.5_35b_a3b）"
-                  value={opencodeSelectedModel}
-                  onChange={(e) => setOpencodeSelectedModel(e.target.value)}
-                />
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    disabled={opencodeProviderConfigBusy || opencodeConfigBusy || !opencodeProviderConfig.provider.trim() || !opencodeSelectedModel.trim()}
-                    onClick={async () => {
-                      try {
-                        setOpencodeProviderConfigBusy(true);
-                        setOpencodeConfigBusy(true);
-                        const pid = opencodeProviderConfig.provider.trim();
-                        const mid = opencodeSelectedModel.trim();
-                        const full = `${pid}/${mid}`;
-                        // OpenCode web flow:
-                        // 1) PUT /auth/:id with {type:"api", key:"..."} when apiKey provided
-                        // 2) PATCH /config (or /global/config) with provider config (baseURL/models/headers),
-                        //    and only re-enable current provider from disabled_providers.
-                        const key = opencodeProviderConfig.apiKey?.trim() || "";
-                        await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-                          repoPath,
-                          provider: pid,
-                          npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
-                          name: opencodeProviderConfig.name || pid,
-                          baseUrl: opencodeProviderConfig.baseUrl,
-                          apiKey: key,
-                          headers: opencodeProviderConfig.headers || {},
-                          endpoint: opencodeProviderConfig.endpoint || "",
-                          region: opencodeProviderConfig.region || "",
-                          profile: opencodeProviderConfig.profile || "",
-                          project: opencodeProviderConfig.project || "",
-                          location: opencodeProviderConfig.location || "",
-                          resourceName: opencodeProviderConfig.resourceName || "",
-                          enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
-                          timeout: opencodeProviderConfig.timeout || "",
-                          chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
-                          modelId: mid,
-                          modelName: mid
-                        });
-                        await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
-                        const effective = await fetchOpencodeServerConfigForChat();
-                        const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
-                        const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
-                        if (!hasProvider || !hasModel) {
-                          appendOpencodeDebugLog(
-                            `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
-                          );
-                          appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
-                          throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
-                        }
-                        await refreshOpencodeCatalog();
-                        await refreshOpencodeServerConfig();
-                        setShowOpencodeCustomProvider(false);
-                        setShowOpencodeModelPicker(true);
-                        setOpencodeModelPickerSearch("");
-                        setMessage(`Saved configuration: ${full}`);
-                      } catch (e) {
-                        setError(String(e));
-                        setMessage("Save configuration failed");
-                      } finally {
-                        setOpencodeConfigBusy(false);
-                        setOpencodeProviderConfigBusy(false);
-                      }
-                    }}
-                  >
-                    {opencodeProviderConfigBusy || opencodeConfigBusy ? "Saving..." : "Save"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <OpenCodeCustomProviderDialog
+            config={opencodeProviderConfig}
+            modelId={opencodeSelectedModel}
+            busy={opencodeProviderConfigBusy || opencodeConfigBusy}
+            onClose={() => setShowOpencodeCustomProvider(false)}
+            onConfigChange={(patch) => setOpencodeProviderConfig((prev) => ({ ...prev, ...patch }))}
+            onModelChange={setOpencodeSelectedModel}
+            onSave={() => void saveOpencodeCustomProvider()}
+          />
         ) : null}
 
         {/* inline connect UI lives inside provider picker right column */}
 
         {showEnvSetup ? (
-          <div className="modal-mask" onClick={() => setShowEnvSetup(false)}>
-            <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
-              <div className="env-setup-head">
-                <h3>Runtime Setup</h3>
-                <button
-                  className="env-refresh-circle"
-                  title="Refresh runtime check"
-                  aria-label="Refresh runtime check"
-                  disabled={runtimeChecking || Boolean(installingDep)}
-                  onClick={() => void refreshRuntimeRequirements()}
-                >
-                  <span className={runtimeChecking ? "refresh-spin" : ""}>↻</span>
-                </button>
-              </div>
-              <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
-
-              <div className="env-check-list">
-                {[runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam]
-                  .filter((d): d is RuntimeDependencyStatus => Boolean(d))
-                  .map((dep) => (
-                    <div className="env-check-row" key={dep.name}>
-                      <div>
-                        <strong>{dep.name}</strong>{" "}
-                        <span
-                          className={
-                            checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? "muted" : dep.installed ? "env-ok" : "env-missing"
-                          }
-                        >
-                          {checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]
-                            ? "Checking..."
-                            : (dep.checked ? (dep.installed ? "Installed" : "Missing") : "Unknown")}
-                        </span>
-                        {dep.version && !checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"] ? (
-                          <div className="small muted">{dep.version}</div>
-                        ) : null}
-                        {dep.path ? <div className="small muted">{dep.path}</div> : null}
-                        {!dep.installed ? <div className="small muted">{dep.installHint}</div> : null}
-                      </div>
-                      <div className="toolbar">
-                        {!dep.installed ? (
-                          <button
-                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "install")}
-                          >
-                            {installingDep === dep.name ? (
-                              <>
-                                <span className="env-btn-spinner" aria-hidden="true" />
-                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                              </>
-                            ) : (
-                              `Install ${dep.name}`
-                            )}
-                          </button>
-                        ) : (
-                          <button
-                            className={installingDep === dep.name ? "chip env-chip-loading" : "chip"}
-                            disabled={Boolean(installingDep) || checkingDeps[dep.name as "git" | "entire" | "opencode" | "giteam"]}
-                            onClick={() => void runDependencyAction(dep.name as "git" | "entire" | "opencode" | "giteam", "uninstall")}
-                          >
-                            {installingDep === dep.name ? (
-                              <>
-                                <span className="env-btn-spinner" aria-hidden="true" />
-                                {runtimeJob?.action === "uninstall" ? "Uninstalling..." : "Installing..."} {installingElapsed}s
-                              </>
-                            ) : (
-                              `Uninstall ${dep.name}`
-                            )}
-                          </button>
-                        )}
-                      </div>
-                      {runtimeJob && runtimeJob.name === dep.name ? (
-                        <div className="env-inline-status">
-                          <button
-                            className="env-progress-button"
-                            onClick={() =>
-                              setExpandedLogDep((prev) => (prev === dep.name ? null : (dep.name as "git" | "entire" | "opencode" | "giteam")))
-                            }
-                            title={expandedLogDep === dep.name ? "Hide details" : "Show details"}
-                          >
-                            <span className="env-progress-track-inline" aria-hidden="true">
-                              <span className={runtimeJob.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
-                            </span>
-                            <span className="env-progress-label">
-                              {runtimeJob.action} · {runtimeJob.status} {installingDep === dep.name ? `· ${installingElapsed}s` : ""}
-                            </span>
-                          </button>
-                          <div className="env-log-tail" title={runtimeLogTail || "No logs yet"}>
-                            {runtimeLogTail || "Waiting for logs..."}
-                          </div>
-                          {expandedLogDep === dep.name ? (
-                            <pre className="env-install-log">{runtimeInstallLog || "No logs yet."}</pre>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "space-between" }}>
-                <div />
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    onClick={() => {
-                      window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
-                      setShowEnvSetup(false);
-                    }}
-                  >
-                    Continue anyway
-                  </button>
-                  <button className="chip" onClick={() => setShowEnvSetup(false)}>
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <RuntimeSetupDialog
+            runtimeStatus={runtimeStatus}
+            runtimeChecking={runtimeChecking}
+            checkingDeps={checkingDeps}
+            installingDep={installingDep}
+            installingElapsed={installingElapsed}
+            runtimeJob={runtimeJob}
+            runtimeInstallLog={runtimeInstallLog}
+            runtimeLogTail={runtimeLogTail}
+            expandedLogDep={expandedLogDep}
+            onClose={() => setShowEnvSetup(false)}
+            onDismiss={() => {
+              window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
+              setShowEnvSetup(false);
+            }}
+            onRefresh={() => void refreshRuntimeRequirements()}
+            onRunDependencyAction={(name, action) => void runDependencyAction(name, action)}
+            onToggleLog={(name) => setExpandedLogDep((prev) => (prev === name ? null : name))}
+          />
         ) : null}
 
         {showOnboarding ? (
@@ -10565,10 +9025,36 @@ branches.forEach((b) => {
               >
                 Create branch from commit
               </button>
+              <button
+                className="repo-context-item"
+                onClick={() => {
+                  setCommitContextMenu(null);
+                  void inspectCommitFromTopology(commitContextMenu.sha);
+                }}
+              >
+                Explain / inspect commit
+              </button>
+              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
+                Cherry-pick to current branch
+              </button>
+              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
+                Revert on current branch
+              </button>
               <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
                 Copy commit id
               </button>
             </div>
+          </div>
+        ) : null}
+
+        {commitHoverCard && !commitContextMenu ? (
+          <div
+            className="gt-commit-hover-card"
+            style={{ left: Math.min(commitHoverCard.x + 14, window.innerWidth - 320), top: Math.min(commitHoverCard.y + 14, window.innerHeight - 150) }}
+          >
+            <strong>{commitHoverCard.subject || "(no subject)"}</strong>
+            <span>{shortSha(commitHoverCard.sha, 12)}{commitHoverCard.branch ? ` · ${commitHoverCard.branch}` : ""}</span>
+            <small>{commitHoverCard.author || "unknown"} · {commitHoverCard.date || "unknown date"}</small>
           </div>
         ) : null}
 

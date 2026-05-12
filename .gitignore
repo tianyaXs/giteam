@@ -4,4 +4,4 @@ target
 .DS_Store
 *.log
 apps/desktop/src-tauri/target
-
+apps/cli/.publish-release.json

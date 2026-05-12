@@ -135,6 +135,7 @@ struct PromptRequest {
     repo_path: String,
     session_id: Option<String>,
     prompt: String,
+    parts: Option<Value>,
     model: Option<String>,
     title: Option<String>,
 }
@@ -250,6 +251,11 @@ fn write_mobile_model_state(value: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| format!("serialize model state failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write model state failed: {e}"))
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn set_mobile_model_state_from_desktop(state: Value) -> Result<(), String> {
+    write_mobile_model_state(&state)
 }
 
 fn attach_mobile_model_state(mut config: Value) -> Value {
@@ -1717,6 +1723,49 @@ fn compact_mobile_message_parts(repo_path: &str, role: &str, parts: &[Value]) ->
                 }
                 out.push(Value::Object(node));
             }
+            "file" if role == "user" => {
+                let mime = part_obj
+                    .get("mime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let filename = part_obj
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let url = part_obj
+                    .get("url")
+                    .or_else(|| part_obj.get("source"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let filename_lower = filename.to_ascii_lowercase();
+                let looks_like_image = mime.starts_with("image/")
+                    || url.starts_with("data:image/")
+                    || filename_lower.ends_with(".png")
+                    || filename_lower.ends_with(".jpg")
+                    || filename_lower.ends_with(".jpeg")
+                    || filename_lower.ends_with(".webp")
+                    || filename_lower.ends_with(".gif")
+                    || filename_lower.ends_with(".heic");
+                if !looks_like_image || url.is_empty() {
+                    continue;
+                }
+                let mut node = Map::new();
+                node.insert("type".to_string(), Value::String("file".to_string()));
+                if let Some(id) = part_obj.get("id").cloned() {
+                    node.insert("id".to_string(), id);
+                }
+                if !mime.is_empty() {
+                    node.insert("mime".to_string(), Value::String(mime.to_string()));
+                }
+                if !filename.is_empty() {
+                    node.insert("filename".to_string(), Value::String(filename.to_string()));
+                }
+                node.insert("url".to_string(), Value::String(url.to_string()));
+                out.push(Value::Object(node));
+            }
             "reasoning" if role == "assistant" => {
                 let text = part_obj
                     .get("text")
@@ -1881,6 +1930,46 @@ fn parse_model_ref(model: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model_id.to_string()))
 }
 
+fn mobile_model_state_allows_model(provider_id: &str, model_id: &str) -> bool {
+    let full = format!("{}/{}", provider_id.trim(), model_id.trim());
+    let state = read_mobile_model_state();
+    let hidden = state
+        .get("hiddenModels")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .any(|v| v.as_str().unwrap_or("").trim() == full)
+        })
+        .unwrap_or(false);
+    if hidden {
+        return false;
+    }
+    if state
+        .get("activeModel")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim() == full)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    for key in ["availableModels", "enabledModels"] {
+        if state
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .any(|v| v.as_str().unwrap_or("").trim() == full)
+            })
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn validate_prompt_model(repo_path: &str, model: &str) -> Result<(), String> {
     let (provider_id, model_id) = parse_model_ref(model)
         .ok_or_else(|| "model must be in format provider/model".to_string())?;
@@ -1909,22 +1998,29 @@ fn validate_prompt_model(repo_path: &str, model: &str) -> Result<(), String> {
     }
 
     let state = opencode::get_opencode_server_provider_state(repo_path)?;
-    let provider = state
+    let provider = match state
         .providers
         .iter()
         .find(|p| normalize_provider_key(p.id.as_str()) == provider_key)
-        .ok_or_else(|| {
-            format!(
+    {
+        Some(provider) => provider,
+        None if mobile_model_state_allows_model(&provider_id, &model_id) => return Ok(()),
+        None => {
+            return Err(format!(
                 "model provider '{}' not found in server provider catalog",
                 provider_id
-            )
-        })?;
+            ))
+        }
+    };
 
     let model_exists = provider
         .models
         .iter()
         .any(|m| m.trim() == model_id || m.trim().eq_ignore_ascii_case(model_id.as_str()));
     if !model_exists {
+        if mobile_model_state_allows_model(&provider_id, &model_id) {
+            return Ok(());
+        }
         return Err(format!(
             "model '{}' is not available under provider '{}'",
             model_id, provider.id
@@ -1936,6 +2032,9 @@ fn validate_prompt_model(repo_path: &str, model: &str) -> Result<(), String> {
         .iter()
         .any(|pid| normalize_provider_key(pid.as_str()) == provider_key);
     if !connected {
+        if mobile_model_state_allows_model(&provider_id, &model_id) {
+            return Ok(());
+        }
         return Err(format!(
             "model provider '{}' is not connected; connect provider first",
             provider.id
@@ -2425,6 +2524,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             payload.repo_path.as_str(),
             session_id.as_str(),
             payload.prompt.as_str(),
+            payload.parts.clone(),
             payload.model.clone(),
         ) {
             Ok(_) => (

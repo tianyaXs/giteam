@@ -17,6 +17,14 @@ export async function gitCommit(repoPath: string, message: string): Promise<stri
   return invoke<string>("run_git_commit", { repoPath, message });
 }
 
+export async function gitCherryPickCommit(repoPath: string, commitSha: string): Promise<string> {
+  return invoke<string>("run_git_cherry_pick_commit", { repoPath, commitSha });
+}
+
+export async function gitRevertCommit(repoPath: string, commitSha: string): Promise<string> {
+  return invoke<string>("run_git_revert_commit", { repoPath, commitSha });
+}
+
 export async function gitStageFile(repoPath: string, filePath: string): Promise<string> {
   return invoke<string>("run_git_stage_file", { repoPath, filePath });
 }
@@ -124,6 +132,12 @@ export type RepoTerminalSnapshot = {
   cwd: string;
 };
 
+export type RepoTerminalCompletion = {
+  nextInput: string;
+  candidates: string[];
+  token: string;
+};
+
 export async function startRepoTerminalSession(repoPath: string, sessionId?: string): Promise<RepoTerminalSnapshot> {
   return invoke<RepoTerminalSnapshot>("start_repo_terminal_session", { repoPath, sessionId });
 }
@@ -134,6 +148,14 @@ export async function sendRepoTerminalInput(repoPath: string, input: string, ses
 
 export async function readRepoTerminalOutput(repoPath: string, afterSeq: number, sessionId?: string): Promise<RepoTerminalSnapshot> {
   return invoke<RepoTerminalSnapshot>("read_repo_terminal_output", { repoPath, sessionId, afterSeq });
+}
+
+export async function completeRepoTerminalInput(repoPath: string, input: string, cwd?: string): Promise<string> {
+  return invoke<string>("complete_repo_terminal_input", { repoPath, input, cwd });
+}
+
+export async function listRepoTerminalCompletions(repoPath: string, input: string, cwd?: string): Promise<RepoTerminalCompletion> {
+  return invoke<RepoTerminalCompletion>("list_repo_terminal_completions", { repoPath, input, cwd });
 }
 
 export async function clearRepoTerminalSession(repoPath: string, sessionId?: string): Promise<void> {
