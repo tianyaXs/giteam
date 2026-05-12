@@ -331,6 +331,7 @@ type OpencodeChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: Array<{ id: string; uri: string; filename?: string }>;
 };
 type OpencodeChatSession = {
   id: string;
@@ -2331,6 +2332,7 @@ export function App() {
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
   const [opencodeShowJumpLatest, setOpencodeShowJumpLatest] = useState(false);
+  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
   const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
   const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -4407,7 +4409,14 @@ export function App() {
     updateOpencodeSessionById(sessionId, (session) => {
       const nextMessages: OpencodeChatMessage[] = [
         ...session.messages,
-        { id: `user-${makeId()}`, role: "user", content: prompt },
+        {
+          id: `user-${makeId()}`,
+          role: "user",
+          content: prompt,
+          attachments: opencodeImageAttachments.length > 0
+            ? opencodeImageAttachments.map((a) => ({ id: a.id, uri: a.dataUrl, filename: a.filename }))
+            : undefined
+        },
         { id: assistantId, role: "assistant", content: "" }
       ];
       const nextTurnCount = buildOpencodeTurnRanges(nextMessages).length;
@@ -8025,9 +8034,31 @@ export function App() {
                           </div>
                         </div>
                       )
-                    ) : msg.content.trim() ? (
+                    ) : msg.content.trim() || (msg.attachments && msg.attachments.length > 0) ? (
                       <div className="opencode-msg-body">
-                        <MarkdownLite source={msg.content} />
+                        {msg.attachments && msg.attachments.length > 0 ? (
+                          <div className="opencode-msg-attachments">
+                            {msg.attachments.map((img, imageIndex) => (
+                              <button
+                                key={img.id}
+                                type="button"
+                                className="opencode-msg-image-btn"
+                                onClick={() => setOpencodePreviewImage({
+                                  images: msg.attachments?.map((item) => ({ uri: item.uri, filename: item.filename })) || [],
+                                  index: imageIndex
+                                })}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  void copyText(img.uri);
+                                }}
+                                title="点击查看，右键复制图片数据"
+                              >
+                                <img className="opencode-msg-image" src={img.uri} alt={img.filename || "attachment"} />
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {msg.content.trim() ? <MarkdownLite source={msg.content} /> : null}
                       </div>
                     ) : null}
                     {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
@@ -10466,6 +10497,28 @@ branches.forEach((b) => {
             </div>
           </div>
         ) : null}
+
+        {opencodePreviewImage ? (() => {
+          const image = opencodePreviewImage.images[opencodePreviewImage.index] || opencodePreviewImage.images[0];
+          if (!image) return null;
+          return (
+            <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
+              <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
+                <img
+                  className="opencode-image-preview-img"
+                  src={image.uri}
+                  alt={image.filename || "preview"}
+                  onClick={(e) => {
+                    if (opencodePreviewImage.images.length <= 1) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const next = e.clientX >= rect.left + rect.width / 2 ? 1 : -1;
+                    setOpencodePreviewImage((prev) => prev ? { ...prev, index: (prev.index + next + prev.images.length) % prev.images.length } : prev);
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })() : null}
 
         {repoContextMenu ? (
           <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>
