@@ -9855,6 +9855,12 @@ button {
   filter: saturate(0.86);
 }
 
+.gt-skill-card-item,
+.gt-installed-skill-chip {
+  content-visibility: auto;
+  contain-intrinsic-size: 120px;
+}
+
 .gt-skill-inline-skeleton {
   margin-top: 10px;
 }

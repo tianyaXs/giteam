@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, Suspense, lazy, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
 import {
@@ -814,6 +814,18 @@ function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): b
   return isInstalledDir && targetsOpencode;
 }
 
+function scheduleAfterInteraction(task: () => void, delay = 240): number {
+  return window.setTimeout(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(task));
+  }, delay);
+}
+
+function waitForPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+  });
+}
+
 async function fetchJsonWithTimeout(url: string, timeoutMs = 7000): Promise<any> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1190,6 +1202,8 @@ export function App() {
   const [opencodePermissionLoading, setOpencodePermissionLoading] = useState(false);
   const [showOpencodeModulePanel, setShowOpencodeModulePanel] = useState(false);
   const [opencodeModuleTab, setOpencodeModuleTab] = useState<OpencodeModuleTab>("permissions");
+  const opencodeSkillsVisible = rightPaneTab === "skills" || (showOpencodeModulePanel && opencodeModuleTab === "skills");
+  const opencodeMcpVisible = rightPaneTab === "mcp" || (showOpencodeModulePanel && opencodeModuleTab === "mcp");
   const [opencodeMcpStatus, setOpencodeMcpStatus] = useState<OpencodeMcpStatusMap>({});
   const [opencodeMcpLoading, setOpencodeMcpLoading] = useState(false);
   const [opencodeMcpError, setOpencodeMcpError] = useState("");
@@ -1234,6 +1248,7 @@ export function App() {
   const [opencodeSkillCatalogCache, setOpencodeSkillCatalogCache] = useState<Record<string, { rows: OpencodeSkillSearchResult[]; page: number; total: number; hasMore: boolean }>>({});
   const [opencodeSkillCatalogAttempted, setOpencodeSkillCatalogAttempted] = useState<Record<string, boolean>>({});
   const [opencodeSkillSearchMeta, setOpencodeSkillSearchMeta] = useState<{ count: number; searchType: string; durationMs: number } | null>(null);
+  const [opencodeSkillAllowBackendCatalogFetch, setOpencodeSkillAllowBackendCatalogFetch] = useState(false);
   const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<OpencodeSkillSearchResult | null>(null);
   const [selectedSkillDetail, setSelectedSkillDetail] = useState<OpencodeSkillDetail | null>(null);
   const [selectedSkillAudits, setSelectedSkillAudits] = useState<OpencodeSkillAudit[]>([]);
@@ -1246,6 +1261,7 @@ export function App() {
   const [opencodeSkillRemovingKey, setOpencodeSkillRemovingKey] = useState("");
   const opencodeSkillCatalogRequestRef = useRef(0);
   const opencodeSkillsRepoPathRef = useRef("");
+  const opencodeSkillsByRepoRef = useRef<Record<string, OpencodeSkillInfo[]>>({});
   const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
@@ -1512,15 +1528,22 @@ export function App() {
   }, [repoPath, gitPanePath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
 
   useEffect(() => {
+    if (!opencodeSkillsVisible) return;
     if (opencodeSkillsRepoPathRef.current === repoPath) return;
     opencodeSkillsRepoPathRef.current = repoPath;
-    setOpencodeSkills([]);
-    setOpencodeSkillsLoadedOnce(false);
-    setOpencodeSkillsLoading(false);
-    setOpencodeSkillsError("");
-    setOpencodeSkillListQuery("");
-    setOpencodeSkillRemovingKey("");
-  }, [repoPath]);
+    const timer = scheduleAfterInteraction(() => {
+      const cached = opencodeSkillsByRepoRef.current[repoPath] || null;
+      startTransition(() => {
+        if (cached) setOpencodeSkills(cached);
+        setOpencodeSkillsLoadedOnce(Boolean(cached));
+        setOpencodeSkillsLoading(!cached);
+        setOpencodeSkillsError("");
+        setOpencodeSkillListQuery("");
+        setOpencodeSkillRemovingKey("");
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [opencodeSkillsVisible, repoPath]);
 
   useEffect(() => {
     if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
@@ -1649,8 +1672,9 @@ export function App() {
     const sid = activeOpencodeSessionId.trim();
     return opencodePermissionRequests.filter((req) => !sid || req.sessionID === sid);
   }, [opencodePermissionRequests, activeOpencodeSessionId]);
-  const opencodeMcpRows = useMemo(() => Object.entries(opencodeMcpStatus).sort(([a], [b]) => a.localeCompare(b)), [opencodeMcpStatus]);
+  const opencodeMcpRows = useMemo(() => opencodeMcpVisible ? Object.entries(opencodeMcpStatus).sort(([a], [b]) => a.localeCompare(b)) : [], [opencodeMcpVisible, opencodeMcpStatus]);
   const filteredOpencodeSkills = useMemo(() => {
+    if (!opencodeSkillsVisible) return [];
     const query = opencodeSkillListQuery.trim().toLowerCase();
     return opencodeSkills.filter((skill) => {
       const scope = skill.scope || "source";
@@ -1659,8 +1683,8 @@ export function App() {
       return [skill.name, skill.description, skill.path, skill.location]
         .some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
-  const opencodeFallbackMarketplaceRows = useMemo(() => OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
+  }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
+  const opencodeFallbackMarketplaceRows = useMemo(() => opencodeSkillsVisible ? OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
     spec: skill.spec,
     package: skill.source,
     skill: skill.title,
@@ -1670,29 +1694,88 @@ export function App() {
     source: skill.source,
     sourceType: "recommended",
     change: index === 0 ? 24 : undefined
-  })), []);
-  const opencodeMarketplaceRows = opencodeSkillSearchResults.length > 0
-    ? opencodeSkillSearchResults
-    : opencodeSkillCatalogRows.length > 0
-      ? opencodeSkillCatalogRows
-      : Array.from(new Map([...opencodeFallbackMarketplaceRows, ...opencodeSkillDiscoveredRows].map((item) => [item.spec, item])).values());
+  })) : [], [opencodeSkillsVisible]);
+  const opencodeMarketplaceRows = useMemo(() => {
+    if (!opencodeSkillsVisible) return [];
+    return opencodeSkillSearchResults.length > 0
+      ? opencodeSkillSearchResults
+      : opencodeSkillCatalogRows.length > 0
+        ? opencodeSkillCatalogRows
+        : Array.from(new Map([...opencodeFallbackMarketplaceRows, ...opencodeSkillDiscoveredRows].map((item) => [item.spec, item])).values());
+  }, [opencodeSkillsVisible, opencodeSkillSearchResults, opencodeSkillCatalogRows, opencodeFallbackMarketplaceRows, opencodeSkillDiscoveredRows]);
   const visibleOpencodeMarketplaceRows = opencodeMarketplaceRows.slice(0, opencodeSkillDisplayLimit);
   const opencodeCanRevealMoreSkills = visibleOpencodeMarketplaceRows.length < opencodeMarketplaceRows.length;
   const opencodeCanFetchMoreCatalogSkills = opencodeSkillSearchResults.length === 0 && opencodeSkillCatalogRows.length > 0 && opencodeSkillCatalogHasMore;
   const opencodeSkillsInitialLoading = opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0;
   const opencodeSkillsSearching = opencodeSkillSearchLoading;
   const opencodeSkillsPaging = (opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length > 0 && opencodeSkillSearchResults.length === 0) || opencodeSkillRevealLoading;
+  const opencodeInstalledSkillNodes = useMemo(() => {
+    if (!opencodeSkillsVisible) return null;
+    if (opencodeSkills.length === 0) return <div className="gt-module-empty">暂无已安装 Skills</div>;
+    return opencodeSkills.map((skill) => {
+      const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
+      return (
+        <div key={`${skill.scope || "project"}-${skill.name}`} className="gt-installed-skill-chip">
+          <div><strong>{skill.name}</strong><small>{skill.scope || "project"}</small></div>
+          <button
+            type="button"
+            className="chip danger"
+            disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === removeKey}
+            title={(skill.scope || "source") === "source" ? "Source skills need to be removed from source config" : "Remove this skill"}
+            onClick={() => void removeOpencodeSkill(skill)}
+          >{opencodeSkillRemovingKey === removeKey ? "Removing" : "Uninstall"}</button>
+        </div>
+      );
+    });
+  }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillRemovingKey]);
+  const opencodeSkillCardNodes = useMemo(() => {
+    if (!opencodeSkillsVisible) return null;
+    return visibleOpencodeMarketplaceRows.map((result, idx) => {
+      const resultInstallSpec = result.installSpec || result.spec;
+      const isInstallingThisSkill = opencodeSkillInstallingSpec === resultInstallSpec || opencodeSkillInstallingSpec === result.spec;
+      return <article
+        key={result.id || result.spec}
+        role="button"
+        tabIndex={0}
+        className={selectedMarketplaceSkill?.spec === result.spec ? "gt-skill-card-item active" : "gt-skill-card-item"}
+        onClick={() => void selectMarketplaceSkill(result)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") void selectMarketplaceSkill(result);
+        }}
+      >
+        <span className="gt-skill-card-rank">{String(idx + 1).padStart(2, "0")}</span>
+        <div className="gt-skill-card-copy">
+          <strong>{result.skill}</strong>
+          <small>{result.package}</small>
+          <div className="gt-skill-card-tags">
+            <span className={`gt-skill-quality ${skillQualityLabel(result)}`}>{skillQualityLabel(result)}</span>
+            <span className="gt-skill-card-spec">{resultInstallSpec}</span>
+          </div>
+        </div>
+        <div className="gt-skill-card-stats">
+          <b>★ {result.installs}</b>
+          <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
+        </div>
+        <button className={isInstallingThisSkill ? "gt-skill-get-btn is-installing" : "gt-skill-get-btn"} type="button" disabled={isInstallingThisSkill || opencodeSkillBusy} onClick={(e) => {
+          e.stopPropagation();
+          if (opencodeSkillBusy) return;
+          void installOpencodeSkillFromRegistry(resultInstallSpec, "project", [result.installUrl || "", result.url || "", result.spec]);
+        }}>{isInstallingThisSkill ? "Installing" : "Get"}</button>
+        {isInstallingThisSkill ? <div className="gt-skill-card-install-log">{opencodeSkillInstallLog || "正在启动安装日志..."}</div> : null}
+      </article>;
+    });
+  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows, selectedMarketplaceSkill?.spec, opencodeSkillInstallingSpec, opencodeSkillBusy, opencodeSkillInstallLog]);
 
   useEffect(() => {
     if (!repoPath.trim() || !activeOpencodeSessionId.trim()) return;
     void refreshPendingPermissions(activeOpencodeSessionId);
+    const shouldPollPermissions = activeOpencodeSessionBusy || opencodeAutoAcceptPermissions || (showOpencodeModulePanel && opencodeModuleTab === "permissions");
+    if (!shouldPollPermissions) return;
     const timer = window.setInterval(() => {
-      if (activeOpencodeSessionBusy || showOpencodeModulePanel || opencodeAutoAcceptPermissions) {
-        void refreshPendingPermissions(activeOpencodeSessionId);
-      }
+      void refreshPendingPermissions(activeOpencodeSessionId);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy, showOpencodeModulePanel, opencodeAutoAcceptPermissions]);
+  }, [repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy, showOpencodeModulePanel, opencodeModuleTab, opencodeAutoAcceptPermissions]);
 
   useEffect(() => {
     if (!showOpencodeModulePanel) return;
@@ -1703,39 +1786,48 @@ export function App() {
   }, [showOpencodeModulePanel, opencodeModuleTab, repoPath]);
 
   useEffect(() => {
-    if (rightPaneTab === "skills") {
-      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) void refreshOpencodeSkills();
+    if (opencodeSkillsVisible) {
+      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) {
+        const timer = scheduleAfterInteraction(() => void refreshOpencodeSkills(), 280);
+        return () => window.clearTimeout(timer);
+      }
     }
-    if (rightPaneTab === "mcp") void refreshOpencodeMcpStatus();
-  }, [rightPaneTab, repoPath, opencodeSkillsLoadedOnce, opencodeSkillsLoading]);
+    if (opencodeMcpVisible) {
+      const timer = scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 280);
+      return () => window.clearTimeout(timer);
+    }
+  }, [opencodeSkillsVisible, opencodeMcpVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillsLoading]);
 
   useEffect(() => {
-    if (rightPaneTab !== "skills") return;
+    if (!opencodeSkillsVisible) return;
     if (opencodeSkillSearchResults.length > 0) return;
     if (opencodeSkillCatalogRows.length > 0) return;
     if (opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) return;
-    void loadInitialSkillsmpCatalog();
-  }, [rightPaneTab, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillCatalogLoading, repoPath, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
+    const timer = scheduleAfterInteraction(() => void loadInitialSkillsmpCatalog(), 320);
+    return () => window.clearTimeout(timer);
+  }, [opencodeSkillsVisible, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillCatalogLoading, repoPath, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
 
   useEffect(() => {
+    if (!opencodeSkillsVisible) return;
     if (!repoPath.trim()) return;
     if (opencodeSkillsLoadedOnce && (opencodeSkillCatalogRows.length > 0 || opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)])) return;
     const timer = window.setTimeout(() => {
       void warmSkillsMarketplace();
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [repoPath, opencodeSkillsLoadedOnce, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillsLoading, opencodeSkillCatalogLoading, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
+  }, [opencodeSkillsVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillsLoading, opencodeSkillCatalogLoading, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
 
   useEffect(() => {
+    if (!opencodeSkillsVisible) return;
     if (opencodeMarketplaceRows.length === 0) return;
     setSelectedMarketplaceSkill((prev) => {
       if (prev && opencodeMarketplaceRows.some((row) => row.spec === prev.spec)) return prev;
       return opencodeMarketplaceRows[0];
     });
-  }, [opencodeMarketplaceRows]);
+  }, [opencodeSkillsVisible, opencodeMarketplaceRows]);
 
   useEffect(() => {
-    if (rightPaneTab !== "skills") return;
+    if (!opencodeSkillsVisible) return;
     const el = opencodeSkillMarketListRef.current;
     if (!el || opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
     if (el.scrollHeight - el.clientHeight > 520) return;
@@ -1746,7 +1838,7 @@ export function App() {
     if (opencodeCanFetchMoreCatalogSkills) {
       void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
     }
-  }, [rightPaneTab, visibleOpencodeMarketplaceRows.length, opencodeCanRevealMoreSkills, opencodeCanFetchMoreCatalogSkills, opencodeSkillsInitialLoading, opencodeSkillsPaging, opencodeSkillCatalogView, opencodeSkillCatalogPage]);
+  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows.length, opencodeCanRevealMoreSkills, opencodeCanFetchMoreCatalogSkills, opencodeSkillsInitialLoading, opencodeSkillsPaging, opencodeSkillCatalogView, opencodeSkillCatalogPage]);
 
   useEffect(() => {
     saveRightModuleVisibility(rightModuleVisibility);
@@ -1923,7 +2015,8 @@ export function App() {
     const expanded = expandedProjectIds.includes(repo.id);
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
-    if (!expanded && runtimeStatus.opencode.installed) {
+    const sessionsCached = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepo, repo.id);
+    if (!expanded && runtimeStatus.opencode.installed && !sessionsCached) {
       void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
     }
   }
@@ -1933,7 +2026,7 @@ export function App() {
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
     opencodeSessionsRepoIdRef.current = repo.id;
     if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-    if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+    if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
     setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
@@ -2211,13 +2304,13 @@ export function App() {
   async function refreshOpencodeSkills() {
     const requestRepoPath = repoPath.trim();
     if (!requestRepoPath) return;
-    setOpencodeSkillsLoading(true);
-    setOpencodeSkillsError("");
+    startTransition(() => {
+      setOpencodeSkillsLoading(true);
+      setOpencodeSkillsError("");
+    });
+    await waitForPaint();
     try {
-      const [raw, installedRaw] = await Promise.all([
-        invoke<unknown>("list_opencode_skills", { repoPath: requestRepoPath }),
-        invoke<unknown>("list_installed_opencode_skills", { repoPath: requestRepoPath }).catch(() => [])
-      ]);
+      const installedRaw = await invoke<unknown>("list_installed_opencode_skills", { repoPath: requestRepoPath }).catch(() => []);
       if (repoPathRef.current.trim() !== requestRepoPath) return;
       const installedRows = normalizeArrayRows(installedRaw).map((item: any) => ({
         name: String(item?.name || "").trim(),
@@ -2225,47 +2318,33 @@ export function App() {
         scope: (item?.scope === "global" ? "global" : "project") as "global" | "project",
         agents: Array.isArray(item?.agents) ? item.agents.map((x: unknown) => String(x || "")).filter(Boolean) : []
       })).filter((item) => item.name && isInstalledOpencodeSkill(item));
-      const sourceByName = new Map<string, OpencodeSkillInfo>();
-      normalizeArrayRows(raw)
-        .forEach((item: any) => {
-          const name = String(item?.name || "").trim();
-          if (!name) return;
-          sourceByName.set(name, {
-            name,
-            description: String(item?.description || ""),
-            location: String(item?.location || ""),
-            license: String(item?.license || ""),
-            compatibility: String(item?.compatibility || ""),
-            metadata: item?.metadata || undefined,
-            scope: "source",
-            path: String(item?.location || ""),
-            agents: []
-          });
-        });
       const rows = installedRows.map((installed): OpencodeSkillInfo => {
-        const source = sourceByName.get(installed.name);
         return {
           name: installed.name,
-          description: source?.description || "Installed via skills.sh",
+          description: "Installed via skills.sh",
           location: installed.path,
-          license: source?.license || "",
-          compatibility: source?.compatibility || "",
-          metadata: source?.metadata,
+          license: "",
+          compatibility: "",
           scope: installed.scope,
           path: installed.path,
           agents: installed.agents
         };
       });
-      setOpencodeSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
+      opencodeSkillsByRepoRef.current[requestRepoPath] = rows;
+      startTransition(() => {
+        setOpencodeSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
+      });
     } catch (e) {
       if (repoPathRef.current.trim() !== requestRepoPath) return;
       const msg = String(e);
-      setOpencodeSkillsError(msg);
+      startTransition(() => setOpencodeSkillsError(msg));
       appendOpencodeDebugLog(`skill.list.error ${msg}`);
     } finally {
       if (repoPathRef.current.trim() === requestRepoPath) {
-        setOpencodeSkillsLoadedOnce(true);
-        setOpencodeSkillsLoading(false);
+        startTransition(() => {
+          setOpencodeSkillsLoadedOnce(true);
+          setOpencodeSkillsLoading(false);
+        });
       }
     }
   }
@@ -2364,11 +2443,12 @@ export function App() {
     return `${view}:${category || "all"}`;
   }
 
-  async function fetchSkillsmpSearchWithFallback(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }) {
+  async function fetchSkillsmpSearchWithFallback(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }, options: { allowBackendFallback?: boolean } = {}) {
     try {
       return await fetchSkillsmpJson(buildSkillsmpSearchEndpoint(input), skillsmpApiKey);
     } catch (directError) {
       appendOpencodeDebugLog(`skillsmp.direct.error ${String(directError)}`);
+      if (options.allowBackendFallback === false) throw directError;
       return await invoke<any>("fetch_skillsmp_skill_search", {
         repoPath,
         query: input.query,
@@ -2412,7 +2492,6 @@ export function App() {
   async function warmSkillsMarketplace() {
     if (!repoPath.trim()) return;
     const tasks: Array<Promise<unknown>> = [];
-    if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) tasks.push(refreshOpencodeSkills());
     if (!opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0 && !opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) {
       tasks.push(loadInitialSkillsmpCatalog());
     }
@@ -2427,6 +2506,11 @@ export function App() {
     if (distanceToBottom > 520) return;
     if (opencodeCanRevealMoreSkills && !opencodeSkillRevealLoading) {
       revealMoreOpencodeSkills();
+      return;
+    }
+    if (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length) {
+      setOpencodeSkillAllowBackendCatalogFetch(true);
+      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0, { allowBackendFallback: true, force: true });
       return;
     }
     if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
@@ -2444,21 +2528,25 @@ export function App() {
     }, 360);
   }
 
-  async function fetchOpencodeSkillCatalog(viewArg = opencodeSkillCatalogView, pageArg = 0) {
+  async function fetchOpencodeSkillCatalog(viewArg = opencodeSkillCatalogView, pageArg = 0, options: { allowBackendFallback?: boolean; force?: boolean } = {}) {
     const requestId = ++opencodeSkillCatalogRequestRef.current;
     const cacheKey = opencodeSkillCatalogCacheKey(viewArg);
-    setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
-    setOpencodeSkillCatalogLoading(true);
-    setOpencodeSkillsError("");
+    if (!options.force && opencodeSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
+    startTransition(() => {
+      setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
+      setOpencodeSkillCatalogLoading(true);
+      setOpencodeSkillsError("");
+    });
+    await waitForPaint();
     try {
       const page = pageArg + 1;
       const sortBy = viewArg === "trending" || viewArg === "hot" ? "recent" : "stars";
       const viewQuery = viewArg === "official" ? "official" : viewArg === "hot" ? "popular" : "agent";
       const query = opencodeSkillCategory ? getSkillsMarketplaceSeedQuery(opencodeSkillCategory) : viewQuery;
-      let json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy, category: opencodeSkillCategory || undefined });
+      let json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy, category: opencodeSkillCategory || undefined }, { allowBackendFallback: options.allowBackendFallback ?? true });
       let rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
       if (rows.length === 0 && opencodeSkillCategory) {
-        json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy });
+        json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy }, { allowBackendFallback: options.allowBackendFallback ?? true });
         rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
       }
       const positiveStarRows = rows.filter((item) => parseSkillInstallCount(item.installs) > 0);
@@ -2468,27 +2556,31 @@ export function App() {
       const nextPage = Number(json?.data?.pagination?.page || page) - 1;
       const nextTotal = Number(json?.data?.pagination?.total || rows.length);
       const nextHasMore = Boolean(json?.data?.pagination?.hasNext);
-      setOpencodeSkillCatalogRows((prev) => {
-        const nextRows = rows.filter((item) => !item.isDuplicate);
-        const mergedRows = pageArg <= 0 ? nextRows : Array.from(new Map([...prev, ...nextRows].map((item) => [item.id || item.spec, item])).values());
-        setOpencodeSkillCatalogCache((cache) => ({
-          ...cache,
-          [opencodeSkillCatalogCacheKey(viewArg)]: { rows: mergedRows, page: nextPage, total: nextTotal, hasMore: nextHasMore }
-        }));
-        return mergedRows;
+      startTransition(() => {
+        setOpencodeSkillCatalogRows((prev) => {
+          const nextRows = rows.filter((item) => !item.isDuplicate);
+          const mergedRows = pageArg <= 0 ? nextRows : Array.from(new Map([...prev, ...nextRows].map((item) => [item.id || item.spec, item])).values());
+          setOpencodeSkillCatalogCache((cache) => ({
+            ...cache,
+            [opencodeSkillCatalogCacheKey(viewArg)]: { rows: mergedRows, page: nextPage, total: nextTotal, hasMore: nextHasMore }
+          }));
+          return mergedRows;
+        });
+        setOpencodeSkillDisplayLimit((limit) => Math.max(limit, opencodeSkillDisplayBatchSize));
+        setOpencodeSkillCatalogPage(nextPage);
+        setOpencodeSkillCatalogTotal(nextTotal);
+        setOpencodeSkillCatalogHasMore(nextHasMore);
       });
-      setOpencodeSkillDisplayLimit((limit) => Math.max(limit, opencodeSkillDisplayBatchSize));
-      setOpencodeSkillCatalogPage(nextPage);
-      setOpencodeSkillCatalogTotal(nextTotal);
-      setOpencodeSkillCatalogHasMore(nextHasMore);
     } catch (e) {
       if (requestId !== opencodeSkillCatalogRequestRef.current) return;
-      setOpencodeSkillsError("");
-      setOpencodeSkillCatalogRows([]);
-      setOpencodeSkillCatalogHasMore(false);
+      startTransition(() => {
+        setOpencodeSkillsError("");
+        setOpencodeSkillCatalogRows([]);
+        setOpencodeSkillCatalogHasMore(false);
+      });
       appendOpencodeDebugLog(`skill.catalog.error ${String(e)}`);
     } finally {
-      if (requestId === opencodeSkillCatalogRequestRef.current) setOpencodeSkillCatalogLoading(false);
+      if (requestId === opencodeSkillCatalogRequestRef.current) startTransition(() => setOpencodeSkillCatalogLoading(false));
     }
   }
 
@@ -2538,17 +2630,20 @@ export function App() {
 
   async function refreshOpencodeMcpStatus() {
     if (!repoPath.trim()) return;
-    setOpencodeMcpLoading(true);
-    setOpencodeMcpError("");
+    startTransition(() => {
+      setOpencodeMcpLoading(true);
+      setOpencodeMcpError("");
+    });
+    await waitForPaint();
     try {
       const raw = await invoke<unknown>("list_opencode_mcp_status", { repoPath });
-      setOpencodeMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as OpencodeMcpStatusMap : {});
+      startTransition(() => setOpencodeMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as OpencodeMcpStatusMap : {}));
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpError(msg);
+      startTransition(() => setOpencodeMcpError(msg));
       appendOpencodeDebugLog(`mcp.status.error ${msg}`);
     } finally {
-      setOpencodeMcpLoading(false);
+      startTransition(() => setOpencodeMcpLoading(false));
     }
   }
 
@@ -7476,12 +7571,39 @@ export function App() {
   useEffect(() => {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
-    for (const msg of opencodeVisibleWindow.visible) {
-      if (msg.role !== "assistant") continue;
-      if (opencodeDetailsByMessageId[msg.id] !== undefined) continue;
-      if (opencodeDetailsLoadingByMessageId[msg.id]) continue;
-      void loadOpencodeMessageDetails(sid, msg.id, 80);
-    }
+    const missing = opencodeVisibleWindow.visible
+      .filter((msg) => msg.role === "assistant")
+      .filter((msg) => opencodeDetailsByMessageId[msg.id] === undefined && !opencodeDetailsLoadingByMessageId[msg.id])
+      .slice(-8);
+    if (missing.length === 0) return;
+    const missingIds = missing.map((msg) => msg.id);
+    setOpencodeDetailsLoadingByMessageId((prev) => {
+      const next = { ...prev };
+      for (const id of missingIds) next[id] = true;
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      void fetchOpencodeDetailedMessagePage(sid, "", OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT)
+        .then((page) => {
+          if (activeOpencodeSessionId.trim() !== sid) return;
+          setOpencodeDetailsByMessageId((prev) => {
+            const next = { ...prev };
+            for (const id of missingIds) {
+              const serverId = (opencodeServerMessageIdByLocalId[id] || "").trim() || id;
+              next[id] = page.detailsById[serverId] || null;
+            }
+            return next;
+          });
+        })
+        .finally(() => {
+          setOpencodeDetailsLoadingByMessageId((prev) => {
+            const next = { ...prev };
+            for (const id of missingIds) next[id] = false;
+            return next;
+          });
+        });
+    }, 120);
+    return () => window.clearTimeout(timer);
   }, [activeOpencodeSessionId, opencodeVisibleWindow.visible, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
   function renderOpencodeExecutionPart(part: OpencodeDetailedPart, keyHint: string) {
@@ -8033,7 +8155,7 @@ export function App() {
                           setNewSessionTargetRepoId(repo.id);
                           opencodeSessionsRepoIdRef.current = repo.id;
                           if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                          if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+                          if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
                           setDraftOpencodeSession(false);
                           setActiveOpencodeSessionId(session.id);
                           bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
@@ -9331,18 +9453,7 @@ branches.forEach((b) => {
             <details className="gt-installed-skills-collapsible">
               <summary><span>已安装 Skills</span><small>{opencodeSkills.length}</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新">↻</button></summary>
               <div className="gt-installed-skill-grid">
-                {opencodeSkills.length === 0 ? <div className="gt-module-empty">暂无已安装 Skills</div> : opencodeSkills.map((skill) => (
-                  <div key={`${skill.scope || "project"}-${skill.name}`} className="gt-installed-skill-chip">
-                    <div><strong>{skill.name}</strong><small>{skill.scope || "project"}</small></div>
-                    <button
-                      type="button"
-                      className="chip danger"
-                      disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`}
-                      title={(skill.scope || "source") === "source" ? "Source skills need to be removed from source config" : "Remove this skill"}
-                      onClick={() => void removeOpencodeSkill(skill)}
-                    >{opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}` ? "Removing" : "Uninstall"}</button>
-                  </div>
-                ))}
+                {opencodeInstalledSkillNodes}
               </div>
             </details>
 
@@ -9406,40 +9517,7 @@ branches.forEach((b) => {
                 ) : visibleOpencodeMarketplaceRows.length > 0 ? (
                   <>
                   <div className={opencodeSkillsSearching || opencodeSkillsPaging ? "gt-skill-card-list is-loading" : "gt-skill-card-list"}>
-                    {visibleOpencodeMarketplaceRows.map((result, idx) => {
-                      const resultInstallSpec = result.installSpec || result.spec;
-                      const isInstallingThisSkill = opencodeSkillInstallingSpec === resultInstallSpec || opencodeSkillInstallingSpec === result.spec;
-                      return <article
-                        key={result.id || result.spec}
-                        role="button"
-                        tabIndex={0}
-                        className={selectedMarketplaceSkill?.spec === result.spec ? "gt-skill-card-item active" : "gt-skill-card-item"}
-                        onClick={() => void selectMarketplaceSkill(result)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") void selectMarketplaceSkill(result);
-                        }}
-                      >
-                        <span className="gt-skill-card-rank">{String(idx + 1).padStart(2, "0")}</span>
-                        <div className="gt-skill-card-copy">
-                          <strong>{result.skill}</strong>
-                          <small>{result.package}</small>
-                          <div className="gt-skill-card-tags">
-                            <span className={`gt-skill-quality ${skillQualityLabel(result)}`}>{skillQualityLabel(result)}</span>
-                            <span className="gt-skill-card-spec">{resultInstallSpec}</span>
-                          </div>
-                        </div>
-                        <div className="gt-skill-card-stats">
-                          <b>★ {result.installs}</b>
-                          <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
-                        </div>
-                        <button className={isInstallingThisSkill ? "gt-skill-get-btn is-installing" : "gt-skill-get-btn"} type="button" disabled={isInstallingThisSkill || opencodeSkillBusy} onClick={(e) => {
-                          e.stopPropagation();
-                          if (opencodeSkillBusy) return;
-                          void installOpencodeSkillFromRegistry(resultInstallSpec, "project", [result.installUrl || "", result.url || "", result.spec]);
-                        }}>{isInstallingThisSkill ? "Installing" : "Get"}</button>
-                        {isInstallingThisSkill ? <div className="gt-skill-card-install-log">{opencodeSkillInstallLog || "正在启动安装日志..."}</div> : null}
-                      </article>
-                    })}
+                    {opencodeSkillCardNodes}
                   </div>
                   {(opencodeSkillsSearching || opencodeSkillsPaging) ? (
                     <div className="gt-skill-skeleton-list gt-skill-inline-skeleton" aria-label="正在加载更多 skills">
@@ -9452,7 +9530,7 @@ branches.forEach((b) => {
                 )}
                 <div className="gt-skill-market-pager">
                   <span>{opencodeSkillsInitialLoading ? "首次进入时会先准备精选榜单与已安装列表" : `已显示 ${visibleOpencodeMarketplaceRows.length} / ${opencodeMarketplaceRows.length}`}</span>
-                  {opencodeSkillsInitialLoading ? <span className="muted">正在为你整理首页内容...</span> : opencodeSkillsPaging ? <span className="gt-skill-auto-load is-loading">Loading more...</span> : (opencodeCanRevealMoreSkills || opencodeCanFetchMoreCatalogSkills) ? <span className="gt-skill-auto-load">滑到底部自动加载更多</span> : <span className="gt-skill-auto-load is-done">已到底部</span>}
+                  {opencodeSkillsInitialLoading ? <span className="muted">正在为你整理首页内容...</span> : opencodeSkillsPaging ? <span className="gt-skill-auto-load is-loading">Loading more...</span> : (opencodeCanRevealMoreSkills || opencodeCanFetchMoreCatalogSkills || (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length)) ? <span className="gt-skill-auto-load">滑到底部自动加载更多</span> : <span className="gt-skill-auto-load is-done">已到底部</span>}
                 </div>
               </main>
 

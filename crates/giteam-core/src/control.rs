@@ -126,6 +126,8 @@ struct PairAuthRequest {
 struct CreateSessionRequest {
     repo_path: String,
     title: Option<String>,
+    agent: Option<String>,
+    permission: Option<Vec<opencode::OpencodePermissionRule>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +138,9 @@ struct PromptRequest {
     prompt: String,
     parts: Option<Value>,
     model: Option<String>,
+    agent: Option<String>,
+    variant: Option<String>,
+    auto_accept_permissions: Option<bool>,
     title: Option<String>,
 }
 
@@ -2236,6 +2241,156 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "GET" && req.path == "/api/v1/opencode/agent" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::list_opencode_agents(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/skill" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::list_opencode_skills(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/skill/installed" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::list_installed_opencode_skills(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/skill/search" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        let query = req.query.get("query").cloned().unwrap_or_default();
+        if repo.trim().is_empty() || query.trim().is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "repoPath and query are required" }),
+            );
+        }
+        return match opencode::search_opencode_skill_registry(repo.as_str(), query.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/opencode/skill/install" {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let repo = raw.get("repoPath").and_then(|v| v.as_str()).unwrap_or("");
+        let spec = raw.get("spec").and_then(|v| v.as_str()).unwrap_or("");
+        let global = raw.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
+        if repo.trim().is_empty() || spec.trim().is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "repoPath and spec are required" }),
+            );
+        }
+        return match opencode::install_opencode_skill_from_registry_blocking(
+            repo,
+            spec,
+            Some(global),
+        ) {
+            Ok(v) => (200, serde_json::json!({ "ok": true, "output": v })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/mcp" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        return match opencode::list_opencode_mcp_status(repo.as_str()) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/opencode/mcp" {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let repo = raw.get("repoPath").and_then(|v| v.as_str()).unwrap_or("");
+        let name = raw.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let config = raw.get("config").cloned().unwrap_or(Value::Null);
+        if repo.trim().is_empty() || name.trim().is_empty() || !config.is_object() {
+            return (
+                400,
+                serde_json::json!({ "error": "repoPath, name and config are required" }),
+            );
+        }
+        return match opencode::add_opencode_mcp_server(repo, name, config) {
+            Ok(v) => (200, v),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "POST" && req.path.starts_with("/api/v1/opencode/mcp/") {
+        let raw = parse_body_json(&req).unwrap_or_else(|_| serde_json::json!({}));
+        let repo = raw.get("repoPath").and_then(|v| v.as_str()).unwrap_or("");
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let parts: Vec<&str> = req.path.split('/').collect();
+        if parts.len() >= 6 {
+            let name = parts[5];
+            if req.path.ends_with("/connect") {
+                return match opencode::connect_opencode_mcp_server(repo, name) {
+                    Ok(v) => (200, serde_json::json!({ "ok": v })),
+                    Err(e) => (500, serde_json::json!({ "error": e })),
+                };
+            }
+            if req.path.ends_with("/disconnect") {
+                return match opencode::disconnect_opencode_mcp_server(repo, name) {
+                    Ok(v) => (200, serde_json::json!({ "ok": v })),
+                    Err(e) => (500, serde_json::json!({ "error": e })),
+                };
+            }
+            if req.path.ends_with("/auth/authenticate") {
+                return match opencode::authenticate_opencode_mcp_server(repo, name) {
+                    Ok(v) => (200, v),
+                    Err(e) => (500, serde_json::json!({ "error": e })),
+                };
+            }
+        }
+    }
+
+    if req.method == "DELETE"
+        && req.path.starts_with("/api/v1/opencode/mcp/")
+        && req.path.ends_with("/auth")
+    {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let parts: Vec<&str> = req.path.split('/').collect();
+        if parts.len() >= 6 {
+            return match opencode::remove_opencode_mcp_auth(repo.as_str(), parts[5]) {
+                Ok(v) => (200, serde_json::json!({ "ok": v })),
+                Err(e) => (500, serde_json::json!({ "error": e })),
+            };
+        }
+    }
+
     if req.method == "POST" && req.path == "/api/v1/opencode/session" {
         let raw = match parse_body_json(&req) {
             Ok(v) => v,
@@ -2250,7 +2405,12 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 )
             }
         };
-        return match opencode::create_opencode_session(payload.repo_path.as_str(), payload.title) {
+        return match opencode::create_opencode_session(
+            payload.repo_path.as_str(),
+            payload.title,
+            payload.agent,
+            payload.permission,
+        ) {
             Ok(v) => (
                 201,
                 serde_json::json!({
@@ -2335,11 +2495,31 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             let created = match opencode::create_opencode_session(
                 payload.repo_path.as_str(),
                 payload.title.clone(),
+                payload.agent.clone(),
+                if payload.auto_accept_permissions.unwrap_or(false) {
+                    Some(vec![opencode::OpencodePermissionRule {
+                        permission: "*".to_string(),
+                        pattern: "*".to_string(),
+                        action: "allow".to_string(),
+                    }])
+                } else {
+                    None
+                },
             ) {
                 Ok(s) => s,
                 Err(e) => return (500, serde_json::json!({ "error": e })),
             };
             session_id = created.id;
+        } else if payload.auto_accept_permissions.unwrap_or(false) {
+            let _ = opencode::set_opencode_session_permission(
+                payload.repo_path.as_str(),
+                session_id.as_str(),
+                vec![opencode::OpencodePermissionRule {
+                    permission: "*".to_string(),
+                    pattern: "*".to_string(),
+                    action: "allow".to_string(),
+                }],
+            );
         }
         {
             let repo_for_capture = payload.repo_path.clone();
@@ -2366,6 +2546,8 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             payload.prompt.as_str(),
             payload.parts.clone(),
             payload.model.clone(),
+            payload.agent.clone(),
+            payload.variant.clone(),
         ) {
             Ok(_) => (
                 200,
@@ -2449,6 +2631,62 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             Ok(v) => (200, serde_json::json!({ "ok": v })),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/opencode/permission" {
+        let repo = req.query.get("repoPath").cloned().unwrap_or_default();
+        if repo.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let session_id = req.query.get("sessionId").cloned().unwrap_or_default();
+        return match opencode::list_opencode_permissions(repo.as_str()) {
+            Ok(v) => {
+                let mut rows = v.as_array().cloned().unwrap_or_default();
+                if !session_id.is_empty() {
+                    rows.retain(|row| {
+                        row.get("sessionID").and_then(|v| v.as_str()) == Some(session_id.as_str())
+                    });
+                }
+                (200, Value::Array(rows))
+            }
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    if req.method == "POST" && req.path.starts_with("/api/v1/opencode/permission/") {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let repo_path = raw
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let reply = raw
+            .get("reply")
+            .and_then(|v| v.as_str())
+            .unwrap_or("once")
+            .to_string();
+        let message = raw
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if repo_path.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "repoPath is required" }));
+        }
+        let path_parts: Vec<&str> = req.path.split('/').collect();
+        if path_parts.len() >= 6 && req.path.ends_with("/reply") {
+            return match opencode::post_opencode_permission_reply(
+                repo_path.as_str(),
+                path_parts[5],
+                reply.as_str(),
+                message,
+            ) {
+                Ok(v) => (200, serde_json::json!({ "ok": v })),
+                Err(e) => (500, serde_json::json!({ "error": e })),
+            };
+        }
     }
 
     if req.method == "GET" && req.path == "/api/v1/opencode/question" {
