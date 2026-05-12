@@ -84,6 +84,9 @@ export async function sendPrompt(args: {
   prompt: string;
   sessionId?: string;
   model?: string;
+  agent?: string;
+  variant?: string;
+  autoAcceptPermissions?: boolean;
   parts?: { type: string; mime?: string; url?: string; filename?: string; text?: string }[];
   timeoutMs?: number;
 }): Promise<PromptResponse> {
@@ -93,7 +96,10 @@ export async function sendPrompt(args: {
     repoPath: args.repoPath,
     prompt: args.prompt,
     sessionId: args.sessionId || undefined,
-    model: args.model || undefined
+    model: args.model || undefined,
+    agent: args.agent || undefined,
+    variant: args.variant || undefined,
+    autoAcceptPermissions: args.autoAcceptPermissions || undefined
   };
   if (args.parts && args.parts.length > 0) {
     body.parts = args.parts;
@@ -115,6 +121,8 @@ export async function createSession(args: {
   token: string;
   repoPath: string;
   title?: string;
+  agent?: string;
+  autoAcceptPermissions?: boolean;
 }): Promise<{ id: string; title: string; createdAt?: number; updatedAt?: number }> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const url = `${baseUrl}/api/v1/opencode/session`;
@@ -126,7 +134,9 @@ export async function createSession(args: {
     },
     body: JSON.stringify({
       repoPath: args.repoPath,
-      title: args.title || undefined
+      title: args.title || undefined,
+      agent: args.agent || undefined,
+      permission: args.autoAcceptPermissions ? [{ permission: '*', pattern: '*', action: 'allow' }] : undefined
     })
   });
   const raw = ensureOk('session.create', 'POST', url, result.status, result.ok, result.text);
@@ -232,6 +242,83 @@ export async function getOpencodeCommands(args: {
   const raw = ensureOk('command.list', 'GET', url, result.status, result.ok, result.text);
   const parsed = JSON.parse(raw);
   return Array.isArray(parsed) ? parsed : [];
+}
+
+export async function getOpencodeAgents(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<any[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  const url = `${baseUrl}/api/v1/opencode/agent?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, { headers: authHeaders(args.token) });
+  const raw = ensureOk('agent.list', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export async function getOpencodeSkills(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<any[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  const url = `${baseUrl}/api/v1/opencode/skill?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, { headers: authHeaders(args.token) });
+  const raw = ensureOk('skill.list', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export async function getOpencodeMcpStatus(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<Record<string, any>> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  const url = `${baseUrl}/api/v1/opencode/mcp?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, { headers: authHeaders(args.token) });
+  const raw = ensureOk('mcp.status', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
+export async function getPendingPermissions(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  sessionId?: string;
+}): Promise<any[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  if (args.sessionId) params.set('sessionId', args.sessionId);
+  const url = `${baseUrl}/api/v1/opencode/permission?${params.toString()}`;
+  const result = await fetchTextWithTrace(url, { headers: authHeaders(args.token) });
+  const raw = ensureOk('permission.list', 'GET', url, result.status, result.ok, result.text);
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export async function replyPermission(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+  requestId: string;
+  reply: 'once' | 'always' | 'reject';
+  message?: string;
+}): Promise<boolean> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const url = `${baseUrl}/api/v1/opencode/permission/${encodeURIComponent(args.requestId)}/reply`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(args.token) },
+    body: JSON.stringify({ repoPath: args.repoPath, reply: args.reply, message: args.message || undefined })
+  });
+  ensureOk('permission.reply', 'POST', url, result.status, result.ok, result.text);
+  return true;
 }
 
 export async function getOpencodeConfig(args: {

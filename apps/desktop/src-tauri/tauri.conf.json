@@ -18,7 +18,10 @@
         "minWidth": 1280,
         "minHeight": 820,
         "maximized": true,
-        "backgroundColor": "#EEF1F4",
+        "theme": "Dark",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#1E1E1E",
         "devtools": false
       }
     ]

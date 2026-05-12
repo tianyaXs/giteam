@@ -58,6 +58,8 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(commands::watch::GitWorktreeWatcherState::default())
         .setup(|app| {
+            commands::ui::apply_saved_window_theme(app.handle());
+
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
@@ -138,11 +140,34 @@ fn main() {
             commands::opencode::get_opencode_server_provider_state,
             commands::opencode::get_opencode_server_provider_auth,
             commands::opencode::get_opencode_server_config,
+            commands::opencode::list_opencode_agents,
+            commands::opencode::list_opencode_skills,
+            commands::opencode::list_installed_opencode_skills,
+            commands::opencode::search_opencode_skill_registry,
+            commands::opencode::fetch_opencode_skill_catalog,
+            commands::opencode::fetch_opencode_skill_search_api,
+            commands::opencode::fetch_opencode_skill_curated,
+            commands::opencode::fetch_opencode_skill_detail_api,
+            commands::opencode::fetch_opencode_skill_audit_api,
+            commands::opencode::fetch_skillsmp_skill_search,
+            commands::opencode::fetch_skillsmp_ai_search,
+            commands::opencode::list_opencode_mcp_status,
+            commands::opencode::add_opencode_mcp_server,
+            commands::opencode::connect_opencode_mcp_server,
+            commands::opencode::disconnect_opencode_mcp_server,
+            commands::opencode::authenticate_opencode_mcp_server,
+            commands::opencode::remove_opencode_mcp_auth,
             commands::opencode::get_opencode_service_base,
             commands::opencode::get_opencode_service_settings,
             commands::opencode::set_opencode_service_settings,
             commands::opencode::get_opencode_server_global_config,
             commands::opencode::patch_opencode_server_config,
+            commands::opencode::set_opencode_session_permission,
+            commands::opencode::list_opencode_permissions,
+            commands::opencode::post_opencode_permission_reply,
+            commands::opencode::install_opencode_skill_from_registry,
+            commands::opencode::get_opencode_skill_install_status,
+            commands::opencode::remove_opencode_skill,
             commands::opencode::set_opencode_server_current_model,
             commands::opencode::put_opencode_server_auth,
             commands::opencode::delete_opencode_server_auth,
@@ -159,6 +184,7 @@ fn main() {
             commands::db::db_remove_repository,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
+            commands::ui::open_external_url,
             commands::giteam_cli::giteam_cli_get_settings,
             commands::giteam_cli::giteam_cli_get_mobile_service_status,
             commands::giteam_cli::giteam_cli_start_mobile_service_background,
