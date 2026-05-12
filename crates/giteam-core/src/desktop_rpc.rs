@@ -365,8 +365,11 @@ fn session_alive(session: &mut ManagedRepoTerminalSession) -> bool {
 
 fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSession, String> {
     let repo = normalize_repo_key(repo_path)?;
-    let mut child = Command::new("/bin/zsh")
-        .args(["-ic", "export PS1='' && exec script -q /dev/null"])
+    let mut child = Command::new("/usr/bin/script")
+        .args(["-q", "/dev/null", "/bin/zsh", "-i"])
+        .env("GITEAM_EMBEDDED_TERMINAL", "1")
+        .env("TERM", "dumb")
+        .env("CLICOLOR", "0")
         .current_dir(&repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

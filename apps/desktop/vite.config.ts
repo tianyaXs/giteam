@@ -9,7 +9,17 @@ export default defineConfig({
     outDir: isWeb ? "dist-web" : "dist",
     emptyOutDir: true,
     rollupOptions: {
-      input: isWeb ? "web.html" : "index.html"
+      input: isWeb ? "web.html" : "index.html",
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/monaco-editor") || id.includes("node_modules/@monaco-editor")) {
+            return "monaco";
+          }
+          if (id.includes("node_modules/react-markdown") || id.includes("node_modules/remark-") || id.includes("node_modules/rehype-")) {
+            return "markdown";
+          }
+        }
+      }
     }
   },
   resolve: {

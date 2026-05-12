@@ -967,25 +967,45 @@ function parseModelRef(input: string): { provider: string; model: string } | nul
 
 function sanitizeTerminalOutput(text: string): string {
   const cleaned = text
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
     .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B[@-Z\\-_]/g, "")
     .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
     .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
+    .replace(/\u0007/g, "")
     .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
 
-  // Handle terminal backspace semantics so "l\bls" becomes "ls".
-  let out = "";
-  for (const ch of cleaned) {
-    if (ch === "\b" || ch === "\u007f") {
-      out = out.slice(0, -1);
+  // Apply basic terminal cursor semantics so prompt redraws don't leak into the text view.
+  const lines = [""];
+  let row = 0;
+  let col = 0;
+  const trimTrailingWhitespace = (value: string) => value.replace(/[ \t]+$/g, "");
+  for (const ch of cleaned.replace(/\r\n/g, "\n")) {
+    if (ch === "\n") {
+      lines[row] = trimTrailingWhitespace(lines[row] || "");
+      lines.push("");
+      row += 1;
+      col = 0;
       continue;
     }
-    out += ch;
+    if (ch === "\r") {
+      col = 0;
+      continue;
+    }
+    if (ch === "\b" || ch === "\u007f") {
+      col = Math.max(0, col - 1);
+      continue;
+    }
+    if (ch.charCodeAt(0) < 32 && ch !== "\t") continue;
+    const current = (lines[row] || "").split("");
+    while (current.length < col) current.push(" ");
+    current[col] = ch;
+    lines[row] = current.join("");
+    col += 1;
   }
-  return out;
+  lines[row] = trimTrailingWhitespace(lines[row] || "");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 function isMissingRepositoryError(error: unknown): boolean {
@@ -1004,10 +1024,10 @@ function splitTerminalOutputForInput(text: string): { body: string; prompt: stri
   while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
   if (idx < 0) return { body: "", prompt: "" };
   const last = lines[idx] || "";
-  const looksLikePrompt = /[#$%]\s*$/.test(last) || /\)\s+[^\n]*\s[%#$]\s*$/.test(last);
+  const looksLikePrompt = /[#$>%]\s*$/.test(last) || /\)\s+[^\n]*\s[>%#$]\s*$/.test(last);
   if (!looksLikePrompt) return { body: source, prompt: "" };
-  // Drop dangling standalone prompt fragments like `%` left by stream chunk boundaries.
-  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*%\s*$/.test(line || ""));
+  // Drop dangling standalone prompt fragments left by stream chunk boundaries.
+  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*[%>]\s*$/.test(line || ""));
   const body = bodyLines.join("\n");
   return { body, prompt: last };
 }
@@ -7805,9 +7825,12 @@ export function App() {
                                 if (!text) return null;
                                 const keepOpen = !isStreaming || idx === lastReasoningIndex;
                                 return (
-                                  <details key={`${msg.id}:${g.key}`} className="opencode-think-card" open={keepOpen}>
+                                  <details key={`${msg.id}:${g.key}`} className={isStreaming && keepOpen ? "opencode-think-card is-active" : "opencode-think-card"} open={keepOpen}>
                                     <summary className="opencode-think-card-summary">
-                                      <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
+                                      <span className="opencode-think-label">
+                                        <span className="opencode-think-spark" aria-hidden="true" />
+                                        <span className={isStreaming && keepOpen ? "opencode-live-text" : ""}>Think</span>
+                                      </span>
                                     </summary>
                                     <div className="opencode-msg-body">
                                       <MarkdownLite source={text} />
