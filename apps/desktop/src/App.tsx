@@ -1,6 +1,6 @@
 import { invoke, listen, IS_TAURI } from "./lib/platform";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, Suspense, lazy, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
 import {
@@ -201,6 +201,80 @@ type OpencodeSlashCommand = {
   description?: string;
   source: "builtin" | "command" | "skill" | "mcp";
 };
+type OpencodeAgentInfo = {
+  name: string;
+  description?: string;
+  mode?: "primary" | "subagent" | "all";
+  native?: boolean;
+  hidden?: boolean;
+  color?: string;
+  variant?: string;
+  model?: { providerID?: string; modelID?: string };
+};
+type OpencodeComposerAgentName = "build" | "plan";
+type OpencodePermissionRule = {
+  permission: string;
+  pattern: string;
+  action: "allow" | "ask" | "deny";
+};
+type OpencodePermissionRequest = {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  always?: string[];
+  metadata?: Record<string, unknown>;
+  tool?: { messageID?: string; callID?: string };
+};
+type OpencodePermissionReply = "once" | "always" | "reject";
+type OpencodeThinkingLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type OpencodeModuleTab = "agents" | "permissions" | "mcp" | "skills";
+type OpencodeMcpType = "local" | "remote";
+type OpencodeMcpStatusMap = Record<string, Record<string, unknown>>;
+type OpencodeSkillSearchStrategy = "keyword" | "ai";
+type OpencodeSkillInfo = {
+  name: string;
+  description?: string;
+  location?: string;
+  license?: string;
+  compatibility?: string;
+  metadata?: Record<string, string>;
+  scope?: "project" | "global" | "source";
+  path?: string;
+  agents?: string[];
+};
+type OpencodeSkillSearchResult = {
+  spec: string;
+  package: string;
+  skill: string;
+  installs: string;
+  url: string;
+  id?: string;
+  source?: string;
+  sourceType?: string;
+  installSpec?: string | null;
+  installUrl?: string | null;
+  isDuplicate?: boolean;
+  change?: number;
+  installsYesterday?: number;
+};
+type OpencodeSkillDetail = {
+  id: string;
+  source: string;
+  slug: string;
+  installs: number;
+  hash?: string | null;
+  files?: Array<{ path: string; contents: string }> | null;
+};
+type OpencodeSkillAudit = {
+  provider: string;
+  slug?: string;
+  status: "pass" | "warn" | "fail" | string;
+  summary?: string;
+  auditedAt?: string;
+  riskLevel?: string;
+  categories?: string[];
+};
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -388,6 +462,408 @@ const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
 const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
+const OPENCODE_AGENT_SELECTION_KEY = "giteam.opencode.agent-selection.v1";
+const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
+const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
+const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
+const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
+const UI_FONT_SIZE_KEY = "giteam.appearance.ui-font-size.v1";
+const CODE_FONT_SIZE_KEY = "giteam.appearance.code-font-size.v1";
+
+const OPENCODE_COMPOSER_AGENT_OPTIONS: Array<{ name: OpencodeComposerAgentName; label: string; title: string }> = [
+  { name: "build", label: "Build", title: "实现、修改、调试" },
+  { name: "plan", label: "Plan", title: "先拆解方案" }
+];
+
+function isComposerAgentName(value: string): value is OpencodeComposerAgentName {
+  return value === "build" || value === "plan";
+}
+
+function normalizeComposerAgentName(raw: unknown): OpencodeComposerAgentName {
+  const value = String(raw || "").trim().toLowerCase();
+  return isComposerAgentName(value) ? value : "build";
+}
+
+const OPENCODE_THINKING_LEVELS: Array<{ value: OpencodeThinkingLevel; label: string; description: string }> = [
+  { value: "auto", label: "Auto", description: "使用模型或 agent 默认配置" },
+  { value: "none", label: "None", description: "尽量关闭推理" },
+  { value: "minimal", label: "Minimal", description: "极低推理强度" },
+  { value: "low", label: "Low", description: "低推理强度" },
+  { value: "medium", label: "Medium", description: "均衡推理强度" },
+  { value: "high", label: "High", description: "高推理强度" },
+  { value: "xhigh", label: "XHigh", description: "极高推理强度" },
+  { value: "max", label: "Max", description: "模型允许的最大推理" }
+];
+
+const OPENCODE_RECOMMENDED_SKILLS: Array<{ spec: string; title: string; source: string; installs: string; tone: string; description: string }> = [
+  {
+    spec: "anthropics/skills@frontend-design",
+    title: "Frontend Design",
+    source: "anthropics/skills",
+    installs: "385K+",
+    tone: "生产级界面",
+    description: "让 OpenCode 先确定明确美学方向，再处理字体、色彩、动效和空间构图，避免通用 AI UI。"
+  },
+  {
+    spec: "vercel-labs/agent-skills@web-design-guidelines",
+    title: "Web Guidelines",
+    source: "vercel-labs/agent-skills",
+    installs: "305K+",
+    tone: "Vercel 规范",
+    description: "适合打磨 Web 界面的间距、层级、交互和可访问性，让组件更像成熟产品。"
+  },
+  {
+    spec: "leonxlnx/taste-skill@design-taste-frontend",
+    title: "Design Taste",
+    source: "leonxlnx/taste-skill",
+    installs: "47K+",
+    tone: "高审美约束",
+    description: "强约束反套路设计，偏 React/Next/Tailwind，高级视觉和动效规则更激进。"
+  },
+  { spec: "vercel-labs/skills@find-skills", title: "Find Skills", source: "vercel-labs/skills", installs: "1.4M", tone: "Discovery", description: "搜索和安装代理能力的基础 Skill。" },
+  { spec: "vercel-labs/agent-skills@vercel-react-best-practices", title: "Vercel React Best Practices", source: "vercel-labs/agent-skills", installs: "386K+", tone: "React", description: "Vercel 官方 React 设计和实现规范。" },
+  { spec: "microsoft/azure-skills@microsoft-foundry", title: "Microsoft Foundry", source: "microsoft/azure-skills", installs: "303K+", tone: "Azure", description: "Microsoft Foundry 与 Azure agent workflows。" },
+  { spec: "remotion-dev/skills@remotion-best-practices", title: "Remotion Best Practices", source: "remotion-dev/skills", installs: "299K+", tone: "Video", description: "Remotion 项目结构、渲染和动画最佳实践。" },
+  { spec: "microsoft/azure-skills@azure-messaging", title: "Azure Messaging", source: "microsoft/azure-skills", installs: "291K+", tone: "Messaging", description: "Azure 消息队列和事件驱动架构能力。" },
+  { spec: "vercel-labs/agent-browser@agent-browser", title: "Agent Browser", source: "vercel-labs/agent-browser", installs: "257K+", tone: "Browser", description: "浏览器自动化和网页上下文工作流。" },
+  { spec: "microsoft/azure-skills@azure-hosted-copilot-sdk", title: "Azure Hosted Copilot SDK", source: "microsoft/azure-skills", installs: "274K+", tone: "Azure", description: "Azure hosted Copilot SDK workflows。" },
+  { spec: "vercel-labs/agent-skills@next-js-development", title: "Next.js Development", source: "vercel-labs/agent-skills", installs: "245K+", tone: "Next.js", description: "Next.js app router、部署和组件最佳实践。" },
+  { spec: "browser-use/browser-use@browser-use", title: "Browser Use", source: "browser-use/browser-use", installs: "188K+", tone: "Browser", description: "基于视觉理解的浏览器自动化。" },
+  { spec: "anthropics/skills@skill-creator", title: "Skill Creator", source: "anthropics/skills", installs: "164K+", tone: "Authoring", description: "创建、测试和发布新的 agent skills。" },
+  { spec: "vercel-labs/agent-skills@typescript-best-practices", title: "TypeScript Best Practices", source: "vercel-labs/agent-skills", installs: "141K+", tone: "TypeScript", description: "TypeScript 项目结构、类型设计和质量实践。" },
+  { spec: "vercel-labs/agent-skills@accessibility", title: "Accessibility", source: "vercel-labs/agent-skills", installs: "128K+", tone: "A11y", description: "Web 可访问性审查和实现规范。" },
+  { spec: "supabase/supabase@supabase", title: "Supabase", source: "supabase/supabase", installs: "120K+", tone: "Database", description: "Supabase 数据库、认证和边缘函数工作流。" },
+  { spec: "vercel-labs/agent-skills@testing", title: "Testing", source: "vercel-labs/agent-skills", installs: "118K+", tone: "Testing", description: "单元测试、组件测试和端到端测试实践。" },
+  { spec: "vercel-labs/agent-skills@tailwind-css", title: "Tailwind CSS", source: "vercel-labs/agent-skills", installs: "103K+", tone: "CSS", description: "Tailwind 样式组织和设计系统实践。" },
+  { spec: "expo/skills@react-native", title: "React Native", source: "expo/skills", installs: "94K+", tone: "Mobile", description: "React Native / Expo 架构和跨平台实践。" },
+  { spec: "vercel-labs/agent-skills@playwright", title: "Playwright", source: "vercel-labs/agent-skills", installs: "86K+", tone: "E2E", description: "Playwright E2E 测试和稳定性策略。" },
+  { spec: "obra/superpowers@systematic-debugging", title: "Systematic Debugging", source: "obra/superpowers", installs: "73K+", tone: "Debug", description: "假设驱动的调试循环。" },
+  { spec: "obra/superpowers@brainstorming", title: "Brainstorming", source: "obra/superpowers", installs: "66K+", tone: "Thinking", description: "结构化创意和问题拆解。" },
+  { spec: "vercel-labs/agent-skills@docker", title: "Docker", source: "vercel-labs/agent-skills", installs: "58K+", tone: "DevOps", description: "容器化、镜像构建和本地开发环境。" },
+  { spec: "vercel-labs/agent-skills@code-review", title: "Code Review", source: "vercel-labs/agent-skills", installs: "52K+", tone: "Review", description: "代码审查、风险识别和回归检查。" }
+];
+
+const SKILLSMP_CATEGORIES: Array<{ group: string; slug: string; label: string; count: string }> = [
+  { group: "Development", slug: "frontend", label: "Frontend", count: "26K" },
+  { group: "Development", slug: "backend", label: "Backend", count: "27K" },
+  { group: "Development", slug: "full-stack", label: "Full Stack", count: "11K" },
+  { group: "Development", slug: "mobile", label: "Mobile", count: "14K" },
+  { group: "Development", slug: "architecture-patterns", label: "Architecture", count: "46K" },
+  { group: "Testing", slug: "testing", label: "Testing", count: "40K" },
+  { group: "Testing", slug: "code-quality", label: "Code Quality", count: "56K" },
+  { group: "Testing", slug: "security", label: "Security", count: "33K" },
+  { group: "Tools", slug: "debugging", label: "Debugging", count: "134K" },
+  { group: "Tools", slug: "automation-tools", label: "Automation", count: "20K" },
+  { group: "Tools", slug: "productivity-tools", label: "Productivity", count: "64K" },
+  { group: "Tools", slug: "cli-tools", label: "CLI Tools", count: "7K" },
+  { group: "Data AI", slug: "llm-ai", label: "LLM / AI", count: "68K" },
+  { group: "Data AI", slug: "machine-learning", label: "Machine Learning", count: "22K" },
+  { group: "Data AI", slug: "data-analysis", label: "Data Analysis", count: "9K" },
+  { group: "DevOps", slug: "git-workflows", label: "Git Workflows", count: "55K" },
+  { group: "DevOps", slug: "cicd", label: "CI/CD", count: "26K" },
+  { group: "DevOps", slug: "cloud", label: "Cloud", count: "11K" },
+  { group: "Docs", slug: "technical-docs", label: "Technical Docs", count: "30K" },
+  { group: "Docs", slug: "knowledge-base", label: "Knowledge Base", count: "33K" },
+  { group: "Business", slug: "sales-marketing", label: "Sales Marketing", count: "120K" },
+  { group: "Business", slug: "project-management", label: "Project Mgmt", count: "47K" },
+  { group: "Content", slug: "design", label: "Design", count: "9K" },
+  { group: "Content", slug: "content-creation", label: "Content", count: "19K" }
+];
+
+function loadLocalString(key: string, fallback = ""): string {
+  try {
+    return window.localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveLocalString(key: string, value: string): void {
+  try {
+    if (value) window.localStorage.setItem(key, value);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
+function loadRightModuleVisibility(): Record<RightPaneTab, boolean> {
+  const fallback: Record<RightPaneTab, boolean> = { changes: true, worktree: true, terminal: true, skills: true, mcp: true };
+  try {
+    const raw = window.localStorage.getItem(RIGHT_MODULE_VISIBILITY_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Record<RightPaneTab, boolean>>;
+    return { ...fallback, ...parsed };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveRightModuleVisibility(value: Record<RightPaneTab, boolean>): void {
+  try {
+    window.localStorage.setItem(RIGHT_MODULE_VISIBILITY_KEY, JSON.stringify(value));
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
+function loadLocalBool(key: string, fallback = false): boolean {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return raw === "1" || raw === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function saveLocalBool(key: string, value: boolean): void {
+  try {
+    window.localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
+function normalizeThinkingLevel(value: unknown): OpencodeThinkingLevel {
+  const v = String(value || "").trim().toLowerCase();
+  return OPENCODE_THINKING_LEVELS.some((item) => item.value === v) ? (v as OpencodeThinkingLevel) : "auto";
+}
+
+function allowAllPermissionRules(): OpencodePermissionRule[] {
+  return [{ permission: "*", pattern: "*", action: "allow" }];
+}
+
+function splitCommandLine(input: string): string[] {
+  const parts = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  return parts
+    .map((part) => part.trim().replace(/^(["'])(.*)\1$/, "$2"))
+    .filter(Boolean);
+}
+
+function parseKeyValueLines(input: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const line of input.split(/\r?\n/)) {
+    const raw = line.trim();
+    if (!raw || raw.startsWith("#")) continue;
+    const eq = raw.indexOf("=");
+    if (eq <= 0) continue;
+    const key = raw.slice(0, eq).trim();
+    const value = raw.slice(eq + 1).trim();
+    if (key) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeArrayRows(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function formatSkillInstalls(value: unknown): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return String(Math.round(n));
+}
+
+function parseSkillInstallCount(value: unknown): number {
+  const raw = String(value || "").trim().toUpperCase().replace(/\+/g, "").replace(/,/g, "");
+  const match = raw.match(/([\d.]+)\s*([KM])?/);
+  if (!match) return 0;
+  const base = Number(match[1] || 0);
+  if (!Number.isFinite(base)) return 0;
+  if (match[2] === "M") return base * 1_000_000;
+  if (match[2] === "K") return base * 1_000;
+  return base;
+}
+
+function isTrustedSkillSource(source: unknown): boolean {
+  const s = String(source || "").toLowerCase();
+  return ["vercel-labs", "anthropics", "microsoft", "expo", "supabase", "remotion-dev"].some((prefix) => s.startsWith(prefix));
+}
+
+function skillQualityLabel(skill: Pick<OpencodeSkillSearchResult, "source" | "package" | "installs">): "trusted" | "popular" | "review" {
+  if (isTrustedSkillSource(skill.source || skill.package)) return "trusted";
+  if (parseSkillInstallCount(skill.installs) >= 1000) return "popular";
+  return "review";
+}
+
+function expandSkillSearchQueries(query: string): string[] {
+  const q = query.trim().toLowerCase();
+  const terms = new Set<string>([q]);
+  const aliases: Array<[RegExp, string[]]> = [
+    [/\breact\b/, ["react best practices", "react performance", "nextjs react"]],
+    [/\bfrontend|ui|design\b/, ["frontend design", "web design", "design system", "accessibility"]],
+    [/\btest|testing|jest|playwright\b/, ["testing", "unit testing", "e2e testing", "playwright"]],
+    [/\bdeploy|deployment|ci\b/, ["deployment", "ci cd", "docker deploy"]],
+    [/\bdocs|documentation|readme\b/, ["documentation", "readme", "api docs"]],
+    [/\breview|lint|refactor\b/, ["code review", "lint", "refactor", "best practices"]],
+    [/\bmobile|native\b/, ["react native", "expo", "mobile testing"]]
+  ];
+  for (const [pattern, values] of aliases) {
+    if (pattern.test(q)) values.forEach((value) => terms.add(value));
+  }
+  return Array.from(terms).filter(Boolean).slice(0, 3);
+}
+
+function opencodeSkillApiToResult(item: any): OpencodeSkillSearchResult | null {
+  const id = String(item?.id || "").trim();
+  const source = String(item?.source || (id ? id.split("/").slice(0, -1).join("/") : "")).trim();
+  const slug = String(item?.slug || (id ? id.split("/").pop() : "")).trim();
+  const name = String(item?.name || slug || id).trim();
+  if (!source || !slug || !name) return null;
+  return {
+    id: id || `${source}/${slug}`,
+    spec: `${source}@${slug}`,
+    package: source,
+    skill: name,
+    installs: formatSkillInstalls(item?.installs),
+    url: String(item?.url || ""),
+    source,
+    sourceType: String(item?.sourceType || ""),
+    installUrl: item?.installUrl ? String(item.installUrl) : null,
+    isDuplicate: Boolean(item?.isDuplicate),
+    change: typeof item?.change === "number" ? item.change : undefined,
+    installsYesterday: typeof item?.installsYesterday === "number" ? item.installsYesterday : undefined
+  };
+}
+
+function skillsmpSkillToResult(item: any): OpencodeSkillSearchResult | null {
+  const name = String(item?.name || "").trim();
+  const githubUrl = String(item?.githubUrl || "").trim();
+  const skillUrl = String(item?.skillUrl || "").trim();
+  const author = String(item?.author || "").trim();
+  if (!name) return null;
+  const source = (() => {
+    try {
+      const url = new URL(githubUrl);
+      const parts = url.pathname.split("/").filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : author;
+    } catch {
+      return author;
+    }
+  })();
+  const installSpec = source || null;
+  return {
+    id: String(item?.id || `${source}/${name}`),
+    spec: source ? `${source}@${name}` : name,
+    package: source || author,
+    skill: name,
+    installs: formatSkillInstalls(item?.stars || 0),
+    url: skillUrl,
+    source: source || author,
+    sourceType: "skillsmp",
+    installSpec,
+    installUrl: githubUrl || null
+  };
+}
+
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function getSkillsMarketplaceSeedQuery(categorySlug: string): string {
+  const slug = categorySlug.trim().toLowerCase();
+  if (!slug) return "agent";
+  const seedBySlug: Record<string, string> = {
+    frontend: "frontend",
+    backend: "backend",
+    "full-stack": "full stack",
+    mobile: "mobile",
+    "architecture-patterns": "architecture",
+    testing: "testing",
+    "code-quality": "code quality",
+    security: "security",
+    debugging: "debugging",
+    "automation-tools": "automation",
+    "productivity-tools": "productivity",
+    "cli-tools": "cli",
+    "llm-ai": "ai",
+    "machine-learning": "machine learning",
+    "data-analysis": "data analysis",
+    "git-workflows": "git",
+    cicd: "ci cd",
+    cloud: "cloud",
+    "technical-docs": "documentation",
+    "knowledge-base": "knowledge base",
+    "sales-marketing": "marketing",
+    "project-management": "project management",
+    design: "design",
+    "content-creation": "content"
+  };
+  return seedBySlug[slug] || slug.replace(/-/g, " ");
+}
+
+function getSkillAvatarLabel(skillName: string): string {
+  const parts = skillName
+    .trim()
+    .split(/[^a-zA-Z0-9\u4e00-\u9fa5]+/)
+    .filter(Boolean);
+  if (parts.length === 0) return "SK";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] || "S"}${parts[1][0] || "K"}`.toUpperCase();
+}
+
+function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): boolean {
+  const normalizedPath = String(item.path || "").replace(/\\/g, "/");
+  const isInstalledDir = normalizedPath.includes("/.agents/skills/") || normalizedPath.includes("/.opencode/skills/");
+  const agents = Array.isArray(item.agents) ? item.agents : [];
+  const targetsOpencode = agents.length === 0 || agents.some((agent) => agent.toLowerCase() === "opencode");
+  return isInstalledDir && targetsOpencode;
+}
+
+function scheduleAfterInteraction(task: () => void, delay = 240): number {
+  return window.setTimeout(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(task));
+  }, delay);
+}
+
+function waitForPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+  });
+}
+
+async function fetchJsonWithTimeout(url: string, timeoutMs = 7000): Promise<any> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal, cache: "force-cache" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function fetchSkillsmpJson(endpoint: string, apiKey = "", timeoutMs = 12000): Promise<any> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+    const resp = await fetch(`https://skillsmp.com${endpoint}`, { headers, signal: controller.signal });
+    if (!resp.ok) throw new Error(`SkillsMP HTTP ${resp.status}`);
+    const json = await resp.json();
+    if (json?.success === false) throw new Error(json?.error?.message || "SkillsMP request failed");
+    return json;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function buildSkillsmpSearchEndpoint(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }): string {
+  const params = new URLSearchParams({
+    q: input.query,
+    page: String(input.page || 1),
+    limit: String(input.limit || 100),
+    sortBy: input.sortBy || "stars"
+  });
+  if (input.category?.trim()) params.set("category", input.category.trim());
+  if (input.occupation?.trim()) params.set("occupation", input.occupation.trim());
+  return `/api/v1/skills/search?${params.toString()}`;
+}
 
 function makeId(): string {
   return Math.random().toString(16).slice(2, 14);
@@ -502,9 +978,12 @@ function useTheme(): [Theme, () => void] {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
+  const [uiFontSize, setUiFontSize] = useState(() => Number(loadLocalString(UI_FONT_SIZE_KEY, "13")) || 13);
+  const [codeFontSize, setCodeFontSize] = useState(() => Number(loadLocalString(CODE_FONT_SIZE_KEY, "12")) || 12);
   const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp">("appearance");
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showGraphPopover, setShowGraphPopover] = useState(false);
@@ -580,6 +1059,7 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
+  const [rightModuleVisibility, setRightModuleVisibility] = useState<Record<RightPaneTab, boolean>>(() => loadRightModuleVisibility());
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
@@ -707,6 +1187,80 @@ export function App() {
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeImageAttachment[]>([]);
   const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
+  const [opencodeAgents, setOpencodeAgents] = useState<OpencodeAgentInfo[]>([]);
+  const [opencodeAgentsLoading, setOpencodeAgentsLoading] = useState(false);
+  const [opencodeAgentsError, setOpencodeAgentsError] = useState("");
+  const [opencodeAgentSearch, setOpencodeAgentSearch] = useState("");
+  const [opencodeDraftAgent, setOpencodeDraftAgent] = useState<OpencodeComposerAgentName>(() => normalizeComposerAgentName(loadLocalString(OPENCODE_AGENT_SELECTION_KEY, "build")));
+  const [opencodeSessionAgent, setOpencodeSessionAgent] = useState<Record<string, string>>({});
+  const [showOpencodeThinkingPicker, setShowOpencodeThinkingPicker] = useState(false);
+  const [opencodeDraftThinkingLevel, setOpencodeDraftThinkingLevel] = useState<OpencodeThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(OPENCODE_THINKING_SELECTION_KEY, "auto")));
+  const [opencodeSessionThinkingLevel, setOpencodeSessionThinkingLevel] = useState<Record<string, OpencodeThinkingLevel>>({});
+  const [opencodeAutoAcceptPermissions, setOpencodeAutoAcceptPermissions] = useState(() => loadLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, false));
+  const [opencodePermissionRequests, setOpencodePermissionRequests] = useState<OpencodePermissionRequest[]>([]);
+  const [opencodePermissionLoading, setOpencodePermissionLoading] = useState(false);
+  const [showOpencodeModulePanel, setShowOpencodeModulePanel] = useState(false);
+  const [opencodeModuleTab, setOpencodeModuleTab] = useState<OpencodeModuleTab>("permissions");
+  const opencodeSkillsVisible = rightPaneTab === "skills" || (showOpencodeModulePanel && opencodeModuleTab === "skills");
+  const opencodeMcpVisible = rightPaneTab === "mcp" || (showOpencodeModulePanel && opencodeModuleTab === "mcp");
+  const [opencodeMcpStatus, setOpencodeMcpStatus] = useState<OpencodeMcpStatusMap>({});
+  const [opencodeMcpLoading, setOpencodeMcpLoading] = useState(false);
+  const [opencodeMcpError, setOpencodeMcpError] = useState("");
+  const [opencodeMcpName, setOpencodeMcpName] = useState("");
+  const [opencodeMcpType, setOpencodeMcpType] = useState<OpencodeMcpType>("remote");
+  const [opencodeMcpCommand, setOpencodeMcpCommand] = useState("");
+  const [opencodeMcpUrl, setOpencodeMcpUrl] = useState("");
+  const [opencodeMcpEnv, setOpencodeMcpEnv] = useState("");
+  const [opencodeMcpHeaders, setOpencodeMcpHeaders] = useState("");
+  const [opencodeMcpBusyName, setOpencodeMcpBusyName] = useState("");
+  const [opencodeSkills, setOpencodeSkills] = useState<OpencodeSkillInfo[]>([]);
+  const [opencodeSkillsLoading, setOpencodeSkillsLoading] = useState(false);
+  const [opencodeSkillsLoadedOnce, setOpencodeSkillsLoadedOnce] = useState(false);
+  const [opencodeSkillsError, setOpencodeSkillsError] = useState("");
+  const [opencodeSkillInstallSpec, setOpencodeSkillInstallSpec] = useState("");
+  const [opencodeSkillInstallScope, setOpencodeSkillInstallScope] = useState<"project" | "global">("project");
+  const [opencodeSkillSearchQuery, setOpencodeSkillSearchQuery] = useState("");
+  const [opencodeSkillSearchStrategy, setOpencodeSkillSearchStrategy] = useState<OpencodeSkillSearchStrategy>("keyword");
+  const [opencodeSkillCategory, setOpencodeSkillCategory] = useState("");
+  const [skillsmpApiKey, setSkillsmpApiKey] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
+  const [skillsmpApiKeyDraft, setSkillsmpApiKeyDraft] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
+  const [showSkillsmpSettings, setShowSkillsmpSettings] = useState(false);
+  const [showSkillInstallMenu, setShowSkillInstallMenu] = useState(false);
+  const [opencodeSkillSearchResults, setOpencodeSkillSearchResults] = useState<OpencodeSkillSearchResult[]>([]);
+  const [opencodeSkillSearchLoading, setOpencodeSkillSearchLoading] = useState(false);
+  const [opencodeSkillSearchCache, setOpencodeSkillSearchCache] = useState<Record<string, OpencodeSkillSearchResult[]>>({});
+  const [opencodeSkillInstallingSpec, setOpencodeSkillInstallingSpec] = useState("");
+  const [opencodeSkillInstallNotice, setOpencodeSkillInstallNotice] = useState("");
+  const [opencodeSkillInstallLog, setOpencodeSkillInstallLog] = useState("");
+  const opencodeSkillDisplayBatchSize = 50;
+  const [opencodeSkillDisplayLimit, setOpencodeSkillDisplayLimit] = useState(opencodeSkillDisplayBatchSize);
+  const [opencodeSkillRevealLoading, setOpencodeSkillRevealLoading] = useState(false);
+  const [opencodeSkillDiscoveredRows, setOpencodeSkillDiscoveredRows] = useState<OpencodeSkillSearchResult[]>([]);
+  const opencodeSkillMarketListRef = useRef<HTMLDivElement | null>(null);
+  const [opencodeSkillCatalogView, setOpencodeSkillCatalogView] = useState<"all-time" | "trending" | "hot" | "official">("all-time");
+  const [opencodeSkillCatalogRows, setOpencodeSkillCatalogRows] = useState<OpencodeSkillSearchResult[]>([]);
+  const [opencodeSkillCatalogLoading, setOpencodeSkillCatalogLoading] = useState(false);
+  const [opencodeSkillCatalogPage, setOpencodeSkillCatalogPage] = useState(0);
+  const [opencodeSkillCatalogQuery, setOpencodeSkillCatalogQuery] = useState("agent");
+  const [opencodeSkillCatalogTotal, setOpencodeSkillCatalogTotal] = useState(0);
+  const [opencodeSkillCatalogHasMore, setOpencodeSkillCatalogHasMore] = useState(false);
+  const [opencodeSkillCatalogCache, setOpencodeSkillCatalogCache] = useState<Record<string, { rows: OpencodeSkillSearchResult[]; page: number; total: number; hasMore: boolean }>>({});
+  const [opencodeSkillCatalogAttempted, setOpencodeSkillCatalogAttempted] = useState<Record<string, boolean>>({});
+  const [opencodeSkillSearchMeta, setOpencodeSkillSearchMeta] = useState<{ count: number; searchType: string; durationMs: number } | null>(null);
+  const [opencodeSkillAllowBackendCatalogFetch, setOpencodeSkillAllowBackendCatalogFetch] = useState(false);
+  const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<OpencodeSkillSearchResult | null>(null);
+  const [selectedSkillDetail, setSelectedSkillDetail] = useState<OpencodeSkillDetail | null>(null);
+  const [selectedSkillAudits, setSelectedSkillAudits] = useState<OpencodeSkillAudit[]>([]);
+  const [selectedSkillLoading, setSelectedSkillLoading] = useState(false);
+  const [opencodeSkillListFilter, setOpencodeSkillListFilter] = useState<"all" | "global" | "project" | "source">("all");
+  const [opencodeSkillListQuery, setOpencodeSkillListQuery] = useState("");
+  const [opencodeSkillSourceInput, setOpencodeSkillSourceInput] = useState("");
+  const [opencodeSkillSourceKind, setOpencodeSkillSourceKind] = useState<"url" | "path">("url");
+  const [opencodeSkillBusy, setOpencodeSkillBusy] = useState(false);
+  const [opencodeSkillRemovingKey, setOpencodeSkillRemovingKey] = useState("");
+  const opencodeSkillCatalogRequestRef = useRef(0);
+  const opencodeSkillsRepoPathRef = useRef("");
+  const opencodeSkillsByRepoRef = useRef<Record<string, OpencodeSkillInfo[]>>({});
   const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
@@ -803,7 +1357,9 @@ export function App() {
   const terminalLogRef = useRef<HTMLDivElement | null>(null);
   const terminalBodyRef = useRef<HTMLDivElement | null>(null);
   const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
-  const terminalInputRef = useRef<HTMLInputElement | null>(null);
+  const terminalInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const terminalTextSelectingRef = useRef(false);
+  const terminalBufferedOutputRef = useRef<Record<string, string>>({});
   const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
   const opencodeModelConfigLoadedRef = useRef(false);
   const opencodeConfiguredModelsLoadedRef = useRef(false);
@@ -910,6 +1466,11 @@ export function App() {
     };
   }, [repoPath]);
 
+  useEffect(() => {
+    if (!repoPath.trim() || !runtimeStatus.opencode.installed) return;
+    void refreshOpencodeAgents();
+  }, [repoPath, runtimeStatus.opencode.installed]);
+
   const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
     () => terminalTabs.find((tab) => tab.id === activeTerminalTabId) ?? terminalTabs[0],
@@ -965,6 +1526,24 @@ export function App() {
     rightPaneTabRef.current = rightPaneTab;
     gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
   }, [repoPath, gitPanePath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+
+  useEffect(() => {
+    if (!opencodeSkillsVisible) return;
+    if (opencodeSkillsRepoPathRef.current === repoPath) return;
+    opencodeSkillsRepoPathRef.current = repoPath;
+    const timer = scheduleAfterInteraction(() => {
+      const cached = opencodeSkillsByRepoRef.current[repoPath] || null;
+      startTransition(() => {
+        if (cached) setOpencodeSkills(cached);
+        setOpencodeSkillsLoadedOnce(Boolean(cached));
+        setOpencodeSkillsLoading(!cached);
+        setOpencodeSkillsError("");
+        setOpencodeSkillListQuery("");
+        setOpencodeSkillRemovingKey("");
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [opencodeSkillsVisible, repoPath]);
 
   useEffect(() => {
     if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
@@ -1064,6 +1643,227 @@ export function App() {
   const opencodeSessionLoading = Boolean(activeOpencodeSessionId && activeOpencodeSession && !activeOpencodeSession.loaded);
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
+  const visibleOpencodeAgents = useMemo(() => {
+    const q = opencodeAgentSearch.trim().toLowerCase();
+    const rows = opencodeAgents.filter((agent) => !agent.hidden && agent.mode !== "subagent");
+    const filtered = q
+      ? rows.filter((agent) => agent.name.toLowerCase().includes(q) || String(agent.description || "").toLowerCase().includes(q))
+      : rows;
+    return filtered.sort((a, b) => {
+      const aPrimary = a.name === "build" || a.mode === "primary" ? 1 : 0;
+      const bPrimary = b.name === "build" || b.mode === "primary" ? 1 : 0;
+      if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+      return a.name.localeCompare(b.name);
+    });
+  }, [opencodeAgents, opencodeAgentSearch]);
+  const activeOpencodeAgent = useMemo(() => {
+    const sessionId = activeOpencodeSessionId.trim();
+    const fromSession = sessionId ? (opencodeSessionAgent[sessionId] || "") : "";
+    const normalizedFromSession = fromSession.trim().toLowerCase();
+    if (isComposerAgentName(normalizedFromSession)) return normalizedFromSession;
+    return normalizeComposerAgentName(opencodeDraftAgent);
+  }, [activeOpencodeSessionId, opencodeSessionAgent, opencodeDraftAgent]);
+  const activeOpencodeThinkingLevel = useMemo(() => {
+    const sessionId = activeOpencodeSessionId.trim();
+    return normalizeThinkingLevel(sessionId ? (opencodeSessionThinkingLevel[sessionId] || opencodeDraftThinkingLevel) : opencodeDraftThinkingLevel);
+  }, [activeOpencodeSessionId, opencodeSessionThinkingLevel, opencodeDraftThinkingLevel]);
+  const activeOpencodeThinkingLabel = OPENCODE_THINKING_LEVELS.find((item) => item.value === activeOpencodeThinkingLevel)?.label || "Auto";
+  const opencodeActivePermissions = useMemo(() => {
+    const sid = activeOpencodeSessionId.trim();
+    return opencodePermissionRequests.filter((req) => !sid || req.sessionID === sid);
+  }, [opencodePermissionRequests, activeOpencodeSessionId]);
+  const opencodeMcpRows = useMemo(() => opencodeMcpVisible ? Object.entries(opencodeMcpStatus).sort(([a], [b]) => a.localeCompare(b)) : [], [opencodeMcpVisible, opencodeMcpStatus]);
+  const filteredOpencodeSkills = useMemo(() => {
+    if (!opencodeSkillsVisible) return [];
+    const query = opencodeSkillListQuery.trim().toLowerCase();
+    return opencodeSkills.filter((skill) => {
+      const scope = skill.scope || "source";
+      if (opencodeSkillListFilter !== "all" && scope !== opencodeSkillListFilter) return false;
+      if (!query) return true;
+      return [skill.name, skill.description, skill.path, skill.location]
+        .some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
+  const opencodeFallbackMarketplaceRows = useMemo(() => opencodeSkillsVisible ? OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
+    spec: skill.spec,
+    package: skill.source,
+    skill: skill.title,
+    installs: skill.installs,
+    url: "",
+    id: skill.spec.includes("@") ? `${skill.source}/${skill.spec.split("@").pop()}` : skill.spec,
+    source: skill.source,
+    sourceType: "recommended",
+    change: index === 0 ? 24 : undefined
+  })) : [], [opencodeSkillsVisible]);
+  const opencodeMarketplaceRows = useMemo(() => {
+    if (!opencodeSkillsVisible) return [];
+    return opencodeSkillSearchResults.length > 0
+      ? opencodeSkillSearchResults
+      : opencodeSkillCatalogRows.length > 0
+        ? opencodeSkillCatalogRows
+        : Array.from(new Map([...opencodeFallbackMarketplaceRows, ...opencodeSkillDiscoveredRows].map((item) => [item.spec, item])).values());
+  }, [opencodeSkillsVisible, opencodeSkillSearchResults, opencodeSkillCatalogRows, opencodeFallbackMarketplaceRows, opencodeSkillDiscoveredRows]);
+  const visibleOpencodeMarketplaceRows = opencodeMarketplaceRows.slice(0, opencodeSkillDisplayLimit);
+  const opencodeCanRevealMoreSkills = visibleOpencodeMarketplaceRows.length < opencodeMarketplaceRows.length;
+  const opencodeCanFetchMoreCatalogSkills = opencodeSkillSearchResults.length === 0 && opencodeSkillCatalogRows.length > 0 && opencodeSkillCatalogHasMore;
+  const opencodeSkillsInitialLoading = opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0;
+  const opencodeSkillsSearching = opencodeSkillSearchLoading;
+  const opencodeSkillsPaging = (opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length > 0 && opencodeSkillSearchResults.length === 0) || opencodeSkillRevealLoading;
+  const opencodeInstalledSkillNodes = useMemo(() => {
+    if (!opencodeSkillsVisible) return null;
+    if (opencodeSkills.length === 0) return <div className="gt-module-empty">暂无已安装 Skills</div>;
+    return opencodeSkills.map((skill) => {
+      const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
+      return (
+        <div key={`${skill.scope || "project"}-${skill.name}`} className="gt-installed-skill-chip">
+          <div><strong>{skill.name}</strong><small>{skill.scope || "project"}</small></div>
+          <button
+            type="button"
+            className="chip danger"
+            disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === removeKey}
+            title={(skill.scope || "source") === "source" ? "Source skills need to be removed from source config" : "Remove this skill"}
+            onClick={() => void removeOpencodeSkill(skill)}
+          >{opencodeSkillRemovingKey === removeKey ? "Removing" : "Uninstall"}</button>
+        </div>
+      );
+    });
+  }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillRemovingKey]);
+  const opencodeSkillCardNodes = useMemo(() => {
+    if (!opencodeSkillsVisible) return null;
+    return visibleOpencodeMarketplaceRows.map((result, idx) => {
+      const resultInstallSpec = result.installSpec || result.spec;
+      const isInstallingThisSkill = opencodeSkillInstallingSpec === resultInstallSpec || opencodeSkillInstallingSpec === result.spec;
+      return <article
+        key={result.id || result.spec}
+        role="button"
+        tabIndex={0}
+        className={selectedMarketplaceSkill?.spec === result.spec ? "gt-skill-card-item active" : "gt-skill-card-item"}
+        onClick={() => void selectMarketplaceSkill(result)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") void selectMarketplaceSkill(result);
+        }}
+      >
+        <span className="gt-skill-card-rank">{String(idx + 1).padStart(2, "0")}</span>
+        <div className="gt-skill-card-copy">
+          <strong>{result.skill}</strong>
+          <small>{result.package}</small>
+          <div className="gt-skill-card-tags">
+            <span className={`gt-skill-quality ${skillQualityLabel(result)}`}>{skillQualityLabel(result)}</span>
+            <span className="gt-skill-card-spec">{resultInstallSpec}</span>
+          </div>
+        </div>
+        <div className="gt-skill-card-stats">
+          <b>★ {result.installs}</b>
+          <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
+        </div>
+        <button className={isInstallingThisSkill ? "gt-skill-get-btn is-installing" : "gt-skill-get-btn"} type="button" disabled={isInstallingThisSkill || opencodeSkillBusy} onClick={(e) => {
+          e.stopPropagation();
+          if (opencodeSkillBusy) return;
+          void installOpencodeSkillFromRegistry(resultInstallSpec, "project", [result.installUrl || "", result.url || "", result.spec]);
+        }}>{isInstallingThisSkill ? "Installing" : "Get"}</button>
+        {isInstallingThisSkill ? <div className="gt-skill-card-install-log">{opencodeSkillInstallLog || "正在启动安装日志..."}</div> : null}
+      </article>;
+    });
+  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows, selectedMarketplaceSkill?.spec, opencodeSkillInstallingSpec, opencodeSkillBusy, opencodeSkillInstallLog]);
+
+  useEffect(() => {
+    if (!repoPath.trim() || !activeOpencodeSessionId.trim()) return;
+    void refreshPendingPermissions(activeOpencodeSessionId);
+    const shouldPollPermissions = activeOpencodeSessionBusy || opencodeAutoAcceptPermissions || (showOpencodeModulePanel && opencodeModuleTab === "permissions");
+    if (!shouldPollPermissions) return;
+    const timer = window.setInterval(() => {
+      void refreshPendingPermissions(activeOpencodeSessionId);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy, showOpencodeModulePanel, opencodeModuleTab, opencodeAutoAcceptPermissions]);
+
+  useEffect(() => {
+    if (!showOpencodeModulePanel) return;
+    if (opencodeModuleTab === "agents") void refreshOpencodeAgents();
+    if (opencodeModuleTab === "permissions") void refreshPendingPermissions();
+    if (opencodeModuleTab === "mcp") void refreshOpencodeMcpStatus();
+    if (opencodeModuleTab === "skills") void refreshOpencodeSkills();
+  }, [showOpencodeModulePanel, opencodeModuleTab, repoPath]);
+
+  useEffect(() => {
+    if (opencodeSkillsVisible) {
+      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) {
+        const timer = scheduleAfterInteraction(() => void refreshOpencodeSkills(), 280);
+        return () => window.clearTimeout(timer);
+      }
+    }
+    if (opencodeMcpVisible) {
+      const timer = scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 280);
+      return () => window.clearTimeout(timer);
+    }
+  }, [opencodeSkillsVisible, opencodeMcpVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillsLoading]);
+
+  useEffect(() => {
+    if (!opencodeSkillsVisible) return;
+    if (opencodeSkillSearchResults.length > 0) return;
+    if (opencodeSkillCatalogRows.length > 0) return;
+    if (opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) return;
+    const timer = scheduleAfterInteraction(() => void loadInitialSkillsmpCatalog(), 320);
+    return () => window.clearTimeout(timer);
+  }, [opencodeSkillsVisible, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillCatalogLoading, repoPath, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
+
+  useEffect(() => {
+    if (!opencodeSkillsVisible) return;
+    if (!repoPath.trim()) return;
+    if (opencodeSkillsLoadedOnce && (opencodeSkillCatalogRows.length > 0 || opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)])) return;
+    const timer = window.setTimeout(() => {
+      void warmSkillsMarketplace();
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [opencodeSkillsVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillsLoading, opencodeSkillCatalogLoading, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
+
+  useEffect(() => {
+    if (!opencodeSkillsVisible) return;
+    if (opencodeMarketplaceRows.length === 0) return;
+    setSelectedMarketplaceSkill((prev) => {
+      if (prev && opencodeMarketplaceRows.some((row) => row.spec === prev.spec)) return prev;
+      return opencodeMarketplaceRows[0];
+    });
+  }, [opencodeSkillsVisible, opencodeMarketplaceRows]);
+
+  useEffect(() => {
+    if (!opencodeSkillsVisible) return;
+    const el = opencodeSkillMarketListRef.current;
+    if (!el || opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
+    if (el.scrollHeight - el.clientHeight > 520) return;
+    if (opencodeCanRevealMoreSkills) {
+      revealMoreOpencodeSkills();
+      return;
+    }
+    if (opencodeCanFetchMoreCatalogSkills) {
+      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
+    }
+  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows.length, opencodeCanRevealMoreSkills, opencodeCanFetchMoreCatalogSkills, opencodeSkillsInitialLoading, opencodeSkillsPaging, opencodeSkillCatalogView, opencodeSkillCatalogPage]);
+
+  useEffect(() => {
+    saveRightModuleVisibility(rightModuleVisibility);
+    if (rightModuleVisibility[rightPaneTab]) return;
+    const next = (["changes", "worktree", "terminal", "skills", "mcp"] as RightPaneTab[]).find((tab) => rightModuleVisibility[tab]);
+    if (next) setRightPaneTab(next);
+  }, [rightModuleVisibility, rightPaneTab]);
+
+  useEffect(() => {
+    const ui = Math.min(18, Math.max(11, uiFontSize));
+    const code = Math.min(18, Math.max(10, codeFontSize));
+    document.documentElement.style.setProperty("--gt-ui-font-size", `${ui}px`);
+    document.documentElement.style.setProperty("--gt-code-font-size", `${code}px`);
+    saveLocalString(UI_FONT_SIZE_KEY, String(ui));
+    saveLocalString(CODE_FONT_SIZE_KEY, String(code));
+  }, [uiFontSize, codeFontSize]);
+
+  useEffect(() => {
+    if (!showSettings || !runtimeStatus.opencode.installed) return;
+    if (Number(opencodeServiceSettings.port) === Number(opencodeServiceSettingsSavedPort)) return;
+    const timer = window.setTimeout(() => {
+      void saveOpencodeServiceSettingsIfNeeded();
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [showSettings, runtimeStatus.opencode.installed, opencodeServiceSettings.port, opencodeServiceSettingsSavedPort]);
 
   function bindOpencodeSessionToWorkspace(sessionId: string, workspacePathInput = repoPath, branchInput = worktreeOverview.branch || selectedBranch) {
     const workspace = normalizeWorkspacePath(workspacePathInput);
@@ -1084,6 +1884,14 @@ export function App() {
       };
       writeWorkspaceAgentBindings(next);
       return next;
+    });
+  }
+
+  function toggleRightModuleVisibility(tab: RightPaneTab) {
+    setRightModuleVisibility((prev) => {
+      const enabledCount = Object.values(prev).filter(Boolean).length;
+      if (prev[tab] && enabledCount <= 1) return prev;
+      return { ...prev, [tab]: !prev[tab] };
     });
   }
 
@@ -1146,12 +1954,15 @@ export function App() {
       const title = `Agent · ${branchInput || pathLeaf(target)}`;
       const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
         repoPath: target,
-        title
+        title,
+        agent: activeOpencodeAgent || null,
+        permission: opencodeAutoAcceptPermissions ? allowAllPermissionRules() : null
       });
       const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
       next.loaded = true;
       setOpencodeSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
       setActiveOpencodeSessionId(created.id);
+      if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [created.id]: activeOpencodeAgent }));
       setDraftOpencodeSession(false);
       bindOpencodeSessionToWorkspace(created.id, target, branchInput);
       setMessage(`已绑定 Agent: ${pathLeaf(target)}`);
@@ -1204,7 +2015,8 @@ export function App() {
     const expanded = expandedProjectIds.includes(repo.id);
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
-    if (!expanded && runtimeStatus.opencode.installed) {
+    const sessionsCached = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepo, repo.id);
+    if (!expanded && runtimeStatus.opencode.installed && !sessionsCached) {
       void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
     }
   }
@@ -1214,7 +2026,7 @@ export function App() {
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
     opencodeSessionsRepoIdRef.current = repo.id;
     if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-    if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+    if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
     setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
@@ -1429,6 +2241,646 @@ export function App() {
       setMessage("Switch model failed");
     } finally {
       setOpencodeConfigBusy(false);
+    }
+  }
+
+  function applyOpencodeAgent(agentName: string) {
+    const name = normalizeComposerAgentName(agentName);
+    const sid = activeOpencodeSessionId.trim();
+    if (sid) {
+      setOpencodeSessionAgent((prev) => ({ ...prev, [sid]: name }));
+    } else {
+      setOpencodeDraftAgent(name);
+    }
+    saveLocalString(OPENCODE_AGENT_SELECTION_KEY, name);
+    setMessage(`Switched agent: ${name}`);
+  }
+
+  function applyOpencodeThinkingLevel(level: OpencodeThinkingLevel) {
+    const next = normalizeThinkingLevel(level);
+    const sid = activeOpencodeSessionId.trim();
+    if (sid) {
+      setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [sid]: next }));
+    } else {
+      setOpencodeDraftThinkingLevel(next);
+    }
+    saveLocalString(OPENCODE_THINKING_SELECTION_KEY, next);
+    setShowOpencodeThinkingPicker(false);
+    setMessage(`Thinking: ${OPENCODE_THINKING_LEVELS.find((item) => item.value === next)?.label || next}`);
+  }
+
+  async function refreshOpencodeAgents() {
+    if (!repoPath.trim()) return;
+    setOpencodeAgentsLoading(true);
+    setOpencodeAgentsError("");
+    try {
+      const raw = await invoke<unknown>("list_opencode_agents", { repoPath });
+      const rows = normalizeArrayRows(raw)
+        .map((item: any): OpencodeAgentInfo | null => {
+          const name = String(item?.name || "").trim();
+          if (!name) return null;
+          return {
+            name,
+            description: String(item?.description || ""),
+            mode: item?.mode === "subagent" || item?.mode === "primary" || item?.mode === "all" ? item.mode : undefined,
+            native: Boolean(item?.native),
+            hidden: Boolean(item?.hidden),
+            color: String(item?.color || ""),
+            variant: String(item?.variant || ""),
+            model: item?.model || undefined
+          };
+        })
+        .filter(Boolean) as OpencodeAgentInfo[];
+      setOpencodeAgents(rows);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeAgentsError(msg);
+      appendOpencodeDebugLog(`agent.list.error ${msg}`);
+    } finally {
+      setOpencodeAgentsLoading(false);
+    }
+  }
+
+  async function refreshOpencodeSkills() {
+    const requestRepoPath = repoPath.trim();
+    if (!requestRepoPath) return;
+    startTransition(() => {
+      setOpencodeSkillsLoading(true);
+      setOpencodeSkillsError("");
+    });
+    await waitForPaint();
+    try {
+      const installedRaw = await invoke<unknown>("list_installed_opencode_skills", { repoPath: requestRepoPath }).catch(() => []);
+      if (repoPathRef.current.trim() !== requestRepoPath) return;
+      const installedRows = normalizeArrayRows(installedRaw).map((item: any) => ({
+        name: String(item?.name || "").trim(),
+        path: String(item?.path || ""),
+        scope: (item?.scope === "global" ? "global" : "project") as "global" | "project",
+        agents: Array.isArray(item?.agents) ? item.agents.map((x: unknown) => String(x || "")).filter(Boolean) : []
+      })).filter((item) => item.name && isInstalledOpencodeSkill(item));
+      const rows = installedRows.map((installed): OpencodeSkillInfo => {
+        return {
+          name: installed.name,
+          description: "Installed via skills.sh",
+          location: installed.path,
+          license: "",
+          compatibility: "",
+          scope: installed.scope,
+          path: installed.path,
+          agents: installed.agents
+        };
+      });
+      opencodeSkillsByRepoRef.current[requestRepoPath] = rows;
+      startTransition(() => {
+        setOpencodeSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
+      });
+    } catch (e) {
+      if (repoPathRef.current.trim() !== requestRepoPath) return;
+      const msg = String(e);
+      startTransition(() => setOpencodeSkillsError(msg));
+      appendOpencodeDebugLog(`skill.list.error ${msg}`);
+    } finally {
+      if (repoPathRef.current.trim() === requestRepoPath) {
+        startTransition(() => {
+          setOpencodeSkillsLoadedOnce(true);
+          setOpencodeSkillsLoading(false);
+        });
+      }
+    }
+  }
+
+  async function searchOpencodeSkillRegistry(queryArg = opencodeSkillSearchQuery, strategyArg = opencodeSkillSearchStrategy) {
+    if (!ensureRepoSelected()) return;
+    const query = queryArg.trim();
+    if (query.length < 2) {
+      setOpencodeSkillSearchResults([]);
+      return;
+    }
+    const cacheKey = `${strategyArg}:${opencodeSkillCategory || "all"}:${query.toLowerCase()}`;
+    const cached = opencodeSkillSearchCache[cacheKey];
+    if (cached) {
+      setOpencodeSkillSearchResults(cached);
+      setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
+      setOpencodeSkillSearchMeta({ count: cached.length, searchType: `${strategyArg}-cache`, durationMs: 0 });
+      return;
+    }
+    setOpencodeSkillSearchLoading(true);
+    setOpencodeSkillsError("");
+    try {
+      if (strategyArg === "ai") {
+        if (!skillsmpApiKey.trim()) {
+          setOpencodeSkillsError("未配置 SKILLSMP_API_KEY，已自动切换到关键词搜索。可在 Settings 中配置后再用 AI 语义搜索。");
+          setOpencodeSkillSearchStrategy("keyword");
+          await searchOpencodeSkillRegistry(query, "keyword");
+          return;
+        }
+        const raw = await fetchSkillsmpAiWithFallback(query);
+        const rows = normalizeArrayRows(raw?.data?.skills || raw?.data).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
+        setOpencodeSkillSearchResults(rows);
+        setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
+        setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: rows }));
+        setOpencodeSkillSearchMeta({ count: rows.length, searchType: "skillsmp-ai", durationMs: Number(raw?.meta?.responseTimeMs || 0) });
+        return;
+      }
+      const collected: OpencodeSkillSearchResult[] = [];
+      for (const q of [query]) {
+        let raw = await fetchSkillsmpSearchWithFallback({
+          query: q,
+          page: 1,
+          limit: 100,
+          sortBy: "stars",
+          category: opencodeSkillCategory || undefined
+        });
+        let rows = normalizeArrayRows(raw?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
+        if (rows.length === 0 && opencodeSkillCategory) {
+          raw = await fetchSkillsmpSearchWithFallback({
+            query: q,
+            page: 1,
+            limit: 100,
+            sortBy: "stars"
+          });
+          rows = normalizeArrayRows(raw?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
+        }
+        collected.push(...rows.map((row) => ({ ...row, sourceType: q === query ? "skillsmp" : `alt: ${q}` })));
+      }
+      const deduped = Array.from(new Map(collected.filter((item) => !item.isDuplicate).map((item) => [item.id || item.spec, item])).values());
+      const sorted = deduped.sort((a, b) => {
+        const trustedDelta = Number(isTrustedSkillSource(b.source || b.package)) - Number(isTrustedSkillSource(a.source || a.package));
+        if (trustedDelta !== 0) return trustedDelta;
+        return parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs);
+      });
+      setOpencodeSkillSearchResults(sorted);
+      setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
+      setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: sorted }));
+      setOpencodeSkillSearchMeta({ count: sorted.length, searchType: "skillsmp-keyword", durationMs: 0 });
+    } catch (e) {
+      const msg = "SkillsMP 搜索暂时不可用，已保留本地榜单。";
+      setOpencodeSkillsError(msg);
+      setOpencodeSkillSearchResults([]);
+      setOpencodeSkillSearchMeta(null);
+      appendOpencodeDebugLog(`skill.search.error ${String(e)}`);
+    } finally {
+      setOpencodeSkillSearchLoading(false);
+    }
+  }
+
+  async function loadInitialSkillsmpCatalog() {
+    if (!ensureRepoSelected() || opencodeSkillCatalogLoading || opencodeSkillCatalogRows.length > 0) return;
+    if (opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) return;
+    await fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0);
+  }
+
+  function updateSkillsMarketplaceCategory(category: string) {
+    setOpencodeSkillCategory(category);
+    setOpencodeSkillCatalogRows([]);
+    setOpencodeSkillCatalogPage(0);
+    setOpencodeSkillSearchResults([]);
+    setOpencodeSkillSearchMeta(null);
+    setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
+  }
+
+  function opencodeSkillCatalogCacheKey(view: string, category = opencodeSkillCategory) {
+    return `${view}:${category || "all"}`;
+  }
+
+  async function fetchSkillsmpSearchWithFallback(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }, options: { allowBackendFallback?: boolean } = {}) {
+    try {
+      return await fetchSkillsmpJson(buildSkillsmpSearchEndpoint(input), skillsmpApiKey);
+    } catch (directError) {
+      appendOpencodeDebugLog(`skillsmp.direct.error ${String(directError)}`);
+      if (options.allowBackendFallback === false) throw directError;
+      return await invoke<any>("fetch_skillsmp_skill_search", {
+        repoPath,
+        query: input.query,
+        page: input.page,
+        limit: input.limit,
+        sortBy: input.sortBy,
+        category: input.category,
+        occupation: input.occupation,
+        apiKey: skillsmpApiKey || undefined
+      });
+    }
+  }
+
+  async function fetchSkillsmpAiWithFallback(query: string) {
+    try {
+      return await fetchSkillsmpJson(`/api/v1/skills/ai-search?q=${encodeURIComponent(query)}`, skillsmpApiKey, 14000);
+    } catch (directError) {
+      appendOpencodeDebugLog(`skillsmp.ai.direct.error ${String(directError)}`);
+      return await invoke<any>("fetch_skillsmp_ai_search", { repoPath, query, apiKey: skillsmpApiKey || undefined });
+    }
+  }
+
+  function switchOpencodeSkillCatalogView(view: "all-time" | "trending" | "hot" | "official") {
+    if (opencodeSkillCatalogView === view && opencodeSkillSearchResults.length === 0) return;
+    setOpencodeSkillSearchResults([]);
+    setOpencodeSkillSearchMeta(null);
+    setOpencodeSkillCatalogView(view);
+    setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
+    setOpencodeSkillsError("");
+    const cached = opencodeSkillCatalogCache[opencodeSkillCatalogCacheKey(view)];
+    if (cached) {
+      setOpencodeSkillCatalogRows(cached.rows);
+      setOpencodeSkillCatalogPage(cached.page);
+      setOpencodeSkillCatalogTotal(cached.total);
+      setOpencodeSkillCatalogHasMore(cached.hasMore);
+      return;
+    }
+    window.requestAnimationFrame(() => void fetchOpencodeSkillCatalog(view, 0));
+  }
+
+  async function warmSkillsMarketplace() {
+    if (!repoPath.trim()) return;
+    const tasks: Array<Promise<unknown>> = [];
+    if (!opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0 && !opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) {
+      tasks.push(loadInitialSkillsmpCatalog());
+    }
+    if (tasks.length === 0) return;
+    await Promise.allSettled(tasks);
+  }
+
+  function handleOpencodeSkillMarketScroll() {
+    const el = opencodeSkillMarketListRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceToBottom > 520) return;
+    if (opencodeCanRevealMoreSkills && !opencodeSkillRevealLoading) {
+      revealMoreOpencodeSkills();
+      return;
+    }
+    if (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length) {
+      setOpencodeSkillAllowBackendCatalogFetch(true);
+      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0, { allowBackendFallback: true, force: true });
+      return;
+    }
+    if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
+      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
+      return;
+    }
+  }
+
+  function revealMoreOpencodeSkills() {
+    if (opencodeSkillRevealLoading) return;
+    setOpencodeSkillRevealLoading(true);
+    window.setTimeout(() => {
+      setOpencodeSkillDisplayLimit((limit) => limit + opencodeSkillDisplayBatchSize);
+      setOpencodeSkillRevealLoading(false);
+    }, 360);
+  }
+
+  async function fetchOpencodeSkillCatalog(viewArg = opencodeSkillCatalogView, pageArg = 0, options: { allowBackendFallback?: boolean; force?: boolean } = {}) {
+    const requestId = ++opencodeSkillCatalogRequestRef.current;
+    const cacheKey = opencodeSkillCatalogCacheKey(viewArg);
+    if (!options.force && opencodeSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
+    startTransition(() => {
+      setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
+      setOpencodeSkillCatalogLoading(true);
+      setOpencodeSkillsError("");
+    });
+    await waitForPaint();
+    try {
+      const page = pageArg + 1;
+      const sortBy = viewArg === "trending" || viewArg === "hot" ? "recent" : "stars";
+      const viewQuery = viewArg === "official" ? "official" : viewArg === "hot" ? "popular" : "agent";
+      const query = opencodeSkillCategory ? getSkillsMarketplaceSeedQuery(opencodeSkillCategory) : viewQuery;
+      let json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy, category: opencodeSkillCategory || undefined }, { allowBackendFallback: options.allowBackendFallback ?? true });
+      let rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
+      if (rows.length === 0 && opencodeSkillCategory) {
+        json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy }, { allowBackendFallback: options.allowBackendFallback ?? true });
+        rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
+      }
+      const positiveStarRows = rows.filter((item) => parseSkillInstallCount(item.installs) > 0);
+      if (positiveStarRows.length > 0) rows = positiveStarRows;
+      rows = rows.slice().sort((a, b) => parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs));
+      if (requestId !== opencodeSkillCatalogRequestRef.current) return;
+      const nextPage = Number(json?.data?.pagination?.page || page) - 1;
+      const nextTotal = Number(json?.data?.pagination?.total || rows.length);
+      const nextHasMore = Boolean(json?.data?.pagination?.hasNext);
+      startTransition(() => {
+        setOpencodeSkillCatalogRows((prev) => {
+          const nextRows = rows.filter((item) => !item.isDuplicate);
+          const mergedRows = pageArg <= 0 ? nextRows : Array.from(new Map([...prev, ...nextRows].map((item) => [item.id || item.spec, item])).values());
+          setOpencodeSkillCatalogCache((cache) => ({
+            ...cache,
+            [opencodeSkillCatalogCacheKey(viewArg)]: { rows: mergedRows, page: nextPage, total: nextTotal, hasMore: nextHasMore }
+          }));
+          return mergedRows;
+        });
+        setOpencodeSkillDisplayLimit((limit) => Math.max(limit, opencodeSkillDisplayBatchSize));
+        setOpencodeSkillCatalogPage(nextPage);
+        setOpencodeSkillCatalogTotal(nextTotal);
+        setOpencodeSkillCatalogHasMore(nextHasMore);
+      });
+    } catch (e) {
+      if (requestId !== opencodeSkillCatalogRequestRef.current) return;
+      startTransition(() => {
+        setOpencodeSkillsError("");
+        setOpencodeSkillCatalogRows([]);
+        setOpencodeSkillCatalogHasMore(false);
+      });
+      appendOpencodeDebugLog(`skill.catalog.error ${String(e)}`);
+    } finally {
+      if (requestId === opencodeSkillCatalogRequestRef.current) startTransition(() => setOpencodeSkillCatalogLoading(false));
+    }
+  }
+
+  async function selectMarketplaceSkill(skill: OpencodeSkillSearchResult) {
+    setSelectedMarketplaceSkill(skill);
+    setSelectedSkillDetail(null);
+    setSelectedSkillAudits([]);
+    setShowSkillInstallMenu(false);
+  }
+
+  async function loadSelectedMarketplaceSkillDetails(skill = selectedMarketplaceSkill) {
+    if (!skill) return;
+    const id = (skill.id || "").trim();
+    if (!id || !repoPath.trim()) return;
+    setSelectedSkillLoading(true);
+    try {
+      const [detailRaw, auditRaw] = await Promise.all([
+        invoke<any>("fetch_opencode_skill_detail_api", { repoPath, id }).catch(() => null),
+        invoke<any>("fetch_opencode_skill_audit_api", { repoPath, id }).catch(() => null)
+      ]);
+      if (detailRaw && typeof detailRaw === "object") {
+        setSelectedSkillDetail({
+          id: String(detailRaw?.id || id),
+          source: String(detailRaw?.source || skill.source || skill.package),
+          slug: String(detailRaw?.slug || skill.skill),
+          installs: Number(detailRaw?.installs || 0),
+          hash: detailRaw?.hash == null ? null : String(detailRaw.hash),
+          files: Array.isArray(detailRaw?.files) ? detailRaw.files.map((file: any) => ({
+            path: String(file?.path || ""),
+            contents: String(file?.contents || "")
+          })).filter((file: { path: string }) => file.path) : null
+        });
+      }
+      setSelectedSkillAudits(Array.isArray(auditRaw?.audits) ? auditRaw.audits.map((audit: any) => ({
+        provider: String(audit?.provider || "Audit"),
+        slug: String(audit?.slug || ""),
+        status: String(audit?.status || "unknown"),
+        summary: String(audit?.summary || ""),
+        auditedAt: String(audit?.auditedAt || ""),
+        riskLevel: String(audit?.riskLevel || ""),
+        categories: Array.isArray(audit?.categories) ? audit.categories.map((x: unknown) => String(x || "")).filter(Boolean) : []
+      })) : []);
+    } finally {
+      setSelectedSkillLoading(false);
+    }
+  }
+
+  async function refreshOpencodeMcpStatus() {
+    if (!repoPath.trim()) return;
+    startTransition(() => {
+      setOpencodeMcpLoading(true);
+      setOpencodeMcpError("");
+    });
+    await waitForPaint();
+    try {
+      const raw = await invoke<unknown>("list_opencode_mcp_status", { repoPath });
+      startTransition(() => setOpencodeMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as OpencodeMcpStatusMap : {}));
+    } catch (e) {
+      const msg = String(e);
+      startTransition(() => setOpencodeMcpError(msg));
+      appendOpencodeDebugLog(`mcp.status.error ${msg}`);
+    } finally {
+      startTransition(() => setOpencodeMcpLoading(false));
+    }
+  }
+
+  async function refreshPendingPermissions(sessionIdArg = activeOpencodeSessionId) {
+    if (!repoPath.trim()) return;
+    setOpencodePermissionLoading(true);
+    try {
+      const raw = await invoke<unknown>("list_opencode_permissions", { repoPath });
+      const rows = normalizeArrayRows(raw)
+        .map((item: any): OpencodePermissionRequest | null => {
+          const id = String(item?.id || "").trim();
+          const sessionID = String(item?.sessionID || "").trim();
+          if (!id || !sessionID) return null;
+          return {
+            id,
+            sessionID,
+            permission: String(item?.permission || ""),
+            patterns: Array.isArray(item?.patterns) ? item.patterns.map((x: unknown) => String(x || "")).filter(Boolean) : [],
+            always: Array.isArray(item?.always) ? item.always.map((x: unknown) => String(x || "")).filter(Boolean) : [],
+            metadata: item?.metadata || undefined,
+            tool: item?.tool || undefined
+          };
+        })
+        .filter(Boolean) as OpencodePermissionRequest[];
+      const sid = sessionIdArg.trim();
+      const nextRows = sid ? rows.filter((row) => row.sessionID === sid) : rows;
+      if (opencodeAutoAcceptPermissions) {
+        await Promise.all(nextRows.map((req) => sendPermissionReply(req.id, "always", { silent: true })));
+        setOpencodePermissionRequests((prev) => prev.filter((req) => !nextRows.some((row) => row.id === req.id)));
+      } else {
+        setOpencodePermissionRequests((prev) => {
+          const rest = sid ? prev.filter((row) => row.sessionID !== sid) : [];
+          return [...rest, ...nextRows];
+        });
+      }
+    } catch (e) {
+      appendOpencodeDebugLog(`permission.list.error ${String(e)}`);
+    } finally {
+      setOpencodePermissionLoading(false);
+    }
+  }
+
+  async function ensureSessionAutoAcceptPermissions(sessionId: string) {
+    if (!opencodeAutoAcceptPermissions || !repoPath.trim() || !sessionId.trim()) return;
+    try {
+      await invoke<unknown>("set_opencode_session_permission", {
+        repoPath,
+        sessionId,
+        permission: allowAllPermissionRules()
+      });
+      appendOpencodeDebugLog(`permission.session.allowAll ${sessionId}`);
+    } catch (e) {
+      appendOpencodeDebugLog(`permission.session.allowAll.error ${String(e)}`);
+    }
+  }
+
+  async function sendPermissionReply(requestId: string, reply: OpencodePermissionReply, opts?: { message?: string; silent?: boolean }) {
+    if (!repoPath.trim() || !requestId.trim()) return false;
+    try {
+      await invoke<boolean>("post_opencode_permission_reply", {
+        repoPath,
+        requestId,
+        reply,
+        message: opts?.message || null
+      });
+      setOpencodePermissionRequests((prev) => prev.filter((req) => req.id !== requestId));
+      appendOpencodeDebugLog(`permission.reply ${requestId} ${reply}`);
+      if (!opts?.silent) setMessage(reply === "reject" ? "Permission rejected" : "Permission accepted");
+      return true;
+    } catch (e) {
+      appendOpencodeDebugLog(`permission.reply.error ${requestId} ${String(e)}`);
+      if (!opts?.silent) setError(String(e));
+      return false;
+    }
+  }
+
+  function handleIncomingPermission(request: OpencodePermissionRequest) {
+    if (!request?.id) return;
+    if (opencodeAutoAcceptPermissions) {
+      void sendPermissionReply(request.id, "always", { silent: true });
+      return;
+    }
+    setOpencodePermissionRequests((prev) => {
+      const next = prev.filter((item) => item.id !== request.id);
+      return [...next, request];
+    });
+  }
+
+  function openOpencodeModulePanel(tab: OpencodeModuleTab) {
+    setOpencodeModuleTab(tab);
+    setShowOpencodeModulePanel(true);
+    if (tab === "agents") void refreshOpencodeAgents();
+    if (tab === "permissions") void refreshPendingPermissions();
+    if (tab === "mcp") void refreshOpencodeMcpStatus();
+    if (tab === "skills") void refreshOpencodeSkills();
+  }
+
+  async function addOpencodeMcpServer() {
+    if (!ensureRepoSelected()) return;
+    const name = opencodeMcpName.trim();
+    if (!name) {
+      setError("MCP name is required");
+      return;
+    }
+    const config: Record<string, unknown> = { type: opencodeMcpType, enabled: true };
+    if (opencodeMcpType === "local") {
+      const command = splitCommandLine(opencodeMcpCommand);
+      if (command.length === 0) {
+        setError("Local MCP command is required");
+        return;
+      }
+      config.command = command;
+      const env = parseKeyValueLines(opencodeMcpEnv);
+      if (env) config.environment = env;
+    } else {
+      const url = opencodeMcpUrl.trim();
+      if (!url) {
+        setError("Remote MCP URL is required");
+        return;
+      }
+      config.url = url;
+      const headers = parseKeyValueLines(opencodeMcpHeaders);
+      if (headers) config.headers = headers;
+    }
+    setOpencodeMcpBusyName(name);
+    setOpencodeMcpError("");
+    try {
+      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config });
+      setOpencodeMcpName("");
+      setOpencodeMcpCommand("");
+      setOpencodeMcpUrl("");
+      setOpencodeMcpEnv("");
+      setOpencodeMcpHeaders("");
+      await refreshOpencodeMcpStatus();
+      setMessage(`MCP added: ${name}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeMcpError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeMcpBusyName("");
+    }
+  }
+
+  async function runMcpAction(name: string, action: "connect" | "disconnect" | "auth" | "logout") {
+    if (!ensureRepoSelected()) return;
+    const n = name.trim();
+    if (!n) return;
+    setOpencodeMcpBusyName(`${n}:${action}`);
+    setOpencodeMcpError("");
+    try {
+      if (action === "connect") await invoke<boolean>("connect_opencode_mcp_server", { repoPath, name: n });
+      if (action === "disconnect") await invoke<boolean>("disconnect_opencode_mcp_server", { repoPath, name: n });
+      if (action === "auth") await invoke<unknown>("authenticate_opencode_mcp_server", { repoPath, name: n });
+      if (action === "logout") await invoke<boolean>("remove_opencode_mcp_auth", { repoPath, name: n });
+      await refreshOpencodeMcpStatus();
+      setMessage(`MCP ${action}: ${n}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeMcpError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeMcpBusyName("");
+    }
+  }
+
+  async function installOpencodeSkillFromRegistry(specArg = opencodeSkillInstallSpec, scopeArg: "project" | "global" = opencodeSkillInstallScope, _fallbackSpecs: string[] = []) {
+    if (!ensureRepoSelected()) return;
+    const primarySpec = specArg.trim();
+    if (!primarySpec) {
+      setError("请输入 skills.sh 条目，例如 vercel-labs/skills/find-skills");
+      return;
+    }
+    const globalFlag = scopeArg === "global" ? " -g" : "";
+    const command = `SKILLS_CLONE_TIMEOUT_MS=600000 npx -y skills add ${quoteShellArg(primarySpec)} --agent opencode -y${globalFlag}`;
+    setOpencodeSkillBusy(false);
+    setOpencodeSkillInstallingSpec("");
+    setOpencodeSkillInstallNotice("");
+    setOpencodeSkillInstallLog("");
+    setOpencodeSkillsError("");
+    setOpencodeSkillInstallSpec("");
+    appendOpencodeDebugLog(`skill.install.terminal ${primarySpec} scope=${scopeArg}`);
+    setMessage(`已切到终端执行 Skill 安装: ${primarySpec}`);
+    await runCommandInTerminalModule(command);
+    [6000, 15000, 30000].forEach((delay) => {
+      window.setTimeout(() => void refreshOpencodeSkills(), delay);
+    });
+  }
+
+  async function removeOpencodeSkill(skill: OpencodeSkillInfo) {
+    if (!ensureRepoSelected()) return;
+    const scope = skill.scope || "source";
+    if (scope !== "project" && scope !== "global") {
+      setOpencodeSkillsError("只能删除已安装到 Repo 或 Global 的 Skill。Source 类型请从来源配置中移除。");
+      return;
+    }
+    const key = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
+    setOpencodeSkillRemovingKey(key);
+    setOpencodeSkillsError("");
+    try {
+      await invoke<string>("remove_opencode_skill", { repoPath, name: skill.name, global: scope === "global" });
+      await refreshOpencodeSkills();
+      setMessage(`Skill removed: ${skill.name}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeSkillsError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeSkillRemovingKey("");
+    }
+  }
+
+  async function addOpencodeSkillSource() {
+    if (!ensureRepoSelected()) return;
+    const source = opencodeSkillSourceInput.trim();
+    if (!source) return;
+    setOpencodeSkillBusy(true);
+    setOpencodeSkillsError("");
+    try {
+      const cfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath });
+      const currentSkills = ((cfg as any)?.skills && typeof (cfg as any).skills === "object") ? (cfg as any).skills : {};
+      const key = opencodeSkillSourceKind === "url" ? "urls" : "paths";
+      const prev = Array.isArray(currentSkills[key]) ? currentSkills[key].map((x: unknown) => String(x || "")).filter(Boolean) : [];
+      const next = Array.from(new Set([...prev, source]));
+      await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
+        repoPath,
+        patch: { skills: { ...currentSkills, [key]: next } }
+      });
+      setOpencodeSkillSourceInput("");
+      await refreshOpencodeSkills();
+      setMessage(`Skill source added: ${source}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeSkillsError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeSkillBusy(false);
     }
   }
 
@@ -1874,7 +3326,9 @@ export function App() {
     appendOpencodeDebugLog("session.create requested");
     const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
       repoPath,
-      title: seedPrompt?.trim() || undefined
+      title: seedPrompt?.trim() || undefined,
+      agent: activeOpencodeAgent || null,
+      permission: opencodeAutoAcceptPermissions ? allowAllPermissionRules() : null
     });
     const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
     next.loaded = true;
@@ -1883,6 +3337,8 @@ export function App() {
       return exists ? prev : [next, ...prev];
     });
     setActiveOpencodeSessionId(created.id);
+    if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [created.id]: activeOpencodeAgent }));
+    setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [created.id]: activeOpencodeThinkingLevel }));
     bindOpencodeSessionToWorkspace(created.id, repoPath, worktreeOverview.branch || selectedBranch);
     setDraftOpencodeSession(false);
     setOpencodePromptInput("");
@@ -2274,9 +3730,9 @@ export function App() {
     }
   }
 
-  async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall") {
+  async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall", options?: { showRuntimePanel?: boolean }) {
     flushSync(() => {
-      setShowEnvSetup(true);
+      setShowEnvSetup(options?.showRuntimePanel ?? true);
       setInstallingDep(name);
       setInstallingElapsed(0);
       setRuntimeInstallLog("");
@@ -2860,6 +4316,9 @@ export function App() {
     }
     if (!sessionId) return;
     bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
+    if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeOpencodeAgent }));
+    setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeOpencodeThinkingLevel }));
+    await ensureSessionAutoAcceptPermissions(sessionId);
     if (opencodeRunBusyBySession[sessionId]) return;
     invalidateOpencodeMessageCache(repoPath, sessionId);
     const assistantId = `assistant-${makeId()}`;
@@ -2929,7 +4388,10 @@ export function App() {
         `chars=${prompt.length}`,
         `model.raw=${rawModel || "(empty)"}`,
         `model.hint=${modelHint || "(empty)"}`,
-        `source=${modelSource}`
+        `source=${modelSource}`,
+        `agent=${activeOpencodeAgent || "(default)"}`,
+        `thinking=${activeOpencodeThinkingLevel}`,
+        `autoAccept=${opencodeAutoAcceptPermissions ? 1 : 0}`
       ].join(" ")
     );
     let done = false;
@@ -3251,6 +4713,30 @@ export function App() {
           return;
         }
 
+        if (typ === "permission.asked") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          handleIncomingPermission({
+            id: String(props?.id || ""),
+            sessionID: sid,
+            permission: String(props?.permission || ""),
+            patterns: Array.isArray(props?.patterns) ? props.patterns.map((x: unknown) => String(x || "")).filter(Boolean) : [],
+            always: Array.isArray(props?.always) ? props.always.map((x: unknown) => String(x || "")).filter(Boolean) : [],
+            metadata: props?.metadata || undefined,
+            tool: props?.tool || undefined
+          });
+          return;
+        }
+
+        if (typ === "permission.replied") {
+          const sid = String(props?.sessionID || "");
+          if (sid !== sessionId) return;
+          const requestID = String(props?.requestID || "");
+          if (!requestID) return;
+          setOpencodePermissionRequests((prev) => prev.filter((item) => item.id !== requestID));
+          return;
+        }
+
         if (typ === "session.error") {
           const sid = String(props?.sessionID || "");
           if (sid !== sessionId) return;
@@ -3359,6 +4845,12 @@ export function App() {
           modelID: mr.model
         };
       }
+      if (activeOpencodeAgent) {
+        promptBody.agent = activeOpencodeAgent;
+      }
+      if (activeOpencodeThinkingLevel !== "auto") {
+        promptBody.variant = activeOpencodeThinkingLevel;
+      }
       const postResp = await fetch(promptUrl, {
         method: "POST",
         headers: {
@@ -3432,6 +4924,39 @@ export function App() {
       const end = el.value.length;
       el.setSelectionRange(end, end);
     });
+  }
+
+  function activateOpencodeSlashCommand(cmd: OpencodeSlashCommand) {
+    const trigger = cmd.trigger.trim().toLowerCase();
+    setOpencodeSlashOpen(false);
+    if (cmd.source === "builtin") {
+      if (trigger === "new") {
+        void createAndSwitchOpencodeSession();
+        return;
+      }
+      if (trigger === "model") {
+        setShowOpencodeModelPicker(true);
+        return;
+      }
+      if (trigger === "agent") {
+        applyOpencodeAgent(activeOpencodeAgent === "build" ? "plan" : "build");
+        return;
+      }
+      if (trigger === "mcp") {
+        openOpencodeModulePanel("mcp");
+        return;
+      }
+      if (trigger === "workspace") {
+        setLeftDrawerOpen(true);
+        return;
+      }
+      if (trigger === "terminal") {
+        setRightPaneTab("terminal");
+        return;
+      }
+    }
+    setOpencodePromptInput(`/${cmd.trigger} `);
+    requestAnimationFrame(() => opencodeInputRef.current?.focus());
   }
 
   function getOpencodePromptHistorySessionKey() {
@@ -4781,6 +6306,25 @@ export function App() {
     );
   }
 
+  function terminalHasTextSelection() {
+    const el = terminalLogRef.current;
+    const selection = window.getSelection();
+    if (!el || !selection || selection.isCollapsed || !selection.toString()) return false;
+    const anchorInside = selection.anchorNode ? el.contains(selection.anchorNode) : false;
+    const focusInside = selection.focusNode ? el.contains(selection.focusNode) : false;
+    return anchorInside || focusInside;
+  }
+
+  function flushBufferedTerminalOutput(tabId = activeTerminalTabId) {
+    const buffered = terminalBufferedOutputRef.current[tabId];
+    if (!buffered) return;
+    delete terminalBufferedOutputRef.current[tabId];
+    updateTerminalTabById(tabId, (prev) => ({
+      ...prev,
+      output: sanitizeTerminalOutput(`${prev.output}${buffered}`)
+    }));
+  }
+
   function createTerminalTab() {
     const n = terminalTabCounterRef.current++;
     const id = `terminal-${n}`;
@@ -4831,6 +6375,37 @@ export function App() {
     } catch (e) {
       const msg = String(e);
       updateTerminalTabById(activeTerminalTab.id, (prev) => ({
+        ...prev,
+        output: `${prev.output}${prev.output.endsWith("\n") || !prev.output ? "" : "\n"}[error] ${msg}\n`
+      }));
+      setError(msg);
+    }
+  }
+
+  async function runCommandInTerminalModule(script: string) {
+    if (!ensureRepoSelected()) return;
+    const command = script.trim();
+    if (!command) return;
+    const tab = activeTerminalTab || terminalTabs[0];
+    if (!tab) return;
+    setRightModuleVisibility((prev) => ({ ...prev, terminal: true }));
+    setRightPaneTab("terminal");
+    setActiveTerminalTabId(tab.id);
+    try {
+      await sendRepoTerminalInput(repoPath, `${command}\r`, tab.id);
+      updateTerminalTabById(tab.id, (prev) => ({
+        ...prev,
+        history: [command, ...prev.history.filter((x) => x !== command)].slice(0, 80),
+        historyIndex: -1,
+        historyDraft: "",
+        input: "",
+        completionItems: [],
+        completionIndex: 0,
+        completionToken: ""
+      }));
+    } catch (e) {
+      const msg = String(e);
+      updateTerminalTabById(tab.id, (prev) => ({
         ...prev,
         output: `${prev.output}${prev.output.endsWith("\n") || !prev.output ? "" : "\n"}[error] ${msg}\n`
       }));
@@ -5471,15 +7046,15 @@ export function App() {
   }, [showSettings, runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
-    if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || (showSettings && settingsInitialSection === "mobile")) || !runtimeStatus.giteam.installed) return;
     // Load settings after the dialog paints to avoid blocking navigation.
     window.setTimeout(() => {
       void loadControlServerSettings();
     }, 0);
-  }, [showMobileControlDialog, runtimeStatus.giteam.installed]);
+  }, [showMobileControlDialog, showSettings, settingsInitialSection, runtimeStatus.giteam.installed]);
 
   useEffect(() => {
-    if (!showMobileControlDialog || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || (showSettings && settingsInitialSection === "mobile")) || !runtimeStatus.giteam.installed) return;
     if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
 
     const token = ++controlMobilePollTokenRef.current;
@@ -5510,6 +7085,8 @@ export function App() {
     };
   }, [
     showMobileControlDialog,
+    showSettings,
+    settingsInitialSection,
     runtimeStatus.giteam.installed,
     controlSettingsLoaded,
     controlServerSettings.enabled
@@ -5611,14 +7188,18 @@ export function App() {
         if (stopped) return;
         terminalSeqRef.current[tabId] = snapshot.seq;
         if (snapshot.output) {
-          const chunk = sanitizeTerminalOutput(snapshot.output);
-          if (chunk) {
+          if (snapshot.output) {
+            if (terminalTextSelectingRef.current && terminalHasTextSelection()) {
+              terminalBufferedOutputRef.current[tabId] = `${terminalBufferedOutputRef.current[tabId] || ""}${snapshot.output}`;
+              updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
+              return;
+            }
             updateTerminalTabById(tabId, (prev) => ({
               ...prev,
               seq: snapshot.seq,
               alive: snapshot.alive,
               cwd: snapshot.cwd || prev.cwd,
-              output: `${prev.output}${chunk}`
+              output: sanitizeTerminalOutput(`${prev.output}${snapshot.output}`)
             }));
           } else {
             updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
@@ -5646,8 +7227,20 @@ export function App() {
   useEffect(() => {
     const el = terminalLogRef.current;
     if (!el) return;
+    if (terminalTextSelectingRef.current && terminalHasTextSelection()) return;
     el.scrollTop = el.scrollHeight;
   }, [activeTerminalTab?.output]);
+
+  useEffect(() => {
+    const onSelectionChange = () => {
+      if (!terminalTextSelectingRef.current) return;
+      if (terminalHasTextSelection()) return;
+      terminalTextSelectingRef.current = false;
+      flushBufferedTerminalOutput(activeTerminalTabId);
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, [activeTerminalTabId]);
 
   useEffect(() => {
     if (rightPaneTab !== "terminal") return;
@@ -5978,12 +7571,39 @@ export function App() {
   useEffect(() => {
     const sid = activeOpencodeSessionId.trim();
     if (!sid) return;
-    for (const msg of opencodeVisibleWindow.visible) {
-      if (msg.role !== "assistant") continue;
-      if (opencodeDetailsByMessageId[msg.id] !== undefined) continue;
-      if (opencodeDetailsLoadingByMessageId[msg.id]) continue;
-      void loadOpencodeMessageDetails(sid, msg.id, 80);
-    }
+    const missing = opencodeVisibleWindow.visible
+      .filter((msg) => msg.role === "assistant")
+      .filter((msg) => opencodeDetailsByMessageId[msg.id] === undefined && !opencodeDetailsLoadingByMessageId[msg.id])
+      .slice(-8);
+    if (missing.length === 0) return;
+    const missingIds = missing.map((msg) => msg.id);
+    setOpencodeDetailsLoadingByMessageId((prev) => {
+      const next = { ...prev };
+      for (const id of missingIds) next[id] = true;
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      void fetchOpencodeDetailedMessagePage(sid, "", OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT)
+        .then((page) => {
+          if (activeOpencodeSessionId.trim() !== sid) return;
+          setOpencodeDetailsByMessageId((prev) => {
+            const next = { ...prev };
+            for (const id of missingIds) {
+              const serverId = (opencodeServerMessageIdByLocalId[id] || "").trim() || id;
+              next[id] = page.detailsById[serverId] || null;
+            }
+            return next;
+          });
+        })
+        .finally(() => {
+          setOpencodeDetailsLoadingByMessageId((prev) => {
+            const next = { ...prev };
+            for (const id of missingIds) next[id] = false;
+            return next;
+          });
+        });
+    }, 120);
+    return () => window.clearTimeout(timer);
   }, [activeOpencodeSessionId, opencodeVisibleWindow.visible, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
 
   function renderOpencodeExecutionPart(part: OpencodeDetailedPart, keyHint: string) {
@@ -6535,7 +8155,7 @@ export function App() {
                           setNewSessionTargetRepoId(repo.id);
                           opencodeSessionsRepoIdRef.current = repo.id;
                           if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                          if (gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+                          if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
                           setDraftOpencodeSession(false);
                           setActiveOpencodeSessionId(session.id);
                           bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
@@ -6799,6 +8419,28 @@ export function App() {
                 ) : null}
               </div>
             ) : null}
+            {opencodeActivePermissions.length > 0 ? (
+              <div className="gt-permission-dock">
+                <div className="gt-permission-dock-head">
+                  <span>授权请求</span>
+                  <button type="button" className="chip" onClick={() => openOpencodeModulePanel("permissions")}>详情</button>
+                </div>
+                {opencodeActivePermissions.slice(0, 2).map((req) => (
+                  <div key={req.id} className="gt-permission-card">
+                    <div className="gt-permission-main">
+                      <strong>{req.permission || "permission"}</strong>
+                      <span>{(req.patterns || []).join(", ") || "*"}</span>
+                      {req.tool?.callID ? <small>{req.tool.callID}</small> : null}
+                    </div>
+                    <div className="gt-permission-actions">
+                      <button type="button" className="chip" onClick={() => void sendPermissionReply(req.id, "once")}>本次允许</button>
+                      <button type="button" className="chip primary" onClick={() => void sendPermissionReply(req.id, "always")}>总是允许</button>
+                      <button type="button" className="chip danger" onClick={() => void sendPermissionReply(req.id, "reject")}>拒绝</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {opencodeActiveQuestions.length > 0 && opencodeActiveQuestions.map((req) => (
               <QuestionDock
                 key={req.id}
@@ -6874,11 +8516,7 @@ export function App() {
                         type="button"
                         className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
                         onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
-                        onClick={() => {
-                          setOpencodePromptInput(`/${cmd.trigger} `);
-                          setOpencodeSlashOpen(false);
-                          opencodeInputRef.current?.focus();
-                        }}
+                        onClick={() => activateOpencodeSlashCommand(cmd)}
                       >
                         <span className="opencode-slash-trigger">/{cmd.trigger}</span>
                         <span className="opencode-slash-title">{cmd.title}</span>
@@ -6892,7 +8530,7 @@ export function App() {
                   <textarea
                     ref={opencodeInputRef}
                     className="opencode-input"
-                    placeholder="Ask OpenCode to code, inspect, or fix..."
+                    placeholder="要做什么？"
                     value={opencodePromptInput}
                     onChange={(e) => {
                       const value = e.target.value;
@@ -6920,10 +8558,7 @@ export function App() {
                         if (e.key === "Enter" || e.key === "Tab") {
                           e.preventDefault();
                           const cmd = opencodeSlashSuggestions[opencodeSlashActiveIndex];
-                          if (cmd) {
-                            setOpencodePromptInput(`/${cmd.trigger} `);
-                            setOpencodeSlashOpen(false);
-                          }
+                          if (cmd) activateOpencodeSlashCommand(cmd);
                           return;
                         }
                         if (e.key === "Escape") {
@@ -6958,137 +8593,172 @@ export function App() {
                 </div>
               </div>
               <div className="opencode-composer-actions">
-                <div className="opencode-attachment-menu-wrap">
-                  <button
-                    type="button"
-                    className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
-                    onClick={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
-                    aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
-                    aria-expanded={opencodeAttachmentMenuOpen}
-                    title="添加附件"
-                  >
-                    <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
-                  </button>
-                  {opencodeAttachmentMenuOpen ? (
-                    <div className="opencode-attachment-menu">
-                      <button
-                        type="button"
-                        className="opencode-attachment-menu-item"
-                        onClick={() => {
-                          setOpencodeAttachmentMenuOpen(false);
-                          opencodeImageInputRef.current?.click();
-                        }}
-                      >
-                        <span className="opencode-attachment-menu-icon" aria-hidden="true">▧</span>
-                        <span>上传图片</span>
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-                <input
-                  ref={opencodeImageInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: "none" }}
-                  onChange={async (e) => {
-                    const files = Array.from(e.target.files || []);
-                    if (files.length === 0) return;
-                    const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
-                    setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
-                    e.currentTarget.value = "";
-                  }}
-                />
-                <div className="opencode-model-picker-wrap opencode-model-inline" ref={opencodeModelPickerRef}>
-                  <button
-                    type="button"
-                    className="opencode-model-trigger opencode-composer-model"
-                    aria-haspopup="listbox"
-                    aria-expanded={showOpencodeModelPicker}
-                    onClick={() => {
-                      const next = !showOpencodeModelPicker;
-                      setShowOpencodeModelPicker(next);
+                <div className="opencode-composer-actions-left">
+                  <div className="opencode-attachment-menu-wrap">
+                    <button
+                      type="button"
+                      className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
+                      onClick={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
+                      aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
+                      aria-expanded={opencodeAttachmentMenuOpen}
+                      title="添加附件"
+                    >
+                      <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
+                    </button>
+                    {opencodeAttachmentMenuOpen ? (
+                      <div className="opencode-attachment-menu">
+                        <button
+                          type="button"
+                          className="opencode-attachment-menu-item"
+                          onClick={() => {
+                            setOpencodeAttachmentMenuOpen(false);
+                            opencodeImageInputRef.current?.click();
+                          }}
+                        >
+                          <span className="opencode-attachment-menu-icon" aria-hidden="true">▧</span>
+                          <span>上传图片</span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                  <input
+                    ref={opencodeImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const files = Array.from(e.target.files || []);
+                      if (files.length === 0) return;
+                      const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
+                      setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+                      e.currentTarget.value = "";
                     }}
-                  >
-                    {(() => {
-                      const display = getOpencodeModelDisplay(activeOpencodeModel || "");
-                      return (
-                        <span className="opencode-model-trigger-copy">
-                          <span className="opencode-model-trigger-title">{display.label || "Auto"}</span>
-                        </span>
-                      );
-                    })()}
-                  </button>
-                  {showOpencodeModelPicker ? (
-                    <div className="opencode-model-picker">
-                      <div className="opencode-model-picker-head">
-                        <div className="opencode-model-picker-kicker">model</div>
+                  />
+                </div>
+                <div className="opencode-composer-actions-right">
+                  <div className="opencode-model-picker-wrap opencode-config-inline" ref={opencodeModelPickerRef}>
+                    <button
+                      type="button"
+                      className="opencode-config-trigger"
+                      aria-haspopup="dialog"
+                      aria-expanded={showOpencodeModelPicker}
+                      onClick={() => {
+                        const next = !showOpencodeModelPicker;
+                        setShowOpencodeModelPicker(next);
+                      }}
+                      title="配置 Agent、Auto 和模型"
+                    >
+                      {(() => {
+                        const display = getOpencodeModelDisplay(activeOpencodeModel || "");
+                        const agentLabel = OPENCODE_COMPOSER_AGENT_OPTIONS.find((item) => item.name === activeOpencodeAgent)?.label || "Build";
+                        return (
+                          <span className="opencode-config-trigger-copy">
+                            <span className="opencode-config-trigger-mode">{agentLabel}</span>
+                            <span className="opencode-config-trigger-model">{display.label || "Auto"}</span>
+                          </span>
+                        );
+                      })()}
+                    </button>
+                    {showOpencodeModelPicker ? (
+                      <div className="opencode-model-picker opencode-config-panel">
                         <input
                           className="path-input opencode-model-search"
-                          placeholder="搜索模型或提供商"
+                          placeholder="Search models"
                           value={opencodeModelPickerSearch}
                           onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
                         />
-                      </div>
-                      <div className="opencode-model-list-col">
-                        {opencodeConfiguredModelCandidates.length === 0 ? (
-                          <div className="opencode-model-empty">
-                            <strong>暂无已配置模型</strong>
-                            <span>连接提供商或添加自定义模型后，这里会显示可用项。</span>
-                          </div>
-                        ) : (
-                          opencodeConfiguredModelCandidates.map((m) => (
+                        <div className="opencode-config-menu-group" aria-label="Agent 模式">
+                          {OPENCODE_COMPOSER_AGENT_OPTIONS.map((agent) => (
                             <button
+                              key={agent.name}
                               type="button"
-                              key={`saved-model-${m}`}
-                              className={m === activeOpencodeModel ? "opencode-model-option selected" : "opencode-model-option"}
-                              onClick={() => {
-                                void applyOpencodeModel(m);
-                                setShowOpencodeModelPicker(false);
-                              }}
-                              title={m}
+                              aria-pressed={activeOpencodeAgent === agent.name}
+                              className={activeOpencodeAgent === agent.name ? "opencode-config-menu-row selected" : "opencode-config-menu-row"}
+                              onClick={() => applyOpencodeAgent(agent.name)}
+                              title={agent.title}
                             >
-                              {(() => {
-                                const display = getOpencodeModelDisplay(m);
-                                return (
-                                  <>
-                                    <span className="opencode-model-option-copy">
-                                      <span className="opencode-model-option-title">{display.label || m}</span>
-                                      <span className="opencode-model-option-meta">
-                                        <span className="opencode-model-option-provider">{display.provider || "Provider"}</span>
-                                      </span>
-                                    </span>
-                                    {m === activeOpencodeModel ? <span className="opencode-model-option-check">✓</span> : null}
-                                  </>
-                                );
-                              })()}
+                              <span>{agent.label}</span>
+                              {activeOpencodeAgent === agent.name ? <span className="opencode-model-option-check">✓</span> : null}
                             </button>
-                          ))
-                        )}
-                      </div>
-                      <div className="opencode-model-picker-foot">
-                        <button type="button" className="opencode-model-picker-config" onClick={() => {
-                          setShowOpencodeProviderPicker(true);
-                          setOpencodeProviderPickerSearch("");
-                          setOpencodeProviderPickerProvider(opencodeModelProvider);
-                          setOpencodeProviderPickerModelSearch("");
-                          setShowOpencodeModelPicker(false);
-                        }}>
-                          <span>配置模型与提供商</span>
-                          <span className="opencode-model-picker-config-tail">⌘</span>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          className={opencodeAutoAcceptPermissions ? "opencode-config-menu-row opencode-config-toggle active" : "opencode-config-menu-row opencode-config-toggle"}
+                          aria-pressed={opencodeAutoAcceptPermissions}
+                          onClick={() => {
+                            const next = !opencodeAutoAcceptPermissions;
+                            setOpencodeAutoAcceptPermissions(next);
+                            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+                            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+                          }}
+                        >
+                          <span>Auto</span>
+                          <span className="opencode-config-switch" aria-hidden="true" />
                         </button>
+                        <div className="opencode-config-divider" />
+                        <div className="opencode-model-list-col">
+                          {opencodeConfiguredModelCandidates.length === 0 ? (
+                            <div className="opencode-model-empty">
+                              <strong>暂无已配置模型</strong>
+                              <span>连接提供商或添加自定义模型后，这里会显示可用项。</span>
+                            </div>
+                          ) : (
+                            opencodeConfiguredModelCandidates.map((m) => (
+                              <button
+                                type="button"
+                                key={`saved-model-${m}`}
+                                className={m === activeOpencodeModel ? "opencode-model-option selected" : "opencode-model-option"}
+                                onClick={() => {
+                                  void applyOpencodeModel(m);
+                                  setShowOpencodeModelPicker(false);
+                                }}
+                                title={m}
+                              >
+                                {(() => {
+                                  const display = getOpencodeModelDisplay(m);
+                                  return (
+                                    <>
+                                      <span className="opencode-model-option-copy">
+                                        <span className="opencode-model-option-title">{display.label || m}</span>
+                                        <span className="opencode-model-option-meta">
+                                          <span className="opencode-model-option-provider">{display.provider || "Provider"}</span>
+                                        </span>
+                                      </span>
+                                      {m === activeOpencodeModel ? <span className="opencode-model-option-check">✓</span> : null}
+                                    </>
+                                  );
+                                })()}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                        <div className="opencode-model-picker-foot">
+                          <button type="button" className="opencode-model-picker-config" onClick={() => {
+                            setSettingsInitialSection("models");
+                            setShowSettings(true);
+                            setOpencodeProviderPickerSearch("");
+                            setOpencodeProviderPickerProvider(opencodeModelProvider);
+                            setOpencodeProviderPickerModelSearch("");
+                            setShowOpencodeModelPicker(false);
+                          }}>
+                            <span>Add Models</span>
+                            <span className="opencode-model-picker-config-tail">⌘</span>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
+                  <button
+                    className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
+                    disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeImageAttachments.length === 0}
+                    onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
+                    aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
+                  >
+                    <SendIcon busy={activeOpencodeSessionBusy} />
+                  </button>
                 </div>
-                <button
-                  className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                  disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeImageAttachments.length === 0}
-                  onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
-                  aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
-                >
-                  <SendIcon busy={activeOpencodeSessionBusy} />
-                </button>
               </div>
             </div>
           </div>
@@ -7778,6 +9448,191 @@ branches.forEach((b) => {
           </div>
         ) : null}
 
+        {rightPaneTab === "skills" ? (
+          <div className="gt-skill-market-shell">
+            <details className="gt-installed-skills-collapsible">
+              <summary><span>已安装 Skills</span><small>{opencodeSkills.length}</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新">↻</button></summary>
+              <div className="gt-installed-skill-grid">
+                {opencodeInstalledSkillNodes}
+              </div>
+            </details>
+
+            <div className="gt-skill-market-layout">
+              <main className="gt-skill-leaderboard-card" ref={opencodeSkillMarketListRef} onScroll={handleOpencodeSkillMarketScroll}>
+                <div className="gt-skill-market-toolbar">
+                  <div className="gt-skill-searchbox">
+                    <span aria-hidden="true">⌕</span>
+                    <input
+                      placeholder={opencodeSkillSearchStrategy === "ai" ? "Describe what you want to build or automate..." : "Search skills, sources, descriptions..."}
+                      value={opencodeSkillSearchQuery}
+                      onChange={(e) => setOpencodeSkillSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void searchOpencodeSkillRegistry();
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="gt-skill-filterbar">
+                  <div className="gt-skill-mode-toggle" aria-label="搜索模式">
+                    {([
+                      ["keyword", "关键词"],
+                      ["ai", "AI 语义"]
+                    ] as Array<[OpencodeSkillSearchStrategy, string]>).map(([strategy, label]) => (
+                      <button key={strategy} type="button" className={opencodeSkillSearchStrategy === strategy ? "active" : ""} onClick={() => setOpencodeSkillSearchStrategy(strategy)}>{label}</button>
+                    ))}
+                  </div>
+                  <span className="gt-skill-filter-hint">{opencodeSkillSearchStrategy === "ai" ? (skillsmpApiKey ? "AI 语义搜索已启用" : "未配置 key 时会自动回退关键词搜索") : `按 stars 排序，首屏展示 ${opencodeSkillDisplayBatchSize} 条`}</span>
+                </div>
+                <div className="gt-skill-market-tabs">
+                  {([
+                    ["all-time", `All Time${opencodeSkillCatalogTotal ? ` (${formatSkillInstalls(opencodeSkillCatalogTotal)})` : ""}`],
+                    ["trending", "Trending (24h)"],
+                    ["hot", "Hot"],
+                    ["official", "Official"]
+                  ] as Array<["all-time" | "trending" | "hot" | "official", string]>).map(([view, label]) => (
+                    <button key={view} type="button" className={opencodeSkillCatalogView === view && opencodeSkillSearchResults.length === 0 ? "active" : ""} onClick={() => switchOpencodeSkillCatalogView(view)}>{label}</button>
+                  ))}
+                </div>
+                {opencodeSkillsError ? <div className="gt-module-empty danger">{opencodeSkillsError}</div> : null}
+                {opencodeSkillInstallNotice ? <div className="gt-skill-inline-error">{opencodeSkillInstallNotice}</div> : null}
+                {(opencodeSkillBusy || opencodeSkillInstallingSpec || opencodeSkillInstallLog) ? (
+                  <div className="gt-skill-install-log">
+                    <div><strong>Install log</strong><span>{opencodeSkillInstallingSpec || "last install"}</span></div>
+                    <pre>{opencodeSkillInstallLog || `正在启动安装 ${opencodeSkillInstallingSpec || "skill"}...`}</pre>
+                  </div>
+                ) : null}
+                {(opencodeSkillsSearching || opencodeSkillsPaging) ? (
+                  <div className="gt-skill-loading-note">
+                    <span className="gt-skill-progress-orb" />
+                    <div><strong>{opencodeSkillsSearching ? `正在搜索 “${opencodeSkillSearchQuery.trim() || "skills"}”` : "正在补充更多 Skills"}</strong><small>{opencodeSkillsSearching ? "结果出来前保留当前列表，减少页面跳动。" : "继续下滑时会在后台静默补充下一批结果。"}</small></div>
+                  </div>
+                ) : null}
+                <div className="gt-skill-market-meta">
+                  <span>{opencodeSkillSearchResults.length > 0 ? `Search · ${opencodeSkillSearchMeta?.searchType || "skillsmp"} · ${opencodeSkillSearchMeta?.count || opencodeSkillSearchResults.length} results` : opencodeSkillCatalogRows.length > 0 ? `${opencodeSkillCatalogView} leaderboard · page ${opencodeSkillCatalogPage + 1}` : opencodeSkillsInitialLoading ? "正在整理 Skills 市场首页..." : "展示本地推荐榜单"}</span>
+                </div>
+                {opencodeSkillsInitialLoading ? (
+                  <div className="gt-skill-skeleton-list" aria-hidden="true">
+                    {Array.from({ length: 6 }).map((_, idx) => <span key={idx} />)}
+                  </div>
+                ) : visibleOpencodeMarketplaceRows.length > 0 ? (
+                  <>
+                  <div className={opencodeSkillsSearching || opencodeSkillsPaging ? "gt-skill-card-list is-loading" : "gt-skill-card-list"}>
+                    {opencodeSkillCardNodes}
+                  </div>
+                  {(opencodeSkillsSearching || opencodeSkillsPaging) ? (
+                    <div className="gt-skill-skeleton-list gt-skill-inline-skeleton" aria-label="正在加载更多 skills">
+                      {Array.from({ length: 2 }).map((_, idx) => <span key={idx} />)}
+                    </div>
+                  ) : null}
+                  </>
+                ) : (
+                  <div className="gt-skill-inspector-empty gt-skill-empty-state"><strong>没有找到匹配的 Skill</strong><span>试试切回关键词搜索、清空分类，或者改用更通用的描述词。</span></div>
+                )}
+                <div className="gt-skill-market-pager">
+                  <span>{opencodeSkillsInitialLoading ? "首次进入时会先准备精选榜单与已安装列表" : `已显示 ${visibleOpencodeMarketplaceRows.length} / ${opencodeMarketplaceRows.length}`}</span>
+                  {opencodeSkillsInitialLoading ? <span className="muted">正在为你整理首页内容...</span> : opencodeSkillsPaging ? <span className="gt-skill-auto-load is-loading">Loading more...</span> : (opencodeCanRevealMoreSkills || opencodeCanFetchMoreCatalogSkills || (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length)) ? <span className="gt-skill-auto-load">滑到底部自动加载更多</span> : <span className="gt-skill-auto-load is-done">已到底部</span>}
+                </div>
+              </main>
+
+              <aside className="gt-skill-inspector-card">
+                {selectedMarketplaceSkill ? (
+                  <>
+                    <div className="gt-skill-inspector-head">
+                      <span className="gt-module-kicker">selected skill</span>
+                      <h3>{selectedMarketplaceSkill.skill}</h3>
+                      <p>{selectedMarketplaceSkill.package}</p>
+                      <span className={`gt-skill-quality ${skillQualityLabel(selectedMarketplaceSkill)}`}>{skillQualityLabel(selectedMarketplaceSkill)}</span>
+                    </div>
+                    <div className="gt-skill-inspector-actions gt-skill-install-wrap">
+                      <button className="chip primary" onClick={() => setShowSkillInstallMenu((prev) => !prev)} disabled={opencodeSkillBusy}>{opencodeSkillBusy ? "安装中..." : "安装"}</button>
+                      {showSkillInstallMenu ? (
+                        <div className="gt-skill-install-menu">
+                          <button type="button" onClick={() => { setShowSkillInstallMenu(false); void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, "project", [selectedMarketplaceSkill.installUrl || "", selectedMarketplaceSkill.url || "", selectedMarketplaceSkill.spec]); }}>安装到当前 Repo</button>
+                          <button type="button" onClick={() => { setShowSkillInstallMenu(false); void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, "global", [selectedMarketplaceSkill.installUrl || "", selectedMarketplaceSkill.url || "", selectedMarketplaceSkill.spec]); }}>安装到 Global</button>
+                        </div>
+                      ) : null}
+                      <button className="chip" onClick={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)} disabled={selectedSkillLoading}>查看详情</button>
+                    </div>
+                    <div className="gt-skill-inspector-stats">
+                      <span><strong>{selectedMarketplaceSkill.installs}</strong>Installs</span>
+                      <span><strong>{selectedSkillDetail?.files?.length || 0}</strong>Files</span>
+                      <span><strong>{selectedSkillAudits.length}</strong>Audits</span>
+                    </div>
+                    {selectedSkillLoading ? <div className="gt-module-empty">正在加载详情...</div> : null}
+                    <div className="gt-skill-audit-list">
+                      {selectedSkillAudits.length === 0 ? <div className="gt-module-empty">点击“查看详情”后加载文件快照和安全审计。</div> : null}
+                      {selectedSkillAudits.map((audit) => <div key={`${audit.provider}-${audit.slug}`} className={`gt-skill-audit-row ${audit.status}`}><strong>{audit.provider}</strong><span>{audit.riskLevel || audit.status}</span><p>{audit.summary || "No summary"}</p></div>)}
+                    </div>
+                    <div className="gt-skill-file-list">
+                      {(selectedSkillDetail?.files || []).slice(0, 8).map((file) => <div key={file.path}><strong>{file.path}</strong><span>{file.contents.split(/\r?\n/).length} lines</span></div>)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="gt-skill-inspector-empty"><strong>选择一个 Skill</strong><span>查看来源、质量信号，并像插件市场一样直接安装。</span></div>
+                )}
+                <div className="gt-installed-skills-mini">
+                  <div className="gt-installed-skills-head"><div><strong>已安装</strong><span>{opencodeSkills.length} skills</span></div><button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新</button></div>
+                  {filteredOpencodeSkills.slice(0, 6).map((skill) => {
+                    const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
+                    return <div key={removeKey} className="gt-installed-skill-row"><div><strong>{skill.name}</strong><span>{skill.description || "Installed via skills.sh"}</span></div><span className={`gt-scope-badge ${skill.scope || "source"}`}>{skill.scope === "global" ? "Global" : skill.scope === "project" ? "Repo" : "Source"}</span><button className="chip danger" disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === removeKey} onClick={() => void removeOpencodeSkill(skill)}>{opencodeSkillRemovingKey === removeKey ? "Removing" : "Uninstall"}</button></div>;
+                  })}
+                </div>
+              </aside>
+            </div>
+          </div>
+        ) : null}
+
+        {rightPaneTab === "mcp" ? (
+          <div className="gt-panel-stack gt-panel-stack-module gt-mcp-page">
+            <section className="gt-mcp-config-card">
+              <div className="gt-mcp-page-head">
+                <div><span className="gt-module-kicker">model context protocol</span><strong>MCP Servers</strong><p>在右侧直接添加、连接和管理工具服务。</p></div>
+                <button className="chip" onClick={() => void refreshOpencodeMcpStatus()} disabled={opencodeMcpLoading}>刷新</button>
+              </div>
+              {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
+              <div className="gt-mcp-form-grid">
+                <input className="path-input" placeholder="名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
+                <select className="path-input" value={opencodeMcpType} onChange={(e) => setOpencodeMcpType(e.target.value as OpencodeMcpType)}>
+                  <option value="remote">remote</option>
+                  <option value="local">local</option>
+                </select>
+                {opencodeMcpType === "remote" ? (
+                  <>
+                    <input className="path-input gt-mcp-form-wide" placeholder="https://mcp.example.com/mcp" value={opencodeMcpUrl} onChange={(e) => setOpencodeMcpUrl(e.target.value)} />
+                    <textarea className="path-input gt-module-textarea gt-mcp-form-wide" placeholder="Headers，每行 KEY=VALUE（可选）" value={opencodeMcpHeaders} onChange={(e) => setOpencodeMcpHeaders(e.target.value)} />
+                  </>
+                ) : (
+                  <>
+                    <input className="path-input gt-mcp-form-wide" placeholder={'npx -y @modelcontextprotocol/server-everything'} value={opencodeMcpCommand} onChange={(e) => setOpencodeMcpCommand(e.target.value)} />
+                    <textarea className="path-input gt-module-textarea gt-mcp-form-wide" placeholder="Environment，每行 KEY=VALUE（可选）" value={opencodeMcpEnv} onChange={(e) => setOpencodeMcpEnv(e.target.value)} />
+                  </>
+                )}
+                <button className="chip primary gt-mcp-form-wide" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName}>添加 MCP</button>
+              </div>
+            </section>
+            <section className="gt-mcp-server-grid">
+              {opencodeMcpLoading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
+              {!opencodeMcpLoading && opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。添加 remote 或 local server 后会出现在这里。</div> : null}
+              {opencodeMcpRows.map(([name, status]) => {
+                const statusLabel = String(status?.status || status?.state || (status?.enabled === false ? "disabled" : "configured"));
+                const tools = Array.isArray((status as any)?.tools) ? (status as any).tools.length : undefined;
+                return (
+                  <article key={name} className="gt-mcp-server-card">
+                    <div className="gt-mcp-server-top"><strong>{name}</strong><span>{String((status as any)?.type || "mcp")}</span></div>
+                    <p>{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</p>
+                    <div className="gt-mcp-server-actions">
+                      <button className="chip" onClick={() => void runMcpAction(name, "connect")} disabled={!!opencodeMcpBusyName}>连接</button>
+                      <button className="chip" onClick={() => void runMcpAction(name, "disconnect")} disabled={!!opencodeMcpBusyName}>断开</button>
+                      <button className="chip" onClick={() => void runMcpAction(name, "auth")} disabled={!!opencodeMcpBusyName}>OAuth</button>
+                      <button className="chip danger" onClick={() => void runMcpAction(name, "logout")} disabled={!!opencodeMcpBusyName}>登出</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          </div>
+        ) : null}
+
         {rightPaneTab === "terminal" ? (
           <div className="gt-panel-stack gt-panel-stack-terminal">
             <div className="gt-terminal-header">
@@ -7832,15 +9687,38 @@ branches.forEach((b) => {
                   </div>
                 </aside>
               ) : null}
-              <div className="gt-terminal-body" ref={terminalBodyRef} onClick={() => terminalInputRef.current?.focus()}>
-                <div ref={terminalLogRef} className="gt-terminal-console">
+              <div className="gt-terminal-body" ref={terminalBodyRef} onClick={() => {
+                if (terminalHasTextSelection()) return;
+                terminalInputRef.current?.focus();
+              }}>
+                <div
+                  ref={terminalLogRef}
+                  className="gt-terminal-console"
+                  onMouseDown={(e) => {
+                    if ((e.target as HTMLElement).closest(".gt-terminal-output")) terminalTextSelectingRef.current = true;
+                  }}
+                  onMouseUp={() => {
+                    window.setTimeout(() => {
+                      if (terminalHasTextSelection()) return;
+                      terminalTextSelectingRef.current = false;
+                      flushBufferedTerminalOutput(activeTerminalTabId);
+                    }, 0);
+                  }}
+                  onCopy={() => {
+                    window.setTimeout(() => {
+                      terminalTextSelectingRef.current = false;
+                      flushBufferedTerminalOutput(activeTerminalTabId);
+                    }, 0);
+                  }}
+                >
                 <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
                 <div className="gt-terminal-inline-input">
                   <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
                   <div className="gt-terminal-input-shell" ref={terminalInputShellRef}>
-                    <input
+                    <textarea
                       ref={terminalInputRef}
                       className="gt-terminal-input"
+                      rows={1}
                       value={activeTerminalTab?.input || ""}
                       onChange={(e) => {
                         if (!activeTerminalTab) return;
@@ -7870,7 +9748,7 @@ branches.forEach((b) => {
                           }));
                           return;
                         }
-                        if (e.key === "Enter") {
+                        if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           void runTerminalCommand();
                           return;
@@ -8006,15 +9884,36 @@ branches.forEach((b) => {
         <div className="wb-editor-rail__head-right" data-tauri-drag-region aria-hidden={!rightDrawerOpen}>
           <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
             <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
-              <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
-                <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
-              </button>
-              <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
-                <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
-              </button>
-              <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
-                <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
-              </button>
+              {rightModuleVisibility.changes ? (
+                <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
+                  <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
+                </button>
+              ) : null}
+              {rightModuleVisibility.worktree ? (
+                <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
+                  <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
+                </button>
+              ) : null}
+              {rightModuleVisibility.terminal ? (
+                <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
+                  <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
+                </button>
+              ) : null}
+              {rightModuleVisibility.skills ? (
+                <button className={rightPaneTab === "skills" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
+                  setRightPaneTab("skills");
+                }} onMouseEnter={() => void warmSkillsMarketplace()} onFocus={() => void warmSkillsMarketplace()} title="Skills" aria-label="Skills">
+                  <RightPaneTabIcon tab="skills" active={rightPaneTab === "skills"} />
+                </button>
+              ) : null}
+              {rightModuleVisibility.mcp ? (
+                <button className={rightPaneTab === "mcp" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
+                  setRightPaneTab("mcp");
+                  void refreshOpencodeMcpStatus();
+                }} title="MCP" aria-label="MCP">
+                  <RightPaneTabIcon tab="mcp" active={rightPaneTab === "mcp"} />
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -8184,12 +10083,14 @@ branches.forEach((b) => {
                   className="wb-status-btn"
                   title={mobileDot.label}
                   onClick={() => {
-                    if (!runtimeStatus.giteam.installed) {
-                      setShowSettings(true);
-                      setShowEnvSetup(true);
-                      return;
+                    setSettingsInitialSection("mobile");
+                    setShowSettings(true);
+                    if (runtimeStatus.giteam.installed) {
+                      setControlPairCodeInfo(null);
+                      setControlAccessInfo(null);
+                      setControlSettingsLoaded(false);
+                      void loadControlServerSettings();
                     }
-                    setShowMobileControlDialog(true);
                   }}
                 >
                   <span className="gt-status-dot" style={{ background: mobileDot.color }} aria-hidden="true" />
@@ -8416,6 +10317,7 @@ branches.forEach((b) => {
         {showSettings ? (
           <SettingsDialog
             theme={theme}
+            initialSection={settingsInitialSection}
             runtimeStatus={runtimeStatus}
             onClose={() => void closeSettingsModal()}
             onToggleTheme={toggleTheme}
@@ -8432,8 +10334,98 @@ branches.forEach((b) => {
               setOpencodeProviderPickerProvider(
                 parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
               );
-              setShowOpencodeProviderPicker(true);
+              setSettingsInitialSection("models");
+              setShowSettings(true);
             }}
+            onOpenSkillsMarketplaceSettings={() => {
+              void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" });
+            }}
+            rightModules={rightModuleVisibility}
+            onToggleRightModule={toggleRightModuleVisibility}
+            opencodePort={opencodeServiceSettings.port}
+            opencodeBusy={opencodeServiceSettingsBusy}
+            onOpencodePortChange={(port) => setOpencodeServiceSettings((prev) => ({ ...prev, port }))}
+            onSaveOpenCodeApi={() => void saveOpencodeServiceSettingsIfNeeded()}
+            skillsmpApiKey={skillsmpApiKey}
+            skillsmpApiKeyDraft={skillsmpApiKeyDraft}
+            onSkillsmpApiKeyDraftChange={setSkillsmpApiKeyDraft}
+            onSaveSkillsmpApiKey={() => {
+              const next = skillsmpApiKeyDraft.trim();
+              setSkillsmpApiKey(next);
+              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
+              setMessage(next ? "SkillsMP API Key saved" : "SkillsMP API Key cleared");
+            }}
+            onClearSkillsmpApiKey={() => {
+              setSkillsmpApiKey("");
+              setSkillsmpApiKeyDraft("");
+              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
+              setMessage("SkillsMP API Key cleared");
+            }}
+            uiFontSize={uiFontSize}
+            codeFontSize={codeFontSize}
+            onUiFontSizeChange={setUiFontSize}
+            onCodeFontSizeChange={setCodeFontSize}
+            controlSettings={controlServerSettings}
+            controlBusy={controlServerSettingsBusy}
+            controlInstalled={runtimeStatus.giteam.installed}
+            onControlSettingsChange={(next) => setControlServerSettings((prev) => ({ ...prev, ...next }))}
+            onSaveControlSettings={() => void saveControlServerSettingsIfNeeded()}
+            onToggleControlService={(enabled) => void toggleControlServiceEnabled(enabled)}
+            runtimeChecking={runtimeChecking}
+            checkingDeps={checkingDeps}
+            installingDep={installingDep}
+            installingElapsed={installingElapsed}
+            runtimeJob={runtimeJob}
+            onRefreshRuntime={() => void refreshRuntimeRequirements()}
+            onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
+            mobileStatusContent={runtimeStatus.giteam.installed ? (
+              <div className="settings-panel-card settings-mobile-inline-status">
+                <div className="settings-panel-copy">
+                  <strong>Connection</strong>
+                  <p>{controlPairCodeInfo?.code ? `Pair code: ${controlPairCodeInfo.code}` : "开启服务后可刷新配对码。"}</p>
+                  {controlAccessInfo?.publicBaseUrl ? <p className="settings-plugin-path">{controlAccessInfo.publicBaseUrl}</p> : null}
+                </div>
+                <div className="settings-panel-action">
+                  <button className="chip" disabled={!controlServerSettings.enabled || controlServerSettingsBusy} onClick={() => void forceRefreshControlPairCode()}>Refresh code</button>
+                </div>
+              </div>
+            ) : null}
+            modelsContent={(
+              <div className="settings-model-inline">
+                <div className="settings-model-head opencode-provider-picker-toolbar">
+                  <input className="path-input" placeholder="搜索提供商..." value={opencodeProviderPickerSearch} onChange={(e) => setOpencodeProviderPickerSearch(e.target.value)} />
+                  <input className="path-input" placeholder="搜索模型..." value={opencodeProviderPickerModelSearch} onChange={(e) => setOpencodeProviderPickerModelSearch(e.target.value)} />
+                </div>
+                <div className="settings-model-lists opencode-provider-picker-grid">
+                  <div className="settings-model-col">
+                    <OpenCodeProviderList
+                      providers={opencodeProviderPickerCandidates}
+                      selectedProvider={opencodeProviderPickerProvider}
+                      connectedProviders={opencodeConnectedProviders}
+                      providerNames={opencodeProviderNames}
+                      modelCountsByProvider={opencodeProviderPickerModelCounts}
+                      getProviderTag={getOpencodeProviderTag}
+                      getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
+                      onSelectProvider={(provider) => setOpencodeProviderPickerProvider(provider)}
+                    />
+                  </div>
+                  <div className="settings-model-col">
+                    {(() => {
+                      const resolved = resolveProviderAliasWithNames(opencodeProviderPickerProvider, opencodeModelsByProvider, opencodeProviderNames);
+                      const cfgResolved = resolveProviderAliasWithNames(opencodeProviderPickerProvider, opencodeConfiguredModelsByProvider, opencodeProviderNames);
+                      const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
+                      const cfgPid = (cfgResolved || pid) || "";
+                      const pool = (pid ? (opencodeModelsByProvider[pid] ?? []) : []).slice().sort((a, b) => a.localeCompare(b));
+                      const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
+                      const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
+                      if (!pid) return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
+                      if (!opencodeConnectedProviders.includes(pid)) return <div className="small muted opencode-provider-empty">该 provider 未连接，请先在 OpenCode 中完成授权。</div>;
+                      return <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => setOpencodeHiddenModels((prev) => new Set([...prev, ref]))} onEnableModel={(ref) => setOpencodeEnabledModels((prev) => new Set([...prev, ref]))} />;
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
           />
         ) : null}
 
@@ -8573,6 +10565,41 @@ branches.forEach((b) => {
                   </div>
                 </div>
                 {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showSkillsmpSettings ? (
+          <div className="modal-mask" onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setShowSkillsmpSettings(false);
+          }}>
+            <div className="modal-card skillsmp-key-modal" role="dialog" aria-modal="true" aria-label="配置 SkillsMP API Key" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="skillsmp-key-modal-head">
+                <div>
+                  <span className="gt-module-kicker">SkillsMP</span>
+                  <h3>配置 API Key</h3>
+                  <p>关键词搜索可匿名使用；AI 语义搜索和更高额度需要 API Key。</p>
+                </div>
+                <button className="gt-diff-icon-btn" type="button" aria-label="关闭" onClick={() => setShowSkillsmpSettings(false)}>×</button>
+              </div>
+              <label className="skillsmp-key-field">
+                <span>API Key</span>
+                <input className="path-input" type="password" placeholder="sk_live_skillsmp_..." value={skillsmpApiKeyDraft} onChange={(e) => setSkillsmpApiKeyDraft(e.target.value)} autoFocus />
+              </label>
+              <div className="skillsmp-key-actions">
+                <button className="chip primary" onClick={() => {
+                  const next = skillsmpApiKeyDraft.trim();
+                  setSkillsmpApiKey(next);
+                  saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
+                  setShowSkillsmpSettings(false);
+                }}>保存</button>
+                <button className="chip" onClick={() => {
+                  setSkillsmpApiKey("");
+                  setSkillsmpApiKeyDraft("");
+                  saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
+                }}>清除</button>
+                <button className="chip" onClick={() => void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" })}>浏览器获取 API Key</button>
               </div>
             </div>
           </div>
@@ -8979,6 +11006,270 @@ branches.forEach((b) => {
             </div>
           );
         })() : null}
+
+        {showOpencodeModulePanel ? createPortal(
+          <div className="gt-module-layer" onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setShowOpencodeModulePanel(false);
+          }}>
+            <div className="gt-module-panel" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="gt-module-head">
+                <div>
+                  <div className="gt-module-kicker">OpenCode Modules</div>
+                  <h2>Agent / 权限 / MCP / Skills</h2>
+                </div>
+                <button type="button" className="modal-close" onClick={() => setShowOpencodeModulePanel(false)}>×</button>
+              </div>
+              <div className="gt-module-tabs">
+                {([
+                  ["agents", "Agents"],
+                  ["permissions", `权限${opencodeActivePermissions.length ? ` (${opencodeActivePermissions.length})` : ""}`],
+                  ["mcp", "MCP"],
+                  ["skills", "Skills"]
+                ] as Array<[OpencodeModuleTab, string]>).map(([tab, label]) => (
+                  <button key={tab} type="button" className={opencodeModuleTab === tab ? "active" : ""} onClick={() => setOpencodeModuleTab(tab)}>{label}</button>
+                ))}
+              </div>
+              <div className="gt-module-body">
+                {opencodeModuleTab === "agents" ? (
+                  <div className="gt-module-section">
+                    <div className="gt-module-toolbar">
+                      <input className="path-input" placeholder="搜索 agent" value={opencodeAgentSearch} onChange={(e) => setOpencodeAgentSearch(e.target.value)} />
+                      <button className="chip" onClick={() => void refreshOpencodeAgents()} disabled={opencodeAgentsLoading}>刷新</button>
+                    </div>
+                    {opencodeAgentsError ? <div className="small" style={{ color: "var(--danger)" }}>{opencodeAgentsError}</div> : null}
+                    <div className="gt-module-list">
+                      {visibleOpencodeAgents.map((agent) => (
+                        <button key={agent.name} type="button" className={agent.name === activeOpencodeAgent ? "gt-module-row selected" : "gt-module-row"} onClick={() => applyOpencodeAgent(agent.name)}>
+                          <span className="gt-module-row-title">@{agent.name}</span>
+                          <span className="gt-module-row-desc">{agent.description || agent.mode || "agent"}</span>
+                          <span className="gt-module-row-meta">{agent.mode || "all"}{agent.native ? " · native" : ""}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {opencodeModuleTab === "permissions" ? (
+                  <div className="gt-module-section">
+                    <label className="gt-switch-row">
+                      <span>
+                        <strong>自动接受权限</strong>
+                        <small>为当前会话写入 allow-all 规则，并自动回复后续 permission.asked。</small>
+                      </span>
+                      <button
+                        type="button"
+                        className={opencodeAutoAcceptPermissions ? "gt-switch active" : "gt-switch"}
+                        onClick={() => {
+                          const next = !opencodeAutoAcceptPermissions;
+                          setOpencodeAutoAcceptPermissions(next);
+                          saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+                          if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+                        }}
+                      >
+                        {opencodeAutoAcceptPermissions ? "ON" : "OFF"}
+                      </button>
+                    </label>
+                    <div className="gt-module-toolbar">
+                      <button className="chip" onClick={() => void refreshPendingPermissions()} disabled={opencodePermissionLoading}>刷新权限请求</button>
+                    </div>
+                    {opencodeActivePermissions.length === 0 ? (
+                      <div className="gt-module-empty">当前没有待处理授权。</div>
+                    ) : (
+                      <div className="gt-module-list">
+                        {opencodeActivePermissions.map((req) => (
+                          <div key={req.id} className="gt-module-row gt-module-row-static">
+                            <span className="gt-module-row-title">{req.permission || "permission"}</span>
+                            <span className="gt-module-row-desc">{(req.patterns || []).join(", ") || "*"}</span>
+                            <span className="gt-module-row-meta">{req.id}</span>
+                            <span className="gt-module-row-actions">
+                              <button className="chip" onClick={() => void sendPermissionReply(req.id, "once")}>本次</button>
+                              <button className="chip primary" onClick={() => void sendPermissionReply(req.id, "always")}>总是</button>
+                              <button className="chip danger" onClick={() => void sendPermissionReply(req.id, "reject")}>拒绝</button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {opencodeModuleTab === "mcp" ? (
+                  <div className="gt-module-section">
+                    <div className="gt-module-toolbar">
+                      <button className="chip" onClick={() => void refreshOpencodeMcpStatus()} disabled={opencodeMcpLoading}>刷新 MCP</button>
+                      {opencodeMcpError ? <span className="small" style={{ color: "var(--danger)" }}>{opencodeMcpError}</span> : null}
+                    </div>
+                    <div className="gt-module-form">
+                      <input className="path-input" placeholder="mcp 名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
+                      <select className="path-input" value={opencodeMcpType} onChange={(e) => setOpencodeMcpType(e.target.value as OpencodeMcpType)}>
+                        <option value="remote">remote</option>
+                        <option value="local">local</option>
+                      </select>
+                      {opencodeMcpType === "remote" ? (
+                        <>
+                          <input className="path-input" placeholder="https://mcp.example.com/mcp" value={opencodeMcpUrl} onChange={(e) => setOpencodeMcpUrl(e.target.value)} />
+                          <textarea className="path-input gt-module-textarea" placeholder="Headers，每行 KEY=VALUE（可选）" value={opencodeMcpHeaders} onChange={(e) => setOpencodeMcpHeaders(e.target.value)} />
+                        </>
+                      ) : (
+                        <>
+                          <input className="path-input" placeholder={'npx -y @modelcontextprotocol/server-everything'} value={opencodeMcpCommand} onChange={(e) => setOpencodeMcpCommand(e.target.value)} />
+                          <textarea className="path-input gt-module-textarea" placeholder="Environment，每行 KEY=VALUE（可选）" value={opencodeMcpEnv} onChange={(e) => setOpencodeMcpEnv(e.target.value)} />
+                        </>
+                      )}
+                      <button className="chip primary" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName}>添加 MCP</button>
+                    </div>
+                    {opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。可添加 Context7、Sentry、Grep 等。</div> : null}
+                    <div className="gt-module-list">
+                      {opencodeMcpRows.map(([name, status]) => {
+                        const statusLabel = String(status?.status || status?.state || (status?.enabled === false ? "disabled" : "configured"));
+                        const tools = Array.isArray((status as any)?.tools) ? (status as any).tools.length : undefined;
+                        return (
+                          <div key={name} className="gt-module-row gt-module-row-static">
+                            <span className="gt-module-row-title">{name}</span>
+                            <span className="gt-module-row-desc">{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</span>
+                            <span className="gt-module-row-meta">{String((status as any)?.type || "mcp")}</span>
+                            <span className="gt-module-row-actions">
+                              <button className="chip" onClick={() => void runMcpAction(name, "connect")} disabled={!!opencodeMcpBusyName}>连接</button>
+                              <button className="chip" onClick={() => void runMcpAction(name, "disconnect")} disabled={!!opencodeMcpBusyName}>断开</button>
+                              <button className="chip" onClick={() => void runMcpAction(name, "auth")} disabled={!!opencodeMcpBusyName}>OAuth</button>
+                              <button className="chip danger" onClick={() => void runMcpAction(name, "logout")} disabled={!!opencodeMcpBusyName}>登出</button>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+                {opencodeModuleTab === "skills" ? (
+                  <div className="gt-module-section">
+                    <div className="gt-module-toolbar">
+                      <button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新 Skills</button>
+                      {opencodeSkillsError ? <span className="small" style={{ color: "var(--danger)" }}>{opencodeSkillsError}</span> : null}
+                    </div>
+                    <div className="gt-skills-hero">
+                      <div className="gt-skills-hero-copy">
+                        <span className="gt-module-kicker">Skill command center</span>
+                        <h3>搜索、安装、区分范围，一屏完成</h3>
+                        <p>默认推荐全局安装通用能力；项目特定规范、私有工作流或团队模板建议安装到当前仓库。</p>
+                      </div>
+                      <div className="gt-skills-hero-stats">
+                        <span><strong>{opencodeSkills.filter((skill) => skill.scope === "global").length}</strong> Global</span>
+                        <span><strong>{opencodeSkills.filter((skill) => skill.scope === "project").length}</strong> Repo</span>
+                        <span><strong>{opencodeSkillSearchResults.length}</strong> Results</span>
+                      </div>
+                    </div>
+                    <div className="gt-skill-scope-picker">
+                      <span>安装范围</span>
+                      <button type="button" className={opencodeSkillInstallScope === "project" ? "active" : ""} onClick={() => setOpencodeSkillInstallScope("project")}>当前仓库</button>
+                      <button type="button" className={opencodeSkillInstallScope === "global" ? "active" : ""} onClick={() => setOpencodeSkillInstallScope("global")}>全局通用</button>
+                    </div>
+                    {opencodeSkillBusy ? (
+                      <div className="gt-skill-progress">
+                        <span className="gt-skill-progress-orb" />
+                        <div>
+                          <strong>正在安装 Skill</strong>
+                          <small>会从 skills.sh / GitHub 拉取内容，完成后自动刷新 OpenCode Skills 列表。</small>
+                        </div>
+                      </div>
+                    ) : null}
+                    {(opencodeSkillBusy || opencodeSkillInstallingSpec || opencodeSkillInstallLog) ? (
+                      <div className="gt-skill-install-log">
+                        <div><strong>安装日志</strong><span>{opencodeSkillInstallingSpec || "最近一次安装"}</span></div>
+                        <pre>{opencodeSkillInstallLog || `正在启动安装 ${opencodeSkillInstallingSpec || "skill"}...`}</pre>
+                      </div>
+                    ) : null}
+                    <div className="gt-skill-recommend-grid">
+                      {OPENCODE_RECOMMENDED_SKILLS.map((skill) => (
+                        <div key={skill.spec} className="gt-skill-recommend-card">
+                          <div className="gt-skill-recommend-top">
+                            <span>{skill.tone}</span>
+                            <small>{skill.installs}</small>
+                          </div>
+                          <strong>{skill.title}</strong>
+                          <p>{skill.description}</p>
+                          <div className="gt-skill-recommend-actions">
+                            <button className="chip" onClick={() => setOpencodeSkillInstallSpec(skill.spec)}>填入</button>
+                            <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry(skill.spec)} disabled={opencodeSkillBusy}>安装</button>
+                          </div>
+                          <code>{skill.spec}</code>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="gt-module-form compact gt-skill-enter-search">
+                      <input
+                        className="path-input"
+                        placeholder="搜索 skills，例如 frontend / react / testing"
+                        value={opencodeSkillSearchQuery}
+                        onChange={(e) => setOpencodeSkillSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void searchOpencodeSkillRegistry();
+                        }}
+                      />
+                    </div>
+                    {opencodeSkillSearchLoading ? (
+                      <div className="gt-skill-skeleton-grid" aria-label="正在搜索 skills">
+                        <span /><span /><span />
+                      </div>
+                    ) : null}
+                    {opencodeSkillSearchResults.length > 0 ? (
+                      <div className="gt-module-list gt-skill-search-list">
+                        {opencodeSkillSearchResults.map((result) => (
+                          <div key={result.spec} className="gt-module-row gt-module-row-static">
+                            <span className="gt-module-row-title">{result.skill}</span>
+                            <span className="gt-module-row-desc">{result.package}</span>
+                            <span className="gt-module-row-meta">{result.installs ? `${result.installs} installs` : result.url}</span>
+                            <span className="gt-module-row-actions">
+                              <button className="chip" onClick={() => setOpencodeSkillInstallSpec(result.installSpec || result.spec)}>填入</button>
+                              <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry(result.installSpec || result.spec, opencodeSkillInstallScope, [result.installUrl || "", result.url || "", result.spec])} disabled={opencodeSkillBusy}>安装</button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="gt-module-form">
+                      <input className="path-input" placeholder="skills.sh 条目，如 anthropics/skills@frontend-design" value={opencodeSkillInstallSpec} onChange={(e) => setOpencodeSkillInstallSpec(e.target.value)} />
+                      <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry()} disabled={opencodeSkillBusy}>从 skills.sh 安装</button>
+                    </div>
+                    <div className="gt-module-form compact">
+                      <select className="path-input" value={opencodeSkillSourceKind} onChange={(e) => setOpencodeSkillSourceKind(e.target.value as "url" | "path")}>
+                        <option value="url">skills.urls</option>
+                        <option value="path">skills.paths</option>
+                      </select>
+                      <input className="path-input" placeholder={opencodeSkillSourceKind === "url" ? "https://example.com/.well-known/skills/" : "/path/to/skills"} value={opencodeSkillSourceInput} onChange={(e) => setOpencodeSkillSourceInput(e.target.value)} />
+                      <button className="chip" onClick={() => void addOpencodeSkillSource()} disabled={opencodeSkillBusy}>添加来源</button>
+                    </div>
+                    <div className="gt-installed-skill-tools">
+                      <div className="gt-skill-filter-tabs">
+                        {([
+                          ["all", `全部 ${opencodeSkills.length}`],
+                          ["global", `Global ${opencodeSkills.filter((skill) => skill.scope === "global").length}`],
+                          ["project", `Repo ${opencodeSkills.filter((skill) => skill.scope === "project").length}`],
+                          ["source", `Source ${opencodeSkills.filter((skill) => (skill.scope || "source") === "source").length}`]
+                        ] as Array<["all" | "global" | "project" | "source", string]>).map(([filter, label]) => (
+                          <button key={filter} type="button" className={opencodeSkillListFilter === filter ? "active" : ""} onClick={() => setOpencodeSkillListFilter(filter)}>{label}</button>
+                        ))}
+                      </div>
+                      <input className="path-input" placeholder="过滤已安装 skills" value={opencodeSkillListQuery} onChange={(e) => setOpencodeSkillListQuery(e.target.value)} />
+                    </div>
+                    {opencodeSkills.length === 0 ? <div className="gt-module-empty">暂无 Skills。OpenCode 会扫描 .opencode/skills、.claude/skills 和全局 skills。</div> : null}
+                    {opencodeSkills.length > 0 && filteredOpencodeSkills.length === 0 ? <div className="gt-module-empty">没有匹配当前过滤条件的 Skill。</div> : null}
+                    <div className="gt-module-list">
+                      {filteredOpencodeSkills.map((skill) => (
+                        <div key={`${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`} className="gt-module-row gt-module-row-static">
+                          <span className="gt-module-row-title">{skill.name}<span className={`gt-scope-badge ${skill.scope || "source"}`}>{skill.scope === "global" ? "Global" : skill.scope === "project" ? "Repo" : "Source"}</span></span>
+                          <span className="gt-module-row-desc">{skill.description || "No description"}</span>
+                          <span className="gt-module-row-meta">{skill.path || skill.location || skill.license || "skill"}</span>
+                          <span className="gt-module-row-actions">
+                            <button className="chip danger" disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`} onClick={() => void removeOpencodeSkill(skill)}>{opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}` ? "Removing" : "Uninstall"}</button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>,
+          document.body
+        ) : null}
 
         {repoContextMenu ? (
           <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>

@@ -78,24 +78,40 @@ export function writeTerminalTabSnapshot(activeId: string, counter: number, tabs
 
 export function sanitizeTerminalOutput(text: string): string {
   const cleaned = text
+    .replace(/\x1B\[[0-9;]*D/g, "\r")
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
     .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
     .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
     .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
     .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
 
-  let out = "";
+  const lines = [""];
+  let col = 0;
   for (const ch of cleaned) {
     if (ch === "\b" || ch === "\u007f") {
-      out = out.slice(0, -1);
+      if (col > 0) col -= 1;
       continue;
     }
-    out += ch;
+    if (ch === "\r") {
+      col = 0;
+      continue;
+    }
+    if (ch === "\n") {
+      lines.push("");
+      col = 0;
+      continue;
+    }
+    const current = lines.length - 1;
+    const line = lines[current] || "";
+    if (col >= line.length) {
+      lines[current] = `${line}${" ".repeat(col - line.length)}${ch}`;
+    } else {
+      lines[current] = `${line.slice(0, col)}${ch}${line.slice(col + 1)}`;
+    }
+    col += 1;
   }
-  return out;
+  return lines.join("\n");
 }
 
 export function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {

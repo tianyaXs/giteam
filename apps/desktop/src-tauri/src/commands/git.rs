@@ -3,11 +3,42 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 const TERMINAL_MAX_BUFFER_BYTES: usize = 256 * 1024;
+
+fn localhost_proxy_available(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(180)).is_ok()
+}
+
+fn terminal_proxy_envs() -> Vec<(String, String)> {
+    let existing = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()));
+    let proxy = existing.or_else(|| {
+        if localhost_proxy_available(7890) {
+            Some("http://127.0.0.1:7890".to_string())
+        } else {
+            None
+        }
+    });
+    let Some(proxy) = proxy else { return Vec::new(); };
+    vec![
+        ("HTTPS_PROXY".to_string(), proxy.clone()),
+        ("HTTP_PROXY".to_string(), proxy.clone()),
+        ("ALL_PROXY".to_string(), proxy.clone()),
+        ("https_proxy".to_string(), proxy.clone()),
+        ("http_proxy".to_string(), proxy.clone()),
+        ("all_proxy".to_string(), proxy),
+        ("NO_PROXY".to_string(), "localhost,127.0.0.1,::1".to_string()),
+        ("no_proxy".to_string(), "localhost,127.0.0.1,::1".to_string()),
+    ]
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -369,6 +400,7 @@ fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSes
     let mut child = Command::new("/usr/bin/script")
         .args(["-q", "/dev/null", "/bin/zsh", "-il"])
         .current_dir(repo_path)
+        .envs(terminal_proxy_envs())
         .env("TERM", "xterm-256color")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
