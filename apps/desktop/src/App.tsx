@@ -646,6 +646,73 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   releaseNotes: true
 };
 
+type AppLocale = "zh-CN" | "zh-TW" | "en-US";
+
+function normalizeAppLocale(value: string): AppLocale {
+  const normalized = value.toLowerCase();
+  if (normalized.startsWith("zh-tw") || normalized.startsWith("zh-hk")) return "zh-TW";
+  if (normalized.startsWith("zh")) return "zh-CN";
+  return "en-US";
+}
+
+function normalizeStoredLanguage(value: unknown): GeneralSettingsDraft["language"] {
+  return value === "system" || value === "zh-CN" || value === "zh-TW" || value === "en-US" ? value : "system";
+}
+
+const APP_TEXT: Record<AppLocale, {
+  close: string;
+  archiveSession: string;
+  removeWorktree: string;
+  removeWorktreeTitle: string;
+  removeWorktreeDesc: string;
+  removing: string;
+  confirmRemove: string;
+  cancel: string;
+  createWorktreeFromCommit: string;
+  createBranchFromCommit: string;
+  explainInspectCommit: string;
+  cherryPickCurrentBranch: string;
+  revertCurrentBranch: string;
+  copyCommitId: string;
+  createBranch: string;
+  createWorktree: string;
+  checkoutNewLocalBranch: string;
+  checkout: string;
+  deleteBranch: string;
+  createBranchFromWorktree: string;
+  openWorktree: string;
+  bindAgent: string;
+  unbindAgent: string;
+  commit: string;
+  push: string;
+  commitPush: string;
+  commitSync: string;
+}> = {
+  "zh-CN": {
+    close: "关闭", archiveSession: "归档会话", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
+    createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
+    createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
+    commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步"
+  },
+  "zh-TW": {
+    close: "關閉", archiveSession: "封存會話", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "這會刪除 worktree 目錄並清理 Git worktree 記錄，目錄內檔案會被刪除。", removing: "移除中...", confirmRemove: "確認移除", cancel: "取消",
+    createWorktreeFromCommit: "從提交建立 worktree", createBranchFromCommit: "從提交建立分支", explainInspectCommit: "解釋 / 檢查提交", cherryPickCurrentBranch: "Cherry-pick 到目前分支", revertCurrentBranch: "在目前分支 Revert", copyCommitId: "複製提交 ID",
+    createBranch: "建立分支", createWorktree: "建立 worktree", checkoutNewLocalBranch: "檢出為本地新分支", checkout: "檢出", deleteBranch: "刪除分支", createBranchFromWorktree: "從 worktree 建立分支", openWorktree: "開啟 worktree", bindAgent: "綁定 Agent", unbindAgent: "解除綁定 Agent",
+    commit: "提交", push: "推送", commitPush: "提交並推送", commitSync: "提交並同步"
+  },
+  "en-US": {
+    close: "Close", archiveSession: "Archive session", removeWorktree: "Remove worktree", removeWorktreeTitle: "Remove worktree?", removeWorktreeDesc: "This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.", removing: "Removing...", confirmRemove: "Confirm Remove", cancel: "Cancel",
+    createWorktreeFromCommit: "Create worktree from commit", createBranchFromCommit: "Create branch from commit", explainInspectCommit: "Explain / inspect commit", cherryPickCurrentBranch: "Cherry-pick to current branch", revertCurrentBranch: "Revert on current branch", copyCommitId: "Copy commit ID",
+    createBranch: "Create Branch", createWorktree: "Create Worktree", checkoutNewLocalBranch: "Checkout as new local branch", checkout: "Checkout", deleteBranch: "Delete Branch", createBranchFromWorktree: "Create Branch from Worktree", openWorktree: "Open Worktree", bindAgent: "Bind Agent", unbindAgent: "Unbind Agent",
+    commit: "Commit", push: "Push", commitPush: "Commit & Push", commitSync: "Commit & Sync"
+  }
+};
+
+function getAppText(language: GeneralSettingsDraft["language"]): (typeof APP_TEXT)[AppLocale] {
+  const locale = language === "system" ? normalizeAppLocale(navigator.language || "zh-CN") : normalizeAppLocale(language);
+  return APP_TEXT[locale];
+}
+
 function loadGeneralSettings(): GeneralSettingsDraft {
   try {
     const raw = window.localStorage.getItem(GENERAL_SETTINGS_KEY);
@@ -653,6 +720,7 @@ function loadGeneralSettings(): GeneralSettingsDraft {
     return {
       ...DEFAULT_GENERAL_SETTINGS,
       ...parsed,
+      language: normalizeStoredLanguage(parsed.language),
       autoAcceptPermissions: loadLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, parsed.autoAcceptPermissions ?? DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions)
     };
   } catch {
@@ -1078,6 +1146,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp">("general");
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => loadGeneralSettings());
+  const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showGraphPopover, setShowGraphPopover] = useState(false);
@@ -9615,10 +9684,10 @@ branches.forEach((b) => {
                     </button>
                     {showCommitActionMenu ? (
                       <div className="gt-commit-action-menu" role="menu">
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommit()} disabled={committing || pushing || !hasCommittableChanges}>Commit</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitPush()} disabled={committing || pushing}>Push</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndPush()} disabled={committing || pushing || !hasCommittableChanges}>Commit & Push</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndSync()} disabled={committing || pushing || !hasCommittableChanges}>Commit & Sync</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommit()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commit}</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitPush()} disabled={committing || pushing}>{appText.push}</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndPush()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commitPush}</button>
+                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndSync()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commitSync}</button>
                       </div>
                     ) : null}
                   </div>
@@ -10435,7 +10504,7 @@ branches.forEach((b) => {
             <div className="wb-graph-popover-head">
               <strong>Graph</strong>
               <button className="chip" onClick={() => setShowGraphPopover(false)}>
-                Close
+                {appText.close}
               </button>
             </div>
             <div className="wb-graph-popover-body">
@@ -10586,7 +10655,7 @@ branches.forEach((b) => {
                   setWorktreeContextMenu(null);
                 }}
               >
-                Remove worktree
+                {appText.removeWorktree}
               </button>
             </div>
           </div>
@@ -10595,14 +10664,14 @@ branches.forEach((b) => {
         {showRemoveWorktreeConfirm ? (
           <div className="modal-mask" onClick={() => { if (!removingWorktreePath) { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); } }}>
             <div className="modal-card gt-discard-confirm-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Remove worktree?</h3>
+              <h3>{appText.removeWorktreeTitle}</h3>
               <p className="small muted">
-                This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.
+                {appText.removeWorktreeDesc}
               </p>
               <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 14 }}>
-                <button className="chip" onClick={() => { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); }} disabled={!!removingWorktreePath}>取消</button>
+                <button className="chip" onClick={() => { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); }} disabled={!!removingWorktreePath}>{appText.cancel}</button>
                 <button className="chip is-danger" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
-                  {removingWorktreePath ? "Removing..." : "Confirm Remove"}
+                  {removingWorktreePath ? appText.removing : appText.confirmRemove}
                 </button>
               </div>
             </div>
@@ -11645,7 +11714,7 @@ branches.forEach((b) => {
                 }}
                 disabled={busy || !runtimeStatus.opencode.installed}
               >
-                归档会话
+                {appText.archiveSession}
               </button>
             </div>
           </div>
@@ -11667,7 +11736,7 @@ branches.forEach((b) => {
                   date: ""
                 }, commitContextMenu.branch)}
               >
-                Create worktree from commit
+                {appText.createWorktreeFromCommit}
               </button>
               <button
                 className="repo-context-item"
@@ -11676,7 +11745,7 @@ branches.forEach((b) => {
                   openTopologyCreateDialog("branch", `commit:${commitContextMenu.branch || currentTopologyBaseBranch()}:${commitContextMenu.sha}`);
                 }}
               >
-                Create branch from commit
+                {appText.createBranchFromCommit}
               </button>
               <button
                 className="repo-context-item"
@@ -11685,16 +11754,16 @@ branches.forEach((b) => {
                   void inspectCommitFromTopology(commitContextMenu.sha);
                 }}
               >
-                Explain / inspect commit
+                {appText.explainInspectCommit}
               </button>
               <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
-                Cherry-pick to current branch
+                {appText.cherryPickCurrentBranch}
               </button>
               <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
-                Revert on current branch
+                {appText.revertCurrentBranch}
               </button>
               <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
-                Copy commit id
+                {appText.copyCommitId}
               </button>
             </div>
           </div>
@@ -11762,23 +11831,23 @@ branches.forEach((b) => {
                       {branchName}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      Create Branch
+                      {appText.createBranch}
                     </button>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
-                      Create Worktree
+                      {appText.createWorktree}
                     </button>
                     {isRemoteBranch ? (
                       <button className="repo-context-item" onClick={() => void checkoutRemoteBranchFromTopology(branchName)}>
-                        Checkout as new local branch
+                        {appText.checkoutNewLocalBranch}
                       </button>
                     ) : (
                       <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
-                        Checkout
+                        {appText.checkout}
                       </button>
                     )}
                     {!isRemoteBranch && branchName !== "main" && branchName !== "master" && !hasWorktree ? (
                       <button className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
-                        Delete Branch
+                        {appText.deleteBranch}
                       </button>
                     ) : null}
                   </>
@@ -11789,23 +11858,23 @@ branches.forEach((b) => {
                       {worktreePath.split("/").pop() || worktreePath}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      Create Branch from Worktree
+                      {appText.createBranchFromWorktree}
                     </button>
                     <button className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
-                      Open Worktree
+                      {appText.openWorktree}
                     </button>
                     {nodeAgentBinding ? (
                       <button className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
-                        Unbind Agent
+                        {appText.unbindAgent}
                       </button>
                     ) : (
                       <button className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
-                        Bind Agent
+                        {appText.bindAgent}
                       </button>
                     )}
                     {!isCurrentBranch ? (
                       <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
-                        Remove Worktree
+                        {appText.removeWorktree}
                       </button>
                     ) : null}
                   </>
