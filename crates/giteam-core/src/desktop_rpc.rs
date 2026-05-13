@@ -1916,8 +1916,9 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let session_id = get_str(&args, "sessionId")?;
             let prompt = get_str(&args, "prompt")?;
+            let parts = args.get("parts").cloned();
             let model = get_str_opt(&args, "model");
-            let result = super::opencode::post_opencode_session_prompt_async(repo_path, session_id, prompt, model)?;
+            let result = super::opencode::post_opencode_session_prompt_async(repo_path, session_id, prompt, parts, model)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "abort_opencode_session" => {
