@@ -185,6 +185,7 @@ fn main() {
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
             commands::ui::open_external_url,
+            commands::ui::send_desktop_notification,
             commands::giteam_cli::giteam_cli_get_settings,
             commands::giteam_cli::giteam_cli_get_mobile_service_status,
             commands::giteam_cli::giteam_cli_start_mobile_service_background,

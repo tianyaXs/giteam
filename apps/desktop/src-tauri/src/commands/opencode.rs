@@ -176,6 +176,8 @@ pub struct OpencodeSessionSummary {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -879,11 +881,15 @@ fn parse_session_summary(v: &Value) -> Option<OpencodeSessionSummary> {
         .and_then(|t| t.get("updated"))
         .and_then(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)))
         .unwrap_or(created_at);
+    let archived_at = time
+        .and_then(|t| t.get("archived"))
+        .and_then(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)));
     Some(OpencodeSessionSummary {
         id,
         title,
         created_at,
         updated_at,
+        archived_at,
     })
 }
 
@@ -1577,8 +1583,11 @@ pub fn list_opencode_sessions(
         let arr = json
             .as_array()
             .ok_or_else(|| "invalid session list response".to_string())?;
-        let mut out: Vec<OpencodeSessionSummary> =
-            arr.iter().filter_map(parse_session_summary).collect();
+        let mut out: Vec<OpencodeSessionSummary> = arr
+            .iter()
+            .filter_map(parse_session_summary)
+            .filter(|s| s.archived_at.is_none())
+            .collect();
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     })
