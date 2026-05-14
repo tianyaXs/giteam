@@ -2209,6 +2209,89 @@ pub fn get_opencode_server_config(repo_path: &str) -> Result<Value, String> {
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_opencode_mcp_status(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let cfg = run_config_get(repo_path, base)?;
+        let mut out = Map::new();
+        if let Some(mcp) = cfg.get("mcp").and_then(|v| v.as_object()) {
+            for (name, node) in mcp {
+                let mut row = node.as_object().cloned().unwrap_or_default();
+                row.entry("status".to_string())
+                    .or_insert(Value::String("configured".to_string()));
+                out.insert(name.clone(), Value::Object(row));
+            }
+        }
+        Ok(Value::Object(out))
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn add_opencode_mcp_server(
+    repo_path: &str,
+    name: &str,
+    config: Value,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        let patch = serde_json::json!({ "mcp": { n: config } });
+        run_config_patch(repo_path, base, &patch)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn delete_opencode_mcp_server(repo_path: &str, name: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    with_service_base(repo_path, |_base| {
+        Err("remove_opencode_mcp_server not implemented yet".to_string())
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn connect_opencode_mcp_server(repo_path: &str, name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    run_opencode(&["mcp", "connect", n], repo_path)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn disconnect_opencode_mcp_server(repo_path: &str, name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    run_opencode(&["mcp", "disconnect", n], repo_path)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn authenticate_opencode_mcp_server(repo_path: &str, name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    run_opencode(&["mcp", "auth", n], repo_path)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn remove_opencode_mcp_auth(repo_path: &str, name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    run_opencode(&["mcp", "logout", n], repo_path)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_opencode_service_base(repo_path: &str) -> Result<String, String> {
     command_runner::validate_repo_path(repo_path)?;
     ensure_managed_service_local(repo_path)

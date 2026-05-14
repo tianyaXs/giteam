@@ -151,10 +151,14 @@ type SettingsDialogProps = {
   skillsLoading?: boolean;
   onRefreshSkills?: () => void;
   onSkillsVisible?: () => void;
+  mcpContent?: ReactNode;
+  mcpLoading?: boolean;
+  onRefreshMcp?: () => void;
+  onMcpVisible?: () => void;
   onToggleControlService: (enabled: boolean) => void;
 };
 
-type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "workspace" | "models" | "skillsmp" | "plugins" | "mobile";
+type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "workspace" | "models" | "skillsmp" | "mcp" | "plugins" | "mobile";
 type InitialSettingsSectionId = SettingsSectionId | "modules" | "opencode";
 
 type SettingsEntry = {
@@ -283,6 +287,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
   useEffect(() => {
     if (activeSection === "skillsmp") props.onSkillsVisible?.();
+    if (activeSection === "mcp") props.onMcpVisible?.();
   }, [activeSection]);
 
   const sections = useMemo(() => {
@@ -423,6 +428,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         }
       ],
       models: [],
+      mcp: [],
       skillsmp: [
         {
           title: text.apiKey,
@@ -525,6 +531,13 @@ export function SettingsDialog(props: SettingsDialogProps) {
         content: props.skillsContent
       },
       {
+        id: "mcp" as const,
+        kicker: "MCP",
+        title: "MCP Servers",
+        description: "管理当前项目和全局 OpenCode MCP 配置。",
+        content: props.mcpContent
+      },
+      {
         id: "updates" as const,
         kicker: text.updatesKicker,
         title: text.updates,
@@ -584,6 +597,8 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 <button className="gt-icon-chip" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>↻</button>
               ) : active.id === "skillsmp" ? (
                 <button className="gt-icon-chip" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>↻</button>
+              ) : active.id === "mcp" ? (
+                <button className="gt-icon-chip" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>↻</button>
               ) : null}
             </div>
 

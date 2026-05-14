@@ -153,6 +153,7 @@ fn main() {
             commands::opencode::fetch_skillsmp_ai_search,
             commands::opencode::list_opencode_mcp_status,
             commands::opencode::add_opencode_mcp_server,
+            commands::opencode::delete_opencode_mcp_server,
             commands::opencode::connect_opencode_mcp_server,
             commands::opencode::disconnect_opencode_mcp_server,
             commands::opencode::authenticate_opencode_mcp_server,

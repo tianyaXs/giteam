@@ -174,6 +174,7 @@ import type {
 import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
 import { MarkdownLite } from "./components/common/MarkdownLite";
 import { BranchGraphLanes } from "./components/git/BranchGraphLanes";
+import { McpMarketplace } from "./components/mcp/McpMarketplace";
 import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
 import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
 import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
@@ -184,8 +185,11 @@ import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
 import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
+import rawMcpServers from "../servers.json";
+import { normalizeMcpMarketData } from "./lib/mcpMarket";
 
 const MonacoDiffViewer = lazy(() => import("./components/git/MonacoDiffViewer"));
+const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
 
 type DetailTab = "diff" | "context" | "findings";
 type Theme = "dark" | "light";
@@ -1144,7 +1148,7 @@ export function App() {
   const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp">("general");
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp" | "mcp">("general");
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => loadGeneralSettings());
   const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
@@ -1350,6 +1354,7 @@ export function App() {
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
+  const [opencodeMcpPromptRefs, setOpencodeMcpPromptRefs] = useState<string[]>([]);
   const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeImageAttachment[]>([]);
   const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
   const [opencodeAgents, setOpencodeAgents] = useState<OpencodeAgentInfo[]>([]);
@@ -1370,6 +1375,8 @@ export function App() {
   const opencodeMcpVisible = rightPaneTab === "mcp" || (showOpencodeModulePanel && opencodeModuleTab === "mcp");
   const [opencodeMcpStatus, setOpencodeMcpStatus] = useState<OpencodeMcpStatusMap>({});
   const [opencodeMcpLoading, setOpencodeMcpLoading] = useState(false);
+  const opencodeMcpLoadingRef = useRef(false);
+  const opencodeMcpLoadedRef = useRef(false);
   const [opencodeMcpError, setOpencodeMcpError] = useState("");
   const [opencodeMcpName, setOpencodeMcpName] = useState("");
   const [opencodeMcpType, setOpencodeMcpType] = useState<OpencodeMcpType>("remote");
@@ -1377,7 +1384,14 @@ export function App() {
   const [opencodeMcpUrl, setOpencodeMcpUrl] = useState("");
   const [opencodeMcpEnv, setOpencodeMcpEnv] = useState("");
   const [opencodeMcpHeaders, setOpencodeMcpHeaders] = useState("");
+  const [opencodeMcpJson, setOpencodeMcpJson] = useState("");
+  const [opencodeMcpCustomParamValues, setOpencodeMcpCustomParamValues] = useState<Record<string, string>>({});
+  const opencodeMcpAutoNameRef = useRef("");
   const [opencodeMcpBusyName, setOpencodeMcpBusyName] = useState("");
+  const [showMcpAddForm, setShowMcpAddForm] = useState(false);
+  const [mcpInstalledOpen, setMcpInstalledOpen] = useState(false);
+  const [editingMcpName, setEditingMcpName] = useState("");
+  const [editingMcpParamValues, setEditingMcpParamValues] = useState<Record<string, string>>({});
   const [opencodeSkills, setOpencodeSkills] = useState<OpencodeSkillInfo[]>([]);
   const [opencodeSkillsLoading, setOpencodeSkillsLoading] = useState(false);
   const [opencodeSkillsLoadedOnce, setOpencodeSkillsLoadedOnce] = useState(false);
@@ -1473,6 +1487,7 @@ export function App() {
   const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
   const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const opencodeInputComposingRef = useRef(false);
   const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
   const commitMessageInputRef = useRef<HTMLInputElement | null>(null);
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
@@ -2007,6 +2022,62 @@ export function App() {
     </div>
   ), [opencodeSkills, opencodeSkillsLoading, opencodeSkillsError, repoPath, opencodeSkillRemovingKey]);
 
+  const settingsMcpContent = useMemo(() => (
+    <div className="settings-skills-manager">
+      {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
+      <div className="settings-skills-grid">
+        {opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无已安装 MCP Server。</div> : opencodeMcpRows.map(([name, status]) => {
+          const s: any = status || {};
+          const source = String(s.source || (s.configured ? "project" : "runtime"));
+          const sourceLabel = source === "both" ? "项目+全局" : source === "global" ? "全局" : source === "project" ? "项目" : source;
+          return (
+            <article key={name} className="settings-skill-card">
+              <button type="button" className="settings-skill-card-main gt-settings-mcp-card-main" onClick={() => startEditMcpParams(name, status)}>
+                <div className="settings-skill-card-title">
+                  <strong>{name}</strong>
+                  <span>{String(s.type || "mcp")}</span>
+                </div>
+                <p>{sourceLabel} · {getInstalledMcpTools(name).length} tools · use {name}</p>
+              </button>
+              <details className="settings-skill-menu">
+                <summary aria-label={`${name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
+                <div className="settings-skill-menu-panel">
+                  <button className="settings-mcp-action" type="button" onClick={() => startEditMcpParams(name, status)}>配置参数</button>
+                  <button className="settings-skill-remove" type="button" disabled={!!opencodeMcpBusyName} onClick={() => void removeOpencodeMcpServer(name)}>{opencodeMcpBusyName.endsWith(":remove") ? "删除中" : "删除"}</button>
+                </div>
+              </details>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  ), [opencodeMcpRows, opencodeMcpError, opencodeMcpBusyName, editingMcpName]);
+
+  useEffect(() => {
+    opencodeMcpLoadedRef.current = false;
+    opencodeMcpLoadingRef.current = false;
+  }, [repoPath]);
+
+  useEffect(() => {
+    if (!showMcpAddForm) return;
+    const inferred = inferCustomMcpName(opencodeMcpJson);
+    if (!inferred) return;
+    const current = opencodeMcpName.trim();
+    if (current && current !== opencodeMcpAutoNameRef.current) return;
+    opencodeMcpAutoNameRef.current = inferred;
+    setOpencodeMcpName(inferred);
+  }, [showMcpAddForm, opencodeMcpJson, opencodeMcpName]);
+
+  useEffect(() => {
+    if (!showMcpAddForm) return;
+    const specs = getCustomMcpParamSpecs(opencodeMcpJson, opencodeMcpName);
+    setOpencodeMcpCustomParamValues((prev) => {
+      const next: Record<string, string> = {};
+      specs.forEach((spec) => { next[spec.key] = prev[spec.key] || ""; });
+      return next;
+    });
+  }, [showMcpAddForm, opencodeMcpJson, opencodeMcpName]);
+
   useEffect(() => {
     if (!repoPath.trim() || !activeOpencodeSessionId.trim()) return;
     void refreshPendingPermissions(activeOpencodeSessionId);
@@ -2022,7 +2093,7 @@ export function App() {
     if (!showOpencodeModulePanel) return;
     if (opencodeModuleTab === "agents") void refreshOpencodeAgents();
     if (opencodeModuleTab === "permissions") void refreshPendingPermissions();
-    if (opencodeModuleTab === "mcp") void refreshOpencodeMcpStatus();
+    if (opencodeModuleTab === "mcp" && !opencodeMcpLoadedRef.current) void refreshOpencodeMcpStatus();
     if (opencodeModuleTab === "skills") {
       const timer = scheduleAfterInteraction(() => void refreshOpencodeSkills(), 280);
       return () => window.clearTimeout(timer);
@@ -2036,7 +2107,7 @@ export function App() {
         return () => window.clearTimeout(timer);
       }
     }
-    if (opencodeMcpVisible) {
+    if (opencodeMcpVisible && !opencodeMcpLoadedRef.current) {
       const timer = scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 280);
       return () => window.clearTimeout(timer);
     }
@@ -2907,19 +2978,24 @@ export function App() {
 
   async function refreshOpencodeMcpStatus() {
     if (!repoPath.trim()) return;
+    if (opencodeMcpLoadingRef.current) return;
+    opencodeMcpLoadingRef.current = true;
+    const hasCachedRows = Object.keys(opencodeMcpStatus).length > 0;
     startTransition(() => {
-      setOpencodeMcpLoading(true);
+      if (!hasCachedRows) setOpencodeMcpLoading(true);
       setOpencodeMcpError("");
     });
     await waitForPaint();
     try {
       const raw = await invoke<unknown>("list_opencode_mcp_status", { repoPath });
       startTransition(() => setOpencodeMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as OpencodeMcpStatusMap : {}));
+      opencodeMcpLoadedRef.current = true;
     } catch (e) {
       const msg = String(e);
       startTransition(() => setOpencodeMcpError(msg));
       appendOpencodeDebugLog(`mcp.status.error ${msg}`);
     } finally {
+      opencodeMcpLoadingRef.current = false;
       startTransition(() => setOpencodeMcpLoading(false));
     }
   }
@@ -3020,46 +3096,63 @@ export function App() {
 
   async function addOpencodeMcpServer() {
     if (!ensureRepoSelected()) return;
-    const name = opencodeMcpName.trim();
-    if (!name) {
-      setError("MCP name is required");
+    let normalized: { name: string; config: Record<string, unknown> };
+    try {
+      normalized = normalizeCustomMcpJson(opencodeMcpJson, opencodeMcpName);
+    } catch (e) {
+      setError(`MCP JSON 配置无效：${String(e instanceof Error ? e.message : e)}`);
       return;
     }
-    const config: Record<string, unknown> = { type: opencodeMcpType, enabled: true };
-    if (opencodeMcpType === "local") {
-      const command = splitCommandLine(opencodeMcpCommand);
-      if (command.length === 0) {
-        setError("Local MCP command is required");
-        return;
-      }
-      config.command = command;
-      const env = parseKeyValueLines(opencodeMcpEnv);
-      if (env) config.environment = env;
-    } else {
-      const url = opencodeMcpUrl.trim();
-      if (!url) {
-        setError("Remote MCP URL is required");
-        return;
-      }
-      config.url = url;
-      const headers = parseKeyValueLines(opencodeMcpHeaders);
-      if (headers) config.headers = headers;
+    const { name, config } = normalized;
+    const paramSpecs = getCustomMcpParamSpecs(opencodeMcpJson, name);
+    const missing = paramSpecs.filter((spec) => spec.required && !String(opencodeMcpCustomParamValues[spec.key] || "").trim());
+    if (missing.length > 0) {
+      setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
+      return;
     }
+    const resolvedConfig = replaceMcpConfigPlaceholders(config, opencodeMcpCustomParamValues) as Record<string, unknown>;
     setOpencodeMcpBusyName(name);
     setOpencodeMcpError("");
     try {
-      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config });
+      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config: resolvedConfig });
+      setOpencodeMcpStatus((prev) => ({ ...prev, [name]: { ...(resolvedConfig as any), status: "configured" } }));
       setOpencodeMcpName("");
       setOpencodeMcpCommand("");
       setOpencodeMcpUrl("");
       setOpencodeMcpEnv("");
       setOpencodeMcpHeaders("");
-      await refreshOpencodeMcpStatus();
+      setOpencodeMcpJson("");
+      setOpencodeMcpCustomParamValues({});
+      opencodeMcpAutoNameRef.current = "";
+      setShowMcpAddForm(false);
+      setMcpInstalledOpen(true);
+      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
       setMessage(`MCP added: ${name}`);
     } catch (e) {
       const msg = String(e);
       setOpencodeMcpError(msg);
       setError(msg);
+    } finally {
+      setOpencodeMcpBusyName("");
+    }
+  }
+
+  async function addOpencodeMcpServerFromMarket(name: string, config: Record<string, unknown>) {
+    if (!ensureRepoSelected()) return;
+    const normalizedName = name.trim();
+    if (!normalizedName) return;
+    setOpencodeMcpBusyName(normalizedName);
+    setOpencodeMcpError("");
+    try {
+      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name: normalizedName, config });
+      setOpencodeMcpStatus((prev) => ({ ...prev, [normalizedName]: { ...(config as any), status: "configured" } }));
+      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      setMessage(`MCP added: ${normalizedName}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeMcpError(msg);
+      setError(msg);
+      throw e;
     } finally {
       setOpencodeMcpBusyName("");
     }
@@ -3080,6 +3173,317 @@ export function App() {
       setMessage(`MCP ${action}: ${n}`);
     } catch (e) {
       const msg = String(e);
+      setOpencodeMcpError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeMcpBusyName("");
+    }
+  }
+
+  function getMcpMarketDefinition(name: string): any | null {
+    const target = name.trim().toLowerCase();
+    return Object.values(MCP_MARKET_SERVERS as Record<string, any>).find((server: any) => {
+      const names = [server?.name, server?.display_name, String(server?.display_name || "").toLowerCase().replace(/\s+/g, "-")];
+      return names.some((item) => String(item || "").trim().toLowerCase() === target);
+    }) || null;
+  }
+
+  function getInstalledMcpParamSpecs(name: string, status: OpencodeMcpStatusMap[string]) {
+    const s: any = status || {};
+    const def = getMcpMarketDefinition(name);
+    const specs = new Map<string, { key: string; required: boolean; description: string; example: string }>();
+    const addSpec = (key: string, required = false, description = "", example = "") => {
+      const k = key.trim();
+      if (!k) return;
+      const prev = specs.get(k);
+      specs.set(k, {
+        key: k,
+        required: Boolean(prev?.required || required),
+        description: prev?.description || description,
+        example: prev?.example || example
+      });
+    };
+    Object.entries(def?.arguments || {}).forEach(([key, arg]: [string, any]) => {
+      addSpec(key, Boolean(arg?.required), String(arg?.description || ""), String(arg?.example || ""));
+    });
+    const scanPlaceholder = (value: unknown) => {
+      const match = String(value ?? "").match(/^\$\{([^}]+)\}$/);
+      if (match?.[1]) addSpec(match[1], true);
+    };
+    if (Array.isArray(s.command)) s.command.forEach(scanPlaceholder);
+    Object.values(s.environment || {}).forEach(scanPlaceholder);
+    Object.values(s.headers || {}).forEach(scanPlaceholder);
+    if (specs.size === 0) {
+      const params = s.type === "remote" ? s.headers : s.environment;
+      Object.keys(params || {}).forEach((key) => addSpec(key, false));
+    }
+    return Array.from(specs.values());
+  }
+
+  function getInstalledMcpTools(name: string) {
+    const def = getMcpMarketDefinition(name);
+    return Array.isArray(def?.tools) ? def.tools : [];
+  }
+
+  function normalizeCustomMcpJson(input: string, fallbackName: string): { name: string; config: Record<string, unknown> } {
+    const parsed = JSON.parse(input);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("config must be an object");
+    const root = parsed as Record<string, any>;
+    const wrapped = root.mcpServers || root.mcp;
+    if (wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)) {
+      const entries = Object.entries(wrapped as Record<string, any>);
+      if (entries.length !== 1 && !fallbackName.trim()) throw new Error("mcpServers/mcp 中包含多个 server，请填写名称");
+      const [wrappedName, wrappedConfig] = fallbackName.trim()
+        ? [fallbackName.trim(), (wrapped as Record<string, any>)[fallbackName.trim()] || entries[0]?.[1]]
+        : entries[0];
+      if (!wrappedConfig || typeof wrappedConfig !== "object" || Array.isArray(wrappedConfig)) throw new Error("server config must be an object");
+      return normalizeCustomMcpConfig(wrappedName, wrappedConfig as Record<string, unknown>);
+    }
+    const entries = Object.entries(root);
+    if (!root.type && !root.command && !root.url && entries.length === 1) {
+      const [marketName, marketConfig] = entries[0] as [string, any];
+      if (marketConfig && typeof marketConfig === "object" && !Array.isArray(marketConfig) && marketConfig.installations) {
+        return normalizeMarketplaceMcpDefinition(fallbackName.trim() || marketName, marketConfig);
+      }
+    }
+    if (root.installations) return normalizeMarketplaceMcpDefinition(fallbackName.trim() || String(root.name || ""), root);
+    if (!root.type && !root.command && !root.url && entries.length === 1) {
+      const [directName, directConfig] = entries[0] as [string, any];
+      if (directConfig && typeof directConfig === "object" && !Array.isArray(directConfig)) {
+        return normalizeCustomMcpConfig(fallbackName.trim() || directName, directConfig as Record<string, unknown>);
+      }
+    }
+    return normalizeCustomMcpConfig(fallbackName.trim(), root);
+  }
+
+  function inferCustomMcpName(input: string): string {
+    try {
+      const parsed = JSON.parse(input);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+      const root = parsed as Record<string, any>;
+      if (root.installations && root.name) return String(root.name);
+      const wrapped = root.mcpServers || root.mcp;
+      const directMap = !wrapped && !root.type && !root.command && !root.url ? root : wrapped;
+      if (directMap && typeof directMap === "object" && !Array.isArray(directMap)) {
+        const entries = Object.entries(directMap as Record<string, any>);
+        if (entries.length === 1) {
+          const [key, value] = entries[0];
+          if (value?.installations) return String(value.name || key);
+        }
+      }
+      if (!directMap || typeof directMap !== "object" || Array.isArray(directMap)) return "";
+      const keys = Object.keys(directMap).filter(Boolean);
+      return keys.length === 1 ? keys[0] : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function normalizeCustomMcpConfig(name: string, raw: Record<string, unknown>): { name: string; config: Record<string, unknown> } {
+    const config: Record<string, unknown> = { ...raw };
+    if (!name) throw new Error("MCP name is required");
+    if (!config.type) {
+      if (typeof config.url === "string") config.type = "remote";
+      else if (typeof config.command === "string" || Array.isArray(config.command)) config.type = "local";
+    }
+    if (typeof config.command === "string") {
+      config.command = [config.command, ...(Array.isArray(config.args) ? config.args.map(String) : [])];
+      delete config.args;
+    } else if (Array.isArray(config.command) && Array.isArray(config.args)) {
+      config.command = [...config.command.map(String), ...config.args.map(String)];
+      delete config.args;
+    }
+    if (config.env && !config.environment) {
+      config.environment = config.env;
+      delete config.env;
+    }
+    if (typeof config.enabled === "undefined") config.enabled = true;
+    if (config.type !== "local" && config.type !== "remote") throw new Error('必须包含 type: "local" 或 "remote"，或提供 command/url 以自动推断');
+    if (config.type === "local" && (!Array.isArray(config.command) || config.command.length === 0)) throw new Error('local MCP 必须包含 command，例如 ["npx", "-y", "server"]');
+    if (config.type === "remote" && typeof config.url !== "string") throw new Error('remote MCP 必须包含 url，例如 "https://mcp.example.com/mcp"');
+    return { name, config };
+  }
+
+  function normalizeMarketplaceMcpDefinition(name: string, raw: any): { name: string; config: Record<string, unknown> } {
+    const serverName = name || String(raw?.name || "").trim();
+    if (!serverName) throw new Error("marketplace MCP 缺少名称");
+    const installations = raw?.installations && typeof raw.installations === "object" ? raw.installations : null;
+    if (!installations) throw new Error("marketplace MCP 缺少 installations");
+    const entries = Object.entries(installations) as Array<[string, any]>;
+    const [, install] = entries.find(([, item]) => item?.recommended) || entries[0] || [];
+    if (!install || typeof install !== "object") throw new Error("marketplace MCP 没有可用安装方式");
+    const command = [String(install.command || "").trim(), ...(Array.isArray(install.args) ? install.args.map(String) : [])].filter(Boolean);
+    if (command.length === 0) throw new Error("marketplace MCP 安装方式缺少 command");
+    const config: Record<string, unknown> = { type: "local", command, enabled: true };
+    const env = install.env && typeof install.env === "object" ? { ...install.env } : undefined;
+    if (env && Object.keys(env).length > 0) config.environment = env;
+    return { name: serverName, config };
+  }
+
+  function readMarketplaceDefinitionFromCustomJson(input: string, fallbackName: string): any | null {
+    try {
+      const parsed = JSON.parse(input);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const root = parsed as Record<string, any>;
+      if (root.installations) return root;
+      const wrapped = root.mcpServers || root.mcp;
+      const directMap = wrapped && typeof wrapped === "object" && !Array.isArray(wrapped) ? wrapped : root;
+      const entries = Object.entries(directMap as Record<string, any>);
+      if (entries.length === 1) {
+        const [, value] = entries[0];
+        if (value && typeof value === "object" && !Array.isArray(value) && value.installations) return value;
+      }
+      if (fallbackName && directMap?.[fallbackName]?.installations) return directMap[fallbackName];
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  function collectPlaceholderNames(value: unknown, out: Set<string>) {
+    if (typeof value === "string") {
+      for (const match of value.matchAll(/\$\{([^}]+)\}/g)) {
+        if (match[1]) out.add(match[1]);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectPlaceholderNames(item, out));
+      return;
+    }
+    if (value && typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach((item) => collectPlaceholderNames(item, out));
+    }
+  }
+
+  function getCustomMcpParamSpecs(input: string, fallbackName: string) {
+    const specs = new Map<string, { key: string; required: boolean; description: string; example: string }>();
+    const add = (key: string, required = true, description = "", example = "") => {
+      const k = key.trim();
+      if (!k) return;
+      const prev = specs.get(k);
+      specs.set(k, {
+        key: k,
+        required: Boolean(prev?.required || required),
+        description: prev?.description || description,
+        example: prev?.example || example
+      });
+    };
+    const market = readMarketplaceDefinitionFromCustomJson(input, fallbackName);
+    Object.entries(market?.arguments || {}).forEach(([key, arg]: [string, any]) => {
+      add(key, Boolean(arg?.required), String(arg?.description || ""), String(arg?.example || ""));
+    });
+    try {
+      const { config } = normalizeCustomMcpJson(input, fallbackName);
+      const placeholders = new Set<string>();
+      collectPlaceholderNames(config, placeholders);
+      placeholders.forEach((key) => add(key, true));
+    } catch {
+      // Invalid JSON/config is already shown in preview; no parameter form needed yet.
+    }
+    return Array.from(specs.values());
+  }
+
+  function replaceMcpConfigPlaceholders(value: unknown, values: Record<string, string>): unknown {
+    if (typeof value === "string") {
+      return value.replace(/\$\{([^}]+)\}/g, (full, key) => {
+        const next = String(values[key] || "").trim();
+        return next || full;
+      });
+    }
+    if (Array.isArray(value)) return value.map((item) => replaceMcpConfigPlaceholders(item, values));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, replaceMcpConfigPlaceholders(item, values)]));
+    }
+    return value;
+  }
+
+  function startEditMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
+    const s: any = status || {};
+    const params = (s.type === "remote" ? s.headers : s.environment) || {};
+    const specs = getInstalledMcpParamSpecs(name, status);
+    const values: Record<string, string> = {};
+    specs.forEach((spec) => {
+      values[spec.key] = params && typeof params === "object" ? String((params as any)[spec.key] ?? "") : "";
+    });
+    setEditingMcpName(name);
+    setEditingMcpParamValues(values);
+  }
+
+  async function saveMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
+    if (!ensureRepoSelected()) return;
+    const s: any = status || {};
+    const config: Record<string, unknown> = { ...s };
+    delete config.source;
+    delete config.configured;
+    delete config.runtimeKnown;
+    delete config.status;
+    delete config.state;
+    delete config.error;
+    delete config.message;
+    delete config.reason;
+    const specs = getInstalledMcpParamSpecs(name, status);
+    const missing = specs.filter((spec) => spec.required && !String(editingMcpParamValues[spec.key] || "").trim());
+    if (missing.length > 0) {
+      setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
+      return;
+    }
+    const parsed = Object.fromEntries(
+      Object.entries(editingMcpParamValues)
+        .map(([key, value]) => [key, String(value || "").trim()] as const)
+        .filter(([, value]) => value)
+    );
+    if (s.type === "remote") {
+      if (Object.keys(parsed).length > 0) config.headers = parsed;
+      else delete config.headers;
+    } else {
+      if (Object.keys(parsed).length > 0) config.environment = parsed;
+      else delete config.environment;
+    }
+    setOpencodeMcpBusyName(`${name}:update`);
+    setOpencodeMcpError("");
+    try {
+      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config });
+      setOpencodeMcpStatus((prev) => ({ ...prev, [name]: { ...(config as any), status: "configured" } }));
+      setEditingMcpName("");
+      setEditingMcpParamValues({});
+      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      setMessage(`MCP params updated: ${name}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeMcpError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeMcpBusyName("");
+    }
+  }
+
+  async function removeOpencodeMcpServer(name: string) {
+    if (!ensureRepoSelected()) return;
+    const n = name.trim();
+    if (!n) return;
+    setOpencodeMcpBusyName(`${n}:remove`);
+    setOpencodeMcpError("");
+    const previousStatus = opencodeMcpStatus;
+    setOpencodeMcpStatus((prev) => {
+      const next = { ...prev };
+      delete next[n];
+      return next;
+    });
+    try {
+      const result = await invoke<any>("delete_opencode_mcp_server", { repoPath, name: n });
+      if (result && typeof result === "object" && result.ok === false) {
+        const checked = Array.isArray(result.checked) ? result.checked.join("\n") : "";
+        throw new Error(`未在 OpenCode 配置文件中找到 ${n}${checked ? `\n已检查:\n${checked}` : ""}`);
+      }
+      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      const detail = result && typeof result === "object"
+        ? [`project:${result.projectDeleted || result.projectFileDeleted ? "yes" : "no"}`, `global:${result.globalDeleted || result.globalFileDeleted ? "yes" : "no"}`, `runtime:${result.apiDeleted ? "yes" : "no"}`].join(" · ")
+        : "removed";
+      setMessage(`MCP removed: ${n} (${detail})`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeMcpStatus(previousStatus);
       setOpencodeMcpError(msg);
       setError(msg);
     } finally {
@@ -4632,7 +5036,9 @@ export function App() {
 
   async function runOpencodePrompt() {
     if (!ensureRepoSelected()) return;
-    const prompt = opencodePromptInput.trim();
+    const typedPrompt = opencodePromptInput.trim();
+    const mcpPromptHints = opencodeMcpPromptRefs.map((name) => `use the ${name} mcp server`);
+    const prompt = [typedPrompt, ...mcpPromptHints].filter(Boolean).join("\n\n").trim();
     const images = opencodeImageAttachments;
     if (!prompt && images.length === 0) return;
     const repoIdAtRun = selectedRepo?.id || newSessionTargetRepoId;
@@ -4688,6 +5094,7 @@ export function App() {
     scrollToBottom({ force: true });
     recordOpencodePromptHistoryEntry(sessionId, prompt);
     setOpencodePromptInput("");
+    setOpencodeMcpPromptRefs([]);
     setOpencodeImageAttachments([]);
     setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
@@ -5300,6 +5707,21 @@ export function App() {
     });
     const trigger = (matched?.trigger || fallback || skill.name).replace(/^\//, "");
     setOpencodePromptInput(`/${trigger} `);
+    setOpencodeSlashOpen(false);
+    requestAnimationFrame(() => {
+      resizeOpencodeInput();
+      const el = opencodeInputRef.current;
+      if (!el) return;
+      el.focus();
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    });
+  }
+
+  function referenceOpencodeMcp(name: string) {
+    const mcpName = name.trim();
+    if (!mcpName) return;
+    setOpencodeMcpPromptRefs((prev) => prev.includes(mcpName) ? prev : [...prev, mcpName]);
     setOpencodeSlashOpen(false);
     requestAnimationFrame(() => {
       resizeOpencodeInput();
@@ -8859,22 +9281,42 @@ export function App() {
                   ↓
                 </button>
               ) : null}
-              {opencodeImageAttachments.length > 0 ? (
-                <div className="opencode-attachments">
-                  {opencodeImageAttachments.map((img) => (
-                    <div key={img.id} className="opencode-attachment-chip">
-                      <img src={img.dataUrl} alt={img.filename} className="opencode-attachment-thumb" />
-                      <span className="opencode-attachment-name">{img.filename}</span>
-                      <button
-                        type="button"
-                        className="opencode-attachment-remove"
-                        onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
-                        aria-label="移除图片"
-                      >
-                        ×
-                      </button>
+              {opencodeImageAttachments.length > 0 || opencodeMcpPromptRefs.length > 0 ? (
+                <div className="opencode-composer-chips">
+                  {opencodeImageAttachments.length > 0 ? (
+                    <div className="opencode-attachments">
+                      {opencodeImageAttachments.map((img) => (
+                        <div key={img.id} className="opencode-attachment-chip">
+                          <img src={img.dataUrl} alt={img.filename} className="opencode-attachment-thumb" />
+                          <span className="opencode-attachment-name">{img.filename}</span>
+                          <button
+                            type="button"
+                            className="opencode-attachment-remove"
+                            onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
+                            aria-label="移除图片"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : null}
+                  {opencodeMcpPromptRefs.length > 0 ? (
+                    <div className="opencode-mcp-reference-chips">
+                      {opencodeMcpPromptRefs.map((name) => (
+                        <div key={name} className="opencode-mcp-reference-chip">
+                          <span>{name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
+                            aria-label={`移除 ${name} MCP 引用`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <div className="opencode-composer-main">
@@ -8902,6 +9344,12 @@ export function App() {
                     className="opencode-input"
                     placeholder="要做什么？"
                     value={opencodePromptInput}
+                    onCompositionStart={() => {
+                      opencodeInputComposingRef.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      opencodeInputComposingRef.current = false;
+                    }}
                     onChange={(e) => {
                       const value = e.target.value;
                       const historyKey = getOpencodePromptHistorySessionKey();
@@ -8914,6 +9362,8 @@ export function App() {
                     }}
                     onKeyDown={(e) => {
                       if (activeOpencodeSessionBusy) return;
+                      const nativeEvent = e.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+                      if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
                       if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
                         if (e.key === "ArrowDown") {
                           e.preventDefault();
@@ -9122,7 +9572,7 @@ export function App() {
                   </div>
                   <button
                     className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                    disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeImageAttachments.length === 0}
+                    disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeMcpPromptRefs.length === 0 && opencodeImageAttachments.length === 0}
                     onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
                     aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
                   >
@@ -9947,55 +10397,141 @@ branches.forEach((b) => {
         ) : null}
 
         {rightPaneTab === "mcp" ? (
-          <div className="gt-panel-stack gt-panel-stack-module gt-mcp-page">
-            <section className="gt-mcp-config-card">
-              <div className="gt-mcp-page-head">
-                <div><span className="gt-module-kicker">model context protocol</span><strong>MCP Servers</strong><p>在右侧直接添加、连接和管理工具服务。</p></div>
-                <button className="chip" onClick={() => void refreshOpencodeMcpStatus()} disabled={opencodeMcpLoading}>刷新</button>
-              </div>
+          <div className="gt-skill-market-shell gt-mcp-market-shell">
+            <details className="gt-installed-skills-collapsible gt-installed-mcp-collapsible" open={mcpInstalledOpen} onToggle={(e) => setMcpInstalledOpen(e.currentTarget.open)}>
+              <summary>
+                <span>已安装 MCP Servers</span>
+                <small>{opencodeMcpRows.length}</small>
+                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowMcpAddForm(true); }} title="自定义添加 MCP Server">＋</button>
+                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeMcpStatus(); }} title="刷新" disabled={opencodeMcpLoading}>↻</button>
+              </summary>
               {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
-              <div className="gt-mcp-form-grid">
-                <input className="path-input" placeholder="名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
-                <select className="path-input" value={opencodeMcpType} onChange={(e) => setOpencodeMcpType(e.target.value as OpencodeMcpType)}>
-                  <option value="remote">remote</option>
-                  <option value="local">local</option>
-                </select>
-                {opencodeMcpType === "remote" ? (
-                  <>
-                    <input className="path-input gt-mcp-form-wide" placeholder="https://mcp.example.com/mcp" value={opencodeMcpUrl} onChange={(e) => setOpencodeMcpUrl(e.target.value)} />
-                    <textarea className="path-input gt-module-textarea gt-mcp-form-wide" placeholder="Headers，每行 KEY=VALUE（可选）" value={opencodeMcpHeaders} onChange={(e) => setOpencodeMcpHeaders(e.target.value)} />
-                  </>
-                ) : (
-                  <>
-                    <input className="path-input gt-mcp-form-wide" placeholder={'npx -y @modelcontextprotocol/server-everything'} value={opencodeMcpCommand} onChange={(e) => setOpencodeMcpCommand(e.target.value)} />
-                    <textarea className="path-input gt-module-textarea gt-mcp-form-wide" placeholder="Environment，每行 KEY=VALUE（可选）" value={opencodeMcpEnv} onChange={(e) => setOpencodeMcpEnv(e.target.value)} />
-                  </>
-                )}
-                <button className="chip primary gt-mcp-form-wide" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName}>添加 MCP</button>
+              <div className="gt-installed-mcp-grid">
+                {opencodeMcpLoading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
+                {!opencodeMcpLoading && opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。从下方市场安装后会显示在这里。</div> : null}
+                {opencodeMcpRows.map(([name, status]) => {
+                  const s: any = status || {};
+                  const source = String(s.source || (s.configured ? "project" : "runtime"));
+                  const sourceLabel = source === "both" ? "项目+全局" : source === "global" ? "全局" : source === "project" ? "项目" : source;
+                  return (
+                    <button key={name} type="button" className="gt-mcp-installed-chip gt-mcp-installed-chip-use" onClick={() => referenceOpencodeMcp(name)} title={`添加 MCP 引用：use the ${name} mcp server`}>
+                      <div className="gt-mcp-installed-main">
+                        <strong>{name}</strong>
+                        <small>{sourceLabel} · {String(s.type || "mcp")} · {getInstalledMcpTools(name).length} tools</small>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
-            </section>
-            <section className="gt-mcp-server-grid">
-              {opencodeMcpLoading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
-              {!opencodeMcpLoading && opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。添加 remote 或 local server 后会出现在这里。</div> : null}
-              {opencodeMcpRows.map(([name, status]) => {
-                const statusLabel = String(status?.status || status?.state || (status?.enabled === false ? "disabled" : "configured"));
-                const tools = Array.isArray((status as any)?.tools) ? (status as any).tools.length : undefined;
-                return (
-                  <article key={name} className="gt-mcp-server-card">
-                    <div className="gt-mcp-server-top"><strong>{name}</strong><span>{String((status as any)?.type || "mcp")}</span></div>
-                    <p>{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</p>
-                    <div className="gt-mcp-server-actions">
-                      <button className="chip" onClick={() => void runMcpAction(name, "connect")} disabled={!!opencodeMcpBusyName}>连接</button>
-                      <button className="chip" onClick={() => void runMcpAction(name, "disconnect")} disabled={!!opencodeMcpBusyName}>断开</button>
-                      <button className="chip" onClick={() => void runMcpAction(name, "auth")} disabled={!!opencodeMcpBusyName}>OAuth</button>
-                      <button className="chip danger" onClick={() => void runMcpAction(name, "logout")} disabled={!!opencodeMcpBusyName}>登出</button>
-                    </div>
-                  </article>
-                );
-              })}
-            </section>
+            </details>
+            <McpMarketplace
+              servers={MCP_MARKET_SERVERS}
+              configuredMcps={opencodeMcpRows.map(([name]) => name)}
+              onAddMcp={addOpencodeMcpServerFromMarket}
+            />
           </div>
         ) : null}
+
+        {showMcpAddForm && typeof document !== "undefined" ? createPortal((() => {
+          const customMcpJsonPlaceholder = `{
+  "type": "remote",
+  "url": "https://mcp.example.com/mcp",
+  "enabled": true
+}`;
+          const customParamSpecs = getCustomMcpParamSpecs(opencodeMcpJson, opencodeMcpName);
+          const previewText = (() => {
+            if (!opencodeMcpJson.trim()) return "粘贴 JSON 后会在这里预览 MCP 类型和连接信息";
+            try {
+              const { name, config } = normalizeCustomMcpJson(opencodeMcpJson, opencodeMcpName);
+              if (config.type === "local") return `${name} · local · command: ${Array.isArray(config.command) ? config.command.join(" ") : "缺少 command[]"}`;
+              if (config.type === "remote") return `${name} · remote · url: ${String(config.url || "缺少 url")}`;
+              return `${name} · ${String(config.type)}`;
+            } catch (e) {
+              return `JSON 无效：${String(e instanceof Error ? e.message : e)}`;
+            }
+          })();
+          return (
+            <div className="gt-mcp-custom-add-popover" role="dialog" aria-modal="true" onClick={() => setShowMcpAddForm(false)}>
+              <section className="gt-mcp-custom-add-card" onClick={(e) => e.stopPropagation()}>
+                <header className="gt-mcp-custom-add-head">
+                  <div>
+                    <span className="gt-module-kicker">custom mcp</span>
+                    <strong>自定义添加 MCP Server</strong>
+                    <small>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</small>
+                  </div>
+                  <button type="button" className="gt-icon-chip" onClick={() => setShowMcpAddForm(false)} aria-label="关闭自定义添加">×</button>
+                </header>
+                <div className="gt-mcp-custom-add-body">
+                  <div className="gt-mcp-custom-add-editor">
+                    <div className="gt-mcp-custom-add-strip">
+                      <span>JSON 会自动识别 name、command/url、env/headers 和必填参数</span>
+                    </div>
+                    <label>
+                      <span>名称</span>
+                      <input className="path-input" placeholder="名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
+                    </label>
+                    <label className="gt-mcp-custom-json-label">
+                      <span>JSON 配置</span>
+                      <textarea className="path-input gt-module-textarea gt-mcp-json-input" value={opencodeMcpJson} placeholder={customMcpJsonPlaceholder} onChange={(e) => setOpencodeMcpJson(e.target.value)} />
+                    </label>
+                  </div>
+                  <aside className="gt-mcp-custom-add-side">
+                    <div className="gt-mcp-json-preview">
+                      <strong>预览</strong>
+                      <code>{previewText}</code>
+                    </div>
+                    {customParamSpecs.length > 0 ? (
+                      <div className="gt-mcp-custom-param-fields">
+                        <strong>连接参数</strong>
+                        {customParamSpecs.map((spec) => (
+                          <label key={spec.key}>
+                            <span>{spec.key}{spec.required ? " *" : ""}</span>
+                            {spec.description ? <small>{spec.description}</small> : null}
+                            <input
+                              className="path-input"
+                              value={opencodeMcpCustomParamValues[spec.key] || ""}
+                              placeholder={spec.example || spec.key}
+                              onChange={(e) => setOpencodeMcpCustomParamValues((prev) => ({ ...prev, [spec.key]: e.target.value }))}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="gt-mcp-custom-add-hint">没有检测到必填参数。添加后会写入当前项目的 OpenCode 配置。</div>
+                    )}
+                  </aside>
+                </div>
+                <footer className="gt-mcp-custom-add-actions">
+                  <button type="button" className="chip" onClick={() => setShowMcpAddForm(false)}>取消</button>
+                  <button type="button" className="chip primary" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName || !opencodeMcpJson.trim()}>{opencodeMcpBusyName ? "添加中..." : "添加 MCP"}</button>
+                </footer>
+              </section>
+            </div>
+          );
+        })(), document.body) : null}
+
+        {editingMcpName && typeof document !== "undefined" ? createPortal((() => {
+          const status = opencodeMcpStatus[editingMcpName];
+          const s: any = status || {};
+          const specs = getInstalledMcpParamSpecs(editingMcpName, status);
+          const tools = getInstalledMcpTools(editingMcpName);
+          const paramKind = s.type === "remote" ? "Headers" : "Environment";
+          return (
+            <div className="gt-mcp-config-popover" role="dialog" aria-modal="true" onClick={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}>
+              <div className="gt-mcp-config-card" onClick={(e) => e.stopPropagation()}>
+                <div className="gt-mcp-config-head"><div><span className="gt-module-kicker">update mcp params</span><strong>{editingMcpName}</strong></div></div>
+                <p>更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
+                {specs.length === 0 ? <div className="gt-module-empty">这个 MCP 当前没有可编辑参数。</div> : (
+                  <div className="gt-mcp-config-fields">
+                    {specs.map((spec) => <label key={spec.key}><span>{spec.key}{spec.required ? " *" : ""}</span>{spec.description ? <small>{spec.description}</small> : null}<input className="path-input" value={editingMcpParamValues[spec.key] || ""} placeholder={spec.example || spec.key} onChange={(e) => setEditingMcpParamValues((prev) => ({ ...prev, [spec.key]: e.target.value }))} /></label>)}
+                  </div>
+                )}
+                <div className="gt-mcp-config-tools"><div className="gt-mcp-config-tools-head"><strong>工具列表</strong><span>{tools.length} tools</span></div>{tools.length === 0 ? <div className="gt-module-empty">暂无工具清单。</div> : <div className="gt-mcp-config-tool-grid">{tools.map((tool: any) => <div key={tool.name} className="gt-mcp-config-tool-cell"><code>{tool.name}</code><p>{tool.description || "No description"}</p></div>)}</div>}</div>
+                <div className="gt-mcp-config-actions"><button type="button" className="chip danger" onClick={() => void removeOpencodeMcpServer(editingMcpName)} disabled={!!opencodeMcpBusyName}>{opencodeMcpBusyName.endsWith(":remove") ? "删除中..." : "删除"}</button><button type="button" className="chip primary" onClick={() => void saveMcpParams(editingMcpName, status)} disabled={!!opencodeMcpBusyName || specs.length === 0}>{opencodeMcpBusyName.endsWith(":update") ? "保存中..." : "保存参数"}</button></div>
+              </div>
+            </div>
+          );
+        })(), document.body) : null}
 
         {rightPaneTab === "terminal" ? (
           <div className="gt-panel-stack gt-panel-stack-terminal">
@@ -10273,7 +10809,6 @@ branches.forEach((b) => {
               {rightModuleVisibility.mcp ? (
                 <button className={rightPaneTab === "mcp" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
                   setRightPaneTab("mcp");
-                  void refreshOpencodeMcpStatus();
                 }} title="MCP" aria-label="MCP">
                   <RightPaneTabIcon tab="mcp" active={rightPaneTab === "mcp"} />
                 </button>
@@ -10756,6 +11291,12 @@ branches.forEach((b) => {
             skillsContent={settingsSkillsContent}
             skillsLoading={opencodeSkillsLoading}
             onRefreshSkills={() => void refreshOpencodeSkills()}
+            mcpContent={settingsMcpContent}
+            mcpLoading={opencodeMcpLoading}
+            onRefreshMcp={() => void refreshOpencodeMcpStatus()}
+            onMcpVisible={() => {
+              if (!opencodeMcpLoading && !opencodeMcpLoadedRef.current) scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 120);
+            }}
             onSkillsVisible={() => {
               if (opencodeSkillsRepoPathRef.current !== repoPath) {
                 opencodeSkillsRepoPathRef.current = repoPath;
