@@ -18,7 +18,7 @@ export function OpenCodeAuthDialog(props: OpenCodeAuthDialogProps) {
           <button className="chip" onClick={props.onClose}>Close</button>
         </div>
         <p className="small muted">{`${props.providerTag} provider`}</p>
-        <div className="settings-provider-form" style={{ marginTop: 8 }}>
+        <div className="settings-provider-form" style={{ marginTop: "var(--gt-space-2)" }}>
           <input
             className="path-input"
             placeholder="输入新的 API 密钥"
@@ -26,7 +26,7 @@ export function OpenCodeAuthDialog(props: OpenCodeAuthDialogProps) {
             onChange={(e) => props.onApiKeyChange(e.target.value)}
           />
         </div>
-        <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 10 }}>
+        <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: "var(--gt-space-2-5)" }}>
           <button className="chip" disabled={props.busy || !props.providerId || !props.apiKey.trim()} onClick={props.onSave}>
             {props.busy ? "Saving..." : "更新 API Key"}
           </button>

@@ -293,8 +293,8 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 16, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-          <div style={{ marginBottom: 8, fontWeight: 600 }}>UI crashed</div>
+        <div style={{ padding: "var(--gt-space-4)", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+          <div style={{ marginBottom: "var(--gt-space-2)", fontWeight: "var(--gt-font-semibold)" }}>UI crashed</div>
           <pre style={{ whiteSpace: "pre-wrap", margin: 0, color: "var(--danger)" }}>{this.state.error}</pre>
         </div>
       );
@@ -9158,7 +9158,7 @@ export function App() {
                       </div>
                     ) : null}
                     {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
-                      <div className="small" style={{ color: "var(--danger)", marginTop: 8 }}>{opencodeDetailsErrorByMessageId[msg.id]}</div>
+                      <div className="small" style={{ color: "var(--danger)", marginTop: "var(--gt-space-2)" }}>{opencodeDetailsErrorByMessageId[msg.id]}</div>
                     ) : null}
                   </div>
                 );
@@ -9921,7 +9921,7 @@ branches.forEach((b) => {
                         ) : null}
                         {remoteRootBranches.length > 0 ? (
                           <>
-                            <div className="gt-gittree-section-divider" style={{ margin: "8px 0", padding: "4px 10px", fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Remote</div>
+                            <div className="gt-gittree-section-divider" style={{ margin: "var(--gt-space-2) 0", padding: "var(--gt-space-1) var(--gt-space-2-5)", fontSize: "var(--gt-text-xs)", color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Remote</div>
                             {remoteRootBranches.map((branch) => renderBranchRow(branch, 0, remoteChildrenByParent))}
                           </>
                         ) : null}
@@ -10008,11 +10008,11 @@ branches.forEach((b) => {
                         <div className="gt-gittree-detail-body">
                           <div className="gt-gittree-commit-toolbar gt-gittree-worktree-toolbar">
                             <span>Worktrees</span>
-                            <div className="toolbar" style={{ gap: 8 }}>
+                            <div className="toolbar" style={{ gap: "var(--gt-space-2)" }}>
                               <span>{activeBranchWorktrees.length} linked</span>
                               <button
                                 className="chip"
-                                style={{ fontSize: 10, height: 22, padding: "0 8px" }}
+                                style={{ fontSize: "var(--gt-text-2xs)", height: 22, padding: "0 var(--gt-space-2)" }}
                                 onClick={() => activeTreeBranch && openTopologyCreateDialog("worktree", `branch:${activeTreeBranch}`)}
                                 disabled={!activeTreeBranch}
                               >
@@ -10038,7 +10038,7 @@ branches.forEach((b) => {
                                 <button
                                   type="button"
                                   className="chip"
-                                  style={{ fontSize: 10, height: 22, padding: "0 8px" }}
+                                  style={{ fontSize: "var(--gt-text-2xs)", height: 22, padding: "0 var(--gt-space-2)" }}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     void activateLinkedWorktree(wt.path);
@@ -10070,7 +10070,7 @@ branches.forEach((b) => {
                   <strong>Changes</strong>
                   <span className="gt-changes-context"><span>Local</span>{worktreeOverview.branch || selectedBranch || "no branch"}</span>
                 </div>
-                <div className="toolbar" style={{ gap: 6 }}>
+                <div className="toolbar" style={{ gap: "var(--gt-space-1-5)" }}>
                   {worktreeChangeStats.total > 0 ? (
                     <button
                       type="button"
@@ -11122,7 +11122,7 @@ branches.forEach((b) => {
                   </label>
                 ) : null}
               </div>
-              <div className="toolbar" style={{ justifyContent: "space-between", marginTop: 12 }}>
+              <div className="toolbar" style={{ justifyContent: "space-between", marginTop: "var(--gt-space-3)" }}>
                 <button className="chip" onClick={() => setShowTopologyCreateDialog(false)}>取消</button>
                 <button className="chip active" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
                   {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
@@ -11165,7 +11165,7 @@ branches.forEach((b) => {
               <p className="small muted">
                 将撤销 {discardAllCount} 个文件的修改。未跟踪文件会被删除，已跟踪文件会恢复到 HEAD。
               </p>
-              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 14 }}>
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: "var(--gt-space-3-5)" }}>
                 <button className="chip" onClick={() => setShowDiscardAllConfirm(false)} disabled={discardingAll}>取消</button>
                 <button className="chip is-danger" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
                   {discardingAll ? "撤销中..." : "确认撤销"}
@@ -11203,7 +11203,7 @@ branches.forEach((b) => {
               <p className="small muted">
                 {appText.removeWorktreeDesc}
               </p>
-              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: 14 }}>
+              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: "var(--gt-space-3-5)" }}>
                 <button className="chip" onClick={() => { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); }} disabled={!!removingWorktreePath}>{appText.cancel}</button>
                 <button className="chip is-danger" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
                   {removingWorktreePath ? appText.removing : appText.confirmRemove}
@@ -11652,7 +11652,7 @@ branches.forEach((b) => {
                       : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
                     const authBlock = showAuthEditor ? (
                       <div className="opencode-provider-connect">
-                        <div className="small muted" style={{ marginBottom: 8 }}>{authHint}</div>
+                        <div className="small muted" style={{ marginBottom: "var(--gt-space-2)" }}>{authHint}</div>
                         <input
                           className="path-input"
                           placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
@@ -11663,7 +11663,7 @@ branches.forEach((b) => {
                             setOpencodeConnectApiKey(e.target.value);
                           }}
                         />
-                        <div className="toolbar" style={{ marginTop: 10 }}>
+                        <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)" }}>
                           <button
                             className="chip"
                             disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
@@ -12368,7 +12368,7 @@ branches.forEach((b) => {
               >
                 {isBranch ? (
                   <>
-                    <div className="repo-context-header" style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
+                    <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
                       {branchName}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
@@ -12395,7 +12395,7 @@ branches.forEach((b) => {
                 ) : null}
                 {isWorktree ? (
                   <>
-                    <div className="repo-context-header" style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
+                    <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
                       {worktreePath.split("/").pop() || worktreePath}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>

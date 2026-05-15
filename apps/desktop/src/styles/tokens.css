@@ -1,0 +1,132 @@
+:root {
+  /* VSCode-like dark theme tokens */
+  --bg: #1e1e1e;
+  --bg-elev: #252526;
+  --bg-panel: #252526;
+  --bg-soft: #2d2d2d;
+  --surface: #252526;
+  --text: #d4d4d4;
+  --muted: #9da5b4;
+  --line: #3c3c3c;
+  --border: #3c3c3c;
+  --accent: #0e639c;
+  --accent-soft: rgba(14, 99, 156, 0.28);
+  --primary: #0e639c;
+  --primary-soft: rgba(14, 99, 156, 0.18);
+  --primary-glow: rgba(14, 99, 156, 0.28);
+  --interactive-hover: rgba(255, 255, 255, 0.04);
+  --interactive-active: rgba(72, 104, 145, 0.2);
+  --interactive-active-strong: rgba(72, 104, 145, 0.3);
+  --sidebar-bg: #222325;
+  --sidebar-hover: rgba(255, 255, 255, 0.045);
+  --sidebar-active: rgba(255, 255, 255, 0.08);
+  --sidebar-selected: rgba(96, 126, 164, 0.18);
+  --message-surface: rgba(255, 255, 255, 0.035);
+  --message-user-surface: rgba(83, 110, 144, 0.18);
+  --composer-surface: rgba(37, 38, 40, 0.92);
+  --switch-off-bg: #34363a;
+  --switch-off-border: #4a4d52;
+  --switch-thumb-bg: #f3f4f6;
+  --success: #2da44e;
+  --danger: #cf6679;
+  --add: #123822;
+  --del: #4a1d25;
+  --gt-ui-font-size: var(--gt-text-base);
+  --gt-code-font-size: var(--gt-text-sm);
+
+  /* === Design System Tokens === */
+
+  /* Radius */
+  --gt-radius-none: 0px;
+  --gt-radius-sm: 3px;
+  --gt-radius-md: 5px;
+  --gt-radius-lg: 7px;
+  --gt-radius-pill: 999px;
+
+  /* Typography: Size */
+  --gt-text-2xs: 10px;
+  --gt-text-xs: 11px;
+  --gt-text-sm: 12px;
+  --gt-text-base: 13px;
+  --gt-text-md: 14px;
+  --gt-text-lg: 16px;
+  --gt-text-xl: 20px;
+  --gt-text-2xl: 24px;
+
+  /* Typography: Line Height */
+  --gt-leading-2xs: 14px;
+  --gt-leading-xs: 15px;
+  --gt-leading-sm: 17px;
+  --gt-leading-base: 19px;
+  --gt-leading-md: 21px;
+  --gt-leading-lg: 23px;
+  --gt-leading-xl: 26px;
+  --gt-leading-2xl: 30px;
+
+  /* Typography: Weight */
+  --gt-font-normal: 400;
+  --gt-font-medium: 500;
+  --gt-font-semibold: 600;
+  --gt-font-bold: 700;
+
+  /* Spacing (4px base) */
+  --gt-space-0: 0px;
+  --gt-space-0-5: 2px;
+  --gt-space-1: 4px;
+  --gt-space-1-5: 6px;
+  --gt-space-2: 8px;
+  --gt-space-2-5: 10px;
+  --gt-space-3: 12px;
+  --gt-space-3-5: 14px;
+  --gt-space-4: 16px;
+  --gt-space-5: 20px;
+  --gt-space-6: 24px;
+  --gt-space-8: 32px;
+
+  /* Elevation: Shadows (Dark) */
+  --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --gt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.30);
+  --gt-shadow-3: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --gt-shadow-4: 0 8px 32px rgba(0, 0, 0, 0.40);
+}
+
+:root[data-theme="light"] {
+  /* VSCode-like light theme tokens */
+  --bg: #ffffff;
+  --bg-elev: #f3f3f3;
+  --bg-panel: #f3f3f3;
+  --bg-soft: #eaeaea;
+  --surface: #ffffff;
+  --text: #1e1e1e;
+  --muted: #5f6368;
+  --line: #e5e5e5;
+  --border: #e5e5e5;
+  --accent: #0066b8;
+  --accent-soft: rgba(0, 102, 184, 0.18);
+  --primary: #0066b8;
+  --primary-soft: rgba(0, 102, 184, 0.12);
+  --primary-glow: rgba(0, 102, 184, 0.2);
+  --interactive-hover: rgba(0, 0, 0, 0.045);
+  --interactive-active: rgba(0, 102, 184, 0.12);
+  --interactive-active-strong: rgba(0, 102, 184, 0.18);
+  --sidebar-bg: #f2f4f7;
+  --sidebar-hover: rgba(34, 36, 40, 0.05);
+  --sidebar-active: rgba(34, 36, 40, 0.07);
+  --sidebar-selected: rgba(0, 102, 184, 0.1);
+  --message-surface: rgba(20, 24, 31, 0.03);
+  --message-user-surface: rgba(0, 102, 184, 0.08);
+  --composer-surface: rgba(255, 255, 255, 0.96);
+  --switch-off-bg: #eef1f5;
+  --switch-off-border: #d2d8e1;
+  --switch-thumb-bg: #ffffff;
+  --success: #1f8f43;
+  --danger: #c2364f;
+  --add: #dcf6e3;
+  --del: #ffe1e6;
+
+  /* Elevation: Shadows (Light overrides) */
+  --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --gt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --gt-shadow-3: 0 4px 16px rgba(0, 0, 0, 0.10);
+  --gt-shadow-4: 0 8px 32px rgba(0, 0, 0, 0.14);
+}

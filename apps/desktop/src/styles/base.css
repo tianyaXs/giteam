@@ -1,0 +1,41 @@
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: var(--gt-ui-font-size);
+}
+
+code,
+kbd,
+pre,
+textarea,
+.terminal-log,
+.gt-skill-card-spec,
+.gt-skill-card-rank {
+  font-size: var(--gt-code-font-size);
+}
+
+:root[data-theme="light"] body {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] html,
+:root[data-theme="light"] #root {
+  background: var(--bg);
+}
+

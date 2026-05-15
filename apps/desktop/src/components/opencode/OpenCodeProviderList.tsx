@@ -13,7 +13,7 @@ type OpenCodeProviderListProps = {
 
 export function OpenCodeProviderList(props: OpenCodeProviderListProps) {
   if (props.providers.length === 0) {
-    return <div className="small muted" style={{ padding: 12 }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>;
+    return <div className="small muted" style={{ padding: "var(--gt-space-3)" }}>暂无可用供应商目录。请检查 OpenCode `/provider` 是否可访问。</div>;
   }
 
   return (

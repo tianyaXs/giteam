@@ -1,0 +1,40 @@
+/* Light theme adjustments */
+:root[data-theme="light"] .mcp-marketplace-overlay {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="light"] .mcp-marketplace {
+  box-shadow: var(--gt-shadow-4);
+}
+
+:root[data-theme="light"] .mcp-server-card:hover {
+  box-shadow: var(--gt-shadow-4);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .mcp-marketplace-grid {
+    grid-template-columns: 1fr;
+    padding: var(--gt-space-4);
+  }
+
+  .mcp-marketplace-header {
+    padding: var(--gt-space-4) var(--gt-space-5);
+  }
+
+  .mcp-marketplace-toolbar {
+    padding: var(--gt-space-3) var(--gt-space-5);
+  }
+
+  .mcp-marketplace-categories {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: var(--gt-space-1);
+  }
+
+  .mcp-marketplace-modal-content {
+    max-height: 95vh;
+    margin: var(--gt-space-2-5);
+  }
+}
+

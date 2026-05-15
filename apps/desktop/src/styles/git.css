@@ -1,0 +1,848 @@
+/* Workbench: commits list should fill sidebar height */
+.wb-sidebar .commit-list {
+  max-height: none;
+  height: 100%;
+  overflow: auto;
+  overflow-x: hidden;
+}
+
+.graph-row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: transparent;
+  display: grid;
+  /* Graph lane strings can get wide on complex histories; avoid clipping lanes. */
+  grid-template-columns: 140px 1fr auto;
+  gap: var(--gt-space-2);
+  align-items: center;
+  text-align: left;
+  padding: var(--gt-space-0-5) var(--gt-space-2);
+  height: 30px;
+  color: var(--text);
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+.graph-row:last-child {
+  border-bottom: 0;
+}
+
+.graph-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
+}
+
+.graph-row.selected {
+  background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+}
+
+.graph-row.connector {
+  cursor: default;
+}
+
+.graph-row.connector:hover {
+  background: transparent;
+}
+
+.graph-row.connector .graph-main,
+.graph-row.connector .graph-refs {
+  visibility: hidden;
+}
+
+.graph-ascii {
+  display: flex;
+  align-items: center;
+  min-height: 16px;
+}
+
+.graph-ascii-placeholder {
+  width: 140px;
+  height: 16px;
+}
+
+.graph-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.lane {
+  width: 8px;
+  height: 16px;
+  position: relative;
+  display: inline-block;
+}
+
+.lane-space::before {
+  content: "";
+}
+
+.lane-vert::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+}
+
+.lane-slash::before,
+.lane-backslash::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 2px;
+  height: 20px;
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+  transform-origin: center;
+}
+
+.lane-slash::before {
+  transform: translateX(-50%) rotate(34deg);
+}
+
+.lane-backslash::before {
+  transform: translateX(-50%) rotate(-34deg);
+}
+
+.lane-horiz::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+}
+
+.lane-node::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-panel) 80%, transparent);
+}
+
+.graph-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--gt-space-0-5);
+}
+
+.graph-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--gt-text-base);
+  line-height: 1.15;
+}
+
+.graph-meta {
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-refs {
+  display: flex;
+  gap: var(--gt-space-1);
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  max-width: 190px;
+  overflow: hidden;
+}
+
+.graph-ref-btn {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  border-radius: var(--gt-radius-pill);
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  font-size: 10.5px;
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-ref-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+}
+
+.branch-node,
+.commit-item,
+.file-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  margin-bottom: var(--gt-space-2);
+  background: linear-gradient(180deg, var(--bg-soft), var(--bg-panel));
+  cursor: pointer;
+  color: var(--text);
+}
+
+.branch-node.selected,
+.commit-item.selected,
+.file-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.branch-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: var(--gt-space-2);
+  padding-left: var(--gt-space-2-5);
+}
+
+.branch-node .lane {
+  position: absolute;
+  left: 16px;
+  top: 24px;
+  bottom: -10px;
+  width: 2px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.branch-node:last-child .lane {
+  display: none;
+}
+
+.branch-node .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: var(--bg-panel);
+  position: relative;
+  z-index: 1;
+}
+
+.branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-badge {
+  font-size: var(--gt-text-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  border-radius: var(--gt-radius-pill);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+.commit-item p,
+.finding-item p {
+  margin: var(--gt-space-1) 0;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+}
+
+.file-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.diff-view {
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  overflow: hidden;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.diff-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-header span {
+  padding: var(--gt-space-2) var(--gt-space-2);
+  font-size: var(--gt-text-sm);
+  color: var(--muted);
+}
+
+.diff-body {
+  max-height: none;
+  flex: 1;
+  overflow: auto;
+  font-family: "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: var(--gt-text-sm);
+}
+
+.diff-empty {
+  padding: var(--gt-space-3);
+  color: var(--muted);
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.cell {
+  padding: var(--gt-space-1) var(--gt-space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-row.add .new {
+  background: var(--add);
+}
+
+.diff-row.del .old {
+  background: var(--del);
+}
+
+.diff-row.meta .old,
+.diff-row.meta .new {
+  background: var(--bg-soft);
+  color: var(--muted);
+}
+
+.finding-item {
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  margin-bottom: var(--gt-space-2);
+  background: var(--bg-panel);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: var(--gt-text-sm);
+}
+
+.error {
+  color: var(--danger);
+}
+
+pre {
+  margin: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.wb-reading-scroll>pre {
+  max-height: none;
+  min-height: 100%;
+}
+
+.mobile-status-toast {
+  position: fixed;
+  bottom: 36px;
+  right: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-md);
+  padding: var(--gt-space-2) var(--gt-space-3-5);
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+  font-size: var(--gt-text-sm);
+  box-shadow: var(--gt-shadow-2);
+  z-index: 1000;
+  animation: toast-slide-in 200ms ease-out;
+}
+
+.mobile-status-toast-icon {
+  color: var(--text);
+}
+
+.mobile-status-toast-icon.connected {
+  color: var(--success, #2da44e);
+}
+
+.mobile-status-toast-icon.disconnected {
+  color: var(--muted, #8b949e);
+}
+
+.mobile-status-toast-msg {
+  color: var(--text);
+}
+
+/* Split diff view */
+.gt-split-diff-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  border-radius: var(--gt-radius-lg);
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 92%, transparent), color-mix(in srgb, var(--bg-soft) 52%, transparent)),
+    color-mix(in srgb, var(--bg-panel) 90%, transparent);
+}
+
+.gt-split-diff-header {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+  min-width: 840px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+}
+
+.gt-split-diff-col-head {
+  padding: var(--gt-space-1-5) var(--gt-space-2);
+  font-size: var(--gt-text-2xs);
+  font-weight: var(--gt-font-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-right: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+}
+
+.gt-split-diff-col-head:last-child {
+  border-right: 0;
+}
+
+.gt-split-diff-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+
+.gt-split-diff-row {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+  align-items: start;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  min-width: 840px;
+}
+
+.gt-split-diff-row.is-hunk,
+.gt-split-diff-row.is-meta {
+  grid-template-columns: 1fr;
+  background: color-mix(in srgb, var(--accent-soft) 16%, transparent);
+}
+
+.gt-split-diff-cell {
+  display: grid;
+  grid-template-columns: 34px 18px minmax(0, 1fr);
+  align-items: start;
+  border-right: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  font-family: "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: var(--gt-text-xs);
+  line-height: 1.42;
+  min-height: 21px;
+  overflow: hidden;
+}
+
+.gt-split-diff-cell:last-child {
+  border-right: 0;
+}
+
+.gt-split-diff-cell.is-empty {
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+}
+
+.gt-split-diff-cell.is-del {
+  background: color-mix(in srgb, var(--del) 72%, transparent);
+}
+
+.gt-split-diff-cell.is-add {
+  background: color-mix(in srgb, var(--add) 72%, transparent);
+}
+
+.gt-split-diff-cell.is-ctx {
+  background: transparent;
+}
+
+.gt-split-diff-line-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  color: var(--muted);
+  border-right: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  font-size: var(--gt-text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.gt-split-diff-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gt-space-0-5) var(--gt-space-1);
+  color: var(--muted);
+  border-right: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  font-size: var(--gt-text-2xs);
+  font-weight: var(--gt-font-semibold);
+}
+
+.gt-split-diff-cell.is-del .gt-split-diff-marker {
+  color: var(--danger);
+}
+
+.gt-split-diff-cell.is-add .gt-split-diff-marker {
+  color: #0f8b4c;
+}
+
+.gt-split-diff-code {
+  margin: 0;
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  white-space: pre;
+  overflow: visible;
+  color: var(--text);
+  min-width: 0;
+}
+
+.gt-split-diff-row.is-hunk .gt-split-diff-code,
+.gt-split-diff-row.is-meta .gt-split-diff-code {
+  color: color-mix(in srgb, var(--text) 92%, var(--accent));
+  font-weight: var(--gt-font-semibold);
+  grid-column: 1 / -1;
+  padding: var(--gt-space-1) var(--gt-space-2);
+}
+
+/* Discard changes button in file list */
+/* File list action buttons (Stage/Unstage/Discard) */
+.gt-worktree-file-actions {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-0-5);
+  padding: var(--gt-space-0-5);
+  border-radius: var(--gt-radius-md);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 45%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.gt-worktree-tree-row:hover .gt-worktree-file-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gt-worktree-tree-row:hover .gt-worktree-row-tail > .gt-worktree-tree-status {
+  opacity: 0;
+}
+
+.gt-worktree-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--gt-radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+  font-weight: var(--gt-font-semibold);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.gt-worktree-action-btn svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gt-worktree-action-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.gt-worktree-action-btn.is-discard:hover {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: var(--danger);
+}
+
+.gt-worktree-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.gt-commit-hover-card {
+  position: fixed;
+  z-index: 2200;
+  width: 300px;
+  display: grid;
+  gap: var(--gt-space-1-5);
+  padding: var(--gt-space-2-5) var(--gt-space-3);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: var(--gt-radius-lg);
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
+  box-shadow: var(--gt-shadow-4);
+  pointer-events: none;
+}
+
+.gt-commit-hover-card strong {
+  color: var(--text);
+  font-size: var(--gt-text-sm);
+  line-height: 1.35;
+}
+
+.gt-commit-hover-card span,
+.gt-commit-hover-card small {
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+  line-height: 1.3;
+}
+
+.gt-stage-toggle {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 38%, transparent);
+  border-radius: var(--gt-radius-md);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: #fff;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 16%, transparent);
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.gt-stage-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--muted));
+  background: color-mix(in srgb, var(--accent-soft) 18%, var(--bg));
+}
+
+.gt-stage-toggle.is-on {
+  background: #3794ff;
+  border-color: #3794ff;
+  box-shadow: none;
+}
+
+.gt-stage-toggle svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gt-stage-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Changes panel header */
+.gt-changes-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gt-changes-header strong {
+  font-size: var(--gt-text-base);
+  letter-spacing: -0.01em;
+}
+
+.gt-changes-context {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
+  color: var(--muted);
+  font-size: var(--gt-text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gt-changes-context span {
+  border-radius: var(--gt-radius-pill);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: color-mix(in srgb, var(--text) 66%, var(--muted));
+  padding: var(--gt-space-1) var(--gt-space-2);
+}
+
+/* Diff view header */
+.gt-diff-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+  min-width: 0;
+}
+
+.gt-diff-filename {
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gt-diff-compact-head {
+  min-height: 38px;
+  padding: 0 var(--gt-space-1);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+}
+
+.gt-diff-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
+  flex: 0 0 auto;
+}
+
+.gt-diff-icon-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--gt-radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--gt-text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gt-diff-icon-btn svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gt-diff-icon-btn[title="暂存"] svg,
+.gt-diff-icon-btn[title="取消暂存"] svg {
+  stroke-width: 1.45;
+}
+
+.gt-diff-icon-btn:hover {
+  background: color-mix(in srgb, var(--sidebar-hover) 80%, transparent);
+  color: var(--text);
+}
+
+.gt-diff-icon-btn.is-danger:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.gt-diff-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.gt-diff-header-actions .gt-stage-toggle {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--gt-radius-md);
+}
+
+.gt-diff-header-actions .gt-stage-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Changes group sections (VS Code style) */
+.gt-changes-group {
+  margin-bottom: var(--gt-space-1);
+}
+
+.gt-changes-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--gt-space-1) var(--gt-space-2);
+  font-size: var(--gt-text-2xs);
+  font-weight: var(--gt-font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  cursor: pointer;
+  user-select: none;
+}
+
+.gt-changes-group-header:hover {
+  background: color-mix(in srgb, var(--bg-soft) 80%, transparent);
+}
+
+.gt-changes-group-title {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
+}
+
+.gt-changes-group-count {
+  font-size: var(--gt-text-2xs);
+  font-weight: var(--gt-font-bold);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  border-radius: var(--gt-radius-lg);
+  min-width: 18px;
+  text-align: center;
+}
+
+.gt-changes-group-list {
+  padding: var(--gt-space-0-5) 0;
+}
+

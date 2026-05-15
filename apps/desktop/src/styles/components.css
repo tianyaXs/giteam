@@ -1,0 +1,220 @@
+/* Primary button style */
+.chip.is-primary {
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  color: #fff;
+  font-weight: var(--gt-font-semibold);
+}
+
+.chip.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 100%, transparent);
+}
+
+.chip.is-primary:disabled {
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+}
+
+/* Danger button style */
+.chip.is-danger {
+  color: var(--danger);
+}
+
+.chip.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+/* Meta chip colors */
+.meta-chip.is-add {
+  background: color-mix(in srgb, var(--add) 72%, transparent);
+  color: #0f8b4c;
+  padding: var(--gt-space-0-5) var(--gt-space-2);
+  font-size: var(--gt-text-xs);
+}
+
+.meta-chip.is-del {
+  background: color-mix(in srgb, var(--del) 72%, transparent);
+  color: var(--danger);
+  padding: var(--gt-space-0-5) var(--gt-space-2);
+  font-size: var(--gt-text-xs);
+}
+
+.gt-worktree-file-main-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-1);
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.gt-changes-pane-head {
+  gap: var(--gt-space-2);
+  min-height: 30px;
+  padding: 0 var(--gt-space-0-5) var(--gt-space-1);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+}
+
+.gt-changes-pane-head .toolbar {
+  flex-wrap: nowrap;
+}
+
+.gt-icon-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  min-width: 24px;
+  padding: 0;
+  font-size: var(--gt-text-2xs);
+}
+
+.gt-icon-chip-svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gt-icon-chip.is-danger {
+  color: var(--danger);
+}
+
+.gt-icon-chip.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.gt-changes-commit-box {
+  display: grid;
+  gap: var(--gt-space-1-5);
+  padding: var(--gt-space-0-5) var(--gt-space-0-5) var(--gt-space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+}
+
+.gt-changes-commit-box .path-input {
+  height: 32px;
+  margin: 0;
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-1-5) var(--gt-space-2-5);
+  font-size: var(--gt-text-sm);
+  background: color-mix(in srgb, var(--bg-panel) 84%, transparent);
+}
+
+.gt-changes-commit-actions {
+  position: relative;
+}
+
+.gt-changes-commit-actions .chip {
+  height: 30px;
+  padding: 0 var(--gt-space-2);
+  font-size: var(--gt-text-sm);
+}
+
+.gt-commit-split-wrap {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  width: 100%;
+}
+
+.gt-commit-main-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gt-space-1-5);
+  width: 100%;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.gt-commit-main-btn.is-loading {
+  cursor: default;
+}
+
+.chip.is-primary.gt-commit-main-btn.is-loading,
+.chip.is-primary.gt-commit-menu-btn.is-loading,
+.chip.is-primary.gt-commit-menu-btn.is-loading:disabled {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  color: #fff;
+}
+
+.gt-btn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #fff;
+  border-radius: var(--gt-radius-pill);
+  animation: gt-spin 0.75s linear infinite;
+}
+
+
+.gt-commit-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid color-mix(in srgb, var(--bg) 32%, transparent);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  line-height: 1;
+}
+
+.chip.is-primary.gt-commit-menu-btn:disabled:not(.is-loading) {
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+}
+
+.gt-commit-chevron {
+  width: 14px;
+  height: 14px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gt-commit-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  min-width: 158px;
+  padding: var(--gt-space-1-5);
+  border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+  border-radius: var(--gt-radius-lg);
+  background: color-mix(in srgb, var(--bg-panel) 96%, var(--bg));
+  box-shadow: var(--gt-shadow-4);
+}
+
+.gt-commit-action-menu button {
+  display: block;
+  width: 100%;
+  padding: var(--gt-space-2) var(--gt-space-2);
+  border-radius: var(--gt-radius-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--gt-text-xs);
+  cursor: pointer;
+}
+
+.gt-commit-action-menu button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.gt-commit-action-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
