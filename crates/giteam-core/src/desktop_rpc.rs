@@ -1811,7 +1811,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         "create_opencode_session" => {
             let repo_path = get_str(&args, "repoPath")?;
             let title = get_str_opt(&args, "title");
-            let result = super::opencode::create_opencode_session(repo_path, title)?;
+            let agent = get_str_opt(&args, "agent");
+            let result = super::opencode::create_opencode_session(repo_path, title, agent, None)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "get_opencode_service_base" => {
@@ -1918,7 +1919,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let prompt = get_str(&args, "prompt")?;
             let parts = args.get("parts").cloned();
             let model = get_str_opt(&args, "model");
-            let result = super::opencode::post_opencode_session_prompt_async(repo_path, session_id, prompt, parts, model)?;
+            let result = super::opencode::post_opencode_session_prompt_async(repo_path, session_id, prompt, parts, model, None, None)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "abort_opencode_session" => {
