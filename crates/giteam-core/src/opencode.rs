@@ -869,6 +869,194 @@ fn dispose_global_state(repo_path: &str, base: &str) {
     );
 }
 
+fn opencode_global_config_file() -> Option<PathBuf> {
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg_config_home.trim();
+        if !p.is_empty() {
+            return Some(PathBuf::from(p).join("opencode").join("opencode.jsonc"));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".config").join("opencode").join("opencode.jsonc"))
+}
+
+fn opencode_project_config_files(repo_path: &str) -> Vec<PathBuf> {
+    let repo = PathBuf::from(repo_path);
+    vec![repo.join("opencode.jsonc"), repo.join("opencode.json")]
+}
+
+fn strip_jsonc_comments(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            continue;
+        }
+        if ch == '/' {
+            match chars.peek().copied() {
+                Some('/') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut prev = '\0';
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            out.push('\n');
+                        }
+                        if prev == '*' && c == '/' {
+                            break;
+                        }
+                        prev = c;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn remove_mcp_from_config_file(path: &Path, name: &str) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let stripped = strip_jsonc_comments(&raw);
+    let mut json: Value = serde_json::from_str(&stripped)
+        .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+    let mut empty_mcp = false;
+    let removed = if let Some(mcp) = json.get_mut("mcp").and_then(|v| v.as_object_mut()) {
+        let did = mcp.remove(name).is_some();
+        empty_mcp = mcp.is_empty();
+        did
+    } else {
+        false
+    };
+    if empty_mcp {
+        if let Some(obj) = json.as_object_mut() {
+            obj.remove("mcp");
+        }
+    }
+    if !removed {
+        return Ok(false);
+    }
+    let next = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("serialize {} failed: {e}", path.display()))?;
+    fs::write(path, format!("{}\n", next))
+        .map_err(|e| format!("write {} failed: {e}", path.display()))?;
+    Ok(true)
+}
+
+fn read_config_file(path: &Path) -> Result<Option<Value>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let stripped = strip_jsonc_comments(&raw);
+    let json: Value = serde_json::from_str(&stripped)
+        .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+    Ok(Some(json))
+}
+
+fn write_config_file(path: &Path, json: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create {} failed: {e}", parent.display()))?;
+    }
+    let next = serde_json::to_string_pretty(json)
+        .map_err(|e| format!("serialize {} failed: {e}", path.display()))?;
+    fs::write(path, format!("{}\n", next))
+        .map_err(|e| format!("write {} failed: {e}", path.display()))
+}
+
+fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<Value, String> {
+    let mut json = read_config_file(path)?.unwrap_or_else(|| {
+        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+    });
+    if !json.is_object() {
+        json = serde_json::json!({ "$schema": "https://opencode.ai/config.json" });
+    }
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| "config root is not an object".to_string())?;
+    if !obj.get("mcp").map(|v| v.is_object()).unwrap_or(false) {
+        obj.insert("mcp".to_string(), Value::Object(Map::new()));
+    }
+    let mcp = obj
+        .get_mut("mcp")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| "mcp config is not an object".to_string())?;
+    mcp.insert(name.to_string(), config);
+    write_config_file(path, &json)?;
+    Ok(json)
+}
+
+fn set_mcp_enabled_in_config_file(path: &Path, name: &str, enabled: bool) -> Result<bool, String> {
+    let Some(mut json) = read_config_file(path)? else {
+        return Ok(false);
+    };
+    let Some(mcp) = json.get_mut("mcp").and_then(|v| v.as_object_mut()) else {
+        return Ok(false);
+    };
+    let Some(node) = mcp.get_mut(name).and_then(|v| v.as_object_mut()) else {
+        return Ok(false);
+    };
+    node.insert("enabled".to_string(), Value::Bool(enabled));
+    write_config_file(path, &json)?;
+    Ok(true)
+}
+
+fn set_mcp_enabled_in_known_config_files(repo_path: &str, name: &str, enabled: bool) -> Result<bool, String> {
+    let mut changed = false;
+    let mut errors = Vec::new();
+    for file in opencode_project_config_files(repo_path) {
+        match set_mcp_enabled_in_config_file(&file, name, enabled) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if let Some(file) = opencode_global_config_file() {
+        match set_mcp_enabled_in_config_file(&file, name, enabled) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if !changed && !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(changed)
+}
+
 fn permission_allow_all_rules() -> Vec<OpencodePermissionRule> {
     vec![OpencodePermissionRule {
         permission: "*".to_string(),
@@ -2886,10 +3074,50 @@ pub fn fetch_skillsmp_ai_search(
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn list_opencode_mcp_status(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
-    with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/mcp").as_str(), None, 12)?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse /mcp failed: {e}"))
-    })
+    let mut out = Map::new();
+    let mut add_config_rows = |cfg: Option<Value>, source: &str| {
+        let Some(mcp) = cfg
+            .as_ref()
+            .and_then(|v| v.get("mcp"))
+            .and_then(|v| v.as_object())
+        else {
+            return;
+        };
+        for (name, node) in mcp {
+            let mut row = out
+                .remove(name)
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            if let Some(obj) = node.as_object() {
+                for (k, v) in obj {
+                    row.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+            let prev_source = row.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let next_source = if prev_source.is_empty() {
+                source.to_string()
+            } else if prev_source == source || prev_source == "both" {
+                prev_source.to_string()
+            } else {
+                "both".to_string()
+            };
+            row.insert("source".to_string(), Value::String(next_source));
+            row.insert("configured".to_string(), Value::Bool(true));
+            row.insert("runtimeKnown".to_string(), Value::Bool(false));
+            row.entry("status".to_string())
+                .or_insert(Value::String("configured".to_string()));
+            out.insert(name.clone(), Value::Object(row));
+        }
+    };
+
+    let project_cfg = opencode_project_config_files(repo_path)
+        .into_iter()
+        .find_map(|path| read_config_file(&path).ok().flatten());
+    let global_cfg = opencode_global_config_file()
+        .and_then(|path| read_config_file(&path).ok().flatten());
+    add_config_rows(project_cfg, "project");
+    add_config_rows(global_cfg, "global");
+    Ok(Value::Object(out))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2903,20 +3131,11 @@ pub fn add_opencode_mcp_server(
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let patch = serde_json::json!({ "mcp": { n: config.clone() } });
-        let _ = run_config_patch(repo_path, base, &patch);
-        let body = serde_json::json!({ "name": n, "config": config }).to_string();
-        let raw = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp").as_str(),
-            Some(body.as_str()),
-            20,
-        )?;
-        dispose_global_state(repo_path, base);
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse add /mcp failed: {e}"))
-    })
+    let project_file = opencode_project_config_files(repo_path)
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from(repo_path).join("opencode.jsonc"));
+    upsert_mcp_to_config_file(&project_file, n, config)
 }
 
 fn post_opencode_mcp_action(repo_path: &str, name: &str, action: &str) -> Result<bool, String> {
@@ -2925,26 +3144,64 @@ fn post_opencode_mcp_action(repo_path: &str, name: &str, action: &str) -> Result
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        if action == "connect" || action == "disconnect" {
-            let patch = serde_json::json!({ "mcp": { n: { "enabled": action == "connect" } } });
-            let _ = run_config_patch(repo_path, base, &patch);
-        }
-        let _ = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp/{}/{}", urlencoding::encode(n), action).as_str(),
-            Some("{}"),
-            30,
-        )?;
-        dispose_global_state(repo_path, base);
-        Ok(true)
-    })
+    if action == "disconnect" {
+        return set_mcp_enabled_in_known_config_files(repo_path, n, false);
+    }
+    Err(format!("unsupported mcp action: {action}"))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn connect_opencode_mcp_server(repo_path: &str, name: &str) -> Result<bool, String> {
-    post_opencode_mcp_action(repo_path, name, "connect")
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+
+    let mut found: Option<Value> = None;
+    for file in opencode_project_config_files(repo_path) {
+        if let Some(node) = read_config_file(&file)?
+            .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned())
+        {
+            found = Some(node);
+            break;
+        }
+    }
+    if found.is_none() {
+        if let Some(file) = opencode_global_config_file() {
+            found = read_config_file(&file)?
+                .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned());
+        }
+    }
+
+    let Some(node) = found else {
+        return Err(format!("mcp server not found in opencode config: {n}"));
+    };
+    let typ = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match typ {
+        "local" => {
+            let has_command = node
+                .get("command")
+                .and_then(|v| v.as_array())
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if !has_command {
+                return Err(format!("local MCP {n} requires command[]"));
+            }
+        }
+        "remote" => {
+            let has_url = node
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_url {
+                return Err(format!("remote MCP {n} requires url"));
+            }
+        }
+        other => return Err(format!("MCP {n} has invalid type: {other}")),
+    }
+    Ok(true)
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2959,16 +3216,8 @@ pub fn authenticate_opencode_mcp_server(repo_path: &str, name: &str) -> Result<V
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let raw = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp/{}/auth/authenticate", urlencoding::encode(n)).as_str(),
-            Some("{}"),
-            90,
-        )?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse mcp auth failed: {e}"))
-    })
+    let out = run_opencode(&["mcp", "auth", n], repo_path)?;
+    Ok(serde_json::json!({ "ok": true, "output": out }))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2978,17 +3227,80 @@ pub fn remove_opencode_mcp_auth(repo_path: &str, name: &str) -> Result<bool, Str
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let _ = run_curl_json(
-            repo_path,
-            "DELETE",
-            format!("{base}/mcp/{}/auth", urlencoding::encode(n)).as_str(),
-            None,
-            20,
-        )?;
-        dispose_global_state(repo_path, base);
-        Ok(true)
-    })
+    let _ = run_opencode(&["mcp", "logout", n], repo_path)?;
+    Ok(true)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn delete_opencode_mcp_server(repo_path: &str, name: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    let mut project_deleted = false;
+    let mut global_deleted = false;
+    let mut checked: Vec<String> = Vec::new();
+    let mut deleted_from: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for file in opencode_project_config_files(repo_path) {
+        checked.push(file.display().to_string());
+        match remove_mcp_from_config_file(&file, n) {
+            Ok(true) => {
+                project_deleted = true;
+                deleted_from.push(file.display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if let Some(global_file) = opencode_global_config_file() {
+        checked.push(global_file.display().to_string());
+        match remove_mcp_from_config_file(&global_file, n) {
+            Ok(true) => {
+                global_deleted = true;
+                deleted_from.push(global_file.display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+
+    let still_present: Vec<String> = checked
+        .iter()
+        .filter_map(|p| {
+            let path = PathBuf::from(p);
+            let has_mcp = read_config_file(&path)
+                .ok()
+                .flatten()
+                .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned())
+                .is_some();
+            if has_mcp { Some(p.clone()) } else { None }
+        })
+        .collect();
+
+    let ok = project_deleted || global_deleted;
+    if !still_present.is_empty() {
+        return Err(format!(
+            "MCP {n} 删除后仍存在于配置文件:\n{}",
+            still_present.join("\n")
+        ));
+    }
+    if !ok && !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(serde_json::json!({
+        "ok": ok,
+        "projectDeleted": project_deleted,
+        "globalDeleted": global_deleted,
+        "projectFileDeleted": project_deleted,
+        "globalFileDeleted": global_deleted,
+        "checked": checked,
+        "deletedFrom": deleted_from,
+        "errors": errors,
+        "message": if ok { "deleted from opencode config file" } else { "not found in opencode config files" }
+    }))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]

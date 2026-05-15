@@ -324,7 +324,15 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
               <button className="gt-question-btn gt-question-btn-primary" onClick={handleSubmitAll}>
                 提交
               </button>
-            ) : singleQuestion ? null : (
+            ) : singleQuestion ? (
+              <button
+                className="gt-question-btn gt-question-btn-primary"
+                onClick={handleSubmitAll}
+                disabled={(answers[0] || []).length === 0}
+              >
+                提交
+              </button>
+            ) : (
               <button
                 className="gt-question-btn gt-question-btn-primary"
                 onClick={() => {

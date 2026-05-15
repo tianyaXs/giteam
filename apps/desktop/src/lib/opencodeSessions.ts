@@ -22,6 +22,7 @@ export type OpencodeSessionSummary = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  archivedAt?: number;
 };
 
 export type OpencodeSessionMessage = {
