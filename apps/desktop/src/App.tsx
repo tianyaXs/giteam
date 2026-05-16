@@ -8874,12 +8874,16 @@ export function App() {
   const sideBar = (
     <div className="wb-sidebar-inner gt-sidebar-inner">
       <div className="gt-sidebar-top">
-        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSessionForSidebar()} disabled={repos.length === 0 || !runtimeStatus.opencode.installed}>
-          <div className="gt-new-session-main">
-            <span className="gt-new-session-icon"><EditIcon /></span>
-            <span className="gt-new-session-label">New Session</span>
+        <button
+          className="gt-new-session-btn flex items-center gap-2 px-row-x py-row-y h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group"
+          onClick={() => void createAndSwitchOpencodeSessionForSidebar()}
+          disabled={repos.length === 0 || !runtimeStatus.opencode.installed}
+        >
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <span className="inline-flex items-center justify-center w-5 h-5 shrink-0 opacity-90"><EditIcon /></span>
+            <span className="flex-1 min-w-0 truncate">New Session</span>
           </div>
-          <span className="gt-new-session-kbd" aria-hidden="true"><kbd>⌘N</kbd></span>
+          <span className="gt-new-session-kbd flex shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150" aria-hidden="true"><kbd>⌘N</kbd></span>
         </button>
       </div>
 
@@ -8892,8 +8896,8 @@ export function App() {
             <>
               {pinnedRepos.length > 0 ? (
                 <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header">
-                    <span className="gt-sidebar-section-title">Pinned</span>
+                  <div className="gt-sidebar-section-header group/projects-section-header flex items-center justify-between px-row-x h-token-nav-row">
+                    <span className="gt-sidebar-section-title text-sm text-token-muted-foreground select-none">Pinned</span>
                   </div>
                   <div className="gt-sidebar-project-list">
                     {pinnedRepos.map((repo) => {
@@ -8906,7 +8910,7 @@ export function App() {
                       return (
                         <div key={repo.id} className="gt-sidebar-project-wrap">
                           <div
-                            className={selectedRepo?.id === repo.id ? "gt-sidebar-project-row active" : "gt-sidebar-project-row"}
+                            className={`gt-sidebar-project-row flex items-center gap-2 px-row-x h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction select-none relative group ${selectedRepo?.id === repo.id ? 'active' : ''}`}
                             title={repo.path}
                             onClick={() => {
                               if (busy) return;
@@ -8921,7 +8925,7 @@ export function App() {
                             }}
                           >
                             <span className="gt-sidebar-project-icon"><PinIcon /></span>
-                            <span className="gt-sidebar-project-name">{repo.name}</span>
+                            <span className="gt-sidebar-project-name flex-1 min-w-0 truncate">{repo.name}</span>
                             <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
                             <button
                               className="gt-sidebar-project-pin active"
@@ -8937,8 +8941,8 @@ export function App() {
                           {shouldRenderChildren ? (
                             <div className="gt-sidebar-project-children">
                               {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title">New Session</span>
+                                <button className="gt-session-item active gt-session-item-draft flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group" onClick={() => opencodeInputRef.current?.focus()}>
+                                  <span className="gt-session-title flex-1 min-w-0 truncate">New Session</span>
                                 </button>
                               ) : null}
                               {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
@@ -8953,7 +8957,7 @@ export function App() {
                                 ? repoSessions.map((session) => (
                                     <button
                                       key={`left-session-${session.id}`}
-                                      className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                                      className={`gt-session-item flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group ${session.id === activeOpencodeSessionId ? 'active' : ''}`}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
@@ -8994,15 +8998,15 @@ export function App() {
                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
                                       }}
                                     >
-                                      <span className="gt-session-title">{session.title}</span>
+                                      <span className="gt-session-title flex-1 min-w-0 truncate">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
+                                        <span className="gt-session-time shrink-0">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
                                       ) : null}
                                     </button>
                                   ))
                                 : null}
                               {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
+                                <button className="gt-load-more-btn flex items-center gap-1.5 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction text-left disabled:opacity-50" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
                                   <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
                                   <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
                                 </button>
@@ -9017,11 +9021,11 @@ export function App() {
               ) : null}
               {repos.length > 0 ? (
                 <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header">
-                    <span className="gt-sidebar-section-title">Projects</span>
-                    <div className="gt-sidebar-actions">
+                  <div className="gt-sidebar-section-header group/projects-section-header flex items-center justify-between px-row-x h-token-nav-row">
+                    <span className="gt-sidebar-section-title text-sm text-token-muted-foreground select-none">Projects</span>
+                    <div className="gt-sidebar-actions flex items-center gap-0.5 opacity-0 group-hover/projects-section-header:opacity-100 pointer-events-none group-hover/projects-section-header:pointer-events-auto transition-opacity duration-150">
                       <button
-                        className="gt-sidebar-action-btn"
+                        className="gt-sidebar-action-btn inline-flex items-center justify-center w-5 h-5 p-0 border-0 rounded-md bg-transparent text-token-muted-foreground text-sm cursor-interaction hover:bg-token-list-hover-background hover:text-token-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                         title="Open Workspace"
                         onClick={() => void pickAndImportRepository()}
                         disabled={busy}
@@ -9041,7 +9045,7 @@ export function App() {
                       return (
                         <div key={repo.id} className="gt-sidebar-project-wrap">
                           <div
-                            className={selectedRepo?.id === repo.id ? "gt-sidebar-project-row active" : "gt-sidebar-project-row"}
+                            className={`gt-sidebar-project-row flex items-center gap-2 px-row-x h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction select-none relative group ${selectedRepo?.id === repo.id ? 'active' : ''}`}
                             title={repo.path}
                             onClick={() => {
                               if (busy) return;
@@ -9056,7 +9060,7 @@ export function App() {
                             }}
                           >
                             <span className="gt-sidebar-project-icon"><FolderIcon /></span>
-                            <span className="gt-sidebar-project-name">{repo.name}</span>
+                            <span className="gt-sidebar-project-name flex-1 min-w-0 truncate">{repo.name}</span>
                             <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
                             <button
                               className="gt-sidebar-project-pin"
@@ -9072,8 +9076,8 @@ export function App() {
                           {shouldRenderChildren ? (
                             <div className="gt-sidebar-project-children">
                               {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title">New Session</span>
+                                <button className="gt-session-item active gt-session-item-draft flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group" onClick={() => opencodeInputRef.current?.focus()}>
+                                  <span className="gt-session-title flex-1 min-w-0 truncate">New Session</span>
                                 </button>
                               ) : null}
                               {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
@@ -9088,7 +9092,7 @@ export function App() {
                                 ? repoSessions.map((session) => (
                                     <button
                                       key={`left-session-${session.id}`}
-                                      className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                                      className={`gt-session-item flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group ${session.id === activeOpencodeSessionId ? 'active' : ''}`}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
@@ -9129,15 +9133,15 @@ export function App() {
                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
                                       }}
                                     >
-                                      <span className="gt-session-title">{session.title}</span>
+                                      <span className="gt-session-title flex-1 min-w-0 truncate">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
+                                        <span className="gt-session-time shrink-0">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
                                       ) : null}
                                     </button>
                                   ))
                                 : null}
                               {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
+                                <button className="gt-load-more-btn flex items-center gap-1.5 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction text-left disabled:opacity-50" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
                                   <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
                                   <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
                                 </button>
@@ -9155,16 +9159,16 @@ export function App() {
         })()}
       </div>
 
-      <div className="gt-sidebar-footer">
-        <div className="gt-user-row">
-          <div className="gt-user-main">
+      <div className="gt-sidebar-footer mt-auto pt-4">
+        <div className="gt-user-row flex items-center justify-between gap-2 px-row-x py-1.5 rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction">
+          <div className="gt-user-main flex items-center gap-2 min-w-0">
             <span className="gt-user-avatar">{firstLetter(gitUserIdentity.name || gitUserIdentity.email || selectedRepo?.name || "g")}</span>
             <span className="gt-user-meta">
               <strong>{gitUserIdentity.name || "Git User"}</strong>
               <small>{gitUserIdentity.email || "No git email configured"}</small>
             </span>
           </div>
-          <button className="gt-user-settings" title="Settings" onClick={() => setShowSettings(true)} aria-label="Settings">
+          <button className="gt-user-settings inline-flex items-center justify-center w-6 h-6 rounded-lg text-token-muted-foreground cursor-interaction hover:bg-token-list-hover-background hover:text-token-foreground" title="Settings" onClick={() => setShowSettings(true)} aria-label="Settings">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Z" fill="none" stroke="currentColor" strokeWidth="1.55" />
               <path d="M19 13.2v-2.4l-1.9-.34a5.7 5.7 0 0 0-.47-1.13l1.1-1.57-1.7-1.7-1.57 1.1c-.36-.2-.74-.36-1.14-.47L13 4.8h-2.4l-.34 1.89c-.4.11-.78.27-1.14.47l-1.57-1.1-1.7 1.7 1.1 1.57c-.2.36-.36.74-.47 1.13L4.6 10.8v2.4l1.88.34c.11.39.27.77.47 1.13l-1.1 1.57 1.7 1.7 1.57-1.1c.36.2.74.36 1.14.47l.34 1.89H13l.33-1.89c.4-.11.78-.27 1.14-.47l1.57 1.1 1.7-1.7-1.1-1.57c.2-.36.36-.74.47-1.13L19 13.2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />

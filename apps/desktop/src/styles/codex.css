@@ -1,0 +1,253 @@
+/* === Codex Design Tokens (extracted from DOM) === */
+:root {
+  --token-foreground: var(--text);
+  --token-description-foreground: var(--muted);
+  --token-muted-foreground: var(--muted);
+  --token-input-placeholder-foreground: var(--muted);
+  --token-list-hover-background: var(--gt-hover-ultra-light);
+  --token-border: var(--line);
+  --token-nav-row-height: 28px;
+  --token-row-x: 8px;
+  --token-row-y: 2px;
+}
+
+/* === Layout === */
+.h-token-nav-row { height: var(--token-nav-row-height); }
+.px-row-x { padding-left: var(--token-row-x); padding-right: var(--token-row-x); }
+.py-row-y { padding-top: var(--token-row-y); padding-bottom: var(--token-row-y); }
+
+.gap-px { gap: 1px; }
+.gap-1 { gap: 4px; }
+.gap-1\.5 { gap: 6px; }
+.gap-2 { gap: 8px; }
+.gap-4 { gap: 16px; }
+
+.rounded-lg { border-radius: 8px; }
+.rounded-md { border-radius: 6px; }
+.rounded-full { border-radius: 999px; }
+
+/* === Color / Token === */
+.text-token-foreground { color: var(--token-foreground); }
+.text-token-description-foreground { color: var(--token-description-foreground); }
+.text-token-muted-foreground { color: var(--token-muted-foreground); }
+.text-token-input-placeholder-foreground { color: var(--token-input-placeholder-foreground); }
+
+.hover\:text-token-foreground:hover { color: var(--token-foreground); }
+.hover\:bg-token-list-hover-background:hover { background: var(--token-list-hover-background); }
+
+.border-token-border { border-color: var(--token-border); }
+.focus-visible\:outline-token-border:focus-visible { outline: 2px solid var(--token-border); outline-offset: 2px; }
+
+/* === Icon sizing === */
+.icon-xs { width: 20px; height: 20px; }
+.icon-2xs { width: 16px; height: 16px; }
+.icon-sm { width: 18px; height: 18px; }
+
+/* === Interaction === */
+.cursor-interaction { cursor: pointer; }
+
+.group { position: relative; }
+
+.group:hover .group-hover\:opacity-0,
+.group:focus-within .group-hover\:opacity-0 {
+  opacity: 0;
+}
+
+.group:hover .group-hover\:opacity-100,
+.group:focus-within .group-hover\:opacity-100 {
+  opacity: 1;
+}
+
+.group:hover .group-hover\:pointer-events-auto,
+.group:focus-within .group-hover\:pointer-events-auto {
+  pointer-events: auto;
+}
+
+.group:hover .group-hover\:flex,
+.group:focus-within .group-hover\:flex {
+  display: flex;
+}
+
+/* Named group variants */
+.group\/folder-row:hover .group-hover\/folder-row\:opacity-0,
+.group\/folder-row:focus-within .group-hover\/folder-row\:opacity-0 {
+  opacity: 0;
+}
+
+.group\/folder-row:hover .group-hover\/folder-row\:opacity-100,
+.group\/folder-row:focus-within .group-hover\/folder-row\:opacity-100 {
+  opacity: 1;
+}
+
+.group\/section-toggle:hover .group-hover\/section-toggle\:opacity-100,
+.group\/section-toggle:focus-within .group-hover\/section-toggle\:opacity-100 {
+  opacity: 1;
+}
+
+.group\/projects-section-header:hover .group-hover\/projects-section-header\:opacity-100,
+.group\/projects-section-header:focus-within .group-hover\/projects-section-header\:opacity-100 {
+  opacity: 1;
+}
+
+.group\/projects-section-header:hover .group-hover\/projects-section-header\:pointer-events-auto,
+.group\/projects-section-header:focus-within .group-hover\/projects-section-header\:pointer-events-auto {
+  pointer-events: auto;
+}
+
+.focus-visible\:outline:focus-visible { outline: 2px solid transparent; outline-offset: 2px; }
+.focus-visible\:outline-2:focus-visible { outline-width: 2px; }
+.focus-visible\:outline-offset-2:focus-visible { outline-offset: 2px; }
+.focus-visible\:outline-offset-\[-2px\]:focus-visible { outline-offset: -2px; }
+
+.focus-visible\:opacity-100:focus-visible { opacity: 1; }
+
+.disabled\:cursor-not-allowed:disabled { cursor: not-allowed; }
+.disabled\:opacity-50:disabled { opacity: 0.5; }
+.disabled\:opacity-40:disabled { opacity: 0.4; }
+
+/* === Typography === */
+.text-sm { font-size: 14px; line-height: 20px; }
+.text-base { font-size: 16px; line-height: 24px; }
+.leading-4 { line-height: 16px; }
+.leading-5 { line-height: 20px; }
+.leading-\[18px\] { line-height: 18px; }
+.leading-none { line-height: 1; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.whitespace-nowrap { white-space: nowrap; }
+
+/* === Flexbox === */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1 1 0%; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.justify-end { justify-content: flex-end; }
+.shrink-0 { flex-shrink: 0; }
+.min-w-0 { min-width: 0; }
+.min-h-0 { min-height: 0; }
+
+/* === Position === */
+.relative { position: relative; }
+.absolute { position: absolute; }
+.inset-0 { inset: 0; }
+.top-0 { top: 0; }
+.right-0 { right: 0; }
+.bottom-0 { bottom: 0; }
+.z-10 { z-index: 10; }
+.z-20 { z-index: 20; }
+
+/* === Overflow === */
+.overflow-hidden { overflow: hidden; }
+.overflow-visible { overflow: visible; }
+.overflow-x-hidden { overflow-x: hidden; }
+.overflow-y-auto { overflow-y: auto; }
+
+/* === Misc === */
+.select-none { user-select: none; }
+.user-select-none { user-select: none; }
+.opacity-0 { opacity: 0; }
+.opacity-50 { opacity: 0.5; }
+.opacity-70 { opacity: 0.7; }
+.opacity-75 { opacity: 0.75; }
+.pointer-events-auto { pointer-events: auto; }
+.pointer-events-none { pointer-events: none; }
+.transition-transform { transition-property: transform; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+.transition-opacity { transition-property: opacity; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+
+/* === Width / Height === */
+.w-full { width: 100%; }
+.w-4 { width: 16px; }
+.w-5 { width: 20px; }
+.w-6 { width: 24px; }
+.w-px { width: 1px; }
+.min-w-\[26px\] { min-width: 26px; }
+.h-full { height: 100%; }
+.h-5 { height: 20px; }
+.h-6 { height: 24px; }
+
+/* === Padding === */
+.p-0\.5 { padding: 2px; }
+.pb-2 { padding-bottom: 8px; }
+.pl-0\.5 { padding-left: 2px; }
+.pl-1 { padding-left: 4px; }
+.pl-2 { padding-left: 8px; }
+.pr-0 { padding-right: 0; }
+.pr-0\.5 { padding-right: 2px; }
+.pr-1 { padding-right: 4px; }
+.pt-0\.5 { padding-top: 2px; }
+.pt-4 { padding-top: 16px; }
+.px-2 { padding-left: 8px; padding-right: 8px; }
+.px-8 { padding-left: 32px; padding-right: 32px; }
+.py-0\.5 { padding-top: 2px; padding-bottom: 2px; }
+.py-1 { padding-top: 4px; padding-bottom: 4px; }
+
+/* === Margin === */
+.ml-1 { margin-left: 4px; }
+.ml-1\.5 { margin-left: 6px; }
+.ml-\[3px\] { margin-left: 3px; }
+.mr-0\.5 { margin-right: 2px; }
+.mt-auto { margin-top: auto; }
+.m-auto { margin: auto; }
+.-ml-2 { margin-left: -8px; }
+
+/* === Text align === */
+.text-left { text-align: left; }
+.text-right { text-align: right; }
+
+/* === Self align === */
+.self-stretch { align-self: stretch; }
+
+/* === Content after pseudo-element === */
+.after\:block::after { content: ""; display: block; }
+.after\:h-px::after { height: 1px; }
+.after\:content-empty::after { content: ""; }
+.last\:after\:hidden:last-child::after { display: none; }
+
+/* === Empty === */
+.empty\:hidden:empty { display: none; }
+
+/* === Background gradient === */
+.bg-gradient-to-b { background-image: linear-gradient(to bottom, var(--tw-gradient-stops)); }
+.from-transparent { --tw-gradient-from: transparent; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
+.to-transparent { --tw-gradient-to: transparent; }
+.via-token-foreground\/25 { --tw-gradient-stops: var(--tw-gradient-from), color-mix(in srgb, var(--token-foreground) 25%, transparent), var(--tw-gradient-to); }
+
+/* === Screen reader only === */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
+
+/* === Vertical scroll fade mask === */
+.vertical-scroll-fade-mask { mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%); }
+
+/* === Isolate === */
+.isolate { isolation: isolate; }
+
+/* === Touch === */
+.touch-none { touch-action: none; }
+
+/* === Rotate === */
+.rotate-0 { transform: rotate(0deg); }
+.-rotate-90 { transform: rotate(-90deg); }
+.translate-x-2 { transform: translateX(8px); }
+
+/* === Active cursor === */
+.active\:cursor-grabbing:active { cursor: grabbing; }
+.active\:cursor-col-resize:active { cursor: col-resize; }
+
+/* === Data state open === */
+.data-\[state\=open\]\:bg-token-list-hover-background[data-state="open"] { background: var(--token-list-hover-background); }
+.data-\[state\=open\]\:bg-transparent[data-state="open"] { background: transparent; }
+
+/* === Has data-state open === */
+.has-\[\[data-state\=open\]\]\:opacity-100:has([data-state="open"]) { opacity: 1; }
+.has-\[\[data-state\=open\]\]\:pointer-events-auto:has([data-state="open"]) { pointer-events: auto; }
+
+/* === Group active === */
+.group:active .group-active\:opacity-100 { opacity: 1; }
+
+/* === Outline hidden === */
+.outline-hidden { outline: 2px solid transparent; outline-offset: 2px; }
+
+/* === No drag === */
+.no-drag { -webkit-user-drag: none; user-drag: none; }
