@@ -889,10 +889,10 @@
 
 .gt-mcp-config-card {
   width: min(560px, 100%);
-  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: var(--bg-elev);
-  box-shadow: var(--gt-shadow-4);
+  border: var(--gt-border-0-5) solid var(--gt-glass-border);
+  border-radius: var(--gt-radius-3xl);
+  background: var(--gt-glass-bg);
+  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
   padding: var(--gt-space-4);
   display: grid;
   gap: var(--gt-space-3-5);
@@ -1515,12 +1515,12 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
-  border-radius: var(--gt-radius-lg);
+  border: var(--gt-border-0-5) solid var(--gt-glass-border);
+  border-radius: var(--gt-radius-3xl);
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 34%),
-    color-mix(in srgb, var(--bg-panel) 98%, transparent);
-  box-shadow: var(--gt-shadow-4);
+    var(--gt-glass-bg);
+  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
 }
 
 .gt-mcp-custom-add-head,
@@ -1530,7 +1530,7 @@
   justify-content: space-between;
   gap: var(--gt-space-3);
   padding: var(--gt-space-4) var(--gt-space-5);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 54%, transparent);
+  border-bottom: var(--gt-border-0-5) solid var(--gt-glass-border);
 }
 
 .gt-mcp-custom-add-head > div {

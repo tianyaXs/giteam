@@ -41,7 +41,28 @@
   --gt-radius-sm: 3px;
   --gt-radius-md: 5px;
   --gt-radius-lg: 7px;
+  --gt-radius-xl: 12px;
+  --gt-radius-2xl: 16px;
+  --gt-radius-3xl: 24px;
   --gt-radius-pill: 999px;
+
+  /* Backdrop blur */
+  --gt-backdrop-sm: blur(4px);
+  --gt-backdrop-md: blur(8px);
+  --gt-backdrop-lg: blur(12px);
+  --gt-backdrop-xl: blur(20px);
+
+  /* Ultra-thin borders */
+  --gt-border-0-5: 0.5px;
+
+  /* Glass surfaces */
+  --gt-glass-bg: rgba(30, 30, 30, 0.85);
+  --gt-glass-border: rgba(255, 255, 255, 0.08);
+  --gt-glass-highlight: rgba(255, 255, 255, 0.04);
+
+  /* Ultra-light hover / active overlays */
+  --gt-hover-ultra-light: rgba(255, 255, 255, 0.05);
+  --gt-active-ultra-light: rgba(255, 255, 255, 0.08);
 
   /* Typography: Size */
   --gt-text-2xs: 10px;
@@ -123,6 +144,15 @@
   --danger: #c2364f;
   --add: #dcf6e3;
   --del: #ffe1e6;
+
+  /* Glass surfaces (Light overrides) */
+  --gt-glass-bg: rgba(255, 255, 255, 0.82);
+  --gt-glass-border: rgba(0, 0, 0, 0.06);
+  --gt-glass-highlight: rgba(0, 0, 0, 0.03);
+
+  /* Ultra-light hover / active overlays (Light overrides) */
+  --gt-hover-ultra-light: rgba(0, 0, 0, 0.04);
+  --gt-active-ultra-light: rgba(0, 0, 0, 0.07);
 
   /* Elevation: Shadows (Light overrides) */
   --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);

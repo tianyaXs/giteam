@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CloseIcon } from "../../components/icons";
 import {
   convertToOpencodeMcpConfig,
   filterByCategory,
@@ -177,7 +178,7 @@ export function McpMarketplace({ servers, configuredMcps = [], onAddMcp }: McpMa
           <div className="gt-mcp-config-card">
             <div className="gt-mcp-config-head">
               <div><span className="gt-module-kicker">configure mcp</span><strong>{configServer.display_name}</strong></div>
-              <button type="button" className="gt-icon-chip" onClick={() => setConfigServer(null)}>×</button>
+              <button type="button" className="gt-icon-chip" onClick={() => setConfigServer(null)}><CloseIcon /></button>
             </div>
             <p>填写连接所需参数后再添加到 OpenCode 配置。</p>
             <div className="gt-mcp-config-fields">

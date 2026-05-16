@@ -1,10 +1,11 @@
-/* Modal */
+/* Modal — Codex glassmorphism style */
 .mcp-marketplace-modal {
   position: fixed;
   inset: 0;
   z-index: 400;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(6px);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: var(--gt-backdrop-xl);
+  -webkit-backdrop-filter: var(--gt-backdrop-xl);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -15,10 +16,10 @@
   width: 100%;
   max-width: 720px;
   max-height: 85vh;
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: var(--gt-radius-lg);
-  box-shadow: var(--gt-shadow-4);
+  background: var(--gt-glass-bg);
+  border: var(--gt-border-0-5) solid var(--gt-glass-border);
+  border-radius: var(--gt-radius-3xl);
+  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -29,8 +30,8 @@
   align-items: flex-start;
   justify-content: space-between;
   padding: var(--gt-space-6) 28px var(--gt-space-4);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent);
+  border-bottom: var(--gt-border-0-5) solid var(--gt-glass-border);
+  background: linear-gradient(180deg, var(--gt-glass-highlight), transparent);
 }
 
 .mcp-modal-header h2 {
@@ -76,11 +77,10 @@
 .mcp-modal-close {
   width: 36px;
   height: 36px;
-  border-radius: var(--gt-radius-lg);
-  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  border-radius: var(--gt-radius-xl);
+  border: var(--gt-border-0-5) solid var(--gt-glass-border);
+  background: transparent;
   color: var(--muted);
-  font-size: var(--gt-text-xl);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -89,8 +89,9 @@
 }
 
 .mcp-modal-close:hover {
-  background: color-mix(in srgb, var(--danger) 15%, var(--bg));
-  color: var(--danger);
+  background: var(--gt-hover-ultra-light);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--line) 50%, transparent);
 }
 
 .mcp-modal-body {
@@ -140,10 +141,10 @@
 }
 
 .mcp-modal-section {
-  border: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
-  border-radius: var(--gt-radius-lg);
+  border: var(--gt-border-0-5) solid var(--gt-glass-border);
+  border-radius: var(--gt-radius-xl);
   padding: var(--gt-space-4);
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  background: var(--gt-glass-highlight);
 }
 
 .mcp-modal-section h4 {
@@ -354,8 +355,8 @@
   display: flex;
   gap: var(--gt-space-3);
   padding: var(--gt-space-4) 28px var(--gt-space-6);
-  border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
-  background: color-mix(in srgb, var(--bg) 40%, transparent);
+  border-top: var(--gt-border-0-5) solid var(--gt-glass-border);
+  background: linear-gradient(0deg, var(--gt-glass-highlight), transparent);
 }
 
 .mcp-modal-add-btn {

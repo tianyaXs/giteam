@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CheckIcon, PlusIcon, RefreshIcon, MinusIcon } from "../../components/icons";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
 
 type RightModuleKey = "changes" | "worktree" | "terminal" | "skills" | "mcp";
@@ -179,9 +180,9 @@ type SettingsSection = {
 function FontSizeStepper(props: { value: number; min: number; max: number; onChange: (value: number) => void }) {
   return (
     <div className="settings-stepper">
-      <button className="chip" type="button" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}>−</button>
+      <button className="chip" type="button" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}><MinusIcon /></button>
       <span>{props.value}</span>
-      <button className="chip" type="button" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}>＋</button>
+      <button className="chip" type="button" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}><PlusIcon /></button>
     </div>
   );
 }
@@ -237,7 +238,7 @@ function LanguagePicker(props: { value: GeneralSettingsDraft["language"]; system
               }}
             >
               <span>{labelFor(option)}</span>
-              {props.value === option.value ? <span aria-hidden="true">✓</span> : null}
+              {props.value === option.value ? <span aria-hidden="true"><CheckIcon width={16} height={16} /></span> : null}
             </button>
           ))}
         </div>
@@ -594,11 +595,11 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 {active.description ? <p>{active.description}</p> : null}
               </div>
               {active.id === "plugins" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>↻</button>
+                <button className="gt-icon-chip" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}><RefreshIcon /></button>
               ) : active.id === "skillsmp" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>↻</button>
+                <button className="gt-icon-chip" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}><RefreshIcon /></button>
               ) : active.id === "mcp" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>↻</button>
+                <button className="gt-icon-chip" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}><RefreshIcon /></button>
               ) : null}
             </div>
 
