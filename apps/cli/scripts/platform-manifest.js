@@ -41,7 +41,7 @@ export const platformMatrix = {
     key: 'linux-x64',
     os: 'linux',
     cpu: 'x64',
-    rustTarget: 'x86_64-unknown-linux-gnu',
+    rustTarget: 'x86_64-unknown-linux-musl',
     packageName: 'giteam-linux-x64',
     packageDir: join(cliRoot, 'npm', 'linux-x64'),
     binaryFileName: 'giteam'

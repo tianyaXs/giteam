@@ -3075,13 +3075,18 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
     let dist_dir = if let Some(d) = dist {
         d
     } else {
-        // Try to find dist-web relative to the binary or current directory
-        let candidates = [
+        // Prefer the npm launcher-provided path, then fall back to local dev paths.
+        let mut candidates = Vec::new();
+        if let Some(env_dist) = std::env::var_os("GITEAM_WEB_DIST") {
+            candidates.push(PathBuf::from(env_dist));
+        }
+        candidates.extend([
+            PathBuf::from("web-assets"),
             PathBuf::from("apps/desktop/dist-web"),
             PathBuf::from("dist-web"),
             PathBuf::from("../apps/desktop/dist-web"),
             PathBuf::from("../../apps/desktop/dist-web"),
-        ];
+        ]);
         let mut found = None;
         for candidate in &candidates {
             if candidate.exists() && candidate.join("index.html").exists() {

@@ -29,6 +29,12 @@ giteam --version
 
 ## 快速开始
 
+直接启动 Web UI：
+
+```bash
+npx giteam web
+```
+
 第一次安装后，推荐先跑一遍初始化检查：
 
 ```bash

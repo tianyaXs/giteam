@@ -26,7 +26,8 @@
     "README.md",
     "bin/**/*",
     "scripts/**/*",
-    "npm-src/**/*"
+    "npm-src/**/*",
+    "web-assets/**/*"
   ],
   "engines": {
     "node": ">=18"
@@ -50,8 +51,9 @@
     "build": "cargo build --release",
     "prepare:rust": "node ./scripts/sync-rust-sources.js",
     "prepare:platforms": "node ./scripts/sync-platform-packages.js",
+    "prepare:web": "npm --prefix ../desktop run build:web && node ./scripts/sync-web-assets.js",
     "postinstall": "node ./scripts/postinstall.js",
-    "prepack": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js",
+    "prepack": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js && npm run prepare:web",
     "build:platform": "node ./scripts/build-platform-package.js",
     "pack:platform": "node ./scripts/build-platform-package.js --pack",
     "publish:check": "node ./scripts/publish-packages.js --dry-run",
