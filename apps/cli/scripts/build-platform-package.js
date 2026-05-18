@@ -32,7 +32,7 @@ for (const key of selectedKeys) {
 
   run('cargo', ['build', '--release', '--target', platform.rustTarget]);
 
-  const builtBinary = join(cliRoot, 'target', platform.rustTarget, 'release', 'giteam');
+  const builtBinary = join(cliRoot, 'target', platform.rustTarget, 'release', platform.binaryFileName);
   if (!existsSync(builtBinary)) {
     console.error(`[giteam] built binary not found: ${builtBinary}`);
     process.exit(1);
@@ -42,7 +42,9 @@ for (const key of selectedKeys) {
   const outputBinary = join(outputDir, platform.binaryFileName);
   mkdirSync(outputDir, { recursive: true });
   copyFileSync(builtBinary, outputBinary);
-  chmodSync(outputBinary, 0o755);
+  if (platform.os !== 'win32') {
+    chmodSync(outputBinary, 0o755);
+  }
   console.log(`[giteam] staged ${platform.packageName} -> ${outputBinary}`);
 
   if (shouldPack) {

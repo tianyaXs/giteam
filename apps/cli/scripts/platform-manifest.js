@@ -19,15 +19,6 @@ export const platformMatrix = {
     packageDir: join(cliRoot, 'npm', 'darwin-arm64'),
     binaryFileName: 'giteam'
   },
-  'darwin-x64': {
-    key: 'darwin-x64',
-    os: 'darwin',
-    cpu: 'x64',
-    rustTarget: 'x86_64-apple-darwin',
-    packageName: 'giteam-darwin-x64',
-    packageDir: join(cliRoot, 'npm', 'darwin-x64'),
-    binaryFileName: 'giteam'
-  },
   'linux-arm64': {
     key: 'linux-arm64',
     os: 'linux',
@@ -45,6 +36,15 @@ export const platformMatrix = {
     packageName: 'giteam-linux-x64',
     packageDir: join(cliRoot, 'npm', 'linux-x64'),
     binaryFileName: 'giteam'
+  },
+  'win32-x64': {
+    key: 'win32-x64',
+    os: 'win32',
+    cpu: 'x64',
+    rustTarget: 'x86_64-pc-windows-msvc',
+    packageName: 'giteam-win32-x64',
+    packageDir: join(cliRoot, 'npm', 'win32-x64'),
+    binaryFileName: 'giteam.exe'
   }
 };
 

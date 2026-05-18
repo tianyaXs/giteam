@@ -37,9 +37,9 @@
   },
   "optionalDependencies": {
     "giteam-darwin-arm64": "0.1.22",
-    "giteam-darwin-x64": "0.1.22",
     "giteam-linux-arm64": "0.1.22",
-    "giteam-linux-x64": "0.1.22"
+    "giteam-linux-x64": "0.1.22",
+    "giteam-win32-x64": "0.1.22"
   },
   "scripts": {
     "start": "node ./bin/giteam.js serve",
@@ -59,8 +59,8 @@
     "publish:check": "node ./scripts/publish-packages.js --dry-run",
     "publish:check:local": "node ./scripts/publish-packages.js --dry-run --platform darwin-arm64 --no-root",
     "publish:root:check": "node ./scripts/publish-packages.js --dry-run --root-only --skip-build",
-    "publish:darwin": "node ./scripts/publish-packages.js --platform darwin-arm64 --no-root && node ./scripts/publish-packages.js --platform darwin-x64 --no-root && node ./scripts/publish-packages.js --root-only --skip-build",
-    "publish:darwin:check": "node ./scripts/publish-packages.js --dry-run --platform darwin-arm64 --no-root --skip-build && node ./scripts/publish-packages.js --dry-run --platform darwin-x64 --no-root --skip-build && node ./scripts/publish-packages.js --dry-run --root-only --skip-build",
+    "publish:darwin": "node ./scripts/publish-packages.js --platform darwin-arm64 --no-root && node ./scripts/publish-packages.js --root-only --skip-build",
+    "publish:darwin:check": "node ./scripts/publish-packages.js --dry-run --platform darwin-arm64 --no-root --skip-build && node ./scripts/publish-packages.js --dry-run --root-only --skip-build",
     "prepublish:verify": "node ./scripts/sync-rust-sources.js && node ./scripts/sync-platform-packages.js && cargo check",
     "publish:npm": "node ./scripts/publish-packages.js",
     "prepublishOnly": "npm run prepublish:verify"

@@ -1,7 +1,7 @@
 {
-  "name": "giteam-darwin-x64",
+  "name": "giteam-win32-x64",
   "version": "0.1.22",
-  "description": "Prebuilt darwin/x64 binary for giteam",
+  "description": "Prebuilt win32/x64 binary for giteam",
   "author": "giteam Contributors",
   "type": "module",
   "repository": {
@@ -23,13 +23,13 @@
     "access": "public"
   },
   "os": [
-    "darwin"
+    "win32"
   ],
   "cpu": [
     "x64"
   ],
   "files": [
-    "bin/giteam",
+    "bin/giteam.exe",
     "README.md",
     "package.json"
   ]

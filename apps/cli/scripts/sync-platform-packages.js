@@ -35,7 +35,7 @@ for (const platform of listPlatforms()) {
     },
     os: [platform.os],
     cpu: [platform.cpu],
-    files: ['bin/giteam', 'README.md', 'package.json']
+    files: [`bin/${platform.binaryFileName}`, 'README.md', 'package.json']
   };
   writeFileSync(join(platform.packageDir, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
   writeFileSync(

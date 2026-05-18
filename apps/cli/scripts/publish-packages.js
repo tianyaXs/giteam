@@ -214,12 +214,16 @@ function replaceFirstPackageVersion(lockPath, packageName, nextVersion) {
 function syncPackageLockCliVersion(lockPath, nextVersion) {
   let raw = readFileSync(lockPath, 'utf8');
   raw = raw.replace(/("apps\/cli": \{\n\s+"name": "giteam",\n\s+"version": ")[^"]+(")/, `$1${nextVersion}$2`);
-  for (const platform of listPlatforms()) {
-    raw = raw.replace(
-      new RegExp(`("${escapeRegExp(platform.packageName)}": ")[^"]+(")`),
-      `$1${nextVersion}$2`
-    );
-  }
+  const platformDeps = listPlatforms()
+    .map((platform, index, platforms) => {
+      const suffix = index === platforms.length - 1 ? '' : ',';
+      return `        "${platform.packageName}": "${nextVersion}"${suffix}`;
+    })
+    .join('\n');
+  raw = raw.replace(
+    /("apps\/cli": \{[\s\S]*?"optionalDependencies": \{\n)([\s\S]*?)(\s+\}\n\s+\})/,
+    `$1${platformDeps}\n$3`
+  );
   writeFileSync(lockPath, raw);
 }
 
