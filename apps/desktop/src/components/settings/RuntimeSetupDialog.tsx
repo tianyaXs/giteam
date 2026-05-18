@@ -1,4 +1,3 @@
-import { RefreshIcon } from "../../components/icons";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
 
 type RuntimeSetupDialogProps = {
@@ -108,7 +107,7 @@ export function RuntimeSetupDialog(props: RuntimeSetupDialogProps) {
             disabled={props.runtimeChecking || Boolean(props.installingDep)}
             onClick={props.onRefresh}
           >
-            <span className={props.runtimeChecking ? "refresh-spin" : ""}><RefreshIcon /></span>
+            <span className={props.runtimeChecking ? "refresh-spin" : ""}>↻</span>
           </button>
         </div>
         <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>

@@ -585,11 +585,6 @@
   width: min(520px, 92vw);
   display: grid;
   gap: var(--gt-space-3-5);
-  border: var(--gt-border-0-5) solid var(--gt-glass-border);
-  border-radius: var(--gt-radius-3xl);
-  background: var(--gt-glass-bg);
-  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
-  padding: var(--gt-space-5);
 }
 
 .skillsmp-key-modal-head {

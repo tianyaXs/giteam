@@ -186,23 +186,6 @@ import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
 import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 import rawMcpServers from "../servers.json";
 import { normalizeMcpMarketData } from "./lib/mcpMarket";
-import {
-  ArrowDownIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  CloseIcon,
-  FolderIcon,
-  ImageIcon,
-  MoreHorizontalIcon,
-  PinIcon,
-  PlusIcon,
-  MenuIcon,
-  RefreshIcon,
-  SyncIcon,
-  MinusIcon,
-  EditIcon,
-} from "./components/icons";
 
 const MonacoDiffViewer = lazy(() => import("./components/git/MonacoDiffViewer"));
 const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
@@ -464,21 +447,6 @@ function withLineNumbers(text: string, maxLines = 400): string {
   const width = String(slice.length).length;
   const body = slice.map((l, i) => `${String(i + 1).padStart(width, " ")}│${l}`).join("\n");
   return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
-}
-
-function formatRelativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const m = Math.floor(diff / 60000);
-  const h = Math.floor(diff / 3600000);
-  const d = Math.floor(diff / 86400000);
-  const mo = Math.floor(d / 30);
-  const y = Math.floor(d / 365);
-  if (y > 0) return `${y}y`;
-  if (mo > 0) return `${mo}mo`;
-  if (d > 0) return `${d}d`;
-  if (h > 0) return `${h}h`;
-  if (m > 0) return `${m}m`;
-  return "now";
 }
 
 type OnboardingStep = {
@@ -1195,13 +1163,6 @@ export function App() {
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
-  const [pinnedRepoIds, setPinnedRepoIds] = useState<string[]>(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem("giteam.pinnedRepos") || "[]");
-    } catch {
-      return [];
-    }
-  });
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right" | "changes";
     startX: number;
@@ -2019,7 +1980,7 @@ export function App() {
           </div>
         </div>
         <div className="gt-skill-card-stats">
-          <b><PinIcon width={14} height={14} /> {result.installs}</b>
+          <b>★ {result.installs}</b>
           <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
         </div>
         <button className={isInstallingThisSkill ? "gt-skill-get-btn is-installing" : "gt-skill-get-btn"} type="button" disabled={isInstallingThisSkill || opencodeSkillBusy} onClick={(e) => {
@@ -2406,14 +2367,6 @@ export function App() {
     if (!expanded && runtimeStatus.opencode.installed && !sessionsCached) {
       void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
     }
-  }
-
-  function togglePinnedRepo(repoId: string) {
-    setPinnedRepoIds((prev) => {
-      const next = prev.includes(repoId) ? prev.filter((id) => id !== repoId) : [...prev, repoId];
-      window.localStorage.setItem("giteam.pinnedRepos", JSON.stringify(next));
-      return next;
-    });
   }
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
@@ -8874,302 +8827,164 @@ export function App() {
   const sideBar = (
     <div className="wb-sidebar-inner gt-sidebar-inner">
       <div className="gt-sidebar-top">
-        <button
-          className="gt-new-session-btn flex items-center gap-2 px-row-x py-row-y h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
-          onClick={() => void createAndSwitchOpencodeSessionForSidebar()}
-          disabled={repos.length === 0 || !runtimeStatus.opencode.installed}
-        >
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <span className="inline-flex items-center justify-center w-5 h-5 shrink-0 opacity-90"><EditIcon /></span>
-            <span className="flex-1 min-w-0 truncate">New Session</span>
-          </div>
-          <span className="gt-new-session-kbd flex shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150" aria-hidden="true"><kbd>⌘N</kbd></span>
+        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSessionForSidebar()} disabled={repos.length === 0 || !runtimeStatus.opencode.installed}>
+          <span>＋</span>
+          <span>New Session</span>
         </button>
       </div>
 
       <div className="gt-project-stack">
         {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地工作区。</div> : null}
-        {(() => {
-          const pinnedRepos = repos.filter((r) => pinnedRepoIds.includes(r.id));
-          const otherRepos = repos.filter((r) => !pinnedRepoIds.includes(r.id));
+        {repos.map((repo) => {
+          const expanded = expandedProjectIds.includes(repo.id);
+          const repoSessions = getVisibleRepoSessions(repo.id);
+          const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
+          const repoSessionsLoading = isRepoSessionsLoading(repo.id);
+          const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
+          const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
           return (
-            <>
-              {pinnedRepos.length > 0 ? (
-                <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header group/projects-section-header flex items-center justify-between px-row-x h-6">
-                    <span className="gt-sidebar-section-title text-sm text-token-muted-foreground select-none">Pinned</span>
-                  </div>
-                  <div className="gt-sidebar-project-list">
-                    {pinnedRepos.map((repo) => {
-                      const expanded = expandedProjectIds.includes(repo.id);
-                      const repoSessions = getVisibleRepoSessions(repo.id);
-                      const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
-                      const repoSessionsLoading = isRepoSessionsLoading(repo.id);
-                      const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
-                      const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
-                      return (
-                        <div key={repo.id} className="gt-sidebar-project-wrap">
-                          <div
-                            className={`gt-sidebar-project-row flex items-center gap-2 px-row-x h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction select-none relative group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${selectedRepo?.id === repo.id ? 'active' : ''}`}
-                            title={repo.path}
-                            onClick={() => {
-                              if (busy) return;
-                              setSelectedRepo(repo);
-                              setGitPaneRepo(repo);
-                              toggleRepoSessions(repo);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openRepoContextMenu(e.clientX, e.clientY, repo);
-                            }}
-                          >
-                            <span className="gt-sidebar-project-icon inline-flex items-center justify-center w-5 h-5"><PinIcon /></span>
-                            <span className="gt-sidebar-project-name flex-1 min-w-0 truncate">{repo.name}</span>
-                            <span className={expanded ? "gt-sidebar-project-chevron is-open inline-flex items-center justify-center w-4 h-4" : "gt-sidebar-project-chevron inline-flex items-center justify-center w-4 h-4"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
-                            <button
-                              className="gt-sidebar-project-pin active inline-flex items-center justify-center w-5 h-5 p-0 border-0 rounded-md bg-transparent cursor-interaction"
-                              title="取消置顶"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePinnedRepo(repo.id);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                          </div>
-                          {shouldRenderChildren ? (
-                            <div className="gt-sidebar-project-children">
-                              {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title flex-1 min-w-0 truncate">New Session</span>
-                                </button>
-                              ) : null}
-                              {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-                              {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
-                                <div className="gt-tree-loading" aria-hidden="true">
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row short" />
-                                </div>
-                              ) : null}
-                              {runtimeStatus.opencode.installed
-                                ? repoSessions.map((session) => (
-                                    <button
-                                      key={`left-session-${session.id}`}
-                                      className={`gt-session-item relative flex items-center px-row-x py-row-y pr-10 rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${session.id === activeOpencodeSessionId ? 'active' : ''}`}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
-                                      }}
-                                      onClick={() => {
-                                        pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-                                        setOpencodeSessions((prev) => {
-                                          const hit = prev.findIndex((s) => s.id === session.id);
-                                          if (hit >= 0) {
-                                            return prev.map((s) =>
-                                              s.id === session.id
-                                                ? {
-                                                    ...s,
-                                                    title: session.title,
-                                                    createdAt: session.createdAt,
-                                                    updatedAt: session.updatedAt,
-                                                    loaded: s.loaded
-                                                  }
-                                                : s
-                                            );
-                                          }
-                                          return [
-                                            {
-                                              ...opencodeSessionFromSummary(session),
-                                              loaded: false
-                                            },
-                                            ...prev
-                                          ];
-                                        });
-                                        setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                                        setNewSessionTargetRepoId(repo.id);
-                                        opencodeSessionsRepoIdRef.current = repo.id;
-                                        if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                                        if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                        setDraftOpencodeSession(false);
-                                        setActiveOpencodeSessionId(session.id);
-                                        bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                      }}
-                                    >
-                                      <span className="gt-session-title flex-1 min-w-0 truncate">{session.title}</span>
-                                      {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time absolute right-2 top-1/2 -translate-y-1/2 opacity-100 group-hover:opacity-0 transition-opacity duration-150">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
-                                      ) : null}
-                                    </button>
-                                  ))
-                                : null}
-                              {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn flex items-center gap-1.5 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction text-left disabled:opacity-50 transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
-                                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-                                  <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-              {repos.length > 0 ? (
-                <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header group/projects-section-header flex items-center justify-between px-row-x h-6">
-                    <span className="gt-sidebar-section-title text-sm text-token-muted-foreground select-none">Projects</span>
-                    <div className="gt-sidebar-actions flex items-center gap-0.5 opacity-0 group-hover/projects-section-header:opacity-100 pointer-events-none group-hover/projects-section-header:pointer-events-auto transition-opacity duration-150">
-                      <button
-                        className="gt-sidebar-action-btn inline-flex items-center justify-center w-5 h-5 p-0 border-0 rounded-md bg-transparent text-token-muted-foreground text-sm cursor-interaction hover:bg-token-list-hover-background hover:text-token-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
-                        title="Open Workspace"
-                        onClick={() => void pickAndImportRepository()}
-                        disabled={busy}
-                      >
-                        <PlusIcon />
-                      </button>
+            <div key={repo.id} className="gt-tree-group">
+              <div
+                className="gt-tree-row"
+                title={repo.path}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openRepoContextMenu(e.clientX, e.clientY, repo);
+                }}
+              >
+                <button
+                  className="gt-tree-label"
+                  onClick={() => {
+                    if (busy) return;
+                    toggleRepoSessions(repo);
+                  }}
+                >
+                  {repo.name}
+                  <span className={expanded ? "gt-tree-chevron is-open" : "gt-tree-chevron"} aria-hidden="true" />
+                </button>
+                <button
+                  className="gt-tree-add"
+                  aria-label={`在 ${repo.name} 新建会话`}
+                  title="新建会话"
+                  disabled={!runtimeStatus.opencode.installed}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (busy || !runtimeStatus.opencode.installed) return;
+                    startDraftSessionForRepo(repo);
+                  }}
+                >
+                  ＋
+                </button>
+                <button
+                  className="gt-tree-toggle"
+                  aria-label={expanded ? "收起项目" : "展开项目"}
+                  onClick={() => toggleRepoSessions(repo)}
+                >
+                  <span className="gt-tree-toggle-hit" aria-hidden="true" />
+                </button>
+              </div>
+
+              {shouldRenderChildren ? (
+                <div className="gt-tree-children">
+                  {hasDraftForRepo ? (
+                    <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
+                      <span className="gt-session-title">New Session</span>
+                      <span className="gt-session-meta">待输入，发送第一条消息后创建</span>
+                    </button>
+                  ) : null}
+                  {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
+                  {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
+                    <div className="gt-tree-loading" aria-hidden="true">
+                      <span className="gt-tree-loading-row" />
+                      <span className="gt-tree-loading-row" />
+                      <span className="gt-tree-loading-row short" />
                     </div>
-                  </div>
-                  <div className="gt-sidebar-project-list">
-                    {otherRepos.map((repo) => {
-                      const expanded = expandedProjectIds.includes(repo.id);
-                      const repoSessions = getVisibleRepoSessions(repo.id);
-                      const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
-                      const repoSessionsLoading = isRepoSessionsLoading(repo.id);
-                      const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
-                      const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
-                      return (
-                        <div key={repo.id} className="gt-sidebar-project-wrap">
-                          <div
-                            className={`gt-sidebar-project-row flex items-center gap-2 px-row-x h-token-nav-row rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction select-none relative group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${selectedRepo?.id === repo.id ? 'active' : ''}`}
-                            title={repo.path}
-                            onClick={() => {
-                              if (busy) return;
-                              setSelectedRepo(repo);
-                              setGitPaneRepo(repo);
-                              toggleRepoSessions(repo);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openRepoContextMenu(e.clientX, e.clientY, repo);
-                            }}
-                          >
-                            <span className="gt-sidebar-project-icon inline-flex items-center justify-center w-5 h-5"><FolderIcon /></span>
-                            <span className="gt-sidebar-project-name flex-1 min-w-0 truncate">{repo.name}</span>
-                            <span className={expanded ? "gt-sidebar-project-chevron is-open inline-flex items-center justify-center w-4 h-4" : "gt-sidebar-project-chevron inline-flex items-center justify-center w-4 h-4"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
-                            <button
-                              className="gt-sidebar-project-pin inline-flex items-center justify-center w-5 h-5 p-0 border-0 rounded-md bg-transparent cursor-interaction"
-                              title="置顶"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePinnedRepo(repo.id);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                          </div>
-                          {shouldRenderChildren ? (
-                            <div className="gt-sidebar-project-children">
-                              {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft flex items-center gap-2 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title flex-1 min-w-0 truncate">New Session</span>
-                                </button>
-                              ) : null}
-                              {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-                              {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
-                                <div className="gt-tree-loading" aria-hidden="true">
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row short" />
-                                </div>
-                              ) : null}
-                              {runtimeStatus.opencode.installed
-                                ? repoSessions.map((session) => (
-                                    <button
-                                      key={`left-session-${session.id}`}
-                                      className={`gt-session-item relative flex items-center px-row-x py-row-y pr-10 rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction w-full text-left group transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${session.id === activeOpencodeSessionId ? 'active' : ''}`}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
-                                      }}
-                                      onClick={() => {
-                                        pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-                                        setOpencodeSessions((prev) => {
-                                          const hit = prev.findIndex((s) => s.id === session.id);
-                                          if (hit >= 0) {
-                                            return prev.map((s) =>
-                                              s.id === session.id
-                                                ? {
-                                                    ...s,
-                                                    title: session.title,
-                                                    createdAt: session.createdAt,
-                                                    updatedAt: session.updatedAt,
-                                                    loaded: s.loaded
-                                                  }
-                                                : s
-                                            );
-                                          }
-                                          return [
-                                            {
-                                              ...opencodeSessionFromSummary(session),
-                                              loaded: false
-                                            },
-                                            ...prev
-                                          ];
-                                        });
-                                        setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                                        setNewSessionTargetRepoId(repo.id);
-                                        opencodeSessionsRepoIdRef.current = repo.id;
-                                        if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                                        if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                        setDraftOpencodeSession(false);
-                                        setActiveOpencodeSessionId(session.id);
-                                        bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                      }}
-                                    >
-                                      <span className="gt-session-title flex-1 min-w-0 truncate">{session.title}</span>
-                                      {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time absolute right-2 top-1/2 -translate-y-1/2 opacity-100 group-hover:opacity-0 transition-opacity duration-150">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
-                                      ) : null}
-                                    </button>
-                                  ))
-                                : null}
-                              {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn flex items-center gap-1.5 px-row-x py-row-y rounded-lg text-sm text-token-muted-foreground hover:bg-token-list-hover-background cursor-interaction text-left disabled:opacity-50 transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
-                                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-                                  <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  ) : null}
+                  {runtimeStatus.opencode.installed
+                    ? repoSessions.map((session) => (
+                      <button
+                        key={`left-session-${session.id}`}
+                        className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
+                        }}
+                        onClick={() => {
+                          pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
+                          setOpencodeSessions((prev) => {
+                            const hit = prev.findIndex((s) => s.id === session.id);
+                            if (hit >= 0) {
+                              return prev.map((s) =>
+                                s.id === session.id
+                                  ? {
+                                    ...s,
+                                    title: session.title,
+                                    createdAt: session.createdAt,
+                                    updatedAt: session.updatedAt,
+                                    loaded: s.loaded
+                                  }
+                                  : s
+                              );
+                            }
+                            return [
+                              {
+                                ...opencodeSessionFromSummary(session),
+                                loaded: false
+                              },
+                              ...prev
+                            ];
+                          });
+                          setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+                          setNewSessionTargetRepoId(repo.id);
+                          opencodeSessionsRepoIdRef.current = repo.id;
+                          if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+                          if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+                          setDraftOpencodeSession(false);
+                          setActiveOpencodeSessionId(session.id);
+                          bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
+                        }}
+                      >
+                        <span className="gt-session-title">{session.title}</span>
+                        <span className="gt-session-meta">
+                          {new Date(session.updatedAt).toLocaleDateString([], { month: "2-digit", day: "2-digit" })}
+                          {" · "}
+                          {new Date(session.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </button>
+                    ))
+                    : null}
+                  {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
+                    <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
+                      <span className="gt-load-more-icon" aria-hidden="true">…</span>
+                      <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
-            </>
+            </div>
           );
-        })()}
+        })}
       </div>
 
-      <div className="gt-sidebar-footer mt-auto pt-4">
-        <div className="gt-user-row flex items-center justify-between gap-2 px-row-x py-1.5 rounded-lg text-sm text-token-foreground hover:bg-token-list-hover-background cursor-interaction transition-colors">
-          <div className="gt-user-main flex items-center gap-2 min-w-0">
+      <div className="gt-sidebar-footer">
+        <button className="gt-open-workspace-btn" onClick={() => void pickAndImportRepository()} disabled={busy}>
+          <span>⊕</span>
+          <span>Open Workspace</span>
+        </button>
+
+        <div className="gt-user-row">
+          <div className="gt-user-main">
             <span className="gt-user-avatar">{firstLetter(gitUserIdentity.name || gitUserIdentity.email || selectedRepo?.name || "g")}</span>
             <span className="gt-user-meta">
               <strong>{gitUserIdentity.name || "Git User"}</strong>
               <small>{gitUserIdentity.email || "No git email configured"}</small>
             </span>
           </div>
-          <button className="gt-user-settings inline-flex items-center justify-center w-6 h-6 rounded-lg text-token-muted-foreground cursor-interaction hover:bg-token-list-hover-background hover:text-token-foreground transition-colors focus-visible:outline-token-border focus-visible:outline-2 focus-visible:outline-offset-[-2px]" title="Settings" onClick={() => setShowSettings(true)} aria-label="Settings">
-            <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+          <button className="gt-user-settings" title="Settings" onClick={() => setShowSettings(true)} aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Z" fill="none" stroke="currentColor" strokeWidth="1.55" />
               <path d="M19 13.2v-2.4l-1.9-.34a5.7 5.7 0 0 0-.47-1.13l1.1-1.57-1.7-1.7-1.57 1.1c-.36-.2-.74-.36-1.14-.47L13 4.8h-2.4l-.34 1.89c-.4.11-.78.27-1.14.47l-1.57-1.1-1.7 1.7 1.1 1.57c-.2.36-.36.74-.47 1.13L4.6 10.8v2.4l1.88.34c.11.39.27.77.47 1.13l-1.1 1.57 1.7 1.7 1.57-1.1c.36.2.74.36 1.14.47l.34 1.89H13l.33-1.89c.4-.11.78-.27 1.14-.47l1.57 1.1 1.7-1.7-1.1-1.57c.2-.36.36-.74.47-1.13L19 13.2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
             </svg>
@@ -9378,7 +9193,7 @@ export function App() {
                       <div key={todo.id} className={`gt-opencode-todo-item is-${todo.status}`}>
                         <span className="gt-opencode-todo-item-check" aria-hidden="true">
                           {todo.status === "completed" ? (
-                            <CheckIcon />
+                            "✓"
                           ) : todo.status === "in_progress" ? (
                             <span className="gt-opencode-todo-thinking">
                               <span />
@@ -9454,9 +9269,6 @@ export function App() {
                 }}
               />
             ))}
-            {opencodeMessages.length === 0 && !opencodeSessionLoading ? (
-              <div className="gt-empty-composer-title">What should we build in {selectedRepo?.name || "Giteam"}?</div>
-            ) : null}
             <div className="opencode-composer">
               {opencodeShowJumpLatest ? (
                 <button
@@ -9466,7 +9278,7 @@ export function App() {
                   aria-label="拉到最新"
                   title="拉到最新"
                 >
-                  <ArrowDownIcon />
+                  ↓
                 </button>
               ) : null}
               {opencodeImageAttachments.length > 0 || opencodeMcpPromptRefs.length > 0 ? (
@@ -9483,7 +9295,7 @@ export function App() {
                             onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
                             aria-label="移除图片"
                           >
-                            <CloseIcon width={16} height={16} />
+                            ×
                           </button>
                         </div>
                       ))}
@@ -9499,7 +9311,7 @@ export function App() {
                             onClick={() => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
                             aria-label={`移除 ${name} MCP 引用`}
                           >
-                            <CloseIcon width={14} height={14} />
+                            ×
                           </button>
                         </div>
                       ))}
@@ -9611,7 +9423,7 @@ export function App() {
                       aria-expanded={opencodeAttachmentMenuOpen}
                       title="添加附件"
                     >
-                      <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? <CloseIcon width={16} height={16} /> : <PlusIcon width={16} height={16} />}</span>
+                      <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? "×" : "+"}</span>
                     </button>
                     {opencodeAttachmentMenuOpen ? (
                       <div className="opencode-attachment-menu">
@@ -9623,7 +9435,7 @@ export function App() {
                             opencodeImageInputRef.current?.click();
                           }}
                         >
-                          <span className="opencode-attachment-menu-icon" aria-hidden="true"><ImageIcon width={18} height={18} /></span>
+                          <span className="opencode-attachment-menu-icon" aria-hidden="true">▧</span>
                           <span>上传图片</span>
                         </button>
                       </div>
@@ -9687,7 +9499,7 @@ export function App() {
                               title={agent.title}
                             >
                               <span>{agent.label}</span>
-                              {activeOpencodeAgent === agent.name ? <span className="opencode-model-option-check"><CheckIcon width={16} height={16} /></span> : null}
+                              {activeOpencodeAgent === agent.name ? <span className="opencode-model-option-check">✓</span> : null}
                             </button>
                           ))}
                         </div>
@@ -9734,7 +9546,7 @@ export function App() {
                                           <span className="opencode-model-option-provider">{display.provider || "Provider"}</span>
                                         </span>
                                       </span>
-                                      {m === activeOpencodeModel ? <span className="opencode-model-option-check"><CheckIcon width={16} height={16} /></span> : null}
+                                      {m === activeOpencodeModel ? <span className="opencode-model-option-check">✓</span> : null}
                                     </>
                                   );
                                 })()}
@@ -9769,26 +9581,6 @@ export function App() {
                 </div>
               </div>
             </div>
-            {opencodeMessages.length === 0 && !opencodeSessionLoading && repos.length > 0 ? (
-              <div className="gt-empty-composer-meta">
-                <div className="gt-empty-composer-repo-picker">
-                  {repos.map((repo) => (
-                    <button
-                      key={repo.id}
-                      className={selectedRepo?.id === repo.id ? "gt-empty-composer-repo-chip active" : "gt-empty-composer-repo-chip"}
-                      onClick={() => {
-                        setSelectedRepo(repo);
-                        setGitPaneRepo(repo);
-                        setNewSessionTargetRepoId(repo.id);
-                      }}
-                    >
-                      <span className="gt-empty-composer-repo-icon"><FolderIcon /></span>
-                      <span className="gt-empty-composer-repo-name">{repo.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
           </div>
         </div>
       </div>
@@ -10286,7 +10078,7 @@ branches.forEach((b) => {
                       title={worktreeChangeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
                       onClick={() => void handleToggleStageAll()}
                     >
-                      {worktreeChangeStats.unstaged > 0 ? <PlusIcon /> : <MinusIcon />}
+                      {worktreeChangeStats.unstaged > 0 ? "+" : "−"}
                     </button>
                   ) : null}
                   {worktreeChangeStats.total > 0 ? (
@@ -10326,8 +10118,8 @@ branches.forEach((b) => {
                     >
                       {committing || pushing ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
                       {gitOperationLabel || (commitPrimaryIsSync
-                        ? (pushing ? "Syncing..." : <><SyncIcon width={16} height={16} /> Sync ({worktreeOverview.ahead}/{worktreeOverview.behind})</>)
-                        : <><CheckIcon width={16} height={16} /> Commit ({commitButtonCount})</>)}
+                        ? (pushing ? "Syncing..." : `↕ Sync (${worktreeOverview.ahead}/${worktreeOverview.behind})`)
+                        : `✓ Commit (${commitButtonCount})`)}
                     </button>
                     <button
                       type="button"
@@ -10479,7 +10271,7 @@ branches.forEach((b) => {
         {rightPaneTab === "skills" ? (
           <div className="gt-skill-market-shell">
             <details className="gt-installed-skills-collapsible">
-              <summary><span>已安装 Skills</span><small>{opencodeSkills.length}</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新"><RefreshIcon /></button></summary>
+              <summary><span>已安装 Skills</span><small>{opencodeSkills.length}</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新">↻</button></summary>
               <div className="gt-installed-skill-grid">
                 {opencodeInstalledSkillNodes}
               </div>
@@ -10610,8 +10402,8 @@ branches.forEach((b) => {
               <summary>
                 <span>已安装 MCP Servers</span>
                 <small>{opencodeMcpRows.length}</small>
-                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowMcpAddForm(true); }} title="自定义添加 MCP Server"><PlusIcon /></button>
-                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeMcpStatus(); }} title="刷新" disabled={opencodeMcpLoading}><RefreshIcon /></button>
+                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowMcpAddForm(true); }} title="自定义添加 MCP Server">＋</button>
+                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeMcpStatus(); }} title="刷新" disabled={opencodeMcpLoading}>↻</button>
               </summary>
               {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
               <div className="gt-installed-mcp-grid">
@@ -10667,7 +10459,7 @@ branches.forEach((b) => {
                     <strong>自定义添加 MCP Server</strong>
                     <small>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</small>
                   </div>
-                  <button type="button" className="gt-icon-chip" onClick={() => setShowMcpAddForm(false)} aria-label="关闭自定义添加"><CloseIcon /></button>
+                  <button type="button" className="gt-icon-chip" onClick={() => setShowMcpAddForm(false)} aria-label="关闭自定义添加">×</button>
                 </header>
                 <div className="gt-mcp-custom-add-body">
                   <div className="gt-mcp-custom-add-editor">
@@ -10750,7 +10542,7 @@ branches.forEach((b) => {
                 onClick={() => setTerminalSidebarVisible((v) => !v)}
                 title={terminalSidebarVisible ? "隐藏终端列表" : "显示终端列表"}
               >
-                <MenuIcon />
+                ☰
               </button>
               <span className="gt-terminal-label">zsh</span>
               <div className="gt-terminal-actions">
@@ -10767,7 +10559,7 @@ branches.forEach((b) => {
                 <aside className="gt-terminal-sidebar">
                   <div className="gt-terminal-sidebar-head">
                     <strong>{terminalTabs.length} Terminals</strong>
-                    <button type="button" className="chip" onClick={createTerminalTab} title="新建终端"><PlusIcon /></button>
+                    <button type="button" className="chip" onClick={createTerminalTab} title="新建终端">＋</button>
                   </div>
                   <div className="gt-terminal-sidebar-list">
                     {terminalTabs.map((tab) => (
@@ -10787,7 +10579,7 @@ branches.forEach((b) => {
                             }}
                             aria-hidden="true"
                           >
-                            <CloseIcon width={14} height={14} />
+                            ×
                           </span>
                         ) : null}
                       </button>
@@ -11236,7 +11028,7 @@ branches.forEach((b) => {
         {mobileStatusChangeToast.visible ? (
           <div className="mobile-status-toast" role="status" aria-live="polite">
             <span className={`mobile-status-toast-icon ${mobileStatusChangeToast.message === "Disconnected" ? "disconnected" : "connected"}`}>
-              {mobileStatusChangeToast.message === "Disconnected" ? <CloseIcon width={16} height={16} /> : <CheckIcon width={16} height={16} />}
+              {mobileStatusChangeToast.message === "Disconnected" ? "✕" : "✓"}
             </span>
             <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
           </div>
@@ -11723,7 +11515,7 @@ branches.forEach((b) => {
                   <h3>配置 API Key</h3>
                   <p>关键词搜索可匿名使用；AI 语义搜索和更高额度需要 API Key。</p>
                 </div>
-                <button className="gt-diff-icon-btn" type="button" aria-label="关闭" onClick={() => setShowSkillsmpSettings(false)}><CloseIcon /></button>
+                <button className="gt-diff-icon-btn" type="button" aria-label="关闭" onClick={() => setShowSkillsmpSettings(false)}>×</button>
               </div>
               <label className="skillsmp-key-field">
                 <span>API Key</span>
@@ -11794,7 +11586,7 @@ branches.forEach((b) => {
                   setShowOpencodeCustomProvider(true);
                 }}
               >
-                <PlusIcon />
+                ＋
               </button>
             </div>
               <div className="settings-model-lists opencode-provider-picker-grid">
@@ -12175,7 +11967,7 @@ branches.forEach((b) => {
                   <div className="gt-module-kicker">OpenCode Modules</div>
                   <h2>Agent / 权限 / MCP / Skills</h2>
                 </div>
-                <button type="button" className="modal-close" onClick={() => setShowOpencodeModulePanel(false)}><CloseIcon /></button>
+                <button type="button" className="modal-close" onClick={() => setShowOpencodeModulePanel(false)}>×</button>
               </div>
               <div className="gt-module-tabs">
                 {([

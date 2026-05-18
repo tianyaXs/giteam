@@ -423,10 +423,10 @@
   max-height: min(760px, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
-  border: var(--gt-border-0-5) solid var(--gt-glass-border);
-  border-radius: var(--gt-radius-3xl);
-  background: var(--gt-glass-bg);
-  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
+  border: 1px solid var(--border);
+  border-radius: var(--gt-radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--gt-shadow-4);
   overflow: hidden;
 }
 
@@ -436,7 +436,7 @@
   justify-content: space-between;
   gap: var(--gt-space-4);
   padding: var(--gt-space-4) var(--gt-space-5) var(--gt-space-3-5);
-  border-bottom: var(--gt-border-0-5) solid var(--gt-glass-border);
+  border-bottom: 1px solid var(--border);
 }
 
 .gt-module-head h2 {

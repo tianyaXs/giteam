@@ -2300,12 +2300,12 @@
 .gt-mcp-config-card {
   position: relative;
   overflow: hidden;
-  border: var(--gt-border-0-5) solid var(--gt-glass-border);
-  border-radius: var(--gt-radius-3xl);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: var(--gt-radius-lg);
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 36%),
-    var(--gt-glass-bg);
-  box-shadow: var(--gt-shadow-4), 0 0 0 1px var(--gt-glass-highlight);
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-panel) 96%, transparent), color-mix(in srgb, var(--bg-soft) 62%, transparent));
+  box-shadow: var(--gt-shadow-4);
 }
 
 .gt-skills-page-hero {
