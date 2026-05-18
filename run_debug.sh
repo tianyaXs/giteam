@@ -19,9 +19,12 @@ if [ -n "$GITEAM_PID" ]; then
     sleep 1
 fi
 
-echo "=== Building web frontend ==="
+echo "=== Installing frontend dependencies ==="
 cd "$SCRIPT_DIR/apps/desktop"
 npm install
+
+echo ""
+echo "=== Building web frontend (fallback for giteam) ==="
 npm run build:web
 
 echo ""
@@ -30,6 +33,22 @@ cd "$SCRIPT_DIR/apps/cli"
 cargo build --release
 
 echo ""
-echo "=== Starting giteam web server ==="
+echo "=== Starting giteam web server (API backend) ==="
 cd "$SCRIPT_DIR/apps/cli"
-exec ./target/release/giteam web "$@"
+./target/release/giteam web --dist "$SCRIPT_DIR/apps/desktop/dist-web" &
+GITEAM_BG_PID=$!
+sleep 2
+
+cleanup() {
+    echo ""
+    echo "=== Stopping giteam web server ==="
+    kill "$GITEAM_BG_PID" 2>/dev/null || true
+    wait "$GITEAM_BG_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+echo ""
+echo "=== Starting Vite dev server (frontend with HMR) ==="
+echo "Open http://localhost:1420 in your browser"
+cd "$SCRIPT_DIR/apps/desktop"
+npm run dev
