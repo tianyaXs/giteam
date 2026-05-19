@@ -23,9 +23,6 @@ jobs:
           - key: linux-x64
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
-          - key: win32-x64
-            runner: windows-latest
-            rust_target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
