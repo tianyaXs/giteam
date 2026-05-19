@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-cli"
-version = "0.1.22"
+version = "0.1.26"
 dependencies = [
  "clap",
  "ctrlc",
