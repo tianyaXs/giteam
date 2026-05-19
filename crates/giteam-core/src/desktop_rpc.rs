@@ -1929,6 +1929,31 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let result = super::opencode::abort_opencode_session(repo_path, session_id, directory)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "list_opencode_questions" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            super::opencode::list_opencode_questions(repo_path)
+        }
+        "post_opencode_question_reply" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let request_id = get_str(&args, "requestId")?;
+            let answers = args
+                .get("answers")
+                .cloned()
+                .map(serde_json::from_value::<Vec<Vec<String>>>)
+                .transpose()
+                .map_err(|e| format!("invalid answers: {e}"))?
+                .unwrap_or_default();
+            let result = super::opencode::post_opencode_question_reply(
+                repo_path, request_id, answers,
+            )?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "post_opencode_question_reject" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let request_id = get_str(&args, "requestId")?;
+            let result = super::opencode::post_opencode_question_reject(repo_path, request_id)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "get_opencode_session_messages_detailed_page" => {
             let repo_path = get_str(&args, "repoPath")?;
             let session_id = get_str(&args, "sessionId")?;

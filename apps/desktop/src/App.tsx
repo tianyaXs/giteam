@@ -3684,11 +3684,12 @@ export function App() {
     };
   }
 
-  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0) {
+  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0, repoPathArg = repoPath) {
     const id = sessionId.trim();
+    const targetRepoPath = repoPathArg.trim();
     const safeBefore = before.trim();
     const safeLimit = Math.max(2, limit);
-    const cacheKey = getOpencodeMessagePageCacheKey(repoPath, id, safeBefore, safeLimit);
+    const cacheKey = getOpencodeMessagePageCacheKey(targetRepoPath, id, safeBefore, safeLimit);
     const cached = opencodeMessagePageCacheRef.current[cacheKey];
     if (cached && cached.fetchedAt >= minFetchedAt) {
       appendOpencodeDebugLog(`session.messages page cache hit ${id} before=${safeBefore || "root"} limit=${safeLimit}`);
@@ -3697,16 +3698,30 @@ export function App() {
     const inflight = opencodeMessagePageInflightRef.current[cacheKey];
     if (inflight) return inflight;
     const task = (async () => {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qs = new URLSearchParams();
-      qs.set("limit", String(safeLimit));
-      qs.set("directory", repoPath);
-      if (safeBefore) qs.set("before", safeBefore);
-      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
-      if (!res.ok) {
-        throw new Error(`fetch message page failed: ${res.status}`);
+      let raw: unknown[] = [];
+      let nextCursorFromRpc = "";
+      if (IS_TAURI) {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath: targetRepoPath });
+        const qs = new URLSearchParams();
+        qs.set("limit", String(safeLimit));
+        qs.set("directory", targetRepoPath);
+        if (safeBefore) qs.set("before", safeBefore);
+        const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
+        if (!res.ok) throw new Error(`fetch message page failed: ${res.status}`);
+        const body = await res.json();
+        raw = Array.isArray(body) ? body : [];
+        nextCursorFromRpc = res.headers.get("x-next-cursor")?.trim() || "";
+      } else {
+        const page = await invoke<{ items?: unknown; nextCursor?: string }>("get_opencode_session_messages_detailed_page", {
+          repoPath: targetRepoPath,
+          sessionId: id,
+          directory: targetRepoPath,
+          before: safeBefore || undefined,
+          limit: safeLimit
+        });
+        raw = Array.isArray(page.items) ? page.items : [];
+        nextCursorFromRpc = String(page.nextCursor || "").trim();
       }
-      const raw = (await res.json()) as unknown[];
       const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
       const detailsById: Record<string, OpencodeDetailedMessage> = {};
       const mapped: OpencodeChatMessage[] = [];
@@ -3726,7 +3741,7 @@ export function App() {
           attachments: role === "user" ? buildOpencodeImageAttachmentsFromParts(parts) : undefined,
         });
       }
-      const nextCursor = res.headers.get("x-next-cursor")?.trim() || undefined;
+      const nextCursor = nextCursorFromRpc || undefined;
       const entry: OpencodeMessagePageCacheEntry = {
         before: safeBefore,
         limit: safeLimit,
@@ -3736,7 +3751,7 @@ export function App() {
         hasMore: Boolean(nextCursor),
         fetchedAt: Date.now()
       };
-      setOpencodeMessagePageCacheEntry(repoPath, id, entry);
+      setOpencodeMessagePageCacheEntry(targetRepoPath, id, entry);
       return entry;
     })().finally(() => {
       delete opencodeMessagePageInflightRef.current[cacheKey];
@@ -3745,11 +3760,12 @@ export function App() {
     return task;
   }
 
-  async function fetchOpencodeCompactMessagesWindow(sessionId: string, initialLimit: number) {
+  async function fetchOpencodeCompactMessagesWindow(sessionId: string, initialLimit: number, repoPathArg = repoPath) {
     const id = sessionId.trim();
+    const targetRepoPath = repoPathArg.trim();
     const limit = Math.max(2, initialLimit);
     const sessionUpdatedAt = opencodeSessions.find((session) => session.id === id)?.updatedAt || 0;
-    const cached = getBestOpencodeMessageCacheEntry(repoPath, id, limit, sessionUpdatedAt);
+    const cached = getBestOpencodeMessageCacheEntry(targetRepoPath, id, limit, sessionUpdatedAt);
     if (cached) {
       appendOpencodeDebugLog(`session.messages cache hit ${id} limit=${cached.limit}`);
       return {
@@ -3760,11 +3776,11 @@ export function App() {
         hasMore: cached.hasMore
       };
     }
-    const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt);
+    const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt, targetRepoPath);
       const existingSession = opencodeSessions.find((session) => session.id === id);
       const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
     const turnCount = buildOpencodeTurnRanges(mapped).length;
-    setOpencodeMessageCacheEntry(repoPath, id, {
+    setOpencodeMessageCacheEntry(targetRepoPath, id, {
       limit,
       mapped,
       turnCount,
@@ -3830,6 +3846,19 @@ export function App() {
     if (!rows || rows.length === 0) {
       appendOpencodeDebugLog("session.list empty");
       opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
+      const pendingForEmptyRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
+      if (pendingForEmptyRepo) {
+        const sidebarHit = (sidebarOpencodeSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForEmptyRepo.sessionId);
+        const cachedHit = opencodeSessions.find((session) => session.id === pendingForEmptyRepo.sessionId);
+        const pendingSession = sidebarHit || cachedHit;
+        if (pendingSession) {
+          setOpencodeSessions([{ ...opencodeSessionFromSummary(pendingSession), loaded: false }]);
+          setActiveOpencodeSessionId(pendingForEmptyRepo.sessionId);
+          setDraftOpencodeSession(false);
+          pendingSidebarSessionSelectionRef.current = null;
+          return;
+        }
+      }
       setOpencodeSessions([]);
       setActiveOpencodeSessionId("");
       setDraftOpencodeSession(true);
@@ -3891,13 +3920,13 @@ export function App() {
     await refreshOpencodeSessions(nextLimit);
   }
 
-  async function loadOpencodeSessionMessages(sessionId: string) {
-    if (!ensureRepoSelected()) return;
+  async function loadOpencodeSessionMessages(sessionId: string, repoPathArg = repoPath) {
+    if (!repoPathArg.trim() && !ensureRepoSelected()) return;
     const id = sessionId.trim();
     if (!id) return;
     appendOpencodeDebugLog(`session.messages load ${id}`);
     try {
-      const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT);
+      const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT, repoPathArg);
       const mapped = result.mapped;
       const turnStart = getInitialOpencodeTurnStart(result.turnCount);
       const currentSession = opencodeSessions.find((s) => s.id === id);
@@ -5908,6 +5937,12 @@ export function App() {
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
+      if (!IS_TAURI) {
+        await invoke<boolean>("post_opencode_question_reply", { repoPath, requestId, answers });
+        appendOpencodeDebugLog(`question.reply ${requestId}`);
+        await refreshPendingQuestions();
+        return true;
+      }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
       const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
@@ -5935,24 +5970,29 @@ export function App() {
     }
     setOpencodeQuestionLoading(true);
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      let raw: unknown = [];
-      let lastError = "";
-      for (const path of ["/question", "/question/"]) {
-        try {
-          const res = await fetch(`${base}${path}?directory=${qdir}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const text = await res.text();
-          if (!text.trim()) throw new Error("empty response");
-          raw = JSON.parse(text);
-          lastError = "";
-          break;
-        } catch (e) {
-          lastError = `${path}: ${String(e)}`;
+      let raw: unknown;
+      if (!IS_TAURI) {
+        raw = await invoke<unknown>("list_opencode_questions", { repoPath });
+      } else {
+        const base = await invoke<string>("get_opencode_service_base", { repoPath });
+        const qdir = encodeURIComponent(repoPath);
+        raw = [];
+        let lastError = "";
+        for (const path of ["/question", "/question/"]) {
+          try {
+            const res = await fetch(`${base}${path}?directory=${qdir}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const text = await res.text();
+            if (!text.trim()) throw new Error("empty response");
+            raw = JSON.parse(text);
+            lastError = "";
+            break;
+          } catch (e) {
+            lastError = `${path}: ${String(e)}`;
+          }
         }
+        if (lastError) throw new Error(lastError);
       }
-      if (lastError) throw new Error(lastError);
       const rows = Array.isArray(raw) ? raw : [];
       const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
       setOpencodeQuestionRequests(requests);
@@ -5965,6 +6005,12 @@ export function App() {
 
   async function sendQuestionReject(requestId: string) {
     try {
+      if (!IS_TAURI) {
+        await invoke<boolean>("post_opencode_question_reject", { repoPath, requestId });
+        appendOpencodeDebugLog(`question.reject ${requestId}`);
+        await refreshPendingQuestions();
+        return true;
+      }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
       const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
@@ -8136,6 +8182,7 @@ export function App() {
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo || !repoPath || !activeOpencodeSessionId) return;
     if (activeOpencodeSessionBusy) return;
+    if (!IS_TAURI) return;
     const sessionId = activeOpencodeSessionId.trim();
     if (!sessionId) return;
     const seq = opencodePassiveSyncSeqRef.current + 1;
@@ -8906,7 +8953,7 @@ export function App() {
                       return (
                         <div key={repo.id} className="gt-sidebar-project-wrap">
                           <div
-                            className={selectedRepo?.id === repo.id ? "gt-sidebar-project-row active" : "gt-sidebar-project-row"}
+                            className="gt-sidebar-project-row"
                             title={repo.path}
                             onClick={() => {
                               if (busy) return;
@@ -8953,7 +9000,7 @@ export function App() {
                                 ? repoSessions.map((session) => (
                                     <button
                                       key={`left-session-${session.id}`}
-                                      className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                                      className={!draftOpencodeSession && repo.id === selectedRepo?.id && session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
@@ -8989,10 +9036,11 @@ export function App() {
                                         opencodeSessionsRepoIdRef.current = repo.id;
                                         if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
                                         if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                        setDraftOpencodeSession(false);
-                                        setActiveOpencodeSessionId(session.id);
-                                        bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                      }}
+                                         setDraftOpencodeSession(false);
+                                         setActiveOpencodeSessionId(session.id);
+                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
+                                         void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
+                                       }}
                                     >
                                       <span className="gt-session-title">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
@@ -9041,7 +9089,7 @@ export function App() {
                       return (
                         <div key={repo.id} className="gt-sidebar-project-wrap">
                           <div
-                            className={selectedRepo?.id === repo.id ? "gt-sidebar-project-row active" : "gt-sidebar-project-row"}
+                            className="gt-sidebar-project-row"
                             title={repo.path}
                             onClick={() => {
                               if (busy) return;
@@ -9088,7 +9136,7 @@ export function App() {
                                 ? repoSessions.map((session) => (
                                     <button
                                       key={`left-session-${session.id}`}
-                                      className={session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
+                                      className={!draftOpencodeSession && repo.id === selectedRepo?.id && session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
@@ -9124,10 +9172,11 @@ export function App() {
                                         opencodeSessionsRepoIdRef.current = repo.id;
                                         if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
                                         if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                        setDraftOpencodeSession(false);
-                                        setActiveOpencodeSessionId(session.id);
-                                        bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                      }}
+                                         setDraftOpencodeSession(false);
+                                         setActiveOpencodeSessionId(session.id);
+                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
+                                         void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
+                                       }}
                                     >
                                       <span className="gt-session-title">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
@@ -9177,7 +9226,7 @@ export function App() {
 
   const centerPane = runtimeStatus.opencode.installed ? (
     <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-      <div className={opencodeMessages.length === 0 && !opencodeSessionLoading ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
+      <div className={opencodeMessages.length === 0 ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
         <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
           <div className="gt-chat-stream">
             {opencodeSessionLoading ? (
@@ -9450,7 +9499,7 @@ export function App() {
                 }}
               />
             ))}
-            {opencodeMessages.length === 0 && !opencodeSessionLoading ? (
+            {opencodeMessages.length === 0 ? (
               <div className="gt-empty-composer-title">What should we build in {selectedRepo?.name || "Giteam"}?</div>
             ) : null}
             <div className="opencode-composer">
@@ -9765,7 +9814,7 @@ export function App() {
                 </div>
               </div>
             </div>
-            {opencodeMessages.length === 0 && !opencodeSessionLoading && repos.length > 0 ? (
+            {opencodeMessages.length === 0 && repos.length > 0 ? (
               <div className="gt-empty-composer-meta">
                 <div className="gt-empty-composer-repo-picker">
                   {repos.map((repo) => (

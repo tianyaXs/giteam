@@ -50,6 +50,7 @@
 }
 
 .gt-sidebar-top {
+  padding-top: 24px;
   padding-bottom: var(--gt-space-1);
 }
 
@@ -128,11 +129,14 @@
   flex: 0 0 auto;
   opacity: 0;
   transition: opacity 120ms ease;
+  max-width: 0;
+  overflow: hidden;
 }
 
 .gt-new-session-btn:hover .gt-new-session-kbd,
 .gt-new-session-btn:focus-visible .gt-new-session-kbd {
   opacity: 1;
+  max-width: 48px;
 }
 
 .gt-new-session-btn:disabled .gt-new-session-kbd {
@@ -297,8 +301,8 @@
 }
 
 .gt-sidebar-project-row.active {
-  background: color-mix(in srgb, var(--sidebar-selected) 55%, transparent);
-  color: var(--text);
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
 
 .gt-sidebar-project-row:hover .gt-sidebar-project-pin {
@@ -1127,10 +1131,12 @@
 }
 
 .gt-shell-toggle-left.is-sidebar-open {
+  left: max(var(--gt-titlebar-safe-left), calc(var(--wb-sidebar-current-width, var(--wb-sidebar-width, 300px)) / 2 - 14px));
   color: #5f6772;
 }
 
 .gt-shell-toggle-left.is-sidebar-closed {
+  left: 12px;
   color: #7c8692;
 }
 
@@ -3672,4 +3678,3 @@ button {
     justify-content: flex-start;
   }
 }
-
