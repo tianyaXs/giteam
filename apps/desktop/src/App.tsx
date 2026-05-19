@@ -11557,8 +11557,8 @@ branches.forEach((b) => {
                       const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
                       const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
                       if (!pid) return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
-                      if (!opencodeConnectedProviders.includes(pid)) return <div className="small muted opencode-provider-empty">该 provider 未连接，请先在 OpenCode 中完成授权。</div>;
-                      return <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => { setOpencodeHiddenModels((prev) => new Set([...prev, ref])); setOpencodeEnabledModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); }} onEnableModel={(ref) => { setOpencodeHiddenModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); setOpencodeEnabledModels((prev) => new Set([...prev, ref])); }} />;
+                      const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+                      return <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} topSlot={<button className="file-item opencode-provider-model-row opencode-provider-model-config-row" type="button" onClick={() => void openConnectProvider(pid).then(() => setShowOpencodeAuthDialogFor(pid))}><span className="opencode-provider-model-main"><span>配置 API Key</span><small>{pretty}</small></span></button>} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => { setOpencodeHiddenModels((prev) => new Set([...prev, ref])); setOpencodeEnabledModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); }} onEnableModel={(ref) => { setOpencodeHiddenModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); setOpencodeEnabledModels((prev) => new Set([...prev, ref])); }} />;
                     })()}
                   </div>
                 </div>
@@ -11971,6 +11971,18 @@ branches.forEach((b) => {
                           modelNamesByProvider={opencodeModelNamesByProvider}
                           hiddenModels={opencodeHiddenModels}
                           enabledModels={opencodeEnabledModels}
+                          topSlot={
+                            <button
+                              className="file-item opencode-provider-model-row opencode-provider-model-config-row"
+                              type="button"
+                              onClick={openAuthEditor}
+                            >
+                              <span className="opencode-provider-model-main">
+                                <span>{connected ? "配置 API Key" : "连接并配置 API Key"}</span>
+                                <small>{pretty}</small>
+                              </span>
+                            </button>
+                          }
                           onSelectModel={(ref) => void applyOpencodeModel(ref)}
                           onHideModel={(ref) => {
                             setOpencodeHiddenModels((prev) => {

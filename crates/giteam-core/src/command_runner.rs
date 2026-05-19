@@ -45,41 +45,71 @@ fn wait_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<ExitStatus,
 
 fn build_path_env() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let path_sep = if cfg!(windows) { ';' } else { ':' };
     let mut dirs: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
-        .split(':')
+        .split(path_sep)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    let home_dirs = [
-        format!("{home}/.local/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-    ];
-    for dir in home_dirs {
-        if !home.is_empty() && !dirs.iter().any(|d| d == &dir) {
-            dirs.push(dir);
+    if cfg!(windows) {
+        let windows_dirs = [
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\AppData\Roaming\npm") },
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\.cargo\bin") },
+            r"C:\ProgramData\chocolatey\bin".to_string(),
+            r"C:\Program Files\Git\cmd".to_string(),
+            r"C:\Windows\System32".to_string(),
+        ];
+        for dir in windows_dirs {
+            if !dir.is_empty() && !dirs.iter().any(|d| d.eq_ignore_ascii_case(&dir)) {
+                dirs.push(dir);
+            }
+        }
+    } else {
+        let home_dirs = [
+            format!("{home}/.local/bin"),
+            format!("{home}/miniconda3/bin"),
+            format!("{home}/anaconda3/bin"),
+            format!("{home}/.pyenv/shims"),
+        ];
+        for dir in home_dirs {
+            if !home.is_empty() && !dirs.iter().any(|d| d == &dir) {
+                dirs.push(dir);
+            }
+        }
+        for dir in EXTRA_BIN_DIRS {
+            if !dirs.iter().any(|d| d == dir) {
+                dirs.push((*dir).to_string());
+            }
         }
     }
-    for dir in EXTRA_BIN_DIRS {
-        if !dirs.iter().any(|d| d == dir) {
-            dirs.push((*dir).to_string());
-        }
-    }
-    dirs.join(":")
+    dirs.join(&path_sep.to_string())
 }
 
 fn resolve_program(program: &str, path_env: &str) -> Option<PathBuf> {
-    if program.contains('/') {
+    if program.contains('/') || program.contains('\\') {
         let path = PathBuf::from(program);
         return path.exists().then_some(path);
     }
-    for dir in path_env.split(':').filter(|s| !s.trim().is_empty()) {
-        let candidate = Path::new(dir).join(program);
-        if candidate.exists() {
-            return Some(candidate);
+    let path_sep = if cfg!(windows) { ';' } else { ':' };
+    for dir in path_env.split(path_sep).filter(|s| !s.trim().is_empty()) {
+        let base = Path::new(dir);
+        let candidates = if cfg!(windows) {
+            vec![
+                base.join(program),
+                base.join(format!("{program}.exe")),
+                base.join(format!("{program}.cmd")),
+                base.join(format!("{program}.bat")),
+            ]
+        } else {
+            vec![base.join(program)]
+        };
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -134,6 +164,20 @@ pub fn run_and_capture_in_dir_with_timeout<S: AsRef<OsStr>>(
     let mut cmd = if let Some(path) = resolved_program {
         let mut c = Command::new(path);
         c.args(args);
+        c
+    } else if cfg!(windows) {
+        let rendered_shell_args = args
+            .iter()
+            .map(|a| a.as_ref().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = if rendered_shell_args.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {rendered_shell_args}")
+        };
+        let mut c = Command::new("cmd");
+        c.args(["/C", &script]);
         c
     } else {
         // Fallback for GUI-launched apps on macOS: PATH may not include user-installed CLIs.

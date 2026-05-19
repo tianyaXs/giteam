@@ -2347,6 +2347,24 @@ fn run_init(selected: Vec<PluginName>, install_missing: bool, json: bool) -> Res
 }
 
 fn app_support_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata = appdata.trim();
+            if !appdata.is_empty() {
+                return Ok(PathBuf::from(appdata).join("giteam"));
+            }
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let user_profile = user_profile.trim();
+            if !user_profile.is_empty() {
+                return Ok(PathBuf::from(user_profile)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("giteam"));
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {

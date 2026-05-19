@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { normalizeModelRef } from "../../lib/opencodeModels";
 
 type OpenCodeProviderModelListProps = {
@@ -13,17 +14,20 @@ type OpenCodeProviderModelListProps = {
   onSelectModel: (modelRef: string) => void;
   onEnableModel: (modelRef: string) => void;
   onHideModel: (modelRef: string) => void;
+  topSlot?: ReactNode;
 };
 
 export function OpenCodeProviderModelList(props: OpenCodeProviderModelListProps) {
-  if (props.models.length === 0) {
-    return <div className="small muted opencode-provider-empty">没有可用模型（或搜索无结果）。</div>;
+  if (props.models.length === 0 && !props.topSlot) {
+    return <div className="small muted opencode-provider-empty">没有可用模型，或当前搜索无结果。</div>;
   }
 
   const active = normalizeModelRef(props.activeModel);
 
   return (
     <>
+      {props.topSlot ? <div className="opencode-provider-model-topslot">{props.topSlot}</div> : null}
+      {props.models.length === 0 ? <div className="small muted opencode-provider-empty">没有可用模型，或当前搜索无结果。</div> : null}
       {props.models.map((modelId) => {
         const ref = `${props.configuredProviderId}/${modelId}`;
         const refNorm = normalizeModelRef(ref);

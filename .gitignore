@@ -7,3 +7,4 @@ target
 assets/
 apps/desktop/src-tauri/target
 apps/cli/.publish-release.json
+apps/desktop/dist-web

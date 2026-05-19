@@ -656,6 +656,24 @@ fn legacy_db_path() -> Option<PathBuf> {
 }
 
 fn cli_db_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Ok(PathBuf::from(p).join("giteam"));
+            }
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let p = user_profile.trim();
+            if !p.is_empty() {
+                return Ok(PathBuf::from(p)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("giteam"));
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -773,39 +791,62 @@ fn run_entire(args: &[&str], repo_path: &str) -> Result<String, String> {
 // Environment helpers
 fn build_path_env() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let path_sep = if cfg!(windows) { ';' } else { ':' };
     let mut dirs: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
-        .split(':')
+        .split(path_sep)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    let home_dirs = [
-        format!("{home}/.local/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-    ];
-    for dir in home_dirs {
-        if !home.is_empty() && !dirs.iter().any(|d| d == &dir) {
-            dirs.push(dir);
+
+    if cfg!(windows) {
+        let windows_dirs = [
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\.cargo\bin") },
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\AppData\Roaming\npm") },
+            r"C:\ProgramData\chocolatey\bin".to_string(),
+        ];
+        for dir in windows_dirs {
+            if !dir.is_empty() && !dirs.iter().any(|d| d.eq_ignore_ascii_case(&dir)) {
+                dirs.push(dir);
+            }
+        }
+    } else {
+        let home_dirs = [
+            format!("{home}/.local/bin"),
+            format!("{home}/miniconda3/bin"),
+            format!("{home}/anaconda3/bin"),
+            format!("{home}/.pyenv/shims"),
+        ];
+        for dir in home_dirs {
+            if !home.is_empty() && !dirs.iter().any(|d| d == &dir) {
+                dirs.push(dir);
+            }
+        }
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+        for dir in extra {
+            if !dirs.iter().any(|d| d == dir) {
+                dirs.push((*dir).to_string());
+            }
         }
     }
-    let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-    for dir in extra {
-        if !dirs.iter().any(|d| d == dir) {
-            dirs.push((*dir).to_string());
-        }
-    }
-    dirs.join(":")
+    dirs.join(&path_sep.to_string())
 }
 
 fn check_dep(name: &str, version_args: &[&str], install_hint: &str) -> RuntimeDependencyStatus {
     let path_env = build_path_env();
-    let mut cmd = Command::new("/bin/zsh");
-    cmd.arg("-ic");
-    let script = format!("{} {}", shell_quote(name), version_args.join(" "));
-    cmd.arg(&script);
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new(name);
+        c.args(version_args);
+        c
+    } else {
+        let mut c = Command::new("/bin/zsh");
+        c.arg("-ic");
+        let script = format!("{} {}", shell_quote(name), version_args.join(" "));
+        c.arg(&script);
+        c
+    };
     cmd.env("PATH", path_env);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -849,7 +890,40 @@ fn shell_quote(arg: &str) -> String {
     format!("'{escaped}'")
 }
 
+fn install_hint_for_dep(name: &str) -> &'static str {
+    if cfg!(windows) {
+        match name {
+            "git" => "winget install Git.Git",
+            "entire" => "Entire CLI is not currently supported by this Windows installer flow. Install it manually if needed.",
+            "opencode" => "npm install -g opencode-ai",
+            "giteam" => "npm install -g giteam@latest",
+            _ => "",
+        }
+    } else {
+        match name {
+            "git" => "brew install git",
+            "entire" => "brew install anomalyco/tap/entire",
+            "opencode" => "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+            "giteam" => "npm install -g giteam@latest",
+            _ => "",
+        }
+    }
+}
+
 fn install_script(name: &str, action: &str) -> Result<&'static str, String> {
+    if cfg!(windows) {
+        return match (name, action) {
+            ("git", "install") => Ok(r#"winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements --silent"#),
+            ("git", "uninstall") => Ok(r#"winget uninstall --id Git.Git -e --silent"#),
+            ("entire", "install") | ("entire", "uninstall") => Ok(r#"Write-Error "Entire CLI is not supported by this Windows installer flow."; exit 2"#),
+            ("opencode", "install") => Ok(r#"if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { npm.cmd install -g opencode-ai } elseif (Get-Command npm -ErrorAction SilentlyContinue) { npm install -g opencode-ai } else { Write-Error "npm is required to install opencode"; exit 2 }"#),
+            ("opencode", "uninstall") => Ok(r#"if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { npm.cmd uninstall -g opencode-ai } elseif (Get-Command npm -ErrorAction SilentlyContinue) { npm uninstall -g opencode-ai } else { Write-Error "npm is required to uninstall opencode"; exit 2 }"#),
+            ("giteam", "install") | ("giteam", "update") => Ok(r#"if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { npm.cmd install -g giteam@latest } elseif (Get-Command npm -ErrorAction SilentlyContinue) { npm install -g giteam@latest } else { Write-Error "npm is required to install giteam"; exit 2 }"#),
+            ("giteam", "uninstall") => Ok(r#"if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { npm.cmd uninstall -g giteam } elseif (Get-Command npm -ErrorAction SilentlyContinue) { npm uninstall -g giteam } else { Write-Error "npm is required to uninstall giteam"; exit 2 }"#),
+            _ => Err(format!("unsupported action: {name}/{action}")),
+        };
+    }
+
     match (name, action) {
         ("git", "install") => Ok(r#"if command -v brew >/dev/null 2>&1; then
   brew install git
@@ -1607,20 +1681,20 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
 
         // Environment / runtime commands
         "check_runtime_requirements" => {
-            let git = check_dep("git", &["--version"], "brew install git");
-            let entire = check_dep("entire", &["--version"], "brew install anomalyco/tap/entire");
-            let opencode = check_dep("opencode", &["--version"], "brew install anomalyco/tap/opencode");
-            let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
+            let git = check_dep("git", &["--version"], install_hint_for_dep("git"));
+            let entire = check_dep("entire", &["--version"], install_hint_for_dep("entire"));
+            let opencode = check_dep("opencode", &["--version"], install_hint_for_dep("opencode"));
+            let giteam = check_dep("giteam", &["--version"], install_hint_for_dep("giteam"));
             let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
             serde_json::to_value(RuntimeRequirementsStatus { ok, git, entire, opencode, giteam }).map_err(|e| e.to_string())
         }
         "check_runtime_dependency" => {
             let name = get_str(&args, "name")?;
             let dep = match name {
-                "git" => check_dep("git", &["--version"], "brew install git"),
-                "entire" => check_dep("entire", &["--version"], "brew tap entireio/tap && brew install entireio/tap/entire"),
-                "opencode" => check_dep("opencode", &["--version"], "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)"),
-                "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
+                "git" => check_dep("git", &["--version"], install_hint_for_dep("git")),
+                "entire" => check_dep("entire", &["--version"], install_hint_for_dep("entire")),
+                "opencode" => check_dep("opencode", &["--version"], install_hint_for_dep("opencode")),
+                "giteam" => check_dep("giteam", &["--version"], install_hint_for_dep("giteam")),
                 _ => return Err(format!("unsupported dependency: {name}")),
             };
             serde_json::to_value(dep).map_err(|e| e.to_string())
@@ -1651,8 +1725,15 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let script_owned = script.to_string();
             let job_id_for_thread = job_id.clone();
             thread::spawn(move || {
-                let mut cmd = Command::new("/bin/zsh");
-                cmd.args(["-fc", &script_owned]);
+                let mut cmd = if cfg!(windows) {
+                    let mut c = Command::new("powershell");
+                    c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script_owned]);
+                    c
+                } else {
+                    let mut c = Command::new("/bin/zsh");
+                    c.args(["-fc", &script_owned]);
+                    c
+                };
                 cmd.env("PATH", build_path_env());
                 cmd.stdin(Stdio::null());
                 cmd.stdout(Stdio::piped());

@@ -112,30 +112,43 @@ fn read_skill_install_stream<R: Read>(mut reader: R, status_key: String) {
 
 fn desktop_path_env() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let path_sep = if cfg!(windows) { ';' } else { ':' };
     let mut dirs: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
-        .split(':')
+        .split(path_sep)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    for dir in [
-        format!("{home}/.local/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/usr/sbin".to_string(),
-        "/sbin".to_string(),
-    ] {
-        if !dir.trim().is_empty() && !dirs.iter().any(|d| d == &dir) {
+    let extra = if cfg!(windows) {
+        vec![
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\AppData\Roaming\npm") },
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\.cargo\bin") },
+            r"C:\ProgramData\chocolatey\bin".to_string(),
+            r"C:\Program Files\Git\cmd".to_string(),
+            r"C:\Windows\System32".to_string(),
+        ]
+    } else {
+        vec![
+            format!("{home}/.local/bin"),
+            format!("{home}/miniconda3/bin"),
+            format!("{home}/anaconda3/bin"),
+            format!("{home}/.pyenv/shims"),
+            "/opt/homebrew/bin".to_string(),
+            "/usr/local/bin".to_string(),
+            "/usr/bin".to_string(),
+            "/bin".to_string(),
+            "/usr/sbin".to_string(),
+            "/sbin".to_string(),
+        ]
+    };
+    for dir in extra {
+        if !dir.trim().is_empty() && !dirs.iter().any(|d| if cfg!(windows) { d.eq_ignore_ascii_case(&dir) } else { d == &dir }) {
             dirs.push(dir);
         }
     }
-    dirs.join(":")
+    dirs.join(&path_sep.to_string())
 }
 
 fn run_opencode(args: &[&str], repo_path: &str) -> Result<String, String> {
@@ -354,6 +367,27 @@ fn extract_config_provider_catalog(root: &Value) -> Vec<OpencodeConfigProviderCa
 }
 
 fn opencode_auth_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("opencode").join("auth.json"));
+            }
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let p = user_profile.trim();
+            if !p.is_empty() {
+                return Some(
+                    PathBuf::from(p)
+                        .join("AppData")
+                        .join("Roaming")
+                        .join("opencode")
+                        .join("auth.json"),
+                );
+            }
+        }
+    }
     if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
         let p = xdg_data_home.trim();
         if !p.is_empty() {
@@ -649,31 +683,43 @@ fn parse_models_dev_catalog(raw: &str) -> Result<Vec<OpencodeCatalogProvider>, S
 
 fn build_stream_path_env() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let path_sep = if cfg!(windows) { ';' } else { ':' };
     let mut dirs: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
-        .split(':')
+        .split(path_sep)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    let extra = [
-        format!("{home}/.local/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/usr/sbin".to_string(),
-        "/sbin".to_string(),
-    ];
+    let extra = if cfg!(windows) {
+        vec![
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\AppData\Roaming\npm") },
+            if user_profile.is_empty() { String::new() } else { format!(r"{user_profile}\.cargo\bin") },
+            r"C:\ProgramData\chocolatey\bin".to_string(),
+            r"C:\Program Files\Git\cmd".to_string(),
+            r"C:\Windows\System32".to_string(),
+        ]
+    } else {
+        vec![
+            format!("{home}/.local/bin"),
+            format!("{home}/miniconda3/bin"),
+            format!("{home}/anaconda3/bin"),
+            format!("{home}/.pyenv/shims"),
+            "/opt/homebrew/bin".to_string(),
+            "/usr/local/bin".to_string(),
+            "/usr/bin".to_string(),
+            "/bin".to_string(),
+            "/usr/sbin".to_string(),
+            "/sbin".to_string(),
+        ]
+    };
     for d in extra {
-        if !d.is_empty() && !dirs.iter().any(|x| x == &d) {
+        if !d.is_empty() && !dirs.iter().any(|x| if cfg!(windows) { x.eq_ignore_ascii_case(&d) } else { x == &d }) {
             dirs.push(d);
         }
     }
-    dirs.join(":")
+    dirs.join(&path_sep.to_string())
 }
 
 #[cfg(feature = "tauri-app")]
@@ -3677,6 +3723,7 @@ pub fn put_opencode_server_auth(
             Some(body.as_str()),
             15,
         )?;
+        set_opencode_auth_api_key(pid, k)?;
         // Re-enable provider if it was previously disabled by "disconnect".
         if let Ok(global_raw) = run_curl_json(
             repo_path,
@@ -3727,6 +3774,7 @@ pub fn delete_opencode_server_auth(repo_path: &str, provider_id: &str) -> Result
             None,
             15,
         )?;
+        set_opencode_auth_api_key(pid, "")?;
         // Keep provider/auth state consistent for subsequent /provider reads.
         let _ = run_curl_json(
             repo_path,
@@ -3784,6 +3832,7 @@ pub fn disconnect_opencode_server_provider(
             None,
             15,
         );
+        let _ = set_opencode_auth_api_key(pid, "");
 
         // For config providers, disconnect also disables provider in global config.
         let global_raw = run_curl_json(

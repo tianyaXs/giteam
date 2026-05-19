@@ -196,7 +196,27 @@ fn default_pair_code_ttl_mode() -> String {
     DEFAULT_PAIR_TTL_MODE.to_string()
 }
 
-fn control_server_settings_path() -> Option<PathBuf> {
+fn giteam_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam"));
+            }
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let p = user_profile.trim();
+            if !p.is_empty() {
+                return Some(
+                    PathBuf::from(p)
+                        .join("AppData")
+                        .join("Roaming")
+                        .join("giteam"),
+                );
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -206,8 +226,7 @@ fn control_server_settings_path() -> Option<PathBuf> {
                     PathBuf::from(h)
                         .join("Library")
                         .join("Application Support")
-                        .join("giteam")
-                        .join("control-server.json"),
+                        .join("giteam"),
                 );
             }
         }
@@ -215,21 +234,20 @@ fn control_server_settings_path() -> Option<PathBuf> {
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
-            return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
+            return Some(PathBuf::from(p).join("giteam"));
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         let h = home.trim();
         if !h.is_empty() {
-            return Some(
-                PathBuf::from(h)
-                    .join(".config")
-                    .join("giteam")
-                    .join("control-server.json"),
-            );
+            return Some(PathBuf::from(h).join(".config").join("giteam"));
         }
     }
     None
+}
+
+fn control_server_settings_path() -> Option<PathBuf> {
+    giteam_config_dir().map(|dir| dir.join("control-server.json"))
 }
 
 fn mobile_model_state_path() -> Option<PathBuf> {
@@ -272,39 +290,7 @@ fn attach_mobile_model_state(mut config: Value) -> Value {
 }
 
 fn control_auth_token_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let h = home.trim();
-            if !h.is_empty() {
-                return Some(
-                    PathBuf::from(h)
-                        .join("Library")
-                        .join("Application Support")
-                        .join("giteam")
-                        .join("control-auth.json"),
-                );
-            }
-        }
-    }
-    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-        let p = xdg_config_home.trim();
-        if !p.is_empty() {
-            return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let h = home.trim();
-        if !h.is_empty() {
-            return Some(
-                PathBuf::from(h)
-                    .join(".config")
-                    .join("giteam")
-                    .join("control-auth.json"),
-            );
-        }
-    }
-    None
+    giteam_config_dir().map(|dir| dir.join("control-auth.json"))
 }
 
 fn read_persisted_bearer_token() -> String {
@@ -496,6 +482,20 @@ fn verify_pair_code(code: &str) -> Result<(), String> {
 fn candidate_client_db_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     // 1) Prefer the desktop app bundle app-data path first.
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                out.push(
+                    PathBuf::from(p)
+                        .join("io.giteam.desktop")
+                        .join(".giteam")
+                        .join("client.db"),
+                );
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {

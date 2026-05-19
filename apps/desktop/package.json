@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
-    "build:web": "tsc -p tsconfig.json && BUILD_TARGET=web vite build && cp dist-web/web.html dist-web/index.html",
+    "build:web": "node ./scripts/build-web.mjs",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
