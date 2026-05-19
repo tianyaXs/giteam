@@ -1182,6 +1182,7 @@ fn build_path_env() -> String {
     let extras = [
         format!("{home}/.local/bin"),
         format!("{home}/.npm-global/bin"),
+        format!("{home}/.bun/bin"),
         format!("{home}/.cargo/bin"),
         format!("{home}/miniconda3/bin"),
         format!("{home}/anaconda3/bin"),
@@ -1203,9 +1204,25 @@ fn build_path_env() -> String {
     dirs.join(":")
 }
 
+fn resolve_posix_shell_path() -> String {
+    [
+        std::env::var("SHELL").ok(),
+        Some("/bin/bash".to_string()),
+        Some("/usr/bin/bash".to_string()),
+        Some("/bin/sh".to_string()),
+        Some("/usr/bin/sh".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|item| item.trim().to_string())
+    .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
+    .unwrap_or_else(|| "/bin/sh".to_string())
+}
+
 fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, String), String> {
-    let mut cmd = Command::new("/bin/zsh");
-    cmd.args(["-fc", script]);
+    let shell = resolve_posix_shell_path();
+    let mut cmd = Command::new(shell.as_str());
+    cmd.args(["-lc", script]);
     cmd.env("PATH", build_path_env());
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -2303,8 +2320,9 @@ fn print_plugin_status(name: Option<PluginName>, json: bool) -> Result<(), Strin
 
 fn run_plugin_action(name: PluginName, action: &str) -> Result<(), String> {
     let script = install_script(name, action)?;
-    let status = Command::new("/bin/zsh")
-        .args(["-fc", script])
+    let shell = resolve_posix_shell_path();
+    let status = Command::new(shell.as_str())
+        .args(["-lc", script])
         .env("PATH", build_path_env())
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -3101,7 +3119,10 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
     };
 
     if !dist_dir.exists() {
-        return Err(format!("Web assets directory does not exist: {}", dist_dir.display()));
+        return Err(format!(
+            "Web assets directory does not exist: {}",
+            dist_dir.display()
+        ));
     }
     if !dist_dir.join("index.html").exists() {
         return Err(format!("No index.html found in: {}", dist_dir.display()));

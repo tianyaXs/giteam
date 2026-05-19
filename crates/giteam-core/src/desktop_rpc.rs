@@ -276,7 +276,9 @@ impl TerminalBuffer {
             bytes,
         });
         while self.total_bytes > TERMINAL_MAX_BUFFER_BYTES {
-            let Some(front) = self.chunks.pop_front() else { break };
+            let Some(front) = self.chunks.pop_front() else {
+                break;
+            };
             self.total_bytes = self.total_bytes.saturating_sub(front.bytes);
         }
     }
@@ -365,15 +367,17 @@ fn session_alive(session: &mut ManagedRepoTerminalSession) -> bool {
 
 fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSession, String> {
     let repo = normalize_repo_key(repo_path)?;
-    let mut child = Command::new("/usr/bin/script")
-        .args(["-q", "/dev/null", "/bin/zsh", "-i"])
+    let mut cmd = Command::new("/usr/bin/script");
+    cmd.args(["-q", "/dev/null", "/bin/zsh", "-i"])
         .env("GITEAM_EMBEDDED_TERMINAL", "1")
         .env("TERM", "dumb")
         .env("CLICOLOR", "0")
         .current_dir(&repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_shell_env(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn terminal: {e}"))?;
     let stdin = child
@@ -470,7 +474,11 @@ fn run_git(args: &[&str], repo_path: &str) -> Result<String, String> {
     command_runner::run_and_capture_in_dir("git", args, repo_path)
 }
 
-fn run_git_with_timeout(args: &[&str], repo_path: &str, timeout_secs: u64) -> Result<String, String> {
+fn run_git_with_timeout(
+    args: &[&str],
+    repo_path: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
 }
 
@@ -621,7 +629,9 @@ fn main_worktree_root(repo_path: &str) -> Result<PathBuf, String> {
     let absolute = if common.is_absolute() {
         common.to_path_buf()
     } else {
-        normalize_repo_key(repo_path).map(PathBuf::from)?.join(common)
+        normalize_repo_key(repo_path)
+            .map(PathBuf::from)?
+            .join(common)
     };
     absolute
         .parent()
@@ -651,8 +661,64 @@ fn now_millis() -> i64 {
 }
 
 fn legacy_db_path() -> Option<PathBuf> {
-    let root = std::env::current_dir().ok()?;
-    Some(root.join(".giteam").join("client.db"))
+    candidate_legacy_db_paths()
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn candidate_legacy_db_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                out.push(
+                    PathBuf::from(h)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("io.giteam.desktop")
+                        .join(".giteam")
+                        .join("client.db"),
+                );
+                out.push(
+                    PathBuf::from(h)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("giteam")
+                        .join(".giteam")
+                        .join("client.db"),
+                );
+            }
+        }
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg.trim();
+        if !p.is_empty() {
+            out.push(
+                PathBuf::from(p)
+                    .join("giteam")
+                    .join(".giteam")
+                    .join("client.db"),
+            );
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let h = home.trim();
+        if !h.is_empty() {
+            out.push(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join(".giteam")
+                    .join("client.db"),
+            );
+        }
+    }
+    if let Ok(root) = std::env::current_dir() {
+        out.push(root.join(".giteam").join("client.db"));
+    }
+    out
 }
 
 fn cli_db_dir() -> Result<PathBuf, String> {
@@ -705,8 +771,13 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Stri
     let mut rows = stmt
         .query([])
         .map_err(|e| format!("query pragma failed: {e}"))?;
-    while let Some(row) = rows.next().map_err(|e| format!("iterate pragma failed: {e}"))? {
-        let name: String = row.get(1).map_err(|e| format!("read pragma row failed: {e}"))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("iterate pragma failed: {e}"))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|e| format!("read pragma row failed: {e}"))?;
         if name == col {
             return Ok(true);
         }
@@ -755,10 +826,55 @@ fn open_db() -> Result<Connection, String> {
     .map_err(|e| format!("migrate repositories failed: {e}"))?;
 
     if !column_exists(&conn, "review_records", "repo_path")? {
-        conn.execute_batch("ALTER TABLE review_records ADD COLUMN repo_path TEXT NOT NULL DEFAULT '';")
-            .map_err(|e| format!("add repo_path column failed: {e}"))?;
+        conn.execute_batch(
+            "ALTER TABLE review_records ADD COLUMN repo_path TEXT NOT NULL DEFAULT '';",
+        )
+        .map_err(|e| format!("add repo_path column failed: {e}"))?;
     }
+    backfill_legacy_repositories(&conn)?;
     Ok(conn)
+}
+
+fn backfill_legacy_repositories(conn: &Connection) -> Result<(), String> {
+    let existing_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM repositories", [], |row| row.get(0))
+        .map_err(|e| format!("count repositories failed: {e}"))?;
+    if existing_count > 0 {
+        return Ok(());
+    }
+    let Some(legacy) = legacy_db_path() else {
+        return Ok(());
+    };
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let legacy_conn =
+        Connection::open(&legacy).map_err(|e| format!("open legacy sqlite failed: {e}"))?;
+    let mut stmt = match legacy_conn
+        .prepare("SELECT id, path, name, added_at FROM repositories ORDER BY added_at_ms DESC")
+    {
+        Ok(stmt) => stmt,
+        Err(_) => return Ok(()),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RepositoryEntry {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                added_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("query legacy repositories failed: {e}"))?;
+    for row in rows {
+        let entry = row.map_err(|e| format!("decode legacy repository row failed: {e}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO repositories (id, path, name, added_at, added_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![entry.id, entry.path, entry.name, entry.added_at, now_millis()],
+        )
+        .map_err(|e| format!("import legacy repository failed: {e}"))?;
+    }
+    Ok(())
 }
 
 fn chrono_like_now() -> String {
@@ -782,6 +898,8 @@ fn build_path_env() -> String {
         .collect();
     let home_dirs = [
         format!("{home}/.local/bin"),
+        format!("{home}/.npm-global/bin"),
+        format!("{home}/.bun/bin"),
         format!("{home}/miniconda3/bin"),
         format!("{home}/anaconda3/bin"),
         format!("{home}/.pyenv/shims"),
@@ -791,7 +909,14 @@ fn build_path_env() -> String {
             dirs.push(dir);
         }
     }
-    let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+    let extra = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ];
     for dir in extra {
         if !dirs.iter().any(|d| d == dir) {
             dirs.push((*dir).to_string());
@@ -800,39 +925,150 @@ fn build_path_env() -> String {
     dirs.join(":")
 }
 
-fn check_dep(name: &str, version_args: &[&str], install_hint: &str) -> RuntimeDependencyStatus {
-    let path_env = build_path_env();
-    let mut cmd = Command::new("/bin/zsh");
-    cmd.arg("-ic");
-    let script = format!("{} {}", shell_quote(name), version_args.join(" "));
-    cmd.arg(&script);
-    cmd.env("PATH", path_env);
+fn read_macos_proxy_env() -> Vec<(String, String)> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = match Command::new("/usr/sbin/scutil").arg("--proxy").output() {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut values: HashMap<String, String> = HashMap::new();
+        for line in stdout.lines() {
+            let Some((key, raw_value)) = line.split_once(':') else {
+                continue;
+            };
+            values.insert(key.trim().to_string(), raw_value.trim().to_string());
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        let build_url = |scheme: &str, host_key: &str, port_key: &str, enabled_key: &str| {
+            let enabled = values.get(enabled_key).map(|v| v == "1").unwrap_or(false);
+            let host = values.get(host_key).cloned().unwrap_or_default();
+            let port = values.get(port_key).cloned().unwrap_or_default();
+            if !enabled || host.is_empty() || port.is_empty() {
+                return None;
+            }
+            Some(format!("{scheme}://{host}:{port}"))
+        };
+        if let Some(http) = build_url("http", "HTTPProxy", "HTTPPort", "HTTPEnable") {
+            out.push(("HTTP_PROXY".to_string(), http.clone()));
+            out.push(("http_proxy".to_string(), http));
+        }
+        if let Some(https) = build_url("http", "HTTPSProxy", "HTTPSPort", "HTTPSEnable") {
+            out.push(("HTTPS_PROXY".to_string(), https.clone()));
+            out.push(("https_proxy".to_string(), https));
+        }
+        if let Some(all_proxy) = build_url("socks5", "SOCKSProxy", "SOCKSPort", "SOCKSEnable") {
+            out.push(("ALL_PROXY".to_string(), all_proxy.clone()));
+            out.push(("all_proxy".to_string(), all_proxy));
+        }
+        out
+    }
+}
+
+fn proxy_env_pairs() -> Vec<(String, String)> {
+    let keys = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ];
+    let mut out: Vec<(String, String)> = keys
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .filter(|(_, value)| !value.trim().is_empty())
+        .collect();
+    if out.is_empty() {
+        out = read_macos_proxy_env();
+    }
+    out
+}
+
+fn apply_shell_env(cmd: &mut Command) {
+    cmd.env("PATH", build_path_env());
+    for (key, value) in proxy_env_pairs() {
+        cmd.env(key, value);
+    }
+}
+
+fn resolve_posix_shell_path() -> String {
+    [
+        std::env::var("SHELL").ok(),
+        Some("/bin/bash".to_string()),
+        Some("/usr/bin/bash".to_string()),
+        Some("/bin/sh".to_string()),
+        Some("/usr/bin/sh".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|item| item.trim().to_string())
+    .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
+    .unwrap_or_else(|| "/bin/sh".to_string())
+}
+
+fn run_shell_output(script: &str) -> Result<std::process::Output, String> {
+    let shell = resolve_posix_shell_path();
+    let mut cmd = Command::new(shell.as_str());
+    cmd.args(["-lc", script]);
+    apply_shell_env(&mut cmd);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let output = cmd.output();
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let path = which::which(name).ok().map(|p| p.to_string_lossy().to_string());
-            let version = if stdout.is_empty() {
-                None
-            } else {
-                Some(stdout)
-            };
-            RuntimeDependencyStatus {
-                name: name.to_string(),
-                installed: o.status.success(),
-                version,
-                path,
-                install_hint: install_hint.to_string(),
-            }
+    cmd.output()
+        .map_err(|e| format!("failed to spawn shell: {e}"))
+}
+
+fn resolve_dep_path(name: &str) -> Option<String> {
+    let script = format!("command -v {}", shell_quote(name));
+    let output = run_shell_output(script.as_str()).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+fn check_dep(name: &str, version_args: &[&str], install_hint: &str) -> RuntimeDependencyStatus {
+    let path = resolve_dep_path(name);
+    let version = path.as_ref().and_then(|bin| {
+        let mut cmd = Command::new(bin.as_str());
+        cmd.args(version_args);
+        apply_shell_env(&mut cmd);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let output = cmd.output().ok()?;
+        if !output.status.success() {
+            return None;
         }
-        Err(_) => RuntimeDependencyStatus {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!stdout.is_empty()).then_some(stdout)
+    });
+    match (path, version) {
+        (Some(path), Some(version)) => RuntimeDependencyStatus {
+            name: name.to_string(),
+            installed: true,
+            version: Some(version),
+            path: Some(path),
+            install_hint: install_hint.to_string(),
+        },
+        (path, version) => RuntimeDependencyStatus {
             name: name.to_string(),
             installed: false,
-            version: None,
-            path: None,
+            version,
+            path,
             install_hint: install_hint.to_string(),
         },
     }
@@ -998,7 +1234,10 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let commit_sha = get_str(&args, "commitSha")?;
             let repo_path = get_str(&args, "repoPath")?;
             command_runner::validate_commit_sha(commit_sha)?;
-            let result = run_git(&["show", "--patch", "--format=fuller", commit_sha], repo_path)?;
+            let result = run_git(
+                &["show", "--patch", "--format=fuller", commit_sha],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
         "run_git_recent_commits" => {
@@ -1007,7 +1246,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let sep = '\u{1f}';
             let pretty = format!("%H{sep}%an{sep}%ad{sep}%s");
             let raw = run_git(
-                &["log", &format!("-n{limit}"), "--date=iso-strict", &format!("--pretty=format:{pretty}")],
+                &[
+                    "log",
+                    &format!("-n{limit}"),
+                    "--date=iso-strict",
+                    &format!("--pretty=format:{pretty}"),
+                ],
                 repo_path,
             )?;
             let mut commits = Vec::new();
@@ -1017,18 +1261,31 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 let author = parts.get(1).copied().unwrap_or("").trim().to_string();
                 let date = parts.get(2).copied().unwrap_or("").trim().to_string();
                 let subject = parts.get(3).copied().unwrap_or("").trim().to_string();
-                if sha.is_empty() { continue; }
-                commits.push(GitCommitSummary { sha, author, date, subject });
+                if sha.is_empty() {
+                    continue;
+                }
+                commits.push(GitCommitSummary {
+                    sha,
+                    author,
+                    date,
+                    subject,
+                });
             }
             serde_json::to_value(commits).map_err(|e| e.to_string())
         }
         "run_git_local_branches" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let local_raw = run_git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"], repo_path)
-                .or_else(|_| run_git(&["branch", "--list"], repo_path))
-                .unwrap_or_default();
-            let remote_raw = run_git(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"], repo_path)
-                .unwrap_or_default();
+            let local_raw = run_git(
+                &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+                repo_path,
+            )
+            .or_else(|_| run_git(&["branch", "--list"], repo_path))
+            .unwrap_or_default();
+            let remote_raw = run_git(
+                &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+                repo_path,
+            )
+            .unwrap_or_default();
             let current = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
@@ -1036,21 +1293,47 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let mut branches = Vec::new();
             for line in local_raw.lines() {
                 let mut name = line.trim().to_string();
-                if name.starts_with('*') { name = name.trim_start_matches('*').trim().to_string(); }
-                if name.is_empty() || name.starts_with("entire/") { continue; }
+                if name.starts_with('*') {
+                    name = name.trim_start_matches('*').trim().to_string();
+                }
+                if name.is_empty() || name.starts_with("entire/") {
+                    continue;
+                }
                 seen.insert(name.clone());
-                branches.push(GitBranchSummary { is_current: name == current, is_remote: false, name });
+                branches.push(GitBranchSummary {
+                    is_current: name == current,
+                    is_remote: false,
+                    name,
+                });
             }
             for line in remote_raw.lines() {
                 let name = line.trim().to_string();
-                if name.is_empty() || name.starts_with("entire/") { continue; }
-                if name.contains(" -> ") { continue; }
-                if seen.contains(&name) { continue; }
+                if name.is_empty() || name.starts_with("entire/") {
+                    continue;
+                }
+                if name.contains(" -> ") {
+                    continue;
+                }
+                if seen.contains(&name) {
+                    continue;
+                }
                 seen.insert(name.clone());
-                branches.push(GitBranchSummary { is_current: false, is_remote: true, name });
+                branches.push(GitBranchSummary {
+                    is_current: false,
+                    is_remote: true,
+                    name,
+                });
             }
-            if branches.is_empty() && !current.is_empty() && current != "HEAD" && !current.starts_with("entire/") {
-                branches.push(GitBranchSummary { name: current, is_current: true, is_remote: false });
+            if branches.is_empty()
+                && !current.is_empty()
+                && current != "HEAD"
+                && !current.starts_with("entire/")
+            {
+                branches.push(GitBranchSummary {
+                    name: current,
+                    is_current: true,
+                    is_remote: false,
+                });
             }
             serde_json::to_value(branches).map_err(|e| e.to_string())
         }
@@ -1061,7 +1344,13 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let sep = '\u{1f}';
             let pretty = format!("%H{sep}%an{sep}%ad{sep}%s");
             let raw = run_git(
-                &["log", branch_name, &format!("-n{limit}"), "--date=iso-strict", &format!("--pretty=format:{pretty}")],
+                &[
+                    "log",
+                    branch_name,
+                    &format!("-n{limit}"),
+                    "--date=iso-strict",
+                    &format!("--pretty=format:{pretty}"),
+                ],
                 repo_path,
             )?;
             let mut commits = Vec::new();
@@ -1071,8 +1360,15 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 let author = parts.get(1).copied().unwrap_or("").trim().to_string();
                 let date = parts.get(2).copied().unwrap_or("").trim().to_string();
                 let subject = parts.get(3).copied().unwrap_or("").trim().to_string();
-                if sha.is_empty() { continue; }
-                commits.push(GitCommitSummary { sha, author, date, subject });
+                if sha.is_empty() {
+                    continue;
+                }
+                commits.push(GitCommitSummary {
+                    sha,
+                    author,
+                    date,
+                    subject,
+                });
             }
             serde_json::to_value(commits).map_err(|e| e.to_string())
         }
@@ -1082,7 +1378,16 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let sep = '\u{1f}';
             let pretty = format!("{sep}%H{sep}%P{sep}%ad{sep}%an{sep}%d{sep}%s");
             let raw = run_git(
-                &["log", "--graph", "--decorate=short", "--date-order", "--all", &format!("-n{limit}"), "--date=short", &format!("--pretty=format:{pretty}")],
+                &[
+                    "log",
+                    "--graph",
+                    "--decorate=short",
+                    "--date-order",
+                    "--all",
+                    &format!("-n{limit}"),
+                    "--date=short",
+                    &format!("--pretty=format:{pretty}"),
+                ],
                 repo_path,
             )?;
             let mut nodes = Vec::new();
@@ -1090,21 +1395,49 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 let parts = split_fields(line, sep);
                 if parts.len() < 7 {
                     let graph = parts.first().copied().unwrap_or("").to_string();
-                    if graph.is_empty() { continue; }
-                    nodes.push(GitGraphNode { graph, sha: String::new(), parents: Vec::new(), date: String::new(), author: String::new(), refs: String::new(), subject: String::new(), is_connector: true });
+                    if graph.is_empty() {
+                        continue;
+                    }
+                    nodes.push(GitGraphNode {
+                        graph,
+                        sha: String::new(),
+                        parents: Vec::new(),
+                        date: String::new(),
+                        author: String::new(),
+                        refs: String::new(),
+                        subject: String::new(),
+                        is_connector: true,
+                    });
                     continue;
                 }
                 let graph = parts.first().copied().unwrap_or("").to_string();
                 let sha = parts.get(1).copied().unwrap_or("").trim().to_string();
                 if sha.is_empty() {
-                    if graph.is_empty() { continue; }
-                    nodes.push(GitGraphNode { graph, sha: String::new(), parents: Vec::new(), date: String::new(), author: String::new(), refs: String::new(), subject: String::new(), is_connector: true });
+                    if graph.is_empty() {
+                        continue;
+                    }
+                    nodes.push(GitGraphNode {
+                        graph,
+                        sha: String::new(),
+                        parents: Vec::new(),
+                        date: String::new(),
+                        author: String::new(),
+                        refs: String::new(),
+                        subject: String::new(),
+                        is_connector: true,
+                    });
                     continue;
                 }
                 let parents_raw = parts.get(2).copied().unwrap_or("").trim();
-                let parents: Vec<String> = parents_raw.split_whitespace().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let parents: Vec<String> = parents_raw
+                    .split_whitespace()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 nodes.push(GitGraphNode {
-                    graph, sha, parents,
+                    graph,
+                    sha,
+                    parents,
                     date: parts.get(3).copied().unwrap_or("").trim().to_string(),
                     author: parts.get(4).copied().unwrap_or("").trim().to_string(),
                     refs: parts.get(5).copied().unwrap_or("").trim().to_string(),
@@ -1118,11 +1451,16 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let commit_sha = get_str(&args, "commitSha")?;
             command_runner::validate_commit_sha(commit_sha)?;
-            let raw = run_git(&["show", "--pretty=format:", "--name-only", commit_sha], repo_path)?;
+            let raw = run_git(
+                &["show", "--pretty=format:", "--name-only", commit_sha],
+                repo_path,
+            )?;
             let mut files = Vec::new();
             for line in raw.lines() {
                 let name = line.trim();
-                if !name.is_empty() { files.push(name.to_string()); }
+                if !name.is_empty() {
+                    files.push(name.to_string());
+                }
             }
             serde_json::to_value(files).map_err(|e| e.to_string())
         }
@@ -1131,9 +1469,16 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let commit_sha = get_str(&args, "commitSha")?;
             let file_path = get_str(&args, "filePath")?;
             command_runner::validate_commit_sha(commit_sha)?;
-            if file_path.trim().is_empty() { return Err("file path is empty".to_string()); }
-            if file_path.contains('\n') || file_path.contains('\r') { return Err("file path contains invalid line breaks".to_string()); }
-            let result = run_git(&["show", "--format=", "--patch", commit_sha, "--", file_path], repo_path)?;
+            if file_path.trim().is_empty() {
+                return Err("file path is empty".to_string());
+            }
+            if file_path.contains('\n') || file_path.contains('\r') {
+                return Err("file path contains invalid line breaks".to_string());
+            }
+            let result = run_git(
+                &["show", "--format=", "--patch", commit_sha, "--", file_path],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
         "run_git_worktree_overview" => {
@@ -1141,7 +1486,10 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
             let mut overview = parse_worktree_overview(raw);
             if overview.branch.is_empty() {
-                overview.branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path).unwrap_or_default().trim().to_string();
+                overview.branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
             }
             serde_json::to_value(overview).map_err(|e| e.to_string())
         }
@@ -1149,7 +1497,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let raw = run_git(&["worktree", "list", "--porcelain"], repo_path)?;
             let mut rows = Vec::new();
-            let current_key = normalize_repo_key(repo_path).unwrap_or_else(|_| repo_path.trim().to_string());
+            let current_key =
+                normalize_repo_key(repo_path).unwrap_or_else(|_| repo_path.trim().to_string());
             let mut path = String::new();
             let mut head = String::new();
             let mut branch = String::new();
@@ -1158,13 +1507,28 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let mut is_current = false;
             let mut is_detached = false;
 
-            let push_current = |rows: &mut Vec<GitLinkedWorktree>, path: &mut String, branch: &mut String, head: &mut String, locked: &mut String, prunable: &mut String, is_current: &mut bool, is_detached: &mut bool| {
-                if path.trim().is_empty() { return; }
-                let overview = run_git(&["status", "--short", "--branch"], path).map(parse_worktree_overview).unwrap_or_else(|_| parse_worktree_overview(String::new()));
+            let push_current = |rows: &mut Vec<GitLinkedWorktree>,
+                                path: &mut String,
+                                branch: &mut String,
+                                head: &mut String,
+                                locked: &mut String,
+                                prunable: &mut String,
+                                is_current: &mut bool,
+                                is_detached: &mut bool| {
+                if path.trim().is_empty() {
+                    return;
+                }
+                let overview = run_git(&["status", "--short", "--branch"], path)
+                    .map(parse_worktree_overview)
+                    .unwrap_or_else(|_| parse_worktree_overview(String::new()));
                 let is_main_worktree = rows.is_empty();
                 rows.push(GitLinkedWorktree {
                     path: path.trim().to_string(),
-                    branch: if branch.trim().is_empty() { overview.branch.clone() } else { branch.trim().to_string() },
+                    branch: if branch.trim().is_empty() {
+                        overview.branch.clone()
+                    } else {
+                        branch.trim().to_string()
+                    },
                     head: head.trim().to_string(),
                     is_current: *is_current,
                     is_main_worktree,
@@ -1176,32 +1540,75 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                     locked: locked.trim().to_string(),
                     prunable: prunable.trim().to_string(),
                 });
-                path.clear(); branch.clear(); head.clear(); locked.clear(); prunable.clear();
-                *is_current = false; *is_detached = false;
+                path.clear();
+                branch.clear();
+                head.clear();
+                locked.clear();
+                prunable.clear();
+                *is_current = false;
+                *is_detached = false;
             };
 
             for line in raw.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
-                    push_current(&mut rows, &mut path, &mut branch, &mut head, &mut locked, &mut prunable, &mut is_current, &mut is_detached);
+                    push_current(
+                        &mut rows,
+                        &mut path,
+                        &mut branch,
+                        &mut head,
+                        &mut locked,
+                        &mut prunable,
+                        &mut is_current,
+                        &mut is_detached,
+                    );
                     continue;
                 }
                 if let Some(v) = trimmed.strip_prefix("worktree ") {
                     path = v.trim().to_string();
-                    is_current = normalize_repo_key(&path).unwrap_or_else(|_| path.trim().to_string()) == current_key;
+                    is_current = normalize_repo_key(&path)
+                        .unwrap_or_else(|_| path.trim().to_string())
+                        == current_key;
                     continue;
                 }
-                if let Some(v) = trimmed.strip_prefix("HEAD ") { head = v.trim().to_string(); continue; }
+                if let Some(v) = trimmed.strip_prefix("HEAD ") {
+                    head = v.trim().to_string();
+                    continue;
+                }
                 if let Some(v) = trimmed.strip_prefix("branch ") {
                     let raw_branch = v.trim();
-                    branch = raw_branch.strip_prefix("refs/heads/").unwrap_or(raw_branch).trim().to_string();
+                    branch = raw_branch
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(raw_branch)
+                        .trim()
+                        .to_string();
                     continue;
                 }
-                if let Some(v) = trimmed.strip_prefix("locked") { locked = v.trim().to_string(); continue; }
-                if let Some(v) = trimmed.strip_prefix("prunable") { prunable = v.trim().to_string(); continue; }
-                if trimmed == "detached" { is_detached = true; if branch.is_empty() { branch = "(detached)".to_string(); } }
+                if let Some(v) = trimmed.strip_prefix("locked") {
+                    locked = v.trim().to_string();
+                    continue;
+                }
+                if let Some(v) = trimmed.strip_prefix("prunable") {
+                    prunable = v.trim().to_string();
+                    continue;
+                }
+                if trimmed == "detached" {
+                    is_detached = true;
+                    if branch.is_empty() {
+                        branch = "(detached)".to_string();
+                    }
+                }
             }
-            push_current(&mut rows, &mut path, &mut branch, &mut head, &mut locked, &mut prunable, &mut is_current, &mut is_detached);
+            push_current(
+                &mut rows,
+                &mut path,
+                &mut branch,
+                &mut head,
+                &mut locked,
+                &mut prunable,
+                &mut is_current,
+                &mut is_detached,
+            );
             if let Some(current_idx) = rows.iter().position(|row| row.is_current) {
                 let current = rows.remove(current_idx);
                 rows.insert(0, current);
@@ -1212,8 +1619,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let branch_name = get_str(&args, "branchName")?;
             let branch = branch_name.trim();
-            if branch.is_empty() { return Err("branch name is empty".to_string()); }
-            if branch.contains('\n') || branch.contains('\r') { return Err("branch name contains invalid line breaks".to_string()); }
+            if branch.is_empty() {
+                return Err("branch name is empty".to_string());
+            }
+            if branch.contains('\n') || branch.contains('\r') {
+                return Err("branch name contains invalid line breaks".to_string());
+            }
             let result = run_git_with_timeout(&["checkout", branch], repo_path, 60)?;
             Ok(Value::String(result))
         }
@@ -1222,9 +1633,15 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let remote_branch = get_str(&args, "remoteBranch")?;
             let local_branch = get_str_opt(&args, "localBranch");
             let remote = remote_branch.trim();
-            if remote.is_empty() { return Err("remote branch name is empty".to_string()); }
-            let local = local_branch.map(|s| s.trim().to_string()).unwrap_or_else(|| remote.split('/').nth(1).unwrap_or(remote).to_string());
-            if local.is_empty() { return Err("local branch name is empty".to_string()); }
+            if remote.is_empty() {
+                return Err("remote branch name is empty".to_string());
+            }
+            let local = local_branch
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| remote.split('/').nth(1).unwrap_or(remote).to_string());
+            if local.is_empty() {
+                return Err("local branch name is empty".to_string());
+            }
             let result = run_git_with_timeout(&["checkout", "-b", &local, remote], repo_path, 60)?;
             Ok(Value::String(result))
         }
@@ -1233,11 +1650,23 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let file_path = get_str(&args, "filePath")?;
             let is_untracked = get_bool(&args, "isUntracked");
             let path = file_path.trim();
-            if path.is_empty() { return Err("file path is empty".to_string()); }
+            if path.is_empty() {
+                return Err("file path is empty".to_string());
+            }
             let result = if is_untracked {
                 run_git(&["clean", "-f", "--", path], repo_path)?
             } else {
-                run_git(&["restore", "--source=HEAD", "--staged", "--worktree", "--", path], repo_path)?
+                run_git(
+                    &[
+                        "restore",
+                        "--source=HEAD",
+                        "--staged",
+                        "--worktree",
+                        "--",
+                        path,
+                    ],
+                    repo_path,
+                )?
             };
             Ok(Value::String(result))
         }
@@ -1245,7 +1674,9 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let file_path = get_str(&args, "filePath")?;
             let path = file_path.trim();
-            if path.is_empty() { return Err("file path is empty".to_string()); }
+            if path.is_empty() {
+                return Err("file path is empty".to_string());
+            }
             let result = run_git(&["add", "--", path], repo_path)?;
             Ok(Value::String(result))
         }
@@ -1253,7 +1684,9 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let file_path = get_str(&args, "filePath")?;
             let path = file_path.trim();
-            if path.is_empty() { return Err("file path is empty".to_string()); }
+            if path.is_empty() {
+                return Err("file path is empty".to_string());
+            }
             let result = run_git(&["restore", "--staged", "--", path], repo_path)?;
             Ok(Value::String(result))
         }
@@ -1262,8 +1695,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let branch_name = get_str(&args, "branchName")?;
             let start_point = get_str_opt(&args, "startPoint");
             let branch = branch_name.trim();
-            if branch.is_empty() { return Err("branch name is empty".to_string()); }
-            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') { return Err("branch name contains invalid characters".to_string()); }
+            if branch.is_empty() {
+                return Err("branch name is empty".to_string());
+            }
+            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') {
+                return Err("branch name contains invalid characters".to_string());
+            }
             let start = start_point.unwrap_or_default().trim().to_string();
             if start.is_empty() {
                 run_git(&["branch", branch], repo_path)?;
@@ -1276,8 +1713,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let branch_name = get_str(&args, "branchName")?;
             let branch = branch_name.trim();
-            if branch.is_empty() { return Err("branch name is empty".to_string()); }
-            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') { return Err("branch name contains invalid characters".to_string()); }
+            if branch.is_empty() {
+                return Err("branch name is empty".to_string());
+            }
+            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') {
+                return Err("branch name contains invalid characters".to_string());
+            }
             run_git_with_timeout(&["branch", "-d", branch], repo_path, 60)?;
             Ok(Value::String(branch.to_string()))
         }
@@ -1286,108 +1727,206 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let branch_name = get_str(&args, "branchName")?;
             let target_path = get_str_opt(&args, "targetPath");
             let branch = branch_name.trim();
-            if branch.is_empty() { return Err("branch name is empty".to_string()); }
-            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') { return Err("branch name contains invalid characters".to_string()); }
+            if branch.is_empty() {
+                return Err("branch name is empty".to_string());
+            }
+            if branch.contains('\n') || branch.contains('\r') || branch.contains('\0') {
+                return Err("branch name contains invalid characters".to_string());
+            }
 
             let target_text = if let Some(custom) = target_path {
                 let trimmed = custom.trim();
-                if trimmed.is_empty() { return Err("target path is empty".to_string()); }
+                if trimmed.is_empty() {
+                    return Err("target path is empty".to_string());
+                }
                 let candidate = PathBuf::from(trimmed);
-                if candidate.exists() { return Err(format!("target path already exists: {trimmed}")); }
-                if let Some(parent) = candidate.parent() { fs::create_dir_all(parent).map_err(|e| format!("failed to create parent directory: {e}"))?; }
+                if candidate.exists() {
+                    return Err(format!("target path already exists: {trimmed}"));
+                }
+                if let Some(parent) = candidate.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create parent directory: {e}"))?;
+                }
                 candidate.to_string_lossy().to_string()
             } else {
                 let main_root = main_worktree_root(repo_path)?;
-                let repo_name = main_root.file_name().and_then(|name| name.to_str()).filter(|name| !name.trim().is_empty()).unwrap_or("repo");
-                let parent = main_root.parent().ok_or_else(|| "failed to resolve parent directory for worktrees".to_string())?;
+                let repo_name = main_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("repo");
+                let parent = main_root.parent().ok_or_else(|| {
+                    "failed to resolve parent directory for worktrees".to_string()
+                })?;
                 let worktree_root = parent.join(format!("{repo_name}.worktrees"));
-                fs::create_dir_all(&worktree_root).map_err(|e| format!("failed to create worktree root: {e}"))?;
+                fs::create_dir_all(&worktree_root)
+                    .map_err(|e| format!("failed to create worktree root: {e}"))?;
                 let base_name = sanitize_branch_for_dir(branch);
                 let mut target_path = worktree_root.join(&base_name);
                 let mut suffix = 2u32;
-                while target_path.exists() { target_path = worktree_root.join(format!("{base_name}-{suffix}")); suffix += 1; }
+                while target_path.exists() {
+                    target_path = worktree_root.join(format!("{base_name}-{suffix}"));
+                    suffix += 1;
+                }
                 target_path.to_string_lossy().to_string()
             };
             run_git_with_timeout(&["worktree", "add", &target_text, branch], repo_path, 120)?;
-            let head = run_git(&["rev-parse", "HEAD"], &target_text).unwrap_or_default().trim().to_string();
-            serde_json::to_value(GitWorktreeCreateResult { path: target_text, branch: branch.to_string(), head }).map_err(|e| e.to_string())
+            let head = run_git(&["rev-parse", "HEAD"], &target_text)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            serde_json::to_value(GitWorktreeCreateResult {
+                path: target_text,
+                branch: branch.to_string(),
+                head,
+            })
+            .map_err(|e| e.to_string())
         }
         "run_git_create_detached_worktree" => {
             let repo_path = get_str(&args, "repoPath")?;
             let start_point = get_str(&args, "startPoint")?;
             let target_path = get_str_opt(&args, "targetPath");
             let start = start_point.trim();
-            if start.is_empty() { return Err("start point is empty".to_string()); }
+            if start.is_empty() {
+                return Err("start point is empty".to_string());
+            }
 
             let target_text = if let Some(custom) = target_path {
                 let trimmed = custom.trim();
-                if trimmed.is_empty() { return Err("target path is empty".to_string()); }
+                if trimmed.is_empty() {
+                    return Err("target path is empty".to_string());
+                }
                 let candidate = PathBuf::from(trimmed);
-                if candidate.exists() { return Err(format!("target path already exists: {trimmed}")); }
-                if let Some(parent) = candidate.parent() { fs::create_dir_all(parent).map_err(|e| format!("failed to create parent directory: {e}"))?; }
+                if candidate.exists() {
+                    return Err(format!("target path already exists: {trimmed}"));
+                }
+                if let Some(parent) = candidate.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create parent directory: {e}"))?;
+                }
                 candidate.to_string_lossy().to_string()
             } else {
                 let main_root = main_worktree_root(repo_path)?;
-                let repo_name = main_root.file_name().and_then(|name| name.to_str()).filter(|name| !name.trim().is_empty()).unwrap_or("repo");
-                let parent = main_root.parent().ok_or_else(|| "failed to resolve parent directory for worktrees".to_string())?;
+                let repo_name = main_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("repo");
+                let parent = main_root.parent().ok_or_else(|| {
+                    "failed to resolve parent directory for worktrees".to_string()
+                })?;
                 let worktree_root = parent.join(format!("{repo_name}.worktrees"));
-                fs::create_dir_all(&worktree_root).map_err(|e| format!("failed to create worktree root: {e}"))?;
+                fs::create_dir_all(&worktree_root)
+                    .map_err(|e| format!("failed to create worktree root: {e}"))?;
                 let base_name = sanitize_branch_for_dir(start);
                 let mut target_path = worktree_root.join(&base_name);
                 let mut suffix = 2u32;
-                while target_path.exists() { target_path = worktree_root.join(format!("{base_name}-{suffix}")); suffix += 1; }
+                while target_path.exists() {
+                    target_path = worktree_root.join(format!("{base_name}-{suffix}"));
+                    suffix += 1;
+                }
                 target_path.to_string_lossy().to_string()
             };
-            run_git_with_timeout(&["worktree", "add", "--detach", &target_text, start], repo_path, 120)?;
-            let head = run_git(&["rev-parse", "HEAD"], &target_text).unwrap_or_default().trim().to_string();
-            serde_json::to_value(GitWorktreeCreateResult { path: target_text, branch: "(detached)".to_string(), head }).map_err(|e| e.to_string())
+            run_git_with_timeout(
+                &["worktree", "add", "--detach", &target_text, start],
+                repo_path,
+                120,
+            )?;
+            let head = run_git(&["rev-parse", "HEAD"], &target_text)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            serde_json::to_value(GitWorktreeCreateResult {
+                path: target_text,
+                branch: "(detached)".to_string(),
+                head,
+            })
+            .map_err(|e| e.to_string())
         }
         "run_git_remove_worktree" => {
             let repo_path = get_str(&args, "repoPath")?;
             let target_path = get_str(&args, "targetPath")?;
             let target = target_path.trim();
-            if target.is_empty() { return Err("target path is empty".to_string()); }
+            if target.is_empty() {
+                return Err("target path is empty".to_string());
+            }
             let current_key = normalize_repo_key(repo_path)?;
             let target_key = normalize_repo_key(target)?;
-            if current_key == target_key { return Err("cannot remove current worktree".to_string()); }
+            if current_key == target_key {
+                return Err("cannot remove current worktree".to_string());
+            }
             run_git_with_timeout(&["worktree", "remove", "--force", target], repo_path, 120)?;
-            serde_json::to_value(GitWorktreeRemoveResult { path: target.to_string() }).map_err(|e| e.to_string())
+            serde_json::to_value(GitWorktreeRemoveResult {
+                path: target.to_string(),
+            })
+            .map_err(|e| e.to_string())
         }
         "run_git_worktree_file_patch" => {
             let repo_path = get_str(&args, "repoPath")?;
             let file_path = get_str(&args, "filePath")?;
             let path = file_path.trim();
-            if path.is_empty() { return Err("file path is empty".to_string()); }
-            if path.contains('\n') || path.contains('\r') { return Err("file path contains invalid line breaks".to_string()); }
+            if path.is_empty() {
+                return Err("file path is empty".to_string());
+            }
+            if path.contains('\n') || path.contains('\r') {
+                return Err("file path contains invalid line breaks".to_string());
+            }
             let staged = run_git(&["diff", "--cached", "--", path], repo_path)?;
             let unstaged = run_git(&["diff", "--", path], repo_path)?;
             let mut parts = Vec::new();
-            if !staged.trim().is_empty() { parts.push(format!("# Staged\n\n{}", staged.trim_end())); }
-            if !unstaged.trim().is_empty() { parts.push(format!("# Working Tree\n\n{}", unstaged.trim_end())); }
-            if parts.is_empty() { return Ok(Value::String("No staged or unstaged patch available for this file.".to_string())); }
+            if !staged.trim().is_empty() {
+                parts.push(format!("# Staged\n\n{}", staged.trim_end()));
+            }
+            if !unstaged.trim().is_empty() {
+                parts.push(format!("# Working Tree\n\n{}", unstaged.trim_end()));
+            }
+            if parts.is_empty() {
+                return Ok(Value::String(
+                    "No staged or unstaged patch available for this file.".to_string(),
+                ));
+            }
             Ok(Value::String(parts.join("\n\n")))
         }
         "run_git_worktree_file_content" => {
             let repo_path = get_str(&args, "repoPath")?;
             let file_path = get_str(&args, "filePath")?;
             let path = file_path.trim();
-            if path.is_empty() { return Err("file path is empty".to_string()); }
-            if path.contains('\n') || path.contains('\r') || path.contains('\0') { return Err("file path contains invalid characters".to_string()); }
+            if path.is_empty() {
+                return Err("file path is empty".to_string());
+            }
+            if path.contains('\n') || path.contains('\r') || path.contains('\0') {
+                return Err("file path contains invalid characters".to_string());
+            }
             let rel_path = std::path::Path::new(path);
-            if rel_path.is_absolute() || path.split('/').any(|part| part == "..") { return Err("file path must be repository-relative".to_string()); }
-            let original = run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
+            if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
+                return Err("file path must be repository-relative".to_string());
+            }
+            let original =
+                run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
             let repo_root = normalize_repo_key(repo_path)?;
             let full_path = PathBuf::from(repo_root).join(rel_path);
-            let modified = fs::read(full_path).map(|bytes| String::from_utf8_lossy(&bytes).to_string()).unwrap_or_default();
-            serde_json::to_value(GitWorktreeFileContent { original, modified }).map_err(|e| e.to_string())
+            let modified = fs::read(full_path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                .unwrap_or_default();
+            serde_json::to_value(GitWorktreeFileContent { original, modified })
+                .map_err(|e| e.to_string())
         }
         "run_repo_terminal_command" => {
             let repo_path = get_str(&args, "repoPath")?;
             let command = get_str(&args, "command")?;
             let script = command.trim();
-            if script.is_empty() { return Err("command is empty".to_string()); }
-            if script.contains('\0') { return Err("command contains invalid null byte".to_string()); }
-            let result = command_runner::run_and_capture_in_dir_with_timeout("/bin/zsh", &["-lc", script], repo_path, 30)?;
+            if script.is_empty() {
+                return Err("command is empty".to_string());
+            }
+            if script.contains('\0') {
+                return Err("command contains invalid null byte".to_string());
+            }
+            let result = command_runner::run_and_capture_in_dir_with_timeout(
+                "/bin/zsh",
+                &["-lc", script],
+                repo_path,
+                30,
+            )?;
             Ok(Value::String(result))
         }
         "start_repo_terminal_session" => {
@@ -1402,12 +1941,26 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let session_id = get_str_opt(&args, "sessionId");
             let input = get_str(&args, "input")?;
             let key = ensure_terminal_session(repo_path, session_id.as_deref())?;
-            if input.is_empty() { return Err("terminal input is empty".to_string()); }
-            if input.contains('\0') { return Err("terminal input contains invalid null byte".to_string()); }
-            let mut sessions = terminal_sessions().lock().map_err(|_| "failed to lock terminal sessions".to_string())?;
-            let Some(session) = sessions.get_mut(&key) else { return Err("terminal session not found".to_string()); };
-            session.stdin.write_all(input.as_bytes()).map_err(|e| format!("failed writing terminal input: {e}"))?;
-            session.stdin.flush().map_err(|e| format!("failed flushing terminal input: {e}"))?;
+            if input.is_empty() {
+                return Err("terminal input is empty".to_string());
+            }
+            if input.contains('\0') {
+                return Err("terminal input contains invalid null byte".to_string());
+            }
+            let mut sessions = terminal_sessions()
+                .lock()
+                .map_err(|_| "failed to lock terminal sessions".to_string())?;
+            let Some(session) = sessions.get_mut(&key) else {
+                return Err("terminal session not found".to_string());
+            };
+            session
+                .stdin
+                .write_all(input.as_bytes())
+                .map_err(|e| format!("failed writing terminal input: {e}"))?;
+            session
+                .stdin
+                .flush()
+                .map_err(|e| format!("failed flushing terminal input: {e}"))?;
             Ok(Value::Null)
         }
         "read_repo_terminal_output" => {
@@ -1417,13 +1970,32 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let snap = read_terminal_snapshot(repo_path, session_id.as_deref(), after_seq)?;
             serde_json::to_value(snap).map_err(|e| e.to_string())
         }
+        "complete_repo_terminal_input" => {
+            let input = get_str(&args, "input")?;
+            Ok(serde_json::json!(input))
+        }
+        "list_repo_terminal_completions" => {
+            let input = get_str(&args, "input")?;
+            Ok(serde_json::json!({
+                "nextInput": input,
+                "candidates": [],
+                "token": ""
+            }))
+        }
         "clear_repo_terminal_session" => {
             let repo_path = get_str(&args, "repoPath")?;
             let session_id = get_str_opt(&args, "sessionId");
             let key = ensure_terminal_session(repo_path, session_id.as_deref())?;
-            let mut sessions = terminal_sessions().lock().map_err(|_| "failed to lock terminal sessions".to_string())?;
-            let Some(session) = sessions.get_mut(&key) else { return Ok(Value::Null); };
-            let mut guard = session.buffer.lock().map_err(|_| "failed to lock terminal buffer".to_string())?;
+            let mut sessions = terminal_sessions()
+                .lock()
+                .map_err(|_| "failed to lock terminal sessions".to_string())?;
+            let Some(session) = sessions.get_mut(&key) else {
+                return Ok(Value::Null);
+            };
+            let mut guard = session
+                .buffer
+                .lock()
+                .map_err(|_| "failed to lock terminal buffer".to_string())?;
             guard.clear();
             Ok(Value::Null)
         }
@@ -1435,8 +2007,14 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         }
         "run_git_user_identity" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let name = run_git(&["config", "user.name"], repo_path).unwrap_or_default().trim().to_string();
-            let email = run_git(&["config", "user.email"], repo_path).unwrap_or_default().trim().to_string();
+            let name = run_git(&["config", "user.name"], repo_path)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let email = run_git(&["config", "user.email"], repo_path)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             serde_json::to_value(GitUserIdentity { name, email }).map_err(|e| e.to_string())
         }
 
@@ -1449,33 +2027,59 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         "run_entire_explain_commit" => {
             let commit_sha = get_str(&args, "commitSha")?;
             let repo_path = get_str(&args, "repoPath")?;
-            let result = run_entire(&["explain", "--commit", commit_sha, "--no-pager"], repo_path)?;
+            let result = run_entire(
+                &["explain", "--commit", commit_sha, "--no-pager"],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
         "run_entire_explain_commit_short" => {
             let commit_sha = get_str(&args, "commitSha")?;
             let repo_path = get_str(&args, "repoPath")?;
-            let result = run_entire(&["explain", "--commit", commit_sha, "--no-pager", "--short"], repo_path)?;
+            let result = run_entire(
+                &["explain", "--commit", commit_sha, "--no-pager", "--short"],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
         "run_entire_explain_checkpoint" => {
             let checkpoint_id = get_str(&args, "checkpointId")?;
             let repo_path = get_str(&args, "repoPath")?;
-            let result = run_entire(&["explain", "--checkpoint", checkpoint_id, "--no-pager", "--short"], repo_path)?;
+            let result = run_entire(
+                &[
+                    "explain",
+                    "--checkpoint",
+                    checkpoint_id,
+                    "--no-pager",
+                    "--short",
+                ],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
         "run_entire_explain_checkpoint_raw_transcript" => {
             let checkpoint_id = get_str(&args, "checkpointId")?;
             let repo_path = get_str(&args, "repoPath")?;
-            let result = run_entire(&["explain", "--checkpoint", checkpoint_id, "--no-pager", "--raw-transcript"], repo_path)?;
+            let result = run_entire(
+                &[
+                    "explain",
+                    "--checkpoint",
+                    checkpoint_id,
+                    "--no-pager",
+                    "--raw-transcript",
+                ],
+                repo_path,
+            )?;
             Ok(Value::String(result))
         }
 
         // DB commands
         "db_save_review_record" => {
-            let record: ReviewRecord = serde_json::from_value(get_field(&args, "record")?).map_err(|e| format!("invalid record: {e}"))?;
+            let record: ReviewRecord = serde_json::from_value(get_field(&args, "record")?)
+                .map_err(|e| format!("invalid record: {e}"))?;
             let conn = open_db()?;
-            let findings_json = serde_json::to_string(&record.findings).map_err(|e| format!("serialize findings failed: {e}"))?;
+            let findings_json = serde_json::to_string(&record.findings)
+                .map_err(|e| format!("serialize findings failed: {e}"))?;
             conn.execute(
                 "INSERT OR REPLACE INTO review_records (id, repo_path, commit_sha, status, summary, findings_json, created_at, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![record.id, record.repo_path, record.commit_sha, record.status, record.summary, findings_json, record.created_at, now_millis()],
@@ -1488,43 +2092,90 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let conn = open_db()?;
             let mut stmt = conn.prepare("SELECT id, repo_path, commit_sha, status, summary, findings_json, created_at FROM review_records WHERE repo_path = ?1 ORDER BY created_at_ms DESC LIMIT ?2")
                 .map_err(|e| format!("prepare list query failed: {e}"))?;
-            let rows = stmt.query_map(params![repo_path, limit], |row| {
-                let findings_json: String = row.get(5)?;
-                let findings: Vec<ReviewFinding> = serde_json::from_str(&findings_json).unwrap_or_else(|_| Vec::new());
-                Ok(ReviewRecord { id: row.get(0)?, repo_path: row.get(1)?, commit_sha: row.get(2)?, status: row.get(3)?, summary: row.get(4)?, findings, created_at: row.get(6)? })
-            }).map_err(|e| format!("query list failed: {e}"))?;
+            let rows = stmt
+                .query_map(params![repo_path, limit], |row| {
+                    let findings_json: String = row.get(5)?;
+                    let findings: Vec<ReviewFinding> =
+                        serde_json::from_str(&findings_json).unwrap_or_else(|_| Vec::new());
+                    Ok(ReviewRecord {
+                        id: row.get(0)?,
+                        repo_path: row.get(1)?,
+                        commit_sha: row.get(2)?,
+                        status: row.get(3)?,
+                        summary: row.get(4)?,
+                        findings,
+                        created_at: row.get(6)?,
+                    })
+                })
+                .map_err(|e| format!("query list failed: {e}"))?;
             let mut out = Vec::new();
-            for row in rows { out.push(row.map_err(|e| format!("decode row failed: {e}"))?); }
+            for row in rows {
+                out.push(row.map_err(|e| format!("decode row failed: {e}"))?);
+            }
             serde_json::to_value(out).map_err(|e| e.to_string())
         }
         "db_add_repository" => {
             let path = get_str(&args, "path")?;
-            if path.trim().is_empty() { return Err("repository path is empty".to_string()); }
+            if path.trim().is_empty() {
+                return Err("repository path is empty".to_string());
+            }
             let p = std::path::Path::new(path);
-            if !p.is_dir() { return Err(format!("repository directory does not exist: {path}")); }
-            if !p.join(".git").exists() { return Err(format!("not a git repository: {path}")); }
-            let canonical = fs::canonicalize(p).map_err(|e| format!("failed to resolve repository path: {e}"))?;
-            let canonical_str = canonical.to_str().ok_or_else(|| "repository path is not valid utf-8".to_string())?.to_string();
-            let name = canonical.file_name().and_then(|s| s.to_str()).unwrap_or("repo").to_string();
+            if !p.is_dir() {
+                return Err(format!("repository directory does not exist: {path}"));
+            }
+            if !p.join(".git").exists() {
+                return Err(format!("not a git repository: {path}"));
+            }
+            let canonical = fs::canonicalize(p)
+                .map_err(|e| format!("failed to resolve repository path: {e}"))?;
+            let canonical_str = canonical
+                .to_str()
+                .ok_or_else(|| "repository path is not valid utf-8".to_string())?
+                .to_string();
+            let name = canonical
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("repo")
+                .to_string();
             let id = format!("repo-{}", now_millis());
             let added_at = chrono_like_now();
             let conn = open_db()?;
             conn.execute("INSERT OR IGNORE INTO repositories (id, path, name, added_at, added_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)", params![&id, &canonical_str, &name, &added_at, now_millis()])
                 .map_err(|e| format!("insert repository failed: {e}"))?;
-            let mut stmt = conn.prepare("SELECT id, path, name, added_at FROM repositories WHERE path = ?1 LIMIT 1")
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, path, name, added_at FROM repositories WHERE path = ?1 LIMIT 1",
+                )
                 .map_err(|e| format!("prepare select repository failed: {e}"))?;
-            let row = stmt.query_row(params![&canonical_str], |r| {
-                Ok(RepositoryEntry { id: r.get(0)?, path: r.get(1)?, name: r.get(2)?, added_at: r.get(3)? })
-            }).map_err(|e| format!("fetch inserted repository failed: {e}"))?;
+            let row = stmt
+                .query_row(params![&canonical_str], |r| {
+                    Ok(RepositoryEntry {
+                        id: r.get(0)?,
+                        path: r.get(1)?,
+                        name: r.get(2)?,
+                        added_at: r.get(3)?,
+                    })
+                })
+                .map_err(|e| format!("fetch inserted repository failed: {e}"))?;
             serde_json::to_value(row).map_err(|e| e.to_string())
         }
         "db_list_repositories" => {
             let conn = open_db()?;
-            let mut stmt = conn.prepare("SELECT id, path, name, added_at FROM repositories ORDER BY added_at_ms DESC")
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, path, name, added_at FROM repositories ORDER BY added_at_ms DESC",
+                )
                 .map_err(|e| format!("prepare list repositories failed: {e}"))?;
-            let rows = stmt.query_map([], |row| {
-                Ok(RepositoryEntry { id: row.get(0)?, path: row.get(1)?, name: row.get(2)?, added_at: row.get(3)? })
-            }).map_err(|e| format!("query list repositories failed: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(RepositoryEntry {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        name: row.get(2)?,
+                        added_at: row.get(3)?,
+                    })
+                })
+                .map_err(|e| format!("query list repositories failed: {e}"))?;
             let mut out = Vec::new();
             let mut stale_ids = Vec::new();
             for row in rows {
@@ -1554,7 +2205,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "db_save_review_action" => {
-            let action: ReviewAction = serde_json::from_value(get_field(&args, "action")?).map_err(|e| format!("invalid action: {e}"))?;
+            let action: ReviewAction = serde_json::from_value(get_field(&args, "action")?)
+                .map_err(|e| format!("invalid action: {e}"))?;
             let conn = open_db()?;
             conn.execute(
                 "INSERT OR REPLACE INTO review_actions (id, repo_path, review_id, finding_id, action, note, created_at, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1572,33 +2224,73 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             } else {
                 ("SELECT id, repo_path, review_id, finding_id, action, note, created_at FROM review_actions WHERE repo_path = ?1 ORDER BY created_at_ms DESC LIMIT ?2", false)
             };
-            let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare action list query failed: {e}"))?;
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| format!("prepare action list query failed: {e}"))?;
             let mut out = Vec::new();
             if bind_review {
                 let rid = review_id.unwrap_or_default();
-                let mut rows = stmt.query(params![repo_path, rid, limit]).map_err(|e| format!("query action list failed: {e}"))?;
-                while let Some(row) = rows.next().map_err(|e| format!("iterate action rows failed: {e}"))? {
+                let mut rows = stmt
+                    .query(params![repo_path, rid, limit])
+                    .map_err(|e| format!("query action list failed: {e}"))?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| format!("iterate action rows failed: {e}"))?
+                {
                     out.push(ReviewAction {
-                        id: row.get(0).map_err(|e| format!("decode action row failed: {e}"))?,
-                        repo_path: row.get(1).map_err(|e| format!("decode action row failed: {e}"))?,
-                        review_id: row.get(2).map_err(|e| format!("decode action row failed: {e}"))?,
-                        finding_id: row.get(3).map_err(|e| format!("decode action row failed: {e}"))?,
-                        action: row.get(4).map_err(|e| format!("decode action row failed: {e}"))?,
-                        note: row.get(5).map_err(|e| format!("decode action row failed: {e}"))?,
-                        created_at: row.get(6).map_err(|e| format!("decode action row failed: {e}"))?,
+                        id: row
+                            .get(0)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        repo_path: row
+                            .get(1)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        review_id: row
+                            .get(2)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        finding_id: row
+                            .get(3)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        action: row
+                            .get(4)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        note: row
+                            .get(5)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        created_at: row
+                            .get(6)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
                     });
                 }
             } else {
-                let mut rows = stmt.query(params![repo_path, limit]).map_err(|e| format!("query action list failed: {e}"))?;
-                while let Some(row) = rows.next().map_err(|e| format!("iterate action rows failed: {e}"))? {
+                let mut rows = stmt
+                    .query(params![repo_path, limit])
+                    .map_err(|e| format!("query action list failed: {e}"))?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| format!("iterate action rows failed: {e}"))?
+                {
                     out.push(ReviewAction {
-                        id: row.get(0).map_err(|e| format!("decode action row failed: {e}"))?,
-                        repo_path: row.get(1).map_err(|e| format!("decode action row failed: {e}"))?,
-                        review_id: row.get(2).map_err(|e| format!("decode action row failed: {e}"))?,
-                        finding_id: row.get(3).map_err(|e| format!("decode action row failed: {e}"))?,
-                        action: row.get(4).map_err(|e| format!("decode action row failed: {e}"))?,
-                        note: row.get(5).map_err(|e| format!("decode action row failed: {e}"))?,
-                        created_at: row.get(6).map_err(|e| format!("decode action row failed: {e}"))?,
+                        id: row
+                            .get(0)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        repo_path: row
+                            .get(1)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        review_id: row
+                            .get(2)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        finding_id: row
+                            .get(3)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        action: row
+                            .get(4)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        note: row
+                            .get(5)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
+                        created_at: row
+                            .get(6)
+                            .map_err(|e| format!("decode action row failed: {e}"))?,
                     });
                 }
             }
@@ -1608,18 +2300,41 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         // Environment / runtime commands
         "check_runtime_requirements" => {
             let git = check_dep("git", &["--version"], "brew install git");
-            let entire = check_dep("entire", &["--version"], "brew install anomalyco/tap/entire");
-            let opencode = check_dep("opencode", &["--version"], "brew install anomalyco/tap/opencode");
+            let entire = check_dep(
+                "entire",
+                &["--version"],
+                "brew install anomalyco/tap/entire",
+            );
+            let opencode = check_dep(
+                "opencode",
+                &["--version"],
+                "brew install anomalyco/tap/opencode",
+            );
             let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
             let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
-            serde_json::to_value(RuntimeRequirementsStatus { ok, git, entire, opencode, giteam }).map_err(|e| e.to_string())
+            serde_json::to_value(RuntimeRequirementsStatus {
+                ok,
+                git,
+                entire,
+                opencode,
+                giteam,
+            })
+            .map_err(|e| e.to_string())
         }
         "check_runtime_dependency" => {
             let name = get_str(&args, "name")?;
             let dep = match name {
                 "git" => check_dep("git", &["--version"], "brew install git"),
-                "entire" => check_dep("entire", &["--version"], "brew tap entireio/tap && brew install entireio/tap/entire"),
-                "opencode" => check_dep("opencode", &["--version"], "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)"),
+                "entire" => check_dep(
+                    "entire",
+                    &["--version"],
+                    "brew tap entireio/tap && brew install entireio/tap/entire",
+                ),
+                "opencode" => check_dep(
+                    "opencode",
+                    &["--version"],
+                    "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+                ),
                 "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
                 _ => return Err(format!("unsupported dependency: {name}")),
             };
@@ -1651,9 +2366,10 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let script_owned = script.to_string();
             let job_id_for_thread = job_id.clone();
             thread::spawn(move || {
-                let mut cmd = Command::new("/bin/zsh");
-                cmd.args(["-fc", &script_owned]);
-                cmd.env("PATH", build_path_env());
+                let shell = resolve_posix_shell_path();
+                let mut cmd = Command::new(shell.as_str());
+                cmd.args(["-lc", &script_owned]);
+                apply_shell_env(&mut cmd);
                 cmd.stdin(Stdio::null());
                 cmd.stdout(Stdio::piped());
                 cmd.stderr(Stdio::piped());
@@ -1783,14 +2499,16 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 "enabled": settings.enabled,
                 "host": settings.host,
                 "port": settings.port
-            })).map_err(|e| e.to_string())
+            }))
+            .map_err(|e| e.to_string())
         }
         "giteam_cli_start_mobile_service_background" => {
             super::control::start_control_server().map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "giteam_cli_set_settings" => {
-            let settings = serde_json::from_value(args).map_err(|e| format!("invalid settings: {e}"))?;
+            let settings =
+                serde_json::from_value(args).map_err(|e| format!("invalid settings: {e}"))?;
             let result = super::control::set_control_server_settings(settings)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
@@ -1831,7 +2549,9 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let session_id = get_str(&args, "sessionId")?;
             let directory = get_str_opt(&args, "directory");
             let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed(repo_path, session_id, directory, limit)?;
+            let result = super::opencode::get_opencode_session_messages_detailed(
+                repo_path, session_id, directory, limit,
+            )?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "delete_opencode_session" => {
@@ -1855,8 +2575,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "set_opencode_service_settings" => {
-            let settings: super::opencode::OpencodeServiceSettings = serde_json::from_value(args.get("settings").cloned().unwrap_or_else(|| serde_json::json!({})))
-                .map_err(|e| format!("invalid settings: {e}"))?;
+            let settings: super::opencode::OpencodeServiceSettings = serde_json::from_value(
+                args.get("settings")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            )
+            .map_err(|e| format!("invalid settings: {e}"))?;
             let repo_path = get_str_opt(&args, "repoPath");
             let result = super::opencode::set_opencode_service_settings(settings, repo_path)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
@@ -1884,7 +2608,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         "disconnect_opencode_server_provider" => {
             let repo_path = get_str(&args, "repoPath")?;
             let provider_id = get_str(&args, "providerId")?;
-            let result = super::opencode::disconnect_opencode_server_provider(repo_path, provider_id)?;
+            let result =
+                super::opencode::disconnect_opencode_server_provider(repo_path, provider_id)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "delete_opencode_server_auth" => {
@@ -1895,8 +2620,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
         }
         "patch_opencode_server_config" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let patch = serde_json::from_value(args.get("patch").cloned().unwrap_or_else(|| serde_json::json!({})))
-                .map_err(|e| format!("invalid patch: {e}"))?;
+            let patch = serde_json::from_value(
+                args.get("patch")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            )
+            .map_err(|e| format!("invalid patch: {e}"))?;
             let result = super::opencode::patch_opencode_server_config(repo_path, patch)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
@@ -1913,54 +2642,77 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let result = super::opencode::set_opencode_server_current_model(repo_path, model)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
-        "post_opencode_session_prompt_async" => {
+        "list_opencode_agents" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let prompt = get_str(&args, "prompt")?;
-            let parts = args.get("parts").cloned();
-            let model = get_str_opt(&args, "model");
-            let result = super::opencode::post_opencode_session_prompt_async(repo_path, session_id, prompt, parts, model, None, None)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
+            super::opencode::list_opencode_agents(repo_path)
         }
-        "abort_opencode_session" => {
+        "list_installed_opencode_skills" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let result = super::opencode::abort_opencode_session(repo_path, session_id, directory)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
+            super::opencode::list_installed_opencode_skills(repo_path)
         }
-        "list_opencode_questions" => {
+        "fetch_opencode_skill_detail_api" => {
             let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_opencode_questions(repo_path)
+            let id = get_str(&args, "id")?;
+            super::opencode::fetch_opencode_skill_detail_api(repo_path, id)
         }
-        "post_opencode_question_reply" => {
+        "fetch_opencode_skill_audit_api" => {
             let repo_path = get_str(&args, "repoPath")?;
-            let request_id = get_str(&args, "requestId")?;
-            let answers = args
-                .get("answers")
+            let id = get_str(&args, "id")?;
+            super::opencode::fetch_opencode_skill_audit_api(repo_path, id)
+        }
+        "list_opencode_permissions" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            super::opencode::list_opencode_permissions(repo_path)
+        }
+        "list_opencode_mcp_status" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            super::opencode::list_opencode_mcp_status(repo_path)
+        }
+        "add_opencode_mcp_server" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            let config = args
+                .get("config")
                 .cloned()
-                .map(serde_json::from_value::<Vec<Vec<String>>>)
-                .transpose()
-                .map_err(|e| format!("invalid answers: {e}"))?
-                .unwrap_or_default();
-            let result = super::opencode::post_opencode_question_reply(
-                repo_path, request_id, answers,
-            )?;
+                .unwrap_or_else(|| serde_json::json!({}));
+            super::opencode::add_opencode_mcp_server(repo_path, name, config)
+        }
+        "connect_opencode_mcp_server" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            let result = super::opencode::connect_opencode_mcp_server(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
-        "post_opencode_question_reject" => {
+        "disconnect_opencode_mcp_server" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            let result = super::opencode::disconnect_opencode_mcp_server(repo_path, name)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "authenticate_opencode_mcp_server" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            super::opencode::authenticate_opencode_mcp_server(repo_path, name)
+        }
+        "remove_opencode_mcp_auth" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            let result = super::opencode::remove_opencode_mcp_auth(repo_path, name)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "delete_opencode_mcp_server" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            super::opencode::delete_opencode_mcp_server(repo_path, name)
+        }
+        "post_opencode_permission_reply" => {
             let repo_path = get_str(&args, "repoPath")?;
             let request_id = get_str(&args, "requestId")?;
-            let result = super::opencode::post_opencode_question_reject(repo_path, request_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages_detailed_page" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let before = get_str_opt(&args, "before");
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed_page(repo_path, session_id, directory, before, limit)?;
+            let reply = get_str(&args, "reply")?;
+            let message = get_str_opt(&args, "message");
+            let result = super::opencode::post_opencode_permission_reply(
+                repo_path, request_id, reply, message,
+            )?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "get_opencode_provider_config" => {
@@ -1983,7 +2735,53 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let session_id = get_str(&args, "sessionId")?;
             let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages(repo_path, session_id, limit)?;
+            let result =
+                super::opencode::get_opencode_session_messages(repo_path, session_id, limit)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "set_mobile_model_state_from_desktop" => {
+            let state = args
+                .get("state")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            super::control::set_mobile_model_state_from_desktop(state)?;
+            Ok(serde_json::json!(true))
+        }
+        "fetch_skillsmp_skill_search" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let query = get_str(&args, "query")?;
+            let page = get_u64_opt(&args, "page");
+            let limit = get_u64_opt(&args, "limit");
+            let sort_by = get_str_opt(&args, "sortBy");
+            let category = get_str_opt(&args, "category");
+            let occupation = get_str_opt(&args, "occupation");
+            let api_key = get_str_opt(&args, "apiKey");
+            super::opencode::fetch_skillsmp_skill_search(
+                repo_path, query, page, limit, sort_by, category, occupation, api_key,
+            )
+        }
+        "fetch_skillsmp_ai_search" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let query = get_str(&args, "query")?;
+            let api_key = get_str_opt(&args, "apiKey");
+            super::opencode::fetch_skillsmp_ai_search(repo_path, query, api_key)
+        }
+        "set_opencode_session_permission" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let session_id = get_str(&args, "sessionId")?;
+            let permission = serde_json::from_value(
+                args.get("permission")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
+            .map_err(|e| format!("invalid permission: {e}"))?;
+            super::opencode::set_opencode_session_permission(repo_path, session_id, permission)
+        }
+        "remove_opencode_skill" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let name = get_str(&args, "name")?;
+            let global = args.get("global").and_then(|v| v.as_bool());
+            let result = super::opencode::remove_opencode_skill(repo_path, name, global)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "get_opencode_server_provider_catalog" => {
@@ -2061,9 +2859,24 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let model_id = get_str_opt(&args, "modelId");
             let model_name = get_str_opt(&args, "modelName");
             let result = super::opencode::set_opencode_provider_config(
-                repo_path, provider, npm, name, base_url, api_key, headers,
-                endpoint, region, profile, project, location, resource_name,
-                enterprise_url, timeout, chunk_timeout, model_id, model_name,
+                repo_path,
+                provider,
+                npm,
+                name,
+                base_url,
+                api_key,
+                headers,
+                endpoint,
+                region,
+                profile,
+                project,
+                location,
+                resource_name,
+                enterprise_url,
+                timeout,
+                chunk_timeout,
+                model_id,
+                model_name,
             )?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
@@ -2080,7 +2893,10 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
 
 // JSON helper functions
 fn get_field(value: &Value, key: &str) -> Result<Value, String> {
-    value.get(key).cloned().ok_or_else(|| format!("missing field: {key}"))
+    value
+        .get(key)
+        .cloned()
+        .ok_or_else(|| format!("missing field: {key}"))
 }
 
 fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -2091,7 +2907,10 @@ fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
 }
 
 fn get_str_opt(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn get_bool(value: &Value, key: &str) -> bool {
@@ -2115,6 +2934,10 @@ fn get_u64(value: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(|v| v.as_u64())
         .ok_or_else(|| format!("missing or invalid u64 field: {key}"))
+}
+
+fn get_u64_opt(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|v| v.as_u64())
 }
 
 fn get_i64_opt(value: &Value, key: &str) -> Option<i64> {
