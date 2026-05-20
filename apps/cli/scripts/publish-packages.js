@@ -107,7 +107,7 @@ console.log(
 );
 
 function publishPackage(packageDir, packageName) {
-  const publishArgs = ['publish'];
+  const publishArgs = ['publish', '--loglevel', 'verbose'];
   if (dryRun) {
     publishArgs.push('--dry-run');
   }
@@ -119,6 +119,10 @@ function publishPackage(packageDir, packageName) {
   }
 
   console.log(`[giteam] ${dryRun ? 'checking' : 'publishing'} ${packageName}`);
+  if (process.platform === 'win32') {
+    run('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...publishArgs], { cwd: packageDir });
+    return;
+  }
   run('npm', publishArgs, { cwd: packageDir });
 }
 
@@ -232,12 +236,20 @@ function escapeRegExp(input) {
 }
 
 function run(command, commandArgs, extra = {}) {
+  console.log(`[giteam] run: ${command} ${commandArgs.join(' ')}`);
   const result = spawnSync(command, commandArgs, {
     cwd: extra.cwd || cliRoot,
     stdio: 'inherit',
     env: process.env
   });
+  if (result.error) {
+    console.error(`[giteam] failed to start command: ${result.error.message}`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
+    if (typeof result.status !== 'number') {
+      console.error(`[giteam] command terminated without exit status: ${command}`);
+    }
     process.exit(result.status ?? 1);
   }
 }
