@@ -2122,13 +2122,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             if path.trim().is_empty() {
                 return Err("repository path is empty".to_string());
             }
+            command_runner::validate_repo_path(path)?;
             let p = std::path::Path::new(path);
-            if !p.is_dir() {
-                return Err(format!("repository directory does not exist: {path}"));
-            }
-            if !p.join(".git").exists() {
-                return Err(format!("not a git repository: {path}"));
-            }
             let canonical = fs::canonicalize(p)
                 .map_err(|e| format!("failed to resolve repository path: {e}"))?;
             let canonical_str = canonical

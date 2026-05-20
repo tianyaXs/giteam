@@ -115,8 +115,7 @@ export async function listen<T>(
     return tauriListen(event, handler);
   }
 
-  // Web mode: no-op for file watcher events (frontend uses polling instead)
-  console.warn(`[platform] listen("${event}") is not supported in web mode`);
+  // Web mode: frontend falls back to polling for watcher-style updates.
   return () => {};
 }
 

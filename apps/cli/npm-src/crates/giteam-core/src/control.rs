@@ -2408,7 +2408,8 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     }
 
     let settings = read_control_server_settings();
-    if !settings.enabled {
+    let is_desktop_rpc = req.method == "POST" && req.path == "/api/v1/desktop/rpc";
+    if !settings.enabled && !is_desktop_rpc {
         return (
             503,
             serde_json::json!({

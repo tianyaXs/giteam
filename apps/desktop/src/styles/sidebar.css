@@ -703,8 +703,8 @@
 }
 
 .gt-user-settings {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--gt-radius-lg);
   color: var(--muted);
   cursor: pointer;
@@ -715,8 +715,8 @@
 }
 
 .gt-user-settings svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   display: block;
   color: color-mix(in srgb, var(--text) 50%, var(--muted));
   opacity: 0.8;
