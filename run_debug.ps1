@@ -204,10 +204,10 @@ function Stop-ProcessOnPort {
     $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique
 
-    foreach ($pid in $connections) {
-        if ($pid -and $pid -ne $PID) {
-            Write-Host "Killing process on port $Port (PID: $pid)"
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    foreach ($processId in $connections) {
+        if ($processId -and $processId -ne $PID) {
+            Write-Host "Killing process on port $Port (PID: $processId)"
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
         }
     }
 }

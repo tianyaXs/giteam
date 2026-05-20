@@ -2543,6 +2543,33 @@ export function App() {
     return (opencodeProviderSourceById[pid] || "").trim().toLowerCase();
   }
 
+  function alignConnectedProviderIds(rawConnected: string[], providerIds: string[], providerNames: Record<string, string>): string[] {
+    const out = new Set<string>();
+    const idByNorm = new Map<string, string>();
+    const idByNameNorm = new Map<string, string>();
+    for (const providerId of providerIds) {
+      const pid = (providerId || "").trim();
+      if (!pid) continue;
+      const idNorm = normalizeProviderId(pid);
+      if (idNorm && !idByNorm.has(idNorm)) idByNorm.set(idNorm, pid);
+      const nameNorm = normalizeProviderId(providerNames[pid] || "");
+      if (nameNorm && !idByNameNorm.has(nameNorm)) idByNameNorm.set(nameNorm, pid);
+    }
+    for (const value of rawConnected) {
+      const raw = (value || "").trim();
+      if (!raw) continue;
+      if (providerIds.includes(raw)) {
+        out.add(raw);
+        continue;
+      }
+      const norm = normalizeProviderId(raw);
+      if (!norm) continue;
+      const matched = idByNorm.get(norm) || idByNameNorm.get(norm);
+      if (matched) out.add(matched);
+    }
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
+  }
+
   function isOpencodeConfigCustomProvider(providerId: string): boolean {
     const pid = (providerId || "").trim();
     if (!pid) return false;
@@ -4560,12 +4587,13 @@ export function App() {
       opencodeModelProvider,
       opencodeSelectedModel
     );
+    const connectedAligned = alignConnectedProviderIds(connected, Object.keys(catalog), names);
     setOpencodeProviderNames((prev) => ({ ...prev, ...names }));
     setOpencodeProviderSourceById((prev) => ({ ...prev, ...sources }));
     setOpencodeModelsByProvider(catalog);
     setOpencodeModelNamesByProvider(modelNamesCatalog);
     setOpencodeProviders(Object.keys(catalog).sort((a, b) => a.localeCompare(b)));
-    setOpencodeConnectedProviders(connected.sort((a, b) => a.localeCompare(b)));
+    setOpencodeConnectedProviders(connectedAligned);
     setOpencodeModelProvider(next.provider);
     setOpencodeSelectedModel(next.model);
     return next.providers;
@@ -4887,6 +4915,12 @@ export function App() {
       const rows = state?.providers || [];
       const connected = (state?.connected || []).filter(Boolean);
       if (!rows || rows.length === 0) return;
+      const names: Record<string, string> = {};
+      for (const p of rows) {
+        if (!p?.id) continue;
+        if (p.name) names[p.id] = p.name;
+      }
+      const connectedAligned = alignConnectedProviderIds(connected, rows.map((p) => p.id).filter(Boolean), names);
       setOpencodeProviderNames((prev) => {
         const next = { ...prev };
         for (const p of rows) {
@@ -4920,8 +4954,8 @@ export function App() {
         return next;
       });
       setOpencodeProviders(rows.map((p) => p.id).filter(Boolean).sort((a, b) => a.localeCompare(b)));
-      setOpencodeConnectedProviders(connected.sort((a, b) => a.localeCompare(b)));
-      appendOpencodeDebugLog(`server.providers synced providers=${rows.length} connected=${connected.length}`);
+      setOpencodeConnectedProviders(connectedAligned);
+      appendOpencodeDebugLog(`server.providers synced providers=${rows.length} connected=${connected.length} aligned=${connectedAligned.length}`);
     } catch (e) {
       appendOpencodeDebugLog(`server.providers error ${String(e)}`);
     }
@@ -11124,23 +11158,40 @@ branches.forEach((b) => {
     }
   }
 
-  async function saveOpencodeAuthKey(providerId: string) {
-    if (!ensureRepoSelected()) return;
+  async function saveOpencodeAuthKey(providerId: string, apiKey?: string) {
+    if (!ensureRepoSelected()) {
+      setMessage("请先选择一个工作区");
+      return;
+    }
     const authPid = providerId.trim();
-    const key = opencodeConnectApiKey.trim();
-    if (!authPid || !key) return;
+    const key = (apiKey ?? opencodeConnectApiKey).trim();
+    if (!authPid) {
+      setError("Provider is missing");
+      setMessage("更新 API Key 失败");
+      return;
+    }
+    if (!key) {
+      setError("API Key is empty");
+      setMessage("请输入 API Key");
+      return;
+    }
     setOpencodeConnectBusy(true);
     setError("");
+    setMessage(`正在更新 API Key: ${authPid}`);
     try {
       await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-      await refreshOpencodeCatalog();
-      if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-        await fetchOpencodeModels(authPid);
-      }
       setOpencodeProviderPickerProvider(authPid);
       setMessage(`已更新密钥: ${authPid}`);
       setOpencodeConnectApiKey("");
       setShowOpencodeAuthDialogFor("");
+      setOpencodeConnectedProviders((prev) => Array.from(new Set([...prev, authPid])).sort((a, b) => a.localeCompare(b)));
+      void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false })
+        .then(async () => {
+          if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+            await fetchOpencodeModels(authPid);
+          }
+        })
+        .catch((e) => appendOpencodeDebugLog(`auth.refresh error ${String(e)}`));
     } catch (e) {
       setError(String(e));
       setMessage("更新密钥失败");
@@ -11841,7 +11892,7 @@ branches.forEach((b) => {
                     }
                     const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
                     const tag = getOpencodeProviderTag(pid);
-                    const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+                    const keyValue = opencodeConnectApiKey;
                     const showAuthEditor = !connected;
                     const menuOpen = opencodeProviderActionMenuFor === pid;
                     const openAuthEditor = () => {
@@ -11869,24 +11920,36 @@ branches.forEach((b) => {
                         />
                         <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)" }}>
                           <button
+                            type="button"
                             className="chip"
-                            disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                            disabled={opencodeConnectBusy || !keyValue.trim()}
                             onClick={async () => {
-                              if (!ensureRepoSelected()) return;
+                              if (!ensureRepoSelected()) {
+                                setMessage("请先选择一个工作区");
+                                return;
+                              }
                               const authPid = pid.trim();
                               const key = opencodeConnectApiKey.trim();
-                              if (!authPid || !key) return;
+                              if (!authPid || !key) {
+                                setMessage("请输入 API Key");
+                                return;
+                              }
                               setOpencodeConnectBusy(true);
                               setError("");
+                              setMessage(`正在更新 API Key: ${authPid}`);
                               try {
                                 await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                                await refreshOpencodeCatalog();
-                                if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                                  await fetchOpencodeModels(authPid);
-                                }
                                 setOpencodeProviderPickerProvider(authPid);
                                 setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
                                 setOpencodeConnectApiKey("");
+                                setOpencodeConnectedProviders((prev) => Array.from(new Set([...prev, authPid])).sort((a, b) => a.localeCompare(b)));
+                                void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false })
+                                  .then(async () => {
+                                    if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                                      await fetchOpencodeModels(authPid);
+                                    }
+                                  })
+                                  .catch((err) => appendOpencodeDebugLog(`auth.inline.refresh error ${String(err)}`));
                               } catch (e) {
                                 setError(String(e));
                                 setMessage(connected ? "更新密钥失败" : "连接失败");
@@ -12021,10 +12084,10 @@ branches.forEach((b) => {
         {showOpencodeAuthDialogFor ? (() => {
           const pid = showOpencodeAuthDialogFor.trim();
           const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-          const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+          const keyValue = opencodeConnectApiKey;
           return (
             <OpenCodeAuthDialog
-              providerId={opencodeConnectProviderId === pid ? pid : ""}
+              providerId={pid}
               providerName={pretty}
               providerTag={getOpencodeProviderTag(pid)}
               apiKey={keyValue}
@@ -12035,7 +12098,7 @@ branches.forEach((b) => {
                 setOpencodeConnectProviderName(pretty);
                 setOpencodeConnectApiKey(value);
               }}
-              onSave={() => void saveOpencodeAuthKey(pid)}
+              onSave={(value) => saveOpencodeAuthKey(pid, value)}
             />
           );
         })() : null}

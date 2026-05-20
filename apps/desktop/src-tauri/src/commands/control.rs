@@ -146,6 +146,15 @@ fn default_pair_code_ttl_mode() -> String {
 }
 
 fn control_server_settings_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -182,6 +191,15 @@ fn control_server_settings_path() -> Option<PathBuf> {
 }
 
 fn control_auth_token_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {

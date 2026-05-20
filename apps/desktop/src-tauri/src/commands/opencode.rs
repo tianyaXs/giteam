@@ -231,6 +231,21 @@ fn extract_config_provider_catalog(root: &Value) -> Vec<OpencodeConfigProviderCa
 }
 
 fn opencode_auth_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let p = local_app_data.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("opencode").join("auth.json"));
+            }
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("opencode").join("auth.json"));
+            }
+        }
+    }
     if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
         let p = xdg_data_home.trim();
         if !p.is_empty() {
@@ -253,6 +268,19 @@ fn opencode_auth_path() -> Option<PathBuf> {
 }
 
 fn opencode_service_settings_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(
+                    PathBuf::from(p)
+                        .join("giteam")
+                        .join("opencode-service.json"),
+                );
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -2920,6 +2948,16 @@ pub fn set_opencode_provider_config(
             set_opencode_auth_api_key(provider, "")?;
         } else {
             set_opencode_auth_api_key(provider, key.as_str())?;
+            if !key.trim().is_empty() {
+                let auth_body = serde_json::json!({ "type": "api", "key": key }).to_string();
+                let _ = run_curl_json(
+                    repo_path,
+                    "PUT",
+                    format!("{base_ep}/auth/{}", urlencoding::encode(provider.trim())).as_str(),
+                    Some(auth_body.as_str()),
+                    15,
+                )?;
+            }
         }
         let _ = run_curl_json(
             repo_path,
