@@ -1,6 +1,6 @@
 {
   "name": "giteam",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "giteam terminal control service",
   "author": "giteam Contributors",
   "type": "module",
@@ -36,10 +36,10 @@
     "giteam": "bin/giteam.js"
   },
   "optionalDependencies": {
-    "giteam-darwin-arm64": "0.1.31",
-    "giteam-linux-arm64": "0.1.31",
-    "giteam-linux-x64": "0.1.31",
-    "giteam-win32-x64": "0.1.31"
+    "giteam-darwin-arm64": "0.1.32",
+    "giteam-linux-arm64": "0.1.32",
+    "giteam-linux-x64": "0.1.32",
+    "giteam-win32-x64": "0.1.32"
   },
   "scripts": {
     "start": "node ./bin/giteam.js serve",
