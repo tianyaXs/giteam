@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -12,6 +13,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TERMINAL_MAX_BUFFER_BYTES: usize = 256 * 1024;
+const GITEAM_HTTP_TIMEOUT_MS: u64 = 1500;
+const GITEAM_SERVICE_BOOT_TIMEOUT_MS: u64 = 6000;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2493,35 +2496,90 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             serde_json::to_value(settings).map_err(|e| e.to_string())
         }
         "giteam_cli_get_mobile_service_status" => {
-            // Return a simple status
             let settings = super::control::get_control_server_settings()?;
+            let running = if super::control::is_web_static_mode() {
+                giteam_service_is_reachable(settings.port)
+            } else {
+                settings.enabled
+            };
             serde_json::to_value(serde_json::json!({
+                "cliInstalled": true,
                 "enabled": settings.enabled,
                 "host": settings.host,
-                "port": settings.port
+                "port": settings.port,
+                "running": running
             }))
             .map_err(|e| e.to_string())
         }
         "giteam_cli_start_mobile_service_background" => {
-            super::control::start_control_server().map_err(|e| e.to_string())?;
+            if super::control::is_web_static_mode() {
+                let settings = super::control::get_control_server_settings()?;
+                if !settings.enabled {
+                    return Err("giteam mobile control service is disabled".to_string());
+                }
+                if !giteam_service_is_reachable(settings.port) {
+                    run_current_giteam_cli(&["service", "start", "--json"])?;
+                    wait_for_giteam_service_port(settings.port)?;
+                }
+            } else {
+                super::control::start_control_server().map_err(|e| e.to_string())?;
+            }
             Ok(Value::Null)
         }
         "giteam_cli_set_settings" => {
-            let settings =
-                serde_json::from_value(args).map_err(|e| format!("invalid settings: {e}"))?;
-            let result = super::control::set_control_server_settings(settings)?;
+            let settings = read_control_settings_payload(&args)?;
+            let result = if super::control::is_web_static_mode() {
+                let saved = super::control::persist_control_server_settings(settings)?;
+                restart_managed_mobile_service(&saved)?;
+                saved
+            } else {
+                super::control::set_control_server_settings(settings)?
+            };
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "giteam_cli_get_pair_code" => {
-            let info = super::control::get_control_pair_code()?;
+            let info = if super::control::is_web_static_mode() {
+                let settings = super::control::get_control_server_settings()?;
+                if !settings.enabled {
+                    return Err("giteam mobile control service is disabled".to_string());
+                }
+                if !giteam_service_is_reachable(settings.port) {
+                    return Err("giteam mobile control service is starting".to_string());
+                }
+                current_pair_from_managed_service(settings.port)?
+            } else {
+                super::control::get_control_pair_code()?
+            };
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
         "giteam_cli_refresh_pair_code" => {
-            let info = super::control::refresh_control_pair_code()?;
+            let info = if super::control::is_web_static_mode() {
+                let settings = super::control::get_control_server_settings()?;
+                if !settings.enabled {
+                    return Err("giteam mobile control service is disabled".to_string());
+                }
+                if !giteam_service_is_reachable(settings.port) {
+                    return Err("giteam mobile control service is starting".to_string());
+                }
+                refresh_pair_from_managed_service(settings.port)?
+            } else {
+                super::control::refresh_control_pair_code()?
+            };
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
         "giteam_cli_get_access_info" => {
-            let info = super::control::get_control_access_info()?;
+            let info = if super::control::is_web_static_mode() {
+                let settings = super::control::get_control_server_settings()?;
+                if !settings.enabled {
+                    return Err("giteam mobile control service is disabled".to_string());
+                }
+                if !giteam_service_is_reachable(settings.port) {
+                    return Err("giteam mobile control service is starting".to_string());
+                }
+                access_info_from_managed_service(settings.port)?
+            } else {
+                super::control::get_control_access_info()?
+            };
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
 
@@ -2942,4 +3000,134 @@ fn get_u64_opt(value: &Value, key: &str) -> Option<u64> {
 
 fn get_i64_opt(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|v| v.as_i64())
+}
+
+fn giteam_service_addr(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+fn giteam_service_is_reachable(port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &giteam_service_addr(port),
+        Duration::from_millis(GITEAM_HTTP_TIMEOUT_MS),
+    )
+    .is_ok()
+}
+
+fn wait_for_giteam_service_port(port: u16) -> Result<(), String> {
+    let start = Instant::now();
+    while start.elapsed().as_millis() < u128::from(GITEAM_SERVICE_BOOT_TIMEOUT_MS) {
+        if giteam_service_is_reachable(port) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    Err(format!(
+        "giteam CLI service did not become reachable on port {port}"
+    ))
+}
+
+fn run_current_giteam_cli(args: &[&str]) -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("resolve current executable failed: {e}"))?;
+    let output = Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run giteam CLI: {e}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        Err(stderr)
+    } else if !stdout.is_empty() {
+        Err(stdout)
+    } else {
+        Err(format!("giteam CLI exited with status {}", output.status))
+    }
+}
+
+fn giteam_http_json(method: &str, port: u16, path: &str, body: Option<&str>) -> Result<Value, String> {
+    let mut stream = TcpStream::connect_timeout(
+        &giteam_service_addr(port),
+        Duration::from_millis(GITEAM_HTTP_TIMEOUT_MS),
+    )
+    .map_err(|e| format!("connect local control api failed: {e}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(GITEAM_HTTP_TIMEOUT_MS)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(GITEAM_HTTP_TIMEOUT_MS)));
+    let payload = body.unwrap_or("");
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
+    );
+    if !payload.is_empty() {
+        req.push_str("Content-Type: application/json\r\n");
+        req.push_str(&format!("Content-Length: {}\r\n", payload.len()));
+    }
+    req.push_str("\r\n");
+    req.push_str(payload);
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("write local control api failed: {e}"))?;
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .map_err(|e| format!("read local control api failed: {e}"))?;
+    let (head, body_text) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "invalid local control api response".to_string())?;
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(500);
+    let json = if body_text.trim().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(body_text)
+            .map_err(|e| format!("invalid local control api json: {e}"))?
+    };
+    if (200..300).contains(&status) {
+        Ok(json)
+    } else {
+        let message = json
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        Err(message)
+    }
+}
+
+fn read_control_settings_payload(args: &Value) -> Result<super::control::ControlServerSettings, String> {
+    let raw = args.get("settings").cloned().unwrap_or_else(|| args.clone());
+    serde_json::from_value(raw).map_err(|e| format!("invalid settings: {e}"))
+}
+
+fn current_pair_from_managed_service(port: u16) -> Result<super::control::ControlPairCodeInfo, String> {
+    let value = giteam_http_json("GET", port, "/api/v1/pair/current", None)?;
+    serde_json::from_value(value).map_err(|e| format!("invalid pair.current payload: {e}"))
+}
+
+fn refresh_pair_from_managed_service(port: u16) -> Result<super::control::ControlPairCodeInfo, String> {
+    let value = giteam_http_json("POST", port, "/api/v1/pair/request", Some("{}"))?;
+    serde_json::from_value(value).map_err(|e| format!("invalid pair.request payload: {e}"))
+}
+
+fn access_info_from_managed_service(port: u16) -> Result<super::control::ControlAccessInfo, String> {
+    let value = giteam_http_json("GET", port, "/api/v1/admin/control/access-info", None)?;
+    serde_json::from_value(value).map_err(|e| format!("invalid admin control access payload: {e}"))
+}
+
+fn restart_managed_mobile_service(settings: &super::control::ControlServerSettings) -> Result<(), String> {
+    if settings.enabled {
+        run_current_giteam_cli(&["service", "restart", "--force", "--json"])?;
+        wait_for_giteam_service_port(settings.port)?;
+    } else {
+        run_current_giteam_cli(&["service", "stop", "--force", "--json"])?;
+    }
+    Ok(())
 }

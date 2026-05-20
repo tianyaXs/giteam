@@ -3236,6 +3236,10 @@ pub fn set_web_static_dir(dir: Option<PathBuf>) {
     let _ = WEB_STATIC_DIR.set(dir);
 }
 
+pub fn is_web_static_mode() -> bool {
+    WEB_STATIC_DIR.get().and_then(|dir| dir.as_ref()).is_some()
+}
+
 pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {
     let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {

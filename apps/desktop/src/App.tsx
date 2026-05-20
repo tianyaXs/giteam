@@ -8981,21 +8981,28 @@ export function App() {
   }, [repos]);
 
   const activityBar = <div />;
+  const noRepos = repos.length === 0;
 
   const sideBar = (
     <div className="wb-sidebar-inner gt-sidebar-inner">
       <div className="gt-sidebar-top">
-        <button className="gt-new-session-btn" onClick={() => void createAndSwitchOpencodeSessionForSidebar()} disabled={repos.length === 0 || !runtimeStatus.opencode.installed}>
+        <button
+          className="gt-new-session-btn"
+          onClick={() => void (noRepos ? pickAndImportRepository() : createAndSwitchOpencodeSessionForSidebar())}
+          disabled={noRepos ? busy : busy || !runtimeStatus.opencode.installed}
+        >
           <div className="gt-new-session-main">
-            <span className="gt-new-session-icon"><EditIcon /></span>
-            <span className="gt-new-session-label">New Session</span>
+            <span className="gt-new-session-icon">{noRepos ? <FolderIcon /> : <EditIcon />}</span>
+            <span className="gt-new-session-label">{noRepos ? "导入项目" : "New Session"}</span>
           </div>
-          <span className="gt-new-session-kbd" aria-hidden="true"><kbd>⌘N</kbd></span>
+          {!noRepos ? <span className="gt-new-session-kbd" aria-hidden="true"><kbd>⌘N</kbd></span> : null}
         </button>
       </div>
 
       <div className="gt-project-stack">
-        {repos.length === 0 ? <div className="gt-empty-hint">还没有项目，先导入一个本地工作区。</div> : null}
+        {noRepos ? (
+          <div className="gt-empty-hint">还没有项目，先通过顶部入口导入一个本地工作区。</div>
+        ) : null}
         {(() => {
           const pinnedRepos = repos.filter((r) => pinnedRepoIds.includes(r.id));
           const otherRepos = repos.filter((r) => !pinnedRepoIds.includes(r.id));

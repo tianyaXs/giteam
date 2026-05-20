@@ -1,6 +1,6 @@
 {
   "name": "giteam-linux-x64",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "Prebuilt linux/x64 binary for giteam",
   "author": "giteam Contributors",
   "type": "module",

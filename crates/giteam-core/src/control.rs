@@ -3246,6 +3246,13 @@ pub fn set_web_static_dir(dir: Option<PathBuf>) {
     }
 }
 
+pub fn is_web_static_mode() -> bool {
+    web_static_dir_cell()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+}
+
 pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {
     let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
