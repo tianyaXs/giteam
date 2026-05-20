@@ -19,6 +19,15 @@ export const platformMatrix = {
     packageDir: join(cliRoot, 'npm', 'darwin-arm64'),
     binaryFileName: 'giteam'
   },
+  'darwin-x64': {
+    key: 'darwin-x64',
+    os: 'darwin',
+    cpu: 'x64',
+    rustTarget: 'x86_64-apple-darwin',
+    packageName: 'giteam-darwin-x64',
+    packageDir: join(cliRoot, 'npm', 'darwin-x64'),
+    binaryFileName: 'giteam'
+  },
   'linux-arm64': {
     key: 'linux-arm64',
     os: 'linux',

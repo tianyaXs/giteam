@@ -14,6 +14,9 @@ export type Prefs = {
   token: string;
   sessionId: string;
   model: string;
+  agent: 'build' | 'plan';
+  autoAcceptPermissions: boolean;
+  notebookTheme: 'paper' | 'slate';
 };
 
 export const DEFAULT_PREFS: Prefs = {
@@ -25,7 +28,10 @@ export const DEFAULT_PREFS: Prefs = {
   repoPaths: [],
   token: '',
   sessionId: '',
-  model: ''
+  model: '',
+  agent: 'build',
+  autoAcceptPermissions: false,
+  notebookTheme: 'paper'
 };
 
 export async function loadPrefs(): Promise<Prefs> {
@@ -47,7 +53,10 @@ export async function loadPrefs(): Promise<Prefs> {
       repoPaths: Array.isArray((merged as any).repoPaths) ? (merged as any).repoPaths.map((x: any) => toText(x)).filter(Boolean) : [],
       token: toText(merged.token),
       sessionId: toText(merged.sessionId),
-      model: toText(merged.model)
+      model: toText(merged.model),
+      agent: (merged as any).agent === 'plan' ? 'plan' : 'build',
+      autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions),
+      notebookTheme: (merged as any).notebookTheme === 'slate' ? 'slate' : 'paper'
     };
   } catch {
     return DEFAULT_PREFS;
@@ -66,4 +75,3 @@ export async function savePrefs(next: Prefs): Promise<void> {
     // ignore
   }
 }
-

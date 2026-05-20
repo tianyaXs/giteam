@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -27,9 +27,115 @@ struct ManagedOpencodeService {
 }
 
 static OPENCODE_SERVICE_POOL: OnceLock<Mutex<Option<ManagedOpencodeService>>> = OnceLock::new();
+static OPENCODE_SKILL_INSTALLS: OnceLock<Mutex<HashMap<String, OpencodeSkillInstallStatus>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeSkillInstallStatus {
+    pub running: bool,
+    pub finished: bool,
+    pub success: bool,
+    pub message: String,
+    pub log: String,
+}
 
 fn service_pool() -> &'static Mutex<Option<ManagedOpencodeService>> {
     OPENCODE_SERVICE_POOL.get_or_init(|| Mutex::new(None))
+}
+
+fn skill_install_pool() -> &'static Mutex<HashMap<String, OpencodeSkillInstallStatus>> {
+    OPENCODE_SKILL_INSTALLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn skill_install_key(repo_path: &str, spec: &str, global: bool) -> String {
+    format!("{}\n{}\n{}", repo_path.trim(), spec.trim(), global)
+}
+
+fn append_skill_install_log(key: &str, text: &str) {
+    let line = text.trim_end();
+    if line.is_empty() {
+        return;
+    }
+    if let Ok(mut pool) = skill_install_pool().lock() {
+        if let Some(status) = pool.get_mut(key) {
+            if !status.log.is_empty() {
+                status.log.push('\n');
+            }
+            status.log.push_str(line);
+            if status.log.len() > 24_000 {
+                let keep_from = status.log.len().saturating_sub(20_000);
+                status.log = format!("...(truncated)\n{}", &status.log[keep_from..]);
+            }
+            status.message = line.to_string();
+        }
+    }
+}
+
+fn sanitize_skill_install_chunk(input: &str) -> String {
+    let cleaned = strip_ansi(input)
+        .replace('\r', "\n")
+        .replace("\u{8}", "")
+        .replace("\u{7}", "");
+    let mut out: Vec<String> = Vec::new();
+    for line in cleaned.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if out.last().map(|prev| prev == line).unwrap_or(false) {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out.join("\n")
+}
+
+fn read_skill_install_stream<R: Read>(mut reader: R, status_key: String) {
+    let mut buf = [0_u8; 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                let text = sanitize_skill_install_chunk(chunk.as_ref());
+                if !text.trim().is_empty() {
+                    append_skill_install_log(status_key.as_str(), text.as_str());
+                }
+            }
+            Err(e) => {
+                append_skill_install_log(status_key.as_str(), format!("failed reading installer output: {e}").as_str());
+                break;
+            }
+        }
+    }
+}
+
+fn desktop_path_env() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut dirs: Vec<String> = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    for dir in [
+        format!("{home}/.local/bin"),
+        format!("{home}/miniconda3/bin"),
+        format!("{home}/anaconda3/bin"),
+        format!("{home}/.pyenv/shims"),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+        "/usr/sbin".to_string(),
+        "/sbin".to_string(),
+    ] {
+        if !dir.trim().is_empty() && !dirs.iter().any(|d| d == &dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs.join(":")
 }
 
 fn run_opencode(args: &[&str], repo_path: &str) -> Result<String, String> {
@@ -761,6 +867,194 @@ fn dispose_global_state(repo_path: &str, base: &str) {
         Some("{}"),
         8,
     );
+}
+
+fn opencode_global_config_file() -> Option<PathBuf> {
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg_config_home.trim();
+        if !p.is_empty() {
+            return Some(PathBuf::from(p).join("opencode").join("opencode.jsonc"));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".config").join("opencode").join("opencode.jsonc"))
+}
+
+fn opencode_project_config_files(repo_path: &str) -> Vec<PathBuf> {
+    let repo = PathBuf::from(repo_path);
+    vec![repo.join("opencode.jsonc"), repo.join("opencode.json")]
+}
+
+fn strip_jsonc_comments(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            continue;
+        }
+        if ch == '/' {
+            match chars.peek().copied() {
+                Some('/') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut prev = '\0';
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            out.push('\n');
+                        }
+                        if prev == '*' && c == '/' {
+                            break;
+                        }
+                        prev = c;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn remove_mcp_from_config_file(path: &Path, name: &str) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let stripped = strip_jsonc_comments(&raw);
+    let mut json: Value = serde_json::from_str(&stripped)
+        .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+    let mut empty_mcp = false;
+    let removed = if let Some(mcp) = json.get_mut("mcp").and_then(|v| v.as_object_mut()) {
+        let did = mcp.remove(name).is_some();
+        empty_mcp = mcp.is_empty();
+        did
+    } else {
+        false
+    };
+    if empty_mcp {
+        if let Some(obj) = json.as_object_mut() {
+            obj.remove("mcp");
+        }
+    }
+    if !removed {
+        return Ok(false);
+    }
+    let next = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("serialize {} failed: {e}", path.display()))?;
+    fs::write(path, format!("{}\n", next))
+        .map_err(|e| format!("write {} failed: {e}", path.display()))?;
+    Ok(true)
+}
+
+fn read_config_file(path: &Path) -> Result<Option<Value>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let stripped = strip_jsonc_comments(&raw);
+    let json: Value = serde_json::from_str(&stripped)
+        .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
+    Ok(Some(json))
+}
+
+fn write_config_file(path: &Path, json: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create {} failed: {e}", parent.display()))?;
+    }
+    let next = serde_json::to_string_pretty(json)
+        .map_err(|e| format!("serialize {} failed: {e}", path.display()))?;
+    fs::write(path, format!("{}\n", next))
+        .map_err(|e| format!("write {} failed: {e}", path.display()))
+}
+
+fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<Value, String> {
+    let mut json = read_config_file(path)?.unwrap_or_else(|| {
+        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+    });
+    if !json.is_object() {
+        json = serde_json::json!({ "$schema": "https://opencode.ai/config.json" });
+    }
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| "config root is not an object".to_string())?;
+    if !obj.get("mcp").map(|v| v.is_object()).unwrap_or(false) {
+        obj.insert("mcp".to_string(), Value::Object(Map::new()));
+    }
+    let mcp = obj
+        .get_mut("mcp")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| "mcp config is not an object".to_string())?;
+    mcp.insert(name.to_string(), config);
+    write_config_file(path, &json)?;
+    Ok(json)
+}
+
+fn set_mcp_enabled_in_config_file(path: &Path, name: &str, enabled: bool) -> Result<bool, String> {
+    let Some(mut json) = read_config_file(path)? else {
+        return Ok(false);
+    };
+    let Some(mcp) = json.get_mut("mcp").and_then(|v| v.as_object_mut()) else {
+        return Ok(false);
+    };
+    let Some(node) = mcp.get_mut(name).and_then(|v| v.as_object_mut()) else {
+        return Ok(false);
+    };
+    node.insert("enabled".to_string(), Value::Bool(enabled));
+    write_config_file(path, &json)?;
+    Ok(true)
+}
+
+fn set_mcp_enabled_in_known_config_files(repo_path: &str, name: &str, enabled: bool) -> Result<bool, String> {
+    let mut changed = false;
+    let mut errors = Vec::new();
+    for file in opencode_project_config_files(repo_path) {
+        match set_mcp_enabled_in_config_file(&file, name, enabled) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if let Some(file) = opencode_global_config_file() {
+        match set_mcp_enabled_in_config_file(&file, name, enabled) {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if !changed && !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(changed)
 }
 
 fn permission_allow_all_rules() -> Vec<OpencodePermissionRule> {
@@ -2442,6 +2736,19 @@ pub fn list_opencode_agents(repo_path: &str) -> Result<Value, String> {
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_opencode_commands(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let url = format!(
+            "{base}/command?directory={}",
+            urlencoding::encode(repo_path)
+        );
+        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 12)?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse /command failed: {e}"))
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn list_opencode_skills(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
@@ -2450,60 +2757,39 @@ pub fn list_opencode_skills(repo_path: &str) -> Result<Value, String> {
     })
 }
 
-fn parse_installed_skills_json(raw: &str) -> Vec<OpencodeInstalledSkill> {
-    serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| {
-            let name = item.get("name")?.as_str()?.trim().to_string();
-            if name.is_empty() {
-                return None;
-            }
-            let agents = item
-                .get("agents")
-                .and_then(|v| v.as_array())
-                .map(|rows| {
-                    rows.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            Some(OpencodeInstalledSkill {
-                name,
-                path: item
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                scope: item
-                    .get("scope")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("project")
-                    .to_string(),
-                agents,
-            })
-        })
-        .collect()
+fn scan_installed_skill_dir(root: PathBuf, scope: &str, rows: &mut Vec<OpencodeInstalledSkill>) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|v| v.to_str()) {
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => continue,
+        };
+        rows.push(OpencodeInstalledSkill {
+            name,
+            path: path.to_string_lossy().to_string(),
+            scope: scope.to_string(),
+            agents: vec!["opencode".to_string()],
+        });
+    }
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     let mut rows: Vec<OpencodeInstalledSkill> = Vec::new();
-    for args in [
-        vec!["-y", "skills", "list", "--agent", "opencode", "--json"],
-        vec![
-            "-y", "skills", "list", "--global", "--agent", "opencode", "--json",
-        ],
-    ] {
-        if let Ok(raw) =
-            command_runner::run_and_capture_in_dir_with_timeout("npx", &args, repo_path, 45)
-        {
-            rows.extend(parse_installed_skills_json(raw.as_str()));
-        }
+    scan_installed_skill_dir(Path::new(repo_path).join(".agents/skills"), "project", &mut rows);
+    scan_installed_skill_dir(Path::new(repo_path).join(".opencode/skills"), "project", &mut rows);
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        scan_installed_skill_dir(home.join(".agents/skills"), "global", &mut rows);
+        scan_installed_skill_dir(home.join(".opencode/skills"), "global", &mut rows);
     }
     rows.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.name.cmp(&b.name)));
     rows.dedup_by(|a, b| a.scope == b.scope && a.path == b.path && a.name == b.name);
@@ -2583,13 +2869,269 @@ pub fn search_opencode_skill_registry(repo_path: &str, query: &str) -> Result<Va
         .map_err(|e| format!("serialize skill search failed: {e}"))
 }
 
+fn fetch_skills_sh_json(
+    repo_path: &str,
+    endpoint: &str,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let ep = endpoint.trim();
+    if !ep.starts_with("/api/v1/skills") || ep.contains('\n') || ep.contains('\r') {
+        return Err("invalid skills.sh endpoint".to_string());
+    }
+    let url = format!("https://skills.sh{ep}");
+    let args = vec![
+        "-sSL",
+        "--compressed",
+        "--connect-timeout",
+        "4",
+        "--max-time",
+        "12",
+        url.as_str(),
+    ];
+    let raw = command_runner::run_and_capture_in_dir_with_timeout(
+        "curl",
+        &args,
+        repo_path,
+        timeout_secs,
+    )?;
+    let parsed = serde_json::from_str::<Value>(&raw)
+        .map_err(|e| format!("parse skills.sh response failed: {e}"))?;
+    if let Some(error) = parsed.get("error").and_then(|v| v.as_str()) {
+        let message = parsed
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or(error);
+        return Err(format!("skills.sh API {error}: {message}"));
+    }
+    Ok(parsed)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_opencode_skill_catalog(
+    repo_path: &str,
+    view: &str,
+    page: Option<u64>,
+    per_page: Option<u64>,
+) -> Result<Value, String> {
+    let v = match view.trim() {
+        "trending" => "trending",
+        "hot" => "hot",
+        _ => "all-time",
+    };
+    let p = page.unwrap_or(0).min(50);
+    let pp = per_page.unwrap_or(50).clamp(1, 200);
+    fetch_skills_sh_json(
+        repo_path,
+        format!("/api/v1/skills?view={v}&page={p}&per_page={pp}").as_str(),
+        15,
+    )
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_opencode_skill_search_api(
+    repo_path: &str,
+    query: &str,
+    limit: Option<u64>,
+) -> Result<Value, String> {
+    let q = query.trim();
+    if q.len() < 2 {
+        return Err("skill search query must be at least 2 characters".to_string());
+    }
+    let lim = limit.unwrap_or(50).clamp(1, 200);
+    fetch_skills_sh_json(
+        repo_path,
+        format!(
+            "/api/v1/skills/search?q={}&limit={lim}",
+            urlencoding::encode(q)
+        )
+        .as_str(),
+        15,
+    )
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_opencode_skill_curated(repo_path: &str) -> Result<Value, String> {
+    fetch_skills_sh_json(repo_path, "/api/v1/skills/curated", 15)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_opencode_skill_detail_api(repo_path: &str, id: &str) -> Result<Value, String> {
+    let sid = id.trim().trim_matches('/');
+    if sid.is_empty() || sid.contains("..") || sid.contains('\n') || sid.contains('\r') {
+        return Err("invalid skill id".to_string());
+    }
+    fetch_skills_sh_json(repo_path, format!("/api/v1/skills/{sid}").as_str(), 18)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_opencode_skill_audit_api(repo_path: &str, id: &str) -> Result<Value, String> {
+    let sid = id.trim().trim_matches('/');
+    if sid.is_empty() || sid.contains("..") || sid.contains('\n') || sid.contains('\r') {
+        return Err("invalid skill id".to_string());
+    }
+    match fetch_skills_sh_json(
+        repo_path,
+        format!("/api/v1/skills/audit/{sid}").as_str(),
+        18,
+    ) {
+        Ok(v) => Ok(v),
+        Err(e) if e.contains("returned error") || e.contains("exit status") => {
+            Ok(serde_json::json!({ "id": sid, "audits": [] }))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn fetch_skillsmp_json_with_key(
+    repo_path: &str,
+    endpoint: &str,
+    timeout_secs: u64,
+    api_key: Option<String>,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let ep = endpoint.trim();
+    if !ep.starts_with("/api/v1/skills/") || ep.contains('\n') || ep.contains('\r') {
+        return Err("invalid SkillsMP endpoint".to_string());
+    }
+    let url = format!("https://skillsmp.com{ep}");
+    let auth = api_key.unwrap_or_else(|| std::env::var("SKILLSMP_API_KEY").unwrap_or_default());
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(timeout_secs.max(1)))
+        .user_agent("giteam-desktop/skillsmp")
+        .build()
+        .map_err(|e| format!("build SkillsMP client failed: {e}"))?;
+    let mut req = client.get(url.as_str()).header("Accept", "application/json");
+    if !auth.trim().is_empty() {
+        req = req.bearer_auth(auth.trim());
+    }
+    let resp = req
+        .send()
+        .map_err(|e| format!("SkillsMP request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("SkillsMP HTTP {}", resp.status()));
+    }
+    let parsed = resp
+        .json::<Value>()
+        .map_err(|e| format!("parse SkillsMP response failed: {e}"))?;
+    if parsed.get("success").and_then(|v| v.as_bool()) == Some(false) {
+        let message = parsed
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("SkillsMP request failed");
+        return Err(message.to_string());
+    }
+    Ok(parsed)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_skillsmp_skill_search(
+    repo_path: &str,
+    query: &str,
+    page: Option<u64>,
+    limit: Option<u64>,
+    sort_by: Option<String>,
+    category: Option<String>,
+    occupation: Option<String>,
+    api_key: Option<String>,
+) -> Result<Value, String> {
+    let q = query.trim();
+    if q.len() < 2 || q == "*" {
+        return Err("SkillsMP search query must be at least 2 characters".to_string());
+    }
+    let p = page.unwrap_or(1).max(1).min(1000);
+    let lim = limit.unwrap_or(100).clamp(1, 100);
+    let sort = match sort_by.unwrap_or_else(|| "stars".to_string()).as_str() {
+        "recent" => "recent",
+        _ => "stars",
+    };
+    let mut endpoint = format!(
+        "/api/v1/skills/search?q={}&page={p}&limit={lim}&sortBy={sort}",
+        urlencoding::encode(q)
+    );
+    let cat = category.unwrap_or_default();
+    if !cat.trim().is_empty() {
+        endpoint.push_str(format!("&category={}", urlencoding::encode(cat.trim())).as_str());
+    }
+    let occ = occupation.unwrap_or_default();
+    if !occ.trim().is_empty() {
+        endpoint.push_str(format!("&occupation={}", urlencoding::encode(occ.trim())).as_str());
+    }
+    fetch_skillsmp_json_with_key(repo_path, endpoint.as_str(), 15, api_key)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn fetch_skillsmp_ai_search(
+    repo_path: &str,
+    query: &str,
+    api_key: Option<String>,
+) -> Result<Value, String> {
+    let key = api_key.unwrap_or_else(|| std::env::var("SKILLSMP_API_KEY").unwrap_or_default());
+    if key.trim().is_empty() {
+        return Err("SKILLSMP_API_KEY is required for AI search".to_string());
+    }
+    let q = query.trim();
+    if q.len() < 2 {
+        return Err("SkillsMP AI search query must be at least 2 characters".to_string());
+    }
+    fetch_skillsmp_json_with_key(
+        repo_path,
+        format!("/api/v1/skills/ai-search?q={}", urlencoding::encode(q)).as_str(),
+        20,
+        Some(key),
+    )
+}
+
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn list_opencode_mcp_status(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
-    with_service_base(repo_path, |base| {
-        let raw = run_curl_json(repo_path, "GET", format!("{base}/mcp").as_str(), None, 12)?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse /mcp failed: {e}"))
-    })
+    let mut out = Map::new();
+    let mut add_config_rows = |cfg: Option<Value>, source: &str| {
+        let Some(mcp) = cfg
+            .as_ref()
+            .and_then(|v| v.get("mcp"))
+            .or_else(|| cfg.as_ref().and_then(|v| v.get("mcpServers")))
+            .and_then(|v| v.as_object())
+        else {
+            return;
+        };
+        for (name, node) in mcp {
+            let mut row = out
+                .remove(name)
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            if let Some(obj) = node.as_object() {
+                for (k, v) in obj {
+                    row.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+            let prev_source = row.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let next_source = if prev_source.is_empty() {
+                source.to_string()
+            } else if prev_source == source || prev_source == "both" {
+                prev_source.to_string()
+            } else {
+                "both".to_string()
+            };
+            row.insert("source".to_string(), Value::String(next_source));
+            row.insert("configured".to_string(), Value::Bool(true));
+            row.insert("runtimeKnown".to_string(), Value::Bool(false));
+            row.entry("status".to_string())
+                .or_insert(Value::String("configured".to_string()));
+            out.insert(name.clone(), Value::Object(row));
+        }
+    };
+
+    let project_cfg = opencode_project_config_files(repo_path)
+        .into_iter()
+        .find_map(|path| read_config_file(&path).ok().flatten());
+    let global_cfg = opencode_global_config_file()
+        .and_then(|path| read_config_file(&path).ok().flatten());
+    add_config_rows(project_cfg, "project");
+    add_config_rows(global_cfg, "global");
+    Ok(Value::Object(out))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2603,20 +3145,11 @@ pub fn add_opencode_mcp_server(
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let patch = serde_json::json!({ "mcp": { n: config.clone() } });
-        let _ = run_config_patch(repo_path, base, &patch);
-        let body = serde_json::json!({ "name": n, "config": config }).to_string();
-        let raw = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp").as_str(),
-            Some(body.as_str()),
-            20,
-        )?;
-        dispose_global_state(repo_path, base);
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse add /mcp failed: {e}"))
-    })
+    let project_file = opencode_project_config_files(repo_path)
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from(repo_path).join("opencode.jsonc"));
+    upsert_mcp_to_config_file(&project_file, n, config)
 }
 
 fn post_opencode_mcp_action(repo_path: &str, name: &str, action: &str) -> Result<bool, String> {
@@ -2625,26 +3158,64 @@ fn post_opencode_mcp_action(repo_path: &str, name: &str, action: &str) -> Result
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        if action == "connect" || action == "disconnect" {
-            let patch = serde_json::json!({ "mcp": { n: { "enabled": action == "connect" } } });
-            let _ = run_config_patch(repo_path, base, &patch);
-        }
-        let _ = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp/{}/{}", urlencoding::encode(n), action).as_str(),
-            Some("{}"),
-            30,
-        )?;
-        dispose_global_state(repo_path, base);
-        Ok(true)
-    })
+    if action == "disconnect" {
+        return set_mcp_enabled_in_known_config_files(repo_path, n, false);
+    }
+    Err(format!("unsupported mcp action: {action}"))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn connect_opencode_mcp_server(repo_path: &str, name: &str) -> Result<bool, String> {
-    post_opencode_mcp_action(repo_path, name, "connect")
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+
+    let mut found: Option<Value> = None;
+    for file in opencode_project_config_files(repo_path) {
+        if let Some(node) = read_config_file(&file)?
+            .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned())
+        {
+            found = Some(node);
+            break;
+        }
+    }
+    if found.is_none() {
+        if let Some(file) = opencode_global_config_file() {
+            found = read_config_file(&file)?
+                .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned());
+        }
+    }
+
+    let Some(node) = found else {
+        return Err(format!("mcp server not found in opencode config: {n}"));
+    };
+    let typ = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match typ {
+        "local" => {
+            let has_command = node
+                .get("command")
+                .and_then(|v| v.as_array())
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if !has_command {
+                return Err(format!("local MCP {n} requires command[]"));
+            }
+        }
+        "remote" => {
+            let has_url = node
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_url {
+                return Err(format!("remote MCP {n} requires url"));
+            }
+        }
+        other => return Err(format!("MCP {n} has invalid type: {other}")),
+    }
+    Ok(true)
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2659,16 +3230,8 @@ pub fn authenticate_opencode_mcp_server(repo_path: &str, name: &str) -> Result<V
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let raw = run_curl_json(
-            repo_path,
-            "POST",
-            format!("{base}/mcp/{}/auth/authenticate", urlencoding::encode(n)).as_str(),
-            Some("{}"),
-            90,
-        )?;
-        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse mcp auth failed: {e}"))
-    })
+    let out = run_opencode(&["mcp", "auth", n], repo_path)?;
+    Ok(serde_json::json!({ "ok": true, "output": out }))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2678,17 +3241,80 @@ pub fn remove_opencode_mcp_auth(repo_path: &str, name: &str) -> Result<bool, Str
     if n.is_empty() {
         return Err("mcp name must not be empty".to_string());
     }
-    with_service_base(repo_path, |base| {
-        let _ = run_curl_json(
-            repo_path,
-            "DELETE",
-            format!("{base}/mcp/{}/auth", urlencoding::encode(n)).as_str(),
-            None,
-            20,
-        )?;
-        dispose_global_state(repo_path, base);
-        Ok(true)
-    })
+    let _ = run_opencode(&["mcp", "logout", n], repo_path)?;
+    Ok(true)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn delete_opencode_mcp_server(repo_path: &str, name: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    let mut project_deleted = false;
+    let mut global_deleted = false;
+    let mut checked: Vec<String> = Vec::new();
+    let mut deleted_from: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for file in opencode_project_config_files(repo_path) {
+        checked.push(file.display().to_string());
+        match remove_mcp_from_config_file(&file, n) {
+            Ok(true) => {
+                project_deleted = true;
+                deleted_from.push(file.display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+    if let Some(global_file) = opencode_global_config_file() {
+        checked.push(global_file.display().to_string());
+        match remove_mcp_from_config_file(&global_file, n) {
+            Ok(true) => {
+                global_deleted = true;
+                deleted_from.push(global_file.display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+
+    let still_present: Vec<String> = checked
+        .iter()
+        .filter_map(|p| {
+            let path = PathBuf::from(p);
+            let has_mcp = read_config_file(&path)
+                .ok()
+                .flatten()
+                .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned())
+                .is_some();
+            if has_mcp { Some(p.clone()) } else { None }
+        })
+        .collect();
+
+    let ok = project_deleted || global_deleted;
+    if !still_present.is_empty() {
+        return Err(format!(
+            "MCP {n} 删除后仍存在于配置文件:\n{}",
+            still_present.join("\n")
+        ));
+    }
+    if !ok && !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(serde_json::json!({
+        "ok": ok,
+        "projectDeleted": project_deleted,
+        "globalDeleted": global_deleted,
+        "projectFileDeleted": project_deleted,
+        "globalFileDeleted": global_deleted,
+        "checked": checked,
+        "deletedFrom": deleted_from,
+        "errors": errors,
+        "message": if ok { "deleted from opencode config file" } else { "not found in opencode config files" }
+    }))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
@@ -2826,7 +3452,156 @@ pub fn post_opencode_permission_reply(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn install_opencode_skill_from_registry(
+pub async fn install_opencode_skill_from_registry(
+    repo_path: &str,
+    spec: &str,
+    global: Option<bool>,
+) -> Result<String, String> {
+    let repo = repo_path.to_string();
+    let s = spec.trim().to_string();
+    let is_global = global.unwrap_or(false);
+    if s.trim().is_empty() {
+        return Err("skill spec must not be empty".to_string());
+    }
+    if s.contains('\n') || s.contains('\r') || s.contains(';') {
+        return Err("skill spec contains unsupported characters".to_string());
+    }
+    #[cfg(feature = "tauri-app")]
+    {
+        command_runner::validate_repo_path(repo.as_str())?;
+        let key = skill_install_key(repo.as_str(), s.as_str(), is_global);
+        {
+            let mut pool = skill_install_pool()
+                .lock()
+                .map_err(|_| "skill install state is unavailable".to_string())?;
+            if pool.get(&key).map(|item| item.running).unwrap_or(false) {
+                return Ok("already-running".to_string());
+            }
+            pool.insert(
+                key.clone(),
+                OpencodeSkillInstallStatus {
+                    running: true,
+                    finished: false,
+                    success: false,
+                    message: "started".to_string(),
+                    log: format!("$ npx -y skills add {} --agent opencode -y{}", s, if is_global { " -g" } else { "" }),
+                },
+            );
+        }
+        std::thread::spawn(move || {
+            let result = install_opencode_skill_from_registry_streaming(repo.as_str(), s.as_str(), Some(is_global), key.as_str());
+            if let Ok(mut pool) = skill_install_pool().lock() {
+                let log = pool.get(&key).map(|item| item.log.clone()).unwrap_or_default();
+                pool.insert(
+                    key,
+                    OpencodeSkillInstallStatus {
+                        running: false,
+                        finished: true,
+                        success: result.is_ok(),
+                        message: result.unwrap_or_else(|e| e),
+                        log,
+                    },
+                );
+            }
+        });
+        return Ok("started".to_string());
+    }
+    #[cfg(not(feature = "tauri-app"))]
+    {
+        install_opencode_skill_from_registry_blocking(repo.as_str(), s.as_str(), Some(is_global))
+    }
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn get_opencode_skill_install_status(
+    repo_path: &str,
+    spec: &str,
+    global: Option<bool>,
+) -> Result<OpencodeSkillInstallStatus, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let key = skill_install_key(repo_path, spec, global.unwrap_or(false));
+    let pool = skill_install_pool()
+        .lock()
+        .map_err(|_| "skill install state is unavailable".to_string())?;
+    Ok(pool.get(&key).cloned().unwrap_or(OpencodeSkillInstallStatus {
+        running: false,
+        finished: false,
+        success: false,
+        message: "not-started".to_string(),
+        log: "".to_string(),
+    }))
+}
+
+fn install_opencode_skill_from_registry_streaming(
+    repo_path: &str,
+    spec: &str,
+    global: Option<bool>,
+    status_key: &str,
+) -> Result<String, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let s = spec.trim();
+    if s.is_empty() {
+        return Err("skill spec must not be empty".to_string());
+    }
+    if s.contains('\n') || s.contains('\r') || s.contains(';') {
+        return Err("skill spec contains unsupported characters".to_string());
+    }
+    let mut args = vec!["-y", "skills", "add", s, "--agent", "opencode", "-y"];
+    if global.unwrap_or(false) {
+        args.push("-g");
+    }
+    append_skill_install_log(status_key, "starting installer...");
+    let mut child = Command::new("npx")
+        .args(&args)
+        .current_dir(repo_path)
+        .env("PATH", desktop_path_env())
+        .env("PAGER", "cat")
+        .env("GIT_PAGER", "cat")
+        .env("LESS", "FRX")
+        .env("ACCESSIBLE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn npx skills installer: {e}"))?;
+
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let key = status_key.to_string();
+        readers.push(std::thread::spawn(move || read_skill_install_stream(stdout, key)));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let key = status_key.to_string();
+        readers.push(std::thread::spawn(move || read_skill_install_stream(stderr, key)));
+    }
+
+    let status = match child
+        .wait_timeout(Duration::from_secs(600))
+        .map_err(|e| format!("failed waiting for installer: {e}"))?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            append_skill_install_log(status_key, "installer timed out after 600s");
+            return Err("command timed out".to_string());
+        }
+    };
+    for reader in readers {
+        let _ = reader.join();
+    }
+    if !status.success() {
+        append_skill_install_log(status_key, format!("installer exited with code {:?}", status.code()).as_str());
+        return Err(format!("npx skills add failed with code {:?}", status.code()));
+    }
+    append_skill_install_log(status_key, "installer finished successfully");
+    if let Ok(base) = ensure_managed_service_local(repo_path) {
+        dispose_global_state(repo_path, base.as_str());
+    }
+    Ok("installed".to_string())
+}
+
+pub fn install_opencode_skill_from_registry_blocking(
     repo_path: &str,
     spec: &str,
     global: Option<bool>,
@@ -2851,6 +3626,27 @@ pub fn install_opencode_skill_from_registry(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn remove_opencode_skill(repo_path: &str, name: &str, global: Option<bool>) -> Result<String, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("skill name must not be empty".to_string());
+    }
+    if n.contains('\n') || n.contains('\r') || n.contains(';') {
+        return Err("skill name contains unsupported characters".to_string());
+    }
+    let mut args = vec!["-y", "skills", "remove", n, "--agent", "opencode", "-y"];
+    if global.unwrap_or(false) {
+        args.push("--global");
+    }
+    let output = command_runner::run_and_capture_in_dir_with_timeout("npx", &args, repo_path, 180)?;
+    if let Ok(base) = ensure_managed_service_local(repo_path) {
+        dispose_global_state(repo_path, base.as_str());
+    }
+    Ok(output)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn set_opencode_server_current_model(repo_path: &str, model: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     let m = model.trim();
@@ -2858,8 +3654,20 @@ pub fn set_opencode_server_current_model(repo_path: &str, model: &str) -> Result
         return Err("model must not be empty".to_string());
     }
     with_service_base(repo_path, |base| {
-        // OpenCode behavior: current model lives under /config (not /global/config).
-        let body = serde_json::json!({ "model": m }).to_string();
+        // /config PATCH validates the full config object, so merge into the current document first.
+        let mut merged = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/config").as_str(),
+            None,
+            15,
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+        merge_json(&mut merged, serde_json::json!({ "model": m }));
+        let body = serde_json::to_string(&merged)
+            .map_err(|e| format!("serialize /config patch failed: {e}"))?;
         let raw = run_curl_json(
             repo_path,
             "PATCH",
@@ -3073,7 +3881,19 @@ pub fn set_opencode_model_config(
     }
     let model_full = model.trim().to_string();
     with_service_base(repo_path, |base| {
-        let body = serde_json::to_string(&serde_json::json!({ "model": model_full }))
+        // /global/config PATCH also validates the full config object.
+        let mut merged = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+        merge_json(&mut merged, serde_json::json!({ "model": model_full }));
+        let body = serde_json::to_string(&merged)
             .map_err(|e| format!("serialize config patch failed: {e}"))?;
         let _ = run_curl_json(
             repo_path,

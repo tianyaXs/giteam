@@ -17,6 +17,8 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
       key={props.filePath}
       height="100%"
       width="100%"
+      keepCurrentOriginalModel
+      keepCurrentModifiedModel
       original={props.original}
       modified={props.modified}
       language={props.language}

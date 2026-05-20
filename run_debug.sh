@@ -21,7 +21,10 @@ fi
 
 echo "=== Installing frontend dependencies ==="
 cd "$SCRIPT_DIR/apps/desktop"
-npm install
+# IMPORTANT: desktop lives inside an npm workspace, but this debug flow only
+# needs desktop deps. Disable workspace resolution here so npm doesn't try to
+# resolve the mobile app's peer deps and fail the whole setup.
+npm install --workspaces=false
 
 echo ""
 echo "=== Building web frontend (fallback for giteam) ==="

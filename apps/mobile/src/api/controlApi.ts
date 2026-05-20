@@ -272,6 +272,27 @@ export async function getOpencodeSkills(args: {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+export async function getInstalledOpencodeSkills(args: {
+  baseUrl: string;
+  token: string;
+  repoPath: string;
+}): Promise<any[]> {
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
+  const params = new URLSearchParams({ repoPath: args.repoPath });
+  const url = `${baseUrl}/api/v1/opencode/skill/installed?${params.toString()}`;
+  try {
+    const result = await fetchTextWithTrace(url, { headers: authHeaders(args.token) });
+    const raw = ensureOk('skill.installed', 'GET', url, result.status, result.ok, result.text);
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed?.items)) return parsed.items;
+    if (Array.isArray(parsed?.data)) return parsed.data;
+    return [];
+  } catch {
+    return getOpencodeSkills(args);
+  }
+}
+
 export async function getOpencodeMcpStatus(args: {
   baseUrl: string;
   token: string;

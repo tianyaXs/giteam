@@ -5,6 +5,16 @@ export type OpencodeAssistantRenderGroup =
   | { kind: "reasoning"; key: string; parts: OpencodeDetailedPart[] }
   | { kind: "part"; key: string; part: OpencodeDetailedPart };
 
+const GITEAM_DIAGNOSTIC_SEGMENT_RE = /\[giteam\]\s+(?:exec|done)\b.*?(?=(?:\[giteam\]\s+(?:exec|done)\b)|(?:retry failed: )|(?:curl failed with code )|\n|$)/gis;
+
+function stripGiteamDiagnosticNoise(input: string): string {
+  return input
+    .replace(/\r\n/g, "\n")
+    .replace(GITEAM_DIAGNOSTIC_SEGMENT_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function toDisplayJson(input: unknown, maxLen = 2400): string {
   try {
     const raw = typeof input === "string" ? input : JSON.stringify(input, null, 2);
@@ -39,7 +49,7 @@ export function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPa
     const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
     if (text) chunks.push(text);
   }
-  return chunks.join("\n\n");
+  return stripGiteamDiagnosticNoise(chunks.join("\n\n"));
 }
 
 export function buildOpencodeImageAttachmentsFromParts(parts: OpencodeDetailedPart[] | undefined | null) {
@@ -197,7 +207,7 @@ export function buildOpencodeReplyMarkdownFromParts(parts: OpencodeDetailedPart[
     const text = String((p as any)?.text ?? "").trim();
     if (text) out.push(text);
   }
-  return out.join("\n\n");
+  return stripGiteamDiagnosticNoise(out.join("\n\n"));
 }
 
 export function buildOpencodeAssistantRenderGroups(parts: OpencodeDetailedPart[] | undefined | null): OpencodeAssistantRenderGroup[] {

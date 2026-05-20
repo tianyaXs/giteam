@@ -33,6 +33,7 @@ import {
 } from "./lib/opencodeModels";
 import {
   buildOpencodeTurnRanges,
+  clipOpencodeSessionTitle,
   getInitialOpencodeTurnStart,
   newOpencodeSession,
   opencodeSessionFromSummary,
@@ -481,12 +482,6 @@ function formatRelativeTime(ts: number): string {
   return "now";
 }
 
-type OnboardingStep = {
-  title: string;
-  body: string;
-};
-
-const ONBOARDING_DONE_KEY = "giteam.onboarding.done.v1";
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
 const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
@@ -502,8 +497,6 @@ const OPENCODE_AGENT_SELECTION_KEY = "giteam.opencode.agent-selection.v1";
 const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
 const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
-const RELEASE_NOTES_SEEN_KEY = "giteam.release-notes.seen-version.v1";
-const APP_RELEASE_VERSION = "0.1.0";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
 const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
 const UI_FONT_SIZE_KEY = "giteam.appearance.ui-font-size.v1";
@@ -1186,9 +1179,6 @@ export function App() {
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showGraphPopover, setShowGraphPopover] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [showReleaseNotes, setShowReleaseNotes] = useState(false);
-  const [onboardingStep, setOnboardingStep] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 840, 640, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(260);
@@ -1324,6 +1314,7 @@ export function App() {
   const [opencodeConnectApiKey, setOpencodeConnectApiKey] = useState("");
   const [showOpencodeAuthDialogFor, setShowOpencodeAuthDialogFor] = useState("");
   const [opencodeProviderActionMenuFor, setOpencodeProviderActionMenuFor] = useState("");
+  const [opencodeInlineAuthOpenFor, setOpencodeInlineAuthOpenFor] = useState("");
   const [opencodeConnectBusy, setOpencodeConnectBusy] = useState(false);
   const [opencodeDisconnectingProvider, setOpencodeDisconnectingProvider] = useState("");
   const [opencodeProviderAuthCache, setOpencodeProviderAuthCache] = useState<Record<string, OpencodeProviderAuthMethod[]>>({});
@@ -1507,6 +1498,7 @@ export function App() {
   const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
   const [sidebarOpencodeSessionHasMoreByRepo, setSidebarOpencodeSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
+  const [opencodeHydratingSessionId, setOpencodeHydratingSessionId] = useState("");
   const [workspaceAgentBindings, setWorkspaceAgentBindings] = useState<Record<string, WorkspaceAgentBinding>>(() => readWorkspaceAgentBindings());
   const [branchParentMap, setBranchParentMap] = useState<Record<string, string>>(() => readBranchParentMap());
   const [worktreeParentMap, setWorktreeParentMap] = useState<Record<string, string>>(() => readWorktreeParentMap());
@@ -1553,6 +1545,7 @@ export function App() {
   const opencodeForceScrollLatestSessionRef = useRef("");
   const opencodeProgrammaticScrollUntilRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
+  const opencodeHydratingSessionIdRef = useRef("");
   const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
   const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
   const controlMobilePollTokenRef = useRef(0);
@@ -1579,14 +1572,6 @@ export function App() {
   const previousPermissionCountRef = useRef(0);
   const previousErrorRef = useRef("");
 
-  useEffect(() => {
-    if (!generalSettings.releaseNotes) return;
-    const seen = window.localStorage.getItem(RELEASE_NOTES_SEEN_KEY);
-    if (seen === APP_RELEASE_VERSION) return;
-    window.localStorage.setItem(RELEASE_NOTES_SEEN_KEY, APP_RELEASE_VERSION);
-    setMessage(`Giteam ${APP_RELEASE_VERSION}: 设置已支持依赖管理和通用偏好。`);
-    setShowReleaseNotes(true);
-  }, [generalSettings.releaseNotes]);
   const terminalInitialSnapshot = useMemo(() => readTerminalTabSnapshot(), []);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>(() =>
     terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]
@@ -1854,6 +1839,25 @@ export function App() {
     if (!activeOpencodeSessionId) return null;
     return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
   }, [opencodeSessions, activeOpencodeSessionId]);
+  const pendingSidebarSessionSelection = pendingSidebarSessionSelectionRef.current;
+  const pendingSidebarSessionId = pendingSidebarSessionSelection?.sessionId || "";
+  const hydratingActiveOpencodeSession = Boolean(
+    activeOpencodeSessionId
+    && opencodeHydratingSessionId
+    && activeOpencodeSessionId === opencodeHydratingSessionId
+  );
+  const pendingSidebarSessionSwitch = Boolean(
+    pendingSidebarSessionSelection?.repoId === (selectedRepo?.id || "")
+    && pendingSidebarSessionId
+    && (
+      pendingSidebarSessionId === opencodeHydratingSessionId
+      || hydratingActiveOpencodeSession
+      ||
+      pendingSidebarSessionId !== activeOpencodeSessionId
+      || !activeOpencodeSession
+      || !activeOpencodeSession.loaded
+    )
+  );
   const activeOpencodeModel = useMemo(() => {
     const isAvailableModel = (full: string) => isModelRefAvailable(full, {
       connectedProviders: opencodeConnectedProviders,
@@ -1888,7 +1892,12 @@ export function App() {
   ]);
   const opencodeMessages = activeOpencodeSession?.messages ?? [];
   const opencodeTurnStart = activeOpencodeSession?.turnStart ?? 0;
-  const opencodeSessionLoading = Boolean(activeOpencodeSessionId && activeOpencodeSession && !activeOpencodeSession.loaded);
+  const opencodeSessionLoading = Boolean(
+    hydratingActiveOpencodeSession
+    || pendingSidebarSessionSwitch
+    || (activeOpencodeSessionId && (!activeOpencodeSession || !activeOpencodeSession.loaded))
+  );
+  const opencodeShowEmptyState = !hydratingActiveOpencodeSession && !pendingSidebarSessionSwitch && !opencodeSessionLoading && opencodeMessages.length === 0;
   const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
   const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
   const visibleOpencodeAgents = useMemo(() => {
@@ -2334,6 +2343,7 @@ export function App() {
     setTopologyContextMenu(null);
     unbindWorkspaceAgent(target);
     if (target === workspacePath) {
+      clearOpencodeSessionHydration();
       setActiveOpencodeSessionId("");
       setDraftOpencodeSession(true);
     }
@@ -2423,6 +2433,8 @@ export function App() {
     if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
     if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
     setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    clearPendingSidebarSessionSelection();
+    clearOpencodeSessionHydration();
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
     setOpencodePromptInput("");
@@ -2561,25 +2573,6 @@ export function App() {
     if (source === "custom") return "custom";
     return isPresetProviderId(providerId) ? "preset" : "other";
   }
-  const onboardingSteps: OnboardingStep[] = [
-    {
-      title: "Step 1 · Import Project",
-      body: "Click the + button in the left project rail, choose a local Git repository folder, and it will be imported immediately."
-    },
-    {
-      title: "Step 2 · Browse Commits",
-      body: "Select a branch and click a commit from the list. The app loads changed files and default diff automatically."
-    },
-    {
-      title: "Step 3 · Read Context",
-      body: "Use the Context tab to view Agent Context. Click 'Load full context' for full transcript when checkpoint data is available."
-    },
-    {
-      title: "Step 4 · Sync Workflow",
-      body: "Use Refresh / Pull / Push actions from the commit toolbar. Open Settings for theme/layout and runtime checks."
-    }
-  ];
-
   function beginSplitDrag(kind: "sidebar" | "right", clientX: number) {
     setDraggingSplit({
       kind,
@@ -2839,6 +2832,18 @@ export function App() {
   }
 
   async function fetchSkillsmpSearchWithFallback(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }, options: { allowBackendFallback?: boolean } = {}) {
+    if (!IS_TAURI) {
+      return await invoke<any>("fetch_skillsmp_skill_search", {
+        repoPath,
+        query: input.query,
+        page: input.page,
+        limit: input.limit,
+        sortBy: input.sortBy,
+        category: input.category,
+        occupation: input.occupation,
+        apiKey: skillsmpApiKey || undefined
+      });
+    }
     try {
       return await fetchSkillsmpJson(buildSkillsmpSearchEndpoint(input), skillsmpApiKey);
     } catch (directError) {
@@ -2858,6 +2863,9 @@ export function App() {
   }
 
   async function fetchSkillsmpAiWithFallback(query: string) {
+    if (!IS_TAURI) {
+      return await invoke<any>("fetch_skillsmp_ai_search", { repoPath, query, apiKey: skillsmpApiKey || undefined });
+    }
     try {
       return await fetchSkillsmpJson(`/api/v1/skills/ai-search?q=${encodeURIComponent(query)}`, skillsmpApiKey, 14000);
     } catch (directError) {
@@ -3632,6 +3640,69 @@ export function App() {
     setOpencodeSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
   }
 
+  function beginOpencodeSessionHydration(sessionId: string) {
+    const id = sessionId.trim();
+    if (!id) return;
+    opencodeHydratingSessionIdRef.current = id;
+    setOpencodeHydratingSessionId(id);
+  }
+
+  function endOpencodeSessionHydration(sessionId: string) {
+    const id = sessionId.trim();
+    if (!id || opencodeHydratingSessionIdRef.current !== id) return;
+    opencodeHydratingSessionIdRef.current = "";
+    setOpencodeHydratingSessionId("");
+  }
+
+  function clearOpencodeSessionHydration() {
+    opencodeHydratingSessionIdRef.current = "";
+    setOpencodeHydratingSessionId("");
+  }
+
+  function clearPendingSidebarSessionSelection() {
+    pendingSidebarSessionSelectionRef.current = null;
+  }
+
+  function openSidebarOpencodeSession(repo: RepositoryEntry, session: OpencodeSessionSummary) {
+    pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
+    const cachedSession = opencodeSessions.find((item) => item.id === session.id) ?? null;
+    const shouldHydrate = selectedRepo?.id !== repo.id || !cachedSession?.loaded;
+    if (shouldHydrate) beginOpencodeSessionHydration(session.id);
+    else endOpencodeSessionHydration(session.id);
+    setOpencodeSessions((prev) => {
+      const hit = prev.findIndex((s) => s.id === session.id);
+      if (hit >= 0) {
+        return prev.map((s) =>
+          s.id === session.id
+            ? {
+                ...s,
+                title: s.title,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt,
+                loaded: s.loaded
+              }
+            : s
+        );
+      }
+      return [
+        {
+          ...opencodeSessionFromSummary(session),
+          loaded: false
+        },
+        ...prev
+      ];
+    });
+    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    setNewSessionTargetRepoId(repo.id);
+    opencodeSessionsRepoIdRef.current = repo.id;
+    if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+    if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
+    setDraftOpencodeSession(false);
+    setActiveOpencodeSessionId(session.id);
+    bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
+    void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
+  }
+
   function getOpencodeMessageCacheKey(repoPathValue: string, sessionId: string) {
     return `${repoPathValue.trim()}\n${sessionId.trim()}`;
   }
@@ -3700,28 +3771,16 @@ export function App() {
     const task = (async () => {
       let raw: unknown[] = [];
       let nextCursorFromRpc = "";
-      if (IS_TAURI) {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath: targetRepoPath });
-        const qs = new URLSearchParams();
-        qs.set("limit", String(safeLimit));
-        qs.set("directory", targetRepoPath);
-        if (safeBefore) qs.set("before", safeBefore);
-        const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
-        if (!res.ok) throw new Error(`fetch message page failed: ${res.status}`);
-        const body = await res.json();
-        raw = Array.isArray(body) ? body : [];
-        nextCursorFromRpc = res.headers.get("x-next-cursor")?.trim() || "";
-      } else {
-        const page = await invoke<{ items?: unknown; nextCursor?: string }>("get_opencode_session_messages_detailed_page", {
-          repoPath: targetRepoPath,
-          sessionId: id,
-          directory: targetRepoPath,
-          before: safeBefore || undefined,
-          limit: safeLimit
-        });
-        raw = Array.isArray(page.items) ? page.items : [];
-        nextCursorFromRpc = String(page.nextCursor || "").trim();
-      }
+      const base = await invoke<string>("get_opencode_service_base", { repoPath: targetRepoPath });
+      const qs = new URLSearchParams();
+      qs.set("limit", String(safeLimit));
+      qs.set("directory", targetRepoPath);
+      if (safeBefore) qs.set("before", safeBefore);
+      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
+      if (!res.ok) throw new Error(`fetch message page failed: ${res.status}`);
+      const body = await res.json();
+      raw = Array.isArray(body) ? body : [];
+      nextCursorFromRpc = res.headers.get("x-next-cursor")?.trim() || "";
       const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
       const detailsById: Record<string, OpencodeDetailedMessage> = {};
       const mapped: OpencodeChatMessage[] = [];
@@ -3772,7 +3831,7 @@ export function App() {
         mapped: cached.mapped,
         turnCount: cached.turnCount,
         requestedLimit: cached.limit,
-        nextCursor: undefined as string | undefined,
+        nextCursor: cached.nextCursor,
         hasMore: cached.hasMore
       };
     }
@@ -3784,6 +3843,7 @@ export function App() {
       limit,
       mapped,
       turnCount,
+      nextCursor: page.nextCursor,
       hasMore: page.hasMore,
       fetchedAt: Date.now()
     });
@@ -3813,8 +3873,15 @@ export function App() {
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
       const sorted = sortOpencodeSessionSummaries(rows || []);
       const hasMore = sorted.length > limit;
-      const mapped = sorted.slice(0, limit).map((s, i) => opencodeSessionFromSummary(s, i + 1));
-      setSidebarOpencodeSessionsByRepo((prev) => ({ ...prev, [repoId]: mapped }));
+      setSidebarOpencodeSessionsByRepo((prev) => {
+        const cachedSessions = prev[repoId] || [];
+        const mapped = sorted.slice(0, limit).map((s, i) => {
+          const base = opencodeSessionFromSummary(s, i + 1);
+          const cached = cachedSessions.find((item) => item.id === base.id) || opencodeSessions.find((item) => item.id === base.id);
+          return cached && cached.title.trim() ? { ...base, title: cached.title } : base;
+        });
+        return { ...prev, [repoId]: mapped };
+      });
       setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
       setSidebarOpencodeSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
     } finally {
@@ -3882,7 +3949,7 @@ export function App() {
         if (!cached) return session;
         return {
           ...cached,
-          title: session.title,
+          title: cached.title.trim() || session.title,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
         };
@@ -3893,7 +3960,7 @@ export function App() {
       return cached
         ? {
           ...cached,
-          title: session.title,
+          title: cached.title.trim() || session.title,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
         }
@@ -3974,6 +4041,8 @@ export function App() {
         loaded: true,
         updatedAt: Date.now()
       }));
+    } finally {
+      endOpencodeSessionHydration(id);
     }
   }
 
@@ -3997,6 +4066,19 @@ export function App() {
       const mapped = merged;
       const growth = Math.max(0, buildOpencodeTurnRanges(mapped).length - prevTurnCount);
       if (growth <= 0) {
+        if (mapped.length > session.messages.length) {
+          if (Object.keys(page.detailsById).length > 0) {
+            setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+          }
+          updateOpencodeSessionById(id, (s) => ({
+            ...s,
+            messages: mapped,
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
+            updatedAt: Date.now()
+          }));
+          appendOpencodeDebugLog(`session.messages load more ${id} mergedWithoutTurnGrowth count=${mapped.length} hasMore=${page.hasMore}`);
+        }
         updateOpencodeSessionById(id, (s) => ({
           ...s,
           nextCursor: page.nextCursor,
@@ -4083,7 +4165,7 @@ export function App() {
     appendOpencodeDebugLog("session.create requested");
     const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
       repoPath,
-      title: seedPrompt?.trim() || undefined,
+      title: clipOpencodeSessionTitle(seedPrompt) || undefined,
       agent: activeOpencodeAgent || null,
       permission: opencodeAutoAcceptPermissions ? allowAllPermissionRules() : null
     });
@@ -4109,6 +4191,8 @@ export function App() {
 
   async function createAndSwitchOpencodeSession(seedPrompt?: string) {
     if (!ensureRepoSelected()) return;
+    clearPendingSidebarSessionSelection();
+    clearOpencodeSessionHydration();
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
     setOpencodePromptInput(seedPrompt?.trim() || "");
@@ -4128,6 +4212,8 @@ export function App() {
     if (gitPaneRepo?.id !== targetRepo.id) setGitPaneRepo(targetRepo);
     setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(targetRepo.id));
     setExpandedProjectIds((prev) => (prev.includes(targetRepo.id) ? prev : [...prev, targetRepo.id]));
+    clearPendingSidebarSessionSelection();
+    clearOpencodeSessionHydration();
     setDraftOpencodeSession(true);
     setActiveOpencodeSessionId("");
     setOpencodePromptInput(seedPrompt?.trim() || "");
@@ -4154,7 +4240,7 @@ export function App() {
         const old = next[idx];
         next[idx] = {
           ...old,
-          title: summary?.title || old.title || titleHint || old.title,
+          title: old.title || summary?.title || titleHint || old.title,
           updatedAt: summary?.updatedAt || Date.now(),
           createdAt: summary?.createdAt || old.createdAt
         };
@@ -4169,6 +4255,7 @@ export function App() {
       const added = opencodeSessionFromSummary(shell, prev.length + 1);
       return [added, ...prev];
     });
+    beginOpencodeSessionHydration(id);
     setActiveOpencodeSessionId(id);
     setDraftOpencodeSession(false);
     try {
@@ -4280,10 +4367,12 @@ export function App() {
     if (activeOpencodeSessionId === id) {
       if (fallback) {
         pendingSidebarSessionSelectionRef.current = { repoId, sessionId: fallback.id };
+        beginOpencodeSessionHydration(fallback.id);
         setOpencodeSessions((prev) => [{ ...opencodeSessionFromSummary(fallback), loaded: false }, ...prev.filter((session) => session.id !== fallback.id)]);
         setActiveOpencodeSessionId(fallback.id);
         setDraftOpencodeSession(false);
       } else {
+        clearOpencodeSessionHydration();
         setActiveOpencodeSessionId("");
         setDraftOpencodeSession(true);
       }
@@ -4319,9 +4408,11 @@ export function App() {
     const fallback = next[Math.max(0, idx - 1)] ?? next[0] ?? null;
     setOpencodeSessions(next);
     if (activeOpencodeSessionId === id && fallback) {
+      beginOpencodeSessionHydration(fallback.id);
       setActiveOpencodeSessionId(fallback.id);
       setDraftOpencodeSession(false);
     } else if (next.length === 0) {
+      clearOpencodeSessionHydration();
       setActiveOpencodeSessionId("");
       setDraftOpencodeSession(true);
     }
@@ -4523,11 +4614,6 @@ export function App() {
       setRuntimeStatus(final);
       if (final.git.installed && final.entire.installed) {
         window.localStorage.setItem("giteam.runtime.ready.v1", "1");
-        const onboardingDone = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "1";
-        if (!onboardingDone) {
-          setOnboardingStep(0);
-          setShowOnboarding(true);
-        }
       }
       return final;
     } finally {
@@ -5141,7 +5227,6 @@ export function App() {
       scheduleOpencodeScrollToBottom({ source: "system" });
     };
     updateOpencodeSessionById(sessionId, (session) => {
-      const nextTitle = session.messages.length === 0 ? toOpencodeSessionTitle(prompt || "(image)") : session.title;
       const nextMessages: OpencodeChatMessage[] = [
         ...session.messages,
         {
@@ -5156,7 +5241,6 @@ export function App() {
       const nextTurnStart = getInitialOpencodeTurnStart(nextTurnCount);
       return {
         ...session,
-        title: nextTitle,
         messages: nextMessages,
         turnStart: nextTurnStart,
         updatedAt: Date.now()
@@ -5164,7 +5248,6 @@ export function App() {
     });
     updateSidebarOpencodeSession(repoIdAtRun, sessionId, (session) => ({
       ...session,
-      title: session.messages.length === 0 ? toOpencodeSessionTitle(prompt || "(image)") : session.title,
       updatedAt: Date.now()
     }));
     scrollToBottom({ force: true });
@@ -5331,12 +5414,6 @@ export function App() {
       if (serverModel && model && serverModel !== model) {
         appendOpencodeDebugLog(`prompt.model.override local=${model} server=${serverModel} (kept local)`);
       }
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const eventUrl = `${base}/global/event?directory=${qdir}`;
-      const promptUrl = `${base}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${qdir}`;
-      appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
-
       const roleByMessageId = new Map<string, string>();
       let seenAssistantActivity = false;
       let promptPosted = false;
@@ -5586,6 +5663,11 @@ export function App() {
         }
       };
 
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      const eventUrl = `${base}/global/event?directory=${qdir}`;
+      const promptUrl = `${base}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${qdir}`;
+      appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
       void (async () => {
         try {
           const resp = await fetch(eventUrl, {
@@ -5615,7 +5697,6 @@ export function App() {
             const { value, done: rdDone } = await reader.read();
             if (rdDone) break;
             buf += decoder.decode(value, { stream: true });
-            // SSE frames are separated by blank lines and may include multi-line data fields.
             while (true) {
               const m = buf.match(/\r?\n\r?\n/);
               if (!m || m.index == null) break;
@@ -5937,12 +6018,6 @@ export function App() {
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
-      if (!IS_TAURI) {
-        await invoke<boolean>("post_opencode_question_reply", { repoPath, requestId, answers });
-        appendOpencodeDebugLog(`question.reply ${requestId}`);
-        await refreshPendingQuestions();
-        return true;
-      }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
       const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
@@ -5971,28 +6046,24 @@ export function App() {
     setOpencodeQuestionLoading(true);
     try {
       let raw: unknown;
-      if (!IS_TAURI) {
-        raw = await invoke<unknown>("list_opencode_questions", { repoPath });
-      } else {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const qdir = encodeURIComponent(repoPath);
-        raw = [];
-        let lastError = "";
-        for (const path of ["/question", "/question/"]) {
-          try {
-            const res = await fetch(`${base}${path}?directory=${qdir}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const text = await res.text();
-            if (!text.trim()) throw new Error("empty response");
-            raw = JSON.parse(text);
-            lastError = "";
-            break;
-          } catch (e) {
-            lastError = `${path}: ${String(e)}`;
-          }
+      const base = await invoke<string>("get_opencode_service_base", { repoPath });
+      const qdir = encodeURIComponent(repoPath);
+      raw = [];
+      let lastError = "";
+      for (const path of ["/question", "/question/"]) {
+        try {
+          const res = await fetch(`${base}${path}?directory=${qdir}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          if (!text.trim()) throw new Error("empty response");
+          raw = JSON.parse(text);
+          lastError = "";
+          break;
+        } catch (e) {
+          lastError = `${path}: ${String(e)}`;
         }
-        if (lastError) throw new Error(lastError);
       }
+      if (lastError) throw new Error(lastError);
       const rows = Array.isArray(raw) ? raw : [];
       const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
       setOpencodeQuestionRequests(requests);
@@ -6005,12 +6076,6 @@ export function App() {
 
   async function sendQuestionReject(requestId: string) {
     try {
-      if (!IS_TAURI) {
-        await invoke<boolean>("post_opencode_question_reject", { repoPath, requestId });
-        appendOpencodeDebugLog(`question.reject ${requestId}`);
-        await refreshPendingQuestions();
-        return true;
-      }
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
       const qdir = encodeURIComponent(repoPath);
       const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
@@ -8182,7 +8247,6 @@ export function App() {
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo || !repoPath || !activeOpencodeSessionId) return;
     if (activeOpencodeSessionBusy) return;
-    if (!IS_TAURI) return;
     const sessionId = activeOpencodeSessionId.trim();
     if (!sessionId) return;
     const seq = opencodePassiveSyncSeqRef.current + 1;
@@ -9007,40 +9071,8 @@ export function App() {
                                         setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
                                       }}
                                       onClick={() => {
-                                        pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-                                        setOpencodeSessions((prev) => {
-                                          const hit = prev.findIndex((s) => s.id === session.id);
-                                          if (hit >= 0) {
-                                            return prev.map((s) =>
-                                              s.id === session.id
-                                                ? {
-                                                    ...s,
-                                                    title: session.title,
-                                                    createdAt: session.createdAt,
-                                                    updatedAt: session.updatedAt,
-                                                    loaded: s.loaded
-                                                  }
-                                                : s
-                                            );
-                                          }
-                                          return [
-                                            {
-                                              ...opencodeSessionFromSummary(session),
-                                              loaded: false
-                                            },
-                                            ...prev
-                                          ];
-                                        });
-                                        setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                                        setNewSessionTargetRepoId(repo.id);
-                                        opencodeSessionsRepoIdRef.current = repo.id;
-                                        if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                                        if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                         setDraftOpencodeSession(false);
-                                         setActiveOpencodeSessionId(session.id);
-                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                         void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
-                                       }}
+                                        openSidebarOpencodeSession(repo, session);
+                                      }}
                                     >
                                       <span className="gt-session-title">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
@@ -9143,40 +9175,8 @@ export function App() {
                                         setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
                                       }}
                                       onClick={() => {
-                                        pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-                                        setOpencodeSessions((prev) => {
-                                          const hit = prev.findIndex((s) => s.id === session.id);
-                                          if (hit >= 0) {
-                                            return prev.map((s) =>
-                                              s.id === session.id
-                                                ? {
-                                                    ...s,
-                                                    title: session.title,
-                                                    createdAt: session.createdAt,
-                                                    updatedAt: session.updatedAt,
-                                                    loaded: s.loaded
-                                                  }
-                                                : s
-                                            );
-                                          }
-                                          return [
-                                            {
-                                              ...opencodeSessionFromSummary(session),
-                                              loaded: false
-                                            },
-                                            ...prev
-                                          ];
-                                        });
-                                        setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
-                                        setNewSessionTargetRepoId(repo.id);
-                                        opencodeSessionsRepoIdRef.current = repo.id;
-                                        if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
-                                        if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-                                         setDraftOpencodeSession(false);
-                                         setActiveOpencodeSessionId(session.id);
-                                         bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-                                         void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
-                                       }}
+                                        openSidebarOpencodeSession(repo, session);
+                                      }}
                                     >
                                       <span className="gt-session-title">{session.title}</span>
                                       {session.updatedAt || session.createdAt ? (
@@ -9226,7 +9226,7 @@ export function App() {
 
   const centerPane = runtimeStatus.opencode.installed ? (
     <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-      <div className={opencodeMessages.length === 0 ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
+      <div className={opencodeShowEmptyState ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
         <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
           <div className="gt-chat-stream">
             {opencodeSessionLoading ? (
@@ -9499,7 +9499,7 @@ export function App() {
                 }}
               />
             ))}
-            {opencodeMessages.length === 0 ? (
+            {opencodeShowEmptyState ? (
               <div className="gt-empty-composer-title">What should we build in {selectedRepo?.name || "Giteam"}?</div>
             ) : null}
             <div className="opencode-composer">
@@ -9814,7 +9814,7 @@ export function App() {
                 </div>
               </div>
             </div>
-            {opencodeMessages.length === 0 && repos.length > 0 ? (
+            {opencodeShowEmptyState && repos.length > 0 ? (
               <div className="gt-empty-composer-meta">
                 <div className="gt-empty-composer-repo-picker">
                   {repos.map((repo) => (
@@ -11008,12 +11008,6 @@ branches.forEach((b) => {
 
   const editor = (
     <div className="wb-editor-inner gt-editor-shell">
-      <button className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
-        <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
-      </button>
-      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={() => setRightDrawerOpen((v) => !v)}>
-        <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
-      </button>
       <div
         className={editorRailClass}
         style={{
@@ -11200,9 +11194,21 @@ branches.forEach((b) => {
 
   const panel = <div className="wb-panel-inner" />;
 
+  const shellToggles = (
+    <div className="gt-shell-toggle-layer" aria-label="布局显隐控制">
+      <button className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
+        <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
+      </button>
+      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={() => setRightDrawerOpen((v) => !v)}>
+        <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
+      </button>
+    </div>
+  );
+
   return (
     <AppErrorBoundary>
       <>
+        {shellToggles}
         <Workbench
           activityBar={activityBar}
           sideBar={sideBar}
@@ -11593,7 +11599,14 @@ branches.forEach((b) => {
                       modelCountsByProvider={opencodeProviderPickerModelCounts}
                       getProviderTag={getOpencodeProviderTag}
                       getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                      onSelectProvider={(provider) => setOpencodeProviderPickerProvider(provider)}
+                      onSelectProvider={(provider, connected) => {
+                        setOpencodeProviderPickerProvider(provider);
+                        const pretty = opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider;
+                        setOpencodeConnectProviderId(provider);
+                        setOpencodeConnectProviderName(pretty);
+                        setOpencodeInlineAuthOpenFor(connected ? "" : provider);
+                        if (!connected) setOpencodeConnectApiKey("");
+                      }}
                     />
                   </div>
                   <div className="settings-model-col">
@@ -11606,8 +11619,70 @@ branches.forEach((b) => {
                       const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
                       const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
                       if (!pid) return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
-                      if (!opencodeConnectedProviders.includes(pid)) return <div className="small muted opencode-provider-empty">该 provider 未连接，请先在 OpenCode 中完成授权。</div>;
-                      return <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => { setOpencodeHiddenModels((prev) => new Set([...prev, ref])); setOpencodeEnabledModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); }} onEnableModel={(ref) => { setOpencodeHiddenModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); setOpencodeEnabledModels((prev) => new Set([...prev, ref])); }} />;
+                      const connected = opencodeConnectedProviders.includes(pid);
+                      const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+                      const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+                      const authOpen = !connected || opencodeInlineAuthOpenFor === pid;
+                      const authHint = connected
+                        ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
+                        : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
+                      return <div className="opencode-provider-right-panel">
+                        <div className="opencode-provider-connect">
+                          <div className="toolbar" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: authOpen ? "var(--gt-space-2)" : "var(--gt-space-3)" }}>
+                            <div className="small muted">{authHint}</div>
+                            {connected ? <button className="chip" onClick={() => {
+                              setOpencodeConnectProviderId(pid);
+                              setOpencodeConnectProviderName(pretty);
+                              setOpencodeInlineAuthOpenFor((prev) => prev === pid ? "" : pid);
+                            }}>{authOpen ? "收起密钥编辑" : "更新 API Key"}</button> : null}
+                          </div>
+                          {authOpen ? <>
+                            <input
+                              className="path-input"
+                              placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
+                              value={keyValue}
+                              onChange={(e) => {
+                                setOpencodeConnectProviderId(pid);
+                                setOpencodeConnectProviderName(pretty);
+                                setOpencodeConnectApiKey(e.target.value);
+                              }}
+                            />
+                            <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)", marginBottom: connected ? "0" : "var(--gt-space-3)" }}>
+                              <button
+                                className="chip"
+                                disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
+                                onClick={async () => {
+                                  if (!ensureRepoSelected()) return;
+                                  const authPid = pid.trim();
+                                  const key = opencodeConnectApiKey.trim();
+                                  if (!authPid || !key) return;
+                                  setOpencodeConnectBusy(true);
+                                  setError("");
+                                  try {
+                                    await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
+                                    await refreshOpencodeCatalog();
+                                    if (!(opencodeModelsByProvider[authPid] ?? []).length) {
+                                      await fetchOpencodeModels(authPid);
+                                    }
+                                    setOpencodeProviderPickerProvider(authPid);
+                                    setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
+                                    setOpencodeConnectApiKey("");
+                                    if (connected) setOpencodeInlineAuthOpenFor("");
+                                  } catch (e) {
+                                    setError(String(e));
+                                    setMessage(connected ? "更新密钥失败" : "连接失败");
+                                  } finally {
+                                    setOpencodeConnectBusy(false);
+                                  }
+                                }}
+                              >
+                                {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
+                              </button>
+                            </div>
+                          </> : null}
+                        </div>
+                        {connected ? <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => { setOpencodeHiddenModels((prev) => new Set([...prev, ref])); setOpencodeEnabledModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); }} onEnableModel={(ref) => { setOpencodeHiddenModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); setOpencodeEnabledModels((prev) => new Set([...prev, ref])); }} /> : null}
+                      </div>;
                     })()}
                   </div>
                 </div>
@@ -11891,7 +11966,7 @@ branches.forEach((b) => {
                     const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
                     const tag = getOpencodeProviderTag(pid);
                     const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                    const showAuthEditor = !connected;
+                    const showAuthEditor = true;
                     const menuOpen = opencodeProviderActionMenuFor === pid;
                     const openAuthEditor = () => {
                       setOpencodeConnectProviderId(pid);
@@ -12111,81 +12186,6 @@ branches.forEach((b) => {
             onRunDependencyAction={(name, action) => void runDependencyAction(name, action)}
             onToggleLog={(name) => setExpandedLogDep((prev) => (prev === name ? null : name))}
           />
-        ) : null}
-
-        {showReleaseNotes ? (
-          <div className="modal-mask" onClick={() => setShowReleaseNotes(false)}>
-            <div className="modal-card onboarding-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Giteam {APP_RELEASE_VERSION}</h3>
-              <p className="small muted">Release Notes</p>
-              <div className="settings-panel-list">
-                <article className="settings-panel-card"><div className="settings-panel-copy"><strong>设置中心完善</strong><p>插件页已改为依赖管理，并补齐通用偏好配置。</p></div></article>
-                <article className="settings-panel-card"><div className="settings-panel-copy"><strong>通知与声音</strong><p>Agent 完成、权限请求、错误事件支持原生通知，并保留 Web 通知降级。</p></div></article>
-              </div>
-              <div className="toolbar" style={{ justifyContent: "flex-end" }}>
-                <button className="chip primary" onClick={() => setShowReleaseNotes(false)}>Got it</button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {showOnboarding ? (
-          <div className="modal-mask" onClick={() => setShowOnboarding(false)}>
-            <div className="modal-card onboarding-card" onClick={(e) => e.stopPropagation()}>
-              <h3>Quick Guide</h3>
-              <p className="small muted">First-time walkthrough</p>
-
-              <div className="onboarding-step-title">{onboardingSteps[onboardingStep].title}</div>
-              <p className="onboarding-step-body">{onboardingSteps[onboardingStep].body}</p>
-
-              <div className="onboarding-dots">
-                {onboardingSteps.map((_, idx) => (
-                  <button
-                    key={`dot-${idx}`}
-                    className={idx === onboardingStep ? "onboarding-dot active" : "onboarding-dot"}
-                    onClick={() => setOnboardingStep(idx)}
-                    aria-label={`Go to step ${idx + 1}`}
-                  />
-                ))}
-              </div>
-
-              <div className="toolbar" style={{ justifyContent: "space-between" }}>
-                <button
-                  className="chip"
-                  disabled={onboardingStep === 0}
-                  onClick={() => setOnboardingStep((s) => Math.max(0, s - 1))}
-                >
-                  Back
-                </button>
-                <div className="toolbar">
-                  <button
-                    className="chip"
-                    onClick={() => {
-                      window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
-                      setShowOnboarding(false);
-                    }}
-                  >
-                    Skip
-                  </button>
-                  {onboardingStep < onboardingSteps.length - 1 ? (
-                    <button className="chip" onClick={() => setOnboardingStep((s) => Math.min(onboardingSteps.length - 1, s + 1))}>
-                      Next
-                    </button>
-                  ) : (
-                    <button
-                      className="chip"
-                      onClick={() => {
-                        window.localStorage.setItem(ONBOARDING_DONE_KEY, "1");
-                        setShowOnboarding(false);
-                      }}
-                    >
-                      Done
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
         ) : null}
 
         {opencodePreviewImage ? (() => {

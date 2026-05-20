@@ -15,6 +15,9 @@ const kotlinVersion = '2.1.0';
 patchMetroExports();
 patchMetroCacheExports();
 patchExpoCliMetroTerminal();
+patchMetroWorkletsBundleModeSha();
+patchDrawerLayoutSpring();
+patchMetroRuntimeWorkletsHmr();
 
 if (fs.existsSync(gradlePluginFile)) {
   const source = fs.readFileSync(gradlePluginFile, 'utf8');
@@ -145,4 +148,98 @@ function patchExpoCliMetroTerminal() {
   }
   fs.writeFileSync(expoCliMetroFile, source.replace(before, after));
   console.log('[patch-expo-cli] patched Metro terminal logger');
+}
+
+function patchMetroWorkletsBundleModeSha() {
+  const dependencyGraphFile = path.join(
+    rootDir,
+    'apps',
+    'mobile',
+    'node_modules',
+    'metro',
+    'src',
+    'node-haste',
+    'DependencyGraph.js'
+  );
+  if (!fs.existsSync(dependencyGraphFile)) return;
+  const source = fs.readFileSync(dependencyGraphFile, 'utf8');
+  const guard = 'mixedPath.includes("react-native-worklets/.worklets/")';
+  if (source.includes(guard)) return;
+  const before = `  async getOrComputeSha1(mixedPath) {
+    const result = await this._fileSystem.getOrComputeSha1(mixedPath);`;
+  const after = `  async getOrComputeSha1(mixedPath) {
+    if (${guard}) {
+      const createHash = require("crypto").createHash;
+      return {
+        sha1: createHash("sha1").update(performance.now().toString()).digest("hex"),
+      };
+    }
+    const result = await this._fileSystem.getOrComputeSha1(mixedPath);`;
+  if (!source.includes(before)) {
+    console.warn('[patch-metro-worklets] DependencyGraph SHA block not found, skipping');
+    return;
+  }
+  fs.writeFileSync(dependencyGraphFile, source.replace(before, after));
+  console.log('[patch-metro-worklets] patched Bundle Mode SHA fallback');
+}
+
+function patchDrawerLayoutSpring() {
+  const drawerFile = path.join(
+    rootDir,
+    'apps',
+    'mobile',
+    'node_modules',
+    'react-native-drawer-layout',
+    'lib',
+    'module',
+    'views',
+    'Drawer.native.js'
+  );
+  if (!fs.existsSync(drawerFile)) return;
+  const source = fs.readFileSync(drawerFile, 'utf8');
+  const before = `      stiffness: 1000,
+      damping: 500,
+      mass: 3,`;
+  const after = `      stiffness: 280,
+      damping: 42,
+      mass: 1.0,`;
+  if (source.includes(after)) return;
+  if (!source.includes(before)) {
+    console.warn('[patch-drawer-layout] spring config not found, skipping');
+    return;
+  }
+  fs.writeFileSync(drawerFile, source.replace(before, after));
+  console.log('[patch-drawer-layout] softened drawer spring animation');
+}
+
+function patchMetroRuntimeWorkletsHmr() {
+  const hmrClientFile = path.join(
+    rootDir,
+    'apps',
+    'mobile',
+    'node_modules',
+    'metro-runtime',
+    'src',
+    'modules',
+    'HMRClient.js'
+  );
+  if (!fs.existsSync(hmrClientFile)) return;
+  const source = fs.readFileSync(hmrClientFile, 'utf8');
+  const guard = 'global.__workletsModuleProxy?.propagateModuleUpdate';
+  if (source.includes(guard)) return;
+  const before = `const EventEmitter = require("./vendor/eventemitter3");
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const inject = ({ module: [id, code], sourceURL }) => {`;
+  const after = `const EventEmitter = require("./vendor/eventemitter3");
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const inject = ({ module: [id, code], sourceURL }) => {
+  if (${guard}) {
+    global.__workletsModuleProxy.propagateModuleUpdate(code, sourceURL);
+  }`;
+  if (!source.includes(before)) {
+    console.warn('[patch-metro-runtime] HMR inject block not found, skipping');
+    return;
+  }
+  fs.writeFileSync(hmrClientFile, source.replace(before, after));
+  console.log('[patch-metro-runtime] patched worklets HMR propagation');
 }

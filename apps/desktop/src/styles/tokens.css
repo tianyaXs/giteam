@@ -29,6 +29,7 @@
   --switch-thumb-bg: #f3f4f6;
   --success: #2da44e;
   --danger: #cf6679;
+  --warning: #d29922;
   --add: #123822;
   --del: #4a1d25;
   --gt-ui-font-size: var(--gt-text-base);
@@ -121,6 +122,7 @@
   --switch-thumb-bg: #ffffff;
   --success: #1f8f43;
   --danger: #c2364f;
+  --warning: #9a6700;
   --add: #dcf6e3;
   --del: #ffe1e6;
 

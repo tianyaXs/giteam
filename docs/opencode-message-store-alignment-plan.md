@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前桌面端在消费 OpenCode `/global/event` 时，会把实时 `message` 和 `part` 事件压平成本地 chat message。事件乱序时，`message.part.updated` 可能早于对应的 `message.updated` 到达，导致前端在尚未确认 role 的情况下创建 assistant 消息，从而把 user part 误渲染为 assistant Markdown，并在真正 assistant 消息创建时出现 Markdown 和三点加载状态来回闪动。
+当前移动端在消费 OpenCode 流式事件时，会把实时 `message` 和 `part` 事件压平成本地 chat message。事件乱序时，`message.part.updated` / `message.part.delta` 可能早于对应的 `message.updated` 到达，导致前端在尚未确认 role 的情况下创建 assistant 消息，或在流式过程中被半成品快照降级，从而出现 Markdown 和三点加载状态来回闪动。
 
 OpenCode Web 端的模型更稳定：`message` 和 `part` 分开存储，`message.updated` 负责确认消息身份，`part` 只按 `messageID` 归档，渲染时再组合。
 
@@ -11,7 +11,7 @@ OpenCode Web 端的模型更稳定：`message` 和 `part` 分开存储，`messag
 - 避免未知 role 的 part 事件创建 assistant UI。
 - 保证 streaming 期间内容单调增长，不被空状态降级为三点加载。
 - 尽量对齐 OpenCode Web 的 message/part store 模型。
-- 保持现有桌面端 UI、工具渲染、thinking 展示和 final hydrate 行为稳定。
+- 保持现有移动端 UI、工具渲染、thinking 展示和 final hydrate 行为稳定。
 
 ## 非目标
 

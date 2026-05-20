@@ -6,6 +6,7 @@ import {
   Easing,
   Image,
   InteractionManager,
+  Keyboard,
   LayoutChangeEvent,
   Modal,
   PanResponder,
@@ -23,7 +24,6 @@ import {
   View
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Drawer } from 'react-native-drawer-layout';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
@@ -34,8 +34,8 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Network from 'expo-network';
 import EventSource from 'react-native-sse';
 import { FlashList } from '@shopify/flash-list';
-import { useMarkdown } from 'react-native-marked';
-import type { MarkedStyles } from 'react-native-marked';
+import { StreamdownText } from 'react-native-streamdown';
+import type { MarkdownStyle } from 'react-native-enriched-markdown';
 import { Feather } from '@expo/vector-icons';
 import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
 import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
@@ -58,8 +58,10 @@ import {
   getClientRepositories,
   getCurrentProject,
   getMessages,
+  getInstalledOpencodeSkills,
   getOpencodeCommands,
   getOpencodeConfig,
+  getOpencodeMcpStatus,
   getPendingQuestions,
   getProjects,
   getSessionStatus,
@@ -80,6 +82,28 @@ import {
   inspectTurnWindow,
   mergeMessageRows
 } from './src/features/messages/turns';
+import {
+  ensureStreamSessionStores as storeEnsureStreamSessionStores,
+  getKnownStreamMessageRole as storeGetKnownStreamMessageRole,
+  getStoredStreamPart as storeGetStoredStreamPart,
+  ingestStreamRows as storeIngestStreamRows,
+  mergeStreamPart as storeMergeStreamPart,
+  patchStoredStreamPartDelta as storePatchStoredStreamPartDelta,
+  publishStreamRows as storePublishStreamRows,
+  rawMessageId as storeRawMessageId,
+  rawMessageRole as storeRawMessageRole,
+  rawPartId as storeRawPartId,
+  removeStreamPermission,
+  removeStreamQuestion,
+  resetOpenCodeStreamStores as storeResetOpenCodeStreamStores,
+  setStreamSessionStatus,
+  setStreamTodos,
+  shouldStoreStreamPart as storeShouldStoreStreamPart,
+  upsertStreamPermission,
+  upsertStreamQuestion,
+  type OpenCodeStreamStoreRefs,
+  type StreamPartEvent
+} from './src/features/messages/opencodeStore';
 import {
   buildHostOrder,
   clampRadarPoint,
@@ -151,7 +175,24 @@ type RecentImageItem = {
 
 /** 会话列表稳定排序：时间降序，相同时间用 id 字典序（避免服务端/合并顺序不稳定） */
 function stableSortSessionItems(items: SessionItem[]): SessionItem[] {
-  return [...items].sort((a, b) => {
+  const deduped = new Map<string, SessionItem>();
+  for (const item of items) {
+    const id = toText(item.id).trim();
+    if (!id) continue;
+    const prev = deduped.get(id);
+    if (!prev) {
+      deduped.set(id, { ...item, id });
+      continue;
+    }
+    deduped.set(id, {
+      id,
+      title: toText(item.title) || prev.title,
+      preview: toText(item.preview) || prev.preview,
+      updatedAt: Math.max(Number(prev.updatedAt) || 0, Number(item.updatedAt) || 0),
+      createdAt: Number(prev.createdAt || 0) || Number(item.createdAt || 0) || undefined
+    });
+  }
+  return [...deduped.values()].sort((a, b) => {
     const ua = Number(a.updatedAt) || 0;
     const ub = Number(b.updatedAt) || 0;
     if (ub !== ua) return ub - ua;
@@ -167,6 +208,8 @@ type ModelOption = {
   label: string;
   provider: string;
 };
+
+type ComposerAgentName = 'build' | 'plan';
 
 type QuestionSubmitState = {
   status: 'submitting' | 'submitted' | 'failed';
@@ -259,89 +302,110 @@ function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): Re
   return <MarkdownMessage text={toText(text)} tone={tone} />;
 }
 
+const HANDWRITTEN_TEXT_FONT = Platform.select({
+  ios: 'Kaiti SC',
+  android: 'serif',
+  default: undefined,
+});
+
 function MarkdownMessage(props: { text: string; tone: 'user' | 'assistant' | 'think' }) {
   const { text, tone } = props;
   const src = normalizeMarkdownForMobile(text);
   const isUser = tone === 'user';
   const isThink = tone === 'think';
-  const textColor = isUser ? '#f8fafc' : isThink ? '#607089' : '#243244';
-  const mutedColor = isUser ? '#cbd5e1' : isThink ? '#7d8ba0' : '#66758a';
-  const headingColor = isUser ? '#ffffff' : isThink ? '#52657d' : '#162235';
-  const codeBg = isUser ? 'rgba(15, 23, 42, 0.32)' : isThink ? '#eef3f8' : '#f1f6fb';
-  const codeColor = isUser ? '#f8fafc' : '#142033';
-  const markdownStyles = useMemo<MarkedStyles>(() => ({
-    text: {
+  const textColor = isUser ? '#fffaf2' : isThink ? '#746b5e' : '#24211d';
+  const mutedColor = isUser ? '#eadfce' : isThink ? '#8d826f' : '#7c766c';
+  const headingColor = isUser ? '#ffffff' : isThink ? '#5f5749' : '#211e19';
+  const codeBg = isUser ? 'rgba(38, 35, 29, 0.34)' : isThink ? '#eee8dc' : '#ece8df';
+  const codeColor = isUser ? '#fffaf2' : '#3a352e';
+  const markdownStyles = useMemo<MarkdownStyle>(() => ({
+    paragraph: {
       color: textColor,
       fontSize: isThink ? 14 : 15,
       lineHeight: isThink ? 22 : 24,
-      letterSpacing: 0.08,
-      fontFamily: Platform.OS === 'android' ? 'sans-serif' : undefined
+      marginTop: 3,
+      marginBottom: 3,
+      fontFamily: HANDWRITTEN_TEXT_FONT
     },
-    paragraph: { paddingVertical: 3, marginBottom: 3 },
-    strong: { color: headingColor, fontWeight: '800' },
-    em: { color: mutedColor, fontStyle: 'italic' },
-    strikethrough: { color: mutedColor, textDecorationLine: 'line-through' },
-    link: { color: isUser ? '#bfdbfe' : '#1768c2', fontWeight: '700', fontStyle: 'normal' },
-    h1: { color: headingColor, fontSize: 20, lineHeight: 27, fontWeight: '800', marginTop: 8, marginBottom: 6, borderBottomWidth: 0 },
-    h2: { color: headingColor, fontSize: 18, lineHeight: 25, fontWeight: '800', marginTop: 6, marginBottom: 5, borderBottomWidth: 0 },
-    h3: { color: headingColor, fontSize: 16, lineHeight: 23, fontWeight: '800', marginTop: 5, marginBottom: 4 },
-    h4: { color: headingColor, fontSize: 15, lineHeight: 22, fontWeight: '800', marginTop: 4, marginBottom: 3 },
-    h5: { color: headingColor, fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 4, marginBottom: 3 },
-    h6: { color: mutedColor, fontSize: 13, lineHeight: 20, fontWeight: '800', marginTop: 4, marginBottom: 3 },
-    list: { marginVertical: 4, paddingLeft: 2 },
-    li: { color: textColor, fontSize: isThink ? 14 : 15, lineHeight: isThink ? 22 : 24, flexShrink: 1 },
-    codespan: {
-      color: codeColor,
-      backgroundColor: codeBg,
-      borderRadius: 6,
-      paddingHorizontal: 5,
-      paddingVertical: 2,
-      fontSize: 13,
-      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
-      fontStyle: 'normal',
-      fontWeight: '500'
+    strong: { color: headingColor, fontWeight: 'bold', fontFamily: HANDWRITTEN_TEXT_FONT },
+    em: { color: mutedColor, fontStyle: 'italic', fontFamily: HANDWRITTEN_TEXT_FONT },
+    link: { color: isUser ? '#bfdbfe' : '#1768c2', underline: true, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h1: { color: headingColor, fontSize: 20, lineHeight: 27, fontWeight: '800', marginTop: 8, marginBottom: 6, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h2: { color: headingColor, fontSize: 18, lineHeight: 25, fontWeight: '800', marginTop: 6, marginBottom: 5, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h3: { color: headingColor, fontSize: 16, lineHeight: 23, fontWeight: '800', marginTop: 5, marginBottom: 4, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h4: { color: headingColor, fontSize: 15, lineHeight: 22, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h5: { color: headingColor, fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: HANDWRITTEN_TEXT_FONT },
+    h6: { color: mutedColor, fontSize: 13, lineHeight: 20, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: HANDWRITTEN_TEXT_FONT },
+    list: {
+      color: textColor,
+      fontSize: isThink ? 14 : 15,
+      lineHeight: isThink ? 22 : 24,
+      marginTop: 4,
+      marginBottom: 4,
+      marginLeft: 14,
+      bulletColor: mutedColor,
+      markerColor: mutedColor,
+      gapWidth: 8,
+      fontFamily: HANDWRITTEN_TEXT_FONT
     },
     code: {
+      color: codeColor,
       backgroundColor: codeBg,
+      borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
+      fontSize: 13,
+      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
+    },
+    codeBlock: {
+      color: codeColor,
+      backgroundColor: codeBg,
+      borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
       borderRadius: 12,
+      borderWidth: 1,
       padding: 12,
-      marginVertical: 8,
-      minWidth: '100%'
+      marginTop: 8,
+      marginBottom: 8,
+      fontSize: 13,
+      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
     },
     blockquote: {
-      backgroundColor: isUser ? 'rgba(15, 23, 42, 0.18)' : '#f6f9fc',
-      borderLeftColor: isUser ? '#bfdbfe' : '#8fb6df',
-      borderLeftWidth: 3,
-      borderRadius: 10,
-      paddingLeft: 12,
-      paddingRight: 10,
-      paddingVertical: 8,
-      marginVertical: 8,
-      opacity: 1
+      color: textColor,
+      backgroundColor: isUser ? 'rgba(38, 35, 29, 0.18)' : '#f3eee5',
+      borderColor: isUser ? '#eadfce' : '#c9b99f',
+      borderWidth: 3,
+      gapWidth: 9,
+      marginTop: 8,
+      marginBottom: 8,
+      fontSize: isThink ? 14 : 15,
+      lineHeight: isThink ? 22 : 24,
+      fontFamily: HANDWRITTEN_TEXT_FONT
     },
-    hr: { borderBottomColor: isUser ? 'rgba(226,232,240,0.35)' : '#dbe5ef', marginVertical: 10 },
-    table: { borderColor: isUser ? 'rgba(226,232,240,0.35)' : '#d8e3ee', borderWidth: 1, borderRadius: 10, marginVertical: 8 },
-    tableRow: { borderBottomColor: isUser ? 'rgba(226,232,240,0.18)' : '#e5edf5', borderBottomWidth: 1 },
-    tableCell: { padding: 8 }
-  }), [codeBg, codeColor, headingColor, isThink, isUser, mutedColor, textColor]);
-  const elements = useMarkdown(src, {
-    colorScheme: 'light',
-    styles: markdownStyles,
-    theme: {
-      colors: {
-        text: textColor,
-        link: isUser ? '#bfdbfe' : '#1768c2',
-        code: codeBg,
-        border: isUser ? 'rgba(226,232,240,0.35)' : '#dbe5ef'
-      }
+    thematicBreak: { color: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca', height: 1, marginTop: 10, marginBottom: 10 },
+    table: {
+      color: textColor,
+      fontSize: isThink ? 14 : 15,
+      lineHeight: isThink ? 22 : 24,
+      borderColor: isUser ? 'rgba(234,223,206,0.35)' : '#ddd4c5',
+      borderWidth: 1,
+      borderRadius: 10,
+      cellPaddingHorizontal: 8,
+      cellPaddingVertical: 8,
+      headerTextColor: headingColor,
+      headerBackgroundColor: isUser ? 'rgba(38, 35, 29, 0.20)' : '#f1eadf',
+      rowEvenBackgroundColor: 'transparent',
+      rowOddBackgroundColor: isUser ? 'rgba(38, 35, 29, 0.10)' : '#fbf7ef',
+      fontFamily: HANDWRITTEN_TEXT_FONT
     }
-  });
+  }), [codeBg, codeColor, headingColor, isThink, isUser, mutedColor, textColor]);
 
   return (
     <View style={styles.markdownBlock}>
-      {elements.map((element, index) => (
-        <React.Fragment key={`md-${index}`}>{element}</React.Fragment>
-      ))}
+      <StreamdownText
+        markdown={src}
+        markdownStyle={markdownStyles}
+        containerStyle={styles.streamdownTextContainer}
+        selectable
+        remendConfig={{ katex: false }}
+      />
     </View>
   );
 }
@@ -352,6 +416,38 @@ function todoMeta(card: MobileTodoCard) {
   const done = items.filter((item) => item.status === 'completed').length;
   const active = items.find((item) => item.status === 'in_progress') || items.find((item) => item.status === 'pending') || items[items.length - 1] || null;
   return { total, done, active };
+}
+
+function buildLiveTodoCard(sessionId: string, todos: any[]): MobileTodoCard | null {
+  const sid = toText(sessionId).trim();
+  const items = Array.isArray(todos)
+    ? todos
+        .map((todo: any, index: number) => {
+          const id = toText(todo?.id).trim() || `todo:${index}`;
+          const content = toText(todo?.content).trim();
+          const status = toText(todo?.status).trim();
+          if (!id || !content) return null;
+          if (status !== 'pending' && status !== 'in_progress' && status !== 'completed' && status !== 'cancelled') return null;
+          return {
+            id,
+            content,
+            status,
+            priority: toText(todo?.priority).trim() || undefined
+          };
+        })
+        .filter(Boolean) as MobileTodoCard['items']
+    : [];
+  if (items.length === 0) return null;
+  const done = items.filter((item) => item.status === 'completed').length;
+  const active = items.find((item) => item.status === 'in_progress') || items.find((item) => item.status === 'pending') || items[items.length - 1] || null;
+  return {
+    id: `todo:stream:${sid || 'current'}`,
+    title: 'Todo',
+    summary: active ? `已完成 ${done}/${items.length} · ${active.content}` : `已完成 ${done}/${items.length}`,
+    createdAt: Date.now(),
+    items,
+    finished: items.every((item) => item.status === 'completed' || item.status === 'cancelled')
+  };
 }
 
 function TodoThinkingDots(props: { pulse: boolean }) {
@@ -737,17 +833,18 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
               </View>
             );
           }
+          const isShellEvent = title.toLowerCase() === 'bash' || mode.toLowerCase() === 'bash' || mode === '命令';
           return (
             <View key={item.event.id} style={styles.eventWrap}>
-              <View style={styles.eventCard}>
+              <View style={[styles.eventCard, isShellEvent && styles.bashEventCard]}>
                 <View style={styles.eventHead}>
-                  <View style={dotStyle} />
-                  <Text style={styles.eventTitle}>{title}</Text>
-                  {mode ? <Text style={styles.eventMode}>{mode}</Text> : null}
-                  <Text style={styles.eventTime}>{formatClock(item.event.createdAt)}</Text>
+                  <View style={isShellEvent ? (st === 'running' || st === 'pending' ? styles.bashEventDotRun : styles.bashEventDot) : dotStyle} />
+                  <Text style={[styles.eventTitle, isShellEvent && styles.bashEventTitle]}>{title}</Text>
+                  {mode ? <Text style={[styles.eventMode, isShellEvent && styles.bashEventMode]}>{mode}</Text> : null}
+                  <Text style={[styles.eventTime, isShellEvent && styles.bashEventTime]}>{formatClock(item.event.createdAt)}</Text>
                 </View>
-                <Text style={styles.eventDetail}>{detail}</Text>
-                {toText(item.event.output) ? <Text style={styles.eventOutput}>{toText(item.event.output)}</Text> : null}
+                <Text style={[styles.eventDetail, isShellEvent && styles.bashEventDetail]}>{detail}</Text>
+                {toText(item.event.output) ? <Text style={[styles.eventOutput, isShellEvent && styles.bashEventOutput]}>{toText(item.event.output)}</Text> : null}
               </View>
             </View>
           );
@@ -963,10 +1060,38 @@ function parsePairPayload(input: string): PairPayload | null {
 // normalizeBaseUrlForClient moved to src/lib/url
 
 function summarizePreview(messages: MobileChatMessage[]): string {
-  const assistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.text.trim());
-  if (assistant) return assistant.text.slice(0, 42);
   const user = [...messages].reverse().find((m) => m.role === 'user' && m.text.trim());
   return user ? user.text.slice(0, 42) : '新会话';
+}
+
+function isPlaceholderSessionTitle(input: string): boolean {
+  const text = toText(input).trim();
+  return !text || text === '新会话' || text === '新建线程' || text === 'New session' || text === 'newsession';
+}
+
+function pickSessionDisplayTitle(item: Pick<SessionItem, 'title' | 'preview' | 'id'>, fallbackMessages?: MobileChatMessage[]): string {
+  const rawTitle = toText(item.title).trim();
+  if (!isPlaceholderSessionTitle(rawTitle)) return rawTitle;
+  const preview = toText(item.preview).trim();
+  if (preview && !isPlaceholderSessionTitle(preview)) return preview.slice(0, 24);
+  const userFallback = fallbackMessages?.find((message) => message.role === 'user' && toText(message.text).trim());
+  if (userFallback) return toText(userFallback.text).trim().slice(0, 24);
+  return rawTitle || '未命名会话';
+}
+
+function formatSessionTimestamp(input?: number): string {
+  const value = Number(input || 0);
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const sameMonth = sameYear && date.getMonth() === now.getMonth();
+  const sameDate = sameMonth && date.getDate() === now.getDate();
+  if (sameDate) return formatClock(value);
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return sameYear ? `${month}-${day}` : `${date.getFullYear()}/${month}/${day}`;
 }
 
 function assistantTextWeight(messages: MobileChatMessage[]): number {
@@ -1076,12 +1201,52 @@ function extractModelOptionsFromConfig(raw: any): ModelOption[] {
   return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function normalizeMcpStatusMap(raw: any): Record<string, any> {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw.mcp && typeof raw.mcp === 'object' && !Array.isArray(raw.mcp)
+      ? raw.mcp
+      : raw.mcpServers && typeof raw.mcpServers === 'object' && !Array.isArray(raw.mcpServers)
+        ? raw.mcpServers
+        : raw)
+    : {};
+  const out: Record<string, any> = {};
+  if (Array.isArray(raw?.items) || Array.isArray(raw?.servers)) {
+    const rows = Array.isArray(raw?.items) ? raw.items : raw.servers;
+    for (const item of rows) {
+      const name = toText(item?.name || item?.id).trim();
+      if (name) out[name] = item;
+    }
+    return out;
+  }
+  for (const [key, value] of Object.entries(source as Record<string, any>)) {
+    if (key === 'mcp' || key === 'mcpServers' || key === '$schema') continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function toProjectOptionsFromPaths(paths: string[]): ProjectOption[] {
   const uniq = Array.from(new Set(paths.map((x) => toText(x).trim()).filter(Boolean)));
-  return uniq.map((p) => ({
+  return sanitizeProjectOptions(uniq.map((p) => ({
     id: p,
     worktree: p,
     name: projectNameFromPath(p)
+  })));
+}
+
+function sanitizeProjectOptions(items: ProjectOption[]): ProjectOption[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const worktree = toText(item.worktree).trim();
+    const name = toText(item.name || projectNameFromPath(worktree)).trim();
+    if (!worktree || !name || worktree === '/' || name === '/') return false;
+    if (seen.has(worktree)) return false;
+    seen.add(worktree);
+    return true;
+  }).map((item) => ({
+    ...item,
+    name: toText(item.name || projectNameFromPath(item.worktree)).trim()
   }));
 }
 
@@ -1174,7 +1339,13 @@ export default function App() {
   const [token, setToken] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [model, setModel] = useState('');
+  const [composerAgent, setComposerAgent] = useState<ComposerAgentName>('build');
+  const [autoAcceptPermissions, setAutoAcceptPermissions] = useState(false);
+  const [composerPickerOpen, setComposerPickerOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [installedSkills, setInstalledSkills] = useState<any[]>([]);
+  const [installedMcpServers, setInstalledMcpServers] = useState<Array<{ name: string; status: any }>>([]);
+  const [extensionsLoading, setExtensionsLoading] = useState(false);
   const [modelCatalogStatus, setModelCatalogStatus] = useState('');
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [sessionSearch, setSessionSearch] = useState('');
@@ -1238,16 +1409,20 @@ export default function App() {
   const [expandedThinkCards, setExpandedThinkCards] = useState<Set<string>>(new Set());
   const [timelineQuestionTabs, setTimelineQuestionTabs] = useState<Map<string, number>>(new Map());
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
-  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [notebookPage, setNotebookPage] = useState<'left' | 'main' | 'right'>('main');
+  const [notebookTheme, setNotebookTheme] = useState<'paper' | 'slate'>('paper');
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [sessionNextCursor, setSessionNextCursor] = useState<Record<string, string>>({});
   const [sessionHasMore, setSessionHasMore] = useState<Record<string, boolean>>({});
   const [sessionHistoryRetryHint, setSessionHistoryRetryHint] = useState<Record<string, string>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [optimisticVersion, setOptimisticVersion] = useState(0);
-  const [sessionDisplayedCount, setSessionDisplayedCount] = useState(5);
+  const [sessionDisplayedCount, setSessionDisplayedCount] = useState(10);
   const [showLatestJump, setShowLatestJump] = useState(false);
   const [inputDockHeight, setInputDockHeight] = useState(88);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const [streamTodoCard, setStreamTodoCard] = useState<MobileTodoCard | null>(null);
   const [chatListResetKey, setChatListResetKey] = useState(0);
   const [startupSessionHydrating, setStartupSessionHydrating] = useState(false);
 
@@ -1271,10 +1446,14 @@ export default function App() {
   const sentAttachmentCacheRef = useRef<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>({});
   const pendingPromptSessionRef = useRef<Record<string, { id: string; startedAt: number }>>({});
   const renderRegressionRetryRef = useRef<Record<string, number>>({});
-  const streamDeltaTextRef = useRef<Record<string, string>>({});
-  const streamPartMapRef = useRef<Record<string, Record<string, any>>>({});
-  const streamPartTypeRef = useRef<Record<string, 'text' | 'reasoning'>>({});
-  const streamPartDeltaKeyRef = useRef<Record<string, string>>({});
+  const streamMessageRoleRef = useRef<Record<string, Record<string, string>>>({});
+  const streamMessageStoreRef = useRef<Record<string, Record<string, any>>>({});
+  const streamPartStoreRef = useRef<Record<string, Record<string, Record<string, any>>>>({});
+  const streamSessionStatusStoreRef = useRef<Record<string, SessionStatusInfo>>({});
+  const streamPermissionStoreRef = useRef<Record<string, any[]>>({});
+  const streamQuestionStoreRef = useRef<Record<string, QuestionRequest[]>>({});
+  const streamTodoStoreRef = useRef<Record<string, any[]>>({});
+  const streamPendingPartEventsRef = useRef<Record<string, Record<string, StreamPartEvent[]>>>({});
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
   const inflightMessageReqRef = useRef<Record<string, Promise<RefreshMessagesResult | undefined>>>({});
@@ -1285,6 +1464,9 @@ export default function App() {
   const messageContentHRef = useRef(0);
   const messageUserScrollingRef = useRef(false);
   const streamRunIdRef = useRef(0);
+  const streamRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamTypewriterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamTypewriterQueueRef = useRef<Record<string, { sid: string; messageId: string; partId: string; field: string; text: string }>>({});
   const sessionStatusEpochRef = useRef(0);
   const busySinceRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
@@ -1292,6 +1474,20 @@ export default function App() {
   const albumImagesLoadingRef = useRef(false);
   const discoverRunRef = useRef(0);
   const discoverAbortRef = useRef<AbortController | null>(null);
+
+  function getOpenCodeStreamStores(): OpenCodeStreamStoreRefs {
+    return {
+      messageRole: streamMessageRoleRef,
+      message: streamMessageStoreRef,
+      part: streamPartStoreRef,
+      sessionStatus: streamSessionStatusStoreRef,
+      permission: streamPermissionStoreRef,
+      question: streamQuestionStoreRef,
+      todo: streamTodoStoreRef,
+      pendingPartEvents: streamPendingPartEventsRef,
+      rawRows: sessionRawMapRef
+    };
+  }
   const discoveringRef = useRef(false);
   // const selectedDiscoverIdRef = useRef(''); // 拖拽交互已移除
   const discoverPointRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -1316,7 +1512,8 @@ export default function App() {
   const discoverCardAnim = useRef(new Animated.Value(0)).current;
   const leftDrawerPulse = useRef(new Animated.Value(1)).current;
   const rightDrawerPulse = useRef(new Animated.Value(1)).current;
-  const workspaceAnim = useRef(new Animated.Value(0)).current;
+  const notebookTrackX = useRef(new Animated.Value(0)).current;
+  const notebookPageIndexRef = useRef(1);
   const streamTopGlowAnim = useRef(new Animated.Value(0)).current;
   const streamTopGlowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const streamTopGlowActiveRef = useRef(false);
@@ -1387,6 +1584,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
+      const height = Number(event.endCoordinates?.height || 0);
+      setKeyboardInset(height > 0 ? height : 0);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardInset(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    setStreamTodoCard(null);
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!loaded || !launchOverlayVisible || startupSessionHydrating) return;
     const timer = setTimeout(() => {
       Animated.timing(launchOverlayOpacity, {
@@ -1405,6 +1618,18 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [startupSessionHydrating]);
 
+  useEffect(() => {
+    const index = notebookPage === 'left' ? 0 : notebookPage === 'right' ? 2 : 1;
+    notebookPageIndexRef.current = index;
+    Animated.spring(notebookTrackX, {
+      toValue: -windowWidth * index,
+      stiffness: 240,
+      damping: 28,
+      mass: 0.9,
+      useNativeDriver: true
+    }).start();
+  }, [notebookPage, notebookTrackX, windowWidth]);
+
   const statusText = toText(status);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
@@ -1418,13 +1643,132 @@ export default function App() {
     if (q || source.length <= sessionDisplayedCount) return source;
     return source.slice(0, sessionDisplayedCount);
   }, [sessions, sessionSearch, sessionDisplayedCount]);
-  const workspacePanelHeight = useMemo(() => {
-    const count = Math.max(1, projects.length);
-    const headerAndPadding = 88;
-    const rowHeight = 50;
-    const desired = headerAndPadding + count * rowHeight;
-    return Math.max(180, Math.min(420, desired));
-  }, [projects.length]);
+  const currentWorkspaceName = useMemo(
+    () => (repoPath ? projectNameFromPath(repoPath) : '选择工作空间'),
+    [repoPath]
+  );
+  const currentSessionTitle = useMemo(() => {
+    const active = sessions.find((item) => item.id === sessionId);
+    if (active) return pickSessionDisplayTitle(active, messages);
+    const fallback = messages.find((item) => item.role === 'user' && toText(item.text).trim());
+    return fallback ? toText(fallback.text).slice(0, 24) : 'newsession';
+  }, [messages, sessionId, sessions]);
+  const notebookColors = useMemo(() => {
+    if (notebookTheme === 'slate') {
+      return {
+        shell: '#eef1f5',
+        main: '#f7f8fa',
+        left: '#eef1f5',
+        right: '#eef1f5',
+        paper: '#ffffff',
+        text: '#2f3338',
+        muted: '#6b737c',
+        faint: '#8b939b',
+        line: 'rgba(47,51,56,0.12)',
+        chip: '#dfe6ee',
+        chipText: '#4d5660',
+        active: '#e7eaee',
+        ink: '#1f2937',
+        topControl: 'rgba(223,230,238,0.58)',
+        topControlBorder: 'rgba(47,51,56,0.07)'
+      };
+    }
+    return {
+      shell: '#f7f3ea',
+      main: '#f8f5ee',
+      left: '#f7f3ea',
+      right: '#f7f3ea',
+      paper: '#fffdf7',
+      text: '#24211d',
+      muted: '#7c766c',
+      faint: '#9a9182',
+      line: 'rgba(65,54,38,0.10)',
+      chip: '#ece8df',
+      chipText: '#5d5345',
+      active: '#f0e9dc',
+      ink: '#24211d',
+      topControl: 'rgba(236,232,223,0.62)',
+      topControlBorder: 'rgba(65,54,38,0.10)'
+    };
+  }, [notebookTheme]);
+  const workspaceSessionGroups = useMemo(() => {
+    const rawProjects = projects.length > 0
+      ? projects
+      : repoPath
+        ? [{ id: repoPath, name: projectNameFromPath(repoPath), worktree: repoPath }]
+        : [];
+    const seenWorktrees = new Set<string>();
+    const knownProjects = rawProjects.filter((project) => {
+      const key = toText(project.worktree || project.id || project.name).trim();
+      if (!key || seenWorktrees.has(key)) return false;
+      seenWorktrees.add(key);
+      return true;
+    });
+    const q = sessionSearch.trim().toLowerCase();
+    return knownProjects.map((project, projectIndex) => {
+      const activeWorkspace = repoPath.trim() === project.worktree.trim();
+      const source = activeWorkspace
+        ? sessions
+        : stableSortSessionItems(sessionCacheRef.current[project.worktree] || []);
+      const filtered = q
+        ? source.filter((s) => {
+            const title = toText(s.title).toLowerCase();
+            const preview = toText(s.preview).toLowerCase();
+            return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q) || project.name.toLowerCase().includes(q);
+          })
+        : source;
+      const limit = q ? filtered.length : Math.min(filtered.length, activeWorkspace ? sessionDisplayedCount : 6);
+      return {
+        key: `${project.worktree || project.id || project.name}:${projectIndex}`,
+        project,
+        activeWorkspace,
+        sessions: filtered.slice(0, limit),
+        total: filtered.length
+      };
+    }).filter((group) => !q || group.sessions.length > 0 || group.project.name.toLowerCase().includes(q));
+  }, [projects, repoPath, sessionDisplayedCount, sessionSearch, sessions]);
+  const availableProjects = useMemo(() => {
+    const source = projects.length > 0 ? projects : projectsRef.current;
+    const sanitized = sanitizeProjectOptions(source);
+    if (sanitized.length > 0) return sanitized;
+    const current = toText(repoPath).trim();
+    return current ? sanitizeProjectOptions([{ id: current, worktree: current, name: projectNameFromPath(current) }]) : [];
+  }, [projects, repoPath]);
+  const currentWorkspaceSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    const source = sessions;
+    if (!q) return source;
+    return source.filter((s) => {
+      const title = toText(s.title).toLowerCase();
+      const preview = toText(s.preview).toLowerCase();
+      return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
+    });
+  }, [sessionSearch, sessions]);
+  const notebookPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.15,
+    onPanResponderGrant: () => {
+      notebookTrackX.stopAnimation();
+    },
+    onPanResponderMove: (_, gesture) => {
+      const baseX = -windowWidth * notebookPageIndexRef.current;
+      const nextX = Math.min(0, Math.max(-windowWidth * 2, baseX + gesture.dx));
+      notebookTrackX.setValue(nextX);
+    },
+    onPanResponderRelease: (_, gesture) => {
+      const baseIndex = notebookPageIndexRef.current;
+      const threshold = windowWidth * 0.14;
+      let nextIndex = baseIndex;
+      if (gesture.dx < -threshold || gesture.vx < -0.35) nextIndex = Math.min(2, baseIndex + 1);
+      else if (gesture.dx > threshold || gesture.vx > 0.35) nextIndex = Math.max(0, baseIndex - 1);
+      const nextPage = nextIndex === 0 ? 'left' : nextIndex === 2 ? 'right' : 'main';
+      if (nextPage === 'left') openDrawer('left');
+      else if (nextPage === 'right') openDrawer('right');
+      else closeDrawer();
+    },
+    onPanResponderTerminate: () => {
+      switchNotebookPage(notebookPage);
+    }
+  }), [notebookPage, notebookTrackX, windowWidth]);
   const authAsciiTextStyle = useMemo(() => {
     const raw = toText(authAsciiBrand);
     const lines = raw.split('\n');
@@ -1556,6 +1900,9 @@ export default function App() {
       setToken(prefs.token);
       setSessionId(prefs.sessionId);
       sessionIdRef.current = prefs.sessionId;
+      setComposerAgent(prefs.agent || 'build');
+      setAutoAcceptPermissions(Boolean((prefs as any).autoAcceptPermissions));
+      setNotebookTheme(prefs.notebookTheme || 'paper');
       if (cachedChat) {
         setMessages(cachedChat.messages);
         setRenderedTurns(cachedChat.renderedTurns);
@@ -1611,9 +1958,12 @@ export default function App() {
       repoPaths: projects.map((p) => p.worktree),
       token,
       sessionId,
-      model
+      model,
+      agent: composerAgent,
+      autoAcceptPermissions,
+      notebookTheme
     });
-  }, [loaded, serverUrl, serverUrlTouched, preferHttps, pairCode, repoPath, projects, token, sessionId, model]);
+  }, [loaded, serverUrl, serverUrlTouched, preferHttps, pairCode, repoPath, projects, token, sessionId, model, composerAgent, autoAcceptPermissions, notebookTheme]);
 
   useEffect(() => {
     const repo = toText(repoPath).trim();
@@ -2006,11 +2356,18 @@ export default function App() {
       streamRef.current.close();
       streamRef.current = null;
     }
+    if (streamRenderTimerRef.current) {
+      clearTimeout(streamRenderTimerRef.current);
+      streamRenderTimerRef.current = null;
+    }
+    if (streamTypewriterTimerRef.current) {
+      clearTimeout(streamTypewriterTimerRef.current);
+      streamTypewriterTimerRef.current = null;
+    }
+    streamTypewriterQueueRef.current = {};
     streamSessionRef.current = '';
-    streamDeltaTextRef.current = {};
-    streamPartMapRef.current = {};
-    streamPartTypeRef.current = {};
-    streamPartDeltaKeyRef.current = {};
+    resetOpenCodeStreamStores();
+    setStreamTodoCard(null);
     setStreaming(false);
   }
 
@@ -2235,151 +2592,300 @@ export default function App() {
   }
 
   function openDrawer(side: 'left' | 'right') {
-    if (drawerSide === side) return;
-    setWorkspacePickerOpen(false);
+    if (drawerSide === side && notebookPage === side) return;
+    setComposerPickerOpen(false);
+    setWorkspaceSwitcherOpen(false);
     setDrawerSide(side);
+    switchNotebookPage(side);
     void InteractionManager.runAfterInteractions(() => {
-      if (side === 'left') void refreshSessionsFromServer();
-      else void refreshModelCatalog();
+      if (side === 'left') {
+        void refreshProjectsCatalog();
+        void refreshSessionsFromServer();
+      }
+      else void refreshInstalledExtensions();
     });
   }
 
+  async function refreshInstalledExtensions() {
+    const repo = toText(repoPath).trim();
+    if (!authed || !repo || !serverUrl || !token) {
+      console.log('[extensions] skip: no auth', { authed, repo: !!repo, serverUrl: !!serverUrl, token: !!token });
+      return;
+    }
+    setExtensionsLoading(true);
+    try {
+      console.log('[extensions] fetching...');
+      const [skills, mcp, cfg] = await Promise.all([
+        getInstalledOpencodeSkills({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
+          console.log('[extensions] skills error:', err);
+          return [];
+        }),
+        getOpencodeMcpStatus({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
+          console.log('[extensions] mcp error:', err);
+          return {};
+        }),
+        getOpencodeConfig({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
+          console.log('[extensions] config fallback error:', err);
+          return {};
+        })
+      ]);
+      const mcpMap = {
+        ...normalizeMcpStatusMap(cfg),
+        ...normalizeMcpStatusMap(mcp)
+      };
+      console.log('[extensions] skills:', skills?.length, 'mcp keys:', Object.keys(mcpMap).length);
+      setInstalledSkills(Array.isArray(skills) ? skills : []);
+      setInstalledMcpServers(Object.entries(mcpMap).map(([name, status]) => ({ name, status })));
+    } finally {
+      setExtensionsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (notebookPage !== 'right') return;
+    void refreshInstalledExtensions();
+  }, [notebookPage, repoPath, serverUrl, token, authed]);
+
   function closeDrawer() {
     setDrawerSide('');
+    setWorkspaceSwitcherOpen(false);
+    switchNotebookPage('main');
+  }
+
+  function switchNotebookPage(next: 'left' | 'main' | 'right') {
+    if (notebookPage === next) return;
+    setNotebookPage(next);
   }
 
   const renderLeftDrawerContent = useCallback(() => (
-    <View style={styles.drawerPanelLeft}>
+    <View style={[styles.drawerPanelLeft, { backgroundColor: notebookColors.left }]}> 
       <View style={styles.drawerHead}>
-        <Text style={styles.drawerTitle}>会话</Text>
-        <View style={styles.drawerMetaRow}>
-          <Text style={styles.drawerMetaChip}>会话 {sessions.length}</Text>
-        </View>
-        <Pressable style={styles.drawerNewBtn} onPress={() => { onNewSession(); closeDrawer(); }}>
-          <Text style={styles.drawerNewTxt}>新建对话</Text>
-        </Pressable>
+        <Text maxFontSizeMultiplier={1.05} style={[styles.drawerTitle, styles.leftHandText, { color: notebookColors.text }]}>Giteam</Text>
       </View>
-      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
-        <TextInput
-          style={styles.drawerSessionSearch}
-          value={sessionSearch}
-          onChangeText={setSessionSearch}
-          autoCapitalize="none"
-          placeholder="搜索会话"
-          placeholderTextColor="#9ca7b5"
-        />
-        <Animated.View style={{ opacity: leftDrawerPulse }}>
-          {filteredSessions.map((s, idx) => {
-            const preview = toText(s.preview).trim();
-            return (
-              <Pressable
-                key={s.id}
-                style={[
-                  s.id === sessionId ? styles.drawerItemActive : styles.drawerItem,
-                  idx < filteredSessions.length - 1 ? styles.drawerItemGap : null
-                ]}
-                onPress={() => {
-                  stopStream();
-                  setActiveSession(s.id);
-                  closeDrawer();
-                }}
-              >
-                <View style={styles.drawerItemHead}>
-                  <Text numberOfLines={1} style={styles.drawerItemTitle}>{toText(s.title || '新会话')}</Text>
-                  <Text style={styles.drawerItemTime}>{formatClock(s.updatedAt)}</Text>
-                </View>
-                {preview ? <Text numberOfLines={1} style={styles.drawerItemPreview}>{preview}</Text> : null}
-              </Pressable>
-            );
-          })}
-          {!sessionSearch.trim() && sessions.length > sessionDisplayedCount ? (
+      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList} showsVerticalScrollIndicator={false}>
+        <View style={styles.leftSectionBlock}>
+          <Text style={[styles.leftSectionLabel, { color: notebookColors.faint }]}>Workspace</Text>
+          <View style={styles.leftProjectRow}>
             <Pressable
-              style={styles.drawerMoreBtn}
-              onPress={() => setSessionDisplayedCount((p) => Math.min(p + 5, sessions.length))}
+              style={styles.leftProjectMain}
+              onPress={() => setWorkspaceSwitcherOpen((v) => !v)}
             >
-              <Text style={styles.drawerMoreTxt}>… more</Text>
+              <View style={[styles.leftProjectIconBox, { borderColor: notebookColors.line, backgroundColor: notebookColors.paper }]}> 
+                <Feather name="folder" size={15} color={notebookColors.text} />
+              </View>
+              <View style={styles.leftProjectTextBlock}>
+                <View style={styles.leftProjectTitleRow}>
+                  <Text numberOfLines={1} style={[styles.workspaceSwitcherTitle, { color: notebookColors.text }]}>{currentWorkspaceName}</Text>
+                  <Feather name="chevron-down" size={15} color={notebookColors.faint} />
+                </View>
+                <Text numberOfLines={1} style={[styles.workspaceSwitcherSub, { color: notebookColors.muted }]}>当前工作区</Text>
+              </View>
+            </Pressable>
+            <Pressable
+              style={[styles.leftProjectCompose, { borderColor: notebookColors.line, backgroundColor: notebookColors.paper }]}
+              onPress={() => { onNewSession(); closeDrawer(); }}
+            >
+              <Feather name="edit-3" size={16} color={notebookColors.muted} />
+            </Pressable>
+          </View>
+          {workspaceSwitcherOpen ? (
+            <View style={[styles.workspaceSwitcherSheetInline, { borderColor: notebookColors.line, backgroundColor: notebookColors.paper }]}> 
+              {availableProjects.map((project) => {
+                const active = repoPath.trim() === project.worktree.trim();
+                return (
+                  <Pressable
+                    key={project.worktree}
+                    style={styles.workspaceSwitcherInlineItem}
+                    onPress={() => {
+                      setWorkspaceSwitcherOpen(false);
+                      if (active) return;
+                      void onSwitchProject(project.worktree);
+                    }}
+                  >
+                    <Text numberOfLines={1} style={[styles.workspaceSwitcherItemTitle, { color: active ? notebookColors.text : notebookColors.muted }]}>{toText(project.name)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.leftSearchShell}>
+          <Feather name="search" size={18} color={notebookColors.faint} />
+          <TextInput
+            style={[styles.drawerSessionSearchMinimal, { color: notebookColors.text }]}
+            value={sessionSearch}
+            onChangeText={setSessionSearch}
+            autoCapitalize="none"
+            placeholder="搜索会话"
+            placeholderTextColor={notebookColors.faint}
+          />
+        </View>
+        <Animated.View style={{ opacity: leftDrawerPulse }}>
+          <View style={styles.directoryGroupPlain}>
+            {currentWorkspaceSessions.slice(0, sessionSearch.trim() ? currentWorkspaceSessions.length : sessionDisplayedCount).map((s) => {
+              const active = s.id === sessionId;
+              const title = pickSessionDisplayTitle(s, active ? messages : undefined);
+              const preview = toText(s.preview).trim();
+              const timeLabel = formatSessionTimestamp(s.updatedAt || s.createdAt);
+              return (
+                <Pressable
+                  key={`${repoPath}:${s.id}`}
+                  style={active ? [styles.directorySessionPlainRow, styles.directorySessionPlainRowActive] : styles.directorySessionPlainRow}
+                  onPress={() => {
+                    stopStream();
+                    setActiveSession(s.id);
+                    closeDrawer();
+                  }}
+                >
+                  <View style={active ? styles.leftSessionRailActive : styles.leftSessionRail} />
+                  <View style={styles.directorySessionPlainBody}>
+                    <View style={styles.directorySessionPlainHead}>
+                      <Text maxFontSizeMultiplier={1.08} numberOfLines={1} style={[active ? styles.directorySessionPlainTitleActive : styles.directorySessionPlainTitle, { color: notebookColors.text }]}>{title}</Text>
+                      {timeLabel ? <Text style={[styles.directorySessionPlainTime, { color: notebookColors.faint }]}>{timeLabel}</Text> : null}
+                    </View>
+                    {preview ? <Text numberOfLines={1} style={[styles.directorySessionPlainMeta, { color: active ? notebookColors.muted : notebookColors.faint }]}>{preview}</Text> : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!sessionSearch.trim() && currentWorkspaceSessions.length > sessionDisplayedCount ? (
+            <Pressable style={styles.drawerMoreBtn} onPress={() => setSessionDisplayedCount((p) => Math.min(p + 5, currentWorkspaceSessions.length))}>
+              <Text style={[styles.drawerMoreTxt, { color: notebookColors.muted }]}>查看更多会话</Text>
             </Pressable>
           ) : null}
         </Animated.View>
-        {filteredSessions.length === 0 ? <Text style={styles.drawerEmpty}>暂无匹配会话</Text> : null}
+        {currentWorkspaceSessions.length === 0 ? <Text style={[styles.drawerEmpty, styles.leftHandText, { color: notebookColors.muted }]}>暂无匹配会话</Text> : null}
       </ScrollView>
     </View>
-  ), [sessions.length, sessionSearch, filteredSessions, sessionId, sessionDisplayedCount, leftDrawerPulse]);
+  ), [availableProjects, currentWorkspaceName, currentWorkspaceSessions, leftDrawerPulse, notebookColors, notebookTheme, projects.length, repoPath, sessionDisplayedCount, sessionId, sessionSearch, sessions.length, workspaceSwitcherOpen]);
 
   const renderRightDrawerContent = useCallback(() => (
-    <View style={styles.drawerPanelRight}>
+    <View style={[styles.drawerPanelRight, { backgroundColor: notebookColors.right }]}> 
       <View style={styles.drawerHead}>
         <View style={styles.drawerHeadTop}>
-          <Text style={styles.drawerTitle}>模型</Text>
-          <Pressable
-            style={styles.drawerLogoutBtn}
-            onPress={() => {
-              closeDrawer();
-              onResetAuth();
-            }}
-          >
-            <Image source={require('./src/assets/icons/logout.png')} style={styles.drawerLogoutImage} resizeMode="contain" />
-          </Pressable>
+          <View>
+            <Text style={[styles.drawerEyebrow, styles.rightHandText, { color: notebookColors.faint }]}>Capabilities</Text>
+            <Text style={[styles.drawerTitle, styles.rightHandText, { color: notebookColors.text }]}>Tools</Text>
+            <Text style={[styles.drawerModelStatus, styles.rightHandText, { color: notebookColors.muted }]}>Skills and MCP bookmarks for this task</Text>
+          </View>
         </View>
-        <Text style={styles.drawerModelStatus}>{toText(modelCatalogStatus || '请选择可用模型')}</Text>
       </View>
       <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
         <Animated.View style={{ opacity: rightDrawerPulse }}>
-          {modelOptions.map((opt, idx) => {
-            const active = model.trim() === opt.id;
-            return (
-              <Pressable
-                key={opt.id}
-                style={[
-                  active ? styles.drawerModelListItemActive : styles.drawerModelListItem,
-                  idx < modelOptions.length - 1 ? styles.drawerItemGap : null
-                ]}
-                onPress={() => setModel(opt.id)}
-              >
-                <Text style={active ? styles.drawerModelListTitleActive : styles.drawerModelListTitle}>{toText(opt.label)}</Text>
-                <Text style={active ? styles.drawerModelListSubActive : styles.drawerModelListSub}>{toText(opt.id)}</Text>
-              </Pressable>
-            );
-          })}
+          <View style={[styles.extensionSectionCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
+            <View style={styles.extensionSectionHead}>
+              <View style={styles.extensionHeroOrb}>
+                <Text style={styles.extensionHeroOrbText}>S</Text>
+              </View>
+              <View style={styles.extensionHeroCopy}>
+                <Text style={styles.extensionHeroTitle}>Skills</Text>
+                <Text style={styles.extensionHeroSub}>
+                  {installedSkills.length > 0 ? `${installedSkills.length} available` : 'No skills'}
+                </Text>
+              </View>
+            </View>
+            {installedSkills.length > 0 ? (
+              installedSkills.map((skill, idx) => {
+                const name = toText(
+                  skill?.name ||
+                  skill?.title ||
+                  skill?.id ||
+                  skill?.spec ||
+                  (typeof skill === 'string' ? skill : null) ||
+                  `Skill ${idx + 1}`
+                );
+                const desc = toText(
+                  skill?.description ||
+                  skill?.path ||
+                  skill?.location ||
+                  skill?.source ||
+                  skill?.config?.description ||
+                  'Installed skill'
+                );
+                return (
+                  <View key={`skill-${idx}-${name}`} style={styles.extensionCard}>
+                    <View style={styles.extensionCardIcon}>
+                      <Feather name="zap" size={14} color="#5d5345" />
+                    </View>
+                    <View style={styles.extensionCardMain}>
+                      <Text numberOfLines={1} style={styles.extensionCardTitle}>{name}</Text>
+                      {desc ? <Text numberOfLines={2} style={styles.extensionCardSub}>{desc}</Text> : null}
+                    </View>
+                  </View>
+                );
+              })
+            ) : !extensionsLoading ? (
+              <Text style={[styles.drawerEmpty, styles.rightHandText]}>No installed skills</Text>
+            ) : null}
+          </View>
+
+          <View style={[styles.extensionSectionCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
+            <View style={styles.extensionSectionHead}>
+              <View style={styles.extensionHeroOrbAlt}>
+                <Text style={styles.extensionHeroOrbText}>M</Text>
+              </View>
+              <View style={styles.extensionHeroCopy}>
+                <Text style={styles.extensionHeroTitle}>MCP</Text>
+                <Text style={styles.extensionHeroSub}>
+                  {installedMcpServers.length > 0 ? `${installedMcpServers.length} servers` : 'No MCP servers'}
+                </Text>
+              </View>
+            </View>
+
+            {installedMcpServers.length > 0 ? (
+              installedMcpServers.map(({ name, status }) => {
+                const type = toText(
+                  status?.type ||
+                  status?.config?.type ||
+                  status?.transport ||
+                  'mcp'
+                );
+                const state = toText(
+                  status?.status ||
+                  status?.state ||
+                  (status?.connected ? 'Connected' : 'Configured')
+                );
+                return (
+                  <View key={`mcp-${name}`} style={styles.extensionCard}>
+                    <View style={styles.extensionCardIconMcp}>
+                      <Feather name="server" size={14} color="#5d5345" />
+                    </View>
+                    <View style={styles.extensionCardMain}>
+                      <View style={styles.extensionCardTitleRow}>
+                        <Text numberOfLines={1} style={styles.extensionCardTitle}>{name}</Text>
+                        <Text style={styles.extensionStatePill}>{state}</Text>
+                      </View>
+                      <Text numberOfLines={1} style={styles.extensionCardSub}>{type}</Text>
+                    </View>
+                  </View>
+                );
+              })
+            ) : !extensionsLoading ? (
+              <Text style={[styles.drawerEmpty, styles.rightHandText]}>No configured MCP servers</Text>
+            ) : null}
+          </View>
+
+          {extensionsLoading ? (
+            <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+              <ActivityIndicator size="small" color="#7c766c" />
+              <Text style={[styles.drawerEmpty, styles.rightHandText, { marginTop: 8 }]}>Loading extensions...</Text>
+            </View>
+          ) : null}
         </Animated.View>
-        {modelOptions.length === 0 ? <Text style={styles.drawerEmpty}>暂无可用模型</Text> : null}
       </ScrollView>
     </View>
-  ), [modelCatalogStatus, modelOptions, model, rightDrawerPulse]);
-
-  function openWorkspacePicker() {
-    if (workspacePickerOpen) return;
-    setDrawerSide('');
-    setWorkspacePickerOpen(true);
-    pushConnLog(`workspace picker opening projects=${projectsRef.current.length}`);
-    workspaceAnim.setValue(0);
-    Animated.timing(workspaceAnim, {
-      toValue: 1,
-      duration: 210,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start();
-    void refreshProjectsCatalog();
-  }
-
-  function closeWorkspacePicker() {
-    Animated.timing(workspaceAnim, {
-      toValue: 0,
-      duration: 160,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start(() => setWorkspacePickerOpen(false));
-  }
+  ), [extensionsLoading, installedMcpServers, installedSkills, notebookColors, rightDrawerPulse]);
 
   function upsertSession(nextSessionId: string, nextMessages: MobileChatMessage[]) {
     if (!nextSessionId) return;
-    const title = nextMessages.find((m) => m.role === 'user' && m.text.trim())?.text.slice(0, 24) || '新会话';
     const preview = summarizePreview(nextMessages);
     setSessions((prev) => {
       const prevEntry = prev.find((s) => s.id === nextSessionId);
+      const fallbackTitle = nextMessages.find((m) => m.role === 'user' && m.text.trim())?.text.slice(0, 24) || '新会话';
       const nextRow: SessionItem = {
         id: nextSessionId,
-        title,
+        title: toText(prevEntry?.title).trim() || fallbackTitle,
         preview,
         // 仅同步预览/标题，不改变排序时间戳，避免每次拉消息列表顺序跳动
         updatedAt: prevEntry?.updatedAt ?? Date.now(),
@@ -2395,10 +2901,11 @@ export default function App() {
     if (!authed || !repo) return [] as SessionItem[];
     const cached = sessionCacheRef.current[repo];
     if (cached && cached.length > 0) {
+      const normalizedCached = stableSortSessionItems(cached);
       const prevIds = new Set(sessionsRef.current.map((x) => x.id));
-      const hasNew = cached.some((x) => !prevIds.has(x.id));
-      sessionsRef.current = cached;
-      setSessions(cached);
+      const hasNew = normalizedCached.some((x) => !prevIds.has(x.id));
+      sessionsRef.current = normalizedCached;
+      setSessions(normalizedCached);
       if (hasNew) triggerPulse(leftDrawerPulse);
     }
     try {
@@ -2436,14 +2943,17 @@ export default function App() {
   }
 
   function setSessionsWithCacheMerge(repo: string, next: SessionItem[], prev: SessionItem[]): SessionItem[] {
+    const prevTitleMap = new Map(prev.map((x) => [x.id, x.title]));
     const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
-    const merged = next.map((s) => ({
+    const merged = stableSortSessionItems(next.map((s) => ({
       id: s.id,
-      title: s.title,
+      title: isPlaceholderSessionTitle(s.title) && !isPlaceholderSessionTitle(toText(prevTitleMap.get(s.id)))
+        ? toText(prevTitleMap.get(s.id))
+        : s.title,
       preview: previewMap.get(s.id) || '',
       updatedAt: s.updatedAt,
       createdAt: s.createdAt
-    }));
+    })));
     setSessions(merged);
     return merged;
   }
@@ -2490,7 +3000,8 @@ export default function App() {
   }
 
   function applyTurnWindow(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) {
-    const merged = Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : [];
+    const storeRows = publishStreamRows(targetSessionId);
+    const merged = storeRows.length > 0 ? storeRows : (Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : []);
     const baseRendered = buildTurnWindow(merged, visibleTurnCount);
     const optimistic = reconcileOptimisticUserMessages(targetSessionId, baseRendered.chatMessages);
     const stableBaseRendered = stabilizeServerUserTurnIds(targetSessionId, baseRendered);
@@ -2555,13 +3066,221 @@ export default function App() {
     return rendered;
   }
 
+  function rawMessageRole(row: any) {
+    return storeRawMessageRole(row);
+  }
+
+  function rawMessageId(row: any) {
+    return storeRawMessageId(row);
+  }
+
+  function rawPartId(part: any, index = 0) {
+    return storeRawPartId(part, index);
+  }
+
+  function mergeStreamPart(prev: any, incoming: any) {
+    return storeMergeStreamPart(prev, incoming);
+  }
+
+  function shouldStoreStreamPart(part: any) {
+    return storeShouldStoreStreamPart(part);
+  }
+
+  function resetOpenCodeStreamStores() {
+    storeResetOpenCodeStreamStores(getOpenCodeStreamStores());
+  }
+
+  function ensureStreamSessionStores(targetSessionId: string) {
+    return storeEnsureStreamSessionStores(getOpenCodeStreamStores(), targetSessionId);
+  }
+
+  function composeStreamRows(targetSessionId: string) {
+    return storePublishStreamRows(getOpenCodeStreamStores(), targetSessionId);
+  }
+
+  function publishStreamRows(targetSessionId: string) {
+    return storePublishStreamRows(getOpenCodeStreamStores(), targetSessionId);
+  }
+
+  function ingestStreamRows(targetSessionId: string, rows: any[]) {
+    return storeIngestStreamRows(getOpenCodeStreamStores(), targetSessionId, rows);
+  }
+
+  function getKnownStreamMessageRole(targetSessionId: string, messageId: string) {
+    return storeGetKnownStreamMessageRole(getOpenCodeStreamStores(), targetSessionId, messageId);
+  }
+
+  function queueStreamPartEvent(targetSessionId: string, messageId: string, event: StreamPartEvent) {
+    const sid = toText(targetSessionId).trim();
+    const mid = toText(messageId).trim();
+    if (!sid || !mid) return;
+    const bySession = streamPendingPartEventsRef.current[sid] || {};
+    const list = bySession[mid] || [];
+    bySession[mid] = [...list, event];
+    streamPendingPartEventsRef.current[sid] = bySession;
+    streamDebug('stream.part.pending', { sid, messageId: mid, kind: event.kind, count: bySession[mid].length });
+  }
+
+  function dropPendingStreamPartEvents(targetSessionId: string, messageId: string) {
+    const sid = toText(targetSessionId).trim();
+    const mid = toText(messageId).trim();
+    const bySession = streamPendingPartEventsRef.current[sid];
+    if (!bySession || !bySession[mid]) return;
+    streamDebug('stream.part.drop', { sid, messageId: mid, count: bySession[mid].length });
+    delete bySession[mid];
+  }
+
+  function flushPendingStreamPartEvents(targetSessionId: string, messageId: string) {
+    const sid = toText(targetSessionId).trim();
+    const mid = toText(messageId).trim();
+    const bySession = streamPendingPartEventsRef.current[sid];
+    const pending = bySession?.[mid] || [];
+    if (pending.length <= 0) return;
+    delete bySession[mid];
+    streamDebug('stream.part.flush', { sid, messageId: mid, count: pending.length });
+    for (const event of pending) {
+      if (event.kind === 'delta') applyAssistantDeltaNow(sid, event.payload);
+      else if (event.kind === 'part') applyAssistantPartNow(sid, event.payload);
+      else applyPartRemovedNow(sid, event.payload);
+    }
+  }
+
+  function applyStreamMessageInfo(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const info = source?.info;
+    const sid = toText(source?.sessionId || source?.sessionID || info?.sessionID || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current || !info || typeof info !== 'object') return;
+    const mid = toText(info?.id).trim();
+    if (!mid) return;
+    const rows = ingestStreamRows(sid, [{ info, parts: [] }]);
+    recordStreamMessageRoles(sid, rows);
+    renderStreamWindow(sid);
+  }
+
+  function applyStreamMessageRemoved(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionId || source?.sessionID || targetSessionId).trim();
+    const mid = toText(source?.messageId || source?.messageID).trim();
+    if (!sid || sid !== sessionIdRef.current || !mid) return;
+    delete streamMessageStoreRef.current[sid]?.[mid];
+    delete streamPartStoreRef.current[sid]?.[mid];
+    delete streamMessageRoleRef.current[sid]?.[mid];
+    dropPendingStreamPartEvents(sid, mid);
+    publishStreamRows(sid);
+    renderStreamWindow(sid);
+  }
+
+  function applyPartRemoved(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const messageId = toText(source?.messageId || source?.messageID).trim();
+    const role = getKnownStreamMessageRole(targetSessionId, messageId);
+    if (!role) {
+      queueStreamPartEvent(targetSessionId, messageId, { kind: 'part_removed', payload });
+      return;
+    }
+    applyPartRemovedNow(targetSessionId, payload);
+  }
+
+  function applyPartRemovedNow(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionId || source?.sessionID || targetSessionId).trim();
+    const messageId = toText(source?.messageId || source?.messageID).trim();
+    const partId = toText(source?.partId || source?.partID).trim();
+    if (!sid || sid !== sessionIdRef.current || !messageId || !partId) return;
+    const partMap = streamPartStoreRef.current[sid]?.[messageId];
+    if (!partMap?.[partId]) return;
+    delete partMap[partId];
+    if (Object.keys(partMap).length === 0 && streamPartStoreRef.current[sid]) delete streamPartStoreRef.current[sid][messageId];
+    publishStreamRows(sid);
+    renderStreamWindow(sid);
+  }
+
+  function refreshQuestionRequestsFromStore(targetSessionId: string) {
+    const sid = toText(targetSessionId).trim();
+    const live = (streamQuestionStoreRef.current[sid] || []) as QuestionRequest[];
+    const fromParts = extractQuestionRequests(sessionRawMapRef.current[sid] || [], sid);
+    const merged = new Map<string, QuestionRequest>();
+    [...fromParts, ...live].forEach((req) => {
+      if (!req?.id || dismissedQuestions.has(req.id)) return;
+      merged.set(req.id, req);
+    });
+    setQuestionRequests([...merged.values()]);
+  }
+
+  function applyStreamTodo(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionID || source?.sessionId || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current) return;
+    const todos = Array.isArray(source?.todos) ? source.todos : [];
+    setStreamTodos(getOpenCodeStreamStores(), sid, todos);
+    setStreamTodoCard(buildLiveTodoCard(sid, todos));
+  }
+
+  function applyStreamPermission(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionID || source?.sessionId || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current) return;
+    upsertStreamPermission(getOpenCodeStreamStores(), { ...source, sessionID: sid });
+  }
+
+  function applyStreamPermissionReplied(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionID || source?.sessionId || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current) return;
+    removeStreamPermission(getOpenCodeStreamStores(), sid, toText(source?.requestID || source?.requestId || source?.id));
+  }
+
+  function applyStreamQuestion(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionID || source?.sessionId || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current) return;
+    upsertStreamQuestion(getOpenCodeStreamStores(), { ...source, sessionID: sid });
+    refreshQuestionRequestsFromStore(sid);
+  }
+
+  function applyStreamQuestionRemoved(targetSessionId: string, payload: unknown) {
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const sid = toText(source?.sessionID || source?.sessionId || targetSessionId).trim();
+    if (!sid || sid !== sessionIdRef.current) return;
+    removeStreamQuestion(getOpenCodeStreamStores(), sid, toText(source?.requestID || source?.requestId || source?.id));
+    refreshQuestionRequestsFromStore(sid);
+  }
+
+  function recordStreamMessageRoles(targetSessionId: string, rows: any[]) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid || !Array.isArray(rows)) return;
+    const roleStore = streamMessageRoleRef.current[sid] || {};
+    for (const row of rows) {
+      const mid = rawMessageId(row);
+      const role = roleStore[mid] || rawMessageRole(row);
+      if (!mid || !role) continue;
+      if (role === 'assistant') flushPendingStreamPartEvents(sid, mid);
+      else dropPendingStreamPartEvents(sid, mid);
+    }
+  }
+
+  function getStoredStreamPart(targetSessionId: string, messageId: string, partId: string) {
+    return storeGetStoredStreamPart(getOpenCodeStreamStores(), targetSessionId, messageId, partId);
+  }
+
+  function patchStoredStreamPartDelta(targetSessionId: string, messageId: string, partId: string, field: string, delta: string) {
+    return storePatchStoredStreamPartDelta(getOpenCodeStreamStores(), targetSessionId, messageId, partId, field, delta);
+  }
+
+  function markStreamAssistantMessage(targetSessionId: string, messageId: string) {
+    const sid = toText(targetSessionId).trim();
+    const mid = toText(messageId).trim();
+    if (!sid || !mid) return;
+    streamMessageRoleRef.current[sid] = { ...(streamMessageRoleRef.current[sid] || {}), [mid]: 'assistant' };
+    flushPendingStreamPartEvents(sid, mid);
+  }
+
   function applyStreamMessageSnapshot(targetSessionId: string, payload: unknown) {
     if (targetSessionId !== sessionIdRef.current) return undefined;
     const incoming = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.items) ? (payload as any).items : [];
     if (incoming.length === 0) return undefined;
-    const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
-    const merged = mergeMessageRows(prevRaw, incoming);
-    sessionRawMapRef.current[targetSessionId] = merged;
+    const merged = ingestStreamRows(targetSessionId, incoming);
+    recordStreamMessageRoles(targetSessionId, merged);
     const turnInfo = inspectTurnWindow(merged);
     const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
     const nextVisibleTurnCount = computeVisibleTurnCount({
@@ -2575,8 +3294,7 @@ export default function App() {
       hasNewHistoryFromCursor: false
     });
     const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount);
-    const nextQuestions = extractQuestionRequests(merged, targetSessionId).filter((req) => !dismissedQuestions.has(req.id));
-    if (nextQuestions.length > 0) setQuestionRequests(nextQuestions);
+    refreshQuestionRequestsFromStore(targetSessionId);
     pushConnLog(`SSE messages sid=${targetSessionId} rows=${incoming.length} merged=${merged.length} turns=${turnInfo.totalTurnCount}`);
     return rendered;
   }
@@ -2585,64 +3303,112 @@ export default function App() {
     if (targetSessionId !== sessionIdRef.current) return;
     const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
     const messageId = toText(source?.messageId || source?.messageID).trim();
+    const role = getKnownStreamMessageRole(targetSessionId, messageId);
+    if (!role) {
+      queueStreamPartEvent(targetSessionId, messageId, { kind: 'delta', payload });
+      return;
+    }
+    const partId = toText(source?.partId || source?.partID).trim() || toText(source?.field).trim() || 'text';
+    if (!getStoredStreamPart(targetSessionId, messageId, partId)) {
+      const field = toText(source?.field).trim();
+      const type = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
+      upsertStreamPart(targetSessionId, messageId, {
+        id: partId,
+        messageID: messageId,
+        type,
+        text: ''
+      });
+    }
+    applyAssistantDeltaNow(targetSessionId, payload);
+  }
+
+  function applyAssistantDeltaNow(targetSessionId: string, payload: unknown) {
+    if (targetSessionId !== sessionIdRef.current) return;
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const messageId = toText(source?.messageId || source?.messageID).trim();
     const partId = toText(source?.partId || source?.partID).trim() || 'text';
     const field = toText(source?.field).trim();
     const delta = typeof source?.delta === 'string' ? source.delta : '';
-    const partTypeKey = `${targetSessionId}:${messageId}:${partId}`;
-    const kind = streamPartTypeRef.current[partTypeKey] || (toText(source?.type).trim() === 'reasoning' || field === 'reasoning' ? 'reasoning' : 'text');
+    const kind = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
     streamDebug('delta.received', { sid: targetSessionId, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
     if (!messageId || !delta) {
       streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
       return;
     }
-
-    const key = normalizedDeltaKey(targetSessionId, messageId, partId, kind);
-    streamPartDeltaKeyRef.current[partTypeKey] = key;
-    const nextText = `${streamDeltaTextRef.current[key] || ''}${delta}`;
-    streamDeltaTextRef.current[key] = nextText;
-    const now = Date.now();
-    upsertStreamPart(targetSessionId, messageId, {
-      type: kind,
-      id: partId,
-      messageID: messageId,
-      text: nextText
-    }, now);
-    renderStreamWindow(targetSessionId);
-    if (!messageUserScrollingRef.current) {
-      forceScrollToLatestUntilRef.current = Date.now() + 45000;
-      requestAnimationFrame(() => scrollToLatest(false));
-    }
-    streamDebug('delta.applied', { sid: targetSessionId, messageId, partId, kind, totalLen: nextText.length });
+    enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, field || 'text', delta);
+    const nextLen = toText(getStoredStreamPart(targetSessionId, messageId, partId)?.[field || 'text']).length + delta.length;
+    streamDebug('delta.enqueued', { sid: targetSessionId, messageId, partId, kind, totalLen: nextLen });
     setStreaming(true);
   }
 
-  function normalizedDeltaKey(targetSessionId: string, messageId: string, partId: string, kind: 'text' | 'reasoning') {
-    return `${targetSessionId}:${messageId}:${partId}:${kind}`;
+  function enqueueStreamTypewriterDelta(targetSessionId: string, messageId: string, partId: string, field: string, delta: string) {
+    const sid = toText(targetSessionId).trim();
+    const mid = toText(messageId).trim();
+    const pid = toText(partId).trim();
+    const key = `${sid}:${mid}:${pid}:${field}`;
+    if (!sid || !mid || !pid || !field || !delta) return;
+    const current = streamTypewriterQueueRef.current[key];
+    streamTypewriterQueueRef.current[key] = {
+      sid,
+      messageId: mid,
+      partId: pid,
+      field,
+      text: `${current?.text || ''}${delta}`
+    };
+    scheduleStreamTypewriterDrain();
   }
 
-  function migrateStreamPartType(targetSessionId: string, messageId: string, partId: string, nextKind: 'text' | 'reasoning') {
-    const partTypeKey = `${targetSessionId}:${messageId}:${partId}`;
-    const prevDeltaKey = streamPartDeltaKeyRef.current[partTypeKey];
-    const nextDeltaKey = normalizedDeltaKey(targetSessionId, messageId, partId, nextKind);
-    streamPartTypeRef.current[partTypeKey] = nextKind;
-    streamPartDeltaKeyRef.current[partTypeKey] = nextDeltaKey;
-    if (prevDeltaKey && prevDeltaKey !== nextDeltaKey) {
-      const prevText = streamDeltaTextRef.current[prevDeltaKey] || '';
-      const nextText = streamDeltaTextRef.current[nextDeltaKey] || '';
-      if (prevText && !nextText) streamDeltaTextRef.current[nextDeltaKey] = prevText;
-      delete streamDeltaTextRef.current[prevDeltaKey];
-    }
-    const messageKey = `${targetSessionId}:${messageId}`;
-    const partMap = streamPartMapRef.current[messageKey] || {};
-    const current = partMap[partId];
-    if (current) {
-      const migratedText = streamDeltaTextRef.current[nextDeltaKey] || toText(current.text);
-      streamPartMapRef.current[messageKey] = {
-        ...partMap,
-        [partId]: { ...current, type: nextKind, text: migratedText }
-      };
-      rewriteStreamMessageRow(targetSessionId, messageId);
-    }
+  function streamTypewriterChunkSize(length: number) {
+    if (length > 480) return 18;
+    if (length > 180) return 10;
+    if (length > 64) return 6;
+    return 3;
+  }
+
+  function scheduleStreamTypewriterDrain() {
+    if (streamTypewriterTimerRef.current) return;
+    streamTypewriterTimerRef.current = setTimeout(() => {
+      streamTypewriterTimerRef.current = null;
+      const entries = Object.entries(streamTypewriterQueueRef.current);
+      if (entries.length === 0) return;
+      const touchedSessions = new Set<string>();
+      for (const [key, item] of entries) {
+        if (item.sid !== sessionIdRef.current) {
+          delete streamTypewriterQueueRef.current[key];
+          continue;
+        }
+        const take = streamTypewriterChunkSize(item.text.length);
+        const chunk = item.text.slice(0, take);
+        const rest = item.text.slice(take);
+        if (chunk) {
+          const ok = patchStoredStreamPartDelta(item.sid, item.messageId, item.partId, item.field, chunk);
+          if (ok) touchedSessions.add(item.sid);
+        }
+        if (rest) streamTypewriterQueueRef.current[key] = { ...item, text: rest };
+        else delete streamTypewriterQueueRef.current[key];
+      }
+      touchedSessions.forEach((sid) => scheduleStreamRender(sid));
+      if (Object.keys(streamTypewriterQueueRef.current).length > 0) {
+        streamTypewriterTimerRef.current = setTimeout(() => {
+          streamTypewriterTimerRef.current = null;
+          scheduleStreamTypewriterDrain();
+        }, 16);
+      }
+    }, 16);
+  }
+
+  function scheduleStreamRender(targetSessionId: string) {
+    if (streamRenderTimerRef.current) return;
+    streamRenderTimerRef.current = setTimeout(() => {
+      streamRenderTimerRef.current = null;
+      if (targetSessionId !== sessionIdRef.current) return;
+      const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
+      const shouldFollowStream = !messageUserScrollingRef.current && distanceFromBottom < 96;
+      renderStreamWindow(targetSessionId);
+      if (shouldFollowStream) {
+        requestAnimationFrame(() => scrollToLatest(false));
+      }
+    }, 24);
   }
 
   function renderStreamWindow(targetSessionId: string) {
@@ -2660,33 +3426,38 @@ export default function App() {
   }
 
   function upsertStreamPart(targetSessionId: string, messageId: string, part: any, createdAt: number = Date.now()) {
-    const partId = toText(part?.id || part?.partID || part?.callID || `${part?.type || 'part'}:${Object.keys(streamPartMapRef.current[`${targetSessionId}:${messageId}`] || {}).length}`);
+    if (!shouldStoreStreamPart(part)) return;
+    const partId = rawPartId(part, Object.keys(streamPartStoreRef.current[targetSessionId]?.[messageId] || {}).length);
     if (!targetSessionId || !messageId || !partId) return;
-    const key = `${targetSessionId}:${messageId}`;
-    const current = streamPartMapRef.current[key] || {};
-    const nextPart = { ...(current[partId] || {}), ...part, id: partId, messageID: messageId };
-    streamPartMapRef.current[key] = { ...current, [partId]: nextPart };
+    const sid = ensureStreamSessionStores(targetSessionId);
+    if (!sid) return;
+    const byMessage = streamPartStoreRef.current[sid] || {};
+    const existingParts = byMessage[messageId] || {};
+    const nextPart = { ...(existingParts[partId] || {}), ...part, id: partId, messageID: messageId };
+    byMessage[messageId] = { ...existingParts, [partId]: mergeStreamPart(existingParts[partId], nextPart) };
+    streamPartStoreRef.current[sid] = byMessage;
     rewriteStreamMessageRow(targetSessionId, messageId, createdAt);
   }
 
   function rewriteStreamMessageRow(targetSessionId: string, messageId: string, createdAt: number = Date.now()) {
-    const key = `${targetSessionId}:${messageId}`;
-    const partMap = streamPartMapRef.current[key] || {};
-    const parts = Object.values(streamPartMapRef.current[key]);
+    const sid = ensureStreamSessionStores(targetSessionId);
+    if (!sid) return;
+    const partMap = streamPartStoreRef.current[sid]?.[messageId] || {};
+    const parts = Object.values(partMap);
     streamDebug('stream.row.rewrite', {
       sid: targetSessionId,
       messageId,
       parts: parts.map((p: any) => `${p?.type || '?'}:${toText(p?.text).length}`).join(',')
     });
-    const row = {
-      info: {
-        id: messageId,
-        role: 'assistant',
-        time: { created: createdAt }
-      },
-      parts
+    const currentInfo = streamMessageStoreRef.current[sid]?.[messageId] || {};
+    streamMessageStoreRef.current[sid][messageId] = {
+      ...currentInfo,
+      id: messageId,
+      role: 'assistant',
+      time: currentInfo.time || { created: createdAt }
     };
-    sessionRawMapRef.current[targetSessionId] = mergeMessageRows(sessionRawMapRef.current[targetSessionId] || [], [row]);
+    streamMessageRoleRef.current[sid] = { ...(streamMessageRoleRef.current[sid] || {}), [messageId]: 'assistant' };
+    publishStreamRows(sid);
   }
 
   function applyAssistantPart(targetSessionId: string, payload: unknown) {
@@ -2694,13 +3465,22 @@ export default function App() {
     const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
     const part = source?.part;
     const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
-    if (!messageId || !part || typeof part !== 'object') return;
-    const partId = toText(part?.id || part?.partID || part?.callID).trim();
-    const partType = toText(part?.type).trim();
-    if (partId && (partType === 'text' || partType === 'reasoning')) {
-      migrateStreamPartType(targetSessionId, messageId, partId, partType);
+    const role = getKnownStreamMessageRole(targetSessionId, messageId);
+    if (!role) {
+      queueStreamPartEvent(targetSessionId, messageId, { kind: 'part', payload });
+      return;
     }
+    applyAssistantPartNow(targetSessionId, payload);
+  }
+
+  function applyAssistantPartNow(targetSessionId: string, payload: unknown) {
+    if (targetSessionId !== sessionIdRef.current) return;
+    const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+    const part = source?.part;
+    const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
+    if (!messageId || !part || typeof part !== 'object') return;
     upsertStreamPart(targetSessionId, messageId, part);
+    flushPendingStreamPartEvents(targetSessionId, messageId);
     renderStreamWindow(targetSessionId);
     if (!messageUserScrollingRef.current) {
       forceScrollToLatestUntilRef.current = Date.now() + 45000;
@@ -2732,6 +3512,7 @@ export default function App() {
         sessionId: sid
       });
       pushConnLog(`question.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
+      requests.forEach((req) => upsertStreamQuestion(getOpenCodeStreamStores(), req));
       // opencode /question can return cached + live copies of the same question. Prefer real que_* ids.
       const deduped = new Map<string, QuestionRequest>();
       for (const req of requests) {
@@ -2744,7 +3525,7 @@ export default function App() {
         }
       }
       const nextRequests = [...deduped.values()];
-      setQuestionRequests(nextRequests);
+      refreshQuestionRequestsFromStore(sid);
       const liveIds = new Set(nextRequests.map((req) => req.id));
       setQuestionSubmitState((prev) => {
         const next: Record<string, QuestionSubmitState> = {};
@@ -2851,8 +3632,12 @@ export default function App() {
           return;
         }
         const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
-        const merged = mergeMessageRows(prevRaw, incoming);
-        sessionRawMapRef.current[targetSessionId] = merged;
+        const merged = before ? mergeMessageRows(prevRaw, incoming) : ingestStreamRows(targetSessionId, incoming);
+        if (before) {
+          sessionRawMapRef.current[targetSessionId] = merged;
+          ingestStreamRows(targetSessionId, merged);
+        }
+        recordStreamMessageRoles(targetSessionId, merged);
         const turnInfo = inspectTurnWindow(merged);
         const nextCursor = toText(res.nextCursor).trim();
         pushConnLog(
@@ -3079,11 +3864,11 @@ export default function App() {
     try {
       pushConnLog('GET repository list');
       const rows = await getClientRepositories({ baseUrl: base, token: tk });
-      let nextProjects = rows.map((x) => ({
+      let nextProjects = sanitizeProjectOptions(rows.map((x) => ({
         id: x.id || x.path,
         worktree: x.path,
         name: toText(x.name) || projectNameFromPath(x.path)
-      }));
+      })));
       if (nextProjects.length === 0) {
         pushConnLog('GET repository list empty, fallback to opencode project APIs');
         const [current, all] = await Promise.all([
@@ -3106,7 +3891,7 @@ export default function App() {
             name: projectNameFromPath(p.worktree)
           });
         }
-        nextProjects = [...merged.values()];
+        nextProjects = sanitizeProjectOptions([...merged.values()]);
       }
       const prevIds = new Set(projectsRef.current.map((x) => x.id));
       const hasNew = nextProjects.some((x) => !prevIds.has(x.id));
@@ -3155,7 +3940,7 @@ export default function App() {
             name: projectNameFromPath(p.worktree)
           });
         }
-        const fallbackProjects = [...merged.values()];
+        const fallbackProjects = sanitizeProjectOptions([...merged.values()]);
         if (fallbackProjects.length > 0) {
           setProjects(fallbackProjects);
           if (!toText(repoPath).trim()) {
@@ -3174,23 +3959,22 @@ export default function App() {
     if (!next) return;
     const current = toText(repoPath).trim();
     if (current === next) return;
+    const cachedNextSessions = stableSortSessionItems(sessionCacheRef.current[next] || []);
     stopStream();
     setStartupSessionHydrating(false);
+    sessionsRef.current = cachedNextSessions;
     setRepoPath(next);
     setActiveSession('');
     setMessages([]);
     setRenderedTurns([]);
-    setSessions([]);
+    setSessions(cachedNextSessions);
     setSessionNextCursor({});
     setSessionHasMore({});
     setSessionHistoryRetryHint({});
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
-    streamDeltaTextRef.current = {};
-    streamPartMapRef.current = {};
-    streamPartTypeRef.current = {};
-    streamPartDeltaKeyRef.current = {};
+    resetOpenCodeStreamStores();
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     renderRegressionRetryRef.current = {};
@@ -3233,7 +4017,6 @@ export default function App() {
       sessionIdRef.current === targetSessionId;
     let lastSyncAt = 0;
     let lastStatusSyncAt = 0;
-    let lastPartSyncAt = 0;
     const syncFromServer = () => {
       if (!isCurrentStream()) return;
       const now = Date.now();
@@ -3251,22 +4034,12 @@ export default function App() {
       lastStatusSyncAt = now;
       void syncSessionStatus(targetSessionId);
     };
-    const syncPartsSoon = () => {
-      const now = Date.now();
-      if (now - lastPartSyncAt < 900) return;
-      lastPartSyncAt = now;
-      void syncSessionMessages(targetSessionId, {
-        limit: INITIAL_SESSION_LIMIT,
-        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
-      });
-    };
     const parseSseData = (event: any) => {
       return typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
     };
     const handleDeltaPayload = (payload: any) => {
       applyAssistantDelta(targetSessionId, payload);
       syncStatusSoon();
-      syncPartsSoon();
     };
     const handlePartPayload = (payload: any) => {
       applyAssistantPart(targetSessionId, payload);
@@ -3324,6 +4097,87 @@ export default function App() {
       }
       syncFromServer();
     });
+    es.addEventListener('session_status' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        const payload = parseSseData(event);
+        const status = payload?.status;
+        if (status && typeof status === 'object') {
+          setStreamSessionStatus(getOpenCodeStreamStores(), targetSessionId, status);
+          setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: status as SessionStatusInfo }));
+          setStreaming((status as SessionStatusInfo).type !== 'idle');
+        }
+      } catch (err) {
+        pushConnLog(`SSE session_status parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('message' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamMessageInfo(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE message parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('message_removed' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamMessageRemoved(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE message_removed parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('todo' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamTodo(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE todo parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('permission' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamPermission(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE permission parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('permission_replied' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamPermissionReplied(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE permission_replied parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('question' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamQuestion(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE question parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('question_removed' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyStreamQuestionRemoved(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE question_removed parse failed ${String(err)}`, 'error');
+      }
+    });
+    es.addEventListener('assistant_message' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        const payload = parseSseData(event);
+        const messageId = toText(payload?.messageId || payload?.messageID).trim();
+        streamDebug('sse.assistant_message', { sid: targetSessionId, messageId });
+        if (messageId) markStreamAssistantMessage(targetSessionId, messageId);
+      } catch (err) {
+        pushConnLog(`SSE assistant_message parse failed ${String(err)}`, 'error');
+      }
+    });
     es.addEventListener('delta' as any, (event: any) => {
       if (!isCurrentStream()) return;
       try {
@@ -3344,6 +4198,14 @@ export default function App() {
         pushConnLog(`SSE part parse failed ${String(err)}`, 'error');
       }
     });
+    es.addEventListener('part_removed' as any, (event: any) => {
+      if (!isCurrentStream()) return;
+      try {
+        applyPartRemoved(targetSessionId, parseSseData(event));
+      } catch (err) {
+        pushConnLog(`SSE part_removed parse failed ${String(err)}`, 'error');
+      }
+    });
     es.addEventListener('stream_fallback' as any, (event: any) => {
       if (!isCurrentStream()) return;
       pushConnLog(`SSE fallback ${toText(event?.data) || 'message-snapshot'}`);
@@ -3360,6 +4222,7 @@ export default function App() {
       streamClosed = true;
       sessionStatusEpochRef.current += 1;
       streamSessionRef.current = '';
+      scheduleStreamTypewriterDrain();
       if (streamRef.current === es) {
         es.close();
         streamRef.current = null;
@@ -3482,7 +4345,16 @@ export default function App() {
       }
     ];
   }, [renderedTurns, showThinkingPlaceholder]);
-  const messageBottomInset = Math.max(140, inputDockHeight + 44);
+  const messageBottomInset = Math.max(140, inputDockHeight + 44 + keyboardInset);
+  const inputModelLabel = useMemo(() => {
+    const selected = modelOptions.find((option) => option.id === model);
+    const label = toText(selected?.label || model || 'Model');
+    return label.replace(/^openai\//i, '').replace(/^kimi-for-coding\//i, '').slice(0, 18);
+  }, [model, modelOptions]);
+  const composerModeOptions = useMemo<Array<{ key: ComposerAgentName; label: string }>>(() => ([
+    { key: 'build', label: 'Build' },
+    { key: 'plan', label: 'Plan' }
+  ]), []);
 
   const liveQuestionTurnId = useMemo(() => {
     for (let i = renderedTurns.length - 1; i >= 0; i -= 1) {
@@ -3513,8 +4385,8 @@ export default function App() {
         if (item.kind === 'todo') return item.todo;
       }
     }
-    return null;
-  }, [displayedTurns]);
+    return streamTodoCard;
+  }, [displayedTurns, streamTodoCard]);
 
   const activeQuestionRequest = useMemo(() => questionRequests[0] || null, [questionRequests]);
 
@@ -3634,7 +4506,7 @@ export default function App() {
   async function fileUriToDataUrl(uri: string, fallbackMime: string): Promise<string> {
     try {
       const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
+        encoding: 'base64',
       });
       if (!base64 || base64.length < 20) {
         throw new Error('empty base64');
@@ -4535,7 +5407,9 @@ export default function App() {
           baseUrl: serverUrl,
           token,
           repoPath,
-          title: payloadPrompt.slice(0, 24) || '新会话'
+          title: payloadPrompt.slice(0, 24) || '新会话',
+          agent: composerAgent,
+          autoAcceptPermissions
         });
         targetSessionId = created.id;
         setActiveSession(targetSessionId);
@@ -4586,6 +5460,8 @@ export default function App() {
         prompt: payloadPrompt,
         sessionId: targetSessionId,
         model: requestModel,
+        agent: composerAgent,
+        autoAcceptPermissions,
         parts: parts.length > 0 ? parts : undefined,
         timeoutMs: images.length > 0 ? IMAGE_SEND_TIMEOUT_MS : undefined
       });
@@ -4721,10 +5597,7 @@ export default function App() {
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
-    streamDeltaTextRef.current = {};
-    streamPartMapRef.current = {};
-    streamPartTypeRef.current = {};
-    streamPartDeltaKeyRef.current = {};
+    resetOpenCodeStreamStores();
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     renderRegressionRetryRef.current = {};
@@ -4854,7 +5727,7 @@ export default function App() {
     return (
       <SafeAreaView style={styles.safe}>
         <RenderBoundary name="auth-screen">
-        <StatusBar barStyle="dark-content" />
+        <StatusBar barStyle="dark-content" backgroundColor="#f7f8fa" translucent={false} />
           <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
             <View style={styles.authPageFrame}>
               <View style={styles.authFormWrap}>
@@ -4938,98 +5811,31 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={styles.gestureRoot}>
-      <SafeAreaView style={styles.chatSafe}>
+      <SafeAreaView style={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}>
         <RenderBoundary name="chat-screen">
-        <Drawer
-          drawerPosition="right"
-          drawerStyle={{ width: 320 }}
-          open={drawerSide === 'right'}
-          onOpen={() => setDrawerSide('right')}
-          onClose={() => setDrawerSide((side) => (side === 'right' ? '' : side))}
-          renderDrawerContent={renderRightDrawerContent}
-          overlayStyle={{ backgroundColor: 'rgba(15,23,42,0.2)' }}
-          swipeEnabled={drawerSide !== 'left'}
-          swipeEdgeWidth={72}
-          swipeMinDistance={18}
-          swipeMinVelocity={180}
-        >
-          <Drawer
-            drawerPosition="left"
-            drawerStyle={{ width: 320 }}
-            open={drawerSide === 'left'}
-            onOpen={() => setDrawerSide('left')}
-            onClose={() => setDrawerSide((side) => (side === 'left' ? '' : side))}
-            renderDrawerContent={renderLeftDrawerContent}
-            overlayStyle={{ backgroundColor: 'rgba(15,23,42,0.2)' }}
-            swipeEnabled={drawerSide !== 'right'}
-            swipeEdgeWidth={72}
-            swipeMinDistance={18}
-            swipeMinVelocity={180}
-          >
-            <StatusBar barStyle="dark-content" />
-
-      <View style={styles.topBar}>
-        <View style={styles.topSideSlot}>
-          <Pressable style={styles.iconBtn} onPress={() => openDrawer('left')}>
-            <Text style={styles.iconTxt}>≡</Text>
-          </Pressable>
-        </View>
-        <Pressable style={styles.topBrand} onPress={workspacePickerOpen ? closeWorkspacePicker : openWorkspacePicker}>
-          <Text style={styles.topTitle}>Giteam</Text>
-          <Text numberOfLines={1} style={styles.topWorkspaceText}>
-            {(repoPath ? projectNameFromPath(repoPath) : '选择工作空间') + ' ▾'}
-          </Text>
-        </Pressable>
-        <View style={styles.topSideSlotRight}>
-          <Pressable style={styles.toolBtn} onPress={() => openDrawer('right')}>
-            <Image source={require('./src/assets/icons/tool.png')} style={styles.toolBtnImage} resizeMode="contain" />
-          </Pressable>
-        </View>
-      </View>
-      {workspacePickerOpen ? (
-        <View style={styles.workspaceMask}>
-          <Pressable style={styles.workspaceBackdrop} onPress={closeWorkspacePicker} />
+        <View style={[styles.notebookShell, { backgroundColor: notebookColors.shell }]} {...notebookPanResponder.panHandlers}>
           <Animated.View
             style={[
-              styles.workspacePanel,
+              styles.notebookTrack,
               {
-                height: workspacePanelHeight,
-                opacity: workspaceAnim,
-                transform: [{ translateY: workspaceAnim.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] }) }]
+                width: windowWidth * 3,
+                transform: [{ translateX: notebookTrackX }]
               }
             ]}
           >
-            <Text style={styles.workspaceTitle}>工作空间（{projects.length}）</Text>
-            <ScrollView style={styles.workspaceList} contentContainerStyle={styles.workspaceListContent}>
-              {projects.map((p) => {
-                const active = repoPath.trim() === p.worktree.trim();
-                return (
-                  <Pressable
-                    key={p.id}
-                    style={active ? styles.workspaceListItemActive : styles.workspaceListItem}
-                    onPress={() => {
-                      closeWorkspacePicker();
-                      void onSwitchProject(p.worktree);
-                    }}
-                  >
-                    <View style={active ? styles.workspaceFolderIconActive : styles.workspaceFolderIcon}>
-                      <View style={active ? styles.workspaceFolderTabActive : styles.workspaceFolderTab} />
-                      <View style={active ? styles.workspaceFolderBodyAccentActive : styles.workspaceFolderBodyAccent} />
-                    </View>
-                    <View style={styles.workspaceItemTextWrap}>
-                      <Text numberOfLines={1} style={active ? styles.workspaceItemTitleActive : styles.workspaceItemTitle}>
-                        {toText(p.name)}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.workspaceItemPath}>{toText(p.worktree)}</Text>
-                    </View>
-                  </Pressable>
-                );
-              })}
-              {projects.length === 0 ? <Text style={styles.drawerEmpty}>暂无可切换工作空间</Text> : null}
-            </ScrollView>
-          </Animated.View>
+            <View style={[styles.notebookPageFrame, { width: windowWidth }]}>
+              {renderLeftDrawerContent()}
+            </View>
+            <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main, width: windowWidth }]}> 
+            <StatusBar barStyle="dark-content" backgroundColor={notebookColors.shell} />
+
+      <View style={[styles.topBar, { backgroundColor: notebookColors.main }]}> 
+        <View style={styles.topSideSlot} />
+        <View style={styles.topBrand}>
+          <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>{currentSessionTitle}</Text>
         </View>
-      ) : null}
+        <View style={styles.topSideSlotRight} />
+      </View>
       <View style={styles.chatBodyWrap}>
         {showStreamTopGlow ? (
           <View pointerEvents="none" style={styles.streamTopGlowTrack}>
@@ -5079,7 +5885,7 @@ export default function App() {
               showsHorizontalScrollIndicator={false}
               scrollEventThrottle={16}
               maintainVisibleContentPosition={{
-                minIndexForVisible: 0
+                autoscrollToBottomThreshold: 80
               }}
               onScrollBeginDrag={() => {
                 forceScrollToLatestUntilRef.current = 0;
@@ -5300,7 +6106,7 @@ export default function App() {
       ) : null}
 
       <View
-        style={styles.inputDock}
+        style={[styles.inputDock, keyboardInset > 0 ? { marginBottom: keyboardInset + 10 } : null]}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h > 0 && Math.abs(h - inputDockHeight) > 2) setInputDockHeight(h);
@@ -5334,24 +6140,25 @@ export default function App() {
             ))}
           </ScrollView>
         ) : null}
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.inputMain}
-            value={toText(prompt)}
-            onChangeText={(value) => {
-              if (attachmentMenuOpen) setAttachmentMenuOpen(false);
-              setPrompt(value);
-              const isSlash = /^\//.test(value) && !value.includes(' ');
-              setSlashOpen(isSlash);
-              setSlashActiveIndex(0);
-            }}
-            placeholder="发消息..."
-            placeholderTextColor="#9aa5b3"
-            multiline
-          />
+        <TextInput
+          style={styles.inputMain}
+          value={toText(prompt)}
+          onChangeText={(value) => {
+            if (attachmentMenuOpen) setAttachmentMenuOpen(false);
+            setPrompt(value);
+            const isSlash = /^\//.test(value) && !value.includes(' ');
+            setSlashOpen(isSlash);
+            setSlashActiveIndex(0);
+          }}
+          placeholder="What would you like to do?"
+          placeholderTextColor="#c6cbd3"
+          multiline
+        />
+        <View style={styles.inputToolbar}>
           <Pressable
             style={styles.cameraBtn}
             onPress={() => setAttachmentMenuOpen((prev) => !prev)}
+            hitSlop={8}
           >
             <Animated.View
               style={{
@@ -5363,8 +6170,12 @@ export default function App() {
                 }]
               }}
             >
-              <Feather name={attachmentMenuOpen ? 'x' : 'plus'} size={18} color="#1f2937" />
+              <Feather name={attachmentMenuOpen ? 'x' : 'plus'} size={22} color="#111827" />
             </Animated.View>
+          </Pressable>
+          <View style={styles.inputToolbarSpacer} />
+          <Pressable style={styles.modelMiniPill} onPress={() => setComposerPickerOpen(true)}>
+            <Text numberOfLines={1} style={styles.modelMiniText}>{inputModelLabel}</Text>
           </Pressable>
           <Pressable
             style={canSendNow || canAbortNow ? styles.actionBtnSend : styles.actionBtnDisabled}
@@ -5387,7 +6198,7 @@ export default function App() {
               <Feather
                 name={canAbortNow ? 'square' : 'arrow-up'}
                 size={canAbortNow ? 16 : 20}
-                color={canSendNow || canAbortNow ? '#ffffff' : '#94a3b8'}
+                color={canSendNow || canAbortNow ? '#ffffff' : '#8d949e'}
               />
             </Animated.View>
           </Pressable>
@@ -5431,7 +6242,7 @@ export default function App() {
                 <View style={styles.attachmentMenuIconShell}>
                   <Feather name="camera" size={22} color="#1f2937" />
                 </View>
-                 <Text style={styles.attachmentMenuLabel}>拍照</Text>
+                 <Text style={styles.attachmentMenuLabel}>Camera</Text>
               </Pressable>
               <Pressable
                 style={styles.attachmentMenuCard}
@@ -5443,7 +6254,7 @@ export default function App() {
                 <View style={styles.attachmentMenuIconShell}>
                   <Feather name="image" size={22} color="#1f2937" />
                 </View>
-                <Text style={styles.attachmentMenuLabel}>相册</Text>
+                <Text style={styles.attachmentMenuLabel}>Photos</Text>
               </Pressable>
               <Pressable
                 style={styles.attachmentMenuCard}
@@ -5455,11 +6266,11 @@ export default function App() {
                 <View style={styles.attachmentMenuIconShell}>
                   <Feather name="folder" size={22} color="#1f2937" />
                 </View>
-                <Text style={styles.attachmentMenuLabel}>本地文件</Text>
+                <Text style={styles.attachmentMenuLabel}>Files</Text>
               </Pressable>
             </View>
             <View style={styles.recentHeaderRow}>
-              <Text style={styles.recentHeaderTitle}>最近图片</Text>
+              <Text style={styles.recentHeaderTitle}>Recent Images</Text>
             </View>
             <ScrollView
               showsVerticalScrollIndicator={false}
@@ -5483,25 +6294,29 @@ export default function App() {
                 {recentImages.length === 0 && recentImagesLoading ? (
                   <View style={styles.recentLoadingState}>
                     <ActivityIndicator size="small" color="#64748b" />
-                    <Text style={styles.recentLoadingText}>正在读取最近图片</Text>
+                    <Text style={styles.recentLoadingText}>Loading recent images</Text>
                   </View>
                 ) : null}
                 {recentImages.length === 0 && !recentImagesLoading ? (
                   <View style={styles.recentEmptyState}>
                     <Feather name="image" size={18} color="#94a3b8" />
-                    <Text style={styles.recentEmptyText}>暂无最近图片</Text>
+                    <Text style={styles.recentEmptyText}>No recent images</Text>
                   </View>
                 ) : null}
                 {recentImagesLoadingMore ? <View style={styles.recentLoadingMore}><ActivityIndicator size="small" /></View> : null}
-                {recentImagesHasNext && !recentImagesLoadingMore ? <View style={styles.recentLoadHint}><Text style={styles.recentLoadHintText}>继续滑动加载</Text></View> : null}
+                {recentImagesHasNext && !recentImagesLoadingMore ? <View style={styles.recentLoadHint}><Text style={styles.recentLoadHintText}>Scroll to load more</Text></View> : null}
               </View>
             </ScrollView>
           </Animated.View>
         ) : null}
       </View>
 
-          </Drawer>
-        </Drawer>
+            </View>
+            <View style={[styles.notebookPageFrame, { width: windowWidth }]}>
+              {renderRightDrawerContent()}
+            </View>
+          </Animated.View>
+        </View>
         </RenderBoundary>
         {albumPickerOpen ? (
           <View style={styles.albumOverlay}>
@@ -5532,7 +6347,7 @@ export default function App() {
               {albumImagesLoading ? (
                 <View style={styles.albumLoadingWrap}>
                   <ActivityIndicator />
-                  <Text style={styles.albumLoadingText}>正在读取照片...</Text>
+                  <Text style={styles.albumLoadingText}>Loading photos...</Text>
                 </View>
               ) : albumImages.length === 0 ? (
                 <Text style={styles.albumEmptyText}>暂无照片</Text>
@@ -5541,7 +6356,6 @@ export default function App() {
                   data={albumImages}
                   numColumns={3}
                   keyExtractor={(item) => item.id}
-                  estimatedItemSize={120}
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.albumGrid}
                   extraData={albumSelectedIds}
@@ -5580,6 +6394,66 @@ export default function App() {
             </View>
           </View>
         ) : null}
+        {composerPickerOpen ? (
+          <View style={styles.composerPickerOverlay}>
+            <Pressable style={styles.composerPickerBackdrop} onPress={() => setComposerPickerOpen(false)} />
+              <View style={[styles.composerPickerSheet, { backgroundColor: notebookColors.left }]}> 
+                <View style={styles.composerPickerHeader}>
+                <Text style={styles.composerPickerTitle}>Model & Mode</Text>
+                <Pressable style={styles.composerPickerCloseBtn} onPress={() => setComposerPickerOpen(false)}>
+                  <Feather name="x" size={20} color="#7c766c" />
+                </Pressable>
+              </View>
+              <View style={styles.composerPickerSection}>
+                <Text style={styles.composerPickerSectionTitle}>Mode</Text>
+                {composerModeOptions.map((option) => {
+                  const active = composerAgent === option.key;
+                  return (
+                    <Pressable
+                      key={option.key}
+                      style={active ? [styles.composerPickerRow, styles.composerPickerRowActive] : styles.composerPickerRow}
+                      onPress={() => setComposerAgent(option.key)}
+                    >
+                      <Text style={active ? [styles.composerPickerRowText, styles.composerPickerRowTextActive] : styles.composerPickerRowText}>{option.label}</Text>
+                      {active ? <Feather name="check" size={18} color="#111827" /> : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.composerPickerDivider} />
+              <View style={styles.composerPickerSection}>
+                <View style={styles.composerPickerRow}>
+                  <Text style={styles.composerPickerRowText}>Auto Accept</Text>
+                  <Pressable
+                    style={autoAcceptPermissions ? [styles.composerPickerSwitch, styles.composerPickerSwitchActive] : styles.composerPickerSwitch}
+                    onPress={() => setAutoAcceptPermissions((v) => !v)}
+                  >
+                    <View style={autoAcceptPermissions ? [styles.composerPickerSwitchThumb, styles.composerPickerSwitchThumbActive] : styles.composerPickerSwitchThumb} />
+                  </Pressable>
+                </View>
+              </View>
+              <View style={styles.composerPickerDivider} />
+              <ScrollView style={styles.composerPickerList} contentContainerStyle={{ paddingBottom: 20 }}>
+                {modelOptions.map((opt) => {
+                  const active = model.trim() === opt.id;
+                  return (
+                    <Pressable
+                      key={opt.id}
+                      style={active ? [styles.composerPickerItem, styles.composerPickerItemActive] : styles.composerPickerItem}
+                      onPress={() => { setModel(opt.id); setComposerPickerOpen(false); }}
+                    >
+                      <View style={styles.composerPickerItemMain}>
+                        <Text style={active ? styles.composerPickerItemTitleActive : styles.composerPickerItemTitle}>{toText(opt.label)}</Text>
+                        <Text style={styles.composerPickerItemSub}>{toText(opt.id)}</Text>
+                      </View>
+                      {active ? <View style={styles.composerPickerCheck}><Feather name="check" size={16} color="#5d5345" /></View> : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          </View>
+        ) : null}
         {launchOverlay}
       </SafeAreaView>
     </GestureHandlerRootView>
@@ -5589,7 +6463,7 @@ export default function App() {
 const styles = StyleSheet.create({
   gestureRoot: { flex: 1 },
   safe: { flex: 1, backgroundColor: '#f7f8fa' },
-  chatSafe: { flex: 1, backgroundColor: '#f7f8fa' },
+  chatSafe: { flex: 1, backgroundColor: '#f7f8fa', paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0 },
 
   launchScreen: { flex: 1, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
   launchOverlay: {
@@ -5953,13 +6827,29 @@ const styles = StyleSheet.create({
   },
 
   topBar: {
-    height: 58,
+    height: 64,
     paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     position: 'relative',
     overflow: 'hidden'
+  },
+  notebookShell: {
+    flex: 1,
+    backgroundColor: '#f5f1e8',
+    position: 'relative'
+  },
+  notebookTrack: {
+    flex: 1,
+    flexDirection: 'row'
+  },
+  notebookPageFrame: {
+    flex: 1
+  },
+  notebookMainPage: {
+    flex: 1,
+    backgroundColor: '#f8f5ee'
   },
   streamTopGlowTrack: {
     position: 'absolute',
@@ -5968,7 +6858,7 @@ const styles = StyleSheet.create({
     right: 0,
     height: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(33, 170, 160, 0.08)',
+    backgroundColor: 'rgba(58, 143, 130, 0.10)',
     overflow: 'hidden',
     zIndex: 8,
     elevation: 8
@@ -5980,7 +6870,7 @@ const styles = StyleSheet.create({
     width: 220,
     height: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(33, 170, 160, 0.72)'
+    backgroundColor: 'rgba(58, 143, 130, 0.62)'
   },
   topSideSlot: { width: 48, alignItems: 'flex-start', zIndex: 1 },
   topSideSlotRight: { width: 48, alignItems: 'flex-end', zIndex: 1 },
@@ -5990,16 +6880,19 @@ const styles = StyleSheet.create({
     right: 68,
     flexDirection: 'column',
     alignItems: 'center',
-    gap: 1
+    gap: 1,
+    top: 8
   },
-  topTitle: { fontSize: 20, color: '#202734', fontWeight: '700' },
-  topWorkspaceText: { fontSize: 11, color: '#7a8798' },
+  topTitle: { fontSize: 20, color: '#24211d', fontWeight: '700' },
+  topTitleCompact: { fontSize: 18, lineHeight: 22, color: '#24211d', fontWeight: '700' },
+  topWorkspaceText: { fontSize: 11, lineHeight: 14, color: '#8d826f', fontWeight: '500' },
   toolBtn: {
     width: 32,
     height: 32,
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
     backgroundColor: '#eef1f5'
   },
   toolBtnImage: { width: 16, height: 16 },
@@ -6146,6 +7039,7 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
     backgroundColor: '#eef1f5'
   },
   iconTxt: { color: '#394455', fontWeight: '700' },
@@ -6153,19 +7047,19 @@ const styles = StyleSheet.create({
   chatBodyWrap: { flex: 1, paddingHorizontal: 16, position: 'relative' },
   chatListStage: { flex: 1, position: 'relative' },
   blankWrap: { marginTop: 26, gap: 10 },
-  blankTitle: { fontSize: 40, fontWeight: '700', color: '#c7ced8' },
-  blankSub: { color: '#7e8898', fontSize: 18 },
+  blankTitle: { fontSize: 40, fontWeight: '700', color: '#24211d' },
+  blankSub: { color: '#8d826f', fontSize: 18 },
   suggestList: { gap: 10, marginTop: 8 },
   suggestChip: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e6e9ee',
-    backgroundColor: '#ffffff',
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
     paddingVertical: 10,
     paddingHorizontal: 12,
     alignSelf: 'flex-start'
   },
-  suggestText: { color: '#545f6f', fontSize: 14 },
+  suggestText: { color: '#5d5345', fontSize: 14 },
 
   latestJumpBtn: {
     position: 'absolute',
@@ -6177,15 +7071,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#d6dee8',
-    backgroundColor: 'rgba(255,255,255,0.96)',
-    shadowColor: '#64748b',
-    shadowOpacity: 0.16,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: 'rgba(255,253,247,0.96)',
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.10,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 4
   },
-  latestJumpTxt: { color: '#334155', fontSize: 20, fontWeight: '800', lineHeight: 24 },
+  latestJumpTxt: { color: '#3a352e', fontSize: 20, fontWeight: '800', lineHeight: 24 },
   turnWrap: { width: '100%', alignSelf: 'stretch', gap: 10 },
   loadEarlierWrap: { alignItems: 'center', paddingTop: 2, paddingBottom: 4 },
   loadEarlierHint: { marginTop: 6, color: '#8b6c45', fontSize: 11 },
@@ -6195,20 +7089,21 @@ const styles = StyleSheet.create({
   contextWrap: { width: '100%', alignItems: 'flex-start' },
   todoInlineWrap: { width: '100%', alignItems: 'flex-start' },
   dividerWrap: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: '#d8dee8' },
-  dividerLabel: { color: '#9aa4b2', fontSize: 11 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: '#ded6ca' },
+  dividerLabel: { color: '#9a9182', fontSize: 11 },
   errorWrap: { width: '100%', alignItems: 'flex-start' },
   todoInlineCard: {
     width: '96%',
     maxWidth: '96%',
     borderRadius: 18,
-    borderWidth: 0,
-    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
     paddingVertical: 12,
     paddingHorizontal: 13,
     gap: 12,
-    shadowColor: '#7b8da6',
-    shadowOpacity: 0.10,
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.07,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
     elevation: 1
@@ -6216,8 +7111,9 @@ const styles = StyleSheet.create({
   todoInlineCardCompact: {
     width: '100%',
     borderRadius: 18,
-    borderWidth: 0,
-    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
     paddingVertical: 12,
     paddingHorizontal: 13,
     gap: 12
@@ -6226,7 +7122,7 @@ const styles = StyleSheet.create({
   todoCardHeadCompact: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   todoCardHeadMain: { flex: 1, gap: 7 },
   todoTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  todoTitle: { color: '#1f2f46', fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
+  todoTitle: { color: '#24211d', fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
   todoActions: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 4 },
   todoChipRunning: {
     minWidth: 42,
@@ -6235,11 +7131,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#e7f4f2',
+    backgroundColor: '#e7f2ee',
     borderWidth: 1,
-    borderColor: '#c8e8e3'
+    borderColor: '#c8ded7'
   },
-  todoChipRunningText: { color: '#08746f', fontSize: 11, fontWeight: '800' },
+  todoChipRunningText: { color: '#2f7f74', fontSize: 11, fontWeight: '800' },
   todoChipDone: {
     minWidth: 42,
     height: 21,
@@ -6247,22 +7143,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eef6ff',
+    backgroundColor: '#f1eadf',
     borderWidth: 1,
-    borderColor: '#d5e8ff'
+    borderColor: '#ddd4c5'
   },
-  todoChipDoneText: { color: '#276aa8', fontSize: 11, fontWeight: '800' },
-  todoSummary: { color: '#637084', fontSize: 12, lineHeight: 18, fontWeight: '500' },
+  todoChipDoneText: { color: '#5d5345', fontSize: 11, fontWeight: '800' },
+  todoSummary: { color: '#7c766c', fontSize: 12, lineHeight: 18, fontWeight: '500' },
   todoProgressTrack: {
     height: 5,
     borderRadius: 999,
-    backgroundColor: '#e8eef5',
+    backgroundColor: '#e5ded2',
     overflow: 'hidden'
   },
   todoProgressFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: '#21aaa0'
+    backgroundColor: '#3a8f82'
   },
   todoChevron: {
     width: 16,
@@ -6283,7 +7179,7 @@ const styles = StyleSheet.create({
     width: 6,
     height: 1.5,
     borderRadius: 999,
-    backgroundColor: '#73839a',
+    backgroundColor: '#8d826f',
     transform: [{ translateX: -1.5 }, { rotate: '45deg' }]
   },
   todoChevronLineRight: {
@@ -6291,7 +7187,7 @@ const styles = StyleSheet.create({
     width: 6,
     height: 1.5,
     borderRadius: 999,
-    backgroundColor: '#73839a',
+    backgroundColor: '#8d826f',
     transform: [{ translateX: 1.5 }, { rotate: '-45deg' }]
   },
   todoToggleBtn: {
@@ -6307,7 +7203,7 @@ const styles = StyleSheet.create({
     height: 10,
     borderRightWidth: 2,
     borderBottomWidth: 2,
-    borderColor: '#708298',
+    borderColor: '#8d826f',
     transform: [{ rotate: '45deg' }]
   },
   todoArrowUp: {
@@ -6315,16 +7211,16 @@ const styles = StyleSheet.create({
   },
   todoList: { gap: 7, paddingTop: 2 },
   todoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  todoRowText: { flex: 1, color: '#2f3d52', fontSize: 13, lineHeight: 19, fontWeight: '500' },
-  todoRowTextDone: { color: '#91a0b2', textDecorationLine: 'line-through' },
-  todoRowTextCancelled: { color: '#aeb7c3', textDecorationLine: 'line-through' },
+  todoRowText: { flex: 1, color: '#3a352e', fontSize: 13, lineHeight: 19, fontWeight: '500' },
+  todoRowTextDone: { color: '#a69d8e', textDecorationLine: 'line-through' },
+  todoRowTextCancelled: { color: '#b8afa0', textDecorationLine: 'line-through' },
   todoStatusPending: {
     width: 20,
     height: 20,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: '#d5dee9',
-    backgroundColor: '#ffffff',
+    borderColor: '#d8cec0',
+    backgroundColor: '#fffdf7',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -6333,8 +7229,8 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: '#d7dce4',
-    backgroundColor: '#f3f5f8',
+    borderColor: '#d8cec0',
+    backgroundColor: '#eee8dc',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -6343,7 +7239,7 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 999,
     borderWidth: 0,
-    backgroundColor: '#21aaa0',
+    backgroundColor: '#3a8f82',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -6360,20 +7256,20 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 999,
-    backgroundColor: 'rgba(33,170,160,0.12)'
+    backgroundColor: 'rgba(58,143,130,0.12)'
   },
   todoStatusRunningPulse2: {
     position: 'absolute',
     width: 14,
     height: 14,
     borderRadius: 999,
-    backgroundColor: 'rgba(33,170,160,0.28)'
+    backgroundColor: 'rgba(58,143,130,0.24)'
   },
   todoStatusRunningCenter: {
     width: 8,
     height: 8,
     borderRadius: 999,
-    backgroundColor: '#21aaa0'
+    backgroundColor: '#3a8f82'
   },
   todoThinkingDots: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   todoThinkingDot: {
@@ -6382,37 +7278,37 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#999999'
   },
-  todoThinkingDotOn: { backgroundColor: '#21aaa0', transform: [{ translateY: -0.5 }, { scale: 1.1 }] },
-  todoThinkingDotMid: { backgroundColor: '#7990a7' },
-  todoThinkingDotSoft: { backgroundColor: '#cdd7e2' },
+  todoThinkingDotOn: { backgroundColor: '#3a8f82', transform: [{ translateY: -0.5 }, { scale: 1.1 }] },
+  todoThinkingDotMid: { backgroundColor: '#8d826f' },
+  todoThinkingDotSoft: { backgroundColor: '#d8cec0' },
   contextCard: {
     width: '96%',
     maxWidth: '96%',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e5eaf2',
-    backgroundColor: '#f9fbff',
+    borderColor: '#eadcc8',
+    backgroundColor: '#fff9f0',
     overflow: 'hidden',
     paddingVertical: 8,
     paddingHorizontal: 10,
     gap: 6
   },
   contextHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  contextTitle: { color: '#2f415a', fontSize: 12, fontWeight: '700' },
-  contextSummary: { color: '#65758a', fontSize: 12, lineHeight: 18 },
+  contextTitle: { color: '#6a4126', fontSize: 12, fontWeight: '700' },
+  contextSummary: { color: '#8b705a', fontSize: 12, lineHeight: 18 },
   contextTools: { gap: 5 },
   contextToolRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  contextToolTitle: { color: '#2d3a4d', fontSize: 12, fontWeight: '600' },
-  contextToolDetail: { color: '#73839a', fontSize: 11, flex: 1 },
+  contextToolTitle: { color: '#6d4428', fontSize: 12, fontWeight: '600' },
+  contextToolDetail: { color: '#9a7a62', fontSize: 11, flex: 1 },
   contextCopyBtn: {
     width: 22,
     height: 22,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eef3f8'
+    backgroundColor: '#f3e5d3'
   },
-  contextCopyText: { color: '#65758a', fontSize: 12, lineHeight: 14, fontWeight: '800' },
+  contextCopyText: { color: '#8b6040', fontSize: 12, lineHeight: 14, fontWeight: '800' },
   eventWrap: { width: '100%', alignItems: 'flex-start' },
   eventCard: {
     width: '96%',
@@ -6435,43 +7331,60 @@ const styles = StyleSheet.create({
   eventDetail: { color: '#667487', fontSize: 12, lineHeight: 18 },
   eventMeta: { color: '#667a94', fontSize: 11 },
   eventOutput: { color: '#4f5e72', fontSize: 12, lineHeight: 18 },
+  bashEventCard: {
+    borderColor: '#ead8bf',
+    backgroundColor: '#fff8ed'
+  },
+  bashEventDot: { width: 7, height: 7, borderRadius: 999, backgroundColor: '#c48b48' },
+  bashEventDotRun: { width: 7, height: 7, borderRadius: 999, backgroundColor: '#d47a34' },
+  bashEventTitle: { color: '#68411f' },
+  bashEventMode: { color: '#9a6a39' },
+  bashEventTime: { color: '#aa8a68' },
+  bashEventDetail: { color: '#7f6045' },
+  bashEventOutput: {
+    color: '#6e533c',
+    backgroundColor: '#f8ecd9',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
   writeEventCard: {
     width: '96%',
     maxWidth: '96%',
     borderRadius: 13,
     borderWidth: 1,
-    borderColor: '#e7edf4',
-    backgroundColor: '#ffffff',
+    borderColor: '#ead8bf',
+    backgroundColor: '#fff8ed',
     paddingVertical: 10,
     paddingHorizontal: 12,
     gap: 8
   },
   writeEventHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  writeEventDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#a8b7c8' },
-  writeEventDotRun: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#4f7aaf' },
-  writeEventTitle: { flexShrink: 1, color: '#2d4058', fontSize: 13, lineHeight: 18, fontWeight: '800', letterSpacing: 0.1 },
-  writeEventTime: { marginLeft: 'auto', color: '#9aa8b8', fontSize: 12, lineHeight: 17, fontWeight: '500' },
-  writeEventDetail: { color: '#5f7186', fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  writeEventDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#c48b48' },
+  writeEventDotRun: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#d47a34' },
+  writeEventTitle: { flexShrink: 1, color: '#68411f', fontSize: 13, lineHeight: 18, fontWeight: '800', letterSpacing: 0.1 },
+  writeEventTime: { marginLeft: 'auto', color: '#aa8a68', fontSize: 12, lineHeight: 17, fontWeight: '500' },
+  writeEventDetail: { color: '#7f6045', fontSize: 12, lineHeight: 17, fontWeight: '600' },
   writeEventSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
   writeEventAction: {
-    color: '#5f7f9e',
+    color: '#9a5f25',
     fontSize: 11,
     lineHeight: 15,
     fontWeight: '800',
-    backgroundColor: '#eef5fb',
+    backgroundColor: '#f4e2c8',
     borderRadius: 999,
     paddingHorizontal: 7,
     paddingVertical: 2,
     overflow: 'hidden'
   },
-  writeEventFile: { flex: 1, color: '#445a73', fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  writeEventFile: { flex: 1, color: '#6e4a2a', fontSize: 12, lineHeight: 17, fontWeight: '700' },
   writeEventAdd: { color: '#1f8a5b', fontSize: 12, lineHeight: 17, fontWeight: '800' },
   writeEventDel: { color: '#b65b5b', fontSize: 12, lineHeight: 17, fontWeight: '800' },
   writeEventOutput: {
-    color: '#536478',
+    color: '#6e533c',
     fontSize: 12,
     lineHeight: 18,
-    backgroundColor: '#f6f8fb',
+    backgroundColor: '#f8ecd9',
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 7
@@ -6604,7 +7517,7 @@ const styles = StyleSheet.create({
     maxWidth: '96%',
     borderRadius: 16,
     borderWidth: 0,
-    backgroundColor: '#f5f8fb',
+    backgroundColor: '#f3eee5',
     overflow: 'hidden',
     paddingVertical: 11,
     paddingHorizontal: 12,
@@ -6612,19 +7525,19 @@ const styles = StyleSheet.create({
   },
   thinkHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   thinkIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0, flex: 1 },
-  thinkSpark: { color: '#21aaa0', fontSize: 15, lineHeight: 18, fontWeight: '800' },
+  thinkSpark: { color: '#3a8f82', fontSize: 15, lineHeight: 18, fontWeight: '800' },
   thinkHeadMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  thinkTitle: { color: '#52627a', fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
-  thinkToggleText: { color: '#8190a3', fontSize: 11, fontWeight: '700' },
+  thinkTitle: { color: '#5d5345', fontSize: 12, fontWeight: '800', letterSpacing: 0.2, fontFamily: HANDWRITTEN_TEXT_FONT },
+  thinkToggleText: { color: '#8d826f', fontSize: 11, fontWeight: '700', fontFamily: HANDWRITTEN_TEXT_FONT },
   thinkExpandedHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  thinkExpandedTitle: { color: '#6f7d90', fontSize: 12, fontWeight: '700' },
-  thinkText: { color: '#5e6e84', fontSize: 13, lineHeight: 19 },
-  thinkCollapsed: { color: '#6f7f95', fontSize: 12, lineHeight: 18 },
+  thinkExpandedTitle: { color: '#7c766c', fontSize: 12, fontWeight: '700', fontFamily: HANDWRITTEN_TEXT_FONT },
+  thinkText: { color: '#6f6657', fontSize: 13, lineHeight: 19, fontFamily: HANDWRITTEN_TEXT_FONT },
+  thinkCollapsed: { color: '#7c766c', fontSize: 12, lineHeight: 18, fontFamily: HANDWRITTEN_TEXT_FONT },
   thinkPreviewLines: { gap: 5, paddingTop: 2 },
   thinkPreviewLineRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  thinkPreviewDot: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#c4cfdb' },
-  thinkPreviewDotLive: { backgroundColor: '#21aaa0', transform: [{ scale: 1.25 }] },
-  thinkPreviewLineText: { flex: 1, color: '#6c7c92', fontSize: 12, lineHeight: 17, fontWeight: '500' },
+  thinkPreviewDot: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#d8cec0' },
+  thinkPreviewDotLive: { backgroundColor: '#3a8f82', transform: [{ scale: 1.25 }] },
+  thinkPreviewLineText: { flex: 1, color: '#7c766c', fontSize: 12, lineHeight: 17, fontWeight: '500', fontFamily: HANDWRITTEN_TEXT_FONT },
   thinkFlowRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 11, paddingTop: 1 },
   thinkFlowIconShell: {
     width: 34,
@@ -6632,10 +7545,10 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#132338',
+    backgroundColor: '#24211d',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.16)',
-    shadowColor: '#14263f',
+    shadowColor: '#503c1e',
     shadowOpacity: 0.18,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 5 },
@@ -6651,23 +7564,23 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#9aa6b2',
     borderWidth: 2,
-    borderColor: '#f7f8fa'
+    borderColor: '#f8f5ee'
   },
-  thinkFlowStatusDotActive: { backgroundColor: '#34c759' },
+  thinkFlowStatusDotActive: { backgroundColor: '#3a8f82' },
   thinkFlowContent: { flex: 1, minWidth: 0, gap: 8 },
   thinkFlowDots: { flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 2 },
-  thinkFlowDot: { width: 5.5, height: 5.5, borderRadius: 999, backgroundColor: '#0a507d' },
-  thinkFlowDotActive: { backgroundColor: '#0a507d', opacity: 1, transform: [{ scale: 1.18 }] },
-  thinkFlowDotMid: { backgroundColor: '#21aaa0', opacity: 0.75 },
-  thinkFlowDotSoft: { backgroundColor: '#8fa2b7', opacity: 0.48 },
+  thinkFlowDot: { width: 5.5, height: 5.5, borderRadius: 999, backgroundColor: '#5d5345' },
+  thinkFlowDotActive: { backgroundColor: '#5d5345', opacity: 1, transform: [{ scale: 1.18 }] },
+  thinkFlowDotMid: { backgroundColor: '#3a8f82', opacity: 0.75 },
+  thinkFlowDotSoft: { backgroundColor: '#c9b99f', opacity: 0.58 },
   thinkFlowPill: {
     alignSelf: 'flex-start',
     maxWidth: '100%',
     minHeight: 36,
     borderRadius: 999,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fffdf7',
     borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.055)',
+    borderColor: 'rgba(65,54,38,0.08)',
     paddingLeft: 14,
     paddingRight: 12,
     flexDirection: 'row',
@@ -6675,7 +7588,7 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: 'center',
     overflow: 'hidden',
-    shadowColor: '#6d7f91',
+    shadowColor: '#503c1e',
     shadowOpacity: 0.07,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
@@ -6686,36 +7599,36 @@ const styles = StyleSheet.create({
     minWidth: 64,
     minHeight: 36,
     borderRadius: 999,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fffdf7',
     borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.055)',
+    borderColor: 'rgba(65,54,38,0.08)',
     paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
-    shadowColor: '#6d7f91',
+    shadowColor: '#503c1e',
     shadowOpacity: 0.07,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
     elevation: 1
   },
-  thinkFlowKicker: { color: '#21aaa0', fontSize: 10, lineHeight: 12, fontWeight: '800', letterSpacing: 0.6 },
-  thinkFlowLine: { flexShrink: 1, color: '#4d5b6a', fontSize: 13, lineHeight: 17, fontWeight: '600', letterSpacing: -0.1 },
+  thinkFlowKicker: { color: '#3a8f82', fontSize: 10, lineHeight: 12, fontWeight: '800', letterSpacing: 0.6, fontFamily: HANDWRITTEN_TEXT_FONT },
+  thinkFlowLine: { flexShrink: 1, color: '#5d5345', fontSize: 13, lineHeight: 17, fontWeight: '600', letterSpacing: -0.1, fontFamily: HANDWRITTEN_TEXT_FONT },
   thinkFlowSteps: { gap: 6, paddingLeft: 8 },
   thinkFlowStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  thinkFlowStepDot: { width: 4, height: 4, borderRadius: 999, backgroundColor: '#c3cbd4' },
-  thinkFlowStepDotLive: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#34c759' },
-  thinkFlowStepText: { flex: 1, color: '#8a96a4', fontSize: 12, lineHeight: 16, fontWeight: '500' },
-  mdText: { fontSize: 15, lineHeight: 20 },
+  thinkFlowStepDot: { width: 4, height: 4, borderRadius: 999, backgroundColor: '#d8cec0' },
+  thinkFlowStepDotLive: { width: 5, height: 5, borderRadius: 999, backgroundColor: '#3a8f82' },
+  thinkFlowStepText: { flex: 1, color: '#8d826f', fontSize: 12, lineHeight: 16, fontWeight: '500', fontFamily: HANDWRITTEN_TEXT_FONT },
+  mdText: { fontSize: 15, lineHeight: 20, fontFamily: HANDWRITTEN_TEXT_FONT },
   mdInlineRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: 0 },
-  mdSegText: { fontSize: 15, lineHeight: 20 },
-  mdHeading: { fontSize: 16, lineHeight: 22, fontWeight: '700', marginBottom: 4 },
+  mdSegText: { fontSize: 15, lineHeight: 20, fontFamily: HANDWRITTEN_TEXT_FONT },
+  mdHeading: { fontSize: 16, lineHeight: 22, fontWeight: '700', marginBottom: 4, fontFamily: HANDWRITTEN_TEXT_FONT },
   mdInlineCode: { borderRadius: 4, paddingHorizontal: 4, fontSize: 13 },
-  mdCodeBlock: { borderRadius: 8, backgroundColor: '#eef3f8', padding: 8 },
+  mdCodeBlock: { borderRadius: 8, backgroundColor: '#ece8df', padding: 8 },
   mdCodeText: { fontSize: 12, lineHeight: 18 },
   mdBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
-  mdBulletDot: { fontSize: 14, lineHeight: 20 },
+  mdBulletDot: { fontSize: 14, lineHeight: 20, fontFamily: HANDWRITTEN_TEXT_FONT },
   thinkingWrap: { alignItems: 'flex-start' },
   thinkingStickyWrap: { alignItems: 'flex-start', paddingBottom: 6 },
   thinkingCard: {
@@ -6724,15 +7637,15 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e7ebf2',
-    backgroundColor: '#ffffff',
+    borderColor: '#ddd4c5',
+    backgroundColor: '#fffdf7',
     paddingVertical: 10,
     paddingHorizontal: 12
   },
   thinkingDots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   thinkingDot: { width: 6, height: 6, borderRadius: 999, backgroundColor: '#c7d0de' },
   thinkingDotOn: { backgroundColor: '#6b7f98' },
-  thinkingLabel: { color: '#667a94', fontSize: 12, fontWeight: '500' },
+  thinkingLabel: { color: '#667a94', fontSize: 12, fontWeight: '500', fontFamily: HANDWRITTEN_TEXT_FONT },
   bubbleUserWrap: { width: '100%', alignItems: 'flex-end' },
   bubbleAssistantWrap: { width: '100%', alignItems: 'flex-start' },
   bubbleUser: {
@@ -6870,7 +7783,8 @@ const styles = StyleSheet.create({
   },
   bubbleContent: { width: '100%', flexShrink: 1, minWidth: 0 },
   markdownBlock: { width: '100%', flexShrink: 1, minWidth: 0 },
-  bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22 },
+  streamdownTextContainer: { width: '100%', flexShrink: 1, minWidth: 0 },
+  bubbleUserText: { color: '#f5f7fb', fontSize: 15, lineHeight: 22, fontFamily: HANDWRITTEN_TEXT_FONT },
   bubbleAssistantText: { color: '#2f3948', lineHeight: 20 },
 
   todoDockWrap: {
@@ -6886,59 +7800,61 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'center',
     paddingLeft: 18,
-    backgroundColor: '#edf6f2'
+    backgroundColor: '#eef5ee'
   },
-  todoSwipeHintText: { color: '#4f8a6b', fontSize: 12, lineHeight: 16, fontWeight: '800' },
+  todoSwipeHintText: { color: '#3a8f82', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   questionDockWrap: {
     marginHorizontal: 12,
     marginBottom: 8
   },
   todoDockCompact: {
     borderRadius: 22,
-    borderWidth: 0,
-    backgroundColor: '#fbfdff',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
     paddingVertical: 12,
     paddingHorizontal: 14,
     gap: 10,
-    shadowColor: '#66809c',
-    shadowOpacity: 0.16,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.08,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 3
   },
   todoDock: {
     borderRadius: 22,
-    borderWidth: 0,
-    backgroundColor: '#fbfdff',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
     paddingVertical: 12,
     paddingHorizontal: 14,
     gap: 10,
-    shadowColor: '#66809c',
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.07,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 2
   },
 
   inputDock: {
-    marginHorizontal: 12,
-    marginBottom: 10,
-    borderRadius: 20,
+    marginHorizontal: 14,
+    marginBottom: 12,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#e0e5ec',
-    backgroundColor: '#ffffff',
-    minHeight: 58,
-    paddingLeft: 12,
-    paddingRight: 10,
-    paddingTop: 8,
-    paddingBottom: 8,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
+    minHeight: 104,
+    paddingLeft: 16,
+    paddingRight: 14,
+    paddingTop: 15,
+    paddingBottom: 12,
     flexDirection: 'column',
     alignItems: 'stretch',
-    gap: 6,
-    shadowColor: '#0f172a',
+    gap: 14,
+    shadowColor: '#503c1e',
     shadowOpacity: 0.08,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
     elevation: 4,
     zIndex: 3
   },
@@ -6946,19 +7862,62 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     top: 58,
     bottom: 86,
-    backgroundColor: 'rgba(248,250,252,0.55)',
+    backgroundColor: 'rgba(248,245,238,0.62)',
     zIndex: 2
   },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  inputToolbar: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  inputToolbarSpacer: { flex: 1 },
+  autoToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingLeft: 10,
+    paddingRight: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#f1eadf',
+    borderWidth: 1,
+    borderColor: '#ded6ca'
+  },
+  autoToggleActive: {
+    backgroundColor: '#e7f2ee',
+    borderColor: '#c8ded7',
+    shadowColor: '#3a8f82',
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2
+  },
+  autoToggleAura: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fffdf7',
+    borderWidth: 1.5,
+    borderColor: '#d8cec0'
+  },
+  autoToggleText: { color: '#7c766c', fontSize: 13, fontWeight: '700', letterSpacing: 0.2 },
+  autoToggleTextActive: { color: '#2f7f74' },
+  autoToggleKnob: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: '#a69d8e'
+  },
+  autoToggleKnobActive: { backgroundColor: '#3a8f82' },
   inputMain: {
-    flex: 1,
-    minHeight: 38,
+    minHeight: 34,
     maxHeight: 120,
     paddingTop: 0,
     paddingBottom: 0,
-    paddingHorizontal: 2,
-    color: '#273041',
-    textAlignVertical: 'center',
+    paddingHorizontal: 10,
+    color: '#24211d',
+    fontSize: 17,
+    lineHeight: 22,
+    textAlignVertical: 'top',
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
   },
   actionBtnStop: {
@@ -6967,27 +7926,42 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eceff3'
+    backgroundColor: '#ece8df'
   },
   actionBtnSend: {
-    width: 36,
-    height: 36,
-    borderRadius: 11,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1f2937'
+    backgroundColor: '#24211d'
   },
   actionBtnDisabled: {
-    width: 36,
-    height: 36,
-    borderRadius: 11,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eef2f7',
-    borderWidth: 1,
-    borderColor: '#dbe3ee'
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent'
   },
-  actionBtnStopTxt: { color: '#5c6779', fontSize: 12, fontWeight: '700' },
+  accessPill: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  accessPillText: { color: '#d46b25', fontSize: 15, fontWeight: '700' },
+  modelMiniPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#f1eadf',
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: 200
+  },
+  modelMiniText: { color: '#3a352e', fontSize: 14, fontWeight: '700', lineHeight: 18, flexShrink: 1 },
+  actionBtnStopTxt: { color: '#7c766c', fontSize: 12, fontWeight: '700' },
   actionBtnSendTxt: { color: '#fff', fontSize: 18, fontWeight: '700' },
   actionBtnGhost: {
     width: 36,
@@ -6995,11 +7969,11 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f1f5f9',
+    backgroundColor: '#f4efe6',
     borderWidth: 1,
-    borderColor: '#e2e8f0'
+    borderColor: '#ddd4c5'
   },
-  actionBtnGhostTxt: { color: '#1f2937', fontSize: 22, lineHeight: 22, fontWeight: '500' },
+  actionBtnGhostTxt: { color: '#24211d', fontSize: 22, lineHeight: 22, fontWeight: '500' },
   slashPopover: {
     marginTop: 8,
     backgroundColor: '#ffffff',
@@ -7082,14 +8056,14 @@ const styles = StyleSheet.create({
   },
   imagePickBtnTxt: { color: '#334155', fontSize: 18, fontWeight: '600', lineHeight: 20 },
   cameraBtn: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f1f5f9',
-    borderWidth: 1,
-    borderColor: '#e2e8f0'
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent'
   },
   cameraBtnTxt: { fontSize: 16 },
   attachmentPanel: {
@@ -7161,34 +8135,77 @@ const styles = StyleSheet.create({
 
   drawerPanelLeft: {
     flex: 1,
-    backgroundColor: '#fbfdff',
-    borderRightWidth: 1,
-    borderColor: '#dde6f2',
-    paddingTop: 54,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 8, height: 0 },
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
-    elevation: 8
+    backgroundColor: '#f7f3ea',
+    paddingTop: 38,
+    paddingHorizontal: 18,
+    paddingBottom: 22
   },
   drawerPanelRight: {
     flex: 1,
-    backgroundColor: '#fbfdff',
-    borderLeftWidth: 1,
-    borderColor: '#dde6f2',
-    paddingTop: 54,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: -8, height: 0 },
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
-    elevation: 8
+    backgroundColor: '#f7f3ea',
+    paddingTop: 38,
+    paddingHorizontal: 18,
+    paddingBottom: 22
   },
-  drawerHead: { gap: 10, marginBottom: 12 },
+  leftHandText: { fontFamily: HANDWRITTEN_TEXT_FONT },
+  rightHandText: { fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerHead: { gap: 8, marginBottom: 18, paddingHorizontal: 14 },
   drawerHeadTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+  notebookPageTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  notebookHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginLeft: 'auto' },
+  themeTextBtn: { marginLeft: 'auto', paddingHorizontal: 2, paddingVertical: 6 },
+  notebookGhostBtn: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(38,35,29,0.16)',
+    backgroundColor: 'rgba(255,250,242,0.64)',
+    paddingHorizontal: 12,
+    paddingVertical: 7
+  },
+  notebookGhostBtnText: { color: '#4b4337', fontSize: 12, fontWeight: '800', lineHeight: 15, fontFamily: HANDWRITTEN_TEXT_FONT },
+  themeSwitchBtn: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  themeSwitchText: { fontSize: 11, fontWeight: '800', lineHeight: 14 },
+  drawerEyebrow: { color: '#958b78', fontSize: 10, lineHeight: 13, fontWeight: '800', letterSpacing: 1.4, textTransform: 'uppercase', fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerHeaderMetaText: { fontSize: 11, lineHeight: 15, fontWeight: '600', marginTop: 1, fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerSectionLabel: { color: '#8b806d', fontSize: 12, fontWeight: '800', letterSpacing: 0.5, marginBottom: 9, marginTop: 8 },
+  drawerAgentSegment: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 4,
+    borderRadius: 999,
+    backgroundColor: '#f3f5f8',
+    gap: 6,
+    alignSelf: 'stretch'
+  },
+  drawerAgentChip: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  drawerAgentChipActive: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  drawerAgentChipText: { color: '#7c8798', fontSize: 14, fontWeight: '700' },
+  drawerAgentChipTextActive: { color: '#182131' },
   drawerLogoutBtn: {
     width: 32,
     height: 32,
@@ -7208,83 +8225,382 @@ const styles = StyleSheet.create({
     borderColor: '#d5e1f0',
     color: '#5a6b82',
     fontSize: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    lineHeight: 15,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
     overflow: 'hidden'
   },
-  drawerModelStatus: { color: '#6a788d', fontSize: 12, lineHeight: 19 },
+  drawerModelStatus: { color: '#6a788d', fontSize: 13, lineHeight: 20, marginBottom: 2 },
+  drawerModelRowTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  drawerModelCheckBadge: {
+    borderRadius: 999,
+    backgroundColor: '#d9e9ff',
+    paddingHorizontal: 10,
+    paddingVertical: 5
+  },
+  drawerModelCheckText: { color: '#24538a', fontSize: 11, fontWeight: '800' },
   drawerModelListItem: {
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#d7e2ef',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    gap: 6
-  },
-  drawerModelListItemActive: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#bad2f3',
-    backgroundColor: '#ecf4ff',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    gap: 6
-  },
-  drawerModelListTitle: { color: '#27384e', fontSize: 14, fontWeight: '600' },
-  drawerModelListTitleActive: { color: '#204b82', fontSize: 14, fontWeight: '700' },
-  drawerModelListSub: { color: '#74839a', fontSize: 12 },
-  drawerModelListSubActive: { color: '#4a6891', fontSize: 12 },
-  drawerTitle: { color: '#1f2734', fontWeight: '700', fontSize: 24, letterSpacing: 0.2 },
-  drawerNewBtn: {
-    borderRadius: 16,
-    backgroundColor: '#edf2f8',
-    borderWidth: 1,
-    borderColor: '#d9e1ed',
-    paddingVertical: 13,
-    alignItems: 'center'
-  },
-  drawerNewTxt: { color: '#2d3848', fontWeight: '700', fontSize: 13 },
-  drawerScroll: { flex: 1 },
-  drawerList: { paddingBottom: 42, paddingTop: 4 },
-  drawerItemGap: { marginBottom: 8 },
-  drawerMoreBtn: { alignItems: 'center', paddingVertical: 12, marginTop: 6 },
-  drawerMoreTxt: { color: '#607287', fontSize: 12, letterSpacing: 0.3 },
-  drawerSessionSearch: {
-    height: 42,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#d4ddea',
+    borderColor: '#e4ebf3',
     backgroundColor: '#ffffff',
     paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 9,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.035,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  drawerModelListItemActive: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#bfd6f5',
+    backgroundColor: '#eef5ff',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 9,
+    shadowColor: '#7ba7df',
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2
+  },
+  drawerModelListTitle: { color: '#27384e', fontSize: 15, fontWeight: '700' },
+  drawerModelListTitleActive: { color: '#1d4d86', fontSize: 15, fontWeight: '800' },
+  drawerModelListSub: { color: '#74839a', fontSize: 12, lineHeight: 18 },
+  drawerModelListSubActive: { color: '#4a6891', fontSize: 12, lineHeight: 18 },
+  drawerProviderPill: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#f4f7fb'
+  },
+  drawerProviderPillActive: { backgroundColor: '#dfeafc' },
+  drawerProviderPillText: { color: '#6d7b90', fontSize: 11, fontWeight: '700' },
+  drawerProviderPillTextActive: { color: '#315b90' },
+  drawerTitle: { color: '#26231d', fontWeight: '800', fontSize: 34, lineHeight: 38, letterSpacing: -1.2 },
+  drawerNewBtn: {
+    borderRadius: 999,
+    backgroundColor: '#26231d',
+    borderWidth: 1,
+    borderColor: '#26231d',
+    paddingVertical: 7,
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12
+  },
+  drawerNewTxt: { color: '#fbfaf6', fontWeight: '800', fontSize: 12, lineHeight: 15 },
+  drawerScroll: { flex: 1 },
+  drawerList: { paddingBottom: 28, paddingTop: 2 },
+  leftActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  leftRoundAction: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fffdf7',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.08)',
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2
+  },
+  leftRoundActionSoft: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#24211d',
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3
+  },
+  leftStatusPill: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start' },
+  leftStatusDotOn: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#22c78a' },
+  leftStatusDotOff: { width: 8, height: 8, borderRadius: 999, backgroundColor: '#c9b99f' },
+  leftStatusText: { fontSize: 15, lineHeight: 20, fontWeight: '600', marginTop: 0, fontFamily: HANDWRITTEN_TEXT_FONT },
+  leftSectionBlock: { marginTop: 0, marginBottom: 16, paddingHorizontal: 14 },
+  leftSectionLabel: { fontSize: 12, lineHeight: 16, fontWeight: '800', marginBottom: 10, letterSpacing: 0.4, textTransform: 'uppercase', fontFamily: HANDWRITTEN_TEXT_FONT },
+  leftProjectRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  leftProjectMain: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  leftProjectIconBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f0c15b',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.12)'
+  },
+  leftProjectTextBlock: { flex: 1, justifyContent: 'center', gap: 2 },
+  leftProjectTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, minWidth: 0 },
+  leftProjectCompose: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,253,247,0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.08)'
+  },
+  leftProjectChevron: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  directoryPaper: {
+    borderRadius: 28,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingTop: 17,
+    paddingBottom: 20,
+    shadowColor: '#4c4438',
+    shadowOpacity: 0.04,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 1
+  },
+  directoryPaperTopRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14, gap: 14 },
+  directoryPaperHeading: { flex: 1, gap: 3 },
+  directoryPaperLabel: { fontSize: 13, lineHeight: 17, fontWeight: '800', letterSpacing: 0.2 },
+  directoryPaperMeta: { fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  directorySectionCaption: { fontSize: 11, lineHeight: 14, fontWeight: '700', marginBottom: 8, letterSpacing: 0.3 },
+  workspaceSwitcherRow: {
+    minHeight: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12
+  },
+  workspaceSwitcherCopy: { flex: 1, gap: 2 },
+  workspaceSwitcherTitle: { fontSize: 18, lineHeight: 23, fontWeight: '700', letterSpacing: -0.05, fontFamily: HANDWRITTEN_TEXT_FONT },
+  workspaceSwitcherSub: { fontSize: 11, lineHeight: 15, fontWeight: '500', fontFamily: HANDWRITTEN_TEXT_FONT },
+  workspaceSwitcherChevron: { fontSize: 18, lineHeight: 18, fontWeight: '600' },
+  workspaceSwitcherSheet: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 6,
+    marginBottom: 12
+  },
+  workspaceSwitcherItem: {
+    minHeight: 38,
+    borderRadius: 12,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  workspaceSwitcherItemTitle: { fontSize: 14, lineHeight: 19, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  workspaceSwitcherSheetInline: {
+    borderWidth: 1,
+    borderRadius: 14,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 4
+  },
+  workspaceSwitcherInlineItem: { minHeight: 32, justifyContent: 'center' },
+  directoryGroup: { marginBottom: 18 },
+  directoryGroupPlain: { gap: 4 },
+  directoryWorkspaceRow: {
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 2,
+    paddingBottom: 4
+  },
+  directoryWorkspaceTitle: { fontSize: 16, lineHeight: 21, fontWeight: '800', letterSpacing: -0.15 },
+  directoryActiveDot: { width: 5, height: 5, borderRadius: 999, marginTop: 1 },
+  directorySessionRow: {
+    minHeight: 34,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    paddingHorizontal: 2,
+    paddingVertical: 5
+  },
+  directorySessionActive: {
+    minHeight: 36,
+    borderRadius: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(38,35,29,0.06)'
+  },
+  directorySessionActiveSlate: {
+    shadowColor: '#9aa5b1',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  directoryBullet: { width: 6, height: 6, borderRadius: 999, opacity: 0.72 },
+  directoryBulletSpacer: { width: 6, height: 6 },
+  directorySessionTitle: { flex: 1, fontSize: 14, lineHeight: 19, fontWeight: '600', letterSpacing: -0.03, fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerSessionSearchMinimal: {
+    flex: 1,
+    height: 38,
+    paddingHorizontal: 0,
+    fontSize: 14,
+    fontFamily: HANDWRITTEN_TEXT_FONT,
+    color: '#24211d',
+    borderBottomWidth: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
+  },
+  leftSearchShell: {
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.08)',
+    backgroundColor: '#f8f4ec',
+    paddingHorizontal: 12,
+    marginHorizontal: 14,
     marginBottom: 10,
-    color: '#243247',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  directorySessionPlainRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 0,
+    minHeight: 62,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 1,
+    borderColor: 'rgba(65,54,38,0.06)',
+    position: 'relative'
+  },
+  directorySessionPlainRowActive: {
+    backgroundColor: 'rgba(255,253,247,0.58)',
+    borderRadius: 14,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    paddingHorizontal: 14
+  },
+  leftSessionRail: { position: 'absolute', left: 0, top: 12, width: 3, height: 36, borderRadius: 999, backgroundColor: 'transparent' },
+  leftSessionRailActive: { position: 'absolute', left: 0, top: 12, width: 3, height: 36, borderRadius: 999, backgroundColor: '#24211d' },
+  directorySessionPlainBody: { flex: 1, gap: 4 },
+  directorySessionPlainHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  directorySessionPlainTitle: { flex: 1, fontSize: 16, lineHeight: 21, fontWeight: '600', letterSpacing: -0.05, fontFamily: HANDWRITTEN_TEXT_FONT },
+  directorySessionPlainTitleActive: { flex: 1, fontSize: 16, lineHeight: 21, fontWeight: '800', letterSpacing: -0.06, fontFamily: HANDWRITTEN_TEXT_FONT },
+  directorySessionPlainTime: { fontSize: 11, lineHeight: 15, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  directorySessionPlainMeta: { fontSize: 12, lineHeight: 17, fontWeight: '500', fontFamily: HANDWRITTEN_TEXT_FONT },
+  workspaceSectionCard: {
+    borderRadius: 2,
+    borderLeftWidth: 3,
+    borderColor: '#26231d',
+    backgroundColor: 'rgba(255,252,245,0.72)',
+    paddingVertical: 14,
+    paddingLeft: 14,
+    paddingRight: 12,
+    gap: 12,
+    marginBottom: 18
+  },
+  workspaceCurrentRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  workspaceCurrentBadge: {
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    backgroundColor: '#26231d',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  workspaceCurrentBadgeText: { color: '#ffffff', fontSize: 15, fontWeight: '800' },
+  workspaceCurrentCopy: { flex: 1, gap: 2 },
+  workspaceCurrentTitle: { color: '#26231d', fontSize: 16, fontWeight: '800' },
+  workspaceCurrentPath: { color: '#8d826f', fontSize: 11 },
+  workspaceMiniList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  workspaceMiniItem: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#ded2be',
+    backgroundColor: '#fffaf0',
+    paddingHorizontal: 12,
+    paddingVertical: 7
+  },
+  workspaceMiniItemActive: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#26231d',
+    backgroundColor: '#26231d',
+    paddingHorizontal: 12,
+    paddingVertical: 7
+  },
+  workspaceMiniItemText: { color: '#5f5749', fontSize: 12, fontWeight: '700' },
+  workspaceMiniItemTextActive: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
+  drawerItemGap: { marginBottom: 8 },
+  drawerMoreBtn: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginTop: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,253,247,0.50)',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.08)'
+  },
+  drawerMoreTxt: { color: '#7c766c', fontSize: 12, fontWeight: '700', letterSpacing: 0.2, fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerSessionSearch: {
+    height: 36,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#ddd2c0',
+    backgroundColor: '#fffaf2',
+    paddingHorizontal: 13,
+    marginBottom: 12,
+    color: '#26231d',
+    fontSize: 13,
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
   },
   drawerItem: {
-    borderRadius: 16,
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#dbe5f0',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+    borderBottomWidth: 1,
+    borderColor: 'rgba(38,35,29,0.12)',
+    paddingHorizontal: 2,
+    paddingVertical: 14,
     gap: 6,
-    minHeight: 72
+    minHeight: 68
   },
   drawerItemActive: {
-    borderRadius: 16,
-    backgroundColor: '#eef5ff',
+    borderRadius: 14,
+    backgroundColor: '#fffaf2',
     borderWidth: 1,
-    borderColor: '#bfd3f1',
+    borderColor: '#d6c7ad',
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingVertical: 12,
     gap: 6,
     minHeight: 72
   },
   drawerItemHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  drawerItemTitle: { color: '#202834', fontWeight: '700', fontSize: 14 },
-  drawerItemTime: { color: '#8392a8', fontSize: 11 },
-  drawerItemPreview: { color: '#66758a', fontSize: 12, lineHeight: 18 },
+  drawerItemTitle: { color: '#26231d', fontWeight: '800', fontSize: 15 },
+  drawerItemTime: { color: '#9a907f', fontSize: 11 },
+  drawerItemPreview: { color: '#6f6657', fontSize: 12, lineHeight: 18 },
   drawerEmpty: { color: '#7d8897', marginTop: 14, fontSize: 12 },
 
   discoverWrap: {
@@ -7894,5 +9210,165 @@ const styles = StyleSheet.create({
     backgroundColor: '#e8edf3'
   },
   btnSoftText: { color: '#39485d', fontWeight: '600' },
-  scannerStatusText: { color: '#4d5e76', fontSize: 13, lineHeight: 18 }
+  scannerStatusText: { color: '#4d5e76', fontSize: 13, lineHeight: 18 },
+
+  extensionSectionCard: {
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,253,247,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    marginBottom: 14,
+    padding: 15,
+    gap: 13
+  },
+  extensionSectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    justifyContent: 'flex-start'
+  },
+  extensionHeroCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e8edf4',
+    marginBottom: 10,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.04,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  extensionHeroCardAlt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e8edf4',
+    marginBottom: 10,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.04,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  extensionHeroOrb: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
+    backgroundColor: '#f0e9dc',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  extensionHeroOrbAlt: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
+    backgroundColor: '#f0e9dc',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  extensionHeroOrbText: { color: '#3b332b', fontSize: 16, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionHeroCopy: { flex: 1, gap: 3 },
+  extensionHeroTitle: { color: '#25231d', fontSize: 16, fontWeight: '900', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionHeroSub: { color: '#7c766c', fontSize: 12, fontWeight: '700', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionSectionGap: { height: 16 },
+  extensionCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: 12,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,253,247,0.58)',
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.08)',
+    marginBottom: 8,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.02,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 0
+  },
+  extensionCardIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#f4eadb',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  extensionCardIconMcp: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#f4eadb',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  extensionCardMain: { flex: 1, gap: 2, paddingTop: 1 },
+  extensionCardTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  extensionCardTitle: { color: '#25231d', fontSize: 13, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionCardSub: { color: '#7c766c', fontSize: 11, lineHeight: 16, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionStatePill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#f0e9dc',
+    color: '#5d5345',
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: HANDWRITTEN_TEXT_FONT,
+    overflow: 'hidden'
+  },
+
+  composerPickerOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 60, justifyContent: 'flex-end' },
+  composerPickerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(36,33,29,0.28)' },
+  composerPickerSheet: {
+    backgroundColor: '#f7f3ea',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 34,
+    maxHeight: '80%',
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.14,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: -8 },
+    elevation: 10
+  },
+  composerPickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  composerPickerTitle: { color: '#24211d', fontSize: 22, lineHeight: 28, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerCloseBtn: { width: 32, height: 32, borderRadius: 999, backgroundColor: '#ece8df', alignItems: 'center', justifyContent: 'center' },
+  composerPickerSegment: { flexDirection: 'row', padding: 4, borderRadius: 999, backgroundColor: '#f3f5f8', gap: 6, marginBottom: 16 },
+  composerPickerChip: { flex: 1, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  composerPickerChipActive: { flex: 1, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, backgroundColor: '#ffffff', shadowColor: '#0f172a', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 2, alignItems: 'center', justifyContent: 'center' },
+  composerPickerChipText: { color: '#7c8798', fontSize: 14, fontWeight: '700' },
+  composerPickerChipTextActive: { color: '#182131' },
+  composerPickerList: { maxHeight: 400 },
+  composerPickerItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,253,247,0.62)', borderWidth: 1, borderColor: 'rgba(65,54,38,0.08)', marginBottom: 8 },
+  composerPickerItemActive: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 16, backgroundColor: '#f0e9dc', borderWidth: 1, borderColor: 'rgba(65,54,38,0.16)', marginBottom: 8 },
+  composerPickerItemMain: { flex: 1, gap: 4 },
+  composerPickerItemTitle: { color: '#24211d', fontSize: 15, lineHeight: 20, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerItemTitleActive: { color: '#24211d', fontSize: 15, lineHeight: 20, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerItemSub: { color: '#7c766c', fontSize: 12, lineHeight: 16, fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerCheck: { width: 28, height: 28, borderRadius: 999, backgroundColor: '#ece8df', alignItems: 'center', justifyContent: 'center' },
+  composerPickerSection: { marginBottom: 8 },
+  composerPickerSectionTitle: { color: '#9a9182', fontSize: 12, fontWeight: '800', marginBottom: 8, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 0.5, fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 14, borderRadius: 14, backgroundColor: 'rgba(255,253,247,0.34)', marginBottom: 6 },
+  composerPickerRowActive: { backgroundColor: '#f0e9dc' },
+  composerPickerRowText: { color: '#5d5345', fontSize: 16, lineHeight: 21, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerRowTextActive: { color: '#24211d', fontWeight: '800' },
+  composerPickerDivider: { height: 1, backgroundColor: 'rgba(65,54,38,0.10)', marginVertical: 8 },
+  composerPickerSwitch: { width: 48, height: 28, borderRadius: 999, backgroundColor: '#ece8df', padding: 3, justifyContent: 'center' },
+  composerPickerSwitchActive: { backgroundColor: '#d8cec0' },
+  composerPickerSwitchThumb: { width: 22, height: 22, borderRadius: 999, backgroundColor: '#fffdf7', shadowColor: '#503c1e', shadowOpacity: 0.1, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
+  composerPickerSwitchThumbActive: { alignSelf: 'flex-end' }
 });

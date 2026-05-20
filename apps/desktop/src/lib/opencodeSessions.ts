@@ -49,6 +49,7 @@ export type OpencodeMessageWindowCacheEntry = {
   limit: number;
   mapped: OpencodeChatMessage[];
   turnCount: number;
+  nextCursor?: string;
   hasMore: boolean;
   fetchedAt: number;
 };
@@ -65,14 +66,24 @@ export type OpencodeMessagePageCacheEntry = {
 
 const OPENCODE_SESSION_TITLE_MAX = 42;
 
+function compactSessionTitleText(input?: string): string {
+  return String(input || "").replace(/\s+/g, " ").trim();
+}
+
+export function clipOpencodeSessionTitle(input?: string): string {
+  const trimmed = compactSessionTitleText(input);
+  if (!trimmed) return "";
+  return trimmed.length > OPENCODE_SESSION_TITLE_MAX ? `${trimmed.slice(0, OPENCODE_SESSION_TITLE_MAX - 1)}…` : trimmed;
+}
+
 function makeSessionId(): string {
   return Math.random().toString(16).slice(2, 14);
 }
 
 export function toOpencodeSessionTitle(prompt?: string, indexHint?: number): string {
-  const trimmed = (prompt || "").replace(/\s+/g, " ").trim();
-  if (!trimmed) return `New Session ${indexHint ?? ""}`.trim();
-  return trimmed.length > OPENCODE_SESSION_TITLE_MAX ? `${trimmed.slice(0, OPENCODE_SESSION_TITLE_MAX - 1)}…` : trimmed;
+  const clipped = clipOpencodeSessionTitle(prompt);
+  if (!clipped) return `New Session ${indexHint ?? ""}`.trim();
+  return clipped;
 }
 
 export function newOpencodeSession(seedPrompt?: string, indexHint?: number): OpencodeChatSession {
@@ -92,7 +103,7 @@ export function newOpencodeSession(seedPrompt?: string, indexHint?: number): Ope
 export function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?: number): OpencodeChatSession {
   return {
     id: summary.id,
-    title: summary.title || `Session ${indexHint ?? ""}`.trim(),
+    title: toOpencodeSessionTitle(summary.title || "", indexHint),
     createdAt: summary.createdAt || Date.now(),
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
     messages: [],

@@ -2736,6 +2736,19 @@ pub fn list_opencode_agents(repo_path: &str) -> Result<Value, String> {
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_opencode_commands(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    with_service_base(repo_path, |base| {
+        let url = format!(
+            "{base}/command?directory={}",
+            urlencoding::encode(repo_path)
+        );
+        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 12)?;
+        serde_json::from_str::<Value>(&raw).map_err(|e| format!("parse /command failed: {e}"))
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn list_opencode_skills(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
@@ -3079,6 +3092,7 @@ pub fn list_opencode_mcp_status(repo_path: &str) -> Result<Value, String> {
         let Some(mcp) = cfg
             .as_ref()
             .and_then(|v| v.get("mcp"))
+            .or_else(|| cfg.as_ref().and_then(|v| v.get("mcpServers")))
             .and_then(|v| v.as_object())
         else {
             return;
@@ -3640,8 +3654,20 @@ pub fn set_opencode_server_current_model(repo_path: &str, model: &str) -> Result
         return Err("model must not be empty".to_string());
     }
     with_service_base(repo_path, |base| {
-        // OpenCode behavior: current model lives under /config (not /global/config).
-        let body = serde_json::json!({ "model": m }).to_string();
+        // /config PATCH validates the full config object, so merge into the current document first.
+        let mut merged = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/config").as_str(),
+            None,
+            15,
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+        merge_json(&mut merged, serde_json::json!({ "model": m }));
+        let body = serde_json::to_string(&merged)
+            .map_err(|e| format!("serialize /config patch failed: {e}"))?;
         let raw = run_curl_json(
             repo_path,
             "PATCH",
@@ -3855,7 +3881,19 @@ pub fn set_opencode_model_config(
     }
     let model_full = model.trim().to_string();
     with_service_base(repo_path, |base| {
-        let body = serde_json::to_string(&serde_json::json!({ "model": model_full }))
+        // /global/config PATCH also validates the full config object.
+        let mut merged = run_curl_json(
+            repo_path,
+            "GET",
+            format!("{base}/global/config").as_str(),
+            None,
+            15,
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+        merge_json(&mut merged, serde_json::json!({ "model": model_full }));
+        let body = serde_json::to_string(&merged)
             .map_err(|e| format!("serialize config patch failed: {e}"))?;
         let _ = run_curl_json(
             repo_path,

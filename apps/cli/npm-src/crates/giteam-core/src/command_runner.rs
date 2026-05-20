@@ -4,11 +4,13 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 20;
 const MAX_STDERR_CHARS: usize = 4000;
+static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 const EXTRA_BIN_DIRS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -17,6 +19,16 @@ const EXTRA_BIN_DIRS: &[&str] = &[
     "/usr/sbin",
     "/sbin",
 ];
+
+fn command_runner_debug_enabled() -> bool {
+    matches!(
+        std::env::var("GITEAM_TRACE_COMMAND_RUNNER")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
 
 fn trim_stderr(s: &str) -> String {
     if s.len() <= MAX_STDERR_CHARS {
@@ -96,6 +108,18 @@ fn shell_quote(arg: &str) -> String {
     format!("'{escaped}'")
 }
 
+fn make_temp_log_path(kind: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TEMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "giteam-{kind}-{}-{stamp}-{seq}.log",
+        std::process::id()
+    ))
+}
+
 pub fn run_and_capture_in_dir<S: AsRef<OsStr>>(
     program: &str,
     args: &[S],
@@ -117,15 +141,13 @@ pub fn run_and_capture_in_dir_with_timeout<S: AsRef<OsStr>>(
         .map(|a| a.as_ref().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(" ");
-    eprintln!("[giteam] exec cwd={} cmd={} {}", repo_path, program, rendered_args);
+    if command_runner_debug_enabled() {
+        eprintln!("[giteam] exec cwd={} cmd={} {}", repo_path, program, rendered_args);
+    }
 
     let now = std::time::Instant::now();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let stdout_path = std::env::temp_dir().join(format!("giteam-stdout-{}-{}.log", std::process::id(), stamp));
-    let stderr_path = std::env::temp_dir().join(format!("giteam-stderr-{}-{}.log", std::process::id(), stamp));
+    let stdout_path = make_temp_log_path("stdout");
+    let stderr_path = make_temp_log_path("stderr");
     let stdout_file = File::create(&stdout_path).map_err(|e| format!("failed creating stdout temp file: {e}"))?;
     let stderr_file = File::create(&stderr_path).map_err(|e| format!("failed creating stderr temp file: {e}"))?;
 
@@ -171,13 +193,15 @@ pub fn run_and_capture_in_dir_with_timeout<S: AsRef<OsStr>>(
     let _ = fs::remove_file(&stdout_path);
     let _ = fs::remove_file(&stderr_path);
 
-    eprintln!(
-        "[giteam] done code={:?} elapsed_ms={} stdout_chars={} stderr_chars={}",
-        status.code(),
-        now.elapsed().as_millis(),
-        stdout.len(),
-        stderr.len()
-    );
+    if command_runner_debug_enabled() {
+        eprintln!(
+            "[giteam] done code={:?} elapsed_ms={} stdout_chars={} stderr_chars={}",
+            status.code(),
+            now.elapsed().as_millis(),
+            stdout.len(),
+            stderr.len()
+        );
+    }
 
     if status.success() {
         return Ok(stdout);

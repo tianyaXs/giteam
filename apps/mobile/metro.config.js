@@ -1,11 +1,12 @@
 const path = require('path');
 const { getDefaultConfig } = require('expo/metro-config');
-const exclusionList = require('metro-config/src/defaults/exclusionList');
+const exclusionList = require('metro-config/private/defaults/exclusionList').default;
+const { getBundleModeMetroConfig } = require('react-native-worklets/bundleMode');
 
 const projectRoot = __dirname;
 const nodeModules = path.resolve(projectRoot, 'node_modules');
 
-const config = getDefaultConfig(projectRoot);
+let config = getDefaultConfig(projectRoot);
 
 config.resolver.disableHierarchicalLookup = true;
 config.resolver.nodeModulesPaths = [nodeModules];
@@ -14,7 +15,13 @@ config.resolver.extraNodeModules = {
   'react-dom': path.resolve(nodeModules, 'react-dom'),
   'react-native': path.resolve(nodeModules, 'react-native')
 };
-config.resolver.resolveRequest = (context, moduleName, platform) => {
+config.watchFolders = config.watchFolders || [];
+const workletsOutput = path.resolve(nodeModules, 'react-native-worklets/.worklets');
+if (!config.watchFolders.includes(workletsOutput)) {
+  config.watchFolders.push(workletsOutput);
+}
+
+const defaultResolver = (context, moduleName, platform) => {
   if (moduleName === 'react' || moduleName === 'react/jsx-runtime' || moduleName === 'react/jsx-dev-runtime') {
     return context.resolveRequest(context, path.resolve(nodeModules, moduleName), platform);
   }
@@ -25,6 +32,17 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     return context.resolveRequest(context, path.resolve(nodeModules, 'react-native'), platform);
   }
   return context.resolveRequest(context, moduleName, platform);
+};
+
+config.resolver.resolveRequest = defaultResolver;
+config = getBundleModeMetroConfig(config);
+const bundleModeResolver = config.resolver.resolveRequest;
+
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName.startsWith('react-native-worklets/.worklets/')) {
+    return bundleModeResolver(context, moduleName, platform);
+  }
+  return defaultResolver(context, moduleName, platform);
 };
 config.resolver.blockList = exclusionList([
   /.*\/node_modules\/[^/]+\/node_modules\/react\/.*/,

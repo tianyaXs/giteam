@@ -7,3 +7,8 @@ target
 assets/
 apps/desktop/src-tauri/target
 apps/cli/.publish-release.json
+.agents
+.claudian
+.obsidian
+opencode.jsonc
+skills-lock.json

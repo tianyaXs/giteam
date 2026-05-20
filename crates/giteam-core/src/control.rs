@@ -155,7 +155,11 @@ struct AbortRequest {
 static CONTROL_RUNTIME: OnceLock<Mutex<Option<ControlRuntime>>> = OnceLock::new();
 static CONTROL_PAIR_STATE: OnceLock<Mutex<PairState>> = OnceLock::new();
 static CONTROL_BEARER_TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
-static WEB_STATIC_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static WEB_STATIC_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn web_static_dir_cell() -> &'static Mutex<Option<PathBuf>> {
+    WEB_STATIC_DIR.get_or_init(|| Mutex::new(None))
+}
 
 fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
     CONTROL_RUNTIME.get_or_init(|| Mutex::new(None))
@@ -359,7 +363,10 @@ fn read_control_server_settings() -> ControlServerSettings {
         cfg.port = DEFAULT_CONTROL_SERVER_PORT;
     }
     cfg.public_base_url = cfg.public_base_url.trim().trim_end_matches('/').to_string();
-    if cfg.port == 5100 && cfg.host == DEFAULT_CONTROL_SERVER_HOST && cfg.public_base_url.is_empty()
+    if cfg.port == 5100
+        && cfg.host == DEFAULT_CONTROL_SERVER_HOST
+        && cfg.public_base_url.is_empty()
+        && normalize_pair_code_ttl_mode(cfg.pair_code_ttl_mode.as_str()) != "none"
     {
         cfg.port = DEFAULT_CONTROL_SERVER_PORT;
     }
@@ -378,6 +385,36 @@ fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(),
         .map_err(|e| format!("serialize control settings failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write control settings failed: {e}"))?;
     Ok(())
+}
+
+fn normalize_control_server_settings(
+    settings: ControlServerSettings,
+) -> Result<ControlServerSettings, String> {
+    let mut next = settings;
+    if next.host.trim().is_empty() {
+        next.host = DEFAULT_CONTROL_SERVER_HOST.to_string();
+    } else {
+        next.host = next.host.trim().to_string();
+    }
+    if next.port == 0 {
+        return Err("control server port must be between 1 and 65535".to_string());
+    }
+    next.public_base_url = next
+        .public_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
+    Ok(next)
+}
+
+fn effective_control_server_settings() -> ControlServerSettings {
+    if let Ok(guard) = runtime_cell().lock() {
+        if let Some(rt) = guard.as_ref() {
+            return rt.settings.clone();
+        }
+    }
+    read_control_server_settings()
 }
 
 fn normalize_pair_code_ttl_mode(raw: &str) -> String {
@@ -418,7 +455,7 @@ fn generate_token() -> String {
 }
 
 fn is_no_auth_mode() -> bool {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none"
 }
 
@@ -446,7 +483,7 @@ fn sync_pair_state_for_mode(state: &mut PairState, mode: &str, now: u64, force_n
 }
 
 fn refresh_pair_code() -> ControlPairCodeInfo {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     let now = now_unix_secs();
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
@@ -463,7 +500,7 @@ fn refresh_pair_code() -> ControlPairCodeInfo {
 }
 
 fn current_pair_code() -> ControlPairCodeInfo {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
     let now = now_unix_secs();
@@ -480,7 +517,7 @@ fn current_pair_code() -> ControlPairCodeInfo {
 }
 
 fn verify_pair_code(code: &str) -> Result<(), String> {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     if mode == "none" {
         return Err("pair code auth disabled (no-auth mode)".to_string());
@@ -870,7 +907,11 @@ fn write_http_file(
 }
 
 fn serve_static_file(stream: &mut TcpStream, req: &HttpRequest) -> bool {
-    let Some(static_dir) = WEB_STATIC_DIR.get().and_then(|d| d.as_ref()) else {
+    let static_dir = match web_static_dir_cell().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => None,
+    };
+    let Some(static_dir) = static_dir.as_ref() else {
         return false;
     };
     // Only serve GET requests for static files
@@ -3200,11 +3241,13 @@ pub fn stop_control_server() {
 }
 
 pub fn set_web_static_dir(dir: Option<PathBuf>) {
-    let _ = WEB_STATIC_DIR.set(dir);
+    if let Ok(mut guard) = web_static_dir_cell().lock() {
+        *guard = dir;
+    }
 }
 
-pub fn start_control_server() -> Result<(), String> {
-    let settings = read_control_server_settings();
+pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {
+    let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
         stop_control_server();
         return Ok(());
@@ -3214,6 +3257,8 @@ pub fn start_control_server() -> Result<(), String> {
             if current.settings.host == settings.host
                 && current.settings.port == settings.port
                 && current.settings.enabled == settings.enabled
+                && current.settings.public_base_url == settings.public_base_url
+                && current.settings.pair_code_ttl_mode == settings.pair_code_ttl_mode
             {
                 return Ok(());
             }
@@ -3246,6 +3291,10 @@ pub fn start_control_server() -> Result<(), String> {
     Err("failed to lock control runtime".to_string())
 }
 
+pub fn start_control_server() -> Result<(), String> {
+    start_control_server_with_settings(read_control_server_settings())
+}
+
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_server_settings() -> Result<ControlServerSettings, String> {
     Ok(read_control_server_settings())
@@ -3254,21 +3303,7 @@ pub fn get_control_server_settings() -> Result<ControlServerSettings, String> {
 pub fn persist_control_server_settings(
     settings: ControlServerSettings,
 ) -> Result<ControlServerSettings, String> {
-    let mut next = settings.clone();
-    if next.host.trim().is_empty() {
-        next.host = DEFAULT_CONTROL_SERVER_HOST.to_string();
-    } else {
-        next.host = next.host.trim().to_string();
-    }
-    if next.port == 0 {
-        return Err("control server port must be between 1 and 65535".to_string());
-    }
-    next.public_base_url = next
-        .public_base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
+    let next = normalize_control_server_settings(settings.clone())?;
     write_control_server_settings(&next)?;
     {
         let now = now_unix_secs();
@@ -3299,7 +3334,7 @@ pub fn refresh_control_pair_code() -> Result<ControlPairCodeInfo, String> {
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let pair = current_pair_code();
     let mut urls: Vec<String> = Vec::new();
     if !settings.public_base_url.trim().is_empty() {

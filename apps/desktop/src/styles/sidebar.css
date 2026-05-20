@@ -277,6 +277,7 @@
 .gt-sidebar-project-list {
   display: grid;
   gap: 1px;
+  overflow-x: hidden;
 }
 
 .gt-sidebar-project-row {
@@ -378,6 +379,7 @@
   display: grid;
   gap: 1px;
   padding: var(--gt-space-1) 0 0 var(--gt-space-5);
+  overflow-x: hidden;
 }
 
 .gt-sidebar-project-children .gt-session-item {
@@ -492,13 +494,17 @@
   position: relative;
   color: var(--muted);
   transition: background-color 120ms ease, color 120ms ease;
+  box-sizing: border-box;
 }
 
 .gt-session-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--gt-space-2);
   width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .gt-load-more-btn {
@@ -544,6 +550,7 @@
 .gt-session-title {
   flex: 1 1 auto;
   min-width: 0;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -555,12 +562,17 @@
 
 .gt-session-time {
   flex: 0 0 auto;
+  max-width: 4.25rem;
   font-size: var(--gt-text-xs);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   opacity: 0.6;
   transition: opacity 120ms ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .gt-session-item:hover .gt-session-time {
@@ -888,6 +900,11 @@
 .gt-center-pane {
   --gt-center-pane-pad: clamp(28px, 4.6vw, 84px);
   padding-inline: var(--gt-center-pane-pad);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .gt-center-pane-left-closed .gt-chat-stream,
@@ -1073,21 +1090,32 @@
   min-height: 40px;
   margin: 0;
   padding: var(--gt-space-1-5) var(--gt-space-4) var(--gt-space-1-5) calc(var(--gt-titlebar-safe-left) + 28px);
+  position: relative;
+  z-index: 8;
+  background: var(--bg);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
 }
 
 .wb-breadcrumbs {
   display: flex;
   gap: var(--gt-space-2);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   min-height: 28px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .wb-breadcrumbs strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   font-size: var(--gt-text-base);
   font-weight: var(--gt-font-semibold);
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gt-shell-toggle {
@@ -1108,6 +1136,17 @@
   padding: 0;
   pointer-events: auto;
   -webkit-app-region: no-drag;
+}
+
+.gt-shell-toggle-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+.gt-shell-toggle-layer .gt-shell-toggle {
+  pointer-events: auto;
 }
 
 .gt-shell-toggle:hover {
@@ -1131,13 +1170,18 @@
 }
 
 .gt-shell-toggle-left.is-sidebar-open {
-  left: max(var(--gt-titlebar-safe-left), calc(var(--wb-sidebar-current-width, var(--wb-sidebar-width, 300px)) / 2 - 14px));
+  left: var(--gt-titlebar-safe-left);
   color: #5f6772;
 }
 
 .gt-shell-toggle-left.is-sidebar-closed {
-  left: 12px;
+  left: var(--gt-titlebar-safe-left);
   color: #7c8692;
+}
+
+.wb-sidebar-collapsed .gt-shell-toggle-left,
+.gt-shell-toggle.gt-shell-toggle-left.is-sidebar-closed {
+  left: var(--gt-titlebar-safe-left) !important;
 }
 
 .gt-shell-toggle-right svg {

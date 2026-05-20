@@ -3128,13 +3128,12 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
         return Err(format!("No index.html found in: {}", dist_dir.display()));
     }
 
-    // Configure control server settings for web mode
+    // Configure a temporary control-server override for web mode.
     let mut settings = control::get_control_server_settings()?;
     settings.enabled = true;
     settings.host = host.trim().to_string();
     settings.port = port;
-    settings.pair_code_ttl_mode = "none".to_string(); // no auth
-    control::persist_control_server_settings(settings)?;
+    settings.pair_code_ttl_mode = "none".to_string();
 
     // Set static web directory
     control::set_web_static_dir(Some(std::fs::canonicalize(&dist_dir).unwrap_or(dist_dir)));
@@ -3144,7 +3143,7 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
         opencode::warmup_managed_opencode_service();
     });
 
-    control::start_control_server()?;
+    control::start_control_server_with_settings(settings)?;
 
     let info = control::get_control_access_info()?;
     eprintln!("giteam web server running:");
@@ -3165,6 +3164,7 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
     }
 
     control::stop_control_server();
+    control::set_web_static_dir(None);
     opencode::shutdown_managed_opencode_service();
     Ok(())
 }

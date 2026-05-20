@@ -1,7 +1,11 @@
 // Platform abstraction layer for giteam desktop
 // Automatically switches between Tauri native APIs and HTTP RPC in browser
 
-export const IS_TAURI = typeof window !== "undefined" && !!(window as any).__TAURI__;
+export const IS_TAURI = typeof window !== "undefined" && !!(
+  (window as any).__TAURI_INTERNALS__
+  || (window as any).isTauri
+  || (window as any).__TAURI__
+);
 
 // In web mode, all API calls go through the same-origin control server
 const RPC_BASE = "/api/v1/desktop/rpc";
@@ -50,6 +54,33 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
   if (IS_TAURI) {
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
     return tauriInvoke(command, args);
+  }
+
+  if (command === "send_desktop_notification") {
+    const title = String(args?.title ?? "").trim();
+    const body = String(args?.body ?? "").trim();
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "granted") {
+        new Notification(title || "Giteam", { body });
+      } else if (Notification.permission === "default") {
+        Notification.requestPermission()
+          .then((permission) => {
+            if (permission === "granted") {
+              new Notification(title || "Giteam", { body });
+            }
+          })
+          .catch(() => {});
+      }
+    }
+    return undefined as T;
+  }
+
+  if (command === "open_external_url") {
+    const url = String(args?.url ?? "").trim();
+    if (url && typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+    return undefined as T;
   }
 
   // Web mode: POST to /api/v1/desktop/rpc

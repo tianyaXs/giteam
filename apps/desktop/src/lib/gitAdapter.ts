@@ -1,4 +1,4 @@
-import { invoke } from "./platform";
+import { IS_TAURI, invoke } from "./platform";
 import type { GitBranchSummary, GitCommitSummary, GitGraphNode, GitLinkedWorktree, GitUserIdentity, GitWorktreeCreateResult, GitWorktreeFileContent, GitWorktreeOverview, GitWorktreeRemoveResult } from "./types";
 
 export async function getHeadCommit(repoPath: string): Promise<string> {
@@ -151,10 +151,18 @@ export async function readRepoTerminalOutput(repoPath: string, afterSeq: number,
 }
 
 export async function completeRepoTerminalInput(repoPath: string, input: string, cwd?: string): Promise<string> {
+  if (!IS_TAURI) return input;
   return invoke<string>("complete_repo_terminal_input", { repoPath, input, cwd });
 }
 
 export async function listRepoTerminalCompletions(repoPath: string, input: string, cwd?: string): Promise<RepoTerminalCompletion> {
+  if (!IS_TAURI) {
+    return {
+      nextInput: input,
+      candidates: [],
+      token: ""
+    };
+  }
   return invoke<RepoTerminalCompletion>("list_repo_terminal_completions", { repoPath, input, cwd });
 }
 

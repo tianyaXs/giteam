@@ -663,6 +663,10 @@
       color-mix(in srgb, var(--bg-panel) 96%, transparent) 100%);
 }
 
+.opencode-canvas.has-chat {
+  overflow: hidden;
+}
+
 .opencode-shell {
   min-height: 0;
   height: 100%;
@@ -2676,4 +2680,3 @@
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-

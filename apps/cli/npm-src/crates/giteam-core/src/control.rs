@@ -1,3 +1,4 @@
+use super::desktop_rpc;
 use super::opencode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -154,6 +155,7 @@ struct AbortRequest {
 static CONTROL_RUNTIME: OnceLock<Mutex<Option<ControlRuntime>>> = OnceLock::new();
 static CONTROL_PAIR_STATE: OnceLock<Mutex<PairState>> = OnceLock::new();
 static CONTROL_BEARER_TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
+static WEB_STATIC_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
     CONTROL_RUNTIME.get_or_init(|| Mutex::new(None))
@@ -357,6 +359,13 @@ fn read_control_server_settings() -> ControlServerSettings {
         cfg.port = DEFAULT_CONTROL_SERVER_PORT;
     }
     cfg.public_base_url = cfg.public_base_url.trim().trim_end_matches('/').to_string();
+    if cfg.port == 5100
+        && cfg.host == DEFAULT_CONTROL_SERVER_HOST
+        && cfg.public_base_url.is_empty()
+        && normalize_pair_code_ttl_mode(cfg.pair_code_ttl_mode.as_str()) != "none"
+    {
+        cfg.port = DEFAULT_CONTROL_SERVER_PORT;
+    }
     cfg.pair_code_ttl_mode = normalize_pair_code_ttl_mode(cfg.pair_code_ttl_mode.as_str());
     cfg
 }
@@ -372,6 +381,36 @@ fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(),
         .map_err(|e| format!("serialize control settings failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write control settings failed: {e}"))?;
     Ok(())
+}
+
+fn normalize_control_server_settings(
+    settings: ControlServerSettings,
+) -> Result<ControlServerSettings, String> {
+    let mut next = settings;
+    if next.host.trim().is_empty() {
+        next.host = DEFAULT_CONTROL_SERVER_HOST.to_string();
+    } else {
+        next.host = next.host.trim().to_string();
+    }
+    if next.port == 0 {
+        return Err("control server port must be between 1 and 65535".to_string());
+    }
+    next.public_base_url = next
+        .public_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
+    Ok(next)
+}
+
+fn effective_control_server_settings() -> ControlServerSettings {
+    if let Ok(guard) = runtime_cell().lock() {
+        if let Some(rt) = guard.as_ref() {
+            return rt.settings.clone();
+        }
+    }
+    read_control_server_settings()
 }
 
 fn normalize_pair_code_ttl_mode(raw: &str) -> String {
@@ -412,7 +451,7 @@ fn generate_token() -> String {
 }
 
 fn is_no_auth_mode() -> bool {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none"
 }
 
@@ -440,7 +479,7 @@ fn sync_pair_state_for_mode(state: &mut PairState, mode: &str, now: u64, force_n
 }
 
 fn refresh_pair_code() -> ControlPairCodeInfo {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     let now = now_unix_secs();
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
@@ -457,7 +496,7 @@ fn refresh_pair_code() -> ControlPairCodeInfo {
 }
 
 fn current_pair_code() -> ControlPairCodeInfo {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     let mut state = pair_state_cell().lock().expect("pair state lock poisoned");
     let now = now_unix_secs();
@@ -474,7 +513,7 @@ fn current_pair_code() -> ControlPairCodeInfo {
 }
 
 fn verify_pair_code(code: &str) -> Result<(), String> {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
     if mode == "none" {
         return Err("pair code auth disabled (no-auth mode)".to_string());
@@ -493,7 +532,42 @@ fn verify_pair_code(code: &str) -> Result<(), String> {
 
 fn candidate_client_db_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    // 1) Prefer the desktop app bundle app-data path first.
+    // 1) Prefer the CLI-compatible config path first so web + desktop RPC read
+    // the same repository database.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                out.push(
+                    PathBuf::from(h)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("giteam")
+                        .join("client.db"),
+                );
+            }
+        }
+    }
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg_config_home.trim();
+        if !p.is_empty() {
+            out.push(PathBuf::from(p).join("giteam").join("client.db"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let h = home.trim();
+        if !h.is_empty() {
+            out.push(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join("client.db"),
+            );
+        }
+    }
+
+    // 2) Legacy app-data locations.
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
@@ -510,7 +584,7 @@ fn candidate_client_db_paths() -> Vec<PathBuf> {
             }
         }
     }
-    // 2) Then prefer the same app-data root used by control settings/auth files.
+    // 3) Then prefer the same app-data root used by control settings/auth files.
     if let Some(cfg) = control_server_settings_path() {
         if let Some(parent) = cfg.parent() {
             out.push(parent.join(".giteam").join("client.db"));
@@ -532,30 +606,7 @@ fn candidate_client_db_paths() -> Vec<PathBuf> {
             }
         }
     }
-    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-        let p = xdg_config_home.trim();
-        if !p.is_empty() {
-            out.push(
-                PathBuf::from(p)
-                    .join("giteam")
-                    .join(".giteam")
-                    .join("client.db"),
-            );
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let h = home.trim();
-        if !h.is_empty() {
-            out.push(
-                PathBuf::from(h)
-                    .join(".config")
-                    .join("giteam")
-                    .join(".giteam")
-                    .join("client.db"),
-            );
-        }
-    }
-    // 3) Last-resort fallback: workspace-local legacy db.
+    // 4) Last-resort fallback: workspace-local legacy db.
     if let Ok(cwd) = std::env::current_dir() {
         out.push(cwd.join(".giteam").join("client.db"));
     }
@@ -807,6 +858,110 @@ fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), Stri
         .map_err(|e| format!("write response failed: {e}"))
 }
 
+fn guess_content_type(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html",
+        Some("js") => "application/javascript",
+        Some("mjs") => "application/javascript",
+        Some("css") => "text/css",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("wasm") => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn write_http_file(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        status, reason, content_type, body.len()
+    );
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    write_stream_all(stream, head.as_bytes(), "write file headers")?;
+    write_stream_all(stream, body, "write file body")?;
+    stream
+        .flush()
+        .map_err(|e| format!("write file response failed: {e}"))
+}
+
+fn serve_static_file(stream: &mut TcpStream, req: &HttpRequest) -> bool {
+    let Some(static_dir) = WEB_STATIC_DIR.get().and_then(|d| d.as_ref()) else {
+        return false;
+    };
+    // Only serve GET requests for static files
+    if req.method != "GET" {
+        return false;
+    }
+    // Don't serve API routes as static files
+    if req.path.starts_with("/api/") {
+        return false;
+    }
+
+    let sanitized = req.path.trim_start_matches('/').replace("..", "");
+    let file_path = if sanitized.is_empty() || sanitized.ends_with('/') {
+        static_dir.join("index.html")
+    } else {
+        static_dir.join(&sanitized)
+    };
+
+    // Security: ensure the resolved path is within static_dir
+    let canonical_file = match std::fs::canonicalize(&file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            // File doesn't exist; try SPA fallback
+            let index_path = static_dir.join("index.html");
+            if let Ok(bytes) = std::fs::read(&index_path) {
+                let ct = guess_content_type(&index_path);
+                let _ = write_http_file(stream, 200, ct, &bytes);
+                return true;
+            }
+            return false;
+        }
+    };
+    let Ok(canonical_dir) = std::fs::canonicalize(static_dir) else {
+        return false;
+    };
+    if !canonical_file.starts_with(&canonical_dir) {
+        return false;
+    }
+
+    if canonical_file.is_file() {
+        if let Ok(bytes) = std::fs::read(&canonical_file) {
+            let ct = guess_content_type(&canonical_file);
+            let _ = write_http_file(stream, 200, ct, &bytes);
+            return true;
+        }
+    }
+
+    // Directory or missing file: SPA fallback
+    let index_path = static_dir.join("index.html");
+    if let Ok(bytes) = std::fs::read(&index_path) {
+        let ct = guess_content_type(&index_path);
+        let _ = write_http_file(stream, 200, ct, &bytes);
+        return true;
+    }
+
+    false
+}
+
 fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,Accept,Cache-Control,Pragma,Last-Event-ID,X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -849,6 +1004,12 @@ fn event_session_id(event: &Value) -> &str {
     event
         .get("properties")
         .and_then(|v| v.get("sessionID"))
+        .or_else(|| {
+            event
+                .get("properties")
+                .and_then(|v| v.get("part"))
+                .and_then(|v| v.get("sessionID"))
+        })
         .and_then(|v| v.as_str())
         .unwrap_or("")
 }
@@ -917,6 +1078,16 @@ fn stream_opencode_global_events(
             return Ok(());
         }
         if typ == "session.status" {
+            let status = event
+                .get("properties")
+                .and_then(|v| v.get("status"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let _ = write_sse_event(
+                stream,
+                "session_status",
+                &serde_json::json!({ "sessionId": session_id, "status": status }),
+            );
             let status_type = event
                 .get("properties")
                 .and_then(|v| v.get("status"))
@@ -942,9 +1113,38 @@ fn stream_opencode_global_events(
             finish(&mut child);
             return Ok(());
         }
+        if typ == "todo.updated" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "todo", &props);
+            continue;
+        }
+        if typ == "permission.asked" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "permission", &props);
+            continue;
+        }
+        if typ == "permission.replied" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "permission_replied", &props);
+            continue;
+        }
+        if typ == "question.asked" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "question", &props);
+            continue;
+        }
+        if typ == "question.replied" || typ == "question.rejected" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "question_removed", &props);
+            continue;
+        }
         if typ == "message.updated" {
             seen_activity = true;
             let props = event.get("properties").and_then(|v| v.as_object());
+            let info_value = props
+                .and_then(|p| p.get("info"))
+                .cloned()
+                .unwrap_or(Value::Null);
             let info = props
                 .and_then(|p| p.get("info"))
                 .and_then(|v| v.as_object());
@@ -958,6 +1158,11 @@ fn stream_opencode_global_events(
                 .unwrap_or("");
             if !message_id.is_empty() {
                 message_roles.insert(message_id.to_string(), role.to_string());
+                let _ = write_sse_event(
+                    stream,
+                    "message",
+                    &serde_json::json!({ "sessionId": session_id, "info": info_value }),
+                );
                 if role == "assistant" {
                     let _ = write_sse_event(
                         stream,
@@ -966,6 +1171,11 @@ fn stream_opencode_global_events(
                     );
                 }
             }
+            continue;
+        }
+        if typ == "message.removed" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "message_removed", &props);
             continue;
         }
         if typ == "message.part.delta" {
@@ -1006,6 +1216,7 @@ fn stream_opencode_global_events(
                     "sessionId": session_id,
                     "messageId": message_id,
                     "partId": part_id,
+                    "field": field,
                     "type": event_type,
                     "delta": delta
                 }),
@@ -1036,9 +1247,6 @@ fn stream_opencode_global_events(
             if message_id.is_empty() {
                 continue;
             }
-            if message_roles.get(message_id).map(String::as_str) != Some("assistant") {
-                continue;
-            }
             if write_sse_event(
                 stream,
                 "part",
@@ -1053,6 +1261,12 @@ fn stream_opencode_global_events(
                 finish(&mut child);
                 return Ok(());
             }
+            continue;
+        }
+        if typ == "message.part.removed" {
+            let props = event.get("properties").cloned().unwrap_or(Value::Null);
+            let _ = write_sse_event(stream, "part_removed", &props);
+            continue;
         }
     }
 
@@ -1105,6 +1319,64 @@ fn parse_body_json(req: &HttpRequest) -> Result<Value, String> {
         return Ok(Value::Object(Default::default()));
     }
     serde_json::from_slice::<Value>(&req.body).map_err(|e| format!("invalid json body: {e}"))
+}
+
+fn summarize_rpc_log_value(value: &Value, depth: usize) -> Value {
+    if depth >= 2 {
+        return match value {
+            Value::Array(arr) => Value::String(format!("[array:{}]", arr.len())),
+            Value::Object(_) => Value::String("[object]".to_string()),
+            _ => value.clone(),
+        };
+    }
+    match value {
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .take(6)
+                .map(|item| summarize_rpc_log_value(item, depth + 1))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, raw) in map {
+                let lower = key.to_lowercase();
+                if lower.contains("key")
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                {
+                    out.insert(key.clone(), Value::String("[redacted]".to_string()));
+                    continue;
+                }
+                if matches!(lower.as_str(), "prompt" | "message" | "log" | "output") {
+                    if let Some(text) = raw.as_str() {
+                        let short = if text.chars().count() > 160 {
+                            format!("{}…", text.chars().take(160).collect::<String>())
+                        } else {
+                            text.to_string()
+                        };
+                        out.insert(key.clone(), Value::String(short));
+                        continue;
+                    }
+                }
+                out.insert(key.clone(), summarize_rpc_log_value(raw, depth + 1));
+            }
+            Value::Object(out)
+        }
+        Value::String(text) => {
+            if text.chars().count() > 160 {
+                Value::String(format!("{}…", text.chars().take(160).collect::<String>()))
+            } else {
+                Value::String(text.clone())
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn summarize_desktop_rpc_args(args: &Value) -> String {
+    serde_json::to_string(&summarize_rpc_log_value(args, 0))
+        .unwrap_or_else(|_| "\"[unserializable args]\"".to_string())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2303,7 +2575,11 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "repoPath and spec are required" }),
             );
         }
-        return match opencode::install_opencode_skill_from_registry(repo, spec, Some(global)) {
+        return match opencode::install_opencode_skill_from_registry_blocking(
+            repo,
+            spec,
+            Some(global),
+        ) {
             Ok(v) => (200, serde_json::json!({ "ok": true, "output": v })),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
@@ -2862,6 +3138,30 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         }
     }
 
+    // Desktop RPC endpoint (used by giteam web)
+    if req.method == "POST" && req.path == "/api/v1/desktop/rpc" {
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        let command = raw.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let args = raw
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let args_summary = summarize_desktop_rpc_args(&args);
+        return match desktop_rpc::handle_desktop_rpc(command, args) {
+            Ok(v) => (200, v),
+            Err(e) => {
+                eprintln!(
+                    "[desktop-rpc] command failed command={} args={} error={}",
+                    command, args_summary, e
+                );
+                (500, serde_json::json!({ "error": e }))
+            }
+        };
+    }
+
     (404, serde_json::json!({ "error": "not found" }))
 }
 
@@ -2872,6 +3172,10 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
     let _ = stream.set_nonblocking(false);
     let response = match read_http_request(&mut stream) {
         Ok(req) => {
+            // Try static file serving first (for giteam web)
+            if serve_static_file(&mut stream, &req) {
+                return;
+            }
             if req.method == "GET" && req.path == "/api/v1/opencode/stream" {
                 handle_stream_messages_sse(stream, &req);
                 return;
@@ -2928,8 +3232,12 @@ pub fn stop_control_server() {
     }
 }
 
-pub fn start_control_server() -> Result<(), String> {
-    let settings = read_control_server_settings();
+pub fn set_web_static_dir(dir: Option<PathBuf>) {
+    let _ = WEB_STATIC_DIR.set(dir);
+}
+
+pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {
+    let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
         stop_control_server();
         return Ok(());
@@ -2939,6 +3247,8 @@ pub fn start_control_server() -> Result<(), String> {
             if current.settings.host == settings.host
                 && current.settings.port == settings.port
                 && current.settings.enabled == settings.enabled
+                && current.settings.public_base_url == settings.public_base_url
+                && current.settings.pair_code_ttl_mode == settings.pair_code_ttl_mode
             {
                 return Ok(());
             }
@@ -2971,6 +3281,10 @@ pub fn start_control_server() -> Result<(), String> {
     Err("failed to lock control runtime".to_string())
 }
 
+pub fn start_control_server() -> Result<(), String> {
+    start_control_server_with_settings(read_control_server_settings())
+}
+
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_server_settings() -> Result<ControlServerSettings, String> {
     Ok(read_control_server_settings())
@@ -2979,21 +3293,7 @@ pub fn get_control_server_settings() -> Result<ControlServerSettings, String> {
 pub fn persist_control_server_settings(
     settings: ControlServerSettings,
 ) -> Result<ControlServerSettings, String> {
-    let mut next = settings.clone();
-    if next.host.trim().is_empty() {
-        next.host = DEFAULT_CONTROL_SERVER_HOST.to_string();
-    } else {
-        next.host = next.host.trim().to_string();
-    }
-    if next.port == 0 {
-        return Err("control server port must be between 1 and 65535".to_string());
-    }
-    next.public_base_url = next
-        .public_base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    next.pair_code_ttl_mode = normalize_pair_code_ttl_mode(next.pair_code_ttl_mode.as_str());
+    let next = normalize_control_server_settings(settings.clone())?;
     write_control_server_settings(&next)?;
     {
         let now = now_unix_secs();
@@ -3024,7 +3324,7 @@ pub fn refresh_control_pair_code() -> Result<ControlPairCodeInfo, String> {
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
-    let settings = read_control_server_settings();
+    let settings = effective_control_server_settings();
     let pair = current_pair_code();
     let mut urls: Vec<String> = Vec::new();
     if !settings.public_base_url.trim().is_empty() {
