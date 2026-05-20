@@ -118,6 +118,11 @@ function publishPackage(packageDir, packageName) {
     publishArgs.push('--otp', otp);
   }
 
+  if (isVersionPublished(packageName, version)) {
+    console.log(`[giteam] skip ${packageName}@${version}: already published`);
+    return;
+  }
+
   console.log(`[giteam] ${dryRun ? 'checking' : 'publishing'} ${packageName}`);
   if (process.platform === 'win32') {
     run('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...publishArgs], { cwd: packageDir, captureOutput: true });
@@ -274,6 +279,41 @@ function extractFailureTail(output) {
     .filter(Boolean)
     .filter((line) => !line.startsWith('npm verbose logfile'));
   return lines.at(-1) || '';
+}
+
+function isVersionPublished(packageName, packageVersion) {
+  const viewArgs = ['view', `${packageName}@${packageVersion}`, 'version', '--json', '--loglevel', 'error'];
+  const result = spawnNpm(viewArgs, { captureOutput: true });
+  if (result.error || result.status !== 0) {
+    return false;
+  }
+  const stdout = String(result.stdout || '').trim();
+  if (!stdout) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed === packageVersion;
+  } catch {
+    return stdout === packageVersion;
+  }
+}
+
+function spawnNpm(npmArgs, extra = {}) {
+  if (process.platform === 'win32') {
+    return spawnSync('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...npmArgs], {
+      cwd: extra.cwd || cliRoot,
+      stdio: extra.captureOutput ? 'pipe' : 'inherit',
+      env: process.env,
+      encoding: extra.captureOutput ? 'utf8' : undefined
+    });
+  }
+  return spawnSync('npm', npmArgs, {
+    cwd: extra.cwd || cliRoot,
+    stdio: extra.captureOutput ? 'pipe' : 'inherit',
+    env: process.env,
+    encoding: extra.captureOutput ? 'utf8' : undefined
+  });
 }
 
 function collectArgs(flag) {
