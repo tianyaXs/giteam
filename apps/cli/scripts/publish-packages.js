@@ -120,10 +120,10 @@ function publishPackage(packageDir, packageName) {
 
   console.log(`[giteam] ${dryRun ? 'checking' : 'publishing'} ${packageName}`);
   if (process.platform === 'win32') {
-    run('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...publishArgs], { cwd: packageDir });
+    run('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...publishArgs], { cwd: packageDir, captureOutput: true });
     return;
   }
-  run('npm', publishArgs, { cwd: packageDir });
+  run('npm', publishArgs, { cwd: packageDir, captureOutput: true });
 }
 
 function prepareReleaseVersion() {
@@ -239,19 +239,41 @@ function run(command, commandArgs, extra = {}) {
   console.log(`[giteam] run: ${command} ${commandArgs.join(' ')}`);
   const result = spawnSync(command, commandArgs, {
     cwd: extra.cwd || cliRoot,
-    stdio: 'inherit',
-    env: process.env
+    stdio: extra.captureOutput ? 'pipe' : 'inherit',
+    env: process.env,
+    encoding: extra.captureOutput ? 'utf8' : undefined
   });
+  if (extra.captureOutput) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
   if (result.error) {
     console.error(`[giteam] failed to start command: ${result.error.message}`);
+    console.error(`::error::failed to start command: ${command} (${result.error.message})`);
     process.exit(1);
   }
   if (result.status !== 0) {
+    if (extra.captureOutput) {
+      const tail = extractFailureTail(result.stderr || result.stdout || '');
+      if (tail) {
+        console.error(`[giteam] command failed summary: ${tail}`);
+        console.error(`::error::${tail}`);
+      }
+    }
     if (typeof result.status !== 'number') {
       console.error(`[giteam] command terminated without exit status: ${command}`);
     }
     process.exit(result.status ?? 1);
   }
+}
+
+function extractFailureTail(output) {
+  const lines = String(output)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith('npm verbose logfile'));
+  return lines.at(-1) || '';
 }
 
 function collectArgs(flag) {
