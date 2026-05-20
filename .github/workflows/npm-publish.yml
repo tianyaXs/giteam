@@ -17,9 +17,6 @@ jobs:
           - key: darwin-arm64
             runner: macos-14
             rust_target: aarch64-apple-darwin
-          - key: darwin-x64
-            runner: macos-13
-            rust_target: x86_64-apple-darwin
           - key: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu

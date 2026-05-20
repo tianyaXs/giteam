@@ -37,7 +37,6 @@
   },
   "optionalDependencies": {
     "giteam-darwin-arm64": "0.1.29",
-    "giteam-darwin-x64": "0.1.29",
     "giteam-linux-arm64": "0.1.29",
     "giteam-linux-x64": "0.1.29",
     "giteam-win32-x64": "0.1.29"
