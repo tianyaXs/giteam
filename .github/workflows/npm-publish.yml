@@ -57,8 +57,8 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-      - name: Install workspace dependencies
-        run: npm ci
+      - name: Install desktop dependencies only
+        run: npm --prefix apps/desktop ci
       - name: Publish root package
         working-directory: apps/cli
         run: node ./scripts/publish-packages.js --root-only --skip-build --no-auto-bump
