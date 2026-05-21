@@ -27,7 +27,8 @@ struct ManagedOpencodeService {
 }
 
 static OPENCODE_SERVICE_POOL: OnceLock<Mutex<Option<ManagedOpencodeService>>> = OnceLock::new();
-static OPENCODE_SKILL_INSTALLS: OnceLock<Mutex<HashMap<String, OpencodeSkillInstallStatus>>> = OnceLock::new();
+static OPENCODE_SKILL_INSTALLS: OnceLock<Mutex<HashMap<String, OpencodeSkillInstallStatus>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,7 +104,10 @@ fn read_skill_install_stream<R: Read>(mut reader: R, status_key: String) {
                 }
             }
             Err(e) => {
-                append_skill_install_log(status_key.as_str(), format!("failed reading installer output: {e}").as_str());
+                append_skill_install_log(
+                    status_key.as_str(),
+                    format!("failed reading installer output: {e}").as_str(),
+                );
                 break;
             }
         }
@@ -145,6 +149,169 @@ fn run_opencode(args: &[&str], repo_path: &str) -> Result<String, String> {
         repo_path,
         OPENCODE_TIMEOUT_SECS,
     )
+}
+
+fn opencode_skill_source_groups_global_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("giteam")
+                        .join("opencode-skill-source-groups.json"),
+                );
+            }
+        }
+    }
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        let p = xdg_config_home.trim();
+        if !p.is_empty() {
+            return Some(
+                PathBuf::from(p)
+                    .join("giteam")
+                    .join("opencode-skill-source-groups.json"),
+            );
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let h = home.trim();
+        if !h.is_empty() {
+            return Some(
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("giteam")
+                    .join("opencode-skill-source-groups.json"),
+            );
+        }
+    }
+    None
+}
+
+fn opencode_skill_source_groups_project_path(repo_path: &str) -> PathBuf {
+    Path::new(repo_path)
+        .join(".giteam")
+        .join("opencode-skill-source-groups.json")
+}
+
+fn read_opencode_skill_source_group_map(path: &Path) -> HashMap<String, String> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str::<HashMap<String, String>>(&raw).unwrap_or_default()
+}
+
+fn write_opencode_skill_source_group_map(
+    path: &Path,
+    map: &HashMap<String, String>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create skill source group dir failed: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(map)
+        .map_err(|e| format!("serialize skill source groups failed: {e}"))?;
+    fs::write(path, format!("{text}\n"))
+        .map_err(|e| format!("write skill source groups failed: {e}"))
+}
+
+fn load_opencode_skill_source_groups(repo_path: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let project_path = opencode_skill_source_groups_project_path(repo_path);
+    out.extend(read_opencode_skill_source_group_map(project_path.as_path()));
+    if let Some(global_path) = opencode_skill_source_groups_global_path() {
+        out.extend(read_opencode_skill_source_group_map(global_path.as_path()));
+    }
+    out
+}
+
+fn upsert_opencode_skill_source_groups_internal(
+    repo_path: &str,
+    entries: &[OpencodeSkillSourceGroupEntry],
+) -> Result<usize, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let project_path = opencode_skill_source_groups_project_path(repo_path);
+    let mut project_map = read_opencode_skill_source_group_map(project_path.as_path());
+    let global_path = opencode_skill_source_groups_global_path();
+    let mut global_map = global_path
+        .as_ref()
+        .map(|path| read_opencode_skill_source_group_map(path.as_path()))
+        .unwrap_or_default();
+    let mut changed = 0usize;
+
+    for entry in entries {
+        let path = entry.path.trim();
+        let source_group = entry.source_group.trim();
+        let scope = entry.scope.trim();
+        if path.is_empty() || source_group.is_empty() {
+            continue;
+        }
+        let target_map = if scope == "global" {
+            &mut global_map
+        } else {
+            &mut project_map
+        };
+        if target_map.get(path).map(|v| v.as_str()) == Some(source_group) {
+            continue;
+        }
+        target_map.insert(path.to_string(), source_group.to_string());
+        changed += 1;
+    }
+
+    if changed == 0 {
+        return Ok(0);
+    }
+
+    write_opencode_skill_source_group_map(project_path.as_path(), &project_map)?;
+    if let Some(path) = global_path {
+        write_opencode_skill_source_group_map(path.as_path(), &global_map)?;
+    }
+    Ok(changed)
+}
+
+fn prune_opencode_skill_source_groups(
+    repo_path: &str,
+    removed_paths: &[String],
+) -> Result<(), String> {
+    if removed_paths.is_empty() {
+        return Ok(());
+    }
+    command_runner::validate_repo_path(repo_path)?;
+    let project_path = opencode_skill_source_groups_project_path(repo_path);
+    let mut project_map = read_opencode_skill_source_group_map(project_path.as_path());
+    let global_path = opencode_skill_source_groups_global_path();
+    let mut global_map = global_path
+        .as_ref()
+        .map(|path| read_opencode_skill_source_group_map(path.as_path()))
+        .unwrap_or_default();
+    let mut project_changed = false;
+    let mut global_changed = false;
+
+    for path in removed_paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if project_map.remove(trimmed).is_some() {
+            project_changed = true;
+        }
+        if global_map.remove(trimmed).is_some() {
+            global_changed = true;
+        }
+    }
+
+    if project_changed {
+        write_opencode_skill_source_group_map(project_path.as_path(), &project_map)?;
+    }
+    if global_changed {
+        if let Some(path) = global_path {
+            write_opencode_skill_source_group_map(path.as_path(), &global_map)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -306,6 +473,16 @@ pub struct OpencodeInstalledSkill {
     pub path: String,
     pub scope: String,
     pub agents: Vec<String>,
+    #[serde(default)]
+    pub source_group: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeSkillSourceGroupEntry {
+    pub path: String,
+    pub scope: String,
+    pub source_group: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -876,9 +1053,12 @@ fn opencode_global_config_file() -> Option<PathBuf> {
             return Some(PathBuf::from(p).join("opencode").join("opencode.jsonc"));
         }
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config").join("opencode").join("opencode.jsonc"))
+    std::env::var("HOME").ok().map(|home| {
+        PathBuf::from(home)
+            .join(".config")
+            .join("opencode")
+            .join("opencode.jsonc")
+    })
 }
 
 fn opencode_project_config_files(repo_path: &str) -> Vec<PathBuf> {
@@ -946,8 +1126,8 @@ fn remove_mcp_from_config_file(path: &Path, name: &str) -> Result<bool, String> 
     if !path.exists() {
         return Ok(false);
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("read {} failed: {e}", path.display()))?;
     let stripped = strip_jsonc_comments(&raw);
     let mut json: Value = serde_json::from_str(&stripped)
         .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
@@ -978,8 +1158,8 @@ fn read_config_file(path: &Path) -> Result<Option<Value>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|e| format!("read {} failed: {e}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("read {} failed: {e}", path.display()))?;
     let stripped = strip_jsonc_comments(&raw);
     let json: Value = serde_json::from_str(&stripped)
         .map_err(|e| format!("parse {} failed: {e}", path.display()))?;
@@ -998,9 +1178,8 @@ fn write_config_file(path: &Path, json: &Value) -> Result<(), String> {
 }
 
 fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<Value, String> {
-    let mut json = read_config_file(path)?.unwrap_or_else(|| {
-        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
-    });
+    let mut json = read_config_file(path)?
+        .unwrap_or_else(|| serde_json::json!({ "$schema": "https://opencode.ai/config.json" }));
     if !json.is_object() {
         json = serde_json::json!({ "$schema": "https://opencode.ai/config.json" });
     }
@@ -1034,7 +1213,11 @@ fn set_mcp_enabled_in_config_file(path: &Path, name: &str, enabled: bool) -> Res
     Ok(true)
 }
 
-fn set_mcp_enabled_in_known_config_files(repo_path: &str, name: &str, enabled: bool) -> Result<bool, String> {
+fn set_mcp_enabled_in_known_config_files(
+    repo_path: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<bool, String> {
     let mut changed = false;
     let mut errors = Vec::new();
     for file in opencode_project_config_files(repo_path) {
@@ -2757,7 +2940,12 @@ pub fn list_opencode_skills(repo_path: &str) -> Result<Value, String> {
     })
 }
 
-fn scan_installed_skill_dir(root: PathBuf, scope: &str, rows: &mut Vec<OpencodeInstalledSkill>) {
+fn scan_installed_skill_dir(
+    root: PathBuf,
+    scope: &str,
+    source_group_map: &HashMap<String, String>,
+    rows: &mut Vec<OpencodeInstalledSkill>,
+) {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -2776,6 +2964,10 @@ fn scan_installed_skill_dir(root: PathBuf, scope: &str, rows: &mut Vec<OpencodeI
             path: path.to_string_lossy().to_string(),
             scope: scope.to_string(),
             agents: vec!["opencode".to_string()],
+            source_group: source_group_map
+                .get(path.to_string_lossy().as_ref())
+                .cloned()
+                .unwrap_or_default(),
         });
     }
 }
@@ -2784,12 +2976,33 @@ fn scan_installed_skill_dir(root: PathBuf, scope: &str, rows: &mut Vec<OpencodeI
 pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     let mut rows: Vec<OpencodeInstalledSkill> = Vec::new();
-    scan_installed_skill_dir(Path::new(repo_path).join(".agents/skills"), "project", &mut rows);
-    scan_installed_skill_dir(Path::new(repo_path).join(".opencode/skills"), "project", &mut rows);
+    let source_group_map = load_opencode_skill_source_groups(repo_path);
+    scan_installed_skill_dir(
+        Path::new(repo_path).join(".agents/skills"),
+        "project",
+        &source_group_map,
+        &mut rows,
+    );
+    scan_installed_skill_dir(
+        Path::new(repo_path).join(".opencode/skills"),
+        "project",
+        &source_group_map,
+        &mut rows,
+    );
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
-        scan_installed_skill_dir(home.join(".agents/skills"), "global", &mut rows);
-        scan_installed_skill_dir(home.join(".opencode/skills"), "global", &mut rows);
+        scan_installed_skill_dir(
+            home.join(".agents/skills"),
+            "global",
+            &source_group_map,
+            &mut rows,
+        );
+        scan_installed_skill_dir(
+            home.join(".opencode/skills"),
+            "global",
+            &source_group_map,
+            &mut rows,
+        );
     }
     rows.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.name.cmp(&b.name)));
     rows.dedup_by(|a, b| a.scope == b.scope && a.path == b.path && a.name == b.name);
@@ -3002,7 +3215,9 @@ fn fetch_skillsmp_json_with_key(
         .user_agent("giteam-desktop/skillsmp")
         .build()
         .map_err(|e| format!("build SkillsMP client failed: {e}"))?;
-    let mut req = client.get(url.as_str()).header("Accept", "application/json");
+    let mut req = client
+        .get(url.as_str())
+        .header("Accept", "application/json");
     if !auth.trim().is_empty() {
         req = req.bearer_auth(auth.trim());
     }
@@ -3127,8 +3342,8 @@ pub fn list_opencode_mcp_status(repo_path: &str) -> Result<Value, String> {
     let project_cfg = opencode_project_config_files(repo_path)
         .into_iter()
         .find_map(|path| read_config_file(&path).ok().flatten());
-    let global_cfg = opencode_global_config_file()
-        .and_then(|path| read_config_file(&path).ok().flatten());
+    let global_cfg =
+        opencode_global_config_file().and_then(|path| read_config_file(&path).ok().flatten());
     add_config_rows(project_cfg, "project");
     add_config_rows(global_cfg, "global");
     Ok(Value::Object(out))
@@ -3290,7 +3505,11 @@ pub fn delete_opencode_mcp_server(repo_path: &str, name: &str) -> Result<Value, 
                 .flatten()
                 .and_then(|json| json.get("mcp").and_then(|v| v.get(n)).cloned())
                 .is_some();
-            if has_mcp { Some(p.clone()) } else { None }
+            if has_mcp {
+                Some(p.clone())
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -3484,14 +3703,26 @@ pub async fn install_opencode_skill_from_registry(
                     finished: false,
                     success: false,
                     message: "started".to_string(),
-                    log: format!("$ npx -y skills add {} --agent opencode -y{}", s, if is_global { " -g" } else { "" }),
+                    log: format!(
+                        "$ npx -y skills add {} --agent opencode -y{}",
+                        s,
+                        if is_global { " -g" } else { "" }
+                    ),
                 },
             );
         }
         std::thread::spawn(move || {
-            let result = install_opencode_skill_from_registry_streaming(repo.as_str(), s.as_str(), Some(is_global), key.as_str());
+            let result = install_opencode_skill_from_registry_streaming(
+                repo.as_str(),
+                s.as_str(),
+                Some(is_global),
+                key.as_str(),
+            );
             if let Ok(mut pool) = skill_install_pool().lock() {
-                let log = pool.get(&key).map(|item| item.log.clone()).unwrap_or_default();
+                let log = pool
+                    .get(&key)
+                    .map(|item| item.log.clone())
+                    .unwrap_or_default();
                 pool.insert(
                     key,
                     OpencodeSkillInstallStatus {
@@ -3523,13 +3754,16 @@ pub fn get_opencode_skill_install_status(
     let pool = skill_install_pool()
         .lock()
         .map_err(|_| "skill install state is unavailable".to_string())?;
-    Ok(pool.get(&key).cloned().unwrap_or(OpencodeSkillInstallStatus {
-        running: false,
-        finished: false,
-        success: false,
-        message: "not-started".to_string(),
-        log: "".to_string(),
-    }))
+    Ok(pool
+        .get(&key)
+        .cloned()
+        .unwrap_or(OpencodeSkillInstallStatus {
+            running: false,
+            finished: false,
+            success: false,
+            message: "not-started".to_string(),
+            log: "".to_string(),
+        }))
 }
 
 fn install_opencode_skill_from_registry_streaming(
@@ -3568,11 +3802,15 @@ fn install_opencode_skill_from_registry_streaming(
     let mut readers = Vec::new();
     if let Some(stdout) = child.stdout.take() {
         let key = status_key.to_string();
-        readers.push(std::thread::spawn(move || read_skill_install_stream(stdout, key)));
+        readers.push(std::thread::spawn(move || {
+            read_skill_install_stream(stdout, key)
+        }));
     }
     if let Some(stderr) = child.stderr.take() {
         let key = status_key.to_string();
-        readers.push(std::thread::spawn(move || read_skill_install_stream(stderr, key)));
+        readers.push(std::thread::spawn(move || {
+            read_skill_install_stream(stderr, key)
+        }));
     }
 
     let status = match child
@@ -3591,8 +3829,14 @@ fn install_opencode_skill_from_registry_streaming(
         let _ = reader.join();
     }
     if !status.success() {
-        append_skill_install_log(status_key, format!("installer exited with code {:?}", status.code()).as_str());
-        return Err(format!("npx skills add failed with code {:?}", status.code()));
+        append_skill_install_log(
+            status_key,
+            format!("installer exited with code {:?}", status.code()).as_str(),
+        );
+        return Err(format!(
+            "npx skills add failed with code {:?}",
+            status.code()
+        ));
     }
     append_skill_install_log(status_key, "installer finished successfully");
     if let Ok(base) = ensure_managed_service_local(repo_path) {
@@ -3626,7 +3870,11 @@ pub fn install_opencode_skill_from_registry_blocking(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn remove_opencode_skill(repo_path: &str, name: &str, global: Option<bool>) -> Result<String, String> {
+pub fn remove_opencode_skill(
+    repo_path: &str,
+    name: &str,
+    global: Option<bool>,
+) -> Result<String, String> {
     command_runner::validate_repo_path(repo_path)?;
     let n = name.trim();
     if n.is_empty() {
@@ -3644,6 +3892,72 @@ pub fn remove_opencode_skill(repo_path: &str, name: &str, global: Option<bool>) 
         dispose_global_state(repo_path, base.as_str());
     }
     Ok(output)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn remove_installed_opencode_skills_by_path(
+    repo_path: &str,
+    paths: Vec<String>,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let repo_root =
+        fs::canonicalize(repo_path).map_err(|e| format!("resolve repo path failed: {e}"))?;
+    let mut allowed_roots = vec![
+        repo_root.join(".agents").join("skills"),
+        repo_root.join(".opencode").join("skills"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        let home_root = PathBuf::from(home);
+        allowed_roots.push(home_root.join(".agents").join("skills"));
+        allowed_roots.push(home_root.join(".opencode").join("skills"));
+    }
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for raw_path in paths {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let skill_path = PathBuf::from(trimmed);
+        if !skill_path.exists() {
+            missing.push(trimmed.to_string());
+            continue;
+        }
+        let canonical = fs::canonicalize(&skill_path)
+            .map_err(|e| format!("resolve skill path failed for {}: {e}", trimmed))?;
+        let allowed = allowed_roots.iter().any(|root| canonical.starts_with(root));
+        if !allowed {
+            return Err(format!(
+                "refusing to remove path outside skills directories: {}",
+                trimmed
+            ));
+        }
+        if !canonical.is_dir() {
+            return Err(format!("skill path is not a directory: {}", trimmed));
+        }
+        fs::remove_dir_all(&canonical)
+            .map_err(|e| format!("remove installed skill failed for {}: {e}", trimmed))?;
+        removed.push(canonical.to_string_lossy().to_string());
+    }
+
+    prune_opencode_skill_source_groups(repo_path, &removed)?;
+
+    serde_json::to_value(serde_json::json!({
+        "removed": removed,
+        "missing": missing,
+    }))
+    .map_err(|e| format!("serialize removal result failed: {e}"))
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn save_opencode_skill_source_groups(
+    repo_path: &str,
+    entries: Vec<OpencodeSkillSourceGroupEntry>,
+) -> Result<Value, String> {
+    let changed = upsert_opencode_skill_source_groups_internal(repo_path, &entries)?;
+    serde_json::to_value(serde_json::json!({ "saved": changed }))
+        .map_err(|e| format!("serialize source group save result failed: {e}"))
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]

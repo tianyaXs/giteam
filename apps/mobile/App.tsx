@@ -7,12 +7,10 @@ import {
   Image,
   InteractionManager,
   Keyboard,
-  LayoutChangeEvent,
   Modal,
   PanResponder,
   Platform,
   Pressable,
-  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -25,6 +23,7 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
+import { useFonts } from 'expo-font';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
@@ -40,6 +39,7 @@ import { Feather } from '@expo/vector-icons';
 import { DiscoverListScreen } from './src/screens/DiscoverListScreen';
 import type { DiscoverListRow } from './src/screens/DiscoverListScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
+import { GiteamStartupAnimation } from './src/components/GiteamStartupAnimation';
 import { toText } from './src/lib/text';
 import { formatClock } from './src/lib/time';
 import { normalizeBaseUrlForClient } from './src/lib/url';
@@ -114,15 +114,26 @@ import {
   resolvePortFromSeed
 } from './src/discovery';
 import type { DiscoveredDevice } from './src/discovery';
-import type { MobileChatMessage, MobileRenderedTurn, MobileTodoCard, SessionStatusInfo, QuestionRequest, MobileQuestionCard } from './src/types';
+import type { MobileChatMessage, MobileRenderedTurn, MobileTodoCard, SessionStatusInfo, QuestionRequest, MobileQuestionCard, MobileTimelineItem } from './src/types';
 import { QuestionDock } from './src/components/QuestionDock';
 
 // keys + storage moved to src/storage/*
 
 const INITIAL_SESSION_LIMIT = 1;
 const OLDER_SESSION_LIMIT = 1;
+const INITIAL_CELL_LIMIT = 6;
+const OLDER_CELL_LIMIT = 8;
+const HISTORY_PREFETCH_TOP_THRESHOLD = 92;
+const HISTORY_PREFETCH_COOLDOWN_MS = 850;
+const INITIAL_CELL_WINDOW_WEIGHT = 7.4;
+const INITIAL_CELL_WINDOW_MAX = 12;
+const CHAT_ESTIMATED_CELL_HEIGHT = 156;
+const CHAT_BOTTOM_PROXIMITY = 96;
+const CHAT_LIST_BOTTOM_AIR = 24;
 const INITIAL_MESSAGE_FETCH_LIMIT = 8;
 const OLDER_MESSAGE_FETCH_LIMIT = 8;
+const QUICK_SKILL_REF_LIMIT = 8;
+const QUICK_MCP_REF_LIMIT = 6;
 const IMAGE_SEND_TARGET_BASE64_LENGTH = 1_100_000;
 const IMAGE_SEND_TIMEOUT_MS = 180000;
 const DISCOVER_OFFLINE_AFTER_MS = 45000;
@@ -222,12 +233,39 @@ type ProjectOption = {
   name: string;
 };
 
+type QuickSkillRef = {
+  key: string;
+  name: string;
+  subtitle: string;
+  itemCount: number;
+};
+
+type QuickMcpRef = {
+  key: string;
+  name: string;
+  subtitle: string;
+  state: string;
+};
+
 type RefreshMessagesResult = {
   nextCursor: string;
   incomingCount: number;
   mergedCount: number;
   prevMergedCount: number;
   totalTurnCount: number;
+};
+
+type ChatViewportSnapshot = {
+  scrollY: number;
+  viewportH: number;
+  contentH: number;
+  distanceFromBottom: number;
+  visibleCellCount: number;
+  firstVisibleCellId?: string;
+  firstVisibleIndexFromEnd?: number;
+  firstVisibleOffset?: number;
+  nearBottom: boolean;
+  updatedAt: number;
 };
 
 type PairPayload = {
@@ -290,9 +328,7 @@ class RenderBoundary extends React.Component<RenderBoundaryProps, RenderBoundary
 
 function GiteamLaunchMark() {
   return (
-    <View style={styles.launchMarkWrap}>
-      <Text style={styles.launchWordmark}>Giteam</Text>
-    </View>
+    <GiteamStartupAnimation animate fontFamily={FONT_DISPLAY_SERIF} />
   );
 }
 
@@ -302,11 +338,12 @@ function renderMarkdown(text: unknown, tone: 'user' | 'assistant' | 'think'): Re
   return <MarkdownMessage text={toText(text)} tone={tone} />;
 }
 
-const HANDWRITTEN_TEXT_FONT = Platform.select({
-  ios: 'Kaiti SC',
-  android: 'serif',
-  default: undefined,
-});
+const FONT_UI_REGULAR = 'StyreneARegular';
+const FONT_UI_MEDIUM = 'StyreneAMedium';
+const FONT_DISPLAY_SERIF = 'GalaxieCopernicusBook';
+const FONT_TEXT_SERIF = 'TiemposTextRegular';
+const FONT_TEXT_SERIF_SEMIBOLD = 'TiemposTextSemibold';
+const HANDWRITTEN_TEXT_FONT = FONT_UI_REGULAR;
 
 function MarkdownMessage(props: { text: string; tone: 'user' | 'assistant' | 'think' }) {
   const { text, tone } = props;
@@ -735,15 +772,19 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   onToggleThinkCard: (id: string) => void;
   timelineQuestionTabs: Map<string, number>;
   onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
+  onMeasuredHeight: (id: string, height: number) => void;
 }) {
-  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, onOpenImage, onCopyImage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab } = props;
+  const { turn, streaming, isLastTurn, thinkingPulse, hasLiveQuestion, liveQuestions, onQuestionReply, onCopyMessage, onOpenImage, onCopyImage, expandedTimelineQuestions, onToggleTimelineQuestion, expandedThinkCards, onToggleThinkCard, timelineQuestionTabs, onChangeTimelineTab, onMeasuredHeight } = props;
   const [, setMeasuredHeight] = useState(0);
   return (
     <View
       style={styles.turnWrap}
       onLayout={(evt) => {
         const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
-        if (h > 0) setMeasuredHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        if (h > 0) {
+          setMeasuredHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+          onMeasuredHeight(turn.id, h);
+        }
       }}
     >
       {turn.userMessage ? (
@@ -1034,6 +1075,7 @@ const MobileTurnCell = React.memo(function MobileTurnCell(props: {
   && prev.onToggleThinkCard === next.onToggleThinkCard
   && prev.timelineQuestionTabs === next.timelineQuestionTabs
   && prev.onChangeTimelineTab === next.onChangeTimelineTab
+  && prev.onMeasuredHeight === next.onMeasuredHeight
 ));
 
 // prefs + discover cache moved to src/storage/*
@@ -1125,30 +1167,167 @@ function projectNameFromPath(worktree: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : text;
 }
 
-function buildProjectQuestionPool(projectName: string): string[] {
-  const name = projectName || '当前项目';
-  return [
-    `请先概览 ${name} 的目录结构，并说明每个模块职责`,
-    `这个项目如何本地运行？请给我最短启动步骤`,
-    `帮我找出 ${name} 的核心业务流程入口`,
-    `请总结 ${name} 使用的技术栈和关键依赖`,
-    `定位这个项目里与接口请求最相关的代码位置`,
-    `如果要在 ${name} 新增功能，建议从哪里改起`,
-    `请检查 ${name} 当前最可能的风险点或待办项`,
-    `帮我生成一份 ${name} 的新人上手说明`,
-    `请把 ${name} 的主要数据流转路径梳理一下`
-  ];
+type DisplayedTurnCell = MobileRenderedTurn & { parentTurnId?: string };
+
+function timelineItemKey(item: MobileTimelineItem, index: number): string {
+  if (item.kind === 'chat') return `chat:${toText(item.message.id) || index}`;
+  if (item.kind === 'think') return `think:${toText(item.card.id) || index}`;
+  if (item.kind === 'event') return `event:${toText(item.event.id) || index}`;
+  if (item.kind === 'context') return `context:${toText(item.context.id) || index}`;
+  if (item.kind === 'todo') return `todo:${toText(item.todo.id) || index}`;
+  if (item.kind === 'question') return `question:${toText(item.question.id) || index}`;
+  if (item.kind === 'divider') return `divider:${toText(item.divider.id) || index}`;
+  return `error:${toText(item.error.id) || index}`;
 }
 
-function pickRandomQuestions(pool: string[], count: number): string[] {
-  const arr = [...pool];
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const t = arr[i];
-    arr[i] = arr[j];
-    arr[j] = t;
+function splitAssistantTextForList(text: string): string[] {
+  const raw = toText(text);
+  if (raw.length <= 420) return raw ? [raw] : [''];
+  const parts = raw.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    if (!current) {
+      current = part;
+      continue;
+    }
+    if (current.length + part.length + 2 > 420) {
+      chunks.push(current);
+      current = part;
+    } else {
+      current = `${current}\n\n${part}`;
+    }
   }
-  return arr.slice(0, Math.max(0, Math.min(count, arr.length)));
+  if (current) chunks.push(current);
+  if (chunks.length > 0) return chunks.flatMap((chunk) => {
+    if (chunk.length <= 520) return [chunk];
+    const out: string[] = [];
+    for (let i = 0; i < chunk.length; i += 420) out.push(chunk.slice(i, i + 420));
+    return out;
+  });
+  const out: string[] = [];
+  for (let i = 0; i < raw.length; i += 420) out.push(raw.slice(i, i + 420));
+  return out;
+}
+
+function splitTimelineItemForList(item: MobileTimelineItem, index: number): MobileTimelineItem[] {
+  if (item.kind !== 'chat' || item.message.role === 'user') return [item];
+  const chunks = splitAssistantTextForList(item.message.text);
+  if (chunks.length <= 1) return [item];
+  return chunks.map((text, chunkIndex) => ({
+    ...item,
+    message: {
+      ...item.message,
+      id: `${item.message.id}:chunk:${chunkIndex}`,
+      text
+    }
+  }));
+}
+
+function flattenTurnsForList(turns: MobileRenderedTurn[]): DisplayedTurnCell[] {
+  const out: DisplayedTurnCell[] = [];
+  turns.forEach((turn) => {
+    if (turn.userMessage) {
+      out.push({
+        ...turn,
+        id: `${turn.id}:cell:user`,
+        parentTurnId: turn.id,
+        items: [],
+        signature: `${turn.signature}:cell:user`
+      });
+    }
+    turn.items.forEach((item, itemIndex) => {
+      if (item.kind === 'chat' && item.message.role === 'user') return;
+      splitTimelineItemForList(item, itemIndex).forEach((cellItem, chunkIndex) => {
+        const key = `${timelineItemKey(cellItem, itemIndex)}:${chunkIndex}`;
+        out.push({
+          id: `${turn.id}:cell:${itemIndex}:${key}`,
+          parentTurnId: turn.id,
+          createdAt: cellItem.createdAt || turn.createdAt,
+          items: [cellItem],
+          signature: `${turn.signature}:cell:${itemIndex}:${key}:${cellItem.createdAt || 0}`
+        });
+      });
+    });
+  });
+  return out.length > 0 ? out : turns;
+}
+
+function takeTailCells(cells: DisplayedTurnCell[], visibleCount: number): DisplayedTurnCell[] {
+  const count = Math.max(1, Math.floor(visibleCount || INITIAL_CELL_LIMIT));
+  if (cells.length <= count) return cells;
+  return cells.slice(cells.length - count);
+}
+
+function estimateDisplayedCellWeight(cell: DisplayedTurnCell): number {
+  if (cell.userMessage) {
+    const textLength = toText(cell.userMessage.text).trim().length;
+    return Math.min(1.8, Math.max(1, textLength / 120));
+  }
+  const item = cell.items[0];
+  if (!item) return 0.9;
+  if (item.kind === 'chat') {
+    const base = item.message.role === 'user' ? 1 : 1.18;
+    const textLength = toText(item.message.text).trim().length;
+    return Math.min(2.45, Math.max(base, textLength / 180));
+  }
+  if (item.kind === 'question') return 1.5;
+  if (item.kind === 'think' || item.kind === 'todo') return 1.3;
+  if (item.kind === 'error') return 1.25;
+  if (item.kind === 'divider') return 0.45;
+  return 0.95;
+}
+
+function getInitialVisibleCellLimit(cells: DisplayedTurnCell[]): number {
+  if (cells.length <= INITIAL_CELL_LIMIT) return cells.length || INITIAL_CELL_LIMIT;
+  let weight = 0;
+  let count = 0;
+  for (let i = cells.length - 1; i >= 0; i -= 1) {
+    weight += estimateDisplayedCellWeight(cells[i]);
+    count += 1;
+    if (count >= INITIAL_CELL_LIMIT && (weight >= INITIAL_CELL_WINDOW_WEIGHT || count >= INITIAL_CELL_WINDOW_MAX)) {
+      break;
+    }
+  }
+  return Math.max(INITIAL_CELL_LIMIT, Math.min(cells.length, count));
+}
+
+function estimateCellHeight(cell: DisplayedTurnCell): number {
+  const item = cell.items[0];
+  if (cell.userMessage) {
+    const textLength = toText(cell.userMessage.text).trim().length;
+    return Math.min(210, Math.max(82, 62 + Math.ceil(textLength / 18) * 20));
+  }
+  if (item?.kind === 'chat') {
+    const textLength = toText(item.message.text).trim().length;
+    return Math.min(360, Math.max(96, 76 + Math.ceil(textLength / 24) * 20));
+  }
+  if (item?.kind === 'question') return 180;
+  if (item?.kind === 'think' || item?.kind === 'todo') return 118;
+  if (item?.kind === 'error') return 132;
+  if (item?.kind === 'divider') return 38;
+  return CHAT_ESTIMATED_CELL_HEIGHT;
+}
+
+function getViewportAwareVisibleCellLimit(
+  cells: DisplayedTurnCell[],
+  viewportH: number,
+  bottomInset: number,
+  measuredHeights: Record<string, number>
+): number {
+  if (cells.length <= INITIAL_CELL_LIMIT) return cells.length || INITIAL_CELL_LIMIT;
+  const available = Math.max(260, viewportH - bottomInset + 36);
+  let height = 0;
+  let count = 0;
+  for (let i = cells.length - 1; i >= 0; i -= 1) {
+    const cell = cells[i];
+    height += measuredHeights[cell.id] || estimateCellHeight(cell);
+    count += 1;
+    if (count >= INITIAL_CELL_LIMIT && (height >= available || count >= INITIAL_CELL_WINDOW_MAX)) {
+      break;
+    }
+  }
+  return Math.max(INITIAL_CELL_LIMIT, Math.min(cells.length, count));
 }
 
 // formatClock moved to src/lib/time
@@ -1259,47 +1438,68 @@ function getRepoPathsFromPairPayload(payload: PairPayload): string[] {
   return fromList.length > 0 ? [fromList[0]] : [];
 }
 
-const AUTH_ASCII_BRANDS = [
-  ` ██████  ██ ████████ ███████  █████  ███    ███ 
-██       ██    ██    ██      ██   ██ ████  ████ 
-██   ███ ██    ██    █████   ███████ ██ ████ ██ 
-██    ██ ██    ██    ██      ██   ██ ██  ██  ██ 
- ██████  ██    ██    ███████ ██   ██ ██      ██ `,
-  `   _____ _____ _______ ______          __  __ 
-  / ____|_   _|__   __|  ____|   /\\   |  \\/  |
- | |  __  | |    | |  | |__     /  \\  | \\  / |
- | | |_ | | |    | |  |  __|   / /\\ \\ | |\\/| |
- | |__| |_| |_   | |  | |____ / ____ \\| |  | |
-  \\_____|_____|  |_|  |______/_/    \\_\\_|  |_|`,
-  `                                     
- _____ _____ _____ _____ _____ _____ 
-|   __|     |_   _|   __|  _  |     |
-|  |  |-   -| | | |   __|     | | | |
-|_____|_____| |_| |_____|__|__|_|_|_|`,
-  `   _________________________    __  ___
-  / ____/  _/_  __/ ____/   |  /  |/  /
- / / __ / /  / / / __/ / /| | / /|_/ / 
-/ /_/ // /  / / / /___/ ___ |/ /  / /  
-\\____/___/ /_/ /_____/_/  |_/_/  /_/`,
-  String.raw` ________  ___  _________  _______   ________  _____ ______      
-|\   ____\|\  \|\___   ___\\  ___ \ |\   __  \|\   _ \  _   \    
-\ \  \___|\ \  \|___ \  \_\ \   __/|\ \  \|\  \ \  \\\__\ \  \   
- \ \  \  __\ \  \   \ \  \ \ \  \_|/_\ \   __  \ \  \\|__| \  \  
-  \ \  \|\  \ \  \   \ \  \ \ \  \_|\ \ \  \ \  \ \  \    \ \  \ 
-   \ \_______\ \__\   \ \__\ \ \_______\ \__\ \__\ \__\    \ \__\
-    \|_______|\|__|    \|__|  \|_______|\|__|\|__|\|__|     \|__|`,
-  String.raw` ____    ______  ______  ____    ______              
-/\  _\` /\__  _\/\__  _\/\  _\` /\  _  \  /'\_/\`    
-\ \ \L\_\/_/\ \/\/_/\ \/\ \ \L\_\ \ \L\ \/\      \   
- \ \ \L_L  \ \ \   \ \ \ \ \  _\L\ \  __ \ \ \__\ \  
-  \ \ \/, \ \_\ \__ \ \ \ \ \ \L\ \ \ \/\ \ \ \_/\ \ 
-   \ \____/ /\_____\ \ \_\ \ \____/\ \_\ \_\ \_\\ \_\
-    \/___/  \/_____/  \/_/  \/___/  \/_/\/_/\/_/ \/_/`
-];
+function stripUrlScheme(value: string): string {
+  return toText(value).trim().replace(/^https?:\/\//i, '');
+}
 
-function pickRandomAuthAsciiBrand(): string {
-  const idx = Math.floor(Math.random() * AUTH_ASCII_BRANDS.length);
-  return AUTH_ASCII_BRANDS[idx] || AUTH_ASCII_BRANDS[0] || '';
+function skillScopeLabel(scope: string): string {
+  const normalized = toText(scope).trim().toLowerCase();
+  if (normalized === 'global') return '全局';
+  if (normalized === 'project') return '当前项目';
+  return '可引用';
+}
+
+function mcpStateLabel(value: unknown): string {
+  const normalized = toText(value).trim().toLowerCase();
+  if (!normalized) return '可用';
+  if (normalized.includes('connect')) return '已连接';
+  if (normalized.includes('run')) return '运行中';
+  if (normalized.includes('config')) return '已配置';
+  if (normalized.includes('auth')) return '待授权';
+  if (normalized.includes('error') || normalized.includes('fail')) return '异常';
+  return '可用';
+}
+
+function dedupeQuickSkillRefs(rows: any[]): QuickSkillRef[] {
+  const byName = new Map<string, QuickSkillRef>();
+  rows.forEach((skill, idx) => {
+    const name = toText(
+      skill?.sourceGroup ||
+      skill?.name ||
+      skill?.title ||
+      skill?.id ||
+      skill?.spec ||
+      (typeof skill === 'string' ? skill : null) ||
+      `Skill ${idx + 1}`
+    ).trim();
+    if (!name) return;
+    const prev = byName.get(name);
+    if (prev) {
+      prev.itemCount += 1;
+      return;
+    }
+    const subtitle = skillScopeLabel(skill?.scope);
+    byName.set(name, { key: name, name, subtitle, itemCount: 1 });
+  });
+  return Array.from(byName.values());
+}
+
+function dedupeQuickMcpRefs(rows: Array<{ name: string; status: any }>): QuickMcpRef[] {
+  const byName = new Map<string, QuickMcpRef>();
+  rows.forEach(({ name, status }) => {
+    const label = toText(name).trim();
+    if (!label || byName.has(label)) return;
+    const typeRaw = toText(status?.type || status?.config?.type || status?.transport || '');
+    const type = typeRaw ? typeRaw.toUpperCase() : 'MCP';
+    const state = mcpStateLabel(status?.status || status?.state || (status?.connected ? 'connected' : 'configured'));
+    byName.set(label, {
+      key: label,
+      name: label,
+      subtitle: type,
+      state
+    });
+  });
+  return Array.from(byName.values());
 }
 
 function isSameDiscoverRenderList(prev: DiscoverCacheDevice[], next: DiscoverCacheDevice[]): boolean {
@@ -1323,15 +1523,19 @@ function isSameDiscoverRenderList(prev: DiscoverCacheDevice[], next: DiscoverCac
 }
 
 export default function App() {
-  const { width: windowWidth } = useWindowDimensions();
+  const [fontsLoaded] = useFonts({
+    [FONT_DISPLAY_SERIF]: require('./assets/fonts/GalaxieCopernicus-Book.otf'),
+    [FONT_TEXT_SERIF]: require('./assets/fonts/TestTiemposText-Regular.otf'),
+    [FONT_TEXT_SERIF_SEMIBOLD]: require('./assets/fonts/TestTiemposText-Semibold.otf'),
+    [FONT_UI_REGULAR]: require('./assets/fonts/StyreneA-Regular-Trial-BF63f6cbd970ee9.otf'),
+    [FONT_UI_MEDIUM]: require('./assets/fonts/StyreneA-Medium-Trial-BF63f6cbdb24b6d.otf'),
+  });
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('准备就绪');
-  const [authAsciiBrand, setAuthAsciiBrand] = useState(() => pickRandomAuthAsciiBrand());
-  const [authAsciiRender, setAuthAsciiRender] = useState('');
-  const [authAsciiBox, setAuthAsciiBox] = useState({ width: 0, height: 94 });
-
   const [serverUrl, setServerUrl] = useState('');
+  const [serverUrlInput, setServerUrlInput] = useState('');
   const [serverUrlTouched, setServerUrlTouched] = useState(false);
   const [preferHttps, setPreferHttps] = useState(false);
   const [pairCode, setPairCode] = useState('');
@@ -1369,7 +1573,6 @@ export default function App() {
   const [discoverLogs, setDiscoverLogs] = useState<Array<{ ts: number; level: 'info' | 'error'; msg: string }>>([]);
 
   const [prompt, setPrompt] = useState('');
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [slashCommands, setSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -1425,6 +1628,8 @@ export default function App() {
   const [streamTodoCard, setStreamTodoCard] = useState<MobileTodoCard | null>(null);
   const [chatListResetKey, setChatListResetKey] = useState(0);
   const [startupSessionHydrating, setStartupSessionHydrating] = useState(false);
+  const [sessionSwitchingTo, setSessionSwitchingTo] = useState('');
+  const [cellWindowVersion, setCellWindowVersion] = useState(0);
 
   const streamRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef('');
@@ -1437,6 +1642,12 @@ export default function App() {
   const sessionsRef = useRef<SessionItem[]>([]);
   const messagesRef = useRef<MobileChatMessage[]>([]);
   const renderedTurnsRef = useRef<MobileRenderedTurn[]>([]);
+  const displayedTurnCellsRef = useRef<DisplayedTurnCell[]>([]);
+  const visibleCellCountRef = useRef(INITIAL_CELL_LIMIT);
+  const chatCellHeightMapRef = useRef<Record<string, number>>({});
+  const chatViewportSnapshotRef = useRef<Record<string, ChatViewportSnapshot>>({});
+  const chatViewableRangeRef = useRef<{ startIndex: number; endIndex: number }>({ startIndex: 0, endIndex: 0 });
+  const sessionVisibleCellCountRef = useRef<Record<string, number>>({});
   const sessionCacheRef = useRef<Record<string, SessionItem[]>>({});
   const discoverDevicesRef = useRef<DiscoverCacheDevice[]>([]);
   const modelOptionsRef = useRef<ModelOption[]>([]);
@@ -1462,6 +1673,7 @@ export default function App() {
   const messageScrollYRef = useRef(0);
   const messageViewportHRef = useRef(0);
   const messageContentHRef = useRef(0);
+  const historyPrefetchLastAtRef = useRef(0);
   const messageUserScrollingRef = useRef(false);
   const streamRunIdRef = useRef(0);
   const streamRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1533,6 +1745,7 @@ export default function App() {
   const albumSelectedSet = useMemo(() => new Set(albumSelectedIds), [albumSelectedIds]);
   const streamTopGlowRequested = false;
   const showStreamTopGlow = false;
+  const appReady = fontsLoaded && loaded;
 
   const localIpv4PrefixRef = useRef<{ prefix: string; ip: string; at: number } | null>(null);
 
@@ -1600,7 +1813,7 @@ export default function App() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (!loaded || !launchOverlayVisible || startupSessionHydrating) return;
+    if (!appReady || !launchOverlayVisible || startupSessionHydrating) return;
     const timer = setTimeout(() => {
       Animated.timing(launchOverlayOpacity, {
         toValue: 0,
@@ -1608,9 +1821,9 @@ export default function App() {
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true
       }).start(() => setLaunchOverlayVisible(false));
-    }, 260);
+    }, 1940);
     return () => clearTimeout(timer);
-  }, [launchOverlayOpacity, launchOverlayVisible, loaded, startupSessionHydrating]);
+  }, [appReady, launchOverlayOpacity, launchOverlayVisible, startupSessionHydrating]);
 
   useEffect(() => {
     if (!startupSessionHydrating) return;
@@ -1653,6 +1866,14 @@ export default function App() {
     const fallback = messages.find((item) => item.role === 'user' && toText(item.text).trim());
     return fallback ? toText(fallback.text).slice(0, 24) : 'newsession';
   }, [messages, sessionId, sessions]);
+  const sessionSwitchingTitle = useMemo(() => {
+    const active = sessions.find((item) => item.id === sessionSwitchingTo);
+    return active ? pickSessionDisplayTitle(active) : '正在切换会话';
+  }, [sessionSwitchingTo, sessions]);
+  const showNotebookSessionTitle = useMemo(
+    () => !sessionSwitchingTo && (renderedTurns.length > 0 || !isPlaceholderSessionTitle(currentSessionTitle)),
+    [currentSessionTitle, renderedTurns.length, sessionSwitchingTo]
+  );
   const notebookColors = useMemo(() => {
     if (notebookTheme === 'slate') {
       return {
@@ -1769,25 +1990,6 @@ export default function App() {
       switchNotebookPage(notebookPage);
     }
   }), [notebookPage, notebookTrackX, windowWidth]);
-  const authAsciiTextStyle = useMemo(() => {
-    const raw = toText(authAsciiBrand);
-    const lines = raw.split('\n');
-    const lineCount = Math.max(1, lines.length);
-    const maxChars = Math.max(1, ...lines.map((line) => line.length));
-    const boxWidth = Math.max(1, authAsciiBox.width - 4);
-    const boxHeight = Math.max(1, authAsciiBox.height);
-    const baseFont = 10;
-    const minFont = 6;
-    const widthByFont = boxWidth / (maxChars * 0.6);
-    const heightByFont = boxHeight / (lineCount * 1.2);
-    const fontSize = Math.max(minFont, Math.min(baseFont, widthByFont, heightByFont));
-    const lineHeight = Math.max(fontSize + 1, Math.round(fontSize * 1.2));
-    return { fontSize, lineHeight };
-  }, [authAsciiBrand, authAsciiBox.height, authAsciiBox.width]);
-  const authAsciiDisplay = useMemo(
-    () => toText(authAsciiRender || authAsciiBrand).replace(/ /g, '\u00A0'),
-    [authAsciiRender, authAsciiBrand]
-  );
   const selectedDiscoverDevice = useMemo(
     () => discoverDevices.find((d) => d.id === selectedDiscoverId) || null,
     [discoverDevices, selectedDiscoverId]
@@ -1874,46 +2076,43 @@ export default function App() {
     return () => clearInterval(timer);
   }, [discoverOpen]);
 
-  function onAuthAsciiSlotLayout(e: LayoutChangeEvent) {
-    const { width, height } = e.nativeEvent.layout;
-    setAuthAsciiBox((prev) => {
-      if (Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1) return prev;
-      return { width, height };
-    });
-  }
-
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const prefs = await loadPrefs();
-      if (!alive) return;
-      const cachedChat = prefs.token && prefs.repoPath && prefs.sessionId
-        ? await loadChatSnapshot(prefs.repoPath, prefs.sessionId)
-        : null;
-      if (!alive) return;
-      setServerUrl(prefs.serverUrl);
-      setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
-      setPreferHttps(Boolean((prefs as any).preferHttps));
-      setPairCode(prefs.pairCode);
-      setRepoPath(prefs.repoPath);
-      setProjects(toProjectOptionsFromPaths(prefs.repoPaths || []));
-      setToken(prefs.token);
-      setSessionId(prefs.sessionId);
-      sessionIdRef.current = prefs.sessionId;
-      setComposerAgent(prefs.agent || 'build');
-      setAutoAcceptPermissions(Boolean((prefs as any).autoAcceptPermissions));
-      setNotebookTheme(prefs.notebookTheme || 'paper');
-      if (cachedChat) {
-        setMessages(cachedChat.messages);
-        setRenderedTurns(cachedChat.renderedTurns);
-        messagesRef.current = cachedChat.messages;
-        renderedTurnsRef.current = cachedChat.renderedTurns;
+      try {
+        const prefs = await loadPrefs();
+        if (!alive) return;
+        const cachedChat = prefs.token && prefs.repoPath && prefs.sessionId
+          ? await loadChatSnapshot(prefs.repoPath, prefs.sessionId)
+          : null;
+        if (!alive) return;
+        setServerUrl(prefs.serverUrl);
+        setServerUrlInput(stripUrlScheme(prefs.serverUrl));
+        setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
+        setPreferHttps(Boolean((prefs as any).preferHttps));
+        setPairCode(prefs.pairCode);
+        setRepoPath(prefs.repoPath);
+        setProjects(toProjectOptionsFromPaths(prefs.repoPaths || []));
+        setToken(prefs.token);
+        setSessionId(prefs.sessionId);
+        sessionIdRef.current = prefs.sessionId;
+        setComposerAgent(prefs.agent || 'build');
+        setAutoAcceptPermissions(Boolean((prefs as any).autoAcceptPermissions));
+        setNotebookTheme(prefs.notebookTheme || 'paper');
+        if (cachedChat) {
+          setMessages(cachedChat.messages);
+          setRenderedTurns(cachedChat.renderedTurns);
+          messagesRef.current = cachedChat.messages;
+          renderedTurnsRef.current = cachedChat.renderedTurns;
+        }
+        setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId && !cachedChat));
+        setModel(prefs.model || '');
+      } catch (e) {
+        if (!alive) return;
+        setStatus(`启动恢复失败: ${String(e)}`);
+      } finally {
+        if (alive) setLoaded(true);
       }
-      setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId && !cachedChat));
-      setModel(prefs.model || '');
-      setLoaded(true);
-      const pname = projectNameFromPath(toText(prefs.repoPath));
-      setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     })();
     loadPairCodeMap().then((m) => {
       if (!alive) return;
@@ -1966,6 +2165,26 @@ export default function App() {
   }, [loaded, serverUrl, serverUrlTouched, preferHttps, pairCode, repoPath, projects, token, sessionId, model, composerAgent, autoAcceptPermissions, notebookTheme]);
 
   useEffect(() => {
+    const sid = toText(sessionId).trim();
+    const repo = toText(repoPath).trim();
+    if (!sid || !repo) return;
+    if ((sessionRawMapRef.current[sid] || []).length > 0) return;
+    let cancelled = false;
+    void (async () => {
+      const snapshot = await loadChatSnapshot(repo, sid);
+      if (cancelled || sid !== sessionIdRef.current || repo !== toText(repoPath).trim() || !snapshot) return;
+      setMessages(snapshot.messages);
+      setRenderedTurns(snapshot.renderedTurns);
+      messagesRef.current = snapshot.messages;
+      renderedTurnsRef.current = snapshot.renderedTurns;
+      setSessionSwitchingTo((prev) => (prev === sid ? '' : prev));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, repoPath]);
+
+  useEffect(() => {
     const repo = toText(repoPath).trim();
     if (!repo || !serverUrl || !token) {
       setSlashCommands([]);
@@ -2005,7 +2224,7 @@ export default function App() {
 
   function onChangeServerUrl(value: string) {
     setServerUrlTouched(true);
-    setServerUrl(value);
+    setServerUrlInput(value);
   }
 
   useEffect(() => {
@@ -2222,23 +2441,6 @@ export default function App() {
   // 去掉拖拽：保持“扫描 + 轻动态感”的简单交互模型
 
   useEffect(() => {
-    if (authed) return;
-    const text = toText(authAsciiBrand);
-    if (!text) {
-      setAuthAsciiRender('');
-      return;
-    }
-    setAuthAsciiRender('');
-    let i = 0;
-    const timer = setInterval(() => {
-      i += 1;
-      setAuthAsciiRender(text.slice(0, i));
-      if (i >= text.length) clearInterval(timer);
-    }, 8);
-    return () => clearInterval(timer);
-  }, [authed, authAsciiBrand]);
-
-  useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
 
@@ -2276,7 +2478,6 @@ export default function App() {
           limit: INITIAL_SESSION_LIMIT,
           fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
         });
-        await syncSessionStatus(sessionId);
       } finally {
         setStartupSessionHydrating(false);
       }
@@ -2390,18 +2591,99 @@ export default function App() {
     }
   }
 
+  function rememberCurrentSessionViewport(targetSessionId: string = sessionIdRef.current) {
+    const sid = toText(targetSessionId).trim();
+    if (!sid) return;
+    const cells = displayedTurnCellsRef.current;
+    const visibleCellCount = Math.max(INITIAL_CELL_LIMIT, Number(visibleCellCountRef.current || cells.length || INITIAL_CELL_LIMIT));
+    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
+    const contentH = Math.max(0, Number(messageContentHRef.current || 0));
+    const fallbackY = Math.max(0, Number(messageScrollYRef.current || 0));
+    let scrollY = fallbackY;
+    try {
+      const currentOffset = Number(messageScrollRef.current?.getAbsoluteLastScrollOffset?.());
+      if (Number.isFinite(currentOffset)) scrollY = Math.max(0, currentOffset);
+    } catch {}
+    const distanceFromBottom = Math.max(0, contentH - viewportH - scrollY);
+    let firstVisibleIndex = Math.max(0, Math.floor(chatViewableRangeRef.current.startIndex || 0));
+    try {
+      const indices = messageScrollRef.current?.computeVisibleIndices?.();
+      if (indices && Number.isFinite(Number(indices.startIndex))) {
+        firstVisibleIndex = Math.max(0, Number(indices.startIndex));
+      }
+    } catch {}
+    const firstCell = cells[firstVisibleIndex];
+    let firstVisibleOffset = 0;
+    try {
+      const layout = messageScrollRef.current?.getLayout?.(firstVisibleIndex);
+      if (layout && Number.isFinite(Number(layout.y))) {
+        firstVisibleOffset = Math.max(0, scrollY - Number(layout.y));
+      }
+    } catch {}
+    chatViewportSnapshotRef.current[sid] = {
+      scrollY,
+      viewportH,
+      contentH,
+      distanceFromBottom,
+      visibleCellCount,
+      firstVisibleCellId: firstCell?.id,
+      firstVisibleIndexFromEnd: firstCell ? Math.max(0, cells.length - 1 - firstVisibleIndex) : undefined,
+      firstVisibleOffset,
+      nearBottom: distanceFromBottom <= CHAT_BOTTOM_PROXIMITY,
+      updatedAt: Date.now()
+    };
+  }
+
   function setActiveSession(nextSessionId: string) {
     const sid = toText(nextSessionId).trim();
+    const prevSid = toText(sessionIdRef.current).trim();
+    if (sid === prevSid) return;
+    const cachedRowsForNextSession = sid && Array.isArray(sessionRawMapRef.current[sid]) ? sessionRawMapRef.current[sid] : [];
+    rememberCurrentSessionViewport(prevSid);
+    forceScrollToLatestUntilRef.current = 0;
+    messageUserScrollingRef.current = false;
+    messageScrollYRef.current = 0;
+    messageViewportHRef.current = 0;
+    messageContentHRef.current = 0;
+    latestJumpVisibleRef.current = false;
+    latestJumpLastChangeRef.current = Date.now();
+    historyPrefetchLastAtRef.current = 0;
+    setShowLatestJump(false);
+    setSessionSwitchingTo(sid && cachedRowsForNextSession.length === 0 ? sid : '');
+    if (sid) {
+      const snapshot = chatViewportSnapshotRef.current[sid];
+      if (snapshot?.visibleCellCount) {
+        sessionVisibleCellCountRef.current[sid] = Math.max(INITIAL_CELL_LIMIT, snapshot.visibleCellCount);
+      } else if (!Number.isFinite(Number(sessionVisibleCellCountRef.current[sid]))) {
+        sessionVisibleCellCountRef.current[sid] = 0;
+      }
+    }
+    setCellWindowVersion((value) => value + 1);
     sessionIdRef.current = sid;
     setSessionId(sid);
     // Clear question state when switching sessions
     setQuestionRequests([]);
     setQuestionSubmitState({});
     if (!sid) {
+      setSessionSwitchingTo('');
+      messagesRef.current = [];
+      renderedTurnsRef.current = [];
+      setMessages([]);
+      setRenderedTurns([]);
       setSessionStatusMap({});
       return;
     }
-    void syncSessionStatus(sid);
+    const cachedRows = cachedRowsForNextSession;
+    if (cachedRows.length > 0) {
+      const visibleCount = Math.max(INITIAL_SESSION_LIMIT, Number(sessionVisibleTurnCountRef.current[sid] || INITIAL_SESSION_LIMIT));
+      applyTurnWindow(sid, visibleCount, sessionNextCursor[sid]);
+      setSessionSwitchingTo('');
+      return;
+    }
+    messagesRef.current = [];
+    renderedTurnsRef.current = [];
+    setMessages([]);
+    setRenderedTurns([]);
   }
 
   function triggerPulse(anim: Animated.Value) {
@@ -2568,12 +2850,6 @@ export default function App() {
   function scrollToLatest(animated: boolean) {
     if (messageUserScrollingRef.current) return;
     const list = messageScrollRef.current;
-    const bottomInset = Math.max(140, inputDockHeight + 44);
-    const maxOffset = Math.max(0, messageContentHRef.current - messageViewportHRef.current + bottomInset);
-    try {
-      list?.scrollToOffset({ offset: maxOffset + 1200, animated });
-      return;
-    } catch {}
     try {
       list?.scrollToEnd({ animated });
     } catch {}
@@ -2586,7 +2862,7 @@ export default function App() {
     latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
     scrollToLatest(true);
-    [80, 220, 420, 760, 1200].forEach((delay) => {
+    [120, 320].forEach((delay) => {
       setTimeout(() => scrollToLatest(false), delay);
     });
   }
@@ -2660,7 +2936,7 @@ export default function App() {
   const renderLeftDrawerContent = useCallback(() => (
     <View style={[styles.drawerPanelLeft, { backgroundColor: notebookColors.left }]}> 
       <View style={styles.drawerHead}>
-        <Text maxFontSizeMultiplier={1.05} style={[styles.drawerTitle, styles.leftHandText, { color: notebookColors.text }]}>Giteam</Text>
+        <Text maxFontSizeMultiplier={1.05} style={[styles.drawerTitle, { color: notebookColors.text }]}>Giteam</Text>
       </View>
       <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList} showsVerticalScrollIndicator={false}>
         <View style={styles.leftSectionBlock}>
@@ -2732,9 +3008,37 @@ export default function App() {
                   key={`${repoPath}:${s.id}`}
                   style={active ? [styles.directorySessionPlainRow, styles.directorySessionPlainRowActive] : styles.directorySessionPlainRow}
                   onPress={() => {
-                    stopStream();
-                    setActiveSession(s.id);
-                    closeDrawer();
+                    if (active) {
+                      closeDrawer();
+                      return;
+                    }
+                    void (async () => {
+                      stopStream();
+                      const hasCachedRows = (sessionRawMapRef.current[s.id] || []).length > 0;
+                      setActiveSession(s.id);
+                      if (!hasCachedRows) {
+                        const repo = toText(repoPath).trim();
+                        const snapshot = repo ? await loadChatSnapshot(repo, s.id).catch(() => null) : null;
+                        if (snapshot && sessionIdRef.current === s.id) {
+                          setMessages(snapshot.messages);
+                          setRenderedTurns(snapshot.renderedTurns);
+                          messagesRef.current = snapshot.messages;
+                          renderedTurnsRef.current = snapshot.renderedTurns;
+                          setSessionSwitchingTo('');
+                          closeDrawer();
+                          void syncSessionMessages(s.id, {
+                            limit: INITIAL_SESSION_LIMIT,
+                            fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+                          });
+                          return;
+                        }
+                        await syncSessionMessages(s.id, {
+                          limit: INITIAL_SESSION_LIMIT,
+                          fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
+                        }).catch(() => undefined);
+                      }
+                      if (sessionIdRef.current === s.id) closeDrawer();
+                    })();
                   }}
                 >
                   <View style={active ? styles.leftSessionRailActive : styles.leftSessionRail} />
@@ -2760,122 +3064,136 @@ export default function App() {
     </View>
   ), [availableProjects, currentWorkspaceName, currentWorkspaceSessions, leftDrawerPulse, notebookColors, notebookTheme, projects.length, repoPath, sessionDisplayedCount, sessionId, sessionSearch, sessions.length, workspaceSwitcherOpen]);
 
+  const quickSkillRefs = useMemo(() => dedupeQuickSkillRefs(installedSkills), [installedSkills]);
+  const quickMcpRefs = useMemo(() => dedupeQuickMcpRefs(installedMcpServers), [installedMcpServers]);
+  const visibleQuickSkillRefs = useMemo(() => quickSkillRefs.slice(0, QUICK_SKILL_REF_LIMIT), [quickSkillRefs]);
+  const visibleQuickMcpRefs = useMemo(() => quickMcpRefs.slice(0, QUICK_MCP_REF_LIMIT), [quickMcpRefs]);
+  const hiddenQuickSkillCount = Math.max(0, quickSkillRefs.length - visibleQuickSkillRefs.length);
+  const hiddenQuickMcpCount = Math.max(0, quickMcpRefs.length - visibleQuickMcpRefs.length);
+
+  function insertQuickReference(text: string) {
+    const next = toText(text).trim();
+    if (!next) return;
+    setDrawerSide('');
+    switchNotebookPage('main');
+    setPrompt((prev) => {
+      const current = toText(prev).trim();
+      if (!current) return next;
+      if (current.includes(next)) return prev;
+      return `${current}\n${next}`;
+    });
+  }
+
   const renderRightDrawerContent = useCallback(() => (
     <View style={[styles.drawerPanelRight, { backgroundColor: notebookColors.right }]}> 
       <View style={styles.drawerHead}>
         <View style={styles.drawerHeadTop}>
           <View>
-            <Text style={[styles.drawerEyebrow, styles.rightHandText, { color: notebookColors.faint }]}>Capabilities</Text>
-            <Text style={[styles.drawerTitle, styles.rightHandText, { color: notebookColors.text }]}>Tools</Text>
-            <Text style={[styles.drawerModelStatus, styles.rightHandText, { color: notebookColors.muted }]}>Skills and MCP bookmarks for this task</Text>
+            <Text style={[styles.drawerEyebrow, styles.rightHandText, { color: notebookColors.faint }]}>工作区</Text>
+            <Text style={[styles.drawerTitle, { color: notebookColors.text }]}>资源</Text>
+            <Text style={[styles.drawerModelStatus, styles.rightHandText, { color: notebookColors.muted }]}>连接与能力</Text>
           </View>
         </View>
       </View>
-      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList}>
+      <ScrollView style={styles.drawerScroll} contentContainerStyle={styles.drawerList} showsVerticalScrollIndicator={false}>
         <Animated.View style={{ opacity: rightDrawerPulse }}>
-          <View style={[styles.extensionSectionCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
+          <View style={[styles.extensionSectionCard, styles.drawerConnectionCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}>
             <View style={styles.extensionSectionHead}>
-              <View style={styles.extensionHeroOrb}>
-                <Text style={styles.extensionHeroOrbText}>S</Text>
+              <View style={styles.extensionHeroOrbNeutral}>
+                <Feather name="radio" size={18} color="#3b332b" />
               </View>
               <View style={styles.extensionHeroCopy}>
-                <Text style={styles.extensionHeroTitle}>Skills</Text>
+                <Text style={styles.extensionHeroTitle}>当前连接</Text>
                 <Text style={styles.extensionHeroSub}>
-                  {installedSkills.length > 0 ? `${installedSkills.length} available` : 'No skills'}
+                  {token === NO_AUTH_TOKEN ? '免鉴权访问' : pairCode.trim() ? '配对已生效' : '访问令牌已启用'}
                 </Text>
               </View>
             </View>
-            {installedSkills.length > 0 ? (
-              installedSkills.map((skill, idx) => {
-                const name = toText(
-                  skill?.name ||
-                  skill?.title ||
-                  skill?.id ||
-                  skill?.spec ||
-                  (typeof skill === 'string' ? skill : null) ||
-                  `Skill ${idx + 1}`
-                );
-                const desc = toText(
-                  skill?.description ||
-                  skill?.path ||
-                  skill?.location ||
-                  skill?.source ||
-                  skill?.config?.description ||
-                  'Installed skill'
-                );
-                return (
-                  <View key={`skill-${idx}-${name}`} style={styles.extensionCard}>
-                    <View style={styles.extensionCardIcon}>
-                      <Feather name="zap" size={14} color="#5d5345" />
-                    </View>
-                    <View style={styles.extensionCardMain}>
-                      <Text numberOfLines={1} style={styles.extensionCardTitle}>{name}</Text>
-                      {desc ? <Text numberOfLines={2} style={styles.extensionCardSub}>{desc}</Text> : null}
-                    </View>
-                  </View>
-                );
-              })
-            ) : !extensionsLoading ? (
-              <Text style={[styles.drawerEmpty, styles.rightHandText]}>No installed skills</Text>
-            ) : null}
+            <View style={styles.drawerConnectionMeta}>
+              <View style={styles.drawerConnectionRow}>
+                <Text style={styles.drawerConnectionLabel}>服务地址</Text>
+                <Text numberOfLines={1} style={styles.drawerConnectionValue}>{stripUrlScheme(serverUrl) || '未连接'}</Text>
+              </View>
+              <View style={styles.drawerConnectionRow}>
+                <Text style={styles.drawerConnectionLabel}>工作区</Text>
+                <Text numberOfLines={1} style={styles.drawerConnectionValue}>{currentWorkspaceName || projectNameFromPath(repoPath) || '未选择'}</Text>
+              </View>
+            </View>
+            <Pressable
+              style={[styles.drawerLogoutAction, { backgroundColor: notebookColors.ink }]}
+              onPress={onResetAuth}
+            >
+              <Feather name="log-out" size={15} color="#fffdf7" />
+              <Text style={styles.drawerLogoutActionText}>退出授权</Text>
+            </Pressable>
           </View>
 
-          <View style={[styles.extensionSectionCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
-            <View style={styles.extensionSectionHead}>
-              <View style={styles.extensionHeroOrbAlt}>
-                <Text style={styles.extensionHeroOrbText}>M</Text>
+          <View style={styles.quickPanelGrid}>
+            <View style={[styles.quickPanelCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
+              <View style={styles.extensionSectionHead}>
+                <View style={styles.extensionHeroOrb}>
+                  <Feather name="zap" size={18} color="#3b332b" />
+                </View>
+                <View style={styles.extensionHeroCopy}>
+                  <Text style={styles.extensionHeroTitle}>技能</Text>
+                  <Text style={styles.extensionHeroSub}>已安装能力</Text>
+                </View>
               </View>
-              <View style={styles.extensionHeroCopy}>
-                <Text style={styles.extensionHeroTitle}>MCP</Text>
-                <Text style={styles.extensionHeroSub}>
-                  {installedMcpServers.length > 0 ? `${installedMcpServers.length} servers` : 'No MCP servers'}
-                </Text>
-              </View>
+              {visibleQuickSkillRefs.length > 0 ? (
+                <View style={styles.quickRefWrap}>
+                  {visibleQuickSkillRefs.map((skill) => (
+                    <Pressable key={skill.key} style={styles.quickRefChip} onPress={() => insertQuickReference(`use ${skill.name}`)}>
+                      <View style={styles.quickRefChipTop}>
+                        <Feather name="zap" size={12} color="#5d5345" />
+                        <Text numberOfLines={1} style={styles.quickRefChipTitle}>{skill.name}</Text>
+                      </View>
+                      <Text numberOfLines={1} style={styles.quickRefChipSub}>{skill.itemCount > 1 ? `${skill.subtitle} · ${skill.itemCount} 项` : skill.subtitle}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : !extensionsLoading ? (
+                <Text style={[styles.drawerEmpty, styles.rightHandText]}>暂无已安装技能</Text>
+              ) : null}
             </View>
 
-            {installedMcpServers.length > 0 ? (
-              installedMcpServers.map(({ name, status }) => {
-                const type = toText(
-                  status?.type ||
-                  status?.config?.type ||
-                  status?.transport ||
-                  'mcp'
-                );
-                const state = toText(
-                  status?.status ||
-                  status?.state ||
-                  (status?.connected ? 'Connected' : 'Configured')
-                );
-                return (
-                  <View key={`mcp-${name}`} style={styles.extensionCard}>
-                    <View style={styles.extensionCardIconMcp}>
-                      <Feather name="server" size={14} color="#5d5345" />
-                    </View>
-                    <View style={styles.extensionCardMain}>
-                      <View style={styles.extensionCardTitleRow}>
-                        <Text numberOfLines={1} style={styles.extensionCardTitle}>{name}</Text>
-                        <Text style={styles.extensionStatePill}>{state}</Text>
+            <View style={[styles.quickPanelCard, { backgroundColor: notebookColors.paper, borderColor: notebookColors.line }]}> 
+              <View style={styles.extensionSectionHead}>
+                <View style={styles.extensionHeroOrbAlt}>
+                  <Feather name="server" size={18} color="#3b332b" />
+                </View>
+                <View style={styles.extensionHeroCopy}>
+                  <Text style={styles.extensionHeroTitle}>MCP</Text>
+                  <Text style={styles.extensionHeroSub}>已配置服务</Text>
+                </View>
+              </View>
+              {visibleQuickMcpRefs.length > 0 ? (
+                <View style={styles.quickRefWrap}>
+                  {visibleQuickMcpRefs.map((mcp) => (
+                    <Pressable key={mcp.key} style={styles.quickRefChip} onPress={() => insertQuickReference(`use the ${mcp.name} mcp server`)}>
+                      <View style={styles.quickRefChipTop}>
+                        <Feather name="server" size={12} color="#5d5345" />
+                        <Text numberOfLines={1} style={styles.quickRefChipTitle}>{mcp.name}</Text>
                       </View>
-                      <Text numberOfLines={1} style={styles.extensionCardSub}>{type}</Text>
-                    </View>
-                  </View>
-                );
-              })
-            ) : !extensionsLoading ? (
-              <Text style={[styles.drawerEmpty, styles.rightHandText]}>No configured MCP servers</Text>
-            ) : null}
+                      <Text numberOfLines={1} style={styles.quickRefChipSub}>{mcp.state}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : !extensionsLoading ? (
+                <Text style={[styles.drawerEmpty, styles.rightHandText]}>暂无已配置服务</Text>
+              ) : null}
+            </View>
           </View>
 
           {extensionsLoading ? (
             <View style={{ alignItems: 'center', paddingVertical: 20 }}>
               <ActivityIndicator size="small" color="#7c766c" />
-              <Text style={[styles.drawerEmpty, styles.rightHandText, { marginTop: 8 }]}>Loading extensions...</Text>
+              <Text style={[styles.drawerEmpty, styles.rightHandText, { marginTop: 8 }]}>正在载入资源...</Text>
             </View>
           ) : null}
         </Animated.View>
       </ScrollView>
     </View>
-  ), [extensionsLoading, installedMcpServers, installedSkills, notebookColors, rightDrawerPulse]);
+  ), [currentWorkspaceName, extensionsLoading, hiddenQuickMcpCount, hiddenQuickSkillCount, insertQuickReference, notebookColors, pairCode, quickMcpRefs.length, quickSkillRefs.length, repoPath, rightDrawerPulse, serverUrl, token, visibleQuickMcpRefs, visibleQuickSkillRefs]);
 
   function upsertSession(nextSessionId: string, nextMessages: MobileChatMessage[]) {
     if (!nextSessionId) return;
@@ -3695,6 +4013,7 @@ export default function App() {
     const run = (async () => {
     const requestedVisibleTurnCount = Math.max(1, Number(opts?.limit || INITIAL_SESSION_LIMIT));
     const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
+    const statusPromise = syncSessionStatus(targetSessionId);
 
     try {
       const res = await refreshMessages(targetSessionId, {
@@ -3703,14 +4022,13 @@ export default function App() {
         before,
         reason: mode
       });
-      const statusInfo = await syncSessionStatus(targetSessionId);
       if (!res || targetSessionId !== sessionIdRef.current) return undefined;
       streamDebug('sync.messages.result', {
         sid: targetSessionId,
         mergedCount: res.mergedCount,
         prevMergedCount: res.prevMergedCount,
         totalTurnCount: res.totalTurnCount,
-        status: statusInfo?.type || 'none'
+        status: 'pending'
       });
 
       const nextVisibleTurnCount = computeVisibleTurnCount({
@@ -3725,6 +4043,10 @@ export default function App() {
         hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
       });
       const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
+      if (targetSessionId === sessionIdRef.current) {
+        setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
+      }
+      const statusInfo = await statusPromise;
       const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
       streamDebug('sync.rendered', {
         sid: targetSessionId,
@@ -3746,6 +4068,9 @@ export default function App() {
       }
       return rendered;
     } finally {
+      if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
+        setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
+      }
       if (opts?.loadingOlder) {
         setLoadingOlder(false);
       }
@@ -3764,6 +4089,17 @@ export default function App() {
   async function onLoadOlderMessages() {
     const sid = toText(sessionId).trim();
     if (!sid || loadingOlder) return;
+    rememberCurrentSessionViewport(sid);
+    const flattenedCells = flattenTurnsForList(renderedTurnsRef.current);
+    const totalCells = flattenedCells.length;
+    const seededVisibleCells = getInitialVisibleCellLimit(flattenedCells);
+    const visibleCells = Math.max(seededVisibleCells, Number(sessionVisibleCellCountRef.current[sid] || 0));
+    if (totalCells > visibleCells) {
+      sessionVisibleCellCountRef.current[sid] = Math.min(totalCells, visibleCells + OLDER_CELL_LIMIT);
+      setCellWindowVersion((value) => value + 1);
+      setSessionHasMore((prev) => ({ ...prev, [sid]: totalCells > sessionVisibleCellCountRef.current[sid] }));
+      return;
+    }
     const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
     const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
     if (cached > visible) {
@@ -3980,8 +4316,6 @@ export default function App() {
     renderRegressionRetryRef.current = {};
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
-    const pname = projectNameFromPath(next);
-    setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     setStatus(`已切换项目: ${projectNameFromPath(next)}`);
     await refreshModelCatalog(next);
     const nextSessions = await refreshSessionsFromServer(next);
@@ -4345,7 +4679,56 @@ export default function App() {
       }
     ];
   }, [renderedTurns, showThinkingPlaceholder]);
-  const messageBottomInset = Math.max(140, inputDockHeight + 44 + keyboardInset);
+  const allDisplayedTurnCells = useMemo(() => flattenTurnsForList(displayedTurns), [displayedTurns]);
+  const messageBottomInset = CHAT_LIST_BOTTOM_AIR;
+  const seededVisibleCellCount = useMemo(
+    () => Math.max(
+      getInitialVisibleCellLimit(allDisplayedTurnCells),
+      getViewportAwareVisibleCellLimit(
+        allDisplayedTurnCells,
+        messageViewportHRef.current || windowHeight,
+        messageBottomInset,
+        chatCellHeightMapRef.current
+      )
+    ),
+    [allDisplayedTurnCells, messageBottomInset, windowHeight]
+  );
+  const visibleCellCount = Math.max(
+    seededVisibleCellCount,
+    Number(sessionVisibleCellCountRef.current[sessionId] || 0)
+  );
+  const displayedTurnCells = useMemo(
+    () => takeTailCells(allDisplayedTurnCells, visibleCellCount),
+    [allDisplayedTurnCells, cellWindowVersion, visibleCellCount]
+  );
+  const hasHiddenCells = allDisplayedTurnCells.length > displayedTurnCells.length;
+  const canLoadEarlierHistory = hasHiddenCells || !!sessionHasMore[sessionId];
+  const historyProgress = allDisplayedTurnCells.length > 0
+    ? Math.min(1, Math.max(0, displayedTurnCells.length / allDisplayedTurnCells.length))
+    : 1;
+  const historyProgressWidth = `${Math.max(6, Math.round(historyProgress * 100))}%` as `${number}%`;
+  const activeViewportSnapshot = sessionId ? chatViewportSnapshotRef.current[sessionId] : undefined;
+  const canRestoreChatSnapshot = !!activeViewportSnapshot
+    && !activeViewportSnapshot.nearBottom
+    && Date.now() - activeViewportSnapshot.updatedAt <= 30 * 60 * 1000;
+  const initialChatScrollIndex = useMemo(() => {
+    if (!canRestoreChatSnapshot || !activeViewportSnapshot) return undefined;
+    if (activeViewportSnapshot.firstVisibleCellId) {
+      const exact = displayedTurnCells.findIndex((cell) => cell.id === activeViewportSnapshot.firstVisibleCellId);
+      if (exact >= 0) return exact;
+    }
+    if (typeof activeViewportSnapshot.firstVisibleIndexFromEnd === 'number') {
+      return Math.max(0, displayedTurnCells.length - 1 - activeViewportSnapshot.firstVisibleIndexFromEnd);
+    }
+    return undefined;
+  }, [activeViewportSnapshot, canRestoreChatSnapshot, displayedTurnCells]);
+  const initialChatScrollOffset = canRestoreChatSnapshot
+    ? Math.max(0, Number(activeViewportSnapshot?.firstVisibleOffset || 0))
+    : undefined;
+  const chatStartsFromBottom = !canRestoreChatSnapshot;
+  const chatListMountKey = `chat-list-${chatListResetKey}-${canRestoreChatSnapshot ? sessionId || 'draft' : 'bottom'}`;
+  displayedTurnCellsRef.current = displayedTurnCells;
+  visibleCellCountRef.current = visibleCellCount;
   const inputModelLabel = useMemo(() => {
     const selected = modelOptions.find((option) => option.id === model);
     const label = toText(selected?.label || model || 'Model');
@@ -4355,6 +4738,24 @@ export default function App() {
     { key: 'build', label: 'Build' },
     { key: 'plan', label: 'Plan' }
   ]), []);
+  const rememberCellHeight = useCallback((id: string, height: number) => {
+    const key = toText(id).trim();
+    if (!key || !Number.isFinite(height) || height <= 0) return;
+    const prev = chatCellHeightMapRef.current[key] || 0;
+    if (Math.abs(prev - height) <= 1) return;
+    chatCellHeightMapRef.current[key] = height;
+  }, []);
+  const chatViewabilityConfig = useMemo(() => ({ itemVisiblePercentThreshold: 1 }), []);
+  const onChatViewableItemsChanged = useCallback((info: { viewableItems: Array<{ index?: number | null }> }) => {
+    const indices = info.viewableItems
+      .map((item) => Number(item.index))
+      .filter((index) => Number.isFinite(index) && index >= 0);
+    if (indices.length <= 0) return;
+    chatViewableRangeRef.current = {
+      startIndex: Math.min(...indices),
+      endIndex: Math.max(...indices)
+    };
+  }, []);
 
   const liveQuestionTurnId = useMemo(() => {
     for (let i = renderedTurns.length - 1; i >= 0; i -= 1) {
@@ -4420,7 +4821,6 @@ export default function App() {
         return !slashQuery || key.includes(slashQuery) || cmd.title.toLowerCase().includes(slashQuery);
       });
   }, [builtinSlashCommands, slashCommands, slashOpen, slashQuery]);
-
   const promptText = toText(prompt).trim();
   const hasPromptText = promptText.length > 0;
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
@@ -4869,6 +5269,7 @@ export default function App() {
         nextToken = toText(res.token).trim();
       }
       setServerUrl(nextUrl);
+      setServerUrlInput(stripUrlScheme(nextUrl));
       setPairCode(nextCode);
       setToken(nextToken);
       setRepoPath('');
@@ -5231,7 +5632,7 @@ export default function App() {
       }
     })();
     setServerUrlTouched(true);
-    setServerUrl(hostWithPort);
+    setServerUrlInput(hostWithPort);
     setPreferHttps(item.baseUrl.startsWith('https://'));
     const key = deviceKeyOf(item);
     const cached = key ? toText(pairCodeMapRef.current[key]).trim() : '';
@@ -5354,7 +5755,7 @@ export default function App() {
   }
 
   async function onAuthSubmit() {
-    await connectWithAddressAndCode(serverUrl, pairCode);
+    await connectWithAddressAndCode(serverUrlInput, pairCode);
   }
 
   async function onSendPrompt(customPrompt?: string) {
@@ -5577,8 +5978,6 @@ export default function App() {
       delete nextRaw[oldSid];
       sessionRawMapRef.current = nextRaw;
     }
-    const pname = projectNameFromPath(repoPath);
-    setSuggestions(pickRandomQuestions(buildProjectQuestionPool(pname), 3));
     setStatus('新会话已创建');
   }
 
@@ -5603,7 +6002,6 @@ export default function App() {
     renderRegressionRetryRef.current = {};
     olderCursorBackoffRef.current = {};
     bumpOptimisticVersion();
-    setAuthAsciiBrand(pickRandomAuthAsciiBrand());
     setStartupSessionHydrating(false);
     setStatus('已退出授权');
     pushConnLog('reset auth');
@@ -5615,10 +6013,10 @@ export default function App() {
     </Animated.View>
   ) : null;
 
-  if (!loaded) {
+  if (!appReady) {
     return (
       <View style={styles.launchScreen}>
-        <GiteamLaunchMark />
+        <GiteamStartupAnimation animate={false} fontFamily={FONT_DISPLAY_SERIF} />
       </View>
     );
   }
@@ -5725,80 +6123,92 @@ export default function App() {
   if (!authed) {
     const showAuthNotice = busy || (statusText && statusText.trim() && statusText.trim() !== '准备就绪');
     return (
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={[styles.safe, { backgroundColor: notebookColors.shell }]}>
         <RenderBoundary name="auth-screen">
-        <StatusBar barStyle="dark-content" backgroundColor="#f7f8fa" translucent={false} />
+        <StatusBar barStyle="dark-content" backgroundColor={notebookColors.shell} translucent={false} />
           <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
             <View style={styles.authPageFrame}>
-              <View style={styles.authFormWrap}>
-                <View style={styles.authAsciiSlot} onLayout={onAuthAsciiSlotLayout}>
-                  <Text
-                    allowFontScaling={false}
-                    maxFontSizeMultiplier={1}
-                    textBreakStrategy="simple"
-                    style={[styles.authAsciiBrand, authAsciiTextStyle]}
-                  >
-                    {authAsciiDisplay}
-                  </Text>
-                </View>
-                <Text style={styles.authSub}>连接远程客户端</Text>
+              <View style={styles.authHeroPanel}>
+                <View style={styles.authHeroOrb} />
+                <View style={styles.authFormWrap}>
+                  <View style={styles.authHeroCopy}>
+                    <Text style={styles.authKicker}>Remote AI Assistant</Text>
+                    <Text style={styles.authTitle}>Giteam</Text>
+                    <Text style={styles.authSub}>连接远程 AI 助手，在手机上继续桌面端任务与会话</Text>
+                  </View>
 
-                <View style={styles.authFieldGroup}>
-                  <Text style={styles.authFieldLabel}>服务地址</Text>
-                  <View style={styles.authUrlRow}>
-                    <TextInput
-                      style={styles.authInputUrl}
-                      value={serverUrl}
-                      onChangeText={onChangeServerUrl}
-                      autoCapitalize="none"
-                      placeholder="输入 IP:端口（如 192.168.1.8:5100）"
-                      placeholderTextColor="#9aa6b6"
-                    />
-                    <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
-                      <View style={styles.authScanIconFrame}>
-                        <View style={styles.authScanIconLt} />
-                        <View style={styles.authScanIconRt} />
-                        <View style={styles.authScanIconLb} />
-                        <View style={styles.authScanIconRb} />
+                  <View style={styles.authCard}>
+                    <View style={styles.authFieldGroup}>
+                      <Text style={styles.authFieldLabel}>服务地址</Text>
+                      <View style={styles.authUrlRow}>
+                        <TextInput
+                          style={styles.authInputUrl}
+                          value={serverUrlInput}
+                          onChangeText={onChangeServerUrl}
+                          autoCapitalize="none"
+                          placeholder="输入地址或 IP:端口，如 43.161.223.16:41000"
+                          placeholderTextColor="#9aa6b6"
+                        />
+                        <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
+                          <View style={styles.authScanIconFrame}>
+                            <View style={styles.authScanIconLt} />
+                            <View style={styles.authScanIconRt} />
+                            <View style={styles.authScanIconLb} />
+                            <View style={styles.authScanIconRb} />
+                          </View>
+                        </Pressable>
                       </View>
-                    </Pressable>
+                    </View>
+
+                    <View style={styles.authFieldGroup}>
+                      <Text style={styles.authFieldLabel}>验证码（选填）</Text>
+                      <TextInput
+                        style={styles.authInput}
+                        value={pairCode}
+                        onChangeText={setPairCode}
+                        autoCapitalize="none"
+                        keyboardType="number-pad"
+                        placeholder="输入验证码，免授权模式可留空"
+                        placeholderTextColor="#9aa6b6"
+                      />
+                    </View>
+
+                    <View style={styles.authAssistRow}>
+                      <Pressable style={styles.authTinyCheckWrap} onPress={() => setPreferHttps((v) => !v)}>
+                        <View style={preferHttps ? styles.authTinyCheckOn : styles.authTinyCheckOff} />
+                        <Text style={styles.authTinyText}>优先使用 HTTPS</Text>
+                      </Pressable>
+                      <View style={styles.authPillRow}>
+                        <Pressable style={styles.authSecondaryPill} onPress={onOpenDiscover} disabled={busy}>
+                          <Feather name="wifi" size={14} color="#5d5345" />
+                          <Text style={styles.authSecondaryPillText}>发现设备</Text>
+                        </Pressable>
+                        <Pressable style={styles.authSecondaryPill} onPress={onOpenScanner} disabled={busy}>
+                          <Feather name="maximize" size={14} color="#5d5345" />
+                          <Text style={styles.authSecondaryPillText}>扫码</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+
+                    <View style={styles.authActionRow}>
+                      <Pressable style={styles.authConnectBtn} onPress={() => void onAuthSubmit()} disabled={busy}>
+                        <Text style={styles.authConnectBtnText}>{busy ? '连接中…' : '连接远程助手'}</Text>
+                      </Pressable>
+                    </View>
+
+                    {showAuthNotice ? (
+                      <View style={styles.authNoticeRow}>
+                        {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
+                        <Text numberOfLines={2} style={styles.authNoticeText}>{statusText}</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.authFootHint}>
+                        <Feather name="link-2" size={14} color="#8d826f" />
+                        <Text style={styles.authFootHintText}>支持手输服务地址、发现局域网设备，或直接扫描连接二维码。</Text>
+                      </View>
+                    )}
                   </View>
                 </View>
-
-                <View style={styles.authFieldGroup}>
-                  <Text style={styles.authFieldLabel}>验证码（选填）</Text>
-                  <TextInput
-                    style={styles.authInput}
-                    value={pairCode}
-                    onChangeText={setPairCode}
-                    autoCapitalize="none"
-                    keyboardType="number-pad"
-                    placeholder="输入验证码，免授权模式可留空"
-                    placeholderTextColor="#9aa6b6"
-                  />
-                </View>
-                <View style={styles.authTinyRowBottom}>
-                  <Pressable style={styles.authTinyCheckWrap} onPress={() => setPreferHttps((v) => !v)}>
-                    <View style={preferHttps ? styles.authTinyCheckOn : styles.authTinyCheckOff} />
-                    <Text style={styles.authTinyText}>使用 HTTPS 连接</Text>
-                  </Pressable>
-                  <Pressable style={styles.authTinyLinkBtn} onPress={onOpenDiscover} disabled={busy}>
-                    <Text style={styles.authTinyLinkText}>发现设备</Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.authActionRow}>
-                  <Pressable style={styles.authConnectBtn} onPress={() => void onAuthSubmit()} disabled={busy}>
-                    <Text style={styles.authConnectBtnText}>认证</Text>
-                  </Pressable>
-                </View>
-
-                {showAuthNotice ? (
-                  <View style={styles.authNoticeRow}>
-                    {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
-                    <Text numberOfLines={2} style={styles.authNoticeText}>{statusText}</Text>
-                  </View>
-                ) : null}
               </View>
             </View>
 
@@ -5832,7 +6242,9 @@ export default function App() {
       <View style={[styles.topBar, { backgroundColor: notebookColors.main }]}> 
         <View style={styles.topSideSlot} />
         <View style={styles.topBrand}>
-          <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>{currentSessionTitle}</Text>
+          {showNotebookSessionTitle ? (
+            <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>{currentSessionTitle}</Text>
+          ) : null}
         </View>
         <View style={styles.topSideSlotRight} />
       </View>
@@ -5855,28 +6267,37 @@ export default function App() {
             />
           </View>
         ) : null}
-        {renderedTurns.length === 0 ? (
-          <View style={styles.blankWrap}>
-            <Text style={styles.blankTitle}>Giteam</Text>
-            <Text style={styles.blankSub}>为你答疑、办事、创作，随时找我聊天</Text>
-            <View style={styles.suggestList}>
-              {suggestions.map((s) => (
-                <Pressable key={s} style={styles.suggestChip} onPress={() => void onSendPrompt(s)}>
-                  <Text style={styles.suggestText}>{s}</Text>
-                </Pressable>
-              ))}
+        {sessionSwitchingTo ? (
+          <View style={[styles.blankWrap, styles.sessionSwitchWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
+            <View style={[styles.blankHero, styles.sessionSwitchHero, { width: Math.min(windowWidth - 56, 320) }]}>
+              <Text numberOfLines={1} style={[styles.blankEyebrow, { color: notebookColors.faint }]}>Loading session</Text>
+              <Text numberOfLines={2} style={[styles.sessionSwitchTitle, { color: notebookColors.text }]}>{sessionSwitchingTitle}</Text>
+              <Text style={[styles.blankSub, { color: notebookColors.muted }]}>正在载入历史消息与上下文，请稍候。</Text>
+              <View style={[styles.sessionSwitchRail, { borderColor: notebookColors.line, backgroundColor: notebookColors.paper }]}>
+                <Animated.View style={[styles.sessionSwitchRailFill, { backgroundColor: notebookColors.text }]} />
+              </View>
+            </View>
+          </View>
+        ) : renderedTurns.length === 0 ? (
+          <View style={[styles.blankWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
+            <View style={[styles.blankHero, { width: Math.min(windowWidth - 56, 320) }]}>
+              <Text numberOfLines={1} style={[styles.blankEyebrow, { color: notebookColors.faint }]}>{currentWorkspaceName}</Text>
+              <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.86} style={styles.blankTitle}>What shall we build?</Text>
+              <Text style={[styles.blankSub, { color: notebookColors.muted }]}>输入你的需求，或使用 `/` 调用命令与工作流。</Text>
             </View>
           </View>
         ) : (
           <View style={styles.chatListStage}>
             <FlashList
-              key={`chat-list-${sessionId || 'draft'}-${chatListResetKey}`}
+              key={chatListMountKey}
               ref={messageScrollRef}
               contentContainerStyle={{ paddingTop: 8, paddingBottom: messageBottomInset, backgroundColor: 'transparent' }}
               onLayout={(evt) => {
                 messageViewportHRef.current = Number(evt.nativeEvent.layout?.height || 0);
               }}
-              data={displayedTurns}
+              data={displayedTurnCells}
+              initialScrollIndex={typeof initialChatScrollIndex === 'number' ? initialChatScrollIndex : undefined}
+              initialScrollIndexParams={typeof initialChatScrollOffset === 'number' ? { viewOffset: initialChatScrollOffset } : undefined}
               removeClippedSubviews={Platform.OS === 'web'}
               alwaysBounceVertical
               bounces
@@ -5885,8 +6306,17 @@ export default function App() {
               showsHorizontalScrollIndicator={false}
               scrollEventThrottle={16}
               maintainVisibleContentPosition={{
-                autoscrollToBottomThreshold: 80
+                autoscrollToBottomThreshold: 80,
+                autoscrollToTopThreshold: HISTORY_PREFETCH_TOP_THRESHOLD,
+                animateAutoScrollToBottom: false,
+                startRenderingFromBottom: chatStartsFromBottom
               }}
+              viewabilityConfig={chatViewabilityConfig}
+              onViewableItemsChanged={onChatViewableItemsChanged}
+              onStartReached={() => {
+                if (canLoadEarlierHistory && !loadingOlder) void onLoadOlderMessages();
+              }}
+              onStartReachedThreshold={0.35}
               onScrollBeginDrag={() => {
                 forceScrollToLatestUntilRef.current = 0;
                 messageUserScrollingRef.current = true;
@@ -5904,23 +6334,6 @@ export default function App() {
                 const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
                 updateLatestJumpVisibility(distanceFromBottom, true);
               }}
-              refreshControl={
-                sessionId ? (
-                  <RefreshControl
-                    refreshing={loadingOlder}
-                    onRefresh={() => {
-                      if (!sessionHasMore[sessionId]) return;
-                      void onLoadOlderMessages();
-                    }}
-                    enabled={!!sessionHasMore[sessionId]}
-                    tintColor="#607287"
-                    colors={['#607287']}
-                    progressViewOffset={28}
-                    title={sessionHasMore[sessionId] ? '下拉加载更多消息' : '没有更多消息'}
-                    titleColor="#607287"
-                  />
-                ) : undefined
-              }
               onScroll={(evt) => {
                 const y = Number(evt.nativeEvent.contentOffset?.y || 0);
                 const viewportH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
@@ -5931,22 +6344,30 @@ export default function App() {
                 messageContentHRef.current = Number(h || 0);
                 const distanceFromBottom = Math.max(0, messageContentHRef.current - messageViewportHRef.current - messageScrollYRef.current);
                 updateLatestJumpVisibility(distanceFromBottom);
+                if (
+                  canLoadEarlierHistory
+                  && !loadingOlder
+                  && messageViewportHRef.current > 0
+                  && messageContentHRef.current < messageViewportHRef.current + 48
+                ) {
+                  const now = Date.now();
+                  if (now - historyPrefetchLastAtRef.current > HISTORY_PREFETCH_COOLDOWN_MS) {
+                    historyPrefetchLastAtRef.current = now;
+                    void onLoadOlderMessages();
+                  }
+                }
                 if (loadingOlder) return;
                 if (messageUserScrollingRef.current) return;
-                if (Date.now() < forceScrollToLatestUntilRef.current) {
-                  requestAnimationFrame(() => scrollToLatest(false));
-                  return;
-                }
               }}
               keyExtractor={(item) => item.id}
               renderItem={({ item, index }) => (
                 <MobileTurnCell
                   turn={item}
                   streaming={sessionWorking}
-                  isLastTurn={item.id === displayedTurns[displayedTurns.length - 1]?.id}
+                  isLastTurn={item.id === displayedTurnCells[displayedTurnCells.length - 1]?.id}
                   thinkingPulse={thinkingPulse}
-                  hasLiveQuestion={liveQuestionTurnId === item.id}
-                  liveQuestions={liveQuestionTurnId === item.id ? activeQuestionsForTurn : []}
+                  hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}
+                  liveQuestions={liveQuestionTurnId === (item.parentTurnId || item.id) ? activeQuestionsForTurn : []}
                   onQuestionReply={(requestId, answers) => {
                     const sid = toText(sessionIdRef.current).trim();
                     setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitting' } }));
@@ -6011,19 +6432,29 @@ export default function App() {
                       return next;
                     });
                   }}
+                  onMeasuredHeight={rememberCellHeight}
                 />
               )}
-              ListHeaderComponent={
-                sessionId ? (
-                  <View style={styles.loadEarlierWrap}>
-                    {toText(sessionHistoryRetryHint[sessionId]).trim() ? (
-                      <Text style={styles.loadEarlierHint}>{toText(sessionHistoryRetryHint[sessionId])}</Text>
-                    ) : null}
-                  </View>
-                ) : null
-              }
+              ListHeaderComponent={null}
               ListFooterComponent={null}
             />
+            {sessionId && (loadingOlder || toText(sessionHistoryRetryHint[sessionId]).trim()) ? (
+              <View pointerEvents="none" style={styles.historyOverlay}>
+                <View style={styles.historyOverlayRail}>
+                  <View
+                    style={[
+                      styles.historyOverlayFill,
+                      loadingOlder
+                        ? styles.historyOverlayFillActive
+                        : { width: historyProgressWidth }
+                    ]}
+                  />
+                </View>
+                {toText(sessionHistoryRetryHint[sessionId]).trim() ? (
+                  <Text style={styles.historyOverlayHint}>{toText(sessionHistoryRetryHint[sessionId])}</Text>
+                ) : null}
+              </View>
+            ) : null}
             {showLatestJump ? (
               <Pressable style={styles.latestJumpBtn} onPress={jumpToLatest}>
                 <Text style={styles.latestJumpTxt}>↑</Text>
@@ -6150,7 +6581,7 @@ export default function App() {
             setSlashOpen(isSlash);
             setSlashActiveIndex(0);
           }}
-          placeholder="What would you like to do?"
+          placeholder="向 Giteam 询问任何事，输入 / 使用命令"
           placeholderTextColor="#c6cbd3"
           multiline
         />
@@ -6465,12 +6896,12 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#f7f8fa' },
   chatSafe: { flex: 1, backgroundColor: '#f7f8fa', paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0 },
 
-  launchScreen: { flex: 1, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  launchScreen: { flex: 1, backgroundColor: '#f6f1e8', alignItems: 'center', justifyContent: 'center' },
   launchOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
     elevation: 9999,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#f6f1e8',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -6505,8 +6936,8 @@ const styles = StyleSheet.create({
     color: '#07517f',
     fontSize: 34,
     lineHeight: 40,
-    fontWeight: '800',
-    letterSpacing: -1.2
+    letterSpacing: -1.2,
+    fontFamily: FONT_DISPLAY_SERIF
   },
 
   centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
@@ -6527,37 +6958,73 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 520,
     width: '100%',
-    paddingHorizontal: 26,
+    paddingHorizontal: 22,
+    paddingVertical: 36,
     justifyContent: 'center'
   },
-  authAsciiSlot: {
-    alignSelf: 'stretch',
-    height: 94,
-    justifyContent: 'center'
+  authHeroPanel: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    position: 'relative'
   },
-  authAsciiBrand: {
-    alignSelf: 'center',
-    fontSize: 10,
-    fontWeight: Platform.OS === 'ios' ? '600' : '400',
-    color: '#1f2630',
-    lineHeight: 12,
-    letterSpacing: 0,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    includeFontPadding: false,
-    marginTop: 0,
-    transform: [{ translateY: -92 }],
-    marginBottom: 10
+  authHeroOrb: {
+    position: 'absolute',
+    width: 240,
+    height: 240,
+    borderRadius: 999,
+    right: -94,
+    top: -116,
+    backgroundColor: 'rgba(58,143,130,0.08)'
   },
   brandRow: { flexDirection: 'row', alignItems: 'center' },
-  authTitle: { fontSize: 32, fontWeight: '700', color: '#1f2630' },
-  authSub: { color: '#5f7087', fontSize: 18, marginBottom: 2, fontWeight: '600' },
+  authKicker: {
+    color: '#8d826f',
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    fontFamily: FONT_UI_MEDIUM
+  },
+  authTitle: {
+    fontSize: 34,
+    lineHeight: 38,
+    color: '#24211d',
+    letterSpacing: -1.2,
+    fontFamily: FONT_DISPLAY_SERIF
+  },
+  authSub: {
+    color: '#655d52',
+    fontSize: 17,
+    lineHeight: 25,
+    marginBottom: 2,
+    fontFamily: FONT_TEXT_SERIF
+  },
+  authHeroCopy: {
+    gap: 6,
+    marginBottom: 18,
+    paddingHorizontal: 6
+  },
   authFormWrap: {
     width: '100%',
-    gap: 8,
-    marginTop: -28
+    gap: 14
+  },
+  authCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(93,83,69,0.12)',
+    backgroundColor: '#fffdf7',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    gap: 12,
+    shadowColor: '#5d5345',
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3
   },
   authFieldGroup: { gap: 6 },
-  authFieldLabel: { color: '#6a7c94', fontSize: 12, fontWeight: '600', paddingLeft: 2 },
+  authFieldLabel: { color: '#8d826f', fontSize: 11, paddingLeft: 2, letterSpacing: 0.5, textTransform: 'uppercase', fontFamily: FONT_UI_MEDIUM },
   authSchemeRow: { flexDirection: 'row', gap: 8, marginBottom: 2 },
   authSchemeChip: {
     paddingHorizontal: 10,
@@ -6582,35 +7049,43 @@ const styles = StyleSheet.create({
   authSchemeChipText: { color: '#5f7087', fontSize: 12, fontWeight: '700' },
   authSchemeChipTextActive: { color: '#f9fbff', fontSize: 12, fontWeight: '700' },
   authInput: {
-    minHeight: 48,
-    borderBottomWidth: 1,
-    borderColor: '#d9e2ee',
-    backgroundColor: 'transparent',
-    paddingHorizontal: 2,
-    paddingVertical: 8,
-    color: '#2f3948'
+    minHeight: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ddd4c5',
+    backgroundColor: '#fbf7ef',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    color: '#2f3948',
+    fontFamily: FONT_UI_REGULAR
   },
   authUrlRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderColor: '#d9e2ee'
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ddd4c5',
+    backgroundColor: '#fbf7ef',
+    paddingLeft: 14,
+    paddingRight: 8,
+    gap: 8
   },
   authInputUrl: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 50,
     backgroundColor: 'transparent',
-    paddingHorizontal: 2,
-    paddingVertical: 8,
-    color: '#2f3948'
+    paddingHorizontal: 0,
+    paddingVertical: 10,
+    color: '#2f3948',
+    fontFamily: FONT_UI_REGULAR
   },
   authScanInlineBtn: {
     width: 40,
     height: 40,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#cbd7e5',
-    backgroundColor: '#f5f8fc',
+    borderColor: '#d8d0c2',
+    backgroundColor: '#f3ede2',
     alignItems: 'center',
     justifyContent: 'center'
   },
@@ -6628,7 +7103,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderLeftWidth: 1.8,
     borderTopWidth: 1.8,
-    borderColor: '#41556f'
+    borderColor: '#5d5345'
   },
   authScanIconRt: {
     position: 'absolute',
@@ -6638,7 +7113,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderRightWidth: 1.8,
     borderTopWidth: 1.8,
-    borderColor: '#41556f'
+    borderColor: '#5d5345'
   },
   authScanIconLb: {
     position: 'absolute',
@@ -6648,7 +7123,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderLeftWidth: 1.8,
     borderBottomWidth: 1.8,
-    borderColor: '#41556f'
+    borderColor: '#5d5345'
   },
   authScanIconRb: {
     position: 'absolute',
@@ -6658,7 +7133,7 @@ const styles = StyleSheet.create({
     height: 6,
     borderRightWidth: 1.8,
     borderBottomWidth: 1.8,
-    borderColor: '#41556f'
+    borderColor: '#5d5345'
   },
   authTinyRow: {
     marginTop: 7,
@@ -6673,24 +7148,47 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between'
   },
+  authAssistRow: {
+    marginTop: 2,
+    gap: 12
+  },
   authTinyCheckWrap: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   authTinyCheckOn: {
     width: 12,
     height: 12,
     borderRadius: 3,
     borderWidth: 1,
-    borderColor: '#3f5878',
-    backgroundColor: '#3f5878'
+    borderColor: '#5d5345',
+    backgroundColor: '#5d5345'
   },
   authTinyCheckOff: {
     width: 12,
     height: 12,
     borderRadius: 3,
     borderWidth: 1,
-    borderColor: '#98aac1',
-    backgroundColor: '#ffffff'
+    borderColor: '#b9ae9c',
+    backgroundColor: '#fffdf7'
   },
-  authTinyText: { color: '#677b93', fontSize: 11 },
+  authTinyText: { color: '#6f6657', fontSize: 12, fontFamily: FONT_UI_REGULAR },
+  authPillRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
+  authSecondaryPill: {
+    height: 36,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#ddd4c5',
+    backgroundColor: '#f7f1e6',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  authSecondaryPillText: {
+    color: '#5d5345',
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: FONT_UI_MEDIUM,
+    includeFontPadding: false
+  },
   authTinyLinkBtn: { paddingVertical: 2, paddingHorizontal: 2 },
   authTinyLinkText: { color: '#4f6f98', fontSize: 11, textDecorationLine: 'underline' },
   authQuickRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
@@ -6705,23 +7203,49 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12
   },
   authQuickBtnText: { color: '#41546c', fontSize: 12, fontWeight: '700' },
-  authActionRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  authActionRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   authConnectBtn: {
     flex: 1,
-    height: 42,
-    borderRadius: 12,
+    minHeight: 52,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1f2937'
+    backgroundColor: '#24211d'
   },
-  authConnectBtnText: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
+  authConnectBtnText: {
+    color: '#fffdf7',
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: FONT_UI_MEDIUM,
+    includeFontPadding: false,
+    textAlignVertical: 'center'
+  },
   authNoticeRow: {
-    minHeight: 34,
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e6dfd2',
+    backgroundColor: '#f6f1e8',
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  authNoticeText: { color: '#6f6657', fontSize: 12, lineHeight: 18, flex: 1, fontFamily: FONT_TEXT_SERIF },
+  authFootHint: {
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#eee6d8',
+    backgroundColor: '#fcf8f0',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
   },
-  authNoticeText: { color: '#64748b', fontSize: 12, lineHeight: 18, flex: 1 },
+  authFootHintText: { flex: 1, color: '#857a69', fontSize: 12, lineHeight: 18, fontFamily: FONT_TEXT_SERIF },
   authPane: { gap: 10 },
   authModeList: { gap: 10 },
   authModeCard: {
@@ -6883,8 +7407,8 @@ const styles = StyleSheet.create({
     gap: 1,
     top: 8
   },
-  topTitle: { fontSize: 20, color: '#24211d', fontWeight: '700' },
-  topTitleCompact: { fontSize: 18, lineHeight: 22, color: '#24211d', fontWeight: '700' },
+  topTitle: { fontSize: 20, color: '#24211d', fontWeight: '700', fontFamily: FONT_TEXT_SERIF_SEMIBOLD },
+  topTitleCompact: { fontSize: 18, lineHeight: 22, color: '#24211d', fontWeight: '700', fontFamily: FONT_TEXT_SERIF_SEMIBOLD },
   topWorkspaceText: { fontSize: 11, lineHeight: 14, color: '#8d826f', fontWeight: '500' },
   toolBtn: {
     width: 32,
@@ -7044,22 +7568,66 @@ const styles = StyleSheet.create({
   },
   iconTxt: { color: '#394455', fontWeight: '700' },
 
-  chatBodyWrap: { flex: 1, paddingHorizontal: 16, position: 'relative' },
+  chatBodyWrap: { flex: 1, paddingHorizontal: 14, position: 'relative' },
   chatListStage: { flex: 1, position: 'relative' },
-  blankWrap: { marginTop: 26, gap: 10 },
-  blankTitle: { fontSize: 40, fontWeight: '700', color: '#24211d' },
-  blankSub: { color: '#8d826f', fontSize: 18 },
-  suggestList: { gap: 10, marginTop: 8 },
-  suggestChip: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(65,54,38,0.10)',
-    backgroundColor: '#fffdf7',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignSelf: 'flex-start'
+  blankWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingTop: 18
   },
-  suggestText: { color: '#5d5345', fontSize: 14 },
+  blankHero: {
+    alignSelf: 'center',
+    gap: 12
+  },
+  blankEyebrow: {
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    fontFamily: FONT_UI_MEDIUM
+  },
+  blankTitle: {
+    fontSize: 27,
+    lineHeight: 31,
+    color: '#24211d',
+    fontFamily: FONT_DISPLAY_SERIF,
+    letterSpacing: -0.6,
+    maxWidth: '100%'
+  },
+  blankSub: {
+    color: '#8d826f',
+    fontSize: 13.5,
+    lineHeight: 21,
+    fontFamily: FONT_TEXT_SERIF,
+    maxWidth: '88%'
+  },
+  sessionSwitchWrap: {
+    justifyContent: 'center'
+  },
+  sessionSwitchHero: {
+    gap: 14
+  },
+  sessionSwitchTitle: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontFamily: FONT_TEXT_SERIF_SEMIBOLD,
+    letterSpacing: -0.3
+  },
+  sessionSwitchRail: {
+    height: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginTop: 2
+  },
+  sessionSwitchRailFill: {
+    width: '38%',
+    height: '100%',
+    borderRadius: 999,
+    opacity: 0.82
+  },
 
   latestJumpBtn: {
     position: 'absolute',
@@ -7081,8 +7649,40 @@ const styles = StyleSheet.create({
   },
   latestJumpTxt: { color: '#3a352e', fontSize: 20, fontWeight: '800', lineHeight: 24 },
   turnWrap: { width: '100%', alignSelf: 'stretch', gap: 10 },
-  loadEarlierWrap: { alignItems: 'center', paddingTop: 2, paddingBottom: 4 },
-  loadEarlierHint: { marginTop: 6, color: '#8b6c45', fontSize: 11 },
+  historyOverlay: {
+    position: 'absolute',
+    top: 6,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    gap: 6
+  },
+  historyOverlayRail: {
+    width: '46%',
+    maxWidth: 176,
+    height: 2,
+    borderRadius: 999,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(65,54,38,0.08)'
+  },
+  historyOverlayFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: 'rgba(86,77,63,0.58)'
+  },
+  historyOverlayFillActive: {
+    width: '100%'
+  },
+  historyOverlayHint: {
+    color: '#8b6c45',
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: FONT_UI_MEDIUM,
+    backgroundColor: 'rgba(255,253,247,0.82)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999
+  },
   historyHintWrap: { alignItems: 'center', paddingTop: 4, paddingBottom: 2 },
   historyHintText: { color: '#7c8aa0', fontSize: 12 },
   thinkWrap: { width: '100%', alignItems: 'flex-start' },
@@ -7837,25 +8437,25 @@ const styles = StyleSheet.create({
   },
 
   inputDock: {
-    marginHorizontal: 14,
-    marginBottom: 12,
-    borderRadius: 24,
+    marginHorizontal: 12,
+    marginBottom: 10,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: 'rgba(65,54,38,0.10)',
     backgroundColor: '#fffdf7',
-    minHeight: 104,
-    paddingLeft: 16,
-    paddingRight: 14,
-    paddingTop: 15,
-    paddingBottom: 12,
+    minHeight: 92,
+    paddingLeft: 14,
+    paddingRight: 12,
+    paddingTop: 12,
+    paddingBottom: 10,
     flexDirection: 'column',
     alignItems: 'stretch',
-    gap: 14,
+    gap: 10,
     shadowColor: '#503c1e',
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 4,
+    shadowOpacity: 0.07,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
     zIndex: 3
   },
   attachmentBackdrop: {
@@ -7866,7 +8466,7 @@ const styles = StyleSheet.create({
     zIndex: 2
   },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  inputToolbar: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  inputToolbar: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   inputToolbarSpacer: { flex: 1 },
   autoToggle: {
     flexDirection: 'row',
@@ -7909,15 +8509,16 @@ const styles = StyleSheet.create({
   },
   autoToggleKnobActive: { backgroundColor: '#3a8f82' },
   inputMain: {
-    minHeight: 34,
-    maxHeight: 120,
+    minHeight: 30,
+    maxHeight: 96,
     paddingTop: 0,
     paddingBottom: 0,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     color: '#24211d',
-    fontSize: 17,
+    fontSize: 16,
     lineHeight: 22,
     textAlignVertical: 'top',
+    fontFamily: FONT_UI_REGULAR,
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {})
   },
   actionBtnStop: {
@@ -7929,16 +8530,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#ece8df'
   },
   actionBtnSend: {
-    width: 34,
-    height: 34,
+    width: 38,
+    height: 38,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#24211d'
   },
   actionBtnDisabled: {
-    width: 34,
-    height: 34,
+    width: 38,
+    height: 38,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
@@ -7952,15 +8553,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: '#f1eadf',
     flexShrink: 1,
     minWidth: 0,
-    maxWidth: 200
+    maxWidth: 170
   },
-  modelMiniText: { color: '#3a352e', fontSize: 14, fontWeight: '700', lineHeight: 18, flexShrink: 1 },
+  modelMiniText: { color: '#3a352e', fontSize: 13, fontWeight: '700', lineHeight: 17, flexShrink: 1, fontFamily: FONT_UI_MEDIUM },
   actionBtnStopTxt: { color: '#7c766c', fontSize: 12, fontWeight: '700' },
   actionBtnSendTxt: { color: '#fff', fontSize: 18, fontWeight: '700' },
   actionBtnGhost: {
@@ -8056,14 +8657,14 @@ const styles = StyleSheet.create({
   },
   imagePickBtnTxt: { color: '#334155', fontSize: 18, fontWeight: '600', lineHeight: 20 },
   cameraBtn: {
-    width: 30,
-    height: 30,
+    width: 34,
+    height: 34,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderColor: 'transparent'
+    backgroundColor: '#f7f1e6',
+    borderWidth: 1,
+    borderColor: '#e7dccb'
   },
   cameraBtnTxt: { fontSize: 16 },
   attachmentPanel: {
@@ -8147,8 +8748,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingBottom: 22
   },
-  leftHandText: { fontFamily: HANDWRITTEN_TEXT_FONT },
-  rightHandText: { fontFamily: HANDWRITTEN_TEXT_FONT },
+  leftHandText: { fontFamily: FONT_UI_REGULAR },
+  rightHandText: { fontFamily: FONT_UI_REGULAR },
   drawerHead: { gap: 8, marginBottom: 18, paddingHorizontal: 14 },
   drawerHeadTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
   notebookPageTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
@@ -8162,7 +8763,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7
   },
-  notebookGhostBtnText: { color: '#4b4337', fontSize: 12, fontWeight: '800', lineHeight: 15, fontFamily: HANDWRITTEN_TEXT_FONT },
+  notebookGhostBtnText: { color: '#4b4337', fontSize: 12, lineHeight: 15, fontFamily: FONT_UI_MEDIUM },
   themeSwitchBtn: {
     borderRadius: 999,
     borderWidth: 1,
@@ -8170,8 +8771,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6
   },
   themeSwitchText: { fontSize: 11, fontWeight: '800', lineHeight: 14 },
-  drawerEyebrow: { color: '#958b78', fontSize: 10, lineHeight: 13, fontWeight: '800', letterSpacing: 1.4, textTransform: 'uppercase', fontFamily: HANDWRITTEN_TEXT_FONT },
-  drawerHeaderMetaText: { fontSize: 11, lineHeight: 15, fontWeight: '600', marginTop: 1, fontFamily: HANDWRITTEN_TEXT_FONT },
+  drawerEyebrow: { color: '#958b78', fontSize: 10, lineHeight: 13, letterSpacing: 1.4, textTransform: 'uppercase', fontFamily: FONT_UI_MEDIUM },
+  drawerHeaderMetaText: { fontSize: 11, lineHeight: 15, marginTop: 1, fontFamily: FONT_TEXT_SERIF },
   drawerSectionLabel: { color: '#8b806d', fontSize: 12, fontWeight: '800', letterSpacing: 0.5, marginBottom: 9, marginTop: 8 },
   drawerAgentSegment: {
     flexDirection: 'row',
@@ -8209,14 +8810,109 @@ const styles = StyleSheet.create({
   drawerLogoutBtn: {
     width: 32,
     height: 32,
-    marginTop: -12,
-    marginRight: -6,
+    marginTop: -6,
     borderRadius: 9,
+    borderWidth: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#eef1f5'
+    justifyContent: 'center'
   },
   drawerLogoutImage: { width: 16, height: 16 },
+  drawerConnectionCard: {
+    gap: 12
+  },
+  drawerConnectionMeta: {
+    gap: 8
+  },
+  drawerConnectionRow: {
+    gap: 4
+  },
+  drawerConnectionLabel: {
+    color: '#9a9182',
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    fontFamily: FONT_UI_MEDIUM
+  },
+  drawerConnectionValue: { color: '#3b332b', fontSize: 13, lineHeight: 18, fontWeight: '700', fontFamily: FONT_TEXT_SERIF },
+  drawerLogoutAction: {
+    height: 40,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  drawerLogoutActionText: {
+    color: '#fffdf7',
+    fontSize: 13,
+    fontWeight: '800',
+    fontFamily: FONT_UI_MEDIUM
+  },
+  quickPanelGrid: {
+    gap: 12
+  },
+  quickPanelCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingVertical: 15,
+    paddingHorizontal: 15,
+    gap: 12,
+    shadowColor: '#503c1e',
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1
+  },
+  quickRefWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  quickRefChip: {
+    minWidth: '47%',
+    flexGrow: 1,
+    flexBasis: '47%',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(65,54,38,0.10)',
+    backgroundColor: '#fffdf7',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    gap: 5
+  },
+  quickRefChipTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7
+  },
+  quickRefChipTitle: {
+    flex: 1,
+    color: '#25231d',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '800',
+    fontFamily: FONT_UI_MEDIUM
+  },
+  quickRefChipSub: {
+    color: '#7c766c',
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: FONT_TEXT_SERIF
+  },
+  quickPanelHint: {
+    alignSelf: 'flex-start',
+    color: '#6f6657',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
+    fontFamily: FONT_UI_MEDIUM,
+    backgroundColor: '#f4efe6',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4
+  },
   drawerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   drawerMetaChip: {
     borderRadius: 999,
@@ -8281,7 +8977,7 @@ const styles = StyleSheet.create({
   drawerProviderPillActive: { backgroundColor: '#dfeafc' },
   drawerProviderPillText: { color: '#6d7b90', fontSize: 11, fontWeight: '700' },
   drawerProviderPillTextActive: { color: '#315b90' },
-  drawerTitle: { color: '#26231d', fontWeight: '800', fontSize: 34, lineHeight: 38, letterSpacing: -1.2 },
+  drawerTitle: { color: '#26231d', fontWeight: '800', fontSize: 34, lineHeight: 38, letterSpacing: -1.2, fontFamily: FONT_DISPLAY_SERIF },
   drawerNewBtn: {
     borderRadius: 999,
     backgroundColor: '#26231d',
@@ -8292,7 +8988,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     paddingHorizontal: 12
   },
-  drawerNewTxt: { color: '#fbfaf6', fontWeight: '800', fontSize: 12, lineHeight: 15 },
+  drawerNewTxt: { color: '#fbfaf6', fontSize: 12, lineHeight: 16, fontFamily: FONT_UI_MEDIUM, includeFontPadding: false },
   drawerScroll: { flex: 1 },
   drawerList: { paddingBottom: 28, paddingTop: 2 },
   leftActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
@@ -9275,10 +9971,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center'
   },
-  extensionHeroOrbText: { color: '#3b332b', fontSize: 16, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionHeroOrbNeutral: {
+    width: 42,
+    height: 42,
+    borderRadius: 16,
+    backgroundColor: '#ece6db',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  extensionHeroOrbText: { color: '#3b332b', fontSize: 16, fontWeight: '800', fontFamily: FONT_UI_MEDIUM },
   extensionHeroCopy: { flex: 1, gap: 3 },
-  extensionHeroTitle: { color: '#25231d', fontSize: 16, fontWeight: '900', fontFamily: HANDWRITTEN_TEXT_FONT },
-  extensionHeroSub: { color: '#7c766c', fontSize: 12, fontWeight: '700', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionHeroTitle: { color: '#25231d', fontSize: 16, fontWeight: '900', fontFamily: FONT_UI_MEDIUM },
+  extensionHeroSub: { color: '#7c766c', fontSize: 12, lineHeight: 16, fontFamily: FONT_TEXT_SERIF },
   extensionSectionGap: { height: 16 },
   extensionCard: {
     flexDirection: 'row',
@@ -9314,8 +10018,8 @@ const styles = StyleSheet.create({
   },
   extensionCardMain: { flex: 1, gap: 2, paddingTop: 1 },
   extensionCardTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  extensionCardTitle: { color: '#25231d', fontSize: 13, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
-  extensionCardSub: { color: '#7c766c', fontSize: 11, lineHeight: 16, fontWeight: '600', fontFamily: HANDWRITTEN_TEXT_FONT },
+  extensionCardTitle: { color: '#25231d', fontSize: 13, fontWeight: '800', fontFamily: FONT_UI_MEDIUM },
+  extensionCardSub: { color: '#7c766c', fontSize: 11, lineHeight: 16, fontFamily: FONT_TEXT_SERIF },
   extensionStatePill: {
     borderRadius: 999,
     paddingHorizontal: 8,
@@ -9324,7 +10028,7 @@ const styles = StyleSheet.create({
     color: '#5d5345',
     fontSize: 10,
     fontWeight: '700',
-    fontFamily: HANDWRITTEN_TEXT_FONT,
+    fontFamily: FONT_UI_MEDIUM,
     overflow: 'hidden'
   },
 
@@ -9345,7 +10049,7 @@ const styles = StyleSheet.create({
     elevation: 10
   },
   composerPickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  composerPickerTitle: { color: '#24211d', fontSize: 22, lineHeight: 28, fontWeight: '800', fontFamily: HANDWRITTEN_TEXT_FONT },
+  composerPickerTitle: { color: '#24211d', fontSize: 22, lineHeight: 28, fontWeight: '800', fontFamily: FONT_DISPLAY_SERIF },
   composerPickerCloseBtn: { width: 32, height: 32, borderRadius: 999, backgroundColor: '#ece8df', alignItems: 'center', justifyContent: 'center' },
   composerPickerSegment: { flexDirection: 'row', padding: 4, borderRadius: 999, backgroundColor: '#f3f5f8', gap: 6, marginBottom: 16 },
   composerPickerChip: { flex: 1, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },

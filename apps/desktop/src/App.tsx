@@ -264,6 +264,13 @@ type OpencodeSkillInfo = {
   scope?: "project" | "global" | "source";
   path?: string;
   agents?: string[];
+  sourceGroup?: string;
+};
+type OpencodeInstalledSkillGroup = {
+  name: string;
+  items: OpencodeSkillInfo[];
+  removableItems: OpencodeSkillInfo[];
+  description: string;
 };
 type OpencodeSkillSearchResult = {
   spec: string;
@@ -498,6 +505,7 @@ const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
 const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
+const OPENCODE_SKILL_SOURCE_GROUPS_KEY = "giteam.opencode.skill-source-groups.v1";
 const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
 const UI_FONT_SIZE_KEY = "giteam.appearance.ui-font-size.v1";
 const CODE_FONT_SIZE_KEY = "giteam.appearance.code-font-size.v1";
@@ -614,6 +622,24 @@ function saveLocalString(key: string, value: string): void {
   try {
     if (value) window.localStorage.setItem(key, value);
     else window.localStorage.removeItem(key);
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
+function loadLocalJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveLocalJson(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
   } catch {
     // ignore unavailable storage
   }
@@ -1000,6 +1026,13 @@ function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): b
   const agents = Array.isArray(item.agents) ? item.agents : [];
   const targetsOpencode = agents.length === 0 || agents.some((agent) => agent.toLowerCase() === "opencode");
   return isInstalledDir && targetsOpencode;
+}
+
+function skillSourceGroupFromSpec(spec: string): string {
+  const trimmed = spec.trim();
+  if (!trimmed) return "";
+  const [pkg] = trimmed.split("@");
+  return (pkg || trimmed).trim();
 }
 
 function scheduleAfterInteraction(task: () => void, delay = 240): number {
@@ -1483,6 +1516,8 @@ export function App() {
   const opencodeSkillCatalogRequestRef = useRef(0);
   const opencodeSkillsRepoPathRef = useRef("");
   const opencodeSkillsByRepoRef = useRef<Record<string, OpencodeSkillInfo[]>>({});
+  const opencodeSkillSourceGroupsRef = useRef<Record<string, string>>(loadLocalJson<Record<string, string>>(OPENCODE_SKILL_SOURCE_GROUPS_KEY, {}));
+  const pendingSkillInstallGroupsRef = useRef<Record<string, Array<{ groupName: string; scope: "project" | "global"; beforePaths: string[] }>>>({});
   const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
@@ -1967,6 +2002,37 @@ export function App() {
         .some((value) => String(value || "").toLowerCase().includes(query));
     });
   }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
+  const groupedOpencodeSkills = useMemo<OpencodeInstalledSkillGroup[]>(() => {
+    if (!opencodeSkillsVisible) return [];
+    const groups = new Map<string, OpencodeSkillInfo[]>();
+    filteredOpencodeSkills.forEach((skill) => {
+      const key = (skill.sourceGroup || skill.name).trim() || "Unnamed Skill";
+      const bucket = groups.get(key) || [];
+      bucket.push(skill);
+      groups.set(key, bucket);
+    });
+    return Array.from(groups.entries())
+      .map(([name, items]) => {
+        const sortedItems = [...items].sort((a, b) => {
+          const scopeOrder = (scope?: string) => scope === "project" ? 0 : scope === "global" ? 1 : 2;
+          return scopeOrder(a.scope) - scopeOrder(b.scope)
+            || String(a.path || a.location || "").localeCompare(String(b.path || b.location || ""));
+        });
+        const removableItems = sortedItems.filter((item) => {
+          const scope = item.scope || "source";
+          return scope === "project" || scope === "global";
+        });
+        return {
+          name,
+          items: sortedItems,
+          removableItems,
+          description: sortedItems.length > 1
+            ? `${sortedItems.length} 个子 Skills`
+            : (sortedItems[0]?.description || sortedItems[0]?.path || sortedItems[0]?.location || "Installed via skills.sh")
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [opencodeSkillsVisible, filteredOpencodeSkills]);
   const opencodeFallbackMarketplaceRows = useMemo(() => opencodeSkillsVisible ? OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
     spec: skill.spec,
     package: skill.source,
@@ -1994,15 +2060,99 @@ export function App() {
   const opencodeSkillsPaging = (opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length > 0 && opencodeSkillSearchResults.length === 0) || opencodeSkillRevealLoading;
   const opencodeInstalledSkillNodes = useMemo(() => {
     if (!opencodeSkillsVisible) return null;
-    if (opencodeSkills.length === 0) return <div className="gt-module-empty">暂无已安装 Skills</div>;
-    return opencodeSkills.map((skill) => {
+    if (groupedOpencodeSkills.length === 0) return <div className="gt-module-empty">暂无已安装 Skills</div>;
+    return groupedOpencodeSkills.map((group) => {
+      const removing = group.removableItems.some((skill) => {
+        const scope = skill.scope || "source";
+        const removeKey = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
+        return opencodeSkillRemovingKey === removeKey;
+      });
+      const singleSkill = group.items[0];
+      const canRenderFlat = group.items.length === 1
+        && !!singleSkill
+        && (singleSkill.sourceGroup || "").trim() === ""
+        && group.name.trim() === singleSkill.name.trim();
+      if (canRenderFlat) {
+        const skill = singleSkill;
+        const scope = skill.scope || "source";
+        const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
+        return (
+          <div key={group.name} className="gt-installed-skill-group is-flat">
+            <div className="gt-installed-skill-group-flat-row">
+              <button
+                type="button"
+                className="gt-installed-skill-chip is-reference"
+                onClick={() => referenceOpencodeSkill(skill)}
+                title={`Use ${skill.name}`}
+              >
+                <div>
+                  <strong>{skill.name}</strong>
+                  <small>{skill.path || skill.location || skill.description || "Installed via skills.sh"}</small>
+                </div>
+                <span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span>
+              </button>
+              <button
+                type="button"
+                className="gt-installed-skill-delete"
+                disabled={group.removableItems.length === 0 || removing}
+                onClick={() => void removeOpencodeSkill(skill)}
+                title={group.removableItems.length === 0 ? "该技能不可删除" : `删除 ${skill.name}`}
+              >
+                {removing ? "删除中..." : "删除"}
+              </button>
+            </div>
+          </div>
+        );
+      }
       return (
-        <button key={`${skill.scope || "project"}-${skill.name}`} type="button" className="gt-installed-skill-chip is-reference" onClick={() => referenceOpencodeSkill(skill)} title={`Use ${skill.name}`}>
-          <div><strong>{skill.name}</strong><small>{skill.scope || "project"}</small></div>
-        </button>
+        <details key={group.name} className="gt-installed-skill-group" open>
+          <summary>
+            <div className="gt-installed-skill-group-main" title={group.name}>
+              <div>
+                <strong>{group.name}</strong>
+                <small>{group.description}</small>
+              </div>
+              <span>{group.items.length} 项</span>
+            </div>
+            <button
+              type="button"
+              className="gt-installed-skill-delete"
+              disabled={group.removableItems.length === 0 || removing}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void removeOpencodeSkillGroup(group);
+              }}
+              title={group.removableItems.length === 0 ? "该目录下没有可删除的已安装项" : `删除 ${group.name}`}
+            >
+              {removing ? "删除中..." : "删除"}
+            </button>
+          </summary>
+          <div className="gt-installed-skill-group-items">
+            {group.items.map((skill) => {
+              const scope = skill.scope || "source";
+              const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
+              return (
+                <button
+                  key={`${scope}:${skill.name}:${skill.path || skill.location || ""}`}
+                  type="button"
+                  className="gt-installed-skill-chip is-reference"
+                  onClick={() => referenceOpencodeSkill(skill)}
+                  title={`Use ${skill.name}`}
+                >
+                  <div>
+                    <strong>{skill.name}</strong>
+                    <small>{skill.path || skill.location || skill.description || "Installed via skills.sh"}</small>
+                  </div>
+                  <span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span>
+                </button>
+              );
+            })}
+          </div>
+        </details>
       );
     });
-  }, [opencodeSkillsVisible, opencodeSkills, opencodeSlashCommands]);
+  }, [opencodeSkillsVisible, groupedOpencodeSkills, opencodeSkillRemovingKey]);
   const opencodeSkillCardNodes = useMemo(() => {
     if (!opencodeSkillsVisible) return null;
     return visibleOpencodeMarketplaceRows.map((result, idx) => {
@@ -2044,23 +2194,24 @@ export function App() {
     <div className="settings-skills-manager">
       {opencodeSkillsError ? <div className="gt-module-empty danger">{opencodeSkillsError}</div> : null}
       <div className="settings-skills-grid">
-        {opencodeSkills.length === 0 ? <div className="gt-module-empty">暂无已安装 Skills。</div> : opencodeSkills.map((skill) => {
-          const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
-          const removable = (skill.scope || "source") !== "source";
-          const scopeLabel = skill.scope === "global" ? "Global" : skill.scope === "project" ? "Repo" : "Source";
+        {groupedOpencodeSkills.length === 0 ? <div className="gt-module-empty">暂无已安装 Skills。</div> : groupedOpencodeSkills.map((group) => {
+          const removing = group.removableItems.some((skill) => {
+            const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
+            return opencodeSkillRemovingKey === removeKey;
+          });
           return (
-            <article key={removeKey} className="settings-skill-card">
+            <article key={group.name} className="settings-skill-card">
               <div className="settings-skill-card-main">
                 <div className="settings-skill-card-title">
-                  <strong>{skill.name}</strong>
-                  <span>{scopeLabel}</span>
+                  <strong>{group.name}</strong>
+                  <span>{group.items.length} 项</span>
                 </div>
-                <p>{skill.description || skill.path || skill.location || "Installed via skills.sh"}</p>
+                <p>{group.description}</p>
               </div>
               <details className="settings-skill-menu">
-                <summary aria-label={`${skill.name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
+                <summary aria-label={`${group.name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
                 <div className="settings-skill-menu-panel">
-                  <button className="settings-skill-remove" type="button" disabled={!removable || opencodeSkillRemovingKey === removeKey} onClick={() => void removeOpencodeSkill(skill)} title={removable ? "Uninstall skill" : "Source skills need to be removed from source config"}>{opencodeSkillRemovingKey === removeKey ? "Removing" : "Uninstall"}</button>
+                  <button className="settings-skill-remove" type="button" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkillGroup(group)} title={group.removableItems.length > 0 ? "Uninstall skill group" : "Source skills need to be removed from source config"}>{removing ? "Removing" : "Uninstall"}</button>
                 </div>
               </details>
             </article>
@@ -2068,7 +2219,7 @@ export function App() {
         })}
       </div>
     </div>
-  ), [opencodeSkills, opencodeSkillsLoading, opencodeSkillsError, repoPath, opencodeSkillRemovingKey]);
+  ), [groupedOpencodeSkills, opencodeSkillsLoading, opencodeSkillsError, repoPath, opencodeSkillRemovingKey]);
 
   const settingsMcpContent = useMemo(() => (
     <div className="settings-skills-manager">
@@ -2704,8 +2855,43 @@ export function App() {
         name: String(item?.name || "").trim(),
         path: String(item?.path || ""),
         scope: (item?.scope === "global" ? "global" : "project") as "global" | "project",
-        agents: Array.isArray(item?.agents) ? item.agents.map((x: unknown) => String(x || "")).filter(Boolean) : []
+        agents: Array.isArray(item?.agents) ? item.agents.map((x: unknown) => String(x || "")).filter(Boolean) : [],
+        sourceGroup: String(item?.sourceGroup || "").trim()
       })).filter((item) => item.name && isInstalledOpencodeSkill(item));
+      const pending = pendingSkillInstallGroupsRef.current[requestRepoPath] || [];
+      if (pending.length > 0) {
+        const nextMap = { ...opencodeSkillSourceGroupsRef.current };
+        let changed = false;
+        const unresolved: Array<{ groupName: string; scope: "project" | "global"; beforePaths: string[] }> = [];
+        pending.forEach((entry) => {
+          let matchedAny = false;
+          installedRows.forEach((item) => {
+            if (item.scope !== entry.scope) return;
+            if (!item.path || entry.beforePaths.includes(item.path)) return;
+            matchedAny = true;
+            if (nextMap[item.path] === entry.groupName) return;
+            nextMap[item.path] = entry.groupName;
+            changed = true;
+          });
+          if (!matchedAny) unresolved.push(entry);
+        });
+        pendingSkillInstallGroupsRef.current[requestRepoPath] = unresolved;
+        if (changed) {
+          opencodeSkillSourceGroupsRef.current = nextMap;
+          saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, nextMap);
+        }
+      }
+      const sourceGroupMap = opencodeSkillSourceGroupsRef.current;
+      const sourceGroupEntries = installedRows
+        .map((installed) => ({
+          path: installed.path,
+          scope: installed.scope,
+          sourceGroup: installed.sourceGroup || sourceGroupMap[installed.path] || ""
+        }))
+        .filter((entry) => entry.path && entry.sourceGroup);
+      if (sourceGroupEntries.length > 0) {
+        void invoke("save_opencode_skill_source_groups", { repoPath: requestRepoPath, entries: sourceGroupEntries }).catch(() => null);
+      }
       const rows = installedRows.map((installed): OpencodeSkillInfo => {
         return {
           name: installed.name,
@@ -2715,7 +2901,8 @@ export function App() {
           compatibility: "",
           scope: installed.scope,
           path: installed.path,
-          agents: installed.agents
+          agents: installed.agents,
+          sourceGroup: installed.sourceGroup || sourceGroupMap[installed.path] || ""
         };
       });
       opencodeSkillsByRepoRef.current[requestRepoPath] = rows;
@@ -3553,6 +3740,15 @@ export function App() {
       setError("请输入 skills.sh 条目，例如 vercel-labs/skills/find-skills");
       return;
     }
+    const groupName = skillSourceGroupFromSpec(primarySpec);
+    const beforePaths = opencodeSkills
+      .filter((skill) => (skill.scope || "project") === scopeArg)
+      .map((skill) => String(skill.path || ""))
+      .filter(Boolean);
+    pendingSkillInstallGroupsRef.current[repoPath] = [
+      ...(pendingSkillInstallGroupsRef.current[repoPath] || []),
+      { groupName: groupName || primarySpec, scope: scopeArg, beforePaths }
+    ];
     const globalFlag = scopeArg === "global" ? " -g" : "";
     const command = `SKILLS_CLONE_TIMEOUT_MS=600000 npx -y skills add ${quoteShellArg(primarySpec)} --agent opencode -y${globalFlag}`;
     setOpencodeSkillBusy(false);
@@ -3569,20 +3765,69 @@ export function App() {
     });
   }
 
+  function buildInstalledSkillRemovePaths(skills: OpencodeSkillInfo[]): string[] {
+    return Array.from(new Set(
+      skills
+        .map((skill) => String(skill.path || "").trim())
+        .filter(Boolean)
+    ));
+  }
+
+  function pruneRemovedSkillSourceGroups(removedPaths: string[]) {
+    if (removedPaths.length === 0) return;
+    const nextMap = { ...opencodeSkillSourceGroupsRef.current };
+    let changed = false;
+    removedPaths.forEach((path) => {
+      if (!(path in nextMap)) return;
+      delete nextMap[path];
+      changed = true;
+    });
+    if (!changed) return;
+    opencodeSkillSourceGroupsRef.current = nextMap;
+    saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, nextMap);
+  }
+
   async function removeOpencodeSkill(skill: OpencodeSkillInfo) {
     if (!ensureRepoSelected()) return;
     const scope = skill.scope || "source";
-    if (scope !== "project" && scope !== "global") {
-      setOpencodeSkillsError("只能删除已安装到 Repo 或 Global 的 Skill。Source 类型请从来源配置中移除。");
+    const key = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
+    const removablePaths = buildInstalledSkillRemovePaths([skill]);
+    if (removablePaths.length === 0) {
+      setOpencodeSkillsError("缺少可删除的技能路径。");
       return;
     }
-    const key = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
     setOpencodeSkillRemovingKey(key);
     setOpencodeSkillsError("");
     try {
-      await invoke<string>("remove_opencode_skill", { repoPath, name: skill.name, global: scope === "global" });
+      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath, paths: removablePaths });
+      pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
       await refreshOpencodeSkills();
       setMessage(`Skill removed: ${skill.name}`);
+    } catch (e) {
+      const msg = String(e);
+      setOpencodeSkillsError(msg);
+      setError(msg);
+    } finally {
+      setOpencodeSkillRemovingKey("");
+    }
+  }
+
+  async function removeOpencodeSkillGroup(group: OpencodeInstalledSkillGroup) {
+    if (!ensureRepoSelected()) return;
+    if (group.removableItems.length === 0) {
+      setOpencodeSkillsError("该目录下没有可删除的已安装项。");
+      return;
+    }
+    setOpencodeSkillsError("");
+    try {
+      const removeKeys = group.removableItems.map((skill) => `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`);
+      const removablePaths = buildInstalledSkillRemovePaths(group.removableItems);
+      if (removablePaths.length === 0) throw new Error("该目录下没有可删除的技能路径。");
+      setOpencodeSkillRemovingKey(removeKeys[0] || "");
+      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath, paths: removablePaths });
+      pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
+      await refreshOpencodeSkills();
+      setMessage(`Skill group removed: ${group.name}`);
     } catch (e) {
       const msg = String(e);
       setOpencodeSkillsError(msg);
@@ -10531,7 +10776,7 @@ branches.forEach((b) => {
         {rightPaneTab === "skills" ? (
           <div className="gt-skill-market-shell">
             <details className="gt-installed-skills-collapsible">
-              <summary><span>已安装 Skills</span><small>{opencodeSkills.length}</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新"><RefreshIcon /></button></summary>
+              <summary><span>已安装 Skills</span><small>{groupedOpencodeSkills.length} 组 / {opencodeSkills.length} 项</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新"><RefreshIcon /></button></summary>
               <div className="gt-installed-skill-grid">
                 {opencodeInstalledSkillNodes}
               </div>
@@ -10645,10 +10890,9 @@ branches.forEach((b) => {
                   <div className="gt-skill-inspector-empty"><strong>选择一个 Skill</strong><span>查看来源、质量信号，并像插件市场一样直接安装。</span></div>
                 )}
                 <div className="gt-installed-skills-mini">
-                  <div className="gt-installed-skills-head"><div><strong>已安装</strong><span>{opencodeSkills.length} skills</span></div><button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新</button></div>
-                  {filteredOpencodeSkills.slice(0, 6).map((skill) => {
-                    const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
-                    return <button type="button" key={removeKey} className="gt-installed-skill-row is-reference" onClick={() => referenceOpencodeSkill(skill)}><div><strong>{skill.name}</strong><span>{skill.description || "Installed via skills.sh"}</span></div><span className={`gt-scope-badge ${skill.scope || "source"}`}>{skill.scope === "global" ? "Global" : skill.scope === "project" ? "Repo" : "Source"}</span></button>;
+                  <div className="gt-installed-skills-head"><div><strong>已安装</strong><span>{groupedOpencodeSkills.length} 组 / {opencodeSkills.length} skills</span></div><button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新</button></div>
+                  {groupedOpencodeSkills.slice(0, 6).map((group) => {
+                    return <button type="button" key={group.name} className="gt-installed-skill-row is-reference" onClick={() => referenceOpencodeSkill(group.items[0])}><div><strong>{group.name}</strong><span>{group.items.length > 1 ? `${group.items.length} 个子 Skills` : (group.items[0]?.name || "Installed via skills.sh")}</span></div><span className="gt-scope-badge project">{group.items.length} 项</span></button>;
                   })}
                 </div>
               </aside>
@@ -12462,16 +12706,41 @@ branches.forEach((b) => {
                     {opencodeSkills.length === 0 ? <div className="gt-module-empty">暂无 Skills。OpenCode 会扫描 .opencode/skills、.claude/skills 和全局 skills。</div> : null}
                     {opencodeSkills.length > 0 && filteredOpencodeSkills.length === 0 ? <div className="gt-module-empty">没有匹配当前过滤条件的 Skill。</div> : null}
                     <div className="gt-module-list">
-                      {filteredOpencodeSkills.map((skill) => (
-                        <div key={`${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`} className="gt-module-row gt-module-row-static">
-                          <span className="gt-module-row-title">{skill.name}<span className={`gt-scope-badge ${skill.scope || "source"}`}>{skill.scope === "global" ? "Global" : skill.scope === "project" ? "Repo" : "Source"}</span></span>
-                          <span className="gt-module-row-desc">{skill.description || "No description"}</span>
-                          <span className="gt-module-row-meta">{skill.path || skill.location || skill.license || "skill"}</span>
-                          <span className="gt-module-row-actions">
-                            <button className="chip danger" disabled={(skill.scope || "source") === "source" || opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`} onClick={() => void removeOpencodeSkill(skill)}>{opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}` ? "Removing" : "Uninstall"}</button>
-                          </span>
-                        </div>
-                      ))}
+                      {groupedOpencodeSkills.map((group) => {
+                        const removing = group.removableItems.some((skill) => opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`);
+                        const singleSkill = group.items[0];
+                        const canRenderFlat = group.items.length === 1
+                          && !!singleSkill
+                          && (singleSkill.sourceGroup || "").trim() === ""
+                          && group.name.trim() === singleSkill.name.trim();
+                        if (canRenderFlat) {
+                          const skill = singleSkill;
+                          const scope = skill.scope || "source";
+                          const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
+                          return (
+                            <div key={group.name} className="gt-module-row gt-module-row-static">
+                              <span className="gt-module-row-title">{skill.name}<span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span></span>
+                              <span className="gt-module-row-desc">{skill.description || "Installed via skills.sh"}</span>
+                              <span className="gt-module-row-meta">{skill.path || skill.location || skill.license || "skill"}</span>
+                              <span className="gt-module-row-actions">
+                                <button className="chip" onClick={() => referenceOpencodeSkill(skill)}>查看</button>
+                                <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkill(skill)}>{removing ? "Removing" : "Uninstall"}</button>
+                              </span>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={group.name} className="gt-module-row gt-module-row-static">
+                            <span className="gt-module-row-title">{group.name}<span className="gt-scope-badge project">{group.items.length} 项</span></span>
+                            <span className="gt-module-row-desc">{group.items.map((skill) => skill.name).join(" · ") || "No description"}</span>
+                            <span className="gt-module-row-meta">{group.items[0]?.path || group.items[0]?.location || group.items[0]?.license || "skill"}</span>
+                            <span className="gt-module-row-actions">
+                              <button className="chip" onClick={() => referenceOpencodeSkill(group.items[0])}>查看</button>
+                              <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkillGroup(group)}>{removing ? "Removing" : "Uninstall"}</button>
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ) : null}

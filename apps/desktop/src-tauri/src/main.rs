@@ -169,6 +169,8 @@ fn main() {
             commands::opencode::install_opencode_skill_from_registry,
             commands::opencode::get_opencode_skill_install_status,
             commands::opencode::remove_opencode_skill,
+            commands::opencode::remove_installed_opencode_skills_by_path,
+            commands::opencode::save_opencode_skill_source_groups,
             commands::opencode::set_opencode_server_current_model,
             commands::opencode::put_opencode_server_auth,
             commands::opencode::delete_opencode_server_auth,

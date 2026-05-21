@@ -5,6 +5,10 @@ target
 *.log
 .idea/
 assets/
+!apps/mobile/assets/
+!apps/mobile/assets/fonts/
+!apps/mobile/assets/fonts/*.otf
+!apps/mobile/assets/fonts/*.ttf
 apps/desktop/src-tauri/target
 apps/cli/.publish-release.json
 .agents

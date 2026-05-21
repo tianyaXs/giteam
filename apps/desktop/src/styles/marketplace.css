@@ -3630,10 +3630,104 @@
 
 .gt-installed-skill-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--gt-space-2);
   border-top: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
   padding: var(--gt-space-2-5);
+  max-height: clamp(280px, 46vh, 640px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.gt-installed-skill-group {
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: var(--gt-radius-lg);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  overflow: hidden;
+}
+
+.gt-installed-skill-group.is-flat {
+  padding: var(--gt-space-2-5);
+}
+
+.gt-installed-skill-group-flat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--gt-space-2);
+  align-items: center;
+}
+
+.gt-installed-skill-group summary {
+  list-style: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--gt-space-2);
+  align-items: center;
+  padding: var(--gt-space-2-5);
+  cursor: pointer;
+}
+
+.gt-installed-skill-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.gt-installed-skill-group-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--gt-space-2);
+  align-items: center;
+}
+
+.gt-installed-skill-group-main div {
+  min-width: 0;
+  display: grid;
+  gap: var(--gt-space-1);
+}
+
+.gt-installed-skill-group-main strong,
+.gt-installed-skill-group-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gt-installed-skill-group-main strong {
+  color: var(--text);
+}
+
+.gt-installed-skill-group-main small {
+  color: var(--muted);
+}
+
+.gt-installed-skill-group-main span {
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+}
+
+.gt-installed-skill-delete {
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+  color: color-mix(in srgb, var(--danger) 72%, var(--text));
+  border-radius: var(--gt-radius-pill);
+  min-height: 30px;
+  padding: 0 var(--gt-space-3);
+  font-size: var(--gt-text-xs);
+  cursor: pointer;
+}
+
+.gt-installed-skill-delete:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gt-installed-skill-group-items {
+  display: grid;
+  gap: var(--gt-space-2);
+  border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+  padding: var(--gt-space-2-5);
+  max-height: 260px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .gt-installed-skill-chip {
@@ -4907,4 +5001,3 @@ button:disabled {
   max-height: 230px;
   overflow: auto;
 }
-

@@ -17,9 +17,20 @@ fn localhost_proxy_available(port: u16) -> bool {
 }
 
 fn terminal_proxy_envs() -> Vec<(String, String)> {
-    let existing = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()));
+    let existing = [
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "all_proxy",
+    ]
+    .iter()
+    .find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    });
     let proxy = existing.or_else(|| {
         if localhost_proxy_available(7890) {
             Some("http://127.0.0.1:7890".to_string())
@@ -27,7 +38,9 @@ fn terminal_proxy_envs() -> Vec<(String, String)> {
             None
         }
     });
-    let Some(proxy) = proxy else { return Vec::new(); };
+    let Some(proxy) = proxy else {
+        return Vec::new();
+    };
     vec![
         ("HTTPS_PROXY".to_string(), proxy.clone()),
         ("HTTP_PROXY".to_string(), proxy.clone()),
@@ -35,8 +48,14 @@ fn terminal_proxy_envs() -> Vec<(String, String)> {
         ("https_proxy".to_string(), proxy.clone()),
         ("http_proxy".to_string(), proxy.clone()),
         ("all_proxy".to_string(), proxy),
-        ("NO_PROXY".to_string(), "localhost,127.0.0.1,::1".to_string()),
-        ("no_proxy".to_string(), "localhost,127.0.0.1,::1".to_string()),
+        (
+            "NO_PROXY".to_string(),
+            "localhost,127.0.0.1,::1".to_string(),
+        ),
+        (
+            "no_proxy".to_string(),
+            "localhost,127.0.0.1,::1".to_string(),
+        ),
     ]
 }
 
@@ -121,9 +140,9 @@ static REPO_TERMINAL_SESSIONS: OnceLock<Mutex<HashMap<String, ManagedRepoTermina
 
 fn terminal_completion_builtins() -> &'static [&'static str] {
     &[
-        "cd", "ls", "pwd", "cat", "cp", "mv", "rm", "mkdir", "touch", "echo", "git", "npm",
-        "node", "pnpm", "yarn", "bun", "python", "python3", "cargo", "rustc", "go", "make", "vim",
-        "nvim", "code", "open", "which", "grep", "rg", "sed", "awk", "find", "clear", "exit",
+        "cd", "ls", "pwd", "cat", "cp", "mv", "rm", "mkdir", "touch", "echo", "git", "npm", "node",
+        "pnpm", "yarn", "bun", "python", "python3", "cargo", "rustc", "go", "make", "vim", "nvim",
+        "code", "open", "which", "grep", "rg", "sed", "awk", "find", "clear", "exit",
     ]
 }
 
@@ -231,7 +250,11 @@ fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
             PathBuf::from(display_dir.as_str())
         }
     } else {
-        let root = if cwd.trim().is_empty() { repo_path } else { cwd };
+        let root = if cwd.trim().is_empty() {
+            repo_path
+        } else {
+            cwd
+        };
         PathBuf::from(root).join(display_dir.as_str())
     };
     let Ok(entries) = fs::read_dir(base_dir) else {
@@ -251,7 +274,10 @@ fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
         }
         out.push((display, is_dir));
     }
-    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+    });
     out.into_iter().map(|(value, _)| value).collect()
 }
 
@@ -276,7 +302,8 @@ fn unescape_terminal_path_token(value: &str) -> String {
 
 fn resolve_terminal_cd_target(current_cwd: &str, line: &str) -> Option<String> {
     let trimmed = line.trim_matches(|ch| ch == '\r' || ch == '\n').trim();
-    if trimmed.is_empty() || trimmed.contains(';') || trimmed.contains('&') || trimmed.contains('|') {
+    if trimmed.is_empty() || trimmed.contains(';') || trimmed.contains('&') || trimmed.contains('|')
+    {
         return None;
     }
     let mut parts = trimmed.split_whitespace();
@@ -287,7 +314,8 @@ fn resolve_terminal_cd_target(current_cwd: &str, line: &str) -> Option<String> {
     if parts.next().is_some() {
         return None;
     }
-    let target = unescape_terminal_path_token(raw_target.trim_matches(|ch| ch == '"' || ch == '\''));
+    let target =
+        unescape_terminal_path_token(raw_target.trim_matches(|ch| ch == '"' || ch == '\''));
     let path = if target == "~" {
         std::env::var("HOME").ok().map(PathBuf::from)?
     } else if let Some(rest) = target.strip_prefix("~/") {
@@ -1254,7 +1282,11 @@ pub fn run_git_checkout_branch(repo_path: &str, branch_name: &str) -> Result<Str
 }
 
 #[tauri::command]
-pub fn run_git_checkout_remote_branch(repo_path: &str, remote_branch: &str, local_branch: Option<String>) -> Result<String, String> {
+pub fn run_git_checkout_remote_branch(
+    repo_path: &str,
+    remote_branch: &str,
+    local_branch: Option<String>,
+) -> Result<String, String> {
     let remote = remote_branch.trim();
     if remote.is_empty() {
         return Err("remote branch name is empty".to_string());
@@ -1305,7 +1337,9 @@ fn validate_commit_ref(commit_sha: &str) -> Result<String, String> {
     if sha.is_empty() {
         return Err("commit sha is empty".to_string());
     }
-    if sha.contains(|c: char| c.is_whitespace()) || sha.contains([';', '&', '|', '`', '$', '\'', '"']) {
+    if sha.contains(|c: char| c.is_whitespace())
+        || sha.contains([';', '&', '|', '`', '$', '\'', '"'])
+    {
         return Err("commit sha contains invalid characters".to_string());
     }
     Ok(sha.to_string())
@@ -1643,7 +1677,11 @@ pub fn read_repo_terminal_output(
 }
 
 #[tauri::command]
-pub fn complete_repo_terminal_input(repo_path: &str, input: &str, cwd: Option<String>) -> Result<String, String> {
+pub fn complete_repo_terminal_input(
+    repo_path: &str,
+    input: &str,
+    cwd: Option<String>,
+) -> Result<String, String> {
     Ok(list_repo_terminal_completions(repo_path, input, cwd)?.next_input)
 }
 

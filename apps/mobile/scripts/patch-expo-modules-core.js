@@ -18,6 +18,7 @@ patchExpoCliMetroTerminal();
 patchMetroWorkletsBundleModeSha();
 patchDrawerLayoutSpring();
 patchMetroRuntimeWorkletsHmr();
+ensureMobileNodeModuleLink('react-native-worklets');
 
 if (fs.existsSync(gradlePluginFile)) {
   const source = fs.readFileSync(gradlePluginFile, 'utf8');
@@ -242,4 +243,28 @@ const inject = ({ module: [id, code], sourceURL }) => {
   }
   fs.writeFileSync(hmrClientFile, source.replace(before, after));
   console.log('[patch-metro-runtime] patched worklets HMR propagation');
+}
+
+function ensureMobileNodeModuleLink(packageName) {
+  const sourceDir = path.join(rootDir, 'node_modules', packageName);
+  const mobileNodeModulesDir = path.join(rootDir, 'apps', 'mobile', 'node_modules');
+  const targetDir = path.join(mobileNodeModulesDir, packageName);
+  if (!fs.existsSync(sourceDir) || !fs.existsSync(mobileNodeModulesDir)) return;
+  try {
+    if (fs.existsSync(targetDir)) {
+      const stat = fs.lstatSync(targetDir);
+      if (stat.isSymbolicLink()) {
+        const current = fs.realpathSync(targetDir);
+        const expected = fs.realpathSync(sourceDir);
+        if (current === expected) return;
+      } else {
+        return;
+      }
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+    fs.symlinkSync(sourceDir, targetDir, 'dir');
+    console.log(`[patch-mobile-node-modules] linked ${packageName} into apps/mobile/node_modules`);
+  } catch (error) {
+    console.warn(`[patch-mobile-node-modules] failed to link ${packageName}`, error);
+  }
 }

@@ -5,9 +5,7 @@
     "version": "0.1.32",
     "icon": "../../apps/desktop/src-tauri/icons/icon.png",
     "splash": {
-      "image": "../../apps/desktop/src-tauri/icons/icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#f6f1e8"
     },
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -20,12 +18,10 @@
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "../../apps/desktop/src-tauri/icons/icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#f6f1e8"
       },
       "splash": {
-        "image": "../../apps/desktop/src-tauri/icons/icon.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#f6f1e8"
       }
     },
     "ios": {
