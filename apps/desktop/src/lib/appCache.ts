@@ -83,6 +83,14 @@ export function saveCachedRuntimeStatus(status: RuntimeRequirementsStatus): void
   }
 }
 
+export function getRuntimeLogTail(log: string): string {
+  const lines = (log || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[lines.length - 1] ?? "";
+}
+
 export function loadCachedWidth(key: string, fallback: number, min: number, max: number): number {
   try {
     const raw = window.localStorage.getItem(key);

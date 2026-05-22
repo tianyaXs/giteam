@@ -1,5 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { mmkvGetString, mmkvSetString } from './mmkv';
+import { toText } from '../lib/text';
 
 export type SessionCacheItem = {
   id: string;
@@ -11,11 +11,9 @@ export type SessionCacheItem = {
 
 export const SESSION_CACHE_KEY = 'giteam.mobile.session-cache.v1';
 
-export async function loadSessionCache(): Promise<Record<string, SessionCacheItem[]>> {
+export function loadSessionCache(): Record<string, SessionCacheItem[]> {
   try {
-    const raw = Platform.OS === 'web'
-      ? window.localStorage.getItem(SESSION_CACHE_KEY)
-      : await AsyncStorage.getItem(SESSION_CACHE_KEY);
+    const raw = mmkvGetString(SESSION_CACHE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (typeof parsed !== 'object' || !parsed) return {};
@@ -37,14 +35,10 @@ export async function loadSessionCache(): Promise<Record<string, SessionCacheIte
   }
 }
 
-export async function saveSessionCache(cache: Record<string, SessionCacheItem[]>): Promise<void> {
+export function saveSessionCache(cache: Record<string, SessionCacheItem[]>): void {
   try {
     const payload = JSON.stringify(cache);
-    if (Platform.OS === 'web') {
-      window.localStorage.setItem(SESSION_CACHE_KEY, payload);
-      return;
-    }
-    await AsyncStorage.setItem(SESSION_CACHE_KEY, payload);
+    mmkvSetString(SESSION_CACHE_KEY, payload);
   } catch {
     // ignore
   }

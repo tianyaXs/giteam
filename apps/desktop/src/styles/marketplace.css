@@ -1147,6 +1147,15 @@
   flex: 1.15;
 }
 
+.gt-gittree-section-divider {
+  margin: var(--gt-space-2) 0;
+  padding: var(--gt-space-1) var(--gt-space-2-5);
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
 .gt-gittree-commit-list {
   flex: 0.95;
   border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent);

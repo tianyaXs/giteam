@@ -1,5 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { mmkvGetString, mmkvSetString } from './mmkv';
 import { toText } from '../lib/text';
 
 export const PREF_KEY = 'giteam.mobile.v3';
@@ -34,13 +33,9 @@ export const DEFAULT_PREFS: Prefs = {
   notebookTheme: 'paper'
 };
 
-export async function loadPrefs(): Promise<Prefs> {
+export function loadPrefs(): Prefs {
   try {
-    const loadRaw = async (): Promise<string | null> => {
-      if (Platform.OS === 'web') return window.localStorage.getItem(PREF_KEY);
-      return await AsyncStorage.getItem(PREF_KEY);
-    };
-    const raw = await loadRaw();
+    const raw = mmkvGetString(PREF_KEY);
     if (!raw) return DEFAULT_PREFS;
     const merged = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) };
     const touched = Boolean((merged as any).serverUrlTouched);
@@ -63,14 +58,10 @@ export async function loadPrefs(): Promise<Prefs> {
   }
 }
 
-export async function savePrefs(next: Prefs): Promise<void> {
+export function savePrefs(next: Prefs): void {
   try {
     const raw = JSON.stringify(next);
-    if (Platform.OS === 'web') {
-      window.localStorage.setItem(PREF_KEY, raw);
-      return;
-    }
-    await AsyncStorage.setItem(PREF_KEY, raw);
+    mmkvSetString(PREF_KEY, raw);
   } catch {
     // ignore
   }

@@ -36,6 +36,59 @@ export function createTerminalTabState(id: string, title: string, cwd = ""): Ter
   };
 }
 
+export function recordTerminalCommand(tab: TerminalTabState, command: string): TerminalTabState {
+  return {
+    ...tab,
+    history: [command, ...tab.history.filter((item) => item !== command)].slice(0, 80),
+    historyIndex: -1,
+    historyDraft: "",
+    input: "",
+    completionItems: [],
+    completionIndex: 0,
+    completionToken: ""
+  };
+}
+
+export function appendTerminalError(tab: TerminalTabState, message: string): TerminalTabState {
+  return {
+    ...tab,
+    output: `${tab.output}${tab.output.endsWith("\n") || !tab.output ? "" : "\n"}[error] ${message}\n`
+  };
+}
+
+export function browseTerminalHistoryState(
+  tab: TerminalTabState,
+  direction: "older" | "newer"
+): TerminalTabState {
+  if (tab.history.length === 0) return tab;
+  if (direction === "older") {
+    const next = tab.historyIndex < 0 ? 0 : Math.min(tab.historyIndex + 1, tab.history.length - 1);
+    return {
+      ...tab,
+      historyIndex: next,
+      historyDraft: tab.historyIndex < 0 ? tab.input : tab.historyDraft,
+      input: tab.history[next] || ""
+    };
+  }
+  if (tab.historyIndex <= 0) {
+    return { ...tab, historyIndex: -1, input: tab.historyDraft };
+  }
+  const next = tab.historyIndex - 1;
+  return { ...tab, historyIndex: next, input: tab.history[next] || "" };
+}
+
+export function clearTerminalCompletion(tab: TerminalTabState, input: string): TerminalTabState {
+  return {
+    ...tab,
+    input,
+    historyIndex: -1,
+    historyDraft: input,
+    completionItems: [],
+    completionIndex: 0,
+    completionToken: ""
+  };
+}
+
 export function readTerminalTabSnapshot(): { tabs: TerminalTabState[]; activeId: string; counter: number } | null {
   try {
     const raw = window.localStorage.getItem(TERMINAL_TABS_STORAGE_KEY);

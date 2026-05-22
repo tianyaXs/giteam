@@ -1,11 +1,37 @@
 import { invoke, listen, IS_TAURI } from "./lib/platform";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, Fragment, Suspense, lazy, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
+import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
+import {
+  DEFAULT_CONTROL_SERVER_SETTINGS,
+  controlServerSettingsChanged,
+  normalizeControlPairMode,
+  normalizeControlPublicBaseUrl,
+  normalizeControlServerSettings,
+  type ControlAccessInfo,
+  type ControlPairCodeInfo,
+  type ControlServerSettings,
+  type GiteamMobileServiceStatus
+} from "./lib/controlServer";
+import { readImageFileAsAttachment, type OpencodeImageAttachment } from "./lib/imageAttachments";
+import {
+  OPENCODE_COMPOSER_AGENT_OPTIONS,
+  OPENCODE_THINKING_LEVELS,
+  allowAllPermissionRules,
+  isComposerAgentName,
+  normalizeComposerAgentName,
+  normalizeThinkingLevel,
+  type OpencodeComposerAgentName,
+  type OpencodePermissionRule,
+  type OpencodeThinkingLevel
+} from "./lib/opencodeComposerSettings";
+import { parseOpencodeAgents, type OpencodeAgentInfo } from "./lib/opencodeAgents";
 import {
   loadCachedRuntimeStatus,
   loadCachedWidth,
+  getRuntimeLogTail,
   RIGHT_PANE_WIDTH_CACHE_KEY,
   saveCachedRuntimeStatus,
   saveCachedWidth,
@@ -18,19 +44,34 @@ import {
 import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
-import { explainCommit, explainCommitShort, getEntireStatusDetailed } from "./lib/entireAdapter";
+import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
-  isModelRefAvailable,
-  loadModelRefSet,
   normalizeModelRef,
   normalizeProviderId,
   parseModelRef,
   resolveProviderAliasWithNames,
-  saveModelRefSet
 } from "./lib/opencodeModels";
+import {
+  applyOpencodeCatalog,
+  buildOpencodeConfiguredProviderSnapshot,
+  buildOpencodeProviderPickerCandidates,
+  getOpencodeModelDisplayInfo,
+  getOpencodeProviderSource as getOpencodeProviderSourceFromCatalog,
+  getOpencodeProviderTag as getOpencodeProviderTagFromCatalog,
+  normalizeOpencodeServerProviderState,
+  resolveActiveOpencodeModel,
+  type OpencodeConfigProviderCatalog,
+  type OpencodeModelConfig,
+  type OpencodeProviderAuthMethod,
+  type OpencodeProviderConfig,
+  type OpencodeServerConfig,
+  type OpencodeServerConfigProvider,
+  type OpencodeServerProviderState,
+  type OpencodeServiceSettings
+} from "./lib/opencodeProviderCatalog";
 import {
   buildOpencodeTurnRanges,
   clipOpencodeSessionTitle,
@@ -51,18 +92,11 @@ import {
   type OpencodeTodoItem
 } from "./lib/opencodeSessions";
 import {
-  buildOpencodeAssistantRenderGroups,
   buildOpencodeImageAttachmentsFromParts,
   buildOpencodeMainLineMarkdownFromParts,
-  buildOpencodeReplyMarkdownFromParts,
-  isOpencodeContextTool,
-  isOpencodeRenderablePart,
   mergeOpencodeMessageAttachments,
   mergeOpencodeStreamText,
-  parseOpencodeTaskSessionId,
   readOpencodeTodosFromPart,
-  summarizeOpencodeContextProgress,
-  summarizeOpencodeContextToolCounts,
   toDisplayJson
 } from "./lib/opencodeParts";
 import {
@@ -70,38 +104,52 @@ import {
   completeRepoTerminalInput,
   clearRepoTerminalSession,
   listRepoTerminalCompletions,
-  createGitBranch,
-  createGitDetachedWorktree,
-  createGitWorktreeFromBranch,
-  deleteGitBranch,
-  getBranchCommits,
   getCommitChangedFiles,
   getCommitFilePatch,
-  getCommitGraph,
-  getGitWorktreeList,
-  getGitUserIdentity,
-  getGitWorktreeFileContent,
-  getGitWorktreeFilePatch,
-  getGitWorktreeOverview,
-  getLocalBranches,
-  gitCheckoutBranch,
-  gitCheckoutRemoteBranch,
-  gitCherryPickCommit,
-  gitDiscardChanges,
-  gitRevertCommit,
-  gitStageFile,
-  gitUnstageFile,
-  removeGitWorktree,
   readRepoTerminalOutput,
-  gitPull,
-  gitPush,
-  gitCommit,
   sendRepoTerminalInput,
   startGitWorktreeWatcher,
   startRepoTerminalSession,
   stopGitWorktreeWatcher
 } from "./lib/gitAdapter";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
+import {
+  filterPermissionsBySession,
+  parseOpencodePermissionRequests,
+  removePermissionsById,
+  replaceSessionPermissions,
+  upsertPermissionRequest,
+  type OpencodePermissionReply,
+  type OpencodePermissionRequest
+} from "./lib/opencodePermissions";
+import {
+  fetchOpencodeQuestions,
+  postOpencodeQuestionReject,
+  postOpencodeQuestionReply
+} from "./lib/opencodeQuestions";
+import {
+  hasRuntimeFirstCheckCompleted,
+  isRuntimeSetupDismissed,
+  markRuntimeFirstCheckCompleted,
+  markRuntimeReady,
+  setRuntimeSetupDismissed
+} from "./lib/desktopPreferences";
+import {
+  getAppText,
+  loadGeneralSettings,
+  playSettingsTone,
+  saveGeneralSettings,
+  showSettingsNotification
+} from "./lib/generalSettings";
+import {
+  loadLocalBool,
+  loadLocalString,
+  saveLocalBool,
+  saveLocalString
+} from "./lib/localPreferences";
+import {
+  type OpencodeSkillInfo,
+} from "./lib/opencodeSkillData";
 import {
   addRepository,
   listRepositories,
@@ -113,15 +161,19 @@ import {
   saveReviewRecord
 } from "./lib/storage";
 import {
+  appendTerminalError,
   applyTerminalCompletionCandidate,
+  browseTerminalHistoryState,
+  clearTerminalCompletion,
   createTerminalTabState,
-  getTerminalCompletionGroup,
-  readTerminalTabSnapshot,
+  recordTerminalCommand,
   sanitizeTerminalOutput,
   splitTerminalOutputForInput,
   type TerminalTabState,
   writeTerminalTabSnapshot
 } from "./lib/terminalState";
+import { useTerminalTabs } from "./lib/useTerminalTabs";
+import { useGitWorkspaceController } from "./lib/useGitWorkspaceController";
 import {
   normalizeWorkspacePath,
   readBranchParentMap,
@@ -136,18 +188,14 @@ import {
   buildSplitDiffRows,
   buildWorktreeTree,
   collectWorktreeDirPaths,
-  collectWorktreeNodeEntries,
-  collectWorktreeNodeFilePaths,
-  getMonacoLanguage,
-  getWorktreeDisplayStatus,
-  getWorktreeFileKindLabel,
+  getDiscardableWorktreeEntryCount,
+  getWorktreeChangeStats,
+  getWorktreePatchStats,
   getWorktreeStatusText,
   toDiffRows,
-  type DiffRow,
-  type WorktreeTreeNode
+  type DiffRow
 } from "./lib/worktreeDiff";
 import {
-  branchTone,
   buildTopologyModel,
   parseRefs,
   pathLeaf,
@@ -172,15 +220,27 @@ import type {
   ReviewRecord
 } from "./lib/types";
 import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
-import { MarkdownLite } from "./components/common/MarkdownLite";
 import { BranchGraphLanes } from "./components/git/BranchGraphLanes";
-import { McpMarketplace } from "./components/mcp/McpMarketplace";
+import { GitChangesPanel } from "./components/git/GitChangesPanel";
+import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
 import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
+import { OpencodeComposerPanel } from "./components/opencode/OpencodeComposerPanel";
+import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
 import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
-import { OpenCodeProviderList } from "./components/opencode/OpenCodeProviderList";
-import { OpenCodeProviderModelList } from "./components/opencode/OpenCodeProviderModelList";
-import { QuestionDock } from "./components/QuestionDock";
+import { OpenCodeModulePanel, type OpencodeModuleTab } from "./components/opencode/OpenCodeModulePanel";
+import { OpenCodeProviderPickerDialog } from "./components/opencode/OpenCodeProviderPickerDialog";
+import { OpenCodeProviderSettingsPanel } from "./components/opencode/OpenCodeProviderSettingsPanel";
+import {
+  OpencodeMcpDialogs,
+  OpencodeMcpMarketPanel,
+  OpencodeSettingsMcpGrid
+} from "./components/opencode/OpencodeMcpPanels";
+import {
+  OpencodeSkillsMarketPanel,
+  OpencodeSettingsSkillsGrid
+} from "./components/opencode/OpencodeSkillsPanels";
+import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
@@ -188,34 +248,43 @@ import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 import rawMcpServers from "../servers.json";
 import { normalizeMcpMarketData } from "./lib/mcpMarket";
 import {
-  ArrowDownIcon,
+  buildOpencodeMcpPanelRows,
+  buildOpencodeMcpRows,
+  buildUpdatedMcpParamConfig,
+  getEditableMcpParamValues,
+  getCustomMcpParamSpecs,
+  getInstalledMcpParamSpecs as getInstalledMcpParamSpecsFromMarket,
+  getInstalledMcpTools as getInstalledMcpToolsFromMarket,
+  getMissingMcpRequiredParams,
+  normalizeCustomMcpJson,
+  replaceMcpConfigPlaceholders
+} from "./lib/opencodeMcpConfig";
+import { getProviderDisplayName, PROVIDER_PRESETS } from "./lib/opencodeProviders";
+import {
+  getSkillAvatarLabel,
+} from "./lib/opencodeSkillMarketplace";
+import { useDesktopTheme } from "./lib/useDesktopTheme";
+import { useAppearanceFontSize } from "./lib/useAppearanceFontSize";
+import { useOpencodeInstalledSkills } from "./lib/useOpencodeInstalledSkills";
+import { useOpencodeSkillMarketplace } from "./lib/useOpencodeSkillMarketplace";
+import { useOpencodeModelVisibility } from "./lib/useOpencodeModelVisibility";
+import { useOpencodeModelSelection } from "./lib/useOpencodeModelSelection";
+import { shouldUsePromptHistoryKey, useOpencodePromptHistory } from "./lib/useOpencodePromptHistory";
+import { useOpencodeMessageCache } from "./lib/useOpencodeMessageCache";
+import { useOpencodeMcpAddForm } from "./lib/useOpencodeMcpAddForm";
+import { usePinnedRepoIds } from "./lib/usePinnedRepoIds";
+import { useRightModuleVisibility } from "./lib/useRightModuleVisibility";
+import { TerminalPanel } from "./components/terminal/TerminalPanel";
+import { MobileControlDialog } from "./components/settings/MobileControlDialog";
+import {
   CheckIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
   CloseIcon,
-  FolderIcon,
-  ImageIcon,
-  MoreHorizontalIcon,
-  PinIcon,
-  PlusIcon,
-  MenuIcon,
-  RefreshIcon,
-  SyncIcon,
-  MinusIcon,
-  EditIcon,
 } from "./components/icons";
 
-const MonacoDiffViewer = lazy(() => import("./components/git/MonacoDiffViewer"));
 const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
 
 type DetailTab = "diff" | "context" | "findings";
-type Theme = "dark" | "light";
-type OpencodeImageAttachment = {
-  id: string;
-  filename: string;
-  mime: string;
-  dataUrl: string;
-};
 type OpencodeSlashCommand = {
   id: string;
   trigger: string;
@@ -223,87 +292,7 @@ type OpencodeSlashCommand = {
   description?: string;
   source: "builtin" | "command" | "skill" | "mcp";
 };
-type OpencodeAgentInfo = {
-  name: string;
-  description?: string;
-  mode?: "primary" | "subagent" | "all";
-  native?: boolean;
-  hidden?: boolean;
-  color?: string;
-  variant?: string;
-  model?: { providerID?: string; modelID?: string };
-};
-type OpencodeComposerAgentName = "build" | "plan";
-type OpencodePermissionRule = {
-  permission: string;
-  pattern: string;
-  action: "allow" | "ask" | "deny";
-};
-type OpencodePermissionRequest = {
-  id: string;
-  sessionID: string;
-  permission: string;
-  patterns: string[];
-  always?: string[];
-  metadata?: Record<string, unknown>;
-  tool?: { messageID?: string; callID?: string };
-};
-type OpencodePermissionReply = "once" | "always" | "reject";
-type OpencodeThinkingLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-type OpencodeModuleTab = "agents" | "permissions" | "mcp" | "skills";
-type OpencodeMcpType = "local" | "remote";
 type OpencodeMcpStatusMap = Record<string, Record<string, unknown>>;
-type OpencodeSkillSearchStrategy = "keyword" | "ai";
-type OpencodeSkillInfo = {
-  name: string;
-  description?: string;
-  location?: string;
-  license?: string;
-  compatibility?: string;
-  metadata?: Record<string, string>;
-  scope?: "project" | "global" | "source";
-  path?: string;
-  agents?: string[];
-  sourceGroup?: string;
-};
-type OpencodeInstalledSkillGroup = {
-  name: string;
-  items: OpencodeSkillInfo[];
-  removableItems: OpencodeSkillInfo[];
-  description: string;
-};
-type OpencodeSkillSearchResult = {
-  spec: string;
-  package: string;
-  skill: string;
-  installs: string;
-  url: string;
-  id?: string;
-  source?: string;
-  sourceType?: string;
-  installSpec?: string | null;
-  installUrl?: string | null;
-  isDuplicate?: boolean;
-  change?: number;
-  installsYesterday?: number;
-};
-type OpencodeSkillDetail = {
-  id: string;
-  source: string;
-  slug: string;
-  installs: number;
-  hash?: string | null;
-  files?: Array<{ path: string; contents: string }> | null;
-};
-type OpencodeSkillAudit = {
-  provider: string;
-  slug?: string;
-  status: "pass" | "warn" | "fail" | string;
-  summary?: string;
-  auditedAt?: string;
-  riskLevel?: string;
-  categories?: string[];
-};
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -327,103 +316,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
     return this.props.children;
   }
 }
-type OpencodeModelConfig = {
-  configPath: string;
-  configuredModel: string;
-  exists: boolean;
-};
-type OpencodeProviderConfig = {
-  provider: string;
-  npm: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  headers?: Record<string, string>;
-  endpoint: string;
-  region: string;
-  profile: string;
-  project: string;
-  location: string;
-  resourceName: string;
-  enterpriseUrl: string;
-  timeout: string;
-  chunkTimeout: string;
-};
-type OpencodeCatalogProvider = {
-  id: string;
-  name: string;
-  models: string[];
-};
-type OpencodeConfigProviderCatalog = {
-  id: string;
-  name: string;
-  npm: string;
-  models: string[];
-};
-type OpencodeServerProviderCatalog = {
-  id: string;
-  name: string;
-  models: string[];
-  modelNames?: Record<string, string>;
-  source?: string;
-};
-type OpencodeServerProviderState = {
-  providers: OpencodeServerProviderCatalog[];
-  connected: string[];
-};
-
-type OpencodeServerConfigProvider = {
-  name?: string;
-  npm?: string;
-  models?: Record<string, { name?: string }>;
-  options?: {
-    baseURL?: string;
-    apiKey?: string;
-    headers?: Record<string, string>;
-  } & Record<string, unknown>;
-  env?: string[];
-};
-type OpencodeServerConfig = {
-  provider?: Record<string, OpencodeServerConfigProvider>;
-  disabled_providers?: string[];
-  model?: string;
-} & Record<string, unknown>;
-type OpencodeServiceSettings = {
-  port: number;
-};
-type ControlServerSettings = {
-  enabled: boolean;
-  host: string;
-  port: number;
-  publicBaseUrl: string;
-  pairCodeTtlMode: "none" | "24h" | "7d" | "forever";
-};
-type ControlPairCodeInfo = {
-  code: string;
-  expiresAt: number;
-  ttlSeconds: number;
-};
-type ControlAccessInfo = {
-  enabled: boolean;
-  host: string;
-  port: number;
-  publicBaseUrl: string;
-  pairCode: string;
-  expiresAt: number;
-  localUrls: string[];
-  pairCodeTtlMode?: string;
-  noAuth?: boolean;
-};
-type GiteamMobileServiceStatus = {
-  cliInstalled: boolean;
-  enabled: boolean;
-  port: number;
-  running: boolean;
-};
-
 type OpencodeAuthPayload = { type: "api"; key: string };
-type OpencodeProviderAuthMethod = { type: string; label?: string };
-
 const EMPTY_WORKTREE: GitWorktreeOverview = {
   branch: "",
   tracking: "",
@@ -447,50 +340,7 @@ const EMPTY_WORKTREE_FILE_CONTENT: GitWorktreeFileContent = {
   modified: ""
 };
 
-function normalizeControlPairMode(raw: unknown): "none" | "24h" | "7d" | "forever" {
-  const v = String(raw || "").trim().toLowerCase();
-  if (v === "none" || v === "24h" || v === "7d" || v === "forever") return v;
-  return "24h";
-}
-
-function parseReadToolOutput(raw: string): { path: string; type: string; content: string } | null {
-  const src = raw || "";
-  if (!src.includes("<path>") || !src.includes("</path>")) return null;
-  const mPath = src.match(/<path>([\s\S]*?)<\/path>/);
-  const mType = src.match(/<type>([\s\S]*?)<\/type>/);
-  const mContent = src.match(/<content>([\s\S]*?)<\/content>/);
-  const path = (mPath?.[1] || "").trim();
-  const type = (mType?.[1] || "").trim();
-  const content = (mContent?.[1] || "").replace(/\s+$/, "");
-  if (!path && !content) return null;
-  return { path, type, content };
-}
-
-function withLineNumbers(text: string, maxLines = 400): string {
-  const lines = (text || "").split("\n");
-  const slice = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
-  const width = String(slice.length).length;
-  const body = slice.map((l, i) => `${String(i + 1).padStart(width, " ")}│${l}`).join("\n");
-  return lines.length > maxLines ? `${body}\n…（仅展示前 ${maxLines} 行，共 ${lines.length} 行）` : body;
-}
-
-function formatRelativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const m = Math.floor(diff / 60000);
-  const h = Math.floor(diff / 3600000);
-  const d = Math.floor(diff / 86400000);
-  const mo = Math.floor(d / 30);
-  const y = Math.floor(d / 365);
-  if (y > 0) return `${y}y`;
-  if (mo > 0) return `${mo}mo`;
-  if (d > 0) return `${d}d`;
-  if (h > 0) return `${h}h`;
-  if (m > 0) return `${m}m`;
-  return "now";
-}
-
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
-const OPENCODE_SAVED_MODELS_KEY = "giteam.opencode.saved-models.v1";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
@@ -505,708 +355,17 @@ const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
 const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
-const OPENCODE_SKILL_SOURCE_GROUPS_KEY = "giteam.opencode.skill-source-groups.v1";
-const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
-const UI_FONT_SIZE_KEY = "giteam.appearance.ui-font-size.v1";
-const CODE_FONT_SIZE_KEY = "giteam.appearance.code-font-size.v1";
-
-const OPENCODE_COMPOSER_AGENT_OPTIONS: Array<{ name: OpencodeComposerAgentName; label: string; title: string }> = [
-  { name: "build", label: "Build", title: "实现、修改、调试" },
-  { name: "plan", label: "Plan", title: "先拆解方案" }
-];
-
-function isComposerAgentName(value: string): value is OpencodeComposerAgentName {
-  return value === "build" || value === "plan";
-}
-
-function normalizeComposerAgentName(raw: unknown): OpencodeComposerAgentName {
-  const value = String(raw || "").trim().toLowerCase();
-  return isComposerAgentName(value) ? value : "build";
-}
-
-const OPENCODE_THINKING_LEVELS: Array<{ value: OpencodeThinkingLevel; label: string; description: string }> = [
-  { value: "auto", label: "Auto", description: "使用模型或 agent 默认配置" },
-  { value: "none", label: "None", description: "尽量关闭推理" },
-  { value: "minimal", label: "Minimal", description: "极低推理强度" },
-  { value: "low", label: "Low", description: "低推理强度" },
-  { value: "medium", label: "Medium", description: "均衡推理强度" },
-  { value: "high", label: "High", description: "高推理强度" },
-  { value: "xhigh", label: "XHigh", description: "极高推理强度" },
-  { value: "max", label: "Max", description: "模型允许的最大推理" }
-];
-
-const OPENCODE_RECOMMENDED_SKILLS: Array<{ spec: string; title: string; source: string; installs: string; tone: string; description: string }> = [
-  {
-    spec: "anthropics/skills@frontend-design",
-    title: "Frontend Design",
-    source: "anthropics/skills",
-    installs: "385K+",
-    tone: "生产级界面",
-    description: "让 OpenCode 先确定明确美学方向，再处理字体、色彩、动效和空间构图，避免通用 AI UI。"
-  },
-  {
-    spec: "vercel-labs/agent-skills@web-design-guidelines",
-    title: "Web Guidelines",
-    source: "vercel-labs/agent-skills",
-    installs: "305K+",
-    tone: "Vercel 规范",
-    description: "适合打磨 Web 界面的间距、层级、交互和可访问性，让组件更像成熟产品。"
-  },
-  {
-    spec: "leonxlnx/taste-skill@design-taste-frontend",
-    title: "Design Taste",
-    source: "leonxlnx/taste-skill",
-    installs: "47K+",
-    tone: "高审美约束",
-    description: "强约束反套路设计，偏 React/Next/Tailwind，高级视觉和动效规则更激进。"
-  },
-  { spec: "vercel-labs/skills@find-skills", title: "Find Skills", source: "vercel-labs/skills", installs: "1.4M", tone: "Discovery", description: "搜索和安装代理能力的基础 Skill。" },
-  { spec: "vercel-labs/agent-skills@vercel-react-best-practices", title: "Vercel React Best Practices", source: "vercel-labs/agent-skills", installs: "386K+", tone: "React", description: "Vercel 官方 React 设计和实现规范。" },
-  { spec: "microsoft/azure-skills@microsoft-foundry", title: "Microsoft Foundry", source: "microsoft/azure-skills", installs: "303K+", tone: "Azure", description: "Microsoft Foundry 与 Azure agent workflows。" },
-  { spec: "remotion-dev/skills@remotion-best-practices", title: "Remotion Best Practices", source: "remotion-dev/skills", installs: "299K+", tone: "Video", description: "Remotion 项目结构、渲染和动画最佳实践。" },
-  { spec: "microsoft/azure-skills@azure-messaging", title: "Azure Messaging", source: "microsoft/azure-skills", installs: "291K+", tone: "Messaging", description: "Azure 消息队列和事件驱动架构能力。" },
-  { spec: "vercel-labs/agent-browser@agent-browser", title: "Agent Browser", source: "vercel-labs/agent-browser", installs: "257K+", tone: "Browser", description: "浏览器自动化和网页上下文工作流。" },
-  { spec: "microsoft/azure-skills@azure-hosted-copilot-sdk", title: "Azure Hosted Copilot SDK", source: "microsoft/azure-skills", installs: "274K+", tone: "Azure", description: "Azure hosted Copilot SDK workflows。" },
-  { spec: "vercel-labs/agent-skills@next-js-development", title: "Next.js Development", source: "vercel-labs/agent-skills", installs: "245K+", tone: "Next.js", description: "Next.js app router、部署和组件最佳实践。" },
-  { spec: "browser-use/browser-use@browser-use", title: "Browser Use", source: "browser-use/browser-use", installs: "188K+", tone: "Browser", description: "基于视觉理解的浏览器自动化。" },
-  { spec: "anthropics/skills@skill-creator", title: "Skill Creator", source: "anthropics/skills", installs: "164K+", tone: "Authoring", description: "创建、测试和发布新的 agent skills。" },
-  { spec: "vercel-labs/agent-skills@typescript-best-practices", title: "TypeScript Best Practices", source: "vercel-labs/agent-skills", installs: "141K+", tone: "TypeScript", description: "TypeScript 项目结构、类型设计和质量实践。" },
-  { spec: "vercel-labs/agent-skills@accessibility", title: "Accessibility", source: "vercel-labs/agent-skills", installs: "128K+", tone: "A11y", description: "Web 可访问性审查和实现规范。" },
-  { spec: "supabase/supabase@supabase", title: "Supabase", source: "supabase/supabase", installs: "120K+", tone: "Database", description: "Supabase 数据库、认证和边缘函数工作流。" },
-  { spec: "vercel-labs/agent-skills@testing", title: "Testing", source: "vercel-labs/agent-skills", installs: "118K+", tone: "Testing", description: "单元测试、组件测试和端到端测试实践。" },
-  { spec: "vercel-labs/agent-skills@tailwind-css", title: "Tailwind CSS", source: "vercel-labs/agent-skills", installs: "103K+", tone: "CSS", description: "Tailwind 样式组织和设计系统实践。" },
-  { spec: "expo/skills@react-native", title: "React Native", source: "expo/skills", installs: "94K+", tone: "Mobile", description: "React Native / Expo 架构和跨平台实践。" },
-  { spec: "vercel-labs/agent-skills@playwright", title: "Playwright", source: "vercel-labs/agent-skills", installs: "86K+", tone: "E2E", description: "Playwright E2E 测试和稳定性策略。" },
-  { spec: "obra/superpowers@systematic-debugging", title: "Systematic Debugging", source: "obra/superpowers", installs: "73K+", tone: "Debug", description: "假设驱动的调试循环。" },
-  { spec: "obra/superpowers@brainstorming", title: "Brainstorming", source: "obra/superpowers", installs: "66K+", tone: "Thinking", description: "结构化创意和问题拆解。" },
-  { spec: "vercel-labs/agent-skills@docker", title: "Docker", source: "vercel-labs/agent-skills", installs: "58K+", tone: "DevOps", description: "容器化、镜像构建和本地开发环境。" },
-  { spec: "vercel-labs/agent-skills@code-review", title: "Code Review", source: "vercel-labs/agent-skills", installs: "52K+", tone: "Review", description: "代码审查、风险识别和回归检查。" }
-];
-
-const SKILLSMP_CATEGORIES: Array<{ group: string; slug: string; label: string; count: string }> = [
-  { group: "Development", slug: "frontend", label: "Frontend", count: "26K" },
-  { group: "Development", slug: "backend", label: "Backend", count: "27K" },
-  { group: "Development", slug: "full-stack", label: "Full Stack", count: "11K" },
-  { group: "Development", slug: "mobile", label: "Mobile", count: "14K" },
-  { group: "Development", slug: "architecture-patterns", label: "Architecture", count: "46K" },
-  { group: "Testing", slug: "testing", label: "Testing", count: "40K" },
-  { group: "Testing", slug: "code-quality", label: "Code Quality", count: "56K" },
-  { group: "Testing", slug: "security", label: "Security", count: "33K" },
-  { group: "Tools", slug: "debugging", label: "Debugging", count: "134K" },
-  { group: "Tools", slug: "automation-tools", label: "Automation", count: "20K" },
-  { group: "Tools", slug: "productivity-tools", label: "Productivity", count: "64K" },
-  { group: "Tools", slug: "cli-tools", label: "CLI Tools", count: "7K" },
-  { group: "Data AI", slug: "llm-ai", label: "LLM / AI", count: "68K" },
-  { group: "Data AI", slug: "machine-learning", label: "Machine Learning", count: "22K" },
-  { group: "Data AI", slug: "data-analysis", label: "Data Analysis", count: "9K" },
-  { group: "DevOps", slug: "git-workflows", label: "Git Workflows", count: "55K" },
-  { group: "DevOps", slug: "cicd", label: "CI/CD", count: "26K" },
-  { group: "DevOps", slug: "cloud", label: "Cloud", count: "11K" },
-  { group: "Docs", slug: "technical-docs", label: "Technical Docs", count: "30K" },
-  { group: "Docs", slug: "knowledge-base", label: "Knowledge Base", count: "33K" },
-  { group: "Business", slug: "sales-marketing", label: "Sales Marketing", count: "120K" },
-  { group: "Business", slug: "project-management", label: "Project Mgmt", count: "47K" },
-  { group: "Content", slug: "design", label: "Design", count: "9K" },
-  { group: "Content", slug: "content-creation", label: "Content", count: "19K" }
-];
-
-function loadLocalString(key: string, fallback = ""): string {
-  try {
-    return window.localStorage.getItem(key) || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveLocalString(key: string, value: string): void {
-  try {
-    if (value) window.localStorage.setItem(key, value);
-    else window.localStorage.removeItem(key);
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function loadLocalJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveLocalJson(key: string, value: unknown): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function loadRightModuleVisibility(): Record<RightPaneTab, boolean> {
-  const fallback: Record<RightPaneTab, boolean> = { changes: true, worktree: true, terminal: true, skills: true, mcp: true };
-  try {
-    const raw = window.localStorage.getItem(RIGHT_MODULE_VISIBILITY_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<Record<RightPaneTab, boolean>>;
-    return { ...fallback, ...parsed };
-  } catch {
-    return fallback;
-  }
-}
-
-function saveRightModuleVisibility(value: Record<RightPaneTab, boolean>): void {
-  try {
-    window.localStorage.setItem(RIGHT_MODULE_VISIBILITY_KEY, JSON.stringify(value));
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function loadLocalBool(key: string, fallback = false): boolean {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw == null) return fallback;
-    return raw === "1" || raw === "true";
-  } catch {
-    return fallback;
-  }
-}
-
-function saveLocalBool(key: string, value: boolean): void {
-  try {
-    window.localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
-  language: "system",
-  autoAcceptPermissions: false,
-  showReasoningSummaries: false,
-  shellToolPartsExpanded: false,
-  editToolPartsExpanded: false,
-  showSessionProgressBar: true,
-  notificationsAgent: true,
-  notificationsPermissions: true,
-  notificationsErrors: false,
-  soundsAgent: true,
-  soundsPermissions: true,
-  soundsErrors: true,
-  updatesStartup: true,
-  releaseNotes: true
-};
-
-type AppLocale = "zh-CN" | "zh-TW" | "en-US";
-
-function normalizeAppLocale(value: string): AppLocale {
-  const normalized = value.toLowerCase();
-  if (normalized.startsWith("zh-tw") || normalized.startsWith("zh-hk")) return "zh-TW";
-  if (normalized.startsWith("zh")) return "zh-CN";
-  return "en-US";
-}
-
-function normalizeStoredLanguage(value: unknown): GeneralSettingsDraft["language"] {
-  return value === "system" || value === "zh-CN" || value === "zh-TW" || value === "en-US" ? value : "system";
-}
-
-const APP_TEXT: Record<AppLocale, {
-  close: string;
-  archiveSession: string;
-  removeWorktree: string;
-  removeWorktreeTitle: string;
-  removeWorktreeDesc: string;
-  removing: string;
-  confirmRemove: string;
-  cancel: string;
-  createWorktreeFromCommit: string;
-  createBranchFromCommit: string;
-  explainInspectCommit: string;
-  cherryPickCurrentBranch: string;
-  revertCurrentBranch: string;
-  copyCommitId: string;
-  createBranch: string;
-  createWorktree: string;
-  checkoutNewLocalBranch: string;
-  checkout: string;
-  deleteBranch: string;
-  createBranchFromWorktree: string;
-  openWorktree: string;
-  bindAgent: string;
-  unbindAgent: string;
-  commit: string;
-  push: string;
-  commitPush: string;
-  commitSync: string;
-}> = {
-  "zh-CN": {
-    close: "关闭", archiveSession: "归档会话", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
-    createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
-    createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
-    commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步"
-  },
-  "zh-TW": {
-    close: "關閉", archiveSession: "封存會話", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "這會刪除 worktree 目錄並清理 Git worktree 記錄，目錄內檔案會被刪除。", removing: "移除中...", confirmRemove: "確認移除", cancel: "取消",
-    createWorktreeFromCommit: "從提交建立 worktree", createBranchFromCommit: "從提交建立分支", explainInspectCommit: "解釋 / 檢查提交", cherryPickCurrentBranch: "Cherry-pick 到目前分支", revertCurrentBranch: "在目前分支 Revert", copyCommitId: "複製提交 ID",
-    createBranch: "建立分支", createWorktree: "建立 worktree", checkoutNewLocalBranch: "檢出為本地新分支", checkout: "檢出", deleteBranch: "刪除分支", createBranchFromWorktree: "從 worktree 建立分支", openWorktree: "開啟 worktree", bindAgent: "綁定 Agent", unbindAgent: "解除綁定 Agent",
-    commit: "提交", push: "推送", commitPush: "提交並推送", commitSync: "提交並同步"
-  },
-  "en-US": {
-    close: "Close", archiveSession: "Archive session", removeWorktree: "Remove worktree", removeWorktreeTitle: "Remove worktree?", removeWorktreeDesc: "This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.", removing: "Removing...", confirmRemove: "Confirm Remove", cancel: "Cancel",
-    createWorktreeFromCommit: "Create worktree from commit", createBranchFromCommit: "Create branch from commit", explainInspectCommit: "Explain / inspect commit", cherryPickCurrentBranch: "Cherry-pick to current branch", revertCurrentBranch: "Revert on current branch", copyCommitId: "Copy commit ID",
-    createBranch: "Create Branch", createWorktree: "Create Worktree", checkoutNewLocalBranch: "Checkout as new local branch", checkout: "Checkout", deleteBranch: "Delete Branch", createBranchFromWorktree: "Create Branch from Worktree", openWorktree: "Open Worktree", bindAgent: "Bind Agent", unbindAgent: "Unbind Agent",
-    commit: "Commit", push: "Push", commitPush: "Commit & Push", commitSync: "Commit & Sync"
-  }
-};
-
-function getAppText(language: GeneralSettingsDraft["language"]): (typeof APP_TEXT)[AppLocale] {
-  const locale = language === "system" ? normalizeAppLocale(navigator.language || "zh-CN") : normalizeAppLocale(language);
-  return APP_TEXT[locale];
-}
-
-function loadGeneralSettings(): GeneralSettingsDraft {
-  try {
-    const raw = window.localStorage.getItem(GENERAL_SETTINGS_KEY);
-    const parsed = raw ? JSON.parse(raw) as Partial<GeneralSettingsDraft> : {};
-    return {
-      ...DEFAULT_GENERAL_SETTINGS,
-      ...parsed,
-      language: normalizeStoredLanguage(parsed.language),
-      autoAcceptPermissions: loadLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, parsed.autoAcceptPermissions ?? DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions)
-    };
-  } catch {
-    return {
-      ...DEFAULT_GENERAL_SETTINGS,
-      autoAcceptPermissions: loadLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions)
-    };
-  }
-}
-
-function saveGeneralSettings(settings: GeneralSettingsDraft): void {
-  try {
-    window.localStorage.setItem(GENERAL_SETTINGS_KEY, JSON.stringify(settings));
-    saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, settings.autoAcceptPermissions);
-  } catch {
-    // ignore unavailable storage
-  }
-}
-
-function playSettingsTone(kind: "agent" | "permission" | "error"): void {
-  try {
-    const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const freq = kind === "error" ? 190 : kind === "permission" ? 520 : 740;
-    osc.type = kind === "error" ? "sawtooth" : "sine";
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-    gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.05, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.24);
-    window.setTimeout(() => void ctx.close().catch(() => {}), 360);
-  } catch {
-    // ignore unavailable audio
-  }
-}
-
-async function showSettingsNotification(title: string, body: string): Promise<void> {
-  try {
-    await invoke("send_desktop_notification", { title, body });
-    return;
-  } catch {
-    // Fall back to browser notifications when native notification is unavailable.
-  }
-  try {
-    if (!("Notification" in window)) return;
-    if (Notification.permission === "granted") {
-      new Notification(title, { body });
-      return;
-    }
-    if (Notification.permission === "default") {
-      await Notification.requestPermission().then((permission) => {
-        if (permission === "granted") new Notification(title, { body });
-      });
-    }
-  } catch {
-    // ignore unavailable notifications
-  }
-}
-
-function normalizeThinkingLevel(value: unknown): OpencodeThinkingLevel {
-  const v = String(value || "").trim().toLowerCase();
-  return OPENCODE_THINKING_LEVELS.some((item) => item.value === v) ? (v as OpencodeThinkingLevel) : "auto";
-}
-
-function allowAllPermissionRules(): OpencodePermissionRule[] {
-  return [{ permission: "*", pattern: "*", action: "allow" }];
-}
-
-function splitCommandLine(input: string): string[] {
-  const parts = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-  return parts
-    .map((part) => part.trim().replace(/^(["'])(.*)\1$/, "$2"))
-    .filter(Boolean);
-}
-
-function parseKeyValueLines(input: string): Record<string, string> | undefined {
-  const out: Record<string, string> = {};
-  for (const line of input.split(/\r?\n/)) {
-    const raw = line.trim();
-    if (!raw || raw.startsWith("#")) continue;
-    const eq = raw.indexOf("=");
-    if (eq <= 0) continue;
-    const key = raw.slice(0, eq).trim();
-    const value = raw.slice(eq + 1).trim();
-    if (key) out[key] = value;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
-function normalizeArrayRows(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function formatSkillInstalls(value: unknown): string {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
-  return String(Math.round(n));
-}
-
-function parseSkillInstallCount(value: unknown): number {
-  const raw = String(value || "").trim().toUpperCase().replace(/\+/g, "").replace(/,/g, "");
-  const match = raw.match(/([\d.]+)\s*([KM])?/);
-  if (!match) return 0;
-  const base = Number(match[1] || 0);
-  if (!Number.isFinite(base)) return 0;
-  if (match[2] === "M") return base * 1_000_000;
-  if (match[2] === "K") return base * 1_000;
-  return base;
-}
-
-function isTrustedSkillSource(source: unknown): boolean {
-  const s = String(source || "").toLowerCase();
-  return ["vercel-labs", "anthropics", "microsoft", "expo", "supabase", "remotion-dev"].some((prefix) => s.startsWith(prefix));
-}
-
-function skillQualityLabel(skill: Pick<OpencodeSkillSearchResult, "source" | "package" | "installs">): "trusted" | "popular" | "review" {
-  if (isTrustedSkillSource(skill.source || skill.package)) return "trusted";
-  if (parseSkillInstallCount(skill.installs) >= 1000) return "popular";
-  return "review";
-}
-
-function expandSkillSearchQueries(query: string): string[] {
-  const q = query.trim().toLowerCase();
-  const terms = new Set<string>([q]);
-  const aliases: Array<[RegExp, string[]]> = [
-    [/\breact\b/, ["react best practices", "react performance", "nextjs react"]],
-    [/\bfrontend|ui|design\b/, ["frontend design", "web design", "design system", "accessibility"]],
-    [/\btest|testing|jest|playwright\b/, ["testing", "unit testing", "e2e testing", "playwright"]],
-    [/\bdeploy|deployment|ci\b/, ["deployment", "ci cd", "docker deploy"]],
-    [/\bdocs|documentation|readme\b/, ["documentation", "readme", "api docs"]],
-    [/\breview|lint|refactor\b/, ["code review", "lint", "refactor", "best practices"]],
-    [/\bmobile|native\b/, ["react native", "expo", "mobile testing"]]
-  ];
-  for (const [pattern, values] of aliases) {
-    if (pattern.test(q)) values.forEach((value) => terms.add(value));
-  }
-  return Array.from(terms).filter(Boolean).slice(0, 3);
-}
-
-function opencodeSkillApiToResult(item: any): OpencodeSkillSearchResult | null {
-  const id = String(item?.id || "").trim();
-  const source = String(item?.source || (id ? id.split("/").slice(0, -1).join("/") : "")).trim();
-  const slug = String(item?.slug || (id ? id.split("/").pop() : "")).trim();
-  const name = String(item?.name || slug || id).trim();
-  if (!source || !slug || !name) return null;
-  return {
-    id: id || `${source}/${slug}`,
-    spec: `${source}@${slug}`,
-    package: source,
-    skill: name,
-    installs: formatSkillInstalls(item?.installs),
-    url: String(item?.url || ""),
-    source,
-    sourceType: String(item?.sourceType || ""),
-    installUrl: item?.installUrl ? String(item.installUrl) : null,
-    isDuplicate: Boolean(item?.isDuplicate),
-    change: typeof item?.change === "number" ? item.change : undefined,
-    installsYesterday: typeof item?.installsYesterday === "number" ? item.installsYesterday : undefined
-  };
-}
-
-function skillsmpSkillToResult(item: any): OpencodeSkillSearchResult | null {
-  const name = String(item?.name || "").trim();
-  const githubUrl = String(item?.githubUrl || "").trim();
-  const skillUrl = String(item?.skillUrl || "").trim();
-  const author = String(item?.author || "").trim();
-  if (!name) return null;
-  const source = (() => {
-    try {
-      const url = new URL(githubUrl);
-      const parts = url.pathname.split("/").filter(Boolean);
-      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : author;
-    } catch {
-      return author;
-    }
-  })();
-  const installSpec = source || null;
-  return {
-    id: String(item?.id || `${source}/${name}`),
-    spec: source ? `${source}@${name}` : name,
-    package: source || author,
-    skill: name,
-    installs: formatSkillInstalls(item?.stars || 0),
-    url: skillUrl,
-    source: source || author,
-    sourceType: "skillsmp",
-    installSpec,
-    installUrl: githubUrl || null
-  };
-}
-
-function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function getSkillsMarketplaceSeedQuery(categorySlug: string): string {
-  const slug = categorySlug.trim().toLowerCase();
-  if (!slug) return "agent";
-  const seedBySlug: Record<string, string> = {
-    frontend: "frontend",
-    backend: "backend",
-    "full-stack": "full stack",
-    mobile: "mobile",
-    "architecture-patterns": "architecture",
-    testing: "testing",
-    "code-quality": "code quality",
-    security: "security",
-    debugging: "debugging",
-    "automation-tools": "automation",
-    "productivity-tools": "productivity",
-    "cli-tools": "cli",
-    "llm-ai": "ai",
-    "machine-learning": "machine learning",
-    "data-analysis": "data analysis",
-    "git-workflows": "git",
-    cicd: "ci cd",
-    cloud: "cloud",
-    "technical-docs": "documentation",
-    "knowledge-base": "knowledge base",
-    "sales-marketing": "marketing",
-    "project-management": "project management",
-    design: "design",
-    "content-creation": "content"
-  };
-  return seedBySlug[slug] || slug.replace(/-/g, " ");
-}
-
-function getSkillAvatarLabel(skillName: string): string {
-  const parts = skillName
-    .trim()
-    .split(/[^a-zA-Z0-9\u4e00-\u9fa5]+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "SK";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0] || "S"}${parts[1][0] || "K"}`.toUpperCase();
-}
-
-function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): boolean {
-  const normalizedPath = String(item.path || "").replace(/\\/g, "/");
-  const isInstalledDir = normalizedPath.includes("/.agents/skills/") || normalizedPath.includes("/.opencode/skills/");
-  const agents = Array.isArray(item.agents) ? item.agents : [];
-  const targetsOpencode = agents.length === 0 || agents.some((agent) => agent.toLowerCase() === "opencode");
-  return isInstalledDir && targetsOpencode;
-}
-
-function skillSourceGroupFromSpec(spec: string): string {
-  const trimmed = spec.trim();
-  if (!trimmed) return "";
-  const [pkg] = trimmed.split("@");
-  return (pkg || trimmed).trim();
-}
-
-function scheduleAfterInteraction(task: () => void, delay = 240): number {
-  return window.setTimeout(() => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(task));
-  }, delay);
-}
-
-function waitForPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
-  });
-}
-
-async function fetchJsonWithTimeout(url: string, timeoutMs = 7000): Promise<any> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { signal: controller.signal, cache: "force-cache" });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return await resp.json();
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-async function fetchSkillsmpJson(endpoint: string, apiKey = "", timeoutMs = 12000): Promise<any> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
-    const resp = await fetch(`https://skillsmp.com${endpoint}`, { headers, signal: controller.signal });
-    if (!resp.ok) throw new Error(`SkillsMP HTTP ${resp.status}`);
-    const json = await resp.json();
-    if (json?.success === false) throw new Error(json?.error?.message || "SkillsMP request failed");
-    return json;
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-function buildSkillsmpSearchEndpoint(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }): string {
-  const params = new URLSearchParams({
-    q: input.query,
-    page: String(input.page || 1),
-    limit: String(input.limit || 100),
-    sortBy: input.sortBy || "stars"
-  });
-  if (input.category?.trim()) params.set("category", input.category.trim());
-  if (input.occupation?.trim()) params.set("occupation", input.occupation.trim());
-  return `/api/v1/skills/search?${params.toString()}`;
-}
-
-function makeId(): string {
-  return Math.random().toString(16).slice(2, 14);
-}
-
-function readImageFileAsAttachment(file: File): Promise<OpencodeImageAttachment | null> {
-  if (!file.type.startsWith("image/")) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.addEventListener("error", () => resolve(null));
-    reader.addEventListener("load", () => {
-      const raw = typeof reader.result === "string" ? reader.result : "";
-      const comma = raw.indexOf(",");
-      if (!raw || comma < 0) {
-        resolve(null);
-        return;
-      }
-      resolve({
-        id: `img-${makeId()}`,
-        filename: file.name || `image-${Date.now()}.png`,
-        mime: file.type || "image/png",
-        dataUrl: `data:${file.type || "image/png"};base64,${raw.slice(comma + 1)}`
-      });
-    });
-    reader.readAsDataURL(file);
-  });
-}
-
-function opencodeSavedModelsStorageKey(): string {
-  return OPENCODE_SAVED_MODELS_KEY;
-}
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n));
-}
-
-function firstLetter(name: string): string {
-  return (name.trim()[0] ?? "?").toUpperCase();
-}
-
-function applyOpencodeCatalog(
-  catalog: Record<string, string[]>,
-  currentProvider: string,
-  currentModel: string
-): {
-  providers: string[];
-  provider: string;
-  models: string[];
-  model: string;
-} {
-  const providers = Object.keys(catalog).sort((a, b) => a.localeCompare(b));
-  const provider = currentProvider && providers.includes(currentProvider) ? currentProvider : "";
-  const models = provider ? (catalog[provider] ?? []) : [];
-  const model = currentModel && models.includes(currentModel) ? currentModel : "";
-  return { providers, provider, models, model };
-}
-
-type ProviderPreset = {
-  id: string;
-  name: string;
-  defaultBaseUrl: string;
-  apiKeyHint: string;
-};
-
-const PROVIDER_PRESETS: ProviderPreset[] = [
-  { id: "opencode", name: "OpenCode", defaultBaseUrl: "", apiKeyHint: "OPENCODE_API_KEY" },
-  { id: "openai", name: "OpenAI", defaultBaseUrl: "https://api.openai.com/v1", apiKeyHint: "OPENAI_API_KEY" },
-  { id: "anthropic", name: "Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1", apiKeyHint: "ANTHROPIC_API_KEY" },
-  { id: "google", name: "Google AI", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta", apiKeyHint: "GOOGLE_GENERATIVE_AI_API_KEY" },
-  { id: "google-vertex", name: "Google Vertex", defaultBaseUrl: "", apiKeyHint: "Google Cloud credentials" },
-  { id: "google-vertex-anthropic", name: "Vertex Anthropic", defaultBaseUrl: "", apiKeyHint: "Google Cloud credentials" },
-  { id: "amazon-bedrock", name: "Amazon Bedrock", defaultBaseUrl: "", apiKeyHint: "AWS credentials / bearer token" },
-  { id: "openrouter", name: "OpenRouter", defaultBaseUrl: "https://openrouter.ai/api/v1", apiKeyHint: "OPENROUTER_API_KEY" },
-  { id: "xai", name: "xAI", defaultBaseUrl: "https://api.x.ai/v1", apiKeyHint: "XAI_API_KEY" },
-  { id: "mistral", name: "Mistral", defaultBaseUrl: "https://api.mistral.ai/v1", apiKeyHint: "MISTRAL_API_KEY" },
-  { id: "groq", name: "Groq", defaultBaseUrl: "https://api.groq.com/openai/v1", apiKeyHint: "GROQ_API_KEY" },
-  { id: "azure", name: "Azure OpenAI", defaultBaseUrl: "https://{resource}.openai.azure.com/openai", apiKeyHint: "AZURE_API_KEY" },
-  { id: "deepinfra", name: "DeepInfra", defaultBaseUrl: "https://api.deepinfra.com/v1/openai", apiKeyHint: "DEEPINFRA_API_KEY" },
-  { id: "cerebras", name: "Cerebras", defaultBaseUrl: "https://api.cerebras.ai/v1", apiKeyHint: "CEREBRAS_API_KEY" },
-  { id: "cohere", name: "Cohere", defaultBaseUrl: "https://api.cohere.ai/v2", apiKeyHint: "COHERE_API_KEY" },
-  { id: "togetherai", name: "Together AI", defaultBaseUrl: "https://api.together.xyz/v1", apiKeyHint: "TOGETHER_API_KEY" },
-  { id: "perplexity", name: "Perplexity", defaultBaseUrl: "https://api.perplexity.ai", apiKeyHint: "PPLX_API_KEY" },
-  { id: "vercel", name: "Vercel AI Gateway", defaultBaseUrl: "", apiKeyHint: "VERCEL_API_KEY" },
-  { id: "github-copilot", name: "GitHub Copilot", defaultBaseUrl: "", apiKeyHint: "Copilot auth" },
-  { id: "azure-cognitive-services", name: "Azure Cognitive Services", defaultBaseUrl: "", apiKeyHint: "AZURE_API_KEY" },
-  { id: "gitlab", name: "GitLab Duo", defaultBaseUrl: "", apiKeyHint: "GITLAB_TOKEN / gitlab auth" }
-];
-
-function isPresetProviderId(providerId: string): boolean {
-  const pid = (providerId || "").trim();
-  if (!pid) return false;
-  return PROVIDER_PRESETS.some((p) => p.id === pid);
-}
-
-function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const value = window.localStorage.getItem("giteam.theme");
-    return value === "light" ? "light" : "dark";
-  });
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    document.documentElement.style.colorScheme = theme;
-    window.localStorage.setItem("giteam.theme", theme);
-    void invoke("set_window_theme", { theme }).catch(() => {
-      // Ignore if running outside Tauri runtime.
-    });
-  }, [theme]);
-
-  return [theme, () => setTheme((prev) => (prev === "dark" ? "light" : "dark"))];
-}
-
 export function App() {
-  const [theme, toggleTheme] = useTheme();
-  const [uiFontSize, setUiFontSize] = useState(() => Number(loadLocalString(UI_FONT_SIZE_KEY, "13")) || 13);
-  const [codeFontSize, setCodeFontSize] = useState(() => Number(loadLocalString(CODE_FONT_SIZE_KEY, "12")) || 12);
+  const [theme, toggleTheme] = useDesktopTheme();
+  const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
+  const { uiFontSize, codeFontSize, setUiFontSize, setCodeFontSize } = useAppearanceFontSize();
   const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp" | "mcp">("general");
-  const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => loadGeneralSettings());
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => (
+    loadGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY)
+  ));
   const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
@@ -1218,13 +377,6 @@ export function App() {
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
-  const [pinnedRepoIds, setPinnedRepoIds] = useState<string[]>(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem("giteam.pinnedRepos") || "[]");
-    } catch {
-      return [];
-    }
-  });
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right" | "changes";
     startX: number;
@@ -1289,7 +441,7 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
-  const [rightModuleVisibility, setRightModuleVisibility] = useState<Record<RightPaneTab, boolean>>(() => loadRightModuleVisibility());
+  const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
   const [commitMessage, setCommitMessage] = useState("");
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
@@ -1334,7 +486,13 @@ export function App() {
   const [opencodeCatalogLoading, setOpencodeCatalogLoading] = useState(false);
   const [opencodeModelProvider, setOpencodeModelProvider] = useState("");
   const [opencodeSelectedModel, setOpencodeSelectedModel] = useState("");
-  const [opencodeSavedModels, setOpencodeSavedModels] = useState<string[]>([]);
+  const {
+    savedModels: opencodeSavedModels,
+    draftModel: opencodeDraftModel,
+    sessionModel: opencodeSessionModel,
+    rememberSavedModel: rememberOpencodeSavedModel,
+    selectModel: selectOpencodeModel
+  } = useOpencodeModelSelection(`${OPENCODE_MODEL_SELECTION_KEY}:global`);
   const [showOpencodeModelPicker, setShowOpencodeModelPicker] = useState(false);
   const [opencodeModelPickerSearch, setOpencodeModelPickerSearch] = useState("");
   const [showOpencodeProviderPicker, setShowOpencodeProviderPicker] = useState(false);
@@ -1351,10 +509,15 @@ export function App() {
   const [opencodeConnectBusy, setOpencodeConnectBusy] = useState(false);
   const [opencodeDisconnectingProvider, setOpencodeDisconnectingProvider] = useState("");
   const [opencodeProviderAuthCache, setOpencodeProviderAuthCache] = useState<Record<string, OpencodeProviderAuthMethod[]>>({});
-  const [opencodeHiddenModels, setOpencodeHiddenModels] = useState<Set<string>>(() => new Set());
-  const [opencodeEnabledModels, setOpencodeEnabledModels] = useState<Set<string>>(() => new Set());
-  const [opencodeDraftModel, setOpencodeDraftModel] = useState("");
-  const [opencodeSessionModel, setOpencodeSessionModel] = useState<Record<string, string>>({});
+  const {
+    hiddenModels: opencodeHiddenModels,
+    enabledModels: opencodeEnabledModels,
+    hideModel: hideOpencodeModel,
+    enableModel: enableOpencodeModel
+  } = useOpencodeModelVisibility({
+    hidden: `${OPENCODE_MODEL_VIS_KEY}:global`,
+    enabled: `${OPENCODE_MODEL_ENABLE_KEY}:global`
+  });
   const [opencodeConfig, setOpencodeConfig] = useState<OpencodeModelConfig | null>(null);
   const [opencodeConfigBusy, setOpencodeConfigBusy] = useState(false);
   const [opencodeServiceSettings, setOpencodeServiceSettings] = useState<OpencodeServiceSettings>({
@@ -1362,20 +525,8 @@ export function App() {
   });
   const [opencodeServiceSettingsSavedPort, setOpencodeServiceSettingsSavedPort] = useState(4098);
   const [opencodeServiceSettingsBusy, setOpencodeServiceSettingsBusy] = useState(false);
-  const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>({
-    enabled: false,
-    host: "0.0.0.0",
-    port: 4100,
-    publicBaseUrl: "",
-    pairCodeTtlMode: "24h"
-  });
-  const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>({
-    enabled: false,
-    host: "0.0.0.0",
-    port: 4100,
-    publicBaseUrl: "",
-    pairCodeTtlMode: "24h"
-  });
+  const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>(DEFAULT_CONTROL_SERVER_SETTINGS);
+  const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>(DEFAULT_CONTROL_SERVER_SETTINGS);
   const [controlServerSettingsBusy, setControlServerSettingsBusy] = useState(false);
   const [controlPairCodeInfo, setControlPairCodeInfo] = useState<ControlPairCodeInfo | null>(null);
   const [controlAccessInfo, setControlAccessInfo] = useState<ControlAccessInfo | null>(null);
@@ -1440,49 +591,21 @@ export function App() {
   const opencodeMcpLoadingRef = useRef(false);
   const opencodeMcpLoadedRef = useRef(false);
   const [opencodeMcpError, setOpencodeMcpError] = useState("");
-  const [opencodeMcpName, setOpencodeMcpName] = useState("");
-  const [opencodeMcpType, setOpencodeMcpType] = useState<OpencodeMcpType>("remote");
-  const [opencodeMcpCommand, setOpencodeMcpCommand] = useState("");
-  const [opencodeMcpUrl, setOpencodeMcpUrl] = useState("");
-  const [opencodeMcpEnv, setOpencodeMcpEnv] = useState("");
-  const [opencodeMcpHeaders, setOpencodeMcpHeaders] = useState("");
-  const [opencodeMcpJson, setOpencodeMcpJson] = useState("");
-  const [opencodeMcpCustomParamValues, setOpencodeMcpCustomParamValues] = useState<Record<string, string>>({});
-  const opencodeMcpAutoNameRef = useRef("");
   const [opencodeMcpBusyName, setOpencodeMcpBusyName] = useState("");
   const [showMcpAddForm, setShowMcpAddForm] = useState(false);
+  const opencodeMcpAddForm = useOpencodeMcpAddForm(showMcpAddForm);
   const [mcpInstalledOpen, setMcpInstalledOpen] = useState(false);
   const [editingMcpName, setEditingMcpName] = useState("");
   const [editingMcpParamValues, setEditingMcpParamValues] = useState<Record<string, string>>({});
-  const [opencodeSkills, setOpencodeSkills] = useState<OpencodeSkillInfo[]>([]);
-  const [opencodeSkillsLoading, setOpencodeSkillsLoading] = useState(false);
-  const [opencodeSkillsLoadedOnce, setOpencodeSkillsLoadedOnce] = useState(false);
-  const [opencodeSkillsError, setOpencodeSkillsError] = useState("");
-  const [opencodeSkillInstallSpec, setOpencodeSkillInstallSpec] = useState("");
-  const [opencodeSkillInstallScope, setOpencodeSkillInstallScope] = useState<"project" | "global">("project");
-  const [opencodeSkillSearchQuery, setOpencodeSkillSearchQuery] = useState("");
-  const [opencodeSkillSearchStrategy, setOpencodeSkillSearchStrategy] = useState<OpencodeSkillSearchStrategy>("keyword");
-  const [opencodeSkillCategory, setOpencodeSkillCategory] = useState("");
   const [skillsmpApiKey, setSkillsmpApiKey] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [skillsmpApiKeyDraft, setSkillsmpApiKeyDraft] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [showSkillsmpSettings, setShowSkillsmpSettings] = useState(false);
-  const [showSkillInstallMenu, setShowSkillInstallMenu] = useState(false);
-  const [opencodeSkillSearchResults, setOpencodeSkillSearchResults] = useState<OpencodeSkillSearchResult[]>([]);
-  const [opencodeSkillSearchLoading, setOpencodeSkillSearchLoading] = useState(false);
-  const [opencodeSkillSearchCache, setOpencodeSkillSearchCache] = useState<Record<string, OpencodeSkillSearchResult[]>>({});
-  const [opencodeSkillInstallingSpec, setOpencodeSkillInstallingSpec] = useState("");
-  const [opencodeSkillInstallNotice, setOpencodeSkillInstallNotice] = useState("");
-  const [opencodeSkillInstallLog, setOpencodeSkillInstallLog] = useState("");
-  const opencodeSkillDisplayBatchSize = 50;
-  const [opencodeSkillDisplayLimit, setOpencodeSkillDisplayLimit] = useState(opencodeSkillDisplayBatchSize);
-  const [opencodeSkillRevealLoading, setOpencodeSkillRevealLoading] = useState(false);
-  const [opencodeSkillDiscoveredRows, setOpencodeSkillDiscoveredRows] = useState<OpencodeSkillSearchResult[]>([]);
 
   useEffect(() => {
     setGeneralSettings((prev) => {
       if (prev.autoAcceptPermissions === opencodeAutoAcceptPermissions) return prev;
       const next = { ...prev, autoAcceptPermissions: opencodeAutoAcceptPermissions };
-      saveGeneralSettings(next);
+      saveGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
       return next;
     });
   }, [opencodeAutoAcceptPermissions]);
@@ -1491,33 +614,7 @@ export function App() {
     const lang = generalSettings.language === "system" ? navigator.language || "zh-CN" : generalSettings.language;
     document.documentElement.lang = lang;
   }, [generalSettings.language]);
-  const opencodeSkillMarketListRef = useRef<HTMLDivElement | null>(null);
-  const [opencodeSkillCatalogView, setOpencodeSkillCatalogView] = useState<"all-time" | "trending" | "hot" | "official">("all-time");
-  const [opencodeSkillCatalogRows, setOpencodeSkillCatalogRows] = useState<OpencodeSkillSearchResult[]>([]);
-  const [opencodeSkillCatalogLoading, setOpencodeSkillCatalogLoading] = useState(false);
-  const [opencodeSkillCatalogPage, setOpencodeSkillCatalogPage] = useState(0);
-  const [opencodeSkillCatalogQuery, setOpencodeSkillCatalogQuery] = useState("agent");
-  const [opencodeSkillCatalogTotal, setOpencodeSkillCatalogTotal] = useState(0);
-  const [opencodeSkillCatalogHasMore, setOpencodeSkillCatalogHasMore] = useState(false);
-  const [opencodeSkillCatalogCache, setOpencodeSkillCatalogCache] = useState<Record<string, { rows: OpencodeSkillSearchResult[]; page: number; total: number; hasMore: boolean }>>({});
-  const [opencodeSkillCatalogAttempted, setOpencodeSkillCatalogAttempted] = useState<Record<string, boolean>>({});
-  const [opencodeSkillSearchMeta, setOpencodeSkillSearchMeta] = useState<{ count: number; searchType: string; durationMs: number } | null>(null);
-  const [opencodeSkillAllowBackendCatalogFetch, setOpencodeSkillAllowBackendCatalogFetch] = useState(false);
-  const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<OpencodeSkillSearchResult | null>(null);
-  const [selectedSkillDetail, setSelectedSkillDetail] = useState<OpencodeSkillDetail | null>(null);
-  const [selectedSkillAudits, setSelectedSkillAudits] = useState<OpencodeSkillAudit[]>([]);
-  const [selectedSkillLoading, setSelectedSkillLoading] = useState(false);
-  const [opencodeSkillListFilter, setOpencodeSkillListFilter] = useState<"all" | "global" | "project" | "source">("all");
-  const [opencodeSkillListQuery, setOpencodeSkillListQuery] = useState("");
-  const [opencodeSkillSourceInput, setOpencodeSkillSourceInput] = useState("");
-  const [opencodeSkillSourceKind, setOpencodeSkillSourceKind] = useState<"url" | "path">("url");
-  const [opencodeSkillBusy, setOpencodeSkillBusy] = useState(false);
-  const [opencodeSkillRemovingKey, setOpencodeSkillRemovingKey] = useState("");
-  const opencodeSkillCatalogRequestRef = useRef(0);
   const opencodeSkillsRepoPathRef = useRef("");
-  const opencodeSkillsByRepoRef = useRef<Record<string, OpencodeSkillInfo[]>>({});
-  const opencodeSkillSourceGroupsRef = useRef<Record<string, string>>(loadLocalJson<Record<string, string>>(OPENCODE_SKILL_SOURCE_GROUPS_KEY, {}));
-  const pendingSkillInstallGroupsRef = useRef<Record<string, Array<{ groupName: string; scope: "project" | "global"; beforePaths: string[] }>>>({});
   const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
   const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
   const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
@@ -1565,9 +662,7 @@ export function App() {
   const opencodePendingAnchorSessionIdRef = useRef("");
   const opencodeStickToBottomSessionRef = useRef("");
   const opencodeSessionsRepoIdRef = useRef("");
-  const opencodeMessageWindowCacheRef = useRef<Record<string, OpencodeMessageWindowCacheEntry[]>>({});
-  const opencodeMessagePageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
-  const opencodeMessagePageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
+  const opencodeMessageCache = useOpencodeMessageCache();
   const opencodePassiveSyncSeqRef = useRef(0);
   const opencodePrevScrollTopRef = useRef(0);
   const opencodeAutoFollowLatestRef = useRef(true);
@@ -1607,31 +702,26 @@ export function App() {
   const previousPermissionCountRef = useRef(0);
   const previousErrorRef = useRef("");
 
-  const terminalInitialSnapshot = useMemo(() => readTerminalTabSnapshot(), []);
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>(() =>
-    terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]
-  );
-  const [activeTerminalTabId, setActiveTerminalTabId] = useState(() => terminalInitialSnapshot?.activeId || "terminal-1");
-  const [terminalSidebarVisible, setTerminalSidebarVisible] = useState(true);
-  const terminalTabCounterRef = useRef(terminalInitialSnapshot?.counter || 2);
-  const terminalSeqRef = useRef<Record<string, number>>(
-    Object.fromEntries((terminalInitialSnapshot?.tabs || [createTerminalTabState("terminal-1", "终端 1")]).map((tab) => [tab.id, 0]))
-  );
+  const {
+    terminalTabs,
+    setTerminalTabs,
+    activeTerminalTabId,
+    setActiveTerminalTabId,
+    terminalSidebarVisible,
+    setTerminalSidebarVisible,
+    terminalTabCounterRef,
+    terminalSeqRef,
+    terminalBufferedOutputRef
+  } = useTerminalTabs();
   const terminalRepoResetReadyRef = useRef(false);
   const terminalLogRef = useRef<HTMLDivElement | null>(null);
   const terminalBodyRef = useRef<HTMLDivElement | null>(null);
   const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
   const terminalInputRef = useRef<HTMLTextAreaElement | null>(null);
   const terminalTextSelectingRef = useRef(false);
-  const terminalBufferedOutputRef = useRef<Record<string, string>>({});
   const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
   const opencodeModelConfigLoadedRef = useRef(false);
   const opencodeConfiguredModelsLoadedRef = useRef(false);
-  const opencodeModelPrefsLoadedRef = useRef(false);
-  const opencodePromptHistoryBySessionRef = useRef<Record<string, string[]>>({});
-  const opencodePromptHistoryIndexBySessionRef = useRef<Record<string, number>>({});
-  const opencodePromptHistoryDraftBySessionRef = useRef<Record<string, string>>({});
-
   const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
     { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
@@ -1687,6 +777,89 @@ export function App() {
   const gitAutoRefreshBlockedRef = useRef(false);
   const gitAutoRefreshTimerRef = useRef<number | null>(null);
   const workspacePath = normalizeWorkspacePath(repoPath);
+  const resolveProviderDisplayName = (providerId: string) => getProviderDisplayName(providerId, opencodeProviderNames);
+  const {
+    opencodeSkills,
+    opencodeSkillsLoading,
+    opencodeSkillsLoadedOnce,
+    opencodeSkillsError,
+    opencodeSkillInstallSpec,
+    setOpencodeSkillInstallSpec,
+    opencodeSkillInstallScope,
+    setOpencodeSkillInstallScope,
+    opencodeSkillInstallingSpec,
+    opencodeSkillInstallNotice,
+    opencodeSkillInstallLog,
+    opencodeSkillListFilter,
+    setOpencodeSkillListFilter,
+    opencodeSkillListQuery,
+    setOpencodeSkillListQuery,
+    opencodeSkillSourceInput,
+    setOpencodeSkillSourceInput,
+    opencodeSkillSourceKind,
+    setOpencodeSkillSourceKind,
+    opencodeSkillBusy,
+    opencodeSkillRemovingKey,
+    groupedOpencodeSkills,
+    filteredOpencodeSkills,
+    skillsByRepoRef: opencodeSkillsByRepoRef,
+    setOpencodeSkillsError,
+    restoreCachedSkillsForRepo,
+    refreshOpencodeSkills,
+    installOpencodeSkillFromRegistry,
+    removeOpencodeSkill,
+    removeOpencodeSkillGroup,
+    addOpencodeSkillSource
+  } = useOpencodeInstalledSkills({
+    repoPath,
+    skillsVisible: opencodeSkillsVisible,
+    ensureRepoSelected,
+    appendDebugLog: appendOpencodeDebugLog,
+    setMessage,
+    setError,
+    runCommandInTerminalModule
+  });
+  const {
+    opencodeSkillMarketListRef,
+    opencodeSkillSearchQuery,
+    setOpencodeSkillSearchQuery,
+    opencodeSkillSearchStrategy,
+    setOpencodeSkillSearchStrategy,
+    opencodeSkillSearchResults,
+    opencodeSkillSearchLoading,
+    opencodeSkillCatalogView,
+    opencodeSkillCatalogRows,
+    opencodeSkillCatalogPage,
+    opencodeSkillCatalogTotal,
+    opencodeSkillSearchMeta,
+    selectedMarketplaceSkill,
+    selectedSkillDetail,
+    selectedSkillAudits,
+    selectedSkillLoading,
+    showSkillInstallMenu,
+    setShowSkillInstallMenu,
+    opencodeMarketplaceRows,
+    visibleOpencodeMarketplaceRows,
+    opencodeSkillsInitialLoading,
+    opencodeSkillsSearching,
+    opencodeSkillsPaging,
+    opencodeCanAutoLoadMore,
+    warmSkillsMarketplace,
+    searchOpencodeSkillRegistry,
+    switchOpencodeSkillCatalogView,
+    handleOpencodeSkillMarketScroll,
+    selectMarketplaceSkill,
+    loadSelectedMarketplaceSkillDetails
+  } = useOpencodeSkillMarketplace({
+    repoPath,
+    skillsVisible: opencodeSkillsVisible,
+    skillsLoadedOnce: opencodeSkillsLoadedOnce,
+    skillsLoading: opencodeSkillsLoading,
+    skillsmpApiKey,
+    ensureRepoSelected,
+    appendDebugLog: appendOpencodeDebugLog,
+    setSkillsError: setOpencodeSkillsError
+  });
 
   useEffect(() => {
     if (!repoPath.trim()) {
@@ -1748,19 +921,10 @@ export function App() {
     [worktreeOverview.entries, selectedWorktreeFile]
   );
   const worktreePatchRows = useMemo(() => buildSplitDiffRows(selectedWorktreePatch), [selectedWorktreePatch]);
-  const worktreePatchStats = useMemo(() => ({
-    added: worktreePatchRows.filter((row) => row.right.tone === "add").length,
-    deleted: worktreePatchRows.filter((row) => row.left.tone === "del").length,
-    hunks: worktreePatchRows.filter((row) => row.kind === "hunk").length
-  }), [worktreePatchRows]);
-  const worktreeChangeStats = useMemo(() => {
-    const entries = worktreeOverview.entries;
-    const stagedCount = entries.filter((e) => e.staged).length;
-    const unstagedCount = entries.filter((e) => e.unstaged || e.untracked).length;
-    return { total: entries.length, staged: stagedCount, unstaged: unstagedCount };
-  }, [worktreeOverview.entries]);
+  const worktreePatchStats = useMemo(() => getWorktreePatchStats(worktreePatchRows), [worktreePatchRows]);
+  const worktreeChangeStats = useMemo(() => getWorktreeChangeStats(worktreeOverview.entries), [worktreeOverview.entries]);
   const discardAllCount = useMemo(
-    () => worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked).length,
+    () => getDiscardableWorktreeEntryCount(worktreeOverview.entries),
     [worktreeOverview.entries]
   );
   const hasCommittableChanges = worktreeChangeStats.staged > 0 || worktreeChangeStats.unstaged > 0;
@@ -1797,15 +961,7 @@ export function App() {
     if (opencodeSkillsRepoPathRef.current === repoPath) return;
     opencodeSkillsRepoPathRef.current = repoPath;
     const timer = scheduleAfterInteraction(() => {
-      const cached = opencodeSkillsByRepoRef.current[repoPath] || null;
-      startTransition(() => {
-        if (cached) setOpencodeSkills(cached);
-        setOpencodeSkillsLoadedOnce(Boolean(cached));
-        setOpencodeSkillsLoading(!cached);
-        setOpencodeSkillsError("");
-        setOpencodeSkillListQuery("");
-        setOpencodeSkillRemovingKey("");
-      });
+      const cached = restoreCachedSkillsForRepo(repoPath, { resetFilter: true });
       if (!cached) {
         scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
       }
@@ -1862,13 +1018,7 @@ export function App() {
     [records, selectedCommit]
   );
   const diffRows = useMemo(() => toDiffRows(selectedFilePatch), [selectedFilePatch]);
-  const runtimeLogTail = useMemo(() => {
-    const lines = (runtimeInstallLog || "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    return lines[lines.length - 1] ?? "";
-  }, [runtimeInstallLog]);
+  const runtimeLogTail = useMemo(() => getRuntimeLogTail(runtimeInstallLog), [runtimeInstallLog]);
 
   const activeOpencodeSession = useMemo(() => {
     if (!activeOpencodeSessionId) return null;
@@ -1894,27 +1044,16 @@ export function App() {
     )
   );
   const activeOpencodeModel = useMemo(() => {
-    const isAvailableModel = (full: string) => isModelRefAvailable(full, {
+    return resolveActiveOpencodeModel({
+      activeSessionId: activeOpencodeSessionId,
+      sessionModel: opencodeSessionModel,
+      draftModel: opencodeDraftModel,
+      configuredModel: opencodeConfig?.configuredModel || "",
+      savedModels: opencodeSavedModels,
       connectedProviders: opencodeConnectedProviders,
-      liveModelsByProvider: opencodeModelsByProvider,
+      modelsByProvider: opencodeModelsByProvider,
       providerNames: opencodeProviderNames
     });
-    const sessionId = activeOpencodeSessionId.trim();
-    const fromSession = sessionId ? normalizeModelRef(opencodeSessionModel[sessionId] || "") : "";
-    if (fromSession && isAvailableModel(fromSession)) return fromSession;
-    const fromDraft = normalizeModelRef(opencodeDraftModel || "");
-    if (fromDraft && isAvailableModel(fromDraft)) return fromDraft;
-    const configured = normalizeModelRef(opencodeConfig?.configuredModel || "");
-    if (configured && isAvailableModel(configured)) return configured;
-    const recent = normalizeModelRef(opencodeSavedModels[0] || "");
-    if (recent && isAvailableModel(recent)) return recent;
-    for (const pid of opencodeConnectedProviders) {
-      const models = opencodeModelsByProvider[pid] ?? [];
-      const mid = models[0] || "";
-      const full = normalizeModelRef(`${pid}/${mid}`);
-      if (full) return full;
-    }
-    return "";
   }, [
     activeOpencodeSessionId,
     opencodeSessionModel,
@@ -1990,292 +1129,33 @@ export function App() {
     if (generalSettings.soundsErrors) playSettingsTone("error");
     if (generalSettings.notificationsErrors) void showSettingsNotification("Giteam error", nextError.slice(0, 120));
   }, [error, generalSettings.soundsErrors, generalSettings.notificationsErrors]);
-  const opencodeMcpRows = useMemo(() => opencodeMcpVisible ? Object.entries(opencodeMcpStatus).sort(([a], [b]) => a.localeCompare(b)) : [], [opencodeMcpVisible, opencodeMcpStatus]);
-  const filteredOpencodeSkills = useMemo(() => {
-    if (!opencodeSkillsVisible) return [];
-    const query = opencodeSkillListQuery.trim().toLowerCase();
-    return opencodeSkills.filter((skill) => {
-      const scope = skill.scope || "source";
-      if (opencodeSkillListFilter !== "all" && scope !== opencodeSkillListFilter) return false;
-      if (!query) return true;
-      return [skill.name, skill.description, skill.path, skill.location]
-        .some((value) => String(value || "").toLowerCase().includes(query));
-    });
-  }, [opencodeSkillsVisible, opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
-  const groupedOpencodeSkills = useMemo<OpencodeInstalledSkillGroup[]>(() => {
-    if (!opencodeSkillsVisible) return [];
-    const groups = new Map<string, OpencodeSkillInfo[]>();
-    filteredOpencodeSkills.forEach((skill) => {
-      const key = (skill.sourceGroup || skill.name).trim() || "Unnamed Skill";
-      const bucket = groups.get(key) || [];
-      bucket.push(skill);
-      groups.set(key, bucket);
-    });
-    return Array.from(groups.entries())
-      .map(([name, items]) => {
-        const sortedItems = [...items].sort((a, b) => {
-          const scopeOrder = (scope?: string) => scope === "project" ? 0 : scope === "global" ? 1 : 2;
-          return scopeOrder(a.scope) - scopeOrder(b.scope)
-            || String(a.path || a.location || "").localeCompare(String(b.path || b.location || ""));
-        });
-        const removableItems = sortedItems.filter((item) => {
-          const scope = item.scope || "source";
-          return scope === "project" || scope === "global";
-        });
-        return {
-          name,
-          items: sortedItems,
-          removableItems,
-          description: sortedItems.length > 1
-            ? `${sortedItems.length} 个子 Skills`
-            : (sortedItems[0]?.description || sortedItems[0]?.path || sortedItems[0]?.location || "Installed via skills.sh")
-        };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [opencodeSkillsVisible, filteredOpencodeSkills]);
-  const opencodeFallbackMarketplaceRows = useMemo(() => opencodeSkillsVisible ? OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
-    spec: skill.spec,
-    package: skill.source,
-    skill: skill.title,
-    installs: skill.installs,
-    url: "",
-    id: skill.spec.includes("@") ? `${skill.source}/${skill.spec.split("@").pop()}` : skill.spec,
-    source: skill.source,
-    sourceType: "recommended",
-    change: index === 0 ? 24 : undefined
-  })) : [], [opencodeSkillsVisible]);
-  const opencodeMarketplaceRows = useMemo(() => {
-    if (!opencodeSkillsVisible) return [];
-    return opencodeSkillSearchResults.length > 0
-      ? opencodeSkillSearchResults
-      : opencodeSkillCatalogRows.length > 0
-        ? opencodeSkillCatalogRows
-        : Array.from(new Map([...opencodeFallbackMarketplaceRows, ...opencodeSkillDiscoveredRows].map((item) => [item.spec, item])).values());
-  }, [opencodeSkillsVisible, opencodeSkillSearchResults, opencodeSkillCatalogRows, opencodeFallbackMarketplaceRows, opencodeSkillDiscoveredRows]);
-  const visibleOpencodeMarketplaceRows = opencodeMarketplaceRows.slice(0, opencodeSkillDisplayLimit);
-  const opencodeCanRevealMoreSkills = visibleOpencodeMarketplaceRows.length < opencodeMarketplaceRows.length;
-  const opencodeCanFetchMoreCatalogSkills = opencodeSkillSearchResults.length === 0 && opencodeSkillCatalogRows.length > 0 && opencodeSkillCatalogHasMore;
-  const opencodeSkillsInitialLoading = opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0;
-  const opencodeSkillsSearching = opencodeSkillSearchLoading;
-  const opencodeSkillsPaging = (opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length > 0 && opencodeSkillSearchResults.length === 0) || opencodeSkillRevealLoading;
-  const opencodeInstalledSkillNodes = useMemo(() => {
-    if (!opencodeSkillsVisible) return null;
-    if (groupedOpencodeSkills.length === 0) return <div className="gt-module-empty">暂无已安装 Skills</div>;
-    return groupedOpencodeSkills.map((group) => {
-      const removing = group.removableItems.some((skill) => {
-        const scope = skill.scope || "source";
-        const removeKey = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
-        return opencodeSkillRemovingKey === removeKey;
-      });
-      const singleSkill = group.items[0];
-      const canRenderFlat = group.items.length === 1
-        && !!singleSkill
-        && (singleSkill.sourceGroup || "").trim() === ""
-        && group.name.trim() === singleSkill.name.trim();
-      if (canRenderFlat) {
-        const skill = singleSkill;
-        const scope = skill.scope || "source";
-        const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
-        return (
-          <div key={group.name} className="gt-installed-skill-group is-flat">
-            <div className="gt-installed-skill-group-flat-row">
-              <button
-                type="button"
-                className="gt-installed-skill-chip is-reference"
-                onClick={() => referenceOpencodeSkill(skill)}
-                title={`Use ${skill.name}`}
-              >
-                <div>
-                  <strong>{skill.name}</strong>
-                  <small>{skill.path || skill.location || skill.description || "Installed via skills.sh"}</small>
-                </div>
-                <span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span>
-              </button>
-              <button
-                type="button"
-                className="gt-installed-skill-delete"
-                disabled={group.removableItems.length === 0 || removing}
-                onClick={() => void removeOpencodeSkill(skill)}
-                title={group.removableItems.length === 0 ? "该技能不可删除" : `删除 ${skill.name}`}
-              >
-                {removing ? "删除中..." : "删除"}
-              </button>
-            </div>
-          </div>
-        );
-      }
-      return (
-        <details key={group.name} className="gt-installed-skill-group" open>
-          <summary>
-            <div className="gt-installed-skill-group-main" title={group.name}>
-              <div>
-                <strong>{group.name}</strong>
-                <small>{group.description}</small>
-              </div>
-              <span>{group.items.length} 项</span>
-            </div>
-            <button
-              type="button"
-              className="gt-installed-skill-delete"
-              disabled={group.removableItems.length === 0 || removing}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void removeOpencodeSkillGroup(group);
-              }}
-              title={group.removableItems.length === 0 ? "该目录下没有可删除的已安装项" : `删除 ${group.name}`}
-            >
-              {removing ? "删除中..." : "删除"}
-            </button>
-          </summary>
-          <div className="gt-installed-skill-group-items">
-            {group.items.map((skill) => {
-              const scope = skill.scope || "source";
-              const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
-              return (
-                <button
-                  key={`${scope}:${skill.name}:${skill.path || skill.location || ""}`}
-                  type="button"
-                  className="gt-installed-skill-chip is-reference"
-                  onClick={() => referenceOpencodeSkill(skill)}
-                  title={`Use ${skill.name}`}
-                >
-                  <div>
-                    <strong>{skill.name}</strong>
-                    <small>{skill.path || skill.location || skill.description || "Installed via skills.sh"}</small>
-                  </div>
-                  <span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span>
-                </button>
-              );
-            })}
-          </div>
-        </details>
-      );
-    });
-  }, [opencodeSkillsVisible, groupedOpencodeSkills, opencodeSkillRemovingKey]);
-  const opencodeSkillCardNodes = useMemo(() => {
-    if (!opencodeSkillsVisible) return null;
-    return visibleOpencodeMarketplaceRows.map((result, idx) => {
-      const resultInstallSpec = result.installSpec || result.spec;
-      const isInstallingThisSkill = opencodeSkillInstallingSpec === resultInstallSpec || opencodeSkillInstallingSpec === result.spec;
-      return <article
-        key={result.id || result.spec}
-        role="button"
-        tabIndex={0}
-        className={selectedMarketplaceSkill?.spec === result.spec ? "gt-skill-card-item active" : "gt-skill-card-item"}
-        onClick={() => void selectMarketplaceSkill(result)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") void selectMarketplaceSkill(result);
-        }}
-      >
-        <span className="gt-skill-card-rank">{String(idx + 1).padStart(2, "0")}</span>
-        <div className="gt-skill-card-copy">
-          <strong>{result.skill}</strong>
-          <small>{result.package}</small>
-          <div className="gt-skill-card-tags">
-            <span className={`gt-skill-quality ${skillQualityLabel(result)}`}>{skillQualityLabel(result)}</span>
-            <span className="gt-skill-card-spec">{resultInstallSpec}</span>
-          </div>
-        </div>
-        <div className="gt-skill-card-stats">
-          <b><PinIcon width={14} height={14} /> {result.installs}</b>
-          <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
-        </div>
-        <button className={isInstallingThisSkill ? "gt-skill-get-btn is-installing" : "gt-skill-get-btn"} type="button" disabled={isInstallingThisSkill || opencodeSkillBusy} onClick={(e) => {
-          e.stopPropagation();
-          if (opencodeSkillBusy) return;
-          void installOpencodeSkillFromRegistry(resultInstallSpec, "project", [result.installUrl || "", result.url || "", result.spec]);
-        }}>{isInstallingThisSkill ? "Installing" : "Get"}</button>
-        {isInstallingThisSkill ? <div className="gt-skill-card-install-log">{opencodeSkillInstallLog || "正在启动安装日志..."}</div> : null}
-      </article>;
-    });
-  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows, selectedMarketplaceSkill?.spec, opencodeSkillInstallingSpec, opencodeSkillBusy, opencodeSkillInstallLog]);
-  const settingsSkillsContent = useMemo(() => (
-    <div className="settings-skills-manager">
-      {opencodeSkillsError ? <div className="gt-module-empty danger">{opencodeSkillsError}</div> : null}
-      <div className="settings-skills-grid">
-        {groupedOpencodeSkills.length === 0 ? <div className="gt-module-empty">暂无已安装 Skills。</div> : groupedOpencodeSkills.map((group) => {
-          const removing = group.removableItems.some((skill) => {
-            const removeKey = `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`;
-            return opencodeSkillRemovingKey === removeKey;
-          });
-          return (
-            <article key={group.name} className="settings-skill-card">
-              <div className="settings-skill-card-main">
-                <div className="settings-skill-card-title">
-                  <strong>{group.name}</strong>
-                  <span>{group.items.length} 项</span>
-                </div>
-                <p>{group.description}</p>
-              </div>
-              <details className="settings-skill-menu">
-                <summary aria-label={`${group.name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
-                <div className="settings-skill-menu-panel">
-                  <button className="settings-skill-remove" type="button" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkillGroup(group)} title={group.removableItems.length > 0 ? "Uninstall skill group" : "Source skills need to be removed from source config"}>{removing ? "Removing" : "Uninstall"}</button>
-                </div>
-              </details>
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  ), [groupedOpencodeSkills, opencodeSkillsLoading, opencodeSkillsError, repoPath, opencodeSkillRemovingKey]);
+  const getInstalledMcpParamSpecs = (name: string, status: OpencodeMcpStatusMap[string]) => getInstalledMcpParamSpecsFromMarket(MCP_MARKET_SERVERS, name, status);
+  const getInstalledMcpTools = (name: string) => getInstalledMcpToolsFromMarket(MCP_MARKET_SERVERS, name);
+  const opencodeMcpRows = useMemo(() => buildOpencodeMcpRows(opencodeMcpStatus, opencodeMcpVisible), [opencodeMcpVisible, opencodeMcpStatus]);
+  const opencodeMcpPanelRows = useMemo(() => buildOpencodeMcpPanelRows(opencodeMcpRows, getInstalledMcpTools), [opencodeMcpRows]);
+  const settingsSkillsContent = (
+    <OpencodeSettingsSkillsGrid
+      error={opencodeSkillsError}
+      groups={groupedOpencodeSkills}
+      removingKey={opencodeSkillRemovingKey}
+      onRemoveSkillGroup={removeOpencodeSkillGroup}
+    />
+  );
 
-  const settingsMcpContent = useMemo(() => (
-    <div className="settings-skills-manager">
-      {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
-      <div className="settings-skills-grid">
-        {opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无已安装 MCP Server。</div> : opencodeMcpRows.map(([name, status]) => {
-          const s: any = status || {};
-          const source = String(s.source || (s.configured ? "project" : "runtime"));
-          const sourceLabel = source === "both" ? "项目+全局" : source === "global" ? "全局" : source === "project" ? "项目" : source;
-          return (
-            <article key={name} className="settings-skill-card">
-              <button type="button" className="settings-skill-card-main gt-settings-mcp-card-main" onClick={() => startEditMcpParams(name, status)}>
-                <div className="settings-skill-card-title">
-                  <strong>{name}</strong>
-                  <span>{String(s.type || "mcp")}</span>
-                </div>
-                <p>{sourceLabel} · {getInstalledMcpTools(name).length} tools · use {name}</p>
-              </button>
-              <details className="settings-skill-menu">
-                <summary aria-label={`${name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
-                <div className="settings-skill-menu-panel">
-                  <button className="settings-mcp-action" type="button" onClick={() => startEditMcpParams(name, status)}>配置参数</button>
-                  <button className="settings-skill-remove" type="button" disabled={!!opencodeMcpBusyName} onClick={() => void removeOpencodeMcpServer(name)}>{opencodeMcpBusyName.endsWith(":remove") ? "删除中" : "删除"}</button>
-                </div>
-              </details>
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  ), [opencodeMcpRows, opencodeMcpError, opencodeMcpBusyName, editingMcpName]);
+  const settingsMcpContent = (
+    <OpencodeSettingsMcpGrid
+      rows={opencodeMcpPanelRows}
+      error={opencodeMcpError}
+      busyName={opencodeMcpBusyName}
+      onEditMcp={(name) => startEditMcpParams(name, opencodeMcpStatus[name])}
+      onRemoveMcp={removeOpencodeMcpServer}
+    />
+  );
 
   useEffect(() => {
     opencodeMcpLoadedRef.current = false;
     opencodeMcpLoadingRef.current = false;
   }, [repoPath]);
-
-  useEffect(() => {
-    if (!showMcpAddForm) return;
-    const inferred = inferCustomMcpName(opencodeMcpJson);
-    if (!inferred) return;
-    const current = opencodeMcpName.trim();
-    if (current && current !== opencodeMcpAutoNameRef.current) return;
-    opencodeMcpAutoNameRef.current = inferred;
-    setOpencodeMcpName(inferred);
-  }, [showMcpAddForm, opencodeMcpJson, opencodeMcpName]);
-
-  useEffect(() => {
-    if (!showMcpAddForm) return;
-    const specs = getCustomMcpParamSpecs(opencodeMcpJson, opencodeMcpName);
-    setOpencodeMcpCustomParamValues((prev) => {
-      const next: Record<string, string> = {};
-      specs.forEach((spec) => { next[spec.key] = prev[spec.key] || ""; });
-      return next;
-    });
-  }, [showMcpAddForm, opencodeMcpJson, opencodeMcpName]);
 
   useEffect(() => {
     if (!repoPath.trim() || !activeOpencodeSessionId.trim()) return;
@@ -2313,64 +1193,6 @@ export function App() {
   }, [opencodeSkillsVisible, opencodeMcpVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillsLoading]);
 
   useEffect(() => {
-    if (!opencodeSkillsVisible) return;
-    if (opencodeSkillSearchResults.length > 0) return;
-    if (opencodeSkillCatalogRows.length > 0) return;
-    if (opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) return;
-    const timer = scheduleAfterInteraction(() => void loadInitialSkillsmpCatalog(), 320);
-    return () => window.clearTimeout(timer);
-  }, [opencodeSkillsVisible, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillCatalogLoading, repoPath, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
-
-  useEffect(() => {
-    if (!opencodeSkillsVisible) return;
-    if (!repoPath.trim()) return;
-    if (opencodeSkillsLoadedOnce && (opencodeSkillCatalogRows.length > 0 || opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)])) return;
-    const timer = window.setTimeout(() => {
-      void warmSkillsMarketplace();
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [opencodeSkillsVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillCatalogRows.length, opencodeSkillSearchResults.length, opencodeSkillsLoading, opencodeSkillCatalogLoading, opencodeSkillCatalogAttempted, opencodeSkillCatalogView]);
-
-  useEffect(() => {
-    if (!opencodeSkillsVisible) return;
-    if (opencodeMarketplaceRows.length === 0) return;
-    setSelectedMarketplaceSkill((prev) => {
-      if (prev && opencodeMarketplaceRows.some((row) => row.spec === prev.spec)) return prev;
-      return opencodeMarketplaceRows[0];
-    });
-  }, [opencodeSkillsVisible, opencodeMarketplaceRows]);
-
-  useEffect(() => {
-    if (!opencodeSkillsVisible) return;
-    const el = opencodeSkillMarketListRef.current;
-    if (!el || opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
-    if (el.scrollHeight - el.clientHeight > 520) return;
-    if (opencodeCanRevealMoreSkills) {
-      revealMoreOpencodeSkills();
-      return;
-    }
-    if (opencodeCanFetchMoreCatalogSkills) {
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
-    }
-  }, [opencodeSkillsVisible, visibleOpencodeMarketplaceRows.length, opencodeCanRevealMoreSkills, opencodeCanFetchMoreCatalogSkills, opencodeSkillsInitialLoading, opencodeSkillsPaging, opencodeSkillCatalogView, opencodeSkillCatalogPage]);
-
-  useEffect(() => {
-    saveRightModuleVisibility(rightModuleVisibility);
-    if (rightModuleVisibility[rightPaneTab]) return;
-    const next = (["changes", "worktree", "terminal", "skills", "mcp"] as RightPaneTab[]).find((tab) => rightModuleVisibility[tab]);
-    if (next) setRightPaneTab(next);
-  }, [rightModuleVisibility, rightPaneTab]);
-
-  useEffect(() => {
-    const ui = Math.min(18, Math.max(11, uiFontSize));
-    const code = Math.min(18, Math.max(10, codeFontSize));
-    document.documentElement.style.setProperty("--gt-ui-font-size", `${ui}px`);
-    document.documentElement.style.setProperty("--gt-code-font-size", `${code}px`);
-    saveLocalString(UI_FONT_SIZE_KEY, String(ui));
-    saveLocalString(CODE_FONT_SIZE_KEY, String(code));
-  }, [uiFontSize, codeFontSize]);
-
-  useEffect(() => {
     if (!showSettings || !runtimeStatus.opencode.installed) return;
     if (Number(opencodeServiceSettings.port) === Number(opencodeServiceSettingsSavedPort)) return;
     const timer = window.setTimeout(() => {
@@ -2398,14 +1220,6 @@ export function App() {
       };
       writeWorkspaceAgentBindings(next);
       return next;
-    });
-  }
-
-  function toggleRightModuleVisibility(tab: RightPaneTab) {
-    setRightModuleVisibility((prev) => {
-      const enabledCount = Object.values(prev).filter(Boolean).length;
-      if (prev[tab] && enabledCount <= 1) return prev;
-      return { ...prev, [tab]: !prev[tab] };
     });
   }
 
@@ -2569,14 +1383,6 @@ export function App() {
     }
   }
 
-  function togglePinnedRepo(repoId: string) {
-    setPinnedRepoIds((prev) => {
-      const next = prev.includes(repoId) ? prev.filter((id) => id !== repoId) : [...prev, repoId];
-      window.localStorage.setItem("giteam.pinnedRepos", JSON.stringify(next));
-      return next;
-    });
-  }
-
   function startDraftSessionForRepo(repo: RepositoryEntry) {
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
@@ -2649,34 +1455,15 @@ export function App() {
   ]);
 
   const opencodeProviderPickerCandidates = useMemo(() => {
-    const q = opencodeProviderPickerSearch.trim().toLowerCase();
-    // Provider list for enable/disable should be "all known providers":
-    // - presets (static list)
-    // - plus any providers discovered from server /provider (custom ones)
-    // - plus providers defined in /global/config (including currently disabled ones),
-    //   so users can reconnect by entering API key.
-    const presetIds = PROVIDER_PRESETS.map((p) => p.id).filter(Boolean);
-    const disabled = new Set((opencodeDisabledProviders || []).filter(Boolean));
-    const configProviderIds = Object.keys(opencodeGlobalConfigProviderMap || {})
-      .filter(Boolean)
-      // Disabled preset providers stay visible for reconnection.
-      // Disabled custom providers are hidden; they can be re-added via "Custom".
-      .filter((id) => !disabled.has(id) || isPresetProviderId(id));
-    const merged = Array.from(new Set([...presetIds, ...opencodeProviders, ...configProviderIds].filter(Boolean)));
-    const connected = new Set(opencodeConnectedProviders.filter(Boolean));
-    const byPriority = (arr: string[]) =>
-      [...arr].sort((a, b) => {
-        const ca = connected.has(a) ? 1 : 0;
-        const cb = connected.has(b) ? 1 : 0;
-        if (ca !== cb) return cb - ca;
-        return a.localeCompare(b);
-      });
-    if (!q) return byPriority(merged);
-    const filtered = merged.filter((id) => {
-      const name = opencodeProviderNames[id] || "";
-      return id.toLowerCase().includes(q) || name.toLowerCase().includes(q);
+    return buildOpencodeProviderPickerCandidates({
+      search: opencodeProviderPickerSearch,
+      presetProviderIds: PROVIDER_PRESETS.map((p) => p.id).filter(Boolean),
+      providers: opencodeProviders,
+      connectedProviders: opencodeConnectedProviders,
+      providerNames: opencodeProviderNames,
+      configProviderMap: opencodeGlobalConfigProviderMap,
+      disabledProviders: opencodeDisabledProviders
     });
-    return byPriority(filtered);
   }, [
     opencodeProviders,
     opencodeProviderNames,
@@ -2687,42 +1474,25 @@ export function App() {
   ]);
 
   function getOpencodeModelDisplay(modelRef: string) {
-    const normalized = normalizeModelRef(modelRef);
-    const parsed = normalized ? parseModelRef(normalized) : null;
-    const provider = resolveProviderAliasWithNames(parsed?.provider || "", opencodeModelsByProvider, opencodeProviderNames) || (parsed?.provider || "");
-    const modelId = parsed?.model || "";
-    const label = (provider ? (opencodeModelNamesByProvider[provider]?.[modelId] || opencodeConfiguredModelNamesByProvider[provider]?.[modelId]) : "") || normalized || "Auto";
-    return {
-      ref: normalized || "",
-      provider: provider || "Auto",
-      modelId,
-      label
-    };
+    return getOpencodeModelDisplayInfo({
+      modelRef,
+      modelsByProvider: opencodeModelsByProvider,
+      providerNames: opencodeProviderNames,
+      modelNamesByProvider: opencodeModelNamesByProvider,
+      configuredModelNamesByProvider: opencodeConfiguredModelNamesByProvider
+    });
   }
 
   function getOpencodeProviderSource(providerId: string): string {
-    const pid = (providerId || "").trim();
-    if (!pid) return "";
-    return (opencodeProviderSourceById[pid] || "").trim().toLowerCase();
-  }
-
-  function isOpencodeConfigCustomProvider(providerId: string): boolean {
-    const pid = (providerId || "").trim();
-    if (!pid) return false;
-    const provider = opencodeGlobalConfigProviderMap[pid];
-    if (!provider) return false;
-    if ((provider.npm || "").trim() !== "@ai-sdk/openai-compatible") return false;
-    const models = provider.models || {};
-    return Object.keys(models).filter(Boolean).length > 0;
+    return getOpencodeProviderSourceFromCatalog(providerId, opencodeProviderSourceById);
   }
 
   function getOpencodeProviderTag(providerId: string): string {
-    const source = getOpencodeProviderSource(providerId);
-    if (source === "env") return "env";
-    if (source === "api") return "api";
-    if (source === "config") return isOpencodeConfigCustomProvider(providerId) ? "custom" : "config";
-    if (source === "custom") return "custom";
-    return isPresetProviderId(providerId) ? "preset" : "other";
+    return getOpencodeProviderTagFromCatalog({
+      providerId,
+      providerSourceById: opencodeProviderSourceById,
+      providerMap: opencodeGlobalConfigProviderMap
+    });
   }
   function beginSplitDrag(kind: "sidebar" | "right", clientX: number) {
     setDraggingSplit({
@@ -2741,15 +1511,6 @@ export function App() {
     });
   }
 
-  function pushOpencodeSavedModel(model: string) {
-    const normalized = normalizeModelRef(model);
-    if (!normalized) return;
-    setOpencodeSavedModels((prev) => {
-      const next = [normalized, ...prev.filter((m) => m !== normalized)].slice(0, 64);
-      return next;
-    });
-  }
-
   async function applyOpencodeModel(model: string) {
     if (!ensureRepoSelected()) return;
     const normalized = normalizeModelRef(model);
@@ -2763,17 +1524,12 @@ export function App() {
       // OpenCode-like: selecting a model updates local selection (session/draft) and recent list.
       // It does NOT write server /config.model unless explicitly requested elsewhere.
       const sid = activeOpencodeSessionId.trim();
-      if (sid) {
-        setOpencodeSessionModel((prev) => ({ ...prev, [sid]: normalized }));
-      } else {
-        setOpencodeDraftModel(normalized);
-      }
+      selectOpencodeModel(normalized, sid);
       if (parsed) {
         ensureProviderExists(parsed.provider);
         setOpencodeModelProvider(parsed.provider);
         setOpencodeSelectedModel(parsed.model);
       }
-      pushOpencodeSavedModel(normalized);
       setMessage(`Switched model: ${normalized}`);
     } catch (e) {
       setError(String(e));
@@ -2814,22 +1570,7 @@ export function App() {
     setOpencodeAgentsError("");
     try {
       const raw = await invoke<unknown>("list_opencode_agents", { repoPath });
-      const rows = normalizeArrayRows(raw)
-        .map((item: any): OpencodeAgentInfo | null => {
-          const name = String(item?.name || "").trim();
-          if (!name) return null;
-          return {
-            name,
-            description: String(item?.description || ""),
-            mode: item?.mode === "subagent" || item?.mode === "primary" || item?.mode === "all" ? item.mode : undefined,
-            native: Boolean(item?.native),
-            hidden: Boolean(item?.hidden),
-            color: String(item?.color || ""),
-            variant: String(item?.variant || ""),
-            model: item?.model || undefined
-          };
-        })
-        .filter(Boolean) as OpencodeAgentInfo[];
+      const rows = parseOpencodeAgents(raw);
       setOpencodeAgents(rows);
     } catch (e) {
       const msg = String(e);
@@ -2837,384 +1578,6 @@ export function App() {
       appendOpencodeDebugLog(`agent.list.error ${msg}`);
     } finally {
       setOpencodeAgentsLoading(false);
-    }
-  }
-
-  async function refreshOpencodeSkills() {
-    const requestRepoPath = repoPath.trim();
-    if (!requestRepoPath) return;
-    startTransition(() => {
-      setOpencodeSkillsLoading(true);
-      setOpencodeSkillsError("");
-    });
-    await waitForPaint();
-    try {
-      const installedRaw = await invoke<unknown>("list_installed_opencode_skills", { repoPath: requestRepoPath }).catch(() => []);
-      if (repoPathRef.current.trim() !== requestRepoPath) return;
-      const installedRows = normalizeArrayRows(installedRaw).map((item: any) => ({
-        name: String(item?.name || "").trim(),
-        path: String(item?.path || ""),
-        scope: (item?.scope === "global" ? "global" : "project") as "global" | "project",
-        agents: Array.isArray(item?.agents) ? item.agents.map((x: unknown) => String(x || "")).filter(Boolean) : [],
-        sourceGroup: String(item?.sourceGroup || "").trim()
-      })).filter((item) => item.name && isInstalledOpencodeSkill(item));
-      const pending = pendingSkillInstallGroupsRef.current[requestRepoPath] || [];
-      if (pending.length > 0) {
-        const nextMap = { ...opencodeSkillSourceGroupsRef.current };
-        let changed = false;
-        const unresolved: Array<{ groupName: string; scope: "project" | "global"; beforePaths: string[] }> = [];
-        pending.forEach((entry) => {
-          let matchedAny = false;
-          installedRows.forEach((item) => {
-            if (item.scope !== entry.scope) return;
-            if (!item.path || entry.beforePaths.includes(item.path)) return;
-            matchedAny = true;
-            if (nextMap[item.path] === entry.groupName) return;
-            nextMap[item.path] = entry.groupName;
-            changed = true;
-          });
-          if (!matchedAny) unresolved.push(entry);
-        });
-        pendingSkillInstallGroupsRef.current[requestRepoPath] = unresolved;
-        if (changed) {
-          opencodeSkillSourceGroupsRef.current = nextMap;
-          saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, nextMap);
-        }
-      }
-      const sourceGroupMap = opencodeSkillSourceGroupsRef.current;
-      const sourceGroupEntries = installedRows
-        .map((installed) => ({
-          path: installed.path,
-          scope: installed.scope,
-          sourceGroup: installed.sourceGroup || sourceGroupMap[installed.path] || ""
-        }))
-        .filter((entry) => entry.path && entry.sourceGroup);
-      if (sourceGroupEntries.length > 0) {
-        void invoke("save_opencode_skill_source_groups", { repoPath: requestRepoPath, entries: sourceGroupEntries }).catch(() => null);
-      }
-      const rows = installedRows.map((installed): OpencodeSkillInfo => {
-        return {
-          name: installed.name,
-          description: "Installed via skills.sh",
-          location: installed.path,
-          license: "",
-          compatibility: "",
-          scope: installed.scope,
-          path: installed.path,
-          agents: installed.agents,
-          sourceGroup: installed.sourceGroup || sourceGroupMap[installed.path] || ""
-        };
-      });
-      opencodeSkillsByRepoRef.current[requestRepoPath] = rows;
-      startTransition(() => {
-        setOpencodeSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
-      });
-    } catch (e) {
-      if (repoPathRef.current.trim() !== requestRepoPath) return;
-      const msg = String(e);
-      startTransition(() => setOpencodeSkillsError(msg));
-      appendOpencodeDebugLog(`skill.list.error ${msg}`);
-    } finally {
-      if (repoPathRef.current.trim() === requestRepoPath) {
-        startTransition(() => {
-          setOpencodeSkillsLoadedOnce(true);
-          setOpencodeSkillsLoading(false);
-        });
-      }
-    }
-  }
-
-  async function searchOpencodeSkillRegistry(queryArg = opencodeSkillSearchQuery, strategyArg = opencodeSkillSearchStrategy) {
-    if (!ensureRepoSelected()) return;
-    const query = queryArg.trim();
-    if (query.length < 2) {
-      setOpencodeSkillSearchResults([]);
-      return;
-    }
-    const cacheKey = `${strategyArg}:${opencodeSkillCategory || "all"}:${query.toLowerCase()}`;
-    const cached = opencodeSkillSearchCache[cacheKey];
-    if (cached) {
-      setOpencodeSkillSearchResults(cached);
-      setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
-      setOpencodeSkillSearchMeta({ count: cached.length, searchType: `${strategyArg}-cache`, durationMs: 0 });
-      return;
-    }
-    setOpencodeSkillSearchLoading(true);
-    setOpencodeSkillsError("");
-    try {
-      if (strategyArg === "ai") {
-        if (!skillsmpApiKey.trim()) {
-          setOpencodeSkillsError("未配置 SKILLSMP_API_KEY，已自动切换到关键词搜索。可在 Settings 中配置后再用 AI 语义搜索。");
-          setOpencodeSkillSearchStrategy("keyword");
-          await searchOpencodeSkillRegistry(query, "keyword");
-          return;
-        }
-        const raw = await fetchSkillsmpAiWithFallback(query);
-        const rows = normalizeArrayRows(raw?.data?.skills || raw?.data).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
-        setOpencodeSkillSearchResults(rows);
-        setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
-        setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: rows }));
-        setOpencodeSkillSearchMeta({ count: rows.length, searchType: "skillsmp-ai", durationMs: Number(raw?.meta?.responseTimeMs || 0) });
-        return;
-      }
-      const collected: OpencodeSkillSearchResult[] = [];
-      for (const q of [query]) {
-        let raw = await fetchSkillsmpSearchWithFallback({
-          query: q,
-          page: 1,
-          limit: 100,
-          sortBy: "stars",
-          category: opencodeSkillCategory || undefined
-        });
-        let rows = normalizeArrayRows(raw?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
-        if (rows.length === 0 && opencodeSkillCategory) {
-          raw = await fetchSkillsmpSearchWithFallback({
-            query: q,
-            page: 1,
-            limit: 100,
-            sortBy: "stars"
-          });
-          rows = normalizeArrayRows(raw?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
-        }
-        collected.push(...rows.map((row) => ({ ...row, sourceType: q === query ? "skillsmp" : `alt: ${q}` })));
-      }
-      const deduped = Array.from(new Map(collected.filter((item) => !item.isDuplicate).map((item) => [item.id || item.spec, item])).values());
-      const sorted = deduped.sort((a, b) => {
-        const trustedDelta = Number(isTrustedSkillSource(b.source || b.package)) - Number(isTrustedSkillSource(a.source || a.package));
-        if (trustedDelta !== 0) return trustedDelta;
-        return parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs);
-      });
-      setOpencodeSkillSearchResults(sorted);
-      setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
-      setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: sorted }));
-      setOpencodeSkillSearchMeta({ count: sorted.length, searchType: "skillsmp-keyword", durationMs: 0 });
-    } catch (e) {
-      const msg = "SkillsMP 搜索暂时不可用，已保留本地榜单。";
-      setOpencodeSkillsError(msg);
-      setOpencodeSkillSearchResults([]);
-      setOpencodeSkillSearchMeta(null);
-      appendOpencodeDebugLog(`skill.search.error ${String(e)}`);
-    } finally {
-      setOpencodeSkillSearchLoading(false);
-    }
-  }
-
-  async function loadInitialSkillsmpCatalog() {
-    if (!ensureRepoSelected() || opencodeSkillCatalogLoading || opencodeSkillCatalogRows.length > 0) return;
-    if (opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) return;
-    await fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0);
-  }
-
-  function updateSkillsMarketplaceCategory(category: string) {
-    setOpencodeSkillCategory(category);
-    setOpencodeSkillCatalogRows([]);
-    setOpencodeSkillCatalogPage(0);
-    setOpencodeSkillSearchResults([]);
-    setOpencodeSkillSearchMeta(null);
-    setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
-  }
-
-  function opencodeSkillCatalogCacheKey(view: string, category = opencodeSkillCategory) {
-    return `${view}:${category || "all"}`;
-  }
-
-  async function fetchSkillsmpSearchWithFallback(input: { query: string; page?: number; limit?: number; sortBy?: "stars" | "recent"; category?: string; occupation?: string }, options: { allowBackendFallback?: boolean } = {}) {
-    if (!IS_TAURI) {
-      return await invoke<any>("fetch_skillsmp_skill_search", {
-        repoPath,
-        query: input.query,
-        page: input.page,
-        limit: input.limit,
-        sortBy: input.sortBy,
-        category: input.category,
-        occupation: input.occupation,
-        apiKey: skillsmpApiKey || undefined
-      });
-    }
-    try {
-      return await fetchSkillsmpJson(buildSkillsmpSearchEndpoint(input), skillsmpApiKey);
-    } catch (directError) {
-      appendOpencodeDebugLog(`skillsmp.direct.error ${String(directError)}`);
-      if (options.allowBackendFallback === false) throw directError;
-      return await invoke<any>("fetch_skillsmp_skill_search", {
-        repoPath,
-        query: input.query,
-        page: input.page,
-        limit: input.limit,
-        sortBy: input.sortBy,
-        category: input.category,
-        occupation: input.occupation,
-        apiKey: skillsmpApiKey || undefined
-      });
-    }
-  }
-
-  async function fetchSkillsmpAiWithFallback(query: string) {
-    if (!IS_TAURI) {
-      return await invoke<any>("fetch_skillsmp_ai_search", { repoPath, query, apiKey: skillsmpApiKey || undefined });
-    }
-    try {
-      return await fetchSkillsmpJson(`/api/v1/skills/ai-search?q=${encodeURIComponent(query)}`, skillsmpApiKey, 14000);
-    } catch (directError) {
-      appendOpencodeDebugLog(`skillsmp.ai.direct.error ${String(directError)}`);
-      return await invoke<any>("fetch_skillsmp_ai_search", { repoPath, query, apiKey: skillsmpApiKey || undefined });
-    }
-  }
-
-  function switchOpencodeSkillCatalogView(view: "all-time" | "trending" | "hot" | "official") {
-    if (opencodeSkillCatalogView === view && opencodeSkillSearchResults.length === 0) return;
-    setOpencodeSkillSearchResults([]);
-    setOpencodeSkillSearchMeta(null);
-    setOpencodeSkillCatalogView(view);
-    setOpencodeSkillDisplayLimit(opencodeSkillDisplayBatchSize);
-    setOpencodeSkillsError("");
-    const cached = opencodeSkillCatalogCache[opencodeSkillCatalogCacheKey(view)];
-    if (cached) {
-      setOpencodeSkillCatalogRows(cached.rows);
-      setOpencodeSkillCatalogPage(cached.page);
-      setOpencodeSkillCatalogTotal(cached.total);
-      setOpencodeSkillCatalogHasMore(cached.hasMore);
-      return;
-    }
-    window.requestAnimationFrame(() => void fetchOpencodeSkillCatalog(view, 0));
-  }
-
-  async function warmSkillsMarketplace() {
-    if (!repoPath.trim()) return;
-    const tasks: Array<Promise<unknown>> = [];
-    if (!opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0 && !opencodeSkillCatalogAttempted[opencodeSkillCatalogCacheKey(opencodeSkillCatalogView)]) {
-      tasks.push(loadInitialSkillsmpCatalog());
-    }
-    if (tasks.length === 0) return;
-    await Promise.allSettled(tasks);
-  }
-
-  function handleOpencodeSkillMarketScroll() {
-    const el = opencodeSkillMarketListRef.current;
-    if (!el) return;
-    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceToBottom > 520) return;
-    if (opencodeCanRevealMoreSkills && !opencodeSkillRevealLoading) {
-      revealMoreOpencodeSkills();
-      return;
-    }
-    if (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length) {
-      setOpencodeSkillAllowBackendCatalogFetch(true);
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0, { allowBackendFallback: true, force: true });
-      return;
-    }
-    if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
-      return;
-    }
-  }
-
-  function revealMoreOpencodeSkills() {
-    if (opencodeSkillRevealLoading) return;
-    setOpencodeSkillRevealLoading(true);
-    window.setTimeout(() => {
-      setOpencodeSkillDisplayLimit((limit) => limit + opencodeSkillDisplayBatchSize);
-      setOpencodeSkillRevealLoading(false);
-    }, 360);
-  }
-
-  async function fetchOpencodeSkillCatalog(viewArg = opencodeSkillCatalogView, pageArg = 0, options: { allowBackendFallback?: boolean; force?: boolean } = {}) {
-    const requestId = ++opencodeSkillCatalogRequestRef.current;
-    const cacheKey = opencodeSkillCatalogCacheKey(viewArg);
-    if (!options.force && opencodeSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
-    startTransition(() => {
-      setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
-      setOpencodeSkillCatalogLoading(true);
-      setOpencodeSkillsError("");
-    });
-    await waitForPaint();
-    try {
-      const page = pageArg + 1;
-      const sortBy = viewArg === "trending" || viewArg === "hot" ? "recent" : "stars";
-      const viewQuery = viewArg === "official" ? "official" : viewArg === "hot" ? "popular" : "agent";
-      const query = opencodeSkillCategory ? getSkillsMarketplaceSeedQuery(opencodeSkillCategory) : viewQuery;
-      let json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy, category: opencodeSkillCategory || undefined }, { allowBackendFallback: options.allowBackendFallback ?? true });
-      let rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
-      if (rows.length === 0 && opencodeSkillCategory) {
-        json = await fetchSkillsmpSearchWithFallback({ query, page, limit: 100, sortBy }, { allowBackendFallback: options.allowBackendFallback ?? true });
-        rows = normalizeArrayRows(json?.data?.skills).map(skillsmpSkillToResult).filter(Boolean) as OpencodeSkillSearchResult[];
-      }
-      const positiveStarRows = rows.filter((item) => parseSkillInstallCount(item.installs) > 0);
-      if (positiveStarRows.length > 0) rows = positiveStarRows;
-      rows = rows.slice().sort((a, b) => parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs));
-      if (requestId !== opencodeSkillCatalogRequestRef.current) return;
-      const nextPage = Number(json?.data?.pagination?.page || page) - 1;
-      const nextTotal = Number(json?.data?.pagination?.total || rows.length);
-      const nextHasMore = Boolean(json?.data?.pagination?.hasNext);
-      startTransition(() => {
-        setOpencodeSkillCatalogRows((prev) => {
-          const nextRows = rows.filter((item) => !item.isDuplicate);
-          const mergedRows = pageArg <= 0 ? nextRows : Array.from(new Map([...prev, ...nextRows].map((item) => [item.id || item.spec, item])).values());
-          setOpencodeSkillCatalogCache((cache) => ({
-            ...cache,
-            [opencodeSkillCatalogCacheKey(viewArg)]: { rows: mergedRows, page: nextPage, total: nextTotal, hasMore: nextHasMore }
-          }));
-          return mergedRows;
-        });
-        setOpencodeSkillDisplayLimit((limit) => Math.max(limit, opencodeSkillDisplayBatchSize));
-        setOpencodeSkillCatalogPage(nextPage);
-        setOpencodeSkillCatalogTotal(nextTotal);
-        setOpencodeSkillCatalogHasMore(nextHasMore);
-      });
-    } catch (e) {
-      if (requestId !== opencodeSkillCatalogRequestRef.current) return;
-      startTransition(() => {
-        setOpencodeSkillsError("");
-        setOpencodeSkillCatalogRows([]);
-        setOpencodeSkillCatalogHasMore(false);
-      });
-      appendOpencodeDebugLog(`skill.catalog.error ${String(e)}`);
-    } finally {
-      if (requestId === opencodeSkillCatalogRequestRef.current) startTransition(() => setOpencodeSkillCatalogLoading(false));
-    }
-  }
-
-  async function selectMarketplaceSkill(skill: OpencodeSkillSearchResult) {
-    setSelectedMarketplaceSkill(skill);
-    setSelectedSkillDetail(null);
-    setSelectedSkillAudits([]);
-    setShowSkillInstallMenu(false);
-  }
-
-  async function loadSelectedMarketplaceSkillDetails(skill = selectedMarketplaceSkill) {
-    if (!skill) return;
-    const id = (skill.id || "").trim();
-    if (!id || !repoPath.trim()) return;
-    setSelectedSkillLoading(true);
-    try {
-      const [detailRaw, auditRaw] = await Promise.all([
-        invoke<any>("fetch_opencode_skill_detail_api", { repoPath, id }).catch(() => null),
-        invoke<any>("fetch_opencode_skill_audit_api", { repoPath, id }).catch(() => null)
-      ]);
-      if (detailRaw && typeof detailRaw === "object") {
-        setSelectedSkillDetail({
-          id: String(detailRaw?.id || id),
-          source: String(detailRaw?.source || skill.source || skill.package),
-          slug: String(detailRaw?.slug || skill.skill),
-          installs: Number(detailRaw?.installs || 0),
-          hash: detailRaw?.hash == null ? null : String(detailRaw.hash),
-          files: Array.isArray(detailRaw?.files) ? detailRaw.files.map((file: any) => ({
-            path: String(file?.path || ""),
-            contents: String(file?.contents || "")
-          })).filter((file: { path: string }) => file.path) : null
-        });
-      }
-      setSelectedSkillAudits(Array.isArray(auditRaw?.audits) ? auditRaw.audits.map((audit: any) => ({
-        provider: String(audit?.provider || "Audit"),
-        slug: String(audit?.slug || ""),
-        status: String(audit?.status || "unknown"),
-        summary: String(audit?.summary || ""),
-        auditedAt: String(audit?.auditedAt || ""),
-        riskLevel: String(audit?.riskLevel || ""),
-        categories: Array.isArray(audit?.categories) ? audit.categories.map((x: unknown) => String(x || "")).filter(Boolean) : []
-      })) : []);
-    } finally {
-      setSelectedSkillLoading(false);
     }
   }
 
@@ -3247,32 +1610,13 @@ export function App() {
     setOpencodePermissionLoading(true);
     try {
       const raw = await invoke<unknown>("list_opencode_permissions", { repoPath });
-      const rows = normalizeArrayRows(raw)
-        .map((item: any): OpencodePermissionRequest | null => {
-          const id = String(item?.id || "").trim();
-          const sessionID = String(item?.sessionID || "").trim();
-          if (!id || !sessionID) return null;
-          return {
-            id,
-            sessionID,
-            permission: String(item?.permission || ""),
-            patterns: Array.isArray(item?.patterns) ? item.patterns.map((x: unknown) => String(x || "")).filter(Boolean) : [],
-            always: Array.isArray(item?.always) ? item.always.map((x: unknown) => String(x || "")).filter(Boolean) : [],
-            metadata: item?.metadata || undefined,
-            tool: item?.tool || undefined
-          };
-        })
-        .filter(Boolean) as OpencodePermissionRequest[];
       const sid = sessionIdArg.trim();
-      const nextRows = sid ? rows.filter((row) => row.sessionID === sid) : rows;
+      const nextRows = filterPermissionsBySession(parseOpencodePermissionRequests(raw), sid);
       if (opencodeAutoAcceptPermissions) {
         await Promise.all(nextRows.map((req) => sendPermissionReply(req.id, "always", { silent: true })));
-        setOpencodePermissionRequests((prev) => prev.filter((req) => !nextRows.some((row) => row.id === req.id)));
+        setOpencodePermissionRequests((prev) => removePermissionsById(prev, new Set(nextRows.map((row) => row.id))));
       } else {
-        setOpencodePermissionRequests((prev) => {
-          const rest = sid ? prev.filter((row) => row.sessionID !== sid) : [];
-          return [...rest, ...nextRows];
-        });
+        setOpencodePermissionRequests((prev) => replaceSessionPermissions(prev, nextRows, sid));
       }
     } catch (e) {
       appendOpencodeDebugLog(`permission.list.error ${String(e)}`);
@@ -3321,10 +1665,7 @@ export function App() {
       void sendPermissionReply(request.id, "always", { silent: true });
       return;
     }
-    setOpencodePermissionRequests((prev) => {
-      const next = prev.filter((item) => item.id !== request.id);
-      return [...next, request];
-    });
+    setOpencodePermissionRequests((prev) => upsertPermissionRequest(prev, request));
   }
 
   function openOpencodeModulePanel(tab: OpencodeModuleTab) {
@@ -3340,32 +1681,25 @@ export function App() {
     if (!ensureRepoSelected()) return;
     let normalized: { name: string; config: Record<string, unknown> };
     try {
-      normalized = normalizeCustomMcpJson(opencodeMcpJson, opencodeMcpName);
+      normalized = normalizeCustomMcpJson(opencodeMcpAddForm.json, opencodeMcpAddForm.name);
     } catch (e) {
       setError(`MCP JSON 配置无效：${String(e instanceof Error ? e.message : e)}`);
       return;
     }
     const { name, config } = normalized;
-    const paramSpecs = getCustomMcpParamSpecs(opencodeMcpJson, name);
-    const missing = paramSpecs.filter((spec) => spec.required && !String(opencodeMcpCustomParamValues[spec.key] || "").trim());
+    const paramSpecs = getCustomMcpParamSpecs(opencodeMcpAddForm.json, name);
+    const missing = paramSpecs.filter((spec) => spec.required && !String(opencodeMcpAddForm.paramValues[spec.key] || "").trim());
     if (missing.length > 0) {
       setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
       return;
     }
-    const resolvedConfig = replaceMcpConfigPlaceholders(config, opencodeMcpCustomParamValues) as Record<string, unknown>;
+    const resolvedConfig = replaceMcpConfigPlaceholders(config, opencodeMcpAddForm.paramValues) as Record<string, unknown>;
     setOpencodeMcpBusyName(name);
     setOpencodeMcpError("");
     try {
       await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config: resolvedConfig });
       setOpencodeMcpStatus((prev) => ({ ...prev, [name]: { ...(resolvedConfig as any), status: "configured" } }));
-      setOpencodeMcpName("");
-      setOpencodeMcpCommand("");
-      setOpencodeMcpUrl("");
-      setOpencodeMcpEnv("");
-      setOpencodeMcpHeaders("");
-      setOpencodeMcpJson("");
-      setOpencodeMcpCustomParamValues({});
-      opencodeMcpAutoNameRef.current = "";
+      opencodeMcpAddForm.reset();
       setShowMcpAddForm(false);
       setMcpInstalledOpen(true);
       window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
@@ -3422,266 +1756,21 @@ export function App() {
     }
   }
 
-  function getMcpMarketDefinition(name: string): any | null {
-    const target = name.trim().toLowerCase();
-    return Object.values(MCP_MARKET_SERVERS as Record<string, any>).find((server: any) => {
-      const names = [server?.name, server?.display_name, String(server?.display_name || "").toLowerCase().replace(/\s+/g, "-")];
-      return names.some((item) => String(item || "").trim().toLowerCase() === target);
-    }) || null;
-  }
-
-  function getInstalledMcpParamSpecs(name: string, status: OpencodeMcpStatusMap[string]) {
-    const s: any = status || {};
-    const def = getMcpMarketDefinition(name);
-    const specs = new Map<string, { key: string; required: boolean; description: string; example: string }>();
-    const addSpec = (key: string, required = false, description = "", example = "") => {
-      const k = key.trim();
-      if (!k) return;
-      const prev = specs.get(k);
-      specs.set(k, {
-        key: k,
-        required: Boolean(prev?.required || required),
-        description: prev?.description || description,
-        example: prev?.example || example
-      });
-    };
-    Object.entries(def?.arguments || {}).forEach(([key, arg]: [string, any]) => {
-      addSpec(key, Boolean(arg?.required), String(arg?.description || ""), String(arg?.example || ""));
-    });
-    const scanPlaceholder = (value: unknown) => {
-      const match = String(value ?? "").match(/^\$\{([^}]+)\}$/);
-      if (match?.[1]) addSpec(match[1], true);
-    };
-    if (Array.isArray(s.command)) s.command.forEach(scanPlaceholder);
-    Object.values(s.environment || {}).forEach(scanPlaceholder);
-    Object.values(s.headers || {}).forEach(scanPlaceholder);
-    if (specs.size === 0) {
-      const params = s.type === "remote" ? s.headers : s.environment;
-      Object.keys(params || {}).forEach((key) => addSpec(key, false));
-    }
-    return Array.from(specs.values());
-  }
-
-  function getInstalledMcpTools(name: string) {
-    const def = getMcpMarketDefinition(name);
-    return Array.isArray(def?.tools) ? def.tools : [];
-  }
-
-  function normalizeCustomMcpJson(input: string, fallbackName: string): { name: string; config: Record<string, unknown> } {
-    const parsed = JSON.parse(input);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("config must be an object");
-    const root = parsed as Record<string, any>;
-    const wrapped = root.mcpServers || root.mcp;
-    if (wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)) {
-      const entries = Object.entries(wrapped as Record<string, any>);
-      if (entries.length !== 1 && !fallbackName.trim()) throw new Error("mcpServers/mcp 中包含多个 server，请填写名称");
-      const [wrappedName, wrappedConfig] = fallbackName.trim()
-        ? [fallbackName.trim(), (wrapped as Record<string, any>)[fallbackName.trim()] || entries[0]?.[1]]
-        : entries[0];
-      if (!wrappedConfig || typeof wrappedConfig !== "object" || Array.isArray(wrappedConfig)) throw new Error("server config must be an object");
-      return normalizeCustomMcpConfig(wrappedName, wrappedConfig as Record<string, unknown>);
-    }
-    const entries = Object.entries(root);
-    if (!root.type && !root.command && !root.url && entries.length === 1) {
-      const [marketName, marketConfig] = entries[0] as [string, any];
-      if (marketConfig && typeof marketConfig === "object" && !Array.isArray(marketConfig) && marketConfig.installations) {
-        return normalizeMarketplaceMcpDefinition(fallbackName.trim() || marketName, marketConfig);
-      }
-    }
-    if (root.installations) return normalizeMarketplaceMcpDefinition(fallbackName.trim() || String(root.name || ""), root);
-    if (!root.type && !root.command && !root.url && entries.length === 1) {
-      const [directName, directConfig] = entries[0] as [string, any];
-      if (directConfig && typeof directConfig === "object" && !Array.isArray(directConfig)) {
-        return normalizeCustomMcpConfig(fallbackName.trim() || directName, directConfig as Record<string, unknown>);
-      }
-    }
-    return normalizeCustomMcpConfig(fallbackName.trim(), root);
-  }
-
-  function inferCustomMcpName(input: string): string {
-    try {
-      const parsed = JSON.parse(input);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
-      const root = parsed as Record<string, any>;
-      if (root.installations && root.name) return String(root.name);
-      const wrapped = root.mcpServers || root.mcp;
-      const directMap = !wrapped && !root.type && !root.command && !root.url ? root : wrapped;
-      if (directMap && typeof directMap === "object" && !Array.isArray(directMap)) {
-        const entries = Object.entries(directMap as Record<string, any>);
-        if (entries.length === 1) {
-          const [key, value] = entries[0];
-          if (value?.installations) return String(value.name || key);
-        }
-      }
-      if (!directMap || typeof directMap !== "object" || Array.isArray(directMap)) return "";
-      const keys = Object.keys(directMap).filter(Boolean);
-      return keys.length === 1 ? keys[0] : "";
-    } catch {
-      return "";
-    }
-  }
-
-  function normalizeCustomMcpConfig(name: string, raw: Record<string, unknown>): { name: string; config: Record<string, unknown> } {
-    const config: Record<string, unknown> = { ...raw };
-    if (!name) throw new Error("MCP name is required");
-    if (!config.type) {
-      if (typeof config.url === "string") config.type = "remote";
-      else if (typeof config.command === "string" || Array.isArray(config.command)) config.type = "local";
-    }
-    if (typeof config.command === "string") {
-      config.command = [config.command, ...(Array.isArray(config.args) ? config.args.map(String) : [])];
-      delete config.args;
-    } else if (Array.isArray(config.command) && Array.isArray(config.args)) {
-      config.command = [...config.command.map(String), ...config.args.map(String)];
-      delete config.args;
-    }
-    if (config.env && !config.environment) {
-      config.environment = config.env;
-      delete config.env;
-    }
-    if (typeof config.enabled === "undefined") config.enabled = true;
-    if (config.type !== "local" && config.type !== "remote") throw new Error('必须包含 type: "local" 或 "remote"，或提供 command/url 以自动推断');
-    if (config.type === "local" && (!Array.isArray(config.command) || config.command.length === 0)) throw new Error('local MCP 必须包含 command，例如 ["npx", "-y", "server"]');
-    if (config.type === "remote" && typeof config.url !== "string") throw new Error('remote MCP 必须包含 url，例如 "https://mcp.example.com/mcp"');
-    return { name, config };
-  }
-
-  function normalizeMarketplaceMcpDefinition(name: string, raw: any): { name: string; config: Record<string, unknown> } {
-    const serverName = name || String(raw?.name || "").trim();
-    if (!serverName) throw new Error("marketplace MCP 缺少名称");
-    const installations = raw?.installations && typeof raw.installations === "object" ? raw.installations : null;
-    if (!installations) throw new Error("marketplace MCP 缺少 installations");
-    const entries = Object.entries(installations) as Array<[string, any]>;
-    const [, install] = entries.find(([, item]) => item?.recommended) || entries[0] || [];
-    if (!install || typeof install !== "object") throw new Error("marketplace MCP 没有可用安装方式");
-    const command = [String(install.command || "").trim(), ...(Array.isArray(install.args) ? install.args.map(String) : [])].filter(Boolean);
-    if (command.length === 0) throw new Error("marketplace MCP 安装方式缺少 command");
-    const config: Record<string, unknown> = { type: "local", command, enabled: true };
-    const env = install.env && typeof install.env === "object" ? { ...install.env } : undefined;
-    if (env && Object.keys(env).length > 0) config.environment = env;
-    return { name: serverName, config };
-  }
-
-  function readMarketplaceDefinitionFromCustomJson(input: string, fallbackName: string): any | null {
-    try {
-      const parsed = JSON.parse(input);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-      const root = parsed as Record<string, any>;
-      if (root.installations) return root;
-      const wrapped = root.mcpServers || root.mcp;
-      const directMap = wrapped && typeof wrapped === "object" && !Array.isArray(wrapped) ? wrapped : root;
-      const entries = Object.entries(directMap as Record<string, any>);
-      if (entries.length === 1) {
-        const [, value] = entries[0];
-        if (value && typeof value === "object" && !Array.isArray(value) && value.installations) return value;
-      }
-      if (fallbackName && directMap?.[fallbackName]?.installations) return directMap[fallbackName];
-    } catch {
-      return null;
-    }
-    return null;
-  }
-
-  function collectPlaceholderNames(value: unknown, out: Set<string>) {
-    if (typeof value === "string") {
-      for (const match of value.matchAll(/\$\{([^}]+)\}/g)) {
-        if (match[1]) out.add(match[1]);
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach((item) => collectPlaceholderNames(item, out));
-      return;
-    }
-    if (value && typeof value === "object") {
-      Object.values(value as Record<string, unknown>).forEach((item) => collectPlaceholderNames(item, out));
-    }
-  }
-
-  function getCustomMcpParamSpecs(input: string, fallbackName: string) {
-    const specs = new Map<string, { key: string; required: boolean; description: string; example: string }>();
-    const add = (key: string, required = true, description = "", example = "") => {
-      const k = key.trim();
-      if (!k) return;
-      const prev = specs.get(k);
-      specs.set(k, {
-        key: k,
-        required: Boolean(prev?.required || required),
-        description: prev?.description || description,
-        example: prev?.example || example
-      });
-    };
-    const market = readMarketplaceDefinitionFromCustomJson(input, fallbackName);
-    Object.entries(market?.arguments || {}).forEach(([key, arg]: [string, any]) => {
-      add(key, Boolean(arg?.required), String(arg?.description || ""), String(arg?.example || ""));
-    });
-    try {
-      const { config } = normalizeCustomMcpJson(input, fallbackName);
-      const placeholders = new Set<string>();
-      collectPlaceholderNames(config, placeholders);
-      placeholders.forEach((key) => add(key, true));
-    } catch {
-      // Invalid JSON/config is already shown in preview; no parameter form needed yet.
-    }
-    return Array.from(specs.values());
-  }
-
-  function replaceMcpConfigPlaceholders(value: unknown, values: Record<string, string>): unknown {
-    if (typeof value === "string") {
-      return value.replace(/\$\{([^}]+)\}/g, (full, key) => {
-        const next = String(values[key] || "").trim();
-        return next || full;
-      });
-    }
-    if (Array.isArray(value)) return value.map((item) => replaceMcpConfigPlaceholders(item, values));
-    if (value && typeof value === "object") {
-      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, replaceMcpConfigPlaceholders(item, values)]));
-    }
-    return value;
-  }
-
   function startEditMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
-    const s: any = status || {};
-    const params = (s.type === "remote" ? s.headers : s.environment) || {};
     const specs = getInstalledMcpParamSpecs(name, status);
-    const values: Record<string, string> = {};
-    specs.forEach((spec) => {
-      values[spec.key] = params && typeof params === "object" ? String((params as any)[spec.key] ?? "") : "";
-    });
     setEditingMcpName(name);
-    setEditingMcpParamValues(values);
+    setEditingMcpParamValues(getEditableMcpParamValues(status, specs));
   }
 
   async function saveMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
     if (!ensureRepoSelected()) return;
-    const s: any = status || {};
-    const config: Record<string, unknown> = { ...s };
-    delete config.source;
-    delete config.configured;
-    delete config.runtimeKnown;
-    delete config.status;
-    delete config.state;
-    delete config.error;
-    delete config.message;
-    delete config.reason;
     const specs = getInstalledMcpParamSpecs(name, status);
-    const missing = specs.filter((spec) => spec.required && !String(editingMcpParamValues[spec.key] || "").trim());
+    const missing = getMissingMcpRequiredParams(specs, editingMcpParamValues);
     if (missing.length > 0) {
       setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
       return;
     }
-    const parsed = Object.fromEntries(
-      Object.entries(editingMcpParamValues)
-        .map(([key, value]) => [key, String(value || "").trim()] as const)
-        .filter(([, value]) => value)
-    );
-    if (s.type === "remote") {
-      if (Object.keys(parsed).length > 0) config.headers = parsed;
-      else delete config.headers;
-    } else {
-      if (Object.keys(parsed).length > 0) config.environment = parsed;
-      else delete config.environment;
-    }
+    const config = buildUpdatedMcpParamConfig(status, editingMcpParamValues);
     setOpencodeMcpBusyName(`${name}:update`);
     setOpencodeMcpError("");
     try {
@@ -3730,138 +1819,6 @@ export function App() {
       setError(msg);
     } finally {
       setOpencodeMcpBusyName("");
-    }
-  }
-
-  async function installOpencodeSkillFromRegistry(specArg = opencodeSkillInstallSpec, scopeArg: "project" | "global" = opencodeSkillInstallScope, _fallbackSpecs: string[] = []) {
-    if (!ensureRepoSelected()) return;
-    const primarySpec = specArg.trim();
-    if (!primarySpec) {
-      setError("请输入 skills.sh 条目，例如 vercel-labs/skills/find-skills");
-      return;
-    }
-    const groupName = skillSourceGroupFromSpec(primarySpec);
-    const beforePaths = opencodeSkills
-      .filter((skill) => (skill.scope || "project") === scopeArg)
-      .map((skill) => String(skill.path || ""))
-      .filter(Boolean);
-    pendingSkillInstallGroupsRef.current[repoPath] = [
-      ...(pendingSkillInstallGroupsRef.current[repoPath] || []),
-      { groupName: groupName || primarySpec, scope: scopeArg, beforePaths }
-    ];
-    const globalFlag = scopeArg === "global" ? " -g" : "";
-    const command = `SKILLS_CLONE_TIMEOUT_MS=600000 npx -y skills add ${quoteShellArg(primarySpec)} --agent opencode -y${globalFlag}`;
-    setOpencodeSkillBusy(false);
-    setOpencodeSkillInstallingSpec("");
-    setOpencodeSkillInstallNotice("");
-    setOpencodeSkillInstallLog("");
-    setOpencodeSkillsError("");
-    setOpencodeSkillInstallSpec("");
-    appendOpencodeDebugLog(`skill.install.terminal ${primarySpec} scope=${scopeArg}`);
-    setMessage(`已切到终端执行 Skill 安装: ${primarySpec}`);
-    await runCommandInTerminalModule(command);
-    [6000, 15000, 30000].forEach((delay) => {
-      window.setTimeout(() => void refreshOpencodeSkills(), delay);
-    });
-  }
-
-  function buildInstalledSkillRemovePaths(skills: OpencodeSkillInfo[]): string[] {
-    return Array.from(new Set(
-      skills
-        .map((skill) => String(skill.path || "").trim())
-        .filter(Boolean)
-    ));
-  }
-
-  function pruneRemovedSkillSourceGroups(removedPaths: string[]) {
-    if (removedPaths.length === 0) return;
-    const nextMap = { ...opencodeSkillSourceGroupsRef.current };
-    let changed = false;
-    removedPaths.forEach((path) => {
-      if (!(path in nextMap)) return;
-      delete nextMap[path];
-      changed = true;
-    });
-    if (!changed) return;
-    opencodeSkillSourceGroupsRef.current = nextMap;
-    saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, nextMap);
-  }
-
-  async function removeOpencodeSkill(skill: OpencodeSkillInfo) {
-    if (!ensureRepoSelected()) return;
-    const scope = skill.scope || "source";
-    const key = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
-    const removablePaths = buildInstalledSkillRemovePaths([skill]);
-    if (removablePaths.length === 0) {
-      setOpencodeSkillsError("缺少可删除的技能路径。");
-      return;
-    }
-    setOpencodeSkillRemovingKey(key);
-    setOpencodeSkillsError("");
-    try {
-      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath, paths: removablePaths });
-      pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
-      await refreshOpencodeSkills();
-      setMessage(`Skill removed: ${skill.name}`);
-    } catch (e) {
-      const msg = String(e);
-      setOpencodeSkillsError(msg);
-      setError(msg);
-    } finally {
-      setOpencodeSkillRemovingKey("");
-    }
-  }
-
-  async function removeOpencodeSkillGroup(group: OpencodeInstalledSkillGroup) {
-    if (!ensureRepoSelected()) return;
-    if (group.removableItems.length === 0) {
-      setOpencodeSkillsError("该目录下没有可删除的已安装项。");
-      return;
-    }
-    setOpencodeSkillsError("");
-    try {
-      const removeKeys = group.removableItems.map((skill) => `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`);
-      const removablePaths = buildInstalledSkillRemovePaths(group.removableItems);
-      if (removablePaths.length === 0) throw new Error("该目录下没有可删除的技能路径。");
-      setOpencodeSkillRemovingKey(removeKeys[0] || "");
-      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath, paths: removablePaths });
-      pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
-      await refreshOpencodeSkills();
-      setMessage(`Skill group removed: ${group.name}`);
-    } catch (e) {
-      const msg = String(e);
-      setOpencodeSkillsError(msg);
-      setError(msg);
-    } finally {
-      setOpencodeSkillRemovingKey("");
-    }
-  }
-
-  async function addOpencodeSkillSource() {
-    if (!ensureRepoSelected()) return;
-    const source = opencodeSkillSourceInput.trim();
-    if (!source) return;
-    setOpencodeSkillBusy(true);
-    setOpencodeSkillsError("");
-    try {
-      const cfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath });
-      const currentSkills = ((cfg as any)?.skills && typeof (cfg as any).skills === "object") ? (cfg as any).skills : {};
-      const key = opencodeSkillSourceKind === "url" ? "urls" : "paths";
-      const prev = Array.isArray(currentSkills[key]) ? currentSkills[key].map((x: unknown) => String(x || "")).filter(Boolean) : [];
-      const next = Array.from(new Set([...prev, source]));
-      await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
-        repoPath,
-        patch: { skills: { ...currentSkills, [key]: next } }
-      });
-      setOpencodeSkillSourceInput("");
-      await refreshOpencodeSkills();
-      setMessage(`Skill source added: ${source}`);
-    } catch (e) {
-      const msg = String(e);
-      setOpencodeSkillsError(msg);
-      setError(msg);
-    } finally {
-      setOpencodeSkillBusy(false);
     }
   }
 
@@ -3948,70 +1905,18 @@ export function App() {
     void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
   }
 
-  function getOpencodeMessageCacheKey(repoPathValue: string, sessionId: string) {
-    return `${repoPathValue.trim()}\n${sessionId.trim()}`;
-  }
-
-  function getOpencodeMessagePageCacheKey(repoPathValue: string, sessionId: string, before: string, limit: number) {
-    return `${getOpencodeMessageCacheKey(repoPathValue, sessionId)}\n${before}\n${limit}`;
-  }
-
-  function getOpencodeMessageCacheEntries(repoPathValue: string, sessionId: string) {
-    return opencodeMessageWindowCacheRef.current[getOpencodeMessageCacheKey(repoPathValue, sessionId)] || [];
-  }
-
-  function getBestOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, limit: number, minFetchedAt = 0) {
-    const entries = getOpencodeMessageCacheEntries(repoPathValue, sessionId);
-    const need = Math.max(2, limit);
-    return entries.find((entry) => entry.limit >= need && entry.fetchedAt >= minFetchedAt) || null;
-  }
-
-  function invalidateOpencodeMessageCache(repoPathValue: string, sessionId: string) {
-    const baseKey = getOpencodeMessageCacheKey(repoPathValue, sessionId);
-    const pagePrefix = `${baseKey}\n`;
-    const nextWindow = { ...opencodeMessageWindowCacheRef.current };
-    delete nextWindow[baseKey];
-    opencodeMessageWindowCacheRef.current = nextWindow;
-    opencodeMessagePageCacheRef.current = Object.fromEntries(
-      Object.entries(opencodeMessagePageCacheRef.current).filter(([key]) => !key.startsWith(pagePrefix))
-    );
-    opencodeMessagePageInflightRef.current = Object.fromEntries(
-      Object.entries(opencodeMessagePageInflightRef.current).filter(([key]) => !key.startsWith(pagePrefix))
-    );
-  }
-
-  function setOpencodeMessageCacheEntry(repoPathValue: string, sessionId: string, entry: OpencodeMessageWindowCacheEntry) {
-    const cacheKey = getOpencodeMessageCacheKey(repoPathValue, sessionId);
-    const prev = opencodeMessageWindowCacheRef.current[cacheKey] || [];
-    const next = [...prev.filter((item) => item.limit !== entry.limit), entry]
-      .sort((a, b) => a.limit - b.limit)
-      .slice(-6);
-    opencodeMessageWindowCacheRef.current = {
-      ...opencodeMessageWindowCacheRef.current,
-      [cacheKey]: next
-    };
-  }
-
-  function setOpencodeMessagePageCacheEntry(repoPathValue: string, sessionId: string, entry: OpencodeMessagePageCacheEntry) {
-    const key = getOpencodeMessagePageCacheKey(repoPathValue, sessionId, entry.before, entry.limit);
-    opencodeMessagePageCacheRef.current = {
-      ...opencodeMessagePageCacheRef.current,
-      [key]: entry
-    };
-  }
-
   async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0, repoPathArg = repoPath) {
     const id = sessionId.trim();
     const targetRepoPath = repoPathArg.trim();
     const safeBefore = before.trim();
     const safeLimit = Math.max(2, limit);
-    const cacheKey = getOpencodeMessagePageCacheKey(targetRepoPath, id, safeBefore, safeLimit);
-    const cached = opencodeMessagePageCacheRef.current[cacheKey];
+    const cacheKey = opencodeMessageCache.getPageCacheKey(targetRepoPath, id, safeBefore, safeLimit);
+    const cached = opencodeMessageCache.getPageCacheEntry(targetRepoPath, id, safeBefore, safeLimit);
     if (cached && cached.fetchedAt >= minFetchedAt) {
       appendOpencodeDebugLog(`session.messages page cache hit ${id} before=${safeBefore || "root"} limit=${safeLimit}`);
       return cached;
     }
-    const inflight = opencodeMessagePageInflightRef.current[cacheKey];
+    const inflight = opencodeMessageCache.getPageInflight(cacheKey);
     if (inflight) return inflight;
     const task = (async () => {
       let raw: unknown[] = [];
@@ -4055,12 +1960,12 @@ export function App() {
         hasMore: Boolean(nextCursor),
         fetchedAt: Date.now()
       };
-      setOpencodeMessagePageCacheEntry(targetRepoPath, id, entry);
+      opencodeMessageCache.setPageEntry(targetRepoPath, id, entry);
       return entry;
     })().finally(() => {
-      delete opencodeMessagePageInflightRef.current[cacheKey];
+      opencodeMessageCache.clearPageInflight(cacheKey);
     });
-    opencodeMessagePageInflightRef.current[cacheKey] = task;
+    opencodeMessageCache.setPageInflight(cacheKey, task);
     return task;
   }
 
@@ -4069,7 +1974,7 @@ export function App() {
     const targetRepoPath = repoPathArg.trim();
     const limit = Math.max(2, initialLimit);
     const sessionUpdatedAt = opencodeSessions.find((session) => session.id === id)?.updatedAt || 0;
-    const cached = getBestOpencodeMessageCacheEntry(targetRepoPath, id, limit, sessionUpdatedAt);
+    const cached = opencodeMessageCache.getBestWindowEntry(targetRepoPath, id, limit, sessionUpdatedAt);
     if (cached) {
       appendOpencodeDebugLog(`session.messages cache hit ${id} limit=${cached.limit}`);
       return {
@@ -4084,7 +1989,7 @@ export function App() {
       const existingSession = opencodeSessions.find((session) => session.id === id);
       const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
     const turnCount = buildOpencodeTurnRanges(mapped).length;
-    setOpencodeMessageCacheEntry(targetRepoPath, id, {
+    opencodeMessageCache.setWindowEntry(targetRepoPath, id, {
       limit,
       mapped,
       turnCount,
@@ -4739,6 +2644,131 @@ export function App() {
     if (all.length > 0 && !gitPaneRepo) setGitPaneRepo(all[0]);
   }
 
+  const {
+    activateLinkedWorktree,
+    checkoutBranchFromTopology,
+    checkoutRemoteBranchFromTopology,
+    activateBranchWorkspace,
+    deleteBranchFromTopology,
+    inspectCommitFromTopology,
+    applyCommitFromContextMenu,
+    currentTopologyBaseBranch,
+    topologyCreateSource,
+    suggestedTopologyPath,
+    commitWorktreeBranchName,
+    openCommitWorktreeDialog,
+    openTopologyCreateDialog,
+    submitTopologyCreateDialog,
+    openTopologyInspectDialog,
+    removeTopologyWorktree,
+    refreshStatus,
+    refreshBranchesAndCommits,
+    refreshWorktreeData,
+    refreshGitUserIdentity,
+    refreshSelectedWorktreePatch,
+    chooseBranch,
+    handleGitCommit,
+    handleGitPush,
+    handleGitSync,
+    handleGitCommitAndPush,
+    handleGitCommitAndSync,
+    refreshScm,
+    pullLatest,
+    pushCurrent,
+    handleDiscardChanges,
+    handleDiscardEntries,
+    handleStageFile,
+    handleStagePaths,
+    handleUnstageFile,
+    handleUnstagePaths,
+    handleToggleStageAll,
+    openDiscardAllConfirm,
+    handleDiscardAllChanges,
+    handleRemoveWorktree,
+    toggleWorktreeDir,
+  } = useGitWorkspaceController({
+    selectedRepo,
+    selectedBranch,
+    selectedWorktreeFile,
+    linkedWorktrees,
+    branches,
+    repoPath,
+    gitPanePath,
+    worktreeOverview,
+    commitMessage,
+    committing,
+    pushing,
+    topologyModel,
+    topologySelectionId,
+    topologyCreateSourceNodeId,
+    topologyCreateMode,
+    topologyCreateBranchName,
+    topologyCreateTargetPath,
+    topologyCreatingNode,
+    commitContextMenu,
+    gitPanePathRef,
+    emptyWorktree: EMPTY_WORKTREE,
+    emptyWorktreeFileContent: EMPTY_WORKTREE_FILE_CONTENT,
+    emptyGitIdentity: EMPTY_GIT_IDENTITY,
+    ensureRepoSelected,
+    ensureGitPaneSelected,
+    rememberBranchParent,
+    forgetBranchParent,
+    rememberWorktreeParent,
+    unbindWorkspaceAgent,
+    appendOpencodeDebugLog,
+    focusCommitMessageInput: () => commitMessageInputRef.current?.focus(),
+    setSelectedRepo,
+    setMessage,
+    setError,
+    setBusy,
+    setOverlayBusy,
+    setWorktreeOverview,
+    setLinkedWorktrees,
+    setBranches,
+    setCommitGraph,
+    setSelectedBranch,
+    setCommits,
+    setSelectedCommit,
+    setTopologyContextMenu,
+    setTopologySelectionId,
+    setCommitContextMenu,
+    setGitOperation,
+    setDetailTab,
+    setTopologyCreateSourceNodeId,
+    setTopologyCreateMode,
+    setTopologyCreateBranchName,
+    setTopologyCreateTargetPath,
+    setTopologyCreatingNode,
+    setShowTopologyCreateDialog,
+    setCreatingTopologyNode,
+    setTopologyInspectNodeId,
+    setShowTopologyInspectDialog,
+    setRemovingTopologyNode,
+    setStatusText,
+    setRecords,
+    setActions,
+    setCommitMessage,
+    setCommitting,
+    setPushing,
+    setShowCommitActionMenu,
+    setSelectedWorktreeFile,
+    setSelectedWorktreePatch,
+    setSelectedWorktreeContent,
+    setGitUserIdentity,
+    setDiscardingFile,
+    setStagingFile,
+    setUnstagingFile,
+    setShowDiscardAllConfirm,
+    setShowRemoveWorktreeConfirm,
+    setDiscardingAll,
+    setRemovingWorktreePath,
+    setWorktreeContextMenu,
+    setWorktreeToRemove,
+    setExpandedWorktreeDirs,
+    setBranchParentMap
+  });
+
   async function importRepository(pathFromPrompt: string): Promise<boolean> {
     setError("");
     const path = pathFromPrompt.trim();
@@ -4857,9 +2887,7 @@ export function App() {
 
       const final = await invoke<RuntimeRequirementsStatus>("check_runtime_requirements");
       setRuntimeStatus(final);
-      if (final.git.installed && final.entire.installed) {
-        window.localStorage.setItem("giteam.runtime.ready.v1", "1");
-      }
+      if (final.git.installed && final.entire.installed) markRuntimeReady();
       return final;
     } finally {
       setRuntimeChecking(false);
@@ -4894,38 +2922,26 @@ export function App() {
 
   async function fetchOpencodeProviders(): Promise<string[]> {
     const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath });
-    const rows = state?.providers || [];
-    const connected = (state?.connected || []).filter(Boolean);
-    const names: Record<string, string> = {};
-    const sources: Record<string, string> = {};
-    const catalog: Record<string, string[]> = {};
-    const modelNamesCatalog: Record<string, Record<string, string>> = {};
-    for (const row of rows) {
-      if (!row?.id) continue;
-      names[row.id] = row.name || row.id;
-      if (row.source) sources[row.id] = row.source;
-      catalog[row.id] = Array.from(new Set((row.models || []).filter(Boolean))).sort((a, b) => a.localeCompare(b));
-      modelNamesCatalog[row.id] = row.modelNames || {};
-    }
-    const connectedSet = new Set(connected);
+    const snapshot = normalizeOpencodeServerProviderState(state);
+    const connectedSet = new Set(snapshot.connectedProviders);
     const stickyProviders = new Set<string>();
     if (opencodeModelProvider.trim()) stickyProviders.add(opencodeModelProvider.trim());
     const configured = parseModelRef(opencodeConfig?.configuredModel || "");
     if (configured?.provider) stickyProviders.add(configured.provider);
     const selectionCatalog = Object.fromEntries(
-      Object.entries(catalog).filter(([providerId]) => connectedSet.has(providerId) || stickyProviders.has(providerId))
+      Object.entries(snapshot.modelsByProvider).filter(([providerId]) => connectedSet.has(providerId) || stickyProviders.has(providerId))
     );
     const next = applyOpencodeCatalog(
-      Object.keys(selectionCatalog).length > 0 ? selectionCatalog : catalog,
+      Object.keys(selectionCatalog).length > 0 ? selectionCatalog : snapshot.modelsByProvider,
       opencodeModelProvider,
       opencodeSelectedModel
     );
-    setOpencodeProviderNames((prev) => ({ ...prev, ...names }));
-    setOpencodeProviderSourceById((prev) => ({ ...prev, ...sources }));
-    setOpencodeModelsByProvider(catalog);
-    setOpencodeModelNamesByProvider(modelNamesCatalog);
-    setOpencodeProviders(Object.keys(catalog).sort((a, b) => a.localeCompare(b)));
-    setOpencodeConnectedProviders(connected.sort((a, b) => a.localeCompare(b)));
+    setOpencodeProviderNames((prev) => ({ ...prev, ...snapshot.providerNames }));
+    setOpencodeProviderSourceById((prev) => ({ ...prev, ...snapshot.providerSources }));
+    setOpencodeModelsByProvider(snapshot.modelsByProvider);
+    setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
+    setOpencodeProviders(snapshot.providers);
+    setOpencodeConnectedProviders(snapshot.connectedProviders);
     setOpencodeModelProvider(next.provider);
     setOpencodeSelectedModel(next.model);
     return next.providers;
@@ -4991,7 +3007,7 @@ export function App() {
         configuredModel: prev?.configuredModel || "",
         exists: Boolean(cfg.exists)
       }));
-      if (cfg.configuredModel) pushOpencodeSavedModel(cfg.configuredModel);
+      if (cfg.configuredModel) rememberOpencodeSavedModel(cfg.configuredModel);
     } catch (e) {
       setError(String(e));
       setMessage("Load model config failed");
@@ -5013,13 +3029,7 @@ export function App() {
     try {
       setControlSettingsLoaded(false);
       const cfg = await invoke<ControlServerSettings>("giteam_cli_get_settings");
-      const next: ControlServerSettings = {
-        enabled: Boolean(cfg.enabled),
-        host: (cfg.host || "0.0.0.0").trim() || "0.0.0.0",
-        port: Number(cfg.port) > 0 ? Number(cfg.port) : 4100,
-        publicBaseUrl: String(cfg.publicBaseUrl || "").trim().replace(/\/+$/, ""),
-        pairCodeTtlMode: normalizeControlPairMode((cfg as any).pairCodeTtlMode)
-      };
+      const next = normalizeControlServerSettings(cfg);
       setControlServerSettings(next);
       setControlServerSettingsSaved(next);
       if (!next.enabled) {
@@ -5094,13 +3104,7 @@ export function App() {
           pairCodeTtlMode: normalizeControlPairMode(draft.pairCodeTtlMode)
         }
       });
-      const normalized = {
-        enabled: Boolean(saved.enabled),
-        host: (saved.host || draft.host).trim() || draft.host,
-        port: Number(saved.port) > 0 ? Number(saved.port) : draft.port,
-        publicBaseUrl: String(saved.publicBaseUrl || "").trim().replace(/\/+$/, ""),
-        pairCodeTtlMode: normalizeControlPairMode((saved as any).pairCodeTtlMode)
-      };
+      const normalized = normalizeControlServerSettings(saved, draft);
       setControlServerSettings(normalized);
       setControlServerSettingsSaved(normalized);
       if (normalized.enabled) {
@@ -5149,30 +3153,18 @@ export function App() {
   }
 
   async function saveControlServerSettingsIfNeeded() {
-    const changed =
-      controlServerSettings.enabled !== controlServerSettingsSaved.enabled ||
-      Number(controlServerSettings.port) !== Number(controlServerSettingsSaved.port) ||
-      controlServerSettings.pairCodeTtlMode !== controlServerSettingsSaved.pairCodeTtlMode ||
-      String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "") !==
-      String(controlServerSettingsSaved.publicBaseUrl || "").trim().replace(/\/+$/, "");
-    if (!changed) return true;
+    if (!controlServerSettingsChanged(controlServerSettings, controlServerSettingsSaved)) return true;
     const port = Number(controlServerSettings.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       setError("Control server port must be between 1 and 65535");
       return false;
     }
-    let publicBaseUrl = String(controlServerSettings.publicBaseUrl || "").trim().replace(/\/+$/, "");
-    if (publicBaseUrl && !/^https?:\/\//i.test(publicBaseUrl)) {
-      publicBaseUrl = `http://${publicBaseUrl}`;
-    }
-    if (publicBaseUrl) {
-      try {
-        const parsed = new URL(publicBaseUrl);
-        publicBaseUrl = `${parsed.protocol}//${parsed.host}`;
-      } catch {
-        setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
-        return false;
-      }
+    let publicBaseUrl = "";
+    try {
+      publicBaseUrl = normalizeControlPublicBaseUrl(controlServerSettings.publicBaseUrl);
+    } catch {
+      setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
+      return false;
     }
     setControlServerSettingsBusy(true);
     try {
@@ -5185,13 +3177,7 @@ export function App() {
           pairCodeTtlMode: normalizeControlPairMode(controlServerSettings.pairCodeTtlMode)
         }
       });
-      const normalized = {
-        enabled: Boolean(saved.enabled),
-        host: (saved.host || controlServerSettings.host).trim() || controlServerSettings.host,
-        port: Number(saved.port) > 0 ? Number(saved.port) : port,
-        publicBaseUrl: String(saved.publicBaseUrl || "").trim().replace(/\/+$/, ""),
-        pairCodeTtlMode: normalizeControlPairMode((saved as any).pairCodeTtlMode)
-      };
+      const normalized = normalizeControlServerSettings(saved, { ...controlServerSettings, port, publicBaseUrl });
       setControlServerSettings(normalized);
       setControlServerSettingsSaved(normalized);
       void loadControlPairCode();
@@ -5244,44 +3230,21 @@ export function App() {
     if (!ensureRepoSelected()) return;
     try {
       const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath });
-      const rows = state?.providers || [];
-      const connected = (state?.connected || []).filter(Boolean);
-      if (!rows || rows.length === 0) return;
+      const snapshot = normalizeOpencodeServerProviderState(state);
+      if (snapshot.providers.length === 0) return;
       setOpencodeProviderNames((prev) => {
         const next = { ...prev };
-        for (const p of rows) {
-          if (!p?.id) continue;
-          if (p.name && !next[p.id]) next[p.id] = p.name;
+        for (const [providerId, displayName] of Object.entries(snapshot.providerNames)) {
+          if (displayName && !next[providerId]) next[providerId] = displayName;
         }
         return next;
       });
-      setOpencodeProviderSourceById(() => {
-        const next: Record<string, string> = {};
-        for (const p of rows) {
-          if (!p?.id) continue;
-          if (p.source) next[p.id] = p.source;
-        }
-        return next;
-      });
-      setOpencodeModelNamesByProvider(() => {
-        const next: Record<string, Record<string, string>> = {};
-        for (const p of rows) {
-          if (!p?.id) continue;
-          next[p.id] = p.modelNames || {};
-        }
-        return next;
-      });
-      setOpencodeModelsByProvider(() => {
-        const next: Record<string, string[]> = {};
-        for (const p of rows) {
-          if (!p?.id) continue;
-          next[p.id] = Array.from(new Set((p.models || []).filter(Boolean))).sort((a, b) => a.localeCompare(b));
-        }
-        return next;
-      });
-      setOpencodeProviders(rows.map((p) => p.id).filter(Boolean).sort((a, b) => a.localeCompare(b)));
-      setOpencodeConnectedProviders(connected.sort((a, b) => a.localeCompare(b)));
-      appendOpencodeDebugLog(`server.providers synced providers=${rows.length} connected=${connected.length}`);
+      setOpencodeProviderSourceById(snapshot.providerSources);
+      setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
+      setOpencodeModelsByProvider(snapshot.modelsByProvider);
+      setOpencodeProviders(snapshot.providers);
+      setOpencodeConnectedProviders(snapshot.connectedProviders);
+      appendOpencodeDebugLog(`server.providers synced providers=${snapshot.providers.length} connected=${snapshot.connectedProviders.length}`);
     } catch (e) {
       appendOpencodeDebugLog(`server.providers error ${String(e)}`);
     }
@@ -5292,7 +3255,7 @@ export function App() {
     const pid = providerId.trim();
     if (!pid) return;
     setOpencodeConnectProviderId(pid);
-    setOpencodeConnectProviderName(opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid);
+    setOpencodeConnectProviderName(resolveProviderDisplayName(pid));
     setOpencodeConnectApiKey("");
     try {
       if (!opencodeProviderAuthCache[pid]) {
@@ -5314,45 +3277,23 @@ export function App() {
       // /config may include provider catalogs (e.g. 302ai) that the user didn't configure.
       // Use /global/config for "configured providers/models", but keep /config.model as the current model source of truth.
       const globalCfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath });
-      const providerMap = globalCfg?.provider || {};
-      setOpencodeGlobalConfigProviderMap(providerMap);
-      const disabled = new Set((globalCfg?.disabled_providers || []).filter(Boolean));
-      setOpencodeDisabledProviders(Array.from(disabled).sort((a, b) => a.localeCompare(b)));
-      const configuredProviders = Object.keys(providerMap).filter((id) => id && !disabled.has(id));
-
-      // Build "configured models" catalog from /config.provider.*.models (OpenCode UI behavior)
-      const names: Record<string, string> = {};
-      const modelsByProvider: Record<string, string[]> = {};
-      const modelNamesByProvider: Record<string, Record<string, string>> = {};
-      for (const [pid, p] of Object.entries(providerMap)) {
-        if (pid) names[pid] = p?.name || pid;
-        if (!pid || disabled.has(pid)) continue;
-        const modelEntries = p?.models || {};
-        const models = Object.keys(modelEntries).filter(Boolean).sort((a, b) => a.localeCompare(b));
-        if (models.length > 0) modelsByProvider[pid] = models;
-        const displayMap: Record<string, string> = {};
-        for (const [mid, mv] of Object.entries(modelEntries)) {
-          const modelId = (mid || "").trim();
-          if (!modelId) continue;
-          const display = (mv?.name || modelId).trim();
-          displayMap[modelId] = display || modelId;
-        }
-        modelNamesByProvider[pid] = displayMap;
-      }
+      const snapshot = buildOpencodeConfiguredProviderSnapshot(globalCfg);
+      setOpencodeGlobalConfigProviderMap(snapshot.providerMap);
+      setOpencodeDisabledProviders(snapshot.disabledProviders);
 
       // Prefer /provider-derived display names when available.
       // /config is often "power-user" config and may use terse ids (e.g. k2p5) even when /provider has a nicer name (e.g. kimi2.5).
       setOpencodeProviderNames((prev) => {
         const next = { ...prev };
-        for (const [pid, display] of Object.entries(names)) {
+        for (const [pid, display] of Object.entries(snapshot.providerNames)) {
           if (!pid) continue;
           if (!next[pid]) next[pid] = display;
         }
         return next;
       });
-      setOpencodeConfiguredModelsByProvider(modelsByProvider);
-      setOpencodeConfiguredModelNamesByProvider(modelNamesByProvider);
-      setOpencodeConfiguredProviders(configuredProviders.sort((a, b) => a.localeCompare(b)));
+      setOpencodeConfiguredModelsByProvider(snapshot.modelsByProvider);
+      setOpencodeConfiguredModelNamesByProvider(snapshot.modelNamesByProvider);
+      setOpencodeConfiguredProviders(snapshot.configuredProviders);
 
       if (includeCurrentModel) {
         const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
@@ -5360,7 +3301,7 @@ export function App() {
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
           if (parsed) {
-            const configuredSet = new Set(configuredProviders);
+            const configuredSet = new Set(snapshot.configuredProviders);
             // When server model is configured, force UI selection to match it.
             if (syncSelection && configuredSet.has(parsed.provider)) {
               ensureProviderExists(parsed.provider);
@@ -5375,7 +3316,7 @@ export function App() {
           }));
         }
       }
-      appendOpencodeDebugLog(`server.config synced providers=${Object.keys(providerMap).length} configured=${configuredProviders.length}`);
+      appendOpencodeDebugLog(`server.config synced providers=${Object.keys(snapshot.providerMap).length} configured=${snapshot.configuredProviders.length}`);
     } catch (e) {
       appendOpencodeDebugLog(`server.config error ${String(e)}`);
     }
@@ -5459,7 +3400,7 @@ export function App() {
     setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeOpencodeThinkingLevel }));
     await ensureSessionAutoAcceptPermissions(sessionId);
     if (opencodeRunBusyBySession[sessionId]) return;
-    invalidateOpencodeMessageCache(repoPath, sessionId);
+    opencodeMessageCache.invalidate(repoPath, sessionId);
     const assistantId = `assistant-${makeId()}`;
     const requestId = `req-${makeId()}`;
     setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
@@ -6067,6 +4008,16 @@ export function App() {
     });
   }
 
+  const {
+    recordHistoryEntry: recordOpencodePromptHistoryEntry,
+    captureDraft: captureOpencodePromptHistoryDraft,
+    browseHistory: browseOpencodePromptHistory
+  } = useOpencodePromptHistory({
+    activeSessionId: activeOpencodeSessionId,
+    currentInput: opencodePromptInput,
+    onApplyHistory: setOpencodePromptInputFromHistory
+  });
+
   function activateOpencodeSlashCommand(cmd: OpencodeSlashCommand) {
     const trigger = cmd.trigger.trim().toLowerCase();
     setOpencodeSlashOpen(false);
@@ -6135,73 +4086,8 @@ export function App() {
     });
   }
 
-  function getOpencodePromptHistorySessionKey() {
-    return activeOpencodeSessionId.trim() || "__draft__";
-  }
-
-  function recordOpencodePromptHistoryEntry(sessionId: string, prompt: string) {
-    const key = sessionId.trim() || "__draft__";
-    const value = prompt.trim();
-    if (!value) return;
-    const prev = opencodePromptHistoryBySessionRef.current[key] || [];
-    opencodePromptHistoryBySessionRef.current[key] = [value, ...prev.filter((item) => item !== value)].slice(0, 80);
-    opencodePromptHistoryIndexBySessionRef.current[key] = -1;
-    opencodePromptHistoryDraftBySessionRef.current[key] = "";
-  }
-
-  function browseOpencodePromptHistory(direction: "older" | "newer") {
-    const key = getOpencodePromptHistorySessionKey();
-    const history = opencodePromptHistoryBySessionRef.current[key] || [];
-    if (history.length === 0) return;
-    const currentIndex = opencodePromptHistoryIndexBySessionRef.current[key] ?? -1;
-    if (direction === "older") {
-      if (currentIndex < 0) {
-        opencodePromptHistoryDraftBySessionRef.current[key] = opencodePromptInput;
-      }
-      const nextIndex = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, history.length - 1);
-      opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
-      setOpencodePromptInputFromHistory(history[nextIndex] || "");
-      return;
-    }
-    if (currentIndex <= 0) {
-      opencodePromptHistoryIndexBySessionRef.current[key] = -1;
-      setOpencodePromptInputFromHistory(opencodePromptHistoryDraftBySessionRef.current[key] || "");
-      return;
-    }
-    const nextIndex = currentIndex - 1;
-    opencodePromptHistoryIndexBySessionRef.current[key] = nextIndex;
-    setOpencodePromptInputFromHistory(history[nextIndex] || "");
-  }
-
-  function shouldUsePromptHistoryKey(event: React.KeyboardEvent<HTMLTextAreaElement>, direction: "older" | "newer") {
-    const target = event.currentTarget;
-    const start = target.selectionStart ?? 0;
-    const end = target.selectionEnd ?? 0;
-    if (start !== end) return false;
-    if (direction === "older") {
-      return start === 0;
-    }
-    return end === target.value.length;
-  }
-
   function browseTerminalHistory(tabId: string, direction: "older" | "newer") {
-    updateTerminalTabById(tabId, (prev) => {
-      if (prev.history.length === 0) return prev;
-      if (direction === "older") {
-        const next = prev.historyIndex < 0 ? 0 : Math.min(prev.historyIndex + 1, prev.history.length - 1);
-        return {
-          ...prev,
-          historyIndex: next,
-          historyDraft: prev.historyIndex < 0 ? prev.input : prev.historyDraft,
-          input: prev.history[next] || ""
-        };
-      }
-      if (prev.historyIndex <= 0) {
-        return { ...prev, historyIndex: -1, input: prev.historyDraft };
-      }
-      const next = prev.historyIndex - 1;
-      return { ...prev, historyIndex: next, input: prev.history[next] || "" };
-    });
+    updateTerminalTabById(tabId, (prev) => browseTerminalHistoryState(prev, direction));
   }
 
   async function refreshTerminalCompletions(tab: TerminalTabState, nextInput: string) {
@@ -6227,14 +4113,7 @@ export function App() {
     const candidate = tab.completionItems[index];
     if (!candidate || !tab.completionToken) return;
     const nextInput = applyTerminalCompletionCandidate(tab.input, tab.completionToken, candidate);
-    updateTerminalTabById(tab.id, {
-      input: nextInput,
-      historyIndex: -1,
-      historyDraft: nextInput,
-      completionItems: [],
-      completionIndex: 0,
-      completionToken: ""
-    });
+    updateTerminalTabById(tab.id, (prev) => clearTerminalCompletion(prev, nextInput));
     void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
   }
 
@@ -6247,14 +4126,7 @@ export function App() {
     try {
       const nextInput = await completeRepoTerminalInput(repoPath, tab.input, tab.cwd || repoPath);
       if (nextInput === tab.input) return;
-      updateTerminalTabById(tab.id, {
-        input: nextInput,
-        historyIndex: -1,
-        historyDraft: nextInput,
-        completionItems: [],
-        completionIndex: 0,
-        completionToken: ""
-      });
+      updateTerminalTabById(tab.id, (prev) => clearTerminalCompletion(prev, nextInput));
       void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
     } catch {
       // ignore completion failures to keep typing smooth
@@ -6264,14 +4136,7 @@ export function App() {
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const url = `${base}/question/${encodeURIComponent(requestId)}/reply?directory=${qdir}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answers })
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await postOpencodeQuestionReply({ baseUrl: base, repoPath, requestId, answers });
       appendOpencodeDebugLog(`question.reply ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -6290,28 +4155,8 @@ export function App() {
     }
     setOpencodeQuestionLoading(true);
     try {
-      let raw: unknown;
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      raw = [];
-      let lastError = "";
-      for (const path of ["/question", "/question/"]) {
-        try {
-          const res = await fetch(`${base}${path}?directory=${qdir}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const text = await res.text();
-          if (!text.trim()) throw new Error("empty response");
-          raw = JSON.parse(text);
-          lastError = "";
-          break;
-        } catch (e) {
-          lastError = `${path}: ${String(e)}`;
-        }
-      }
-      if (lastError) throw new Error(lastError);
-      const rows = Array.isArray(raw) ? raw : [];
-      const requests = rows.filter((row: any) => String(row?.sessionID || "") === sid) as QuestionRequest[];
-      setOpencodeQuestionRequests(requests);
+      setOpencodeQuestionRequests(await fetchOpencodeQuestions({ baseUrl: base, repoPath, sessionId: sid }));
     } catch (e) {
       appendOpencodeDebugLog(`question.list.error ${String(e)}`);
     } finally {
@@ -6322,13 +4167,7 @@ export function App() {
   async function sendQuestionReject(requestId: string) {
     try {
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const url = `${base}/question/${encodeURIComponent(requestId)}/reject?directory=${qdir}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await postOpencodeQuestionReject({ baseUrl: base, repoPath, requestId });
       appendOpencodeDebugLog(`question.reject ${requestId}`);
       await refreshPendingQuestions();
       return true;
@@ -6391,421 +4230,6 @@ export function App() {
     }
   }
 
-  async function activateLinkedWorktree(path: string) {
-    setTopologyContextMenu(null);
-    const target = path.trim();
-    if (!target) return;
-    if (!selectedRepo) return;
-    // Worktree is part of the same repo; just update the working path.
-    setSelectedRepo({ ...selectedRepo, path: target });
-    setMessage(`已切换到 worktree: ${target}`);
-    // Manually refresh using the new path because repoPath won't update until next render.
-    try {
-      const [overview, worktrees, branchList, graphRows] = await Promise.all([
-        getGitWorktreeOverview(target),
-        getGitWorktreeList(target),
-        getLocalBranches(target),
-        getCommitGraph(target, 600)
-      ]);
-      setWorktreeOverview(overview);
-      setLinkedWorktrees(worktrees);
-      setBranches(branchList);
-      setCommitGraph(graphRows);
-      const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
-      const targetBranch = branchList.some((b) => b.name === selectedBranch) ? selectedBranch : current;
-      setSelectedBranch(targetBranch);
-      if (targetBranch) {
-        const rows = await getBranchCommits(target, targetBranch, 80);
-        setCommits(rows);
-        setSelectedCommit(rows[0]?.sha ?? "");
-      }
-    } catch (e) {
-      setError(String(e));
-      setMessage(`切换 worktree 失败: ${target}`);
-    }
-  }
-
-  async function checkoutBranchFromTopology(branchName: string) {
-    if (!ensureRepoSelected()) return;
-    setTopologyContextMenu(null);
-    setBusy(true);
-    setError("");
-    setMessage(`检出分支: ${branchName}...`);
-    try {
-      // If the target branch already has a linked worktree, switch to that worktree instead.
-      const wt = linkedWorktrees.find((w) => w.branch === branchName);
-      if (wt) {
-        await activateLinkedWorktree(wt.path);
-        setMessage(`已切换到 worktree 分支: ${branchName}`);
-      } else {
-        await gitCheckoutBranch(repoPath, branchName);
-        setSelectedBranch(branchName);
-        await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-        setMessage(`已检出分支: ${branchName}`);
-      }
-    } catch (e) {
-      setError(String(e));
-      setMessage(`检出失败: ${branchName}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function checkoutRemoteBranchFromTopology(remoteBranch: string) {
-    if (!ensureRepoSelected()) return;
-    setTopologyContextMenu(null);
-    setBusy(true);
-    setError("");
-    const localName = remoteBranch.split('/').slice(1).join('/');
-    setMessage(`创建本地分支: ${localName} from ${remoteBranch}...`);
-    try {
-      await gitCheckoutRemoteBranch(repoPath, remoteBranch, localName);
-      setSelectedBranch(localName);
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-      setMessage(`已创建并检出分支: ${localName}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage(`创建分支失败: ${localName}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function activateBranchWorkspace(branchName: string) {
-    if (!ensureRepoSelected()) return;
-    const branch = branchName.trim();
-    if (!branch) return;
-    setTopologyContextMenu(null);
-    setBusy(true);
-    setError("");
-    setMessage(`激活工作空间: ${branch}...`);
-    try {
-      const linked = linkedWorktrees.find((wt) => wt.branch === branch && !wt.isMainWorktree);
-      if (linked) {
-        await activateLinkedWorktree(linked.path);
-        setMessage(`已打开工作空间: ${branch}`);
-        return;
-      }
-      const main = linkedWorktrees.find((wt) => wt.branch === branch && wt.isMainWorktree);
-      if (main) {
-        setMessage(`分支 ${branch} 已在主工作区中`);
-        return;
-      }
-      const branchExists = branches.some((b) => b.name === branch);
-      if (!branchExists) {
-        throw new Error(`分支 "${branch}" 不存在`);
-      }
-      const targetPath = suggestedTopologyPath(branch);
-      const created = await createGitWorktreeFromBranch(repoPath, branch, targetPath || undefined);
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-      setTopologySelectionId(`worktree:${created.path}`);
-      setMessage(`已激活工作空间: ${branch}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage(`激活工作空间失败: ${branch}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function deleteBranchFromTopology(branchName: string) {
-    if (!ensureRepoSelected()) return;
-    const branch = branchName.trim();
-    if (!branch) return;
-    setTopologyContextMenu(null);
-    setBusy(true);
-    setError("");
-    setMessage(`删除分支: ${branch}...`);
-    try {
-      const isCurrent = branches.some((b) => b.name === branch && b.isCurrent) || worktreeOverview.branch === branch;
-      if (isCurrent) {
-        throw new Error("不能删除当前分支");
-      }
-      const hasLinkedWorktree = linkedWorktrees.some((wt) => wt.branch === branch);
-      if (hasLinkedWorktree) {
-        throw new Error("该分支仍有关联工作空间，请先移除工作空间");
-      }
-      await deleteGitBranch(repoPath, branch);
-      forgetBranchParent(branch);
-      await refreshBranchesAndCommits();
-      await refreshWorktreeData(selectedWorktreeFile);
-      setTopologySelectionId(topologyModel.primaryNodeId);
-      setMessage(`已删除分支: ${branch}`);
-    } catch (e) {
-      const text = String(e);
-      setError(text);
-      setMessage(`删除分支失败: ${text}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function inspectCommitFromTopology(sha: string) {
-    setTopologyContextMenu(null);
-    setCommitContextMenu(null);
-    setSelectedCommit(sha);
-    setDetailTab("context");
-    setMessage(`查看 Entire agent 上下文: ${sha.slice(0, 8)}`);
-  }
-
-  async function applyCommitFromContextMenu(action: "cherryPick" | "revert") {
-    if (!ensureRepoSelected() || !commitContextMenu?.sha) return;
-    const sha = commitContextMenu.sha;
-    const label = shortSha(sha, 8);
-    const isRevert = action === "revert";
-    const ok = window.confirm(
-      isRevert
-        ? `确定要 revert ${label} 吗？\n\n这会在当前分支创建一个反向提交。`
-        : `确定要 cherry-pick ${label} 到当前分支吗？\n\n如果有冲突，需要手动解决。`
-    );
-    if (!ok) return;
-    setCommitContextMenu(null);
-    setBusy(true);
-    setGitOperation(action);
-    setError("");
-    setMessage(isRevert ? `正在 revert: ${label}...` : `正在 cherry-pick: ${label}...`);
-    try {
-      const result = isRevert ? await gitRevertCommit(repoPath, sha) : await gitCherryPickCommit(repoPath, sha);
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-      setSelectedCommit(sha);
-      setMessage(isRevert ? `已 revert: ${label}` : `已 cherry-pick: ${label}`);
-      appendOpencodeDebugLog(`git.${isRevert ? "revert" : "cherry-pick"} ${result.trim() || label}`);
-    } catch (e) {
-      const text = String(e);
-      setError(text);
-      setMessage(isRevert ? `Revert 失败: ${label}` : `Cherry-pick 失败: ${label}`);
-      await refreshWorktreeData(selectedWorktreeFile).catch(() => undefined);
-    } finally {
-      setBusy(false);
-      setGitOperation(null);
-    }
-  }
-
-  function currentTopologyBaseBranch(): string {
-    return worktreeOverview.branch || selectedBranch || branches.find((item) => item.isCurrent)?.name || "";
-  }
-
-  function topologyCreateSource(nodeId?: string): { startPoint: string; baseBranch: string } {
-    if (nodeId?.startsWith("branch:")) {
-      const branch = nodeId.slice(7);
-      return { startPoint: branch, baseBranch: branch || currentTopologyBaseBranch() };
-    }
-    if (nodeId?.startsWith("commit:")) {
-      const parts = nodeId.split(":");
-      const branch = parts[1] || currentTopologyBaseBranch();
-      const sha = parts[2] || "";
-      return { startPoint: sha || branch, baseBranch: branch };
-    }
-    const node = topologyModel.nodeById[nodeId || topologySelectionId || topologyModel.primaryNodeId];
-    if (!node) {
-      return { startPoint: "", baseBranch: currentTopologyBaseBranch() };
-    }
-    if (node.kind === "commit") {
-      return {
-        startPoint: node.sha || "",
-        baseBranch: node.branch || currentTopologyBaseBranch() || shortSha(node.sha || "", 7)
-      };
-    }
-    if (node.kind === "branch" || node.kind === "worktree") {
-      return {
-        startPoint: node.branch || node.sha || "",
-        baseBranch: node.branch || currentTopologyBaseBranch()
-      };
-    }
-    return { startPoint: currentTopologyBaseBranch(), baseBranch: currentTopologyBaseBranch() };
-  }
-
-  function suggestedTopologyPath(baseBranch: string, identifier?: string): string {
-    const mainWorktree = linkedWorktrees.find((wt) => wt.isMainWorktree)?.path || "";
-    const currentPath = (mainWorktree || repoPath || selectedRepo?.path || "").trim();
-    if (!currentPath) return "";
-    const prefix = baseBranch.trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
-    const suffix = (identifier || "").trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
-    const combined = suffix ? `${prefix}-${suffix}` : prefix;
-    const segs = currentPath.split("/").filter(Boolean);
-    if (segs.length === 0) return "";
-    const repoLeaf = segs[segs.length - 1] || "repo";
-    const parent = currentPath.slice(0, currentPath.length - repoLeaf.length).replace(/\/$/, "");
-    return `${parent}/${repoLeaf}.worktrees/${combined}`;
-  }
-
-  function commitWorktreeBranchName(commit: GitCommitSummary): string {
-    const subjectSlug = (commit.subject || "commit")
-      .toLowerCase()
-      .replace(/[^a-z0-9/_-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 28);
-    return `worktree/${subjectSlug || "commit"}-${shortSha(commit.sha, 7)}`;
-  }
-
-  function openCommitWorktreeDialog(commit: GitCommitSummary, branchName?: string) {
-    if (!ensureRepoSelected()) return;
-    const branch = branchName || selectedBranch || worktreeOverview.branch || currentTopologyBaseBranch();
-    const sourceId = `commit:${branch}:${commit.sha}`;
-    const name = commitWorktreeBranchName(commit);
-    setCommitContextMenu(null);
-    setTopologyContextMenu(null);
-    setTopologySelectionId(sourceId);
-    setTopologyCreateSourceNodeId(sourceId);
-    setTopologyCreateMode("worktree");
-    setTopologyCreateBranchName(name);
-    setTopologyCreateTargetPath(suggestedTopologyPath(branch || shortSha(commit.sha, 7), name));
-    setTopologyCreatingNode(null);
-    setShowTopologyCreateDialog(true);
-  }
-
-  function openTopologyCreateDialog(mode: "branch" | "worktree", nodeId?: string) {
-    if (!ensureRepoSelected()) return;
-    const sourceId = nodeId || topologySelectionId || topologyModel.primaryNodeId;
-    if (sourceId.startsWith("branch:")) {
-      const baseBranch = sourceId.slice(7);
-      setTopologyContextMenu(null);
-      setTopologySelectionId(sourceId);
-      setTopologyCreateSourceNodeId(sourceId);
-      setTopologyCreateMode(mode);
-      setTopologyCreateBranchName("");
-      setTopologyCreateTargetPath(mode === "worktree" && baseBranch ? suggestedTopologyPath(baseBranch) : "");
-      setTopologyCreatingNode(null);
-      setShowTopologyCreateDialog(true);
-      return;
-    }
-    if (sourceId.startsWith("commit:")) {
-      const { baseBranch, startPoint } = topologyCreateSource(sourceId);
-      setTopologyContextMenu(null);
-      setTopologySelectionId(sourceId);
-      setTopologyCreateSourceNodeId(sourceId);
-      setTopologyCreateMode(mode);
-      setTopologyCreateBranchName(mode === "worktree" ? `worktree/${shortSha(startPoint, 7)}` : "");
-      setTopologyCreateTargetPath(mode === "worktree" ? suggestedTopologyPath(baseBranch || shortSha(startPoint, 7), shortSha(startPoint, 7)) : "");
-      setTopologyCreatingNode(null);
-      setShowTopologyCreateDialog(true);
-      return;
-    }
-    const parentNode = topologyModel.nodeById[sourceId];
-    if (!parentNode) {
-      setError("未找到当前节点，无法创建");
-      return;
-    }
-    setTopologyContextMenu(null);
-    setTopologySelectionId(sourceId);
-    setTopologyCreateSourceNodeId(sourceId);
-    setTopologyCreateMode(mode);
-    setTopologyCreateBranchName("");
-    const baseBranch = parentNode.branch || currentTopologyBaseBranch();
-    setTopologyCreateTargetPath(mode === "worktree" && baseBranch ? suggestedTopologyPath(baseBranch) : "");
-    setTopologyCreatingNode(null);
-    setShowTopologyCreateDialog(true);
-  }
-
-  async function submitTopologyCreateDialog() {
-    if (!ensureRepoSelected()) return;
-    const sourceId = topologyCreateSourceNodeId || topologyCreatingNode?.parentId || topologySelectionId || topologyModel.primaryNodeId;
-    const mode = topologyCreateMode || topologyCreatingNode?.mode || "branch";
-    const branchName = (topologyCreateBranchName || topologyCreatingNode?.name || "").trim();
-    if (!branchName) {
-      setError(mode === "worktree" ? "请输入工作空间标识" : "请输入新的分支名");
-      return;
-    }
-    const { baseBranch, startPoint } = topologyCreateSource(sourceId);
-    setTopologyContextMenu(null);
-    setCreatingTopologyNode(true);
-    setBusy(true);
-    setError("");
-
-    try {
-      if (mode === "branch") {
-        if (branches.some((b) => b.name === branchName)) {
-          throw new Error(`分支 "${branchName}" 已存在`);
-        }
-        setMessage(`基于 ${baseBranch} 创建分支: ${branchName}...`);
-        await createGitBranch(repoPath, branchName, startPoint || undefined);
-        rememberBranchParent(branchName, baseBranch);
-        await refreshBranchesAndCommits();
-        setSelectedBranch(branchName);
-        setTopologySelectionId(`branch:${branchName}`);
-        setTopologyCreatingNode(null);
-        setShowTopologyCreateDialog(false);
-        setMessage(`已创建分支: ${branchName}`);
-      } else {
-        const workspaceName = branchName;
-        let targetPath = topologyCreateTargetPath.trim() || suggestedTopologyPath(baseBranch, branchName);
-        const workspaceAlreadyActive = linkedWorktrees.some((wt) => normalizeWorkspacePath(wt.path) === normalizeWorkspacePath(targetPath));
-        if (workspaceAlreadyActive) {
-          throw new Error(`工作空间 "${workspaceName}" 已经存在`);
-        }
-        // If suggested path already exists, let backend auto-generate a unique path
-        const pathExists = linkedWorktrees.some((wt) => wt.path === targetPath);
-        if (pathExists) {
-          targetPath = "";
-        }
-        setMessage(`基于 ${startPoint || baseBranch} 创建工作空间: ${workspaceName}...`);
-        const created = await createGitDetachedWorktree(repoPath, startPoint || baseBranch, targetPath || undefined);
-        rememberWorktreeParent(created.path, baseBranch);
-        await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-        const newBranchCommits = baseBranch ? await getBranchCommits(repoPath, baseBranch, 80) : [];
-        if (newBranchCommits.length > 0) {
-          setCommits(newBranchCommits);
-          setSelectedCommit(newBranchCommits[0]?.sha ?? "");
-        }
-        setSelectedBranch(baseBranch);
-        setTopologySelectionId(`branch:${baseBranch}`);
-        setTopologyCreatingNode(null);
-        setShowTopologyCreateDialog(false);
-        setMessage(`已创建工作空间: ${workspaceName}`);
-      }
-    } catch (e) {
-      setError(String(e));
-      setMessage(`创建失败: ${branchName}`);
-    } finally {
-      setCreatingTopologyNode(false);
-      setBusy(false);
-    }
-  }
-
-  function openTopologyInspectDialog(nodeId: string) {
-    setTopologyContextMenu(null);
-    setTopologyInspectNodeId(nodeId);
-    setShowTopologyInspectDialog(true);
-    const node = topologyModel.nodeById[nodeId];
-    if (node?.kind === "commit" && node.sha) {
-      setSelectedCommit(node.sha);
-      setDetailTab("context");
-    }
-  }
-
-  async function removeTopologyWorktree(targetPath: string) {
-    if (!ensureRepoSelected()) return;
-    const target = targetPath.trim();
-    if (!target) {
-      setError("目标路径为空");
-      return;
-    }
-    const worktree = linkedWorktrees.find((item) => item.path.trim() === target);
-    if (worktree?.isCurrent) {
-      setError("不能删除当前 worktree 节点");
-      return;
-    }
-    setTopologyContextMenu(null);
-    setRemovingTopologyNode(true);
-    setBusy(true);
-    setError("");
-    setMessage(`正在删除 worktree: ${target}...`);
-    try {
-      await removeGitWorktree(repoPath, target);
-      unbindWorkspaceAgent(target);
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-      setTopologySelectionId(topologyModel.primaryNodeId);
-      setMessage("worktree 已删除");
-    } catch (e) {
-      console.error("删除 worktree 失败:", e);
-      setError(String(e));
-      setMessage(`删除失败: ${String(e)}`);
-    } finally {
-      setRemovingTopologyNode(false);
-      setBusy(false);
-    }
-  }
-
   function centerTopologyOnCurrent() {
     const viewport = topologyViewportRef.current;
     const node = topologyModel.nodeById[topologyModel.primaryNodeId];
@@ -6828,72 +4252,6 @@ export function App() {
     viewport.classList.add("is-dragging");
   }
 
-  async function refreshStatus() {
-    if (!ensureRepoSelected()) return;
-    setError("");
-    setMessage("读取 entire 状态...");
-    try {
-      const res = await getEntireStatusDetailed(repoPath);
-      setStatusText(res.raw);
-      setMessage("状态已更新");
-    } catch (e) {
-      setError(String(e));
-      setMessage("读取状态失败");
-    }
-  }
-
-  async function refreshBranchesAndCommits() {
-    if (!ensureGitPaneSelected()) return;
-    const requestRepoPath = gitPanePath;
-    setError("");
-    setMessage("加载分支与提交...");
-    try {
-      const branchList = await getLocalBranches(gitPanePath);
-      const graphRows = await getCommitGraph(gitPanePath, 600);
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setBranches(branchList);
-      setCommitGraph(graphRows);
-      setBranchParentMap((prev) => {
-        const cleaned = Object.fromEntries(
-          Object.entries(prev).filter(([child, parent]) => {
-            if (!child.trim() || !parent.trim()) return false;
-            const childExists = branchList.some((b) => b.name === child) || Object.prototype.hasOwnProperty.call(prev, child);
-            const parentExists = branchList.some((b) => b.name === parent);
-            return childExists && parentExists;
-          })
-        );
-        if (Object.keys(cleaned).length !== Object.keys(prev).length) {
-          writeBranchParentMap(cleaned);
-        }
-        return cleaned;
-      });
-      const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
-      const target = branchList.some((b) => b.name === selectedBranch) ? selectedBranch : current;
-      setSelectedBranch(target);
-      if (!target) {
-        setCommits([]);
-        setSelectedCommit("");
-        setMessage("未找到可用本地分支");
-        return;
-      }
-      const rows = await getBranchCommits(gitPanePath, target, 80);
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setCommits(rows);
-      setSelectedCommit(rows[0]?.sha ?? "");
-      setMessage(rows.length > 0 ? "分支与提交已更新" : `分支 ${target} 暂无提交可显示`);
-    } catch (e) {
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setError(String(e));
-      setBranches([]);
-      setCommitGraph([]);
-      setCommits([]);
-      setSelectedBranch("");
-      setSelectedCommit("");
-      setBranchParentMap({});
-      setMessage("加载分支/提交失败");
-    }
-  }
-
   async function refreshReviewData() {
     if (!ensureGitPaneSelected()) return;
     const requestRepoPath = gitPanePath;
@@ -6904,573 +4262,6 @@ export function App() {
     if (gitPanePathRef.current !== requestRepoPath) return;
     setRecords(reviewRows);
     setActions(actionRows);
-  }
-
-  async function refreshWorktreeData(preferredFile?: string) {
-    if (!ensureGitPaneSelected()) return;
-    const requestRepoPath = gitPanePath;
-    try {
-      const [overview, worktrees] = await Promise.all([
-        getGitWorktreeOverview(gitPanePath),
-        getGitWorktreeList(gitPanePath)
-      ]);
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setWorktreeOverview(overview);
-      setLinkedWorktrees(worktrees);
-      const target = preferredFile && overview.entries.some((entry) => entry.path === preferredFile)
-        ? preferredFile
-        : overview.entries[0]?.path || "";
-      setSelectedWorktreeFile(target);
-      if (!target) {
-        setSelectedWorktreePatch(overview.clean ? "Working tree is clean." : "No patch available.");
-        setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
-        return;
-      }
-      const [patch, content] = await Promise.all([
-        getGitWorktreeFilePatch(gitPanePath, target),
-        getGitWorktreeFileContent(gitPanePath, target)
-      ]);
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setSelectedWorktreePatch(patch);
-      setSelectedWorktreeContent(content);
-    } catch (e) {
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setError(String(e));
-      setWorktreeOverview(EMPTY_WORKTREE);
-      setLinkedWorktrees([]);
-      setSelectedWorktreeFile("");
-      setSelectedWorktreePatch("");
-    }
-  }
-
-  async function refreshGitUserIdentity() {
-    if (!ensureGitPaneSelected()) return;
-    const requestRepoPath = gitPanePath;
-    try {
-      const identity = await getGitUserIdentity(gitPanePath);
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setGitUserIdentity(identity);
-    } catch {
-      if (gitPanePathRef.current !== requestRepoPath) return;
-      setGitUserIdentity(EMPTY_GIT_IDENTITY);
-    }
-  }
-
-  async function refreshSelectedWorktreePatch(filePath: string) {
-    if (!ensureRepoSelected() || !filePath) return;
-    setSelectedWorktreeFile(filePath);
-    try {
-      const [patch, content] = await Promise.all([
-        getGitWorktreeFilePatch(repoPath, filePath),
-        getGitWorktreeFileContent(repoPath, filePath)
-      ]);
-      setSelectedWorktreePatch(patch);
-      setSelectedWorktreeContent(content);
-    } catch (e) {
-      setError(String(e));
-      setSelectedWorktreePatch("");
-      setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
-    }
-  }
-
-  async function handleGitCommit() {
-    if (!ensureRepoSelected()) return;
-    if (committing || pushing) return;
-    const msg = commitMessage.trim();
-    if (!msg) {
-      setMessage("Please enter a commit message");
-      commitMessageInputRef.current?.focus();
-      return;
-    }
-    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
-    const unstagedFiles = worktreeOverview.entries
-      .filter((e) => e.unstaged || e.untracked)
-      .map((e) => e.path);
-    if (!hasStaged && unstagedFiles.length === 0) {
-      setMessage("No changes to commit");
-      return;
-    }
-    setCommitting(true);
-    setGitOperation("commit");
-    setError("");
-    try {
-      if (!hasStaged) {
-        for (const file of unstagedFiles) {
-          await gitStageFile(repoPath, file);
-        }
-      }
-      const result = await gitCommit(repoPath, msg);
-      setCommitMessage("");
-      setMessage("提交成功");
-      await refreshWorktreeData();
-      appendOpencodeDebugLog(`git.commit ${result.trim()}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage("提交失败");
-    } finally {
-      setCommitting(false);
-      setGitOperation(null);
-    }
-  }
-
-  async function handleGitPush() {
-    if (!ensureRepoSelected()) return;
-    if (committing || pushing) return;
-    setPushing(true);
-    setGitOperation("push");
-    setError("");
-    setShowCommitActionMenu(false);
-    try {
-      const result = await gitPush(repoPath);
-      setMessage("推送成功");
-      await refreshWorktreeData();
-      appendOpencodeDebugLog(`git.push ${result.trim()}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage("推送失败");
-    } finally {
-      setPushing(false);
-      setGitOperation(null);
-    }
-  }
-
-  async function handleGitSync() {
-    if (!ensureRepoSelected()) return;
-    if (committing || pushing) return;
-    setPushing(true);
-    setGitOperation("sync");
-    setError("");
-    setShowCommitActionMenu(false);
-    try {
-      if (worktreeOverview.behind > 0) {
-        await gitPull(repoPath);
-      }
-      if (worktreeOverview.ahead > 0) {
-        await gitPush(repoPath);
-      }
-      setMessage("Sync succeeded");
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-    } catch (e) {
-      setError(String(e));
-      setMessage("Sync failed");
-    } finally {
-      setPushing(false);
-      setGitOperation(null);
-    }
-  }
-
-  async function handleGitCommitAndPush() {
-    if (!ensureRepoSelected()) return;
-    if (committing || pushing) return;
-    const msg = commitMessage.trim();
-    if (!msg) {
-      setMessage("Please enter a commit message");
-      commitMessageInputRef.current?.focus();
-      return;
-    }
-    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
-    const unstagedFiles = worktreeOverview.entries
-      .filter((e) => e.unstaged || e.untracked)
-      .map((e) => e.path);
-    if (!hasStaged && unstagedFiles.length === 0) {
-      setMessage("No changes to commit");
-      return;
-    }
-    setCommitting(true);
-    setPushing(true);
-    setGitOperation("commitPush");
-    setError("");
-    setShowCommitActionMenu(false);
-    try {
-      if (!hasStaged) {
-        for (const file of unstagedFiles) {
-          await gitStageFile(repoPath, file);
-        }
-      }
-      const commitResult = await gitCommit(repoPath, msg);
-      const pushResult = await gitPush(repoPath);
-      setCommitMessage("");
-      setMessage("提交并推送成功");
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
-      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage("提交并推送失败");
-    } finally {
-      setCommitting(false);
-      setPushing(false);
-      setGitOperation(null);
-    }
-  }
-
-  async function handleGitCommitAndSync() {
-    if (!ensureRepoSelected()) return;
-    if (committing || pushing) return;
-    const msg = commitMessage.trim();
-    if (!msg) {
-      setMessage("Please enter a commit message");
-      commitMessageInputRef.current?.focus();
-      return;
-    }
-    const hasStaged = worktreeOverview.entries.some((e) => e.staged);
-    const unstagedFiles = worktreeOverview.entries
-      .filter((e) => e.unstaged || e.untracked)
-      .map((e) => e.path);
-    if (!hasStaged && unstagedFiles.length === 0) {
-      setMessage("No changes to commit");
-      return;
-    }
-    setCommitting(true);
-    setPushing(true);
-    setGitOperation("commitSync");
-    setError("");
-    setShowCommitActionMenu(false);
-    try {
-      if (!hasStaged) {
-        for (const file of unstagedFiles) {
-          await gitStageFile(repoPath, file);
-        }
-      }
-      const commitResult = await gitCommit(repoPath, msg);
-      const pushResult = await gitPush(repoPath);
-      setCommitMessage("");
-      setMessage("Commit & Sync succeeded");
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
-      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage("Commit & Sync failed");
-    } finally {
-      setCommitting(false);
-      setPushing(false);
-      setGitOperation(null);
-    }
-  }
-
-  async function handleDiscardChanges(filePath: string, isUntracked: boolean) {
-    if (!ensureRepoSelected() || !filePath) return;
-    setDiscardingFile(filePath);
-    setError("");
-    try {
-      await gitDiscardChanges(repoPath, filePath, isUntracked);
-      setMessage(`已撤销: ${filePath}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("撤销修改失败");
-    } finally {
-      setDiscardingFile("");
-    }
-  }
-
-  async function handleDiscardEntries(entries: GitWorktreeEntry[], label: string) {
-    if (!ensureRepoSelected() || entries.length === 0) return;
-    const ok = window.confirm(`确定要丢弃目录「${label}」下的 ${entries.length} 个变更吗？\n\n这会删除未跟踪文件，并恢复已跟踪文件到 HEAD。`);
-    if (!ok) return;
-    setDiscardingFile(label);
-    setError("");
-    try {
-      for (const entry of entries) {
-        await gitDiscardChanges(repoPath, entry.path, entry.untracked);
-      }
-      setMessage(`已丢弃 ${entries.length} 个变更: ${label}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("目录丢弃失败");
-    } finally {
-      setDiscardingFile("");
-    }
-  }
-
-  async function handleStageFile(filePath: string) {
-    if (!ensureRepoSelected() || !filePath) return;
-    setStagingFile(filePath);
-    setError("");
-    try {
-      await gitStageFile(repoPath, filePath);
-      setMessage(`已暂存: ${filePath}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("暂存失败");
-    } finally {
-      setStagingFile("");
-    }
-  }
-
-  async function handleStagePaths(paths: string[], label: string) {
-    if (!ensureRepoSelected() || paths.length === 0) return;
-    setStagingFile(label);
-    setError("");
-    try {
-      for (const file of paths) {
-        await gitStageFile(repoPath, file);
-      }
-      setMessage(`已暂存 ${paths.length} 个文件: ${label}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("目录暂存失败");
-    } finally {
-      setStagingFile("");
-    }
-  }
-
-  async function handleUnstageFile(filePath: string) {
-    if (!ensureRepoSelected() || !filePath) return;
-    setUnstagingFile(filePath);
-    setError("");
-    try {
-      await gitUnstageFile(repoPath, filePath);
-      setMessage(`已取消暂存: ${filePath}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("取消暂存失败");
-    } finally {
-      setUnstagingFile("");
-    }
-  }
-
-  async function handleUnstagePaths(paths: string[], label: string) {
-    if (!ensureRepoSelected() || paths.length === 0) return;
-    setUnstagingFile(label);
-    setError("");
-    try {
-      for (const file of paths) {
-        await gitUnstageFile(repoPath, file);
-      }
-      setMessage(`已取消暂存 ${paths.length} 个文件: ${label}`);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("目录取消暂存失败");
-    } finally {
-      setUnstagingFile("");
-    }
-  }
-
-  async function handleToggleStageAll() {
-    if (!ensureRepoSelected()) return;
-    const unstagedFiles = worktreeOverview.entries
-      .filter((e) => e.unstaged || e.untracked)
-      .map((e) => e.path);
-    const stagedFiles = worktreeOverview.entries
-      .filter((e) => e.staged)
-      .map((e) => e.path);
-
-    setError("");
-    try {
-      if (unstagedFiles.length > 0) {
-        for (const file of unstagedFiles) {
-          await gitStageFile(repoPath, file);
-        }
-        setMessage(`已暂存 ${unstagedFiles.length} 个文件`);
-      } else if (stagedFiles.length > 0) {
-        for (const file of stagedFiles) {
-          await gitUnstageFile(repoPath, file);
-        }
-        setMessage(`已取消暂存 ${stagedFiles.length} 个文件`);
-      }
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage(unstagedFiles.length > 0 ? "全部暂存失败" : "全部取消暂存失败");
-    }
-  }
-
-  function openDiscardAllConfirm() {
-    if (!ensureRepoSelected()) return;
-    const entries = worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked);
-    if (entries.length === 0) return;
-    setShowDiscardAllConfirm(true);
-  }
-
-  async function handleDiscardAllChanges() {
-    if (!ensureRepoSelected()) return;
-    const entries = worktreeOverview.entries.filter((e) => e.staged || e.unstaged || e.untracked);
-    if (entries.length === 0) {
-      setShowDiscardAllConfirm(false);
-      return;
-    }
-    setDiscardingAll(true);
-    setError("");
-    try {
-      for (const entry of entries) {
-        await gitDiscardChanges(repoPath, entry.path, entry.untracked);
-      }
-      setMessage(`已撤销 ${entries.length} 个文件`);
-      setShowDiscardAllConfirm(false);
-      await refreshWorktreeData();
-    } catch (e) {
-      setError(String(e));
-      setMessage("撤销全部修改失败");
-    } finally {
-      setDiscardingAll(false);
-    }
-  }
-
-  async function handleRemoveWorktree(path: string) {
-    if (!ensureRepoSelected() || !path) return;
-    setRemovingWorktreePath(path);
-    setError("");
-    try {
-      await removeGitWorktree(repoPath, path);
-      setMessage(`已移除 worktree: ${path}`);
-      setShowRemoveWorktreeConfirm(false);
-      setWorktreeContextMenu(null);
-      await refreshWorktreeData();
-      await Promise.all([refreshBranchesAndCommits()]);
-    } catch (e) {
-      setError(String(e));
-      setMessage("移除 worktree 失败");
-    } finally {
-      setRemovingWorktreePath("");
-      setWorktreeToRemove("");
-    }
-  }
-
-  function toggleWorktreeDir(path: string) {
-    setExpandedWorktreeDirs((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]));
-  }
-
-  function renderWorktreeNodes(nodes: WorktreeTreeNode[], depth = 0, mode: "stage" | "unstage" = "stage"): ReactNode {
-    return nodes.map((node) => {
-      if (node.kind === "dir") {
-        const expanded = expandedWorktreeDirs.includes(node.path);
-        const filePaths = collectWorktreeNodeFilePaths(node);
-        const entries = collectWorktreeNodeEntries(node);
-        const busyPath = mode === "stage" ? stagingFile : unstagingFile;
-        const canDiscardDir = entries.some((entry) => entry.staged || entry.unstaged || entry.untracked);
-        return (
-          <div key={node.path} className="gt-worktree-tree-group">
-            <div className="gt-worktree-tree-row gt-worktree-tree-dir" style={{ paddingLeft: `${depth * 14 + 6}px` }}>
-              <button type="button" className="gt-worktree-dir-main-btn" onClick={() => toggleWorktreeDir(node.path)}>
-                <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
-                <span className="gt-worktree-tree-name">{node.name}</span>
-              </button>
-              <div className="gt-worktree-row-tail">
-                <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
-                <div className="gt-worktree-file-actions">
-                  <button
-                    type="button"
-                    className={mode === "unstage" ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
-                    title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
-                    aria-pressed={mode === "unstage"}
-                    disabled={busyPath === node.path || filePaths.length === 0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (mode === "unstage") void handleUnstagePaths(filePaths, node.path);
-                      else void handleStagePaths(filePaths, node.path);
-                    }}
-                  >
-                    {mode === "unstage" ? (
-                      <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M4 8.2 6.7 11 12 5" />
-                      </svg>
-                    ) : null}
-                  </button>
-                  {canDiscardDir ? (
-                    <button
-                      type="button"
-                      className="gt-worktree-action-btn is-discard"
-                      title="丢弃此目录变更"
-                      disabled={discardingFile === node.path}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleDiscardEntries(entries, node.path);
-                      }}
-                    >
-                      {discardingFile === node.path ? "..." : (
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M6 4 3 7l3 3" />
-                          <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                        </svg>
-                      )}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-            {expanded ? <div className="gt-worktree-tree-children">{renderWorktreeNodes(node.children, depth + 1, mode)}</div> : null}
-          </div>
-        );
-      }
-
-      const entry = node.entry;
-      if (!entry) return null;
-      const status = getWorktreeDisplayStatus(entry);
-      const fileKind = getWorktreeFileKindLabel(entry.path);
-      const canDiscard = entry.staged || entry.unstaged || entry.untracked;
-      const toggleStaged = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        if (entry.staged) {
-          void handleUnstageFile(entry.path);
-        } else {
-          void handleStageFile(entry.path);
-        }
-      };
-      return (
-        <div
-          key={node.path}
-          className={selectedWorktreeFile === entry.path ? "gt-worktree-tree-row gt-worktree-tree-file active" : "gt-worktree-tree-row gt-worktree-tree-file"}
-          style={{ paddingLeft: `${depth * 14 + 6}px` }}
-          title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
-        >
-          <button
-            type="button"
-            className="gt-worktree-file-main-btn"
-            onClick={() => void refreshSelectedWorktreePatch(entry.path)}
-          >
-            <span className={`gt-worktree-kind gt-worktree-kind-${fileKind}`}>{fileKind}</span>
-            <span className="gt-worktree-tree-name">{node.name}</span>
-          </button>
-          <div className="gt-worktree-row-tail">
-            <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-            <div className="gt-worktree-file-actions">
-            <button
-              type="button"
-              className={entry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
-              title={entry.staged ? "取消暂存" : "暂存更改"}
-              aria-pressed={entry.staged}
-              disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
-              onClick={toggleStaged}
-            >
-              {entry.staged ? (
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M4 8.2 6.7 11 12 5" />
-                </svg>
-              ) : null}
-            </button>
-            {canDiscard ? (
-              <button
-                type="button"
-                className="gt-worktree-action-btn is-discard"
-                title={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
-                disabled={discardingFile === entry.path}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleDiscardChanges(entry.path, entry.untracked);
-                }}
-              >
-                {discardingFile === entry.path ? (
-                  "..."
-                ) : (
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M6 4 3 7l3 3" />
-                    <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                  </svg>
-                )}
-              </button>
-            ) : null}
-            </div>
-          </div>
-        </div>
-      );
-    });
   }
 
   function updateTerminalTabById(tabId: string, patch: Partial<TerminalTabState> | ((prev: TerminalTabState) => TerminalTabState)) {
@@ -7539,22 +4330,10 @@ export function App() {
     if (!script) return;
     try {
       await sendRepoTerminalInput(repoPath, `${script}\r`, activeTerminalTab.id);
-      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
-        ...prev,
-        history: [script, ...prev.history.filter((x) => x !== script)].slice(0, 80),
-        historyIndex: -1,
-        historyDraft: "",
-        input: "",
-        completionItems: [],
-        completionIndex: 0,
-        completionToken: ""
-      }));
+      updateTerminalTabById(activeTerminalTab.id, (prev) => recordTerminalCommand(prev, script));
     } catch (e) {
       const msg = String(e);
-      updateTerminalTabById(activeTerminalTab.id, (prev) => ({
-        ...prev,
-        output: `${prev.output}${prev.output.endsWith("\n") || !prev.output ? "" : "\n"}[error] ${msg}\n`
-      }));
+      updateTerminalTabById(activeTerminalTab.id, (prev) => appendTerminalError(prev, msg));
       setError(msg);
     }
   }
@@ -7570,22 +4349,10 @@ export function App() {
     setActiveTerminalTabId(tab.id);
     try {
       await sendRepoTerminalInput(repoPath, `${command}\r`, tab.id);
-      updateTerminalTabById(tab.id, (prev) => ({
-        ...prev,
-        history: [command, ...prev.history.filter((x) => x !== command)].slice(0, 80),
-        historyIndex: -1,
-        historyDraft: "",
-        input: "",
-        completionItems: [],
-        completionIndex: 0,
-        completionToken: ""
-      }));
+      updateTerminalTabById(tab.id, (prev) => recordTerminalCommand(prev, command));
     } catch (e) {
       const msg = String(e);
-      updateTerminalTabById(tab.id, (prev) => ({
-        ...prev,
-        output: `${prev.output}${prev.output.endsWith("\n") || !prev.output ? "" : "\n"}[error] ${msg}\n`
-      }));
+      updateTerminalTabById(tab.id, (prev) => appendTerminalError(prev, msg));
       setError(msg);
     }
   }
@@ -7730,101 +4497,6 @@ export function App() {
     return actions.find((a) => a.reviewId === reviewId && a.findingId === findingId);
   }
 
-  async function chooseBranch(branchName: string) {
-    if (!selectedRepo) return;
-    setSelectedBranch(branchName);
-    try {
-      const rows = await getBranchCommits(selectedRepo.path, branchName, 80);
-      setCommits(rows);
-      setSelectedCommit(rows[0]?.sha ?? "");
-      setMessage(`已选择分支: ${branchName}`);
-    } catch (e) {
-      setError(String(e));
-      setMessage("加载分支失败");
-    }
-  }
-
-  async function refreshScm() {
-    if (!ensureRepoSelected()) return;
-    setBusy(true);
-    setOverlayBusy(true);
-    setError("");
-    setMessage("刷新提交与状态...");
-    try {
-      const [statusRes, branchList, graphRows, reviewRows, actionRows] = await Promise.all([
-        getEntireStatusDetailed(repoPath),
-        getLocalBranches(repoPath),
-        getCommitGraph(repoPath, 300),
-        loadReviewRecords(repoPath),
-        loadReviewActions(repoPath)
-      ]);
-      setStatusText(statusRes.raw);
-      setBranches(branchList);
-      setCommitGraph(graphRows);
-      setRecords(reviewRows);
-      setActions(actionRows);
-      const current = branchList.find((b) => b.isCurrent)?.name ?? branchList[0]?.name ?? "";
-      const target = branchList.some((b) => b.name === selectedBranch) ? selectedBranch : current;
-      setSelectedBranch(target);
-      if (!target) {
-        setCommits([]);
-        setSelectedCommit("");
-      } else {
-        const rows = await getBranchCommits(repoPath, target, 80);
-        setCommits(rows);
-        setSelectedCommit(rows[0]?.sha ?? "");
-      }
-      await refreshWorktreeData(selectedWorktreeFile);
-      setMessage("刷新完成");
-    } catch (e) {
-      setError(String(e));
-      setMessage("刷新失败");
-    } finally {
-      setBusy(false);
-      setOverlayBusy(false);
-    }
-  }
-
-  async function pullLatest() {
-    if (!ensureRepoSelected()) return;
-    setBusy(true);
-    setOverlayBusy(true);
-    setError("");
-    setMessage("执行 git pull...");
-    try {
-      const out = await gitPull(repoPath);
-      setStatusText((prev) => [prev, `\n$ git pull --ff-only\n${out}`].filter(Boolean).join("\n"));
-      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
-      setMessage("拉取完成");
-    } catch (e) {
-      setError(String(e));
-      setMessage("拉取失败");
-    } finally {
-      setBusy(false);
-      setOverlayBusy(false);
-    }
-  }
-
-  async function pushCurrent() {
-    if (!ensureRepoSelected()) return;
-    setBusy(true);
-    setOverlayBusy(true);
-    setError("");
-    setMessage("执行 git push...");
-    try {
-      const out = await gitPush(repoPath);
-      setStatusText((prev) => [prev, `\n$ git push\n${out}`].filter(Boolean).join("\n"));
-      await refreshWorktreeData(selectedWorktreeFile);
-      setMessage("推送完成");
-    } catch (e) {
-      setError(String(e));
-      setMessage("推送失败");
-    } finally {
-      setBusy(false);
-      setOverlayBusy(false);
-    }
-  }
-
   useEffect(() => {
     void refreshRepositories().catch((e) => setError(String(e)));
   }, []);
@@ -7909,11 +4581,11 @@ export function App() {
 
   useEffect(() => {
     if (!generalSettings.updatesStartup) return;
-    const hasCheckedBefore = window.localStorage.getItem(RUNTIME_FIRST_CHECK_KEY) === "1";
-    const dismissed = window.localStorage.getItem("giteam.runtime.setup.dismissed.v1") === "1";
+    const hasCheckedBefore = hasRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
+    const dismissed = isRuntimeSetupDismissed();
     void refreshRuntimeRequirements()
       .then((res) => {
-        window.localStorage.setItem(RUNTIME_FIRST_CHECK_KEY, "1");
+        markRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
         const missing = [res.git, res.entire].some((d) => !d.installed);
         if (!hasCheckedBefore && !dismissed && missing) setShowEnvSetup(true);
       })
@@ -8107,30 +4779,6 @@ export function App() {
   }, [runtimeStatus.opencode.installed]);
 
   useEffect(() => {
-    setOpencodeSavedModels([]);
-  }, []);
-
-  useEffect(() => {
-    const hiddenKey = `${OPENCODE_MODEL_VIS_KEY}:global`;
-    const enabledKey = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
-    setOpencodeHiddenModels(loadModelRefSet(hiddenKey, "hidden"));
-    setOpencodeEnabledModels(loadModelRefSet(enabledKey, "enabled"));
-    opencodeModelPrefsLoadedRef.current = true;
-  }, []);
-
-  useEffect(() => {
-    if (!opencodeModelPrefsLoadedRef.current) return;
-    const key = `${OPENCODE_MODEL_VIS_KEY}:global`;
-    saveModelRefSet(key, "hidden", opencodeHiddenModels);
-  }, [opencodeHiddenModels]);
-
-  useEffect(() => {
-    if (!opencodeModelPrefsLoadedRef.current) return;
-    const key = `${OPENCODE_MODEL_ENABLE_KEY}:global`;
-    saveModelRefSet(key, "enabled", opencodeEnabledModels);
-  }, [opencodeEnabledModels]);
-
-  useEffect(() => {
     if (!selectedRepo?.id && !repoPath) return;
     const availableModels = opencodeSyncModelRefs;
     const modelLabels: Record<string, string> = {};
@@ -8173,46 +4821,6 @@ export function App() {
     opencodeSyncModelRefs,
     repoPath,
   ]);
-
-  useEffect(() => {
-    // Global model selection; session-specific overrides are keyed by session id.
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        setOpencodeDraftModel("");
-        setOpencodeSessionModel({});
-        return;
-      }
-      const parsed = JSON.parse(raw) as { draft?: string; session?: Record<string, string> } | null;
-      setOpencodeDraftModel(normalizeModelRef(String(parsed?.draft || "")));
-      const session = parsed?.session && typeof parsed.session === "object" ? parsed.session : {};
-      const next: Record<string, string> = {};
-      for (const [sid, m] of Object.entries(session || {})) {
-        const norm = normalizeModelRef(String(m || ""));
-        if (sid && norm) next[sid] = norm;
-      }
-      setOpencodeSessionModel(next);
-    } catch {
-      setOpencodeDraftModel("");
-      setOpencodeSessionModel({});
-    }
-  }, []);
-
-  useEffect(() => {
-    const key = `${OPENCODE_MODEL_SELECTION_KEY}:global`;
-    try {
-      window.localStorage.setItem(
-        key,
-        JSON.stringify({
-          draft: opencodeDraftModel || "",
-          session: opencodeSessionModel || {}
-        })
-      );
-    } catch {
-      // ignore
-    }
-  }, [opencodeDraftModel, opencodeSessionModel]);
 
   useEffect(() => {
     if (!showSettings || !runtimeStatus.opencode.installed || !selectedRepo) return;
@@ -8311,7 +4919,7 @@ export function App() {
 
   useEffect(() => {
     if (!activeOpencodeModel) return;
-    pushOpencodeSavedModel(activeOpencodeModel);
+    rememberOpencodeSavedModel(activeOpencodeModel);
   }, [activeOpencodeModel]);
 
   useEffect(() => {
@@ -8506,7 +5114,7 @@ export function App() {
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
         if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
-        invalidateOpencodeMessageCache(repoPath, sessionId);
+        opencodeMessageCache.invalidate(repoPath, sessionId);
         void loadOpencodeSessionMessages(sessionId).catch((e) => setError(String(e)));
         void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch(() => {});
       }, delay);
@@ -8786,77 +5394,6 @@ export function App() {
     }, 120);
     return () => window.clearTimeout(timer);
   }, [activeOpencodeSessionId, opencodeVisibleWindow.visible, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
-
-  function renderOpencodeExecutionPart(part: OpencodeDetailedPart, keyHint: string) {
-    const type = String(part?.type || "");
-    if (type === "step-start" || type === "step-finish") {
-      return null;
-    }
-    if (type !== "tool") return null;
-    const tool = String((part as any).tool || "tool");
-    if (tool === "todowrite") return null;
-    const state = (part as any).state || {};
-    const status = String(state.status || "").trim();
-    const running = status.toLowerCase() === "running" || status.toLowerCase() === "pending";
-    const input = state.input;
-    const output = state.output;
-    const subtitle =
-      String(input?.description || input?.filePath || input?.pattern || input?.query || input?.url || "").trim();
-    const ioLabel = (() => {
-      if (!running) return "";
-      if (tool === "read" || tool === "list" || tool === "glob" || tool === "grep") return "读取";
-      if (tool === "write" || tool === "edit" || tool === "apply_patch") return "写入";
-      return "";
-    })();
-    const taskSessionId = tool === "task" ? parseOpencodeTaskSessionId(part) : "";
-    const taskSubagent = tool === "task" ? String(input?.subagent_type || "").trim() : "";
-    const taskTitleHint =
-      (tool === "task" ? String(input?.description || "").trim() : "") ||
-      (taskSubagent ? `@${taskSubagent}` : "") ||
-      "";
-    const contextTool = isOpencodeContextTool(tool);
-    const parsedRead = tool === "read" && typeof output === "string" ? parseReadToolOutput(output) : null;
-    const outputText = typeof output === "string" ? output : output ? toDisplayJson(output, 2200) : "";
-    const rawLines = outputText ? outputText.split("\n") : [];
-    const previewLines = rawLines.slice(0, 12);
-    const outputPreview = previewLines.join("\n") + (rawLines.length > 12 ? "\n..." : "");
-    const shellTool = tool === "bash";
-    const editTool = tool === "write" || tool === "edit" || tool === "apply_patch";
-    const showOutput = !contextTool && !!outputPreview && (status === "error" || (shellTool && generalSettings.shellToolPartsExpanded) || (editTool && generalSettings.editToolPartsExpanded));
-    return (
-      <div key={`oce-tool-${keyHint}`} className="opencode-exec-item opencode-exec-tool">
-        <div className="opencode-exec-tool-head">
-          <span
-            className={
-              status === "error"
-                ? "opencode-exec-status opencode-exec-status-error"
-                : running
-                  ? "opencode-exec-status opencode-exec-status-running"
-                  : "opencode-exec-status"
-            }
-            aria-hidden="true"
-          />
-          <strong className={running ? "opencode-live-text" : ""}>{tool}</strong>
-          {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-          {subtitle ? <span className="small muted">{subtitle}</span> : null}
-          {taskSessionId ? (
-            <button
-              type="button"
-              className="opencode-task-link"
-              onClick={() => void openOpencodeChildSession(taskSessionId, taskTitleHint)}
-              title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
-            >
-              {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
-            </button>
-          ) : null}
-        </div>
-        {parsedRead && generalSettings.editToolPartsExpanded ? (
-          <pre className="opencode-tool-output">{withLineNumbers(parsedRead.content, 80)}</pre>
-        ) : null}
-        {!parsedRead && showOutput ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
-      </div>
-    );
-  }
 
   const opencodeHasHiddenHistory = opencodeTurnStart > 0;
 
@@ -9229,865 +5766,241 @@ export function App() {
   const noRepos = repos.length === 0;
 
   const sideBar = (
-    <div className="wb-sidebar-inner gt-sidebar-inner">
-      <div className="gt-sidebar-top">
-        <button
-          className="gt-new-session-btn"
-          onClick={() => void (noRepos ? pickAndImportRepository() : createAndSwitchOpencodeSessionForSidebar())}
-          disabled={noRepos ? busy : busy || !runtimeStatus.opencode.installed}
-        >
-          <div className="gt-new-session-main">
-            <span className="gt-new-session-icon">{noRepos ? <FolderIcon /> : <EditIcon />}</span>
-            <span className="gt-new-session-label">{noRepos ? "导入项目" : "New Session"}</span>
-          </div>
-          {!noRepos ? <span className="gt-new-session-kbd" aria-hidden="true"><kbd>⌘N</kbd></span> : null}
-        </button>
-      </div>
-
-      <div className="gt-project-stack">
-        {noRepos ? (
-          <div className="gt-empty-hint">还没有项目，先通过顶部入口导入一个本地工作区。</div>
-        ) : null}
-        {(() => {
-          const pinnedRepos = repos.filter((r) => pinnedRepoIds.includes(r.id));
-          const otherRepos = repos.filter((r) => !pinnedRepoIds.includes(r.id));
-          return (
-            <>
-              {pinnedRepos.length > 0 ? (
-                <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header">
-                    <span className="gt-sidebar-section-title">Pinned</span>
-                  </div>
-                  <div className="gt-sidebar-project-list">
-                    {pinnedRepos.map((repo) => {
-                      const expanded = expandedProjectIds.includes(repo.id);
-                      const repoSessions = getVisibleRepoSessions(repo.id);
-                      const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
-                      const repoSessionsLoading = isRepoSessionsLoading(repo.id);
-                      const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
-                      const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
-                      return (
-                        <div key={repo.id} className="gt-sidebar-project-wrap">
-                          <div
-                            className="gt-sidebar-project-row"
-                            title={repo.path}
-                            onClick={() => {
-                              if (busy) return;
-                              setSelectedRepo(repo);
-                              setGitPaneRepo(repo);
-                              toggleRepoSessions(repo);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openRepoContextMenu(e.clientX, e.clientY, repo);
-                            }}
-                          >
-                            <span className="gt-sidebar-project-icon"><PinIcon /></span>
-                            <span className="gt-sidebar-project-name">{repo.name}</span>
-                            <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
-                            <button
-                              className="gt-sidebar-project-pin active"
-                              title="取消置顶"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePinnedRepo(repo.id);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                          </div>
-                          {shouldRenderChildren ? (
-                            <div className="gt-sidebar-project-children">
-                              {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title">New Session</span>
-                                </button>
-                              ) : null}
-                              {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-                              {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
-                                <div className="gt-tree-loading" aria-hidden="true">
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row short" />
-                                </div>
-                              ) : null}
-                              {runtimeStatus.opencode.installed
-                                ? repoSessions.map((session) => (
-                                    <button
-                                      key={`left-session-${session.id}`}
-                                      className={!draftOpencodeSession && repo.id === selectedRepo?.id && session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
-                                      }}
-                                      onClick={() => {
-                                        openSidebarOpencodeSession(repo, session);
-                                      }}
-                                    >
-                                      <span className="gt-session-title">{session.title}</span>
-                                      {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
-                                      ) : null}
-                                    </button>
-                                  ))
-                                : null}
-                              {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
-                                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-                                  <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-              {repos.length > 0 ? (
-                <div className="gt-sidebar-section">
-                  <div className="gt-sidebar-section-header">
-                    <span className="gt-sidebar-section-title">Projects</span>
-                    <div className="gt-sidebar-actions">
-                      <button
-                        className="gt-sidebar-action-btn"
-                        title="Open Workspace"
-                        onClick={() => void pickAndImportRepository()}
-                        disabled={busy}
-                      >
-                        <PlusIcon />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="gt-sidebar-project-list">
-                    {otherRepos.map((repo) => {
-                      const expanded = expandedProjectIds.includes(repo.id);
-                      const repoSessions = getVisibleRepoSessions(repo.id);
-                      const repoHasMoreSessions = hasMoreRepoSessions(repo.id);
-                      const repoSessionsLoading = isRepoSessionsLoading(repo.id);
-                      const hasDraftForRepo = draftOpencodeSession && repo.id === selectedRepo?.id;
-                      const shouldRenderChildren = expanded && (repoSessionsLoading || repoSessions.length > 0 || repoHasMoreSessions || hasDraftForRepo || !runtimeStatus.opencode.installed);
-                      return (
-                        <div key={repo.id} className="gt-sidebar-project-wrap">
-                          <div
-                            className="gt-sidebar-project-row"
-                            title={repo.path}
-                            onClick={() => {
-                              if (busy) return;
-                              setSelectedRepo(repo);
-                              setGitPaneRepo(repo);
-                              toggleRepoSessions(repo);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openRepoContextMenu(e.clientX, e.clientY, repo);
-                            }}
-                          >
-                            <span className="gt-sidebar-project-icon"><FolderIcon /></span>
-                            <span className="gt-sidebar-project-name">{repo.name}</span>
-                            <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
-                            <button
-                              className="gt-sidebar-project-pin"
-                              title="置顶"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePinnedRepo(repo.id);
-                              }}
-                            >
-                              <PinIcon />
-                            </button>
-                          </div>
-                          {shouldRenderChildren ? (
-                            <div className="gt-sidebar-project-children">
-                              {hasDraftForRepo ? (
-                                <button className="gt-session-item active gt-session-item-draft" onClick={() => opencodeInputRef.current?.focus()}>
-                                  <span className="gt-session-title">New Session</span>
-                                </button>
-                              ) : null}
-                              {!runtimeStatus.opencode.installed ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-                              {runtimeStatus.opencode.installed && repoSessionsLoading && repoSessions.length === 0 ? (
-                                <div className="gt-tree-loading" aria-hidden="true">
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row" />
-                                  <span className="gt-tree-loading-row short" />
-                                </div>
-                              ) : null}
-                              {runtimeStatus.opencode.installed
-                                ? repoSessions.map((session) => (
-                                    <button
-                                      key={`left-session-${session.id}`}
-                                      className={!draftOpencodeSession && repo.id === selectedRepo?.id && session.id === activeOpencodeSessionId ? "gt-session-item active" : "gt-session-item"}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setSessionContextMenu({ x: e.clientX, y: e.clientY, repo, session });
-                                      }}
-                                      onClick={() => {
-                                        openSidebarOpencodeSession(repo, session);
-                                      }}
-                                    >
-                                      <span className="gt-session-title">{session.title}</span>
-                                      {session.updatedAt || session.createdAt ? (
-                                        <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
-                                      ) : null}
-                                    </button>
-                                  ))
-                                : null}
-                              {runtimeStatus.opencode.installed && repoHasMoreSessions ? (
-                                <button className="gt-load-more-btn" onClick={() => void loadMoreSidebarRepoSessions(repo)} disabled={repoSessionsLoading}>
-                                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-                                  <span>{repoSessionsLoading ? "Loading…" : "More"}</span>
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-            </>
-          );
-        })()}
-      </div>
-
-      <div className="gt-sidebar-footer">
-        <div className="gt-user-row">
-          <div className="gt-user-main">
-            <span className="gt-user-avatar">{firstLetter(gitUserIdentity.name || gitUserIdentity.email || selectedRepo?.name || "g")}</span>
-            <span className="gt-user-meta">
-              <strong>{gitUserIdentity.name || "Git User"}</strong>
-              <small>{gitUserIdentity.email || "No git email configured"}</small>
-            </span>
-          </div>
-          <button className="gt-user-settings" title="Settings" onClick={() => setShowSettings(true)} aria-label="Settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Z" fill="none" stroke="currentColor" strokeWidth="1.55" />
-              <path d="M19 13.2v-2.4l-1.9-.34a5.7 5.7 0 0 0-.47-1.13l1.1-1.57-1.7-1.7-1.57 1.1c-.36-.2-.74-.36-1.14-.47L13 4.8h-2.4l-.34 1.89c-.4.11-.78.27-1.14.47l-1.57-1.1-1.7 1.7 1.1 1.57c-.2.36-.36.74-.47 1.13L4.6 10.8v2.4l1.88.34c.11.39.27.77.47 1.13l-1.1 1.57 1.7 1.7 1.57-1.1c.36.2.74.36 1.14.47l.34 1.89H13l.33-1.89c.4-.11.78-.27 1.14-.47l1.57 1.1 1.7-1.7-1.1-1.57c.2-.36.36-.74.47-1.13L19 13.2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
+    <DesktopSidebar
+      noRepos={noRepos}
+      busy={busy}
+      opencodeInstalled={runtimeStatus.opencode.installed}
+      repos={repos}
+      pinnedRepoIds={pinnedRepoIds}
+      expandedProjectIds={expandedProjectIds}
+      selectedRepoId={selectedRepo?.id || ""}
+      activeSessionId={activeOpencodeSessionId}
+      draftRepoId={draftOpencodeSession ? (selectedRepo?.id || "") : ""}
+      gitUserIdentity={gitUserIdentity}
+      fallbackIdentityName={selectedRepo?.name || "g"}
+      getVisibleRepoSessions={getVisibleRepoSessions}
+      hasMoreRepoSessions={hasMoreRepoSessions}
+      isRepoSessionsLoading={isRepoSessionsLoading}
+      onImportRepository={() => void pickAndImportRepository()}
+      onCreateSession={() => void createAndSwitchOpencodeSessionForSidebar()}
+      onSelectRepo={(repo) => {
+        setSelectedRepo(repo);
+        setGitPaneRepo(repo);
+      }}
+      onToggleRepoSessions={toggleRepoSessions}
+      onOpenRepoContextMenu={openRepoContextMenu}
+      onTogglePinnedRepo={togglePinnedRepo}
+      onFocusDraftSession={() => opencodeInputRef.current?.focus()}
+      onOpenSession={openSidebarOpencodeSession}
+      onOpenSessionContextMenu={(x, y, repo, session) => setSessionContextMenu({ x, y, repo, session })}
+      onLoadMoreSessions={(repo) => void loadMoreSidebarRepoSessions(repo)}
+      onOpenSettings={() => setShowSettings(true)}
+    />
   );
 
   const centerPane = runtimeStatus.opencode.installed ? (
     <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-      <div className={opencodeShowEmptyState ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
-        <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
-          <div className="gt-chat-stream">
-            {opencodeSessionLoading ? (
-              <div className="opencode-session-loading small muted">加载会话中…</div>
-            ) : opencodeMessages.length === 0 ? null : (
-              opencodeRenderedMessages.map((msg) => {
-                const isAssistant = msg.role === "assistant";
-                const latestAssistantId = [...opencodeMessages].reverse().find((row) => row.role === "assistant")?.id || "";
-                const isStreaming = isAssistant && msg.id === activeOpencodeStreamingAssistantId && msg.id === latestAssistantId && activeOpencodeSessionBusy;
-                const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-                const detail = isAssistant ? (opencodeDetailsByMessageId[msg.id] || null) : null;
-                const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
-                const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
-                const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
-                const renderParts = detailParts.filter(isOpencodeRenderablePart);
-                const timelineGroups = buildOpencodeAssistantRenderGroups(renderParts);
-                const hasTimeline = timelineGroups.length > 0;
-                const fallbackReply = (buildOpencodeReplyMarkdownFromParts(detailParts) || msg.content || "").trim();
-                return (
-                  <div key={msg.id} className={msg.role === "user" ? "opencode-msg opencode-msg-user" : "opencode-msg opencode-msg-assistant"}>
-                    {isAssistant && opencodeDetailsLoadingByMessageId[msg.id] && liveParts.length <= 0 ? (
-                      <div className="opencode-msg-meta">
-                        {opencodeDetailsLoadingByMessageId[msg.id] ? <span className="small muted">加载中…</span> : null}
-                      </div>
-                    ) : null}
-                    {isAssistant ? (
-                      hasTimeline ? (
-                        <div className="opencode-assistant-timeline">
-                          {(() => {
-                            const activeReasoningPartId = isStreaming
-                              ? [...renderParts]
-                                .reverse()
-                                .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
-                              : "";
-                            return timelineGroups.map((g, idx) => {
-                              if (g.kind === "context") {
-                                const c = summarizeOpencodeContextToolCounts(g.parts);
-                                const progress = summarizeOpencodeContextProgress(g.parts);
-                                return (
-                                  <div key={`${msg.id}:${g.key}`} className="opencode-exec-context">
-                                    <div className="opencode-exec-context-head">
-                                      <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
-                                        {isStreaming || progress.active ? "Gathering Context" : "Context"}
-                                      </strong>
-                                      <span className="small muted">
-                                        {progress.detail
-                                          ? `${progress.mode} · ${progress.detail} · ${c.read} read · ${c.search} search · ${c.list} list`
-                                          : `${c.read} read · ${c.search} search · ${c.list} list`}
-                                      </span>
-                                    </div>
-                                    <div className="opencode-exec-list">
-                                      {g.parts.map((p, pidx) => renderOpencodeExecutionPart(p, `${g.key}:${pidx}`))}
-                                    </div>
-                                  </div>
-                                );
-                              }
-                              if (g.kind === "reasoning") {
-                                if (!generalSettings.showReasoningSummaries) return null;
-                                const text = g.parts
-                                  .map((part) => String((part as { text?: string }).text || "").trim())
-                                  .filter(Boolean)
-                                  .join("\n\n");
-                                if (!text) return null;
-                                const activeThink = isStreaming && g.parts.some((part) => String(part.id || "") === activeReasoningPartId);
-                                const thinkPreviewLines = text
-                                  .split(/\n+/)
-                                  .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
-                                  .filter(Boolean)
-                                  .slice(-4);
-                                const thinkPreview = thinkPreviewLines.length > 0
-                                  ? thinkPreviewLines
-                                  : ["Reading context", "Tracing changes", "Composing answer"];
-                                return (
-                                  <details key={`${msg.id}:${g.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}>
-                                    <summary className="opencode-think-card-summary">
-                                      <span className="opencode-think-label">
-                                        <span className="opencode-think-spark" aria-hidden="true" />
-                                        Think
-                                      </span>
-                                      {thinkPreview.length > 0 ? (
-                                        <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
-                                          <span className="opencode-think-carousel-track" style={{ ["--think-count" as any]: thinkPreview.length }}>
-                                            {thinkPreview.map((line, lineIdx) => (
-                                              <span
-                                                key={`${g.key}:think-preview:${lineIdx}`}
-                                                className="opencode-think-carousel-line"
-                                                style={{ ["--think-index" as any]: lineIdx }}
-                                              >
-                                                {line}
-                                              </span>
-                                            ))}
-                                          </span>
-                                        </span>
-                                      ) : null}
-                                    </summary>
-                                    <div className="opencode-msg-body">
-                                      <MarkdownLite source={text} />
-                                    </div>
-                                  </details>
-                                );
-                              }
-                              if (g.kind !== "part") return null;
-                              const part = g.part;
-                              const t = String((part as { type?: string }).type || "");
-                              if (t === "text") {
-                                const text = String((part as { text?: string }).text || "").trim();
-                                if (!text) return null;
-                                return (
-                                  <div key={`${msg.id}:${g.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                                    <MarkdownLite source={text} />
-                                    {isStreaming && idx === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                                  </div>
-                                );
-                              }
-                              return <div key={`${msg.id}:${g.key}`}>{renderOpencodeExecutionPart(part, g.key)}</div>;
-                            });
-                          })()}
-                        </div>
-                      ) : fallbackReply ? (
-                        <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                          <MarkdownLite source={fallbackReply} />
-                          {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                        </div>
-                      ) : (
-                        <div className="opencode-thinking-wrap">
-                          <div className="opencode-thinking">
-                            <span />
-                            <span />
-                            <span />
-                            <em>Thinking</em>
-                          </div>
-                        </div>
-                      )
-                    ) : msg.content.trim() || (msg.attachments && msg.attachments.length > 0) ? (
-                      <div className="opencode-msg-body">
-                        {msg.attachments && msg.attachments.length > 0 ? (
-                          <div className="opencode-msg-attachments">
-                            {msg.attachments.map((img, imageIndex) => (
-                              <button
-                                key={img.id}
-                                type="button"
-                                className="opencode-msg-image-btn"
-                                onClick={() => setOpencodePreviewImage({
-                                  images: msg.attachments?.map((item) => ({ uri: item.uri, filename: item.filename })) || [],
-                                  index: imageIndex
-                                })}
-                                onContextMenu={(e) => {
-                                  e.preventDefault();
-                                  void copyText(img.uri);
-                                }}
-                                title="点击查看，右键复制图片数据"
-                              >
-                                <img className="opencode-msg-image" src={img.uri} alt={img.filename || "attachment"} />
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                        {msg.content.trim() ? <MarkdownLite source={msg.content} /> : null}
-                      </div>
-                    ) : null}
-                    {isAssistant && opencodeDetailsErrorByMessageId[msg.id] ? (
-                      <div className="small" style={{ color: "var(--danger)", marginTop: "var(--gt-space-2)" }}>{opencodeDetailsErrorByMessageId[msg.id]}</div>
-                    ) : null}
-                  </div>
-                );
-              })
-            )}
+        <div className={opencodeShowEmptyState ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
+          <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
+            <OpencodeMessageStream
+              sessionLoading={opencodeSessionLoading}
+              messages={opencodeMessages}
+              renderedMessages={opencodeRenderedMessages}
+              activeStreamingAssistantId={activeOpencodeStreamingAssistantId}
+              activeSessionBusy={activeOpencodeSessionBusy}
+              serverMessageIdByLocalId={opencodeServerMessageIdByLocalId}
+              detailsByMessageId={opencodeDetailsByMessageId}
+              livePartsByServerMessageId={opencodeLivePartsByServerMessageId}
+              detailsLoadingByMessageId={opencodeDetailsLoadingByMessageId}
+              detailsErrorByMessageId={opencodeDetailsErrorByMessageId}
+              showReasoningSummaries={generalSettings.showReasoningSummaries}
+              shellToolPartsExpanded={generalSettings.shellToolPartsExpanded}
+              editToolPartsExpanded={generalSettings.editToolPartsExpanded}
+              onOpenTaskSession={(sessionId, titleHint) => {
+                void openOpencodeChildSession(sessionId, titleHint);
+              }}
+              onPreviewImageGroup={(images, index) => {
+                setOpencodePreviewImage({ images, index });
+              }}
+              onCopyAttachmentUri={(uri) => {
+                void copyText(uri);
+              }}
+            />
           </div>
-        </div>
-        <div className="opencode-input-row">
-          <div className="gt-chat-composer-wrap">
-            {generalSettings.showSessionProgressBar && opencodeTodoDockVisible && opencodeActiveTodos.length > 0 ? (
-              <div className="gt-opencode-todo-dock">
-                <button
-                  type="button"
-                  className="gt-opencode-todo-dock-head"
-                  onClick={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
-                  aria-expanded={!opencodeTodoDockCollapsed}
-                >
-                  <span className="gt-opencode-todo-dock-progress">
-                    已完成 {opencodeTodoProgress.done} 个任务（共 {opencodeTodoProgress.total} 个）
-                  </span>
-                  <span className="gt-opencode-todo-dock-preview">
-                    {opencodeTodoDockCollapsed ? opencodeTodoProgress.active?.content || "" : ""}
-                  </span>
-                  <span className={opencodeTodoDockCollapsed ? "gt-opencode-todo-dock-chevron is-collapsed" : "gt-opencode-todo-dock-chevron"} aria-hidden="true">
-                    <span />
-                    <span />
-                  </span>
-                </button>
-                {!opencodeTodoDockCollapsed ? (
-                  <div className="gt-opencode-todo-dock-list">
-                    {opencodeActiveTodos.map((todo) => (
-                      <div key={todo.id} className={`gt-opencode-todo-item is-${todo.status}`}>
-                        <span className="gt-opencode-todo-item-check" aria-hidden="true">
-                          {todo.status === "completed" ? (
-                            <CheckIcon />
-                          ) : todo.status === "in_progress" ? (
-                            <span className="gt-opencode-todo-thinking">
-                              <span />
-                              <span />
-                              <span />
-                            </span>
-                          ) : (
-                            ""
-                          )}
-                        </span>
-                        <span className="gt-opencode-todo-item-content">{todo.content}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {opencodeActivePermissions.length > 0 ? (
-              <div className="gt-permission-dock">
-                <div className="gt-permission-dock-head">
-                  <span>授权请求</span>
-                  <button type="button" className="chip" onClick={() => openOpencodeModulePanel("permissions")}>详情</button>
-                </div>
-                {opencodeActivePermissions.slice(0, 2).map((req) => (
-                  <div key={req.id} className="gt-permission-card">
-                    <div className="gt-permission-main">
-                      <strong>{req.permission || "permission"}</strong>
-                      <span>{(req.patterns || []).join(", ") || "*"}</span>
-                      {req.tool?.callID ? <small>{req.tool.callID}</small> : null}
-                    </div>
-                    <div className="gt-permission-actions">
-                      <button type="button" className="chip" onClick={() => void sendPermissionReply(req.id, "once")}>本次允许</button>
-                      <button type="button" className="chip primary" onClick={() => void sendPermissionReply(req.id, "always")}>总是允许</button>
-                      <button type="button" className="chip danger" onClick={() => void sendPermissionReply(req.id, "reject")}>拒绝</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {opencodeActiveQuestions.length > 0 && opencodeActiveQuestions.map((req) => (
-              <QuestionDock
-                key={req.id}
-                request={req}
-                onReply={(requestId, answers) => {
-                  void sendQuestionReply(requestId, answers).then((ok) => {
-                    if (ok) setOpencodeDismissedQuestionsBySession((prev) => ({
-                      ...prev,
-                      [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-                    }));
-                  });
-                }}
-                onDismiss={(requestId) => {
-                  void sendQuestionReject(requestId).then((ok) => {
-                    if (ok) setOpencodeDismissedQuestionsBySession((prev) => ({
-                      ...prev,
-                      [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-                    }));
-                  });
-                }}
-              />
-            ))}
-            {!opencodeQuestionLoading && opencodeActiveQuestions.length === 0 && opencodeStaleQuestions.map((req) => (
-              <QuestionDock
-                key={req.id}
-                request={req}
-                disabledReason="该问题已失效，无法提交；请重新发起本轮请求"
-                onReply={() => {}}
-                onDismiss={(requestId) => {
-                  setOpencodeDismissedQuestionsBySession((prev) => ({
-                    ...prev,
-                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-                  }));
-                }}
-              />
-            ))}
-            {opencodeShowEmptyState ? (
-              <div className="gt-empty-composer-title">What should we build in {selectedRepo?.name || "Giteam"}?</div>
-            ) : null}
-            <div className="opencode-composer">
-              {opencodeShowJumpLatest ? (
-                <button
-                  type="button"
-                  className="opencode-jump-latest-btn"
-                  onClick={jumpOpencodeToLatest}
-                  aria-label="拉到最新"
-                  title="拉到最新"
-                >
-                  <ArrowDownIcon />
-                </button>
-              ) : null}
-              {opencodeImageAttachments.length > 0 || opencodeMcpPromptRefs.length > 0 ? (
-                <div className="opencode-composer-chips">
-                  {opencodeImageAttachments.length > 0 ? (
-                    <div className="opencode-attachments">
-                      {opencodeImageAttachments.map((img) => (
-                        <div key={img.id} className="opencode-attachment-chip">
-                          <img src={img.dataUrl} alt={img.filename} className="opencode-attachment-thumb" />
-                          <span className="opencode-attachment-name">{img.filename}</span>
-                          <button
-                            type="button"
-                            className="opencode-attachment-remove"
-                            onClick={() => setOpencodeImageAttachments((prev) => prev.filter((i) => i.id !== img.id))}
-                            aria-label="移除图片"
-                          >
-                            <CloseIcon width={16} height={16} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {opencodeMcpPromptRefs.length > 0 ? (
-                    <div className="opencode-mcp-reference-chips">
-                      {opencodeMcpPromptRefs.map((name) => (
-                        <div key={name} className="opencode-mcp-reference-chip">
-                          <span>{name}</span>
-                          <button
-                            type="button"
-                            onClick={() => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
-                            aria-label={`移除 ${name} MCP 引用`}
-                          >
-                            <CloseIcon width={14} height={14} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="opencode-composer-main">
-                {opencodeSlashOpen && opencodeSlashSuggestions.length > 0 ? (
-                  <div className="opencode-slash-popover">
-                    {opencodeSlashSuggestions.map((cmd, idx) => (
-                      <button
-                        key={cmd.id}
-                        type="button"
-                        className={idx === opencodeSlashActiveIndex ? "opencode-slash-item active" : "opencode-slash-item"}
-                        onMouseEnter={() => setOpencodeSlashActiveIndex(idx)}
-                        onClick={() => activateOpencodeSlashCommand(cmd)}
-                      >
-                        <span className="opencode-slash-trigger">/{cmd.trigger}</span>
-                        <span className="opencode-slash-title">{cmd.title}</span>
-                        {cmd.description ? <span className="opencode-slash-desc">{cmd.description}</span> : null}
-                        <span className={`opencode-slash-badge ${cmd.source}`}>{cmd.source}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="opencode-input-shell opencode-composer-editor">
-                  <textarea
-                    ref={opencodeInputRef}
-                    className="opencode-input"
-                    placeholder="要做什么？"
-                    value={opencodePromptInput}
-                    onCompositionStart={() => {
-                      opencodeInputComposingRef.current = true;
-                    }}
-                    onCompositionEnd={() => {
-                      opencodeInputComposingRef.current = false;
-                    }}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      const historyKey = getOpencodePromptHistorySessionKey();
-                      opencodePromptHistoryIndexBySessionRef.current[historyKey] = -1;
-                      opencodePromptHistoryDraftBySessionRef.current[historyKey] = value;
-                      setOpencodePromptInput(value);
-                      const isSlash = /^\//.test(value) && !value.includes(" ");
-                      setOpencodeSlashOpen(isSlash);
-                      setOpencodeSlashActiveIndex(0);
-                    }}
-                    onKeyDown={(e) => {
-                      if (activeOpencodeSessionBusy) return;
-                      const nativeEvent = e.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-                      if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
-                      if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
-                        if (e.key === "ArrowDown") {
-                          e.preventDefault();
-                          setOpencodeSlashActiveIndex((i) => (i + 1) % opencodeSlashSuggestions.length);
-                          return;
-                        }
-                        if (e.key === "ArrowUp") {
-                          e.preventDefault();
-                          setOpencodeSlashActiveIndex((i) => (i - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
-                          return;
-                        }
-                        if (e.key === "Enter" || e.key === "Tab") {
-                          e.preventDefault();
-                          const cmd = opencodeSlashSuggestions[opencodeSlashActiveIndex];
-                          if (cmd) activateOpencodeSlashCommand(cmd);
-                          return;
-                        }
-                        if (e.key === "Escape") {
-                          setOpencodeSlashOpen(false);
-                          return;
-                        }
-                      }
-                      if (e.key === "ArrowUp" && shouldUsePromptHistoryKey(e, "older")) {
-                        e.preventDefault();
-                        browseOpencodePromptHistory("older");
-                        return;
-                      }
-                      if (e.key === "ArrowDown" && shouldUsePromptHistoryKey(e, "newer")) {
-                        e.preventDefault();
-                        browseOpencodePromptHistory("newer");
-                        return;
-                      }
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        void runOpencodePrompt();
-                      }
-                    }}
-                    onPaste={async (e) => {
-                      const files = Array.from(e.clipboardData?.files || []);
-                      if (files.length === 0) return;
-                      e.preventDefault();
-                      const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
-                      setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
-                    }}
-                    rows={1}
-                  />
-                </div>
-              </div>
-              <div className="opencode-composer-actions">
-                <div className="opencode-composer-actions-left">
-                  <div className="opencode-attachment-menu-wrap">
-                    <button
-                      type="button"
-                      className={opencodeAttachmentMenuOpen ? "opencode-image-btn open" : "opencode-image-btn"}
-                      onClick={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
-                      aria-label={opencodeAttachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
-                      aria-expanded={opencodeAttachmentMenuOpen}
-                      title="添加附件"
-                    >
-                      <span className="opencode-image-btn-icon">{opencodeAttachmentMenuOpen ? <CloseIcon width={16} height={16} /> : <PlusIcon width={16} height={16} />}</span>
-                    </button>
-                    {opencodeAttachmentMenuOpen ? (
-                      <div className="opencode-attachment-menu">
-                        <button
-                          type="button"
-                          className="opencode-attachment-menu-item"
-                          onClick={() => {
-                            setOpencodeAttachmentMenuOpen(false);
-                            opencodeImageInputRef.current?.click();
-                          }}
-                        >
-                          <span className="opencode-attachment-menu-icon" aria-hidden="true"><ImageIcon width={18} height={18} /></span>
-                          <span>上传图片</span>
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                  <input
-                    ref={opencodeImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    style={{ display: "none" }}
-                    onChange={async (e) => {
-                      const files = Array.from(e.target.files || []);
-                      if (files.length === 0) return;
-                      const attachments = await Promise.all(files.map((f) => readImageFileAsAttachment(f)));
-                      setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </div>
-                <div className="opencode-composer-actions-right">
-                  <div className="opencode-model-picker-wrap opencode-config-inline" ref={opencodeModelPickerRef}>
-                    <button
-                      type="button"
-                      className="opencode-config-trigger"
-                      aria-haspopup="dialog"
-                      aria-expanded={showOpencodeModelPicker}
-                      onClick={() => {
-                        const next = !showOpencodeModelPicker;
-                        setShowOpencodeModelPicker(next);
-                      }}
-                      title="配置 Agent、Auto 和模型"
-                    >
-                      {(() => {
-                        const display = getOpencodeModelDisplay(activeOpencodeModel || "");
-                        const agentLabel = OPENCODE_COMPOSER_AGENT_OPTIONS.find((item) => item.name === activeOpencodeAgent)?.label || "Build";
-                        return (
-                          <span className="opencode-config-trigger-copy">
-                            <span className="opencode-config-trigger-mode">{agentLabel}</span>
-                            <span className="opencode-config-trigger-model">{display.label || "Auto"}</span>
-                          </span>
-                        );
-                      })()}
-                    </button>
-                    {showOpencodeModelPicker ? (
-                      <div className="opencode-model-picker opencode-config-panel">
-                        <input
-                          className="path-input opencode-model-search"
-                          placeholder="Search models"
-                          value={opencodeModelPickerSearch}
-                          onChange={(e) => setOpencodeModelPickerSearch(e.target.value)}
-                        />
-                        <div className="opencode-config-menu-group" aria-label="Agent 模式">
-                          {OPENCODE_COMPOSER_AGENT_OPTIONS.map((agent) => (
-                            <button
-                              key={agent.name}
-                              type="button"
-                              aria-pressed={activeOpencodeAgent === agent.name}
-                              className={activeOpencodeAgent === agent.name ? "opencode-config-menu-row selected" : "opencode-config-menu-row"}
-                              onClick={() => applyOpencodeAgent(agent.name)}
-                              title={agent.title}
-                            >
-                              <span>{agent.label}</span>
-                              {activeOpencodeAgent === agent.name ? <span className="opencode-model-option-check"><CheckIcon width={16} height={16} /></span> : null}
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          className={opencodeAutoAcceptPermissions ? "opencode-config-menu-row opencode-config-toggle active" : "opencode-config-menu-row opencode-config-toggle"}
-                          aria-pressed={opencodeAutoAcceptPermissions}
-                          onClick={() => {
-                            const next = !opencodeAutoAcceptPermissions;
-                            setOpencodeAutoAcceptPermissions(next);
-                            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-                            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
-                          }}
-                        >
-                          <span>Auto</span>
-                          <span className="opencode-config-switch" aria-hidden="true" />
-                        </button>
-                        <div className="opencode-config-divider" />
-                        <div className="opencode-model-list-col">
-                          {opencodeConfiguredModelCandidates.length === 0 ? (
-                            <div className="opencode-model-empty">
-                              <strong>暂无已配置模型</strong>
-                              <span>连接提供商或添加自定义模型后，这里会显示可用项。</span>
-                            </div>
-                          ) : (
-                            opencodeConfiguredModelCandidates.map((m) => (
-                              <button
-                                type="button"
-                                key={`saved-model-${m}`}
-                                className={m === activeOpencodeModel ? "opencode-model-option selected" : "opencode-model-option"}
-                                onClick={() => {
-                                  void applyOpencodeModel(m);
-                                  setShowOpencodeModelPicker(false);
-                                }}
-                                title={m}
-                              >
-                                {(() => {
-                                  const display = getOpencodeModelDisplay(m);
-                                  return (
-                                    <>
-                                      <span className="opencode-model-option-copy">
-                                        <span className="opencode-model-option-title">{display.label || m}</span>
-                                        <span className="opencode-model-option-meta">
-                                          <span className="opencode-model-option-provider">{display.provider || "Provider"}</span>
-                                        </span>
-                                      </span>
-                                      {m === activeOpencodeModel ? <span className="opencode-model-option-check"><CheckIcon width={16} height={16} /></span> : null}
-                                    </>
-                                  );
-                                })()}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                        <div className="opencode-model-picker-foot">
-                          <button type="button" className="opencode-model-picker-config" onClick={() => {
-                            setSettingsInitialSection("models");
-                            setShowSettings(true);
-                            setOpencodeProviderPickerSearch("");
-                            setOpencodeProviderPickerProvider(opencodeModelProvider);
-                            setOpencodeProviderPickerModelSearch("");
-                            setShowOpencodeModelPicker(false);
-                          }}>
-                            <span>Add Models</span>
-                            <span className="opencode-model-picker-config-tail">⌘</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                  <button
-                    className={activeOpencodeSessionBusy ? "opencode-run-btn opencode-composer-send opencode-stop-btn" : "opencode-run-btn opencode-composer-send"}
-                    disabled={!activeOpencodeSessionBusy && !opencodePromptInput.trim() && opencodeMcpPromptRefs.length === 0 && opencodeImageAttachments.length === 0}
-                    onClick={() => (activeOpencodeSessionBusy ? void stopOpencodePrompt() : void runOpencodePrompt())}
-                    aria-label={activeOpencodeSessionBusy ? "停止" : "发送"}
-                  >
-                    <SendIcon busy={activeOpencodeSessionBusy} />
-                  </button>
-                </div>
-              </div>
-            </div>
-            {opencodeShowEmptyState && repos.length > 0 ? (
-              <div className="gt-empty-composer-meta">
-                <div className="gt-empty-composer-repo-picker">
-                  {repos.map((repo) => (
-                    <button
-                      key={repo.id}
-                      className={selectedRepo?.id === repo.id ? "gt-empty-composer-repo-chip active" : "gt-empty-composer-repo-chip"}
-                      onClick={() => {
-                        setSelectedRepo(repo);
-                        setGitPaneRepo(repo);
-                        setNewSessionTargetRepoId(repo.id);
-                      }}
-                    >
-                      <span className="gt-empty-composer-repo-icon"><FolderIcon /></span>
-                      <span className="gt-empty-composer-repo-name">{repo.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
+        <OpencodeComposerPanel
+          showSessionProgressBar={generalSettings.showSessionProgressBar}
+          todoDockVisible={opencodeTodoDockVisible}
+          todoDockCollapsed={opencodeTodoDockCollapsed}
+          activeTodos={opencodeActiveTodos}
+          todoProgress={opencodeTodoProgress}
+          onToggleTodoDockCollapsed={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
+          permissions={opencodeActivePermissions}
+          onOpenPermissionsPanel={() => openOpencodeModulePanel("permissions")}
+          onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
+          questionLoading={opencodeQuestionLoading}
+          activeQuestions={opencodeActiveQuestions}
+          staleQuestions={opencodeStaleQuestions}
+          onReplyQuestion={(requestId, answers) => {
+            void sendQuestionReply(requestId, answers).then((ok) => {
+              if (!ok) return;
+              setOpencodeDismissedQuestionsBySession((prev) => ({
+                ...prev,
+                [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+              }));
+            });
+          }}
+          onDismissQuestion={(requestId) => {
+            void sendQuestionReject(requestId).then((ok) => {
+              if (!ok) return;
+              setOpencodeDismissedQuestionsBySession((prev) => ({
+                ...prev,
+                [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+              }));
+            });
+          }}
+          onDismissStaleQuestion={(requestId) => {
+            setOpencodeDismissedQuestionsBySession((prev) => ({
+              ...prev,
+              [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+            }));
+          }}
+          showEmptyState={opencodeShowEmptyState}
+          selectedRepoName={selectedRepo?.name || "Giteam"}
+          showJumpLatest={opencodeShowJumpLatest}
+          onJumpLatest={jumpOpencodeToLatest}
+          imageAttachments={opencodeImageAttachments}
+          mcpPromptRefs={opencodeMcpPromptRefs}
+          onRemoveImageAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+          onRemoveMcpPromptRef={(name) => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
+          slashOpen={opencodeSlashOpen}
+          slashSuggestions={opencodeSlashSuggestions}
+          slashActiveIndex={opencodeSlashActiveIndex}
+          onHoverSlashSuggestion={setOpencodeSlashActiveIndex}
+          onActivateSlashCommand={activateOpencodeSlashCommand}
+          promptInputRef={opencodeInputRef}
+          promptInput={opencodePromptInput}
+          onPromptCompositionStart={() => {
+            opencodeInputComposingRef.current = true;
+          }}
+          onPromptCompositionEnd={() => {
+            opencodeInputComposingRef.current = false;
+          }}
+          onPromptChange={(event) => {
+            const value = event.target.value;
+            captureOpencodePromptHistoryDraft(value);
+            setOpencodePromptInput(value);
+            const isSlash = /^\//.test(value) && !value.includes(" ");
+            setOpencodeSlashOpen(isSlash);
+            setOpencodeSlashActiveIndex(0);
+          }}
+          onPromptKeyDown={(event) => {
+            if (activeOpencodeSessionBusy) return;
+            const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+            if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
+            if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setOpencodeSlashActiveIndex((index) => (index + 1) % opencodeSlashSuggestions.length);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setOpencodeSlashActiveIndex((index) => (index - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
+                return;
+              }
+              if (event.key === "Enter" || event.key === "Tab") {
+                event.preventDefault();
+                const command = opencodeSlashSuggestions[opencodeSlashActiveIndex];
+                if (command) activateOpencodeSlashCommand(command);
+                return;
+              }
+              if (event.key === "Escape") {
+                setOpencodeSlashOpen(false);
+                return;
+              }
+            }
+            if (event.key === "ArrowUp" && shouldUsePromptHistoryKey(event, "older")) {
+              event.preventDefault();
+              browseOpencodePromptHistory("older");
+              return;
+            }
+            if (event.key === "ArrowDown" && shouldUsePromptHistoryKey(event, "newer")) {
+              event.preventDefault();
+              browseOpencodePromptHistory("newer");
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void runOpencodePrompt();
+            }
+          }}
+          onPromptPaste={async (event) => {
+            const files = Array.from(event.clipboardData?.files || []);
+            if (files.length === 0) return;
+            event.preventDefault();
+            const attachments = await Promise.all(files.map((file) => readImageFileAsAttachment(file)));
+            setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+          }}
+          attachmentMenuOpen={opencodeAttachmentMenuOpen}
+          onToggleAttachmentMenu={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
+          imageInputRef={opencodeImageInputRef}
+          onOpenImagePicker={() => {
+            setOpencodeAttachmentMenuOpen(false);
+            opencodeImageInputRef.current?.click();
+          }}
+          onImageInputChange={async (event) => {
+            const files = Array.from(event.target.files || []);
+            if (files.length === 0) return;
+            const attachments = await Promise.all(files.map((file) => readImageFileAsAttachment(file)));
+            setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+            event.currentTarget.value = "";
+          }}
+          modelPickerRef={opencodeModelPickerRef}
+          showModelPicker={showOpencodeModelPicker}
+          onToggleModelPicker={() => setShowOpencodeModelPicker((prev) => !prev)}
+          modelPickerSearch={opencodeModelPickerSearch}
+          onModelPickerSearchChange={setOpencodeModelPickerSearch}
+          activeAgent={activeOpencodeAgent}
+          onApplyAgent={applyOpencodeAgent}
+          autoAcceptPermissions={opencodeAutoAcceptPermissions}
+          onToggleAutoAcceptPermissions={() => {
+            const next = !opencodeAutoAcceptPermissions;
+            setOpencodeAutoAcceptPermissions(next);
+            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+          }}
+          configuredModelCandidates={opencodeConfiguredModelCandidates}
+          activeModel={activeOpencodeModel}
+          getModelDisplay={getOpencodeModelDisplay}
+          onApplyModel={(modelRef) => {
+            void applyOpencodeModel(modelRef);
+            setShowOpencodeModelPicker(false);
+          }}
+          onOpenModelSettings={() => {
+            setSettingsInitialSection("models");
+            setShowSettings(true);
+            setOpencodeProviderPickerSearch("");
+            setOpencodeProviderPickerProvider(opencodeModelProvider);
+            setOpencodeProviderPickerModelSearch("");
+            setShowOpencodeModelPicker(false);
+          }}
+          activeSessionBusy={activeOpencodeSessionBusy}
+          canSubmit={Boolean(opencodePromptInput.trim() || opencodeMcpPromptRefs.length > 0 || opencodeImageAttachments.length > 0)}
+          onPrimaryAction={() => {
+            if (activeOpencodeSessionBusy) {
+              void stopOpencodePrompt();
+            } else {
+              void runOpencodePrompt();
+            }
+          }}
+          repos={repos}
+          selectedRepoId={selectedRepo?.id || ""}
+          onSelectRepo={(repo) => {
+            setSelectedRepo(repo);
+            setGitPaneRepo(repo);
+            setNewSessionTargetRepoId(repo.id);
+          }}
+        />
       </div>
       {showOpencodeDebugLog ? (
         <div className="opencode-debug-panel">
@@ -10114,1133 +6027,230 @@ export function App() {
         {rightPaneTab === "worktree" ? (
           <div className="gt-worktree-topology-shell">
             <div className="gt-gittree-panel">
-              {(() => {
-                const worktreeOnlyBranches = new Set(
-                  linkedWorktrees
-                    .filter((wt) => !wt.isMainWorktree && branchParentMap[wt.branch])
-                    .map((wt) => wt.branch)
-                );
-                const allBranchNames = new Set<string>();
-                const isGitTreeBranch = (name: string) => {
-                  const normalized = name.trim().toLowerCase();
-                  if (normalized.length === 0 || normalized.includes("worktree") || normalized.includes(".worktrees")) return false;
-                  // Filter out pure remote names like "origin" (not actual branches)
-                  const info = branches.find((b) => b.name === name);
-                  if (info?.isRemote && !name.includes("/")) return false;
-                  return true;
-                };
-
-branches.forEach((b) => {
-                  if (isGitTreeBranch(b.name) && !worktreeOnlyBranches.has(b.name)) {
-                    allBranchNames.add(b.name);
-                  }
-                });
-                Object.keys(branchParentMap).forEach((b) => {
-                  if (isGitTreeBranch(b) && !worktreeOnlyBranches.has(b)) {
-                    allBranchNames.add(b);
-                  }
-                });
-                Object.values(branchParentMap).forEach((b) => {
-                  if (isGitTreeBranch(b)) {
-                    allBranchNames.add(b);
-                  }
-                });
-
-                const defaultMain = Array.from(allBranchNames).find((b) => b === "main" || b === "master") || "";
-                const isRemoteBranch = (name: string) => name.includes("/") && !name.startsWith("worktree/");
-                
-                // Separate local and remote parent maps
-                const localParentMap: Record<string, string> = {};
-                const remoteParentMap: Record<string, string> = {};
-                Object.entries(branchParentMap).forEach(([child, parent]) => {
-                  if (!allBranchNames.has(child) || !allBranchNames.has(parent)) return;
-                  if (isRemoteBranch(child)) {
-                    remoteParentMap[child] = parent;
-                  } else {
-                    localParentMap[child] = parent;
-                  }
-                });
-
-                const branchHeadByName = new Map<string, string>();
-                const shaToParents = new Map<string, string[]>();
-                commitGraph.forEach((node) => {
-                  if (node.isConnector || !node.sha) return;
-                  shaToParents.set(node.sha, node.parents || []);
-                  const refsText = node.refs.trim();
-                  if (!refsText) return;
-                  const inner = refsText.startsWith("(") && refsText.endsWith(")") ? refsText.slice(1, -1) : refsText;
-                  const refs = inner.split(",").map((p) => p.trim()).filter(Boolean);
-
-                  refs.forEach((ref) => {
-                    if (ref.startsWith("tag:")) return;
-                    let branchName: string | null = null;
-                    if (ref.includes("->")) {
-                      const rhs = ref.split("->")[1]?.trim();
-                      if (rhs && allBranchNames.has(rhs)) branchName = rhs;
-                    } else if (allBranchNames.has(ref)) {
-                      branchName = ref;
-                    }
-                    if (branchName && !branchHeadByName.has(branchName)) {
-                      branchHeadByName.set(branchName, node.sha);
-                    }
-                  });
-                });
-
-                function ancestorDistance(targetSha: string, querySha: string): number {
-                  const queue: Array<{ sha: string; dist: number }> = [{ sha: querySha, dist: 0 }];
-                  const visited = new Set<string>();
-                  while (queue.length > 0) {
-                    const { sha, dist } = queue.shift()!;
-                    if (sha === targetSha) return dist;
-                    if (visited.has(sha)) continue;
-                    visited.add(sha);
-                    const parents = shaToParents.get(sha) || [];
-                    for (const p of parents) {
-                      if (!visited.has(p)) {
-                        queue.push({ sha: p, dist: dist + 1 });
-                      }
-                    }
-                  }
-                  return Infinity;
-                }
-
-                const branchNames = Array.from(allBranchNames);
-                const actualCurrentBranchName = branches.find((item) => item.isCurrent)?.name || (worktreeOverview.branch && worktreeOverview.branch !== "HEAD" && worktreeOverview.branch !== "(detached)" ? worktreeOverview.branch : "");
-                const currentBranchName = actualCurrentBranchName;
-                const sortBranches = (items: string[]) => items.sort((a, b) => {
-                  if (a === defaultMain) return -1;
-                  if (b === defaultMain) return 1;
-                  return a.localeCompare(b);
-                });
-
-                branchNames.forEach((branch) => {
-                  if (localParentMap[branch]) return;
-                  if (branch === defaultMain) return;
-                  if (isRemoteBranch(branch)) return;
-
-                  const branchSha = branchHeadByName.get(branch);
-                  if (!branchSha) return;
-
-                  const candidates: Array<{ name: string; distance: number }> = [];
-                  branchNames.forEach((candidate) => {
-                    if (candidate === branch) return;
-                    if (isRemoteBranch(candidate)) return;
-                    const candidateSha = branchHeadByName.get(candidate);
-                    if (!candidateSha) return;
-                    
-                    const dist = ancestorDistance(candidateSha, branchSha);
-                    if (dist < Infinity && dist > 0) {
-                      candidates.push({ name: candidate, distance: dist });
-                    }
-                  });
-
-                  if (candidates.length > 0) {
-                    candidates.sort((a, b) => a.distance - b.distance);
-                    localParentMap[branch] = candidates[0].name;
-                  } else if (defaultMain) {
-                    const prefix = branch.split("/")[0]?.toLowerCase() || "";
-                    const developBranch = branchNames.find((b) => b === "develop" || b === "dev");
-                    const isFeatureLike = ["feature", "hotfix", "fix", "release", "chore", "docs", "test", "refactor", "style"].includes(prefix);
-
-                    if (branch === "develop" || branch === "dev") {
-                      localParentMap[branch] = defaultMain;
-                    } else if (isFeatureLike && developBranch) {
-                      localParentMap[branch] = developBranch;
-                    } else {
-                      localParentMap[branch] = defaultMain;
-                    }
-                  }
-                });
-
-                // Build local branch tree
-                const localBranchNames = branchNames.filter((b) => !isRemoteBranch(b));
-                const localRootBranches: string[] = [];
-                localBranchNames.forEach((branch) => {
-                  const parent = localParentMap[branch];
-                  if (!parent || !localBranchNames.includes(parent)) {
-                    localRootBranches.push(branch);
-                  }
-                });
-                if (localRootBranches.length === 0 && localBranchNames.length > 0) {
-                  localRootBranches.push(localBranchNames[0]);
-                }
-                sortBranches(localRootBranches);
-
-                const localChildrenByParent = new Map<string, string[]>();
-                localBranchNames.forEach((branch) => {
-                  const parent = localParentMap[branch];
-                  if (!parent || !localBranchNames.includes(parent)) return;
-                  const list = localChildrenByParent.get(parent) || [];
-                  list.push(branch);
-                  localChildrenByParent.set(parent, list);
-                });
-                localChildrenByParent.forEach((list) => sortBranches(list));
-
-                // Build remote branch tree
-                const remoteBranchNames = branchNames.filter((b) => isRemoteBranch(b));
-                const remoteRootBranches: string[] = [];
-                remoteBranchNames.forEach((branch) => {
-                  const parent = remoteParentMap[branch];
-                  if (!parent || !remoteBranchNames.includes(parent)) {
-                    remoteRootBranches.push(branch);
-                  }
-                });
-                if (remoteRootBranches.length === 0 && remoteBranchNames.length > 0) {
-                  remoteRootBranches.push(remoteBranchNames[0]);
-                }
-                sortBranches(remoteRootBranches);
-
-                const remoteChildrenByParent = new Map<string, string[]>();
-                remoteBranchNames.forEach((branch) => {
-                  const parent = remoteParentMap[branch];
-                  if (!parent || !remoteBranchNames.includes(parent)) return;
-                  const list = remoteChildrenByParent.get(parent) || [];
-                  list.push(branch);
-                  remoteChildrenByParent.set(parent, list);
-                });
-                remoteChildrenByParent.forEach((list) => sortBranches(list));
-
-                const graphCommitBySha = new Map<string, GitGraphNode>();
-                commitGraph.forEach((node) => {
-                  if (!node.isConnector && node.sha) graphCommitBySha.set(node.sha, node);
-                });
-
-                const commitsFromGraph = (branchName: string, limit = 40): GitCommitSummary[] => {
-                  const head = branchHeadByName.get(branchName);
-                  if (!head || !graphCommitBySha.has(head)) return [];
-                  const rows: GitCommitSummary[] = [];
-                  const visited = new Set<string>();
-                  let cursor = head;
-                  while (cursor && graphCommitBySha.has(cursor) && rows.length < limit) {
-                    if (visited.has(cursor)) break;
-                    visited.add(cursor);
-                    const row = graphCommitBySha.get(cursor)!;
-                    rows.push({ sha: row.sha, subject: row.subject, author: row.author, date: row.date });
-                    cursor = row.parents[0] || "";
-                  }
-                  return rows;
-                };
-
-                const selectedTreeBranch = topologySelectionId.startsWith("worktree:")
-                  ? worktreeParentMap[normalizeWorkspacePath(topologySelectionId.slice(9))] || selectedBranch || actualCurrentBranchName || defaultMain || localRootBranches[0] || ""
-                  : topologySelectionId.startsWith("branch:")
-                  ? topologySelectionId.slice(7)
-                  : selectedBranch || actualCurrentBranchName || defaultMain || localRootBranches[0] || "";
-                const activeTreeBranch = allBranchNames.has(selectedTreeBranch) ? selectedTreeBranch : defaultMain || localRootBranches[0] || "";
-                const activeBranchSummary = branches.find((branch) => branch.name === activeTreeBranch);
-                const activeTone = branchTone(activeTreeBranch);
-                const activeBranchCommits = activeTreeBranch === selectedBranch || activeTreeBranch === currentBranchName
-                  ? commits
-                  : commitsFromGraph(activeTreeBranch);
-                const selectedTreeCommit = topologySelectionId.startsWith("commit:")
-                  ? activeBranchCommits.find((commit) => commit.sha === selectedCommit) || null
-                  : null;
-                const worktreeParentBranch = (wt: GitLinkedWorktree) => {
-                  const pathParent = worktreeParentMap[normalizeWorkspacePath(wt.path)] || "";
-                  if (pathParent) return pathParent;
-                  return wt.branch;
-                };
-                const branchWorktrees = (branchName: string) => linkedWorktrees.filter((wt) => !wt.isMainWorktree && worktreeParentBranch(wt) === branchName);
-                const activeBranchWorktrees = branchWorktrees(activeTreeBranch);
-                const activeBranchIsCurrent = activeBranchSummary?.isCurrent || worktreeOverview.branch === activeTreeBranch;
-
-                const branchCommitCount = (branchName: string) => {
-                  return commitsFromGraph(branchName, 20).length;
-                };
-
-                const selectBranchFromTree = (branchName: string) => {
-                  setTopologySelectionId(`branch:${branchName}`);
-                  void chooseBranch(branchName);
-                };
-
-                const renderBranchRow = (branchName: string, depth = 0, childrenMap = localChildrenByParent): ReactNode => {
-                  const childBranches = childrenMap.get(branchName) || [];
-                  const childWorktrees = branchWorktrees(branchName);
-                  const treeKey = `tree:${branchName}`;
-                  const collapsed = collapsedBranchIds.has(treeKey);
-                  const tone = branchTone(branchName);
-                  const branchInfo = branches.find((b) => b.name === branchName);
-                  const isCurrent = branchName === currentBranchName || !!branchInfo?.isCurrent;
-                  const isRemote = !!branchInfo?.isRemote || (branchName.includes("/") && !branchName.startsWith("worktree/"));
-                  const isActive = branchName === activeTreeBranch;
-                  const displayName = isRemote && branchName.includes("/") ? branchName.split("/").slice(1).join("/") : branchName;
-                  return (
-                    <Fragment key={branchName}>
-                      <div
-                        className={isActive ? "gt-gittree-branch active" : isRemote ? "gt-gittree-branch is-remote" : "gt-gittree-branch"}
-                        style={{ paddingLeft: 10 + depth * 18 }}
-                        onClick={() => selectBranchFromTree(branchName)}
-                        onDoubleClick={() => !isRemote && void checkoutBranchFromTopology(branchName)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setTopologyContextMenu({ x: e.clientX, y: e.clientY, nodeId: `branch:${branchName}` });
-                        }}
-                      >
-                        <button
-                          type="button"
-                          className={childBranches.length > 0 ? "gt-gittree-disclosure" : "gt-gittree-disclosure empty"}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (childBranches.length === 0) return;
-                            setCollapsedBranchIds((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(treeKey)) next.delete(treeKey);
-                              else next.add(treeKey);
-                              return next;
-                            });
-                          }}
-                          aria-label={collapsed ? "展开分支" : "收起分支"}
-                        >
-                          {childBranches.length > 0 ? (collapsed ? "▸" : "▾") : ""}
-                        </button>
-                        <span className="gt-gittree-dot" style={{ background: tone.accent }} />
-                        <span className="gt-gittree-name" title={branchName}>{displayName}</span>
-                        {isCurrent ? <span className="gt-gittree-badge">CURRENT</span> : null}
-                        {isRemote ? <span className="gt-gittree-badge is-remote">REMOTE</span> : null}
-                        <span className="gt-gittree-count">{branchCommitCount(branchName) || "-"}</span>
-                      </div>
-                      {!collapsed ? childBranches.map((child) => renderBranchRow(child, depth + 1, childrenMap)) : null}
-                    </Fragment>
-                  );
-                };
-
-                return (
-                  <>
-                    <div className="gt-gittree-sidebar">
-                      <div className="gt-gittree-head">
-                        <div>
-                          <span className="gt-gittree-kicker">GitTree</span>
-                          <strong>{selectedRepo?.name || "Repository"}</strong>
-                        </div>
-                        <button className="chip" onClick={() => void refreshScm()} disabled={busy}>Refresh</button>
-                      </div>
-                      <div className="gt-gittree-summary">
-                        <span>{branchNames.length} branches</span>
-                        <span>{currentBranchName || "no branch"}</span>
-                      </div>
-                      <div className="gt-gittree-branch-list">
-                        {localRootBranches.length > 0 ? (
-                          <>
-                            {localRootBranches.map((branch) => renderBranchRow(branch, 0, localChildrenByParent))}
-                          </>
-                        ) : null}
-                        {remoteRootBranches.length > 0 ? (
-                          <>
-                            <div className="gt-gittree-section-divider" style={{ margin: "var(--gt-space-2) 0", padding: "var(--gt-space-1) var(--gt-space-2-5)", fontSize: "var(--gt-text-xs)", color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Remote</div>
-                            {remoteRootBranches.map((branch) => renderBranchRow(branch, 0, remoteChildrenByParent))}
-                          </>
-                        ) : null}
-                        {localRootBranches.length === 0 && remoteRootBranches.length === 0 ? (
-                          <div className="gt-empty-hint">暂无本地分支。</div>
-                        ) : null}
-                      </div>
-                      <div className="gt-gittree-commit-toolbar">
-                        <span>Commits</span>
-                        <span>{activeBranchCommits.length > 0 ? `${activeBranchCommits.length} loaded` : "No commit loaded"}</span>
-                      </div>
-                      <div className="gt-gittree-commit-list">
-                        {activeBranchCommits.length > 0 ? activeBranchCommits.map((commit, index) => (
-                          <button
-                            key={`${activeTreeBranch}:${commit.sha}`}
-                            className={selectedCommit === commit.sha ? "gt-gittree-commit selected" : "gt-gittree-commit"}
-                            onClick={() => {
-                              setSelectedCommit(commit.sha);
-                              setTopologySelectionId(`commit:${activeTreeBranch}:${commit.sha}`);
-                            }}
-                            onDoubleClick={() => {
-                              setSelectedCommit(commit.sha);
-                              setDetailTab("context");
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject });
-                            }}
-                            onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: commit.sha, branch: activeTreeBranch, subject: commit.subject, author: commit.author, date: commit.date })}
-                            onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === commit.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
-                            onMouseLeave={() => setCommitHoverCard(null)}
-                          >
-                            <span className="gt-gittree-commit-index">{index === 0 ? "HEAD" : index + 1}</span>
-                            <span className="gt-gittree-commit-dot" style={{ background: activeTone.accent }} />
-                            <span className="gt-gittree-commit-main">
-                              <strong>{commit.subject || "(no subject)"}</strong>
-                              <span>{shortSha(commit.sha, 7)} · {commit.author || "unknown"} · {commit.date || "unknown date"}</span>
-                            </span>
-                          </button>
-                        )) : (
-                          <div className="gt-gittree-empty">
-                            <strong>没有可展示的提交</strong>
-                            <span>点击左侧分支会加载该分支提交；若仍为空，请刷新 Git 数据。</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="gt-gittree-detail">
-                      <div className="gt-gittree-detail-head">
-                        <div className="gt-gittree-selected-title">
-                          <span className="gt-gittree-dot large" style={{ background: activeTone.accent }} />
-                          <div>
-                            <strong>{selectedTreeCommit ? selectedTreeCommit.subject || "(no subject)" : activeTreeBranch || "未选择分支"}</strong>
-                            <span>{selectedTreeCommit ? `${shortSha(selectedTreeCommit.sha, 8)} · ${activeTreeBranch}` : activeBranchIsCurrent ? "CURRENT" : branchHeadByName.get(activeTreeBranch)?.slice(0, 7) || "no head in graph"}</span>
-                          </div>
-                        </div>
-                        <div className="gt-gittree-actions">
-                          {selectedTreeCommit ? (
-                            <>
-                              <button className="chip active" onClick={() => openCommitWorktreeDialog(selectedTreeCommit, activeTreeBranch)}>Create Worktree</button>
-                              <button className="chip" onClick={() => inspectCommitFromTopology(selectedTreeCommit.sha)}>Explain</button>
-                            </>
-                          ) : (
-                            <button className="chip" onClick={() => activeTreeBranch && openTopologyCreateDialog("worktree", `branch:${activeTreeBranch}`)} disabled={!activeTreeBranch}>New Worktree</button>
-                          )}
-                        </div>
-                      </div>
-                      {selectedTreeCommit ? (
-                        <div className="gt-gittree-detail-body">
-                          <div className="gt-gittree-detail-card">
-                            <span>Commit</span>
-                            <strong>{shortSha(selectedTreeCommit.sha, 12)}</strong>
-                            <p>{selectedTreeCommit.subject || "(no subject)"}</p>
-                          </div>
-                          <div className="gt-gittree-detail-grid">
-                            <div><span>Branch</span><strong>{activeTreeBranch || "-"}</strong></div>
-                            <div><span>Author</span><strong>{selectedTreeCommit.author || "unknown"}</strong></div>
-                            <div><span>Date</span><strong>{selectedTreeCommit.date || "unknown"}</strong></div>
-                            <div><span>Worktree</span><strong>{activeBranchWorktrees.length || 0}</strong></div>
-                          </div>
-                          <pre className="gt-gittree-detail-preview">{selectedExplain || "Select Explain to load Entire context for this commit."}</pre>
-                        </div>
-                      ) : (
-                        <div className="gt-gittree-detail-body">
-                          <div className="gt-gittree-commit-toolbar gt-gittree-worktree-toolbar">
-                            <span>Worktrees</span>
-                            <div className="toolbar" style={{ gap: "var(--gt-space-2)" }}>
-                              <span>{activeBranchWorktrees.length} linked</span>
-                              <button
-                                className="chip"
-                                style={{ fontSize: "var(--gt-text-2xs)", height: 22, padding: "0 var(--gt-space-2)" }}
-                                onClick={() => activeTreeBranch && openTopologyCreateDialog("worktree", `branch:${activeTreeBranch}`)}
-                                disabled={!activeTreeBranch}
-                              >
-                                + New
-                              </button>
-                            </div>
-                          </div>
-                          <div className="gt-gittree-worktree-list">
-                            {activeBranchWorktrees.length > 0 ? activeBranchWorktrees.map((wt) => (
-                              <button
-                                key={wt.path}
-                                className={selectedWorktreePath === wt.path ? "gt-gittree-worktree-row selected" : "gt-gittree-worktree-row"}
-                                onClick={() => setSelectedWorktreePath(wt.path)}
-                                onContextMenu={(e) => {
-                                  e.preventDefault();
-                                  setWorktreeContextMenu({ x: e.clientX, y: e.clientY, path: wt.path });
-                                }}
-                              >
-                                <span className="gt-gittree-worktree-state">{wt.isCurrent ? "Current" : wt.isDetached ? "Detached" : "Worktree"}</span>
-                                <strong>{wt.path.split("/").filter(Boolean).pop() || wt.branch || "worktree"}</strong>
-                                <span>{wt.path}</span>
-                                <em>{wt.clean ? "clean" : `${wt.stagedCount + wt.unstagedCount + wt.untrackedCount} changes`}</em>
-                                <button
-                                  type="button"
-                                  className="chip"
-                                  style={{ fontSize: "var(--gt-text-2xs)", height: 22, padding: "0 var(--gt-space-2)" }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void activateLinkedWorktree(wt.path);
-                                  }}
-                                >
-                                  Open
-                                </button>
-                              </button>
-                            )) : <div className="gt-empty-hint">No worktree for this branch.</div>}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                );
-              })()}
+              <GitTreeTopologyPanel
+                selectedRepo={selectedRepo}
+                linkedWorktrees={linkedWorktrees}
+                branchParentMap={branchParentMap}
+                branches={branches}
+                commitGraph={commitGraph}
+                worktreeOverview={worktreeOverview}
+                selectedBranch={selectedBranch}
+                topologySelectionId={topologySelectionId}
+                worktreeParentMap={worktreeParentMap}
+                commits={commits}
+                selectedCommit={selectedCommit}
+                collapsedBranchIds={collapsedBranchIds}
+                selectedExplain={selectedExplain}
+                selectedWorktreePath={selectedWorktreePath}
+                busy={busy}
+                onRefresh={() => void refreshScm()}
+                onChooseBranch={(branchName) => void chooseBranch(branchName)}
+                onCheckoutBranch={(branchName) => void checkoutBranchFromTopology(branchName)}
+                onSelectCommit={setSelectedCommit}
+                onSelectTopology={setTopologySelectionId}
+                onOpenDetailContext={() => setDetailTab("context")}
+                onOpenBranchMenu={(x, y, nodeId) => setTopologyContextMenu({ x, y, nodeId })}
+                onOpenCommitMenu={(x, y, commit, branch) => setCommitContextMenu({ x, y, sha: commit.sha, branch, subject: commit.subject })}
+                onHoverCommit={(x, y, commit, branch) => setCommitHoverCard({ x, y, sha: commit.sha, branch, subject: commit.subject, author: commit.author, date: commit.date })}
+                onMoveCommitHover={(x, y, sha) => setCommitHoverCard((prev) => prev?.sha === sha ? { ...prev, x, y } : prev)}
+                onClearCommitHover={() => setCommitHoverCard(null)}
+                onToggleBranchCollapse={(treeKey) => setCollapsedBranchIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(treeKey)) next.delete(treeKey);
+                  else next.add(treeKey);
+                  return next;
+                })}
+                onOpenCommitWorktreeDialog={openCommitWorktreeDialog}
+                onInspectCommit={(sha) => void inspectCommitFromTopology(sha)}
+                onOpenTopologyCreateDialog={openTopologyCreateDialog}
+                onSelectWorktree={setSelectedWorktreePath}
+                onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
+                onActivateWorktree={(path) => void activateLinkedWorktree(path)}
+              />
             </div>
           </div>
         ) : null}
 
         {rightPaneTab === "changes" ? (
-          <div
-            className="gt-panel-stack gt-panel-stack-split gt-changes-workspace"
-            style={{ "--changes-sidebar-width": `${changesSidebarWidth}px` } as CSSProperties}
-          >
-            <div className="gt-right-card gt-right-card-files">
-              <div className="gt-right-card-head gt-changes-pane-head">
-                <div className="gt-changes-header">
-                  <strong>Changes</strong>
-                  <span className="gt-changes-context"><span>Local</span>{worktreeOverview.branch || selectedBranch || "no branch"}</span>
-                </div>
-                <div className="toolbar" style={{ gap: "var(--gt-space-1-5)" }}>
-                  {worktreeChangeStats.total > 0 ? (
-                    <button
-                      type="button"
-                      className="chip gt-icon-chip"
-                      title={worktreeChangeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
-                      onClick={() => void handleToggleStageAll()}
-                    >
-                      {worktreeChangeStats.unstaged > 0 ? <PlusIcon /> : <MinusIcon />}
-                    </button>
-                  ) : null}
-                  {worktreeChangeStats.total > 0 ? (
-                    <button
-                      type="button"
-                      className="chip gt-icon-chip is-danger"
-                      title="撤销全部修改"
-                      disabled={discardingAll}
-                      onClick={openDiscardAllConfirm}
-                    >
-                      <svg className="gt-icon-chip-svg" viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M6 4 3 7l3 3" />
-                        <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                      </svg>
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <div className="gt-changes-commit-box">
-                <input
-                  ref={commitMessageInputRef}
-                  className="path-input"
-                  style={{ width: "100%" }}
-                  placeholder="Message"
-                  value={commitMessage}
-                  onChange={(e) => setCommitMessage(e.target.value)}
-                  disabled={committing || pushing}
-                />
-                <div className="gt-changes-commit-actions" onClick={(e) => e.stopPropagation()}>
-                  <div className="gt-commit-split-wrap">
-                    <button
-                      className={committing || pushing ? "chip is-primary gt-commit-main-btn is-loading" : "chip is-primary gt-commit-main-btn"}
-                      onClick={() => void (commitPrimaryIsSync ? handleGitSync() : handleGitCommit())}
-                      disabled={commitPrimaryIsSync ? false : !hasCommittableChanges}
-                      aria-busy={committing || pushing}
-                      title={commitPrimaryIsSync ? "Sync branch" : (!hasCommittableChanges ? "No changes to commit" : "")}
-                    >
-                      {committing || pushing ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
-                      {gitOperationLabel || (commitPrimaryIsSync
-                        ? (pushing ? "Syncing..." : <><SyncIcon width={16} height={16} /> Sync ({worktreeOverview.ahead}/{worktreeOverview.behind})</>)
-                        : <><CheckIcon width={16} height={16} /> Commit ({commitButtonCount})</>)}
-                    </button>
-                    <button
-                      type="button"
-                      className={committing || pushing ? "chip is-primary gt-commit-menu-btn is-loading" : "chip is-primary gt-commit-menu-btn"}
-                      onClick={() => setShowCommitActionMenu((prev) => !prev)}
-                      disabled={committing || pushing || !commitMenuAvailable}
-                      title="More commit actions"
-                    >
-                      <svg className="gt-commit-chevron" viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M4.5 6.5 8 10l3.5-3.5" />
-                      </svg>
-                    </button>
-                    {showCommitActionMenu ? (
-                      <div className="gt-commit-action-menu" role="menu">
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommit()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commit}</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitPush()} disabled={committing || pushing}>{appText.push}</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndPush()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commitPush}</button>
-                        <button type="button" role="menuitem" onClick={() => void handleGitCommitAndSync()} disabled={committing || pushing || !hasCommittableChanges}>{appText.commitSync}</button>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-              <div className="gt-worktree-file-list gt-worktree-tree-list">
-                {worktreeOverview.entries.length === 0 ? (
-                  <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div>
-                ) : (
-                  <>
-                    {/* Staged Changes */}
-                    {stagedTree.length > 0 && (
-                      <div className="gt-changes-group">
-                        <div className="gt-changes-group-header">
-                          <span className="gt-changes-group-title">Staged Changes</span>
-                          <span className="gt-changes-group-count">{worktreeChangeStats.staged}</span>
-                        </div>
-                        <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(stagedTree, 0, "unstage")}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Changes (unstaged) */}
-                    {unstagedTree.length > 0 && (
-                      <div className="gt-changes-group">
-                        <div className="gt-changes-group-header">
-                          <span className="gt-changes-group-title">Changes</span>
-                          <span className="gt-changes-group-count">{worktreeChangeStats.unstaged}</span>
-                        </div>
-                        <div className="gt-changes-group-list">
-                          {renderWorktreeNodes(unstagedTree, 0, "stage")}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-            <div
-              className={draggingSplit?.kind === "changes" ? "gt-changes-splitter active" : "gt-changes-splitter"}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="调整 Changes 文件树宽度"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setDraggingSplit({ kind: "changes", startX: e.clientX, startWidth: changesSidebarWidth });
-              }}
-            />
-            <div className="gt-right-card gt-right-card-fill gt-diff-editor-pane">
-              <div className="gt-right-card-head gt-diff-compact-head">
-                <div className="gt-diff-header">
-                  {selectedWorktreeFile ? (
-                    <>
-                      <span className={`gt-worktree-kind gt-worktree-kind-${getWorktreeFileKindLabel(selectedWorktreeFile)}`}>{getWorktreeFileKindLabel(selectedWorktreeFile)}</span>
-                      <strong className="gt-diff-filename">{selectedWorktreeFile}</strong>
-                      <button
-                        type="button"
-                        className="gt-diff-icon-btn"
-                        title="复制文件路径"
-                        onClick={() => void copyText(selectedWorktreeFile)}
-                      >
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                          <rect x="5" y="3" width="8" height="8" rx="1.5" />
-                          <path d="M3 5.5v6A1.5 1.5 0 0 0 4.5 13h6" />
-                        </svg>
-                      </button>
-                      {worktreePatchStats.added > 0 ? <span className="meta-chip is-add">+{worktreePatchStats.added}</span> : null}
-                      {worktreePatchStats.deleted > 0 ? <span className="meta-chip is-del">-{worktreePatchStats.deleted}</span> : null}
-                    </>
-                  ) : (
-                    <span className="small muted">选择一个文件</span>
-                  )}
-                </div>
-                {selectedWorktreeEntry ? (
-                  <div className="gt-diff-header-actions">
-                    <button
-                      className={selectedWorktreeEntry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
-                      title={selectedWorktreeEntry.staged ? "取消暂存" : "暂存"}
-                      aria-pressed={selectedWorktreeEntry.staged}
-                      onClick={() => {
-                        if (selectedWorktreeEntry.staged) {
-                          void handleUnstageFile(selectedWorktreeEntry.path);
-                        } else {
-                          void handleStageFile(selectedWorktreeEntry.path);
-                        }
-                      }}
-                      disabled={(selectedWorktreeEntry.staged ? unstagingFile : stagingFile) === selectedWorktreeEntry.path}
-                    >
-                      {selectedWorktreeEntry.staged ? (
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M4 8.2 6.7 11 12 5" />
-                        </svg>
-                      ) : null}
-                    </button>
-                    {(selectedWorktreeEntry.staged || selectedWorktreeEntry.unstaged || selectedWorktreeEntry.untracked) ? (
-                      <button
-                        className="gt-diff-icon-btn is-danger"
-                        title="撤销修改"
-                        onClick={() => void handleDiscardChanges(selectedWorktreeEntry.path, selectedWorktreeEntry.untracked)}
-                        disabled={discardingFile === selectedWorktreeEntry.path}
-                      >
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M6 4 3 7l3 3" />
-                          <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                        </svg>
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-              {selectedWorktreeFile ? (
-                <div className="gt-monaco-diff-shell">
-                  <Suspense fallback={<div className="gt-worktree-patch-empty">Loading diff viewer...</div>}>
-                    <MonacoDiffViewer
-                      filePath={selectedWorktreeFile}
-                      original={selectedWorktreeContent.original}
-                      modified={selectedWorktreeContent.modified}
-                      language={getMonacoLanguage(selectedWorktreeFile)}
-                      theme={theme}
-                    />
-                  </Suspense>
-                </div>
-              ) : (
-                <div className="gt-worktree-patch-empty">选择左侧文件后查看 patch。</div>
-              )}
-            </div>
-          </div>
+          <GitChangesPanel
+            branchName={worktreeOverview.branch || selectedBranch || "no branch"}
+            ahead={worktreeOverview.ahead}
+            behind={worktreeOverview.behind}
+            changesSidebarWidth={changesSidebarWidth}
+            isResizing={draggingSplit?.kind === "changes"}
+            changeStats={worktreeChangeStats}
+            stagedTree={stagedTree}
+            unstagedTree={unstagedTree}
+            expandedDirs={expandedWorktreeDirs}
+            selectedFile={selectedWorktreeFile}
+            selectedEntry={selectedWorktreeEntry}
+            selectedContent={selectedWorktreeContent}
+            patchStats={worktreePatchStats}
+            commitMessage={commitMessage}
+            commitMessageInputRef={commitMessageInputRef}
+            committing={committing}
+            pushing={pushing}
+            gitOperationLabel={gitOperationLabel}
+            commitPrimaryIsSync={commitPrimaryIsSync}
+            hasCommittableChanges={hasCommittableChanges}
+            commitButtonCount={commitButtonCount}
+            commitMenuAvailable={commitMenuAvailable}
+            showCommitActionMenu={showCommitActionMenu}
+            stagingFile={stagingFile}
+            unstagingFile={unstagingFile}
+            discardingFile={discardingFile}
+            discardingAll={discardingAll}
+            theme={theme}
+            appText={appText}
+            onCommitMessageChange={setCommitMessage}
+            onToggleStageAll={() => void handleToggleStageAll()}
+            onOpenDiscardAllConfirm={openDiscardAllConfirm}
+            onToggleCommitActionMenu={() => setShowCommitActionMenu((prev) => !prev)}
+            onCommit={() => void handleGitCommit()}
+            onPush={() => void handleGitPush()}
+            onSync={() => void handleGitSync()}
+            onCommitAndPush={() => void handleGitCommitAndPush()}
+            onCommitAndSync={() => void handleGitCommitAndSync()}
+            onToggleDir={toggleWorktreeDir}
+            onOpenFile={(path) => void refreshSelectedWorktreePatch(path)}
+            onStageFile={(path) => void handleStageFile(path)}
+            onUnstageFile={(path) => void handleUnstageFile(path)}
+            onStagePaths={(paths, label) => void handleStagePaths(paths, label)}
+            onUnstagePaths={(paths, label) => void handleUnstagePaths(paths, label)}
+            onDiscardFile={(path, isUntracked) => void handleDiscardChanges(path, isUntracked)}
+            onDiscardEntries={(entries, label) => void handleDiscardEntries(entries, label)}
+            onCopyText={(text) => void copyText(text)}
+            onBeginResize={(clientX) => setDraggingSplit({ kind: "changes", startX: clientX, startWidth: changesSidebarWidth })}
+          />
         ) : null}
 
         {rightPaneTab === "skills" ? (
-          <div className="gt-skill-market-shell">
-            <details className="gt-installed-skills-collapsible">
-              <summary><span>已安装 Skills</span><small>{groupedOpencodeSkills.length} 组 / {opencodeSkills.length} 项</small><button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeSkills(); }} title="刷新"><RefreshIcon /></button></summary>
-              <div className="gt-installed-skill-grid">
-                {opencodeInstalledSkillNodes}
-              </div>
-            </details>
-
-            <div className="gt-skill-market-layout">
-              <main className="gt-skill-leaderboard-card" ref={opencodeSkillMarketListRef} onScroll={handleOpencodeSkillMarketScroll}>
-                <div className="gt-skill-market-toolbar">
-                  <div className="gt-skill-searchbox">
-                    <span aria-hidden="true">⌕</span>
-                    <input
-                      placeholder={opencodeSkillSearchStrategy === "ai" ? "Describe what you want to build or automate..." : "Search skills, sources, descriptions..."}
-                      value={opencodeSkillSearchQuery}
-                      onChange={(e) => setOpencodeSkillSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void searchOpencodeSkillRegistry();
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="gt-skill-filterbar">
-                  <div className="gt-skill-mode-toggle" aria-label="搜索模式">
-                    {([
-                      ["keyword", "关键词"],
-                      ["ai", "AI 语义"]
-                    ] as Array<[OpencodeSkillSearchStrategy, string]>).map(([strategy, label]) => (
-                      <button key={strategy} type="button" className={opencodeSkillSearchStrategy === strategy ? "active" : ""} onClick={() => setOpencodeSkillSearchStrategy(strategy)}>{label}</button>
-                    ))}
-                  </div>
-                  <span className="gt-skill-filter-hint">{opencodeSkillSearchStrategy === "ai" ? (skillsmpApiKey ? "AI 语义搜索已启用" : "未配置 key 时会自动回退关键词搜索") : `按 stars 排序，首屏展示 ${opencodeSkillDisplayBatchSize} 条`}</span>
-                </div>
-                <div className="gt-skill-market-tabs">
-                  {([
-                    ["all-time", `All Time${opencodeSkillCatalogTotal ? ` (${formatSkillInstalls(opencodeSkillCatalogTotal)})` : ""}`],
-                    ["trending", "Trending (24h)"],
-                    ["hot", "Hot"],
-                    ["official", "Official"]
-                  ] as Array<["all-time" | "trending" | "hot" | "official", string]>).map(([view, label]) => (
-                    <button key={view} type="button" className={opencodeSkillCatalogView === view && opencodeSkillSearchResults.length === 0 ? "active" : ""} onClick={() => switchOpencodeSkillCatalogView(view)}>{label}</button>
-                  ))}
-                </div>
-                {opencodeSkillsError ? <div className="gt-module-empty danger">{opencodeSkillsError}</div> : null}
-                {opencodeSkillInstallNotice ? <div className="gt-skill-inline-error">{opencodeSkillInstallNotice}</div> : null}
-                {(opencodeSkillBusy || opencodeSkillInstallingSpec || opencodeSkillInstallLog) ? (
-                  <div className="gt-skill-install-log">
-                    <div><strong>Install log</strong><span>{opencodeSkillInstallingSpec || "last install"}</span></div>
-                    <pre>{opencodeSkillInstallLog || `正在启动安装 ${opencodeSkillInstallingSpec || "skill"}...`}</pre>
-                  </div>
-                ) : null}
-                <div className="gt-skill-market-meta">
-                  <span>{opencodeSkillSearchResults.length > 0 ? `Search · ${opencodeSkillSearchMeta?.searchType || "skillsmp"} · ${opencodeSkillSearchMeta?.count || opencodeSkillSearchResults.length} results` : opencodeSkillCatalogRows.length > 0 ? `${opencodeSkillCatalogView} leaderboard · page ${opencodeSkillCatalogPage + 1}` : opencodeSkillsInitialLoading ? "正在整理 Skills 市场首页..." : "展示本地推荐榜单"}</span>
-                </div>
-                {opencodeSkillsInitialLoading ? (
-                  <div className="gt-skill-skeleton-list" aria-hidden="true">
-                    {Array.from({ length: 6 }).map((_, idx) => <span key={idx} />)}
-                  </div>
-                ) : visibleOpencodeMarketplaceRows.length > 0 ? (
-                  <>
-                  <div className={opencodeSkillsSearching || opencodeSkillsPaging ? "gt-skill-card-list is-loading" : "gt-skill-card-list"}>
-                    {opencodeSkillCardNodes}
-                  </div>
-                  {(opencodeSkillsSearching || opencodeSkillsPaging) ? (
-                    <div className="gt-skill-skeleton-list gt-skill-inline-skeleton" aria-label="正在加载更多 skills">
-                      {Array.from({ length: 2 }).map((_, idx) => <span key={idx} />)}
-                    </div>
-                  ) : null}
-                  </>
-                ) : (
-                  <div className="gt-skill-inspector-empty gt-skill-empty-state"><strong>没有找到匹配的 Skill</strong><span>试试切回关键词搜索、清空分类，或者改用更通用的描述词。</span></div>
-                )}
-                <div className="gt-skill-market-pager">
-                  <span>{opencodeSkillsInitialLoading ? "首次进入时会先准备精选榜单与已安装列表" : `已显示 ${visibleOpencodeMarketplaceRows.length} / ${opencodeMarketplaceRows.length}`}</span>
-                  {opencodeSkillsInitialLoading ? <span className="muted">正在为你整理首页内容...</span> : opencodeSkillsPaging ? <span className="gt-skill-auto-load is-loading">Loading more...</span> : (opencodeCanRevealMoreSkills || opencodeCanFetchMoreCatalogSkills || (!opencodeSkillAllowBackendCatalogFetch && opencodeMarketplaceRows.length < opencodeSkillDisplayBatchSize && !opencodeSkillCatalogRows.length && !opencodeSkillSearchResults.length)) ? <span className="gt-skill-auto-load">滑到底部自动加载更多</span> : <span className="gt-skill-auto-load is-done">已到底部</span>}
-                </div>
-              </main>
-
-              <aside className="gt-skill-inspector-card">
-                {selectedMarketplaceSkill ? (
-                  <>
-                    <div className="gt-skill-inspector-head">
-                      <span className="gt-module-kicker">selected skill</span>
-                      <h3>{selectedMarketplaceSkill.skill}</h3>
-                      <p>{selectedMarketplaceSkill.package}</p>
-                      <span className={`gt-skill-quality ${skillQualityLabel(selectedMarketplaceSkill)}`}>{skillQualityLabel(selectedMarketplaceSkill)}</span>
-                    </div>
-                    <div className="gt-skill-inspector-actions gt-skill-install-wrap">
-                      <button className="chip primary" onClick={() => setShowSkillInstallMenu((prev) => !prev)} disabled={opencodeSkillBusy}>{opencodeSkillBusy ? "安装中..." : "安装"}</button>
-                      {showSkillInstallMenu ? (
-                        <div className="gt-skill-install-menu">
-                          <button type="button" onClick={() => { setShowSkillInstallMenu(false); void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, "project", [selectedMarketplaceSkill.installUrl || "", selectedMarketplaceSkill.url || "", selectedMarketplaceSkill.spec]); }}>安装到当前 Repo</button>
-                          <button type="button" onClick={() => { setShowSkillInstallMenu(false); void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, "global", [selectedMarketplaceSkill.installUrl || "", selectedMarketplaceSkill.url || "", selectedMarketplaceSkill.spec]); }}>安装到 Global</button>
-                        </div>
-                      ) : null}
-                      <button className="chip" onClick={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)} disabled={selectedSkillLoading}>查看详情</button>
-                    </div>
-                    <div className="gt-skill-inspector-stats">
-                      <span><strong>{selectedMarketplaceSkill.installs}</strong>Installs</span>
-                      <span><strong>{selectedSkillDetail?.files?.length || 0}</strong>Files</span>
-                      <span><strong>{selectedSkillAudits.length}</strong>Audits</span>
-                    </div>
-                    {selectedSkillLoading ? <div className="gt-module-empty">正在加载详情...</div> : null}
-                    <div className="gt-skill-audit-list">
-                      {selectedSkillAudits.length === 0 ? <div className="gt-module-empty">点击“查看详情”后加载文件快照和安全审计。</div> : null}
-                      {selectedSkillAudits.map((audit) => <div key={`${audit.provider}-${audit.slug}`} className={`gt-skill-audit-row ${audit.status}`}><strong>{audit.provider}</strong><span>{audit.riskLevel || audit.status}</span><p>{audit.summary || "No summary"}</p></div>)}
-                    </div>
-                    <div className="gt-skill-file-list">
-                      {(selectedSkillDetail?.files || []).slice(0, 8).map((file) => <div key={file.path}><strong>{file.path}</strong><span>{file.contents.split(/\r?\n/).length} lines</span></div>)}
-                    </div>
-                  </>
-                ) : (
-                  <div className="gt-skill-inspector-empty"><strong>选择一个 Skill</strong><span>查看来源、质量信号，并像插件市场一样直接安装。</span></div>
-                )}
-                <div className="gt-installed-skills-mini">
-                  <div className="gt-installed-skills-head"><div><strong>已安装</strong><span>{groupedOpencodeSkills.length} 组 / {opencodeSkills.length} skills</span></div><button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新</button></div>
-                  {groupedOpencodeSkills.slice(0, 6).map((group) => {
-                    return <button type="button" key={group.name} className="gt-installed-skill-row is-reference" onClick={() => referenceOpencodeSkill(group.items[0])}><div><strong>{group.name}</strong><span>{group.items.length > 1 ? `${group.items.length} 个子 Skills` : (group.items[0]?.name || "Installed via skills.sh")}</span></div><span className="gt-scope-badge project">{group.items.length} 项</span></button>;
-                  })}
-                </div>
-              </aside>
-            </div>
-          </div>
+          <OpencodeSkillsMarketPanel
+            groups={groupedOpencodeSkills}
+            skills={opencodeSkills}
+            skillsLoading={opencodeSkillsLoading}
+            skillsError={opencodeSkillsError}
+            skillsmpApiKey={skillsmpApiKey}
+            removingKey={opencodeSkillRemovingKey}
+            skillBusy={opencodeSkillBusy}
+            skillInstallingSpec={opencodeSkillInstallingSpec}
+            skillInstallNotice={opencodeSkillInstallNotice}
+            skillInstallLog={opencodeSkillInstallLog}
+            marketListRef={opencodeSkillMarketListRef}
+            searchQuery={opencodeSkillSearchQuery}
+            searchStrategy={opencodeSkillSearchStrategy}
+            searchResults={opencodeSkillSearchResults}
+            catalogView={opencodeSkillCatalogView}
+            catalogPage={opencodeSkillCatalogPage}
+            catalogTotal={opencodeSkillCatalogTotal}
+            searchMeta={opencodeSkillSearchMeta}
+            selectedMarketplaceSkill={selectedMarketplaceSkill}
+            selectedSkillDetail={selectedSkillDetail}
+            selectedSkillAudits={selectedSkillAudits}
+            selectedSkillLoading={selectedSkillLoading}
+            showSkillInstallMenu={showSkillInstallMenu}
+            marketplaceRows={opencodeMarketplaceRows}
+            visibleMarketplaceRows={visibleOpencodeMarketplaceRows}
+            initialLoading={opencodeSkillsInitialLoading}
+            searching={opencodeSkillsSearching}
+            paging={opencodeSkillsPaging}
+            canAutoLoadMore={opencodeCanAutoLoadMore}
+            onSearchQueryChange={setOpencodeSkillSearchQuery}
+            onSearch={() => void searchOpencodeSkillRegistry()}
+            onSearchStrategyChange={setOpencodeSkillSearchStrategy}
+            onSwitchCatalogView={switchOpencodeSkillCatalogView}
+            onRefreshSkills={() => void refreshOpencodeSkills()}
+            onScrollMarket={handleOpencodeSkillMarketScroll}
+            onSelectMarketplaceSkill={selectMarketplaceSkill}
+            onInstallMarketplaceSkill={(spec) => void installOpencodeSkillFromRegistry(spec, "project")}
+            onToggleSkillInstallMenu={() => setShowSkillInstallMenu((prev) => !prev)}
+            onInstallSelectedMarketplaceSkill={(scope) => {
+              if (!selectedMarketplaceSkill) return;
+              setShowSkillInstallMenu(false);
+              void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
+            }}
+            onLoadSelectedSkillDetails={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)}
+            onReferenceSkill={referenceOpencodeSkill}
+            onRemoveSkill={removeOpencodeSkill}
+            onRemoveSkillGroup={removeOpencodeSkillGroup}
+          />
         ) : null}
 
         {rightPaneTab === "mcp" ? (
-          <div className="gt-skill-market-shell gt-mcp-market-shell">
-            <details className="gt-installed-skills-collapsible gt-installed-mcp-collapsible" open={mcpInstalledOpen} onToggle={(e) => setMcpInstalledOpen(e.currentTarget.open)}>
-              <summary>
-                <span>已安装 MCP Servers</span>
-                <small>{opencodeMcpRows.length}</small>
-                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowMcpAddForm(true); }} title="自定义添加 MCP Server"><PlusIcon /></button>
-                <button type="button" className="gt-icon-chip" onClick={(e) => { e.preventDefault(); void refreshOpencodeMcpStatus(); }} title="刷新" disabled={opencodeMcpLoading}><RefreshIcon /></button>
-              </summary>
-              {opencodeMcpError ? <div className="gt-module-empty danger">{opencodeMcpError}</div> : null}
-              <div className="gt-installed-mcp-grid">
-                {opencodeMcpLoading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
-                {!opencodeMcpLoading && opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。从下方市场安装后会显示在这里。</div> : null}
-                {opencodeMcpRows.map(([name, status]) => {
-                  const s: any = status || {};
-                  const source = String(s.source || (s.configured ? "project" : "runtime"));
-                  const sourceLabel = source === "both" ? "项目+全局" : source === "global" ? "全局" : source === "project" ? "项目" : source;
-                  return (
-                    <button key={name} type="button" className="gt-mcp-installed-chip gt-mcp-installed-chip-use" onClick={() => referenceOpencodeMcp(name)} title={`添加 MCP 引用：use the ${name} mcp server`}>
-                      <div className="gt-mcp-installed-main">
-                        <strong>{name}</strong>
-                        <small>{sourceLabel} · {String(s.type || "mcp")} · {getInstalledMcpTools(name).length} tools</small>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </details>
-            <McpMarketplace
-              servers={MCP_MARKET_SERVERS}
-              configuredMcps={opencodeMcpRows.map(([name]) => name)}
-              onAddMcp={addOpencodeMcpServerFromMarket}
-            />
-          </div>
+          <OpencodeMcpMarketPanel
+            rows={opencodeMcpPanelRows}
+            loading={opencodeMcpLoading}
+            error={opencodeMcpError}
+            installedOpen={mcpInstalledOpen}
+            servers={MCP_MARKET_SERVERS}
+            configuredMcpNames={opencodeMcpRows.map(([name]) => name)}
+            onInstalledOpenChange={setMcpInstalledOpen}
+            onShowCustomAdd={() => setShowMcpAddForm(true)}
+            onRefresh={() => void refreshOpencodeMcpStatus()}
+            onReferenceMcp={referenceOpencodeMcp}
+            onAddMcpFromMarket={addOpencodeMcpServerFromMarket}
+          />
         ) : null}
 
-        {showMcpAddForm && typeof document !== "undefined" ? createPortal((() => {
-          const customMcpJsonPlaceholder = `{
-  "type": "remote",
-  "url": "https://mcp.example.com/mcp",
-  "enabled": true
-}`;
-          const customParamSpecs = getCustomMcpParamSpecs(opencodeMcpJson, opencodeMcpName);
-          const previewText = (() => {
-            if (!opencodeMcpJson.trim()) return "粘贴 JSON 后会在这里预览 MCP 类型和连接信息";
-            try {
-              const { name, config } = normalizeCustomMcpJson(opencodeMcpJson, opencodeMcpName);
-              if (config.type === "local") return `${name} · local · command: ${Array.isArray(config.command) ? config.command.join(" ") : "缺少 command[]"}`;
-              if (config.type === "remote") return `${name} · remote · url: ${String(config.url || "缺少 url")}`;
-              return `${name} · ${String(config.type)}`;
-            } catch (e) {
-              return `JSON 无效：${String(e instanceof Error ? e.message : e)}`;
-            }
-          })();
-          return (
-            <div className="gt-mcp-custom-add-popover" role="dialog" aria-modal="true" onClick={() => setShowMcpAddForm(false)}>
-              <section className="gt-mcp-custom-add-card" onClick={(e) => e.stopPropagation()}>
-                <header className="gt-mcp-custom-add-head">
-                  <div>
-                    <span className="gt-module-kicker">custom mcp</span>
-                    <strong>自定义添加 MCP Server</strong>
-                    <small>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</small>
-                  </div>
-                  <button type="button" className="gt-icon-chip" onClick={() => setShowMcpAddForm(false)} aria-label="关闭自定义添加"><CloseIcon /></button>
-                </header>
-                <div className="gt-mcp-custom-add-body">
-                  <div className="gt-mcp-custom-add-editor">
-                    <div className="gt-mcp-custom-add-strip">
-                      <span>JSON 会自动识别 name、command/url、env/headers 和必填参数</span>
-                    </div>
-                    <label>
-                      <span>名称</span>
-                      <input className="path-input" placeholder="名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
-                    </label>
-                    <label className="gt-mcp-custom-json-label">
-                      <span>JSON 配置</span>
-                      <textarea className="path-input gt-module-textarea gt-mcp-json-input" value={opencodeMcpJson} placeholder={customMcpJsonPlaceholder} onChange={(e) => setOpencodeMcpJson(e.target.value)} />
-                    </label>
-                  </div>
-                  <aside className="gt-mcp-custom-add-side">
-                    <div className="gt-mcp-json-preview">
-                      <strong>预览</strong>
-                      <code>{previewText}</code>
-                    </div>
-                    {customParamSpecs.length > 0 ? (
-                      <div className="gt-mcp-custom-param-fields">
-                        <strong>连接参数</strong>
-                        {customParamSpecs.map((spec) => (
-                          <label key={spec.key}>
-                            <span>{spec.key}{spec.required ? " *" : ""}</span>
-                            {spec.description ? <small>{spec.description}</small> : null}
-                            <input
-                              className="path-input"
-                              value={opencodeMcpCustomParamValues[spec.key] || ""}
-                              placeholder={spec.example || spec.key}
-                              onChange={(e) => setOpencodeMcpCustomParamValues((prev) => ({ ...prev, [spec.key]: e.target.value }))}
-                            />
-                          </label>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="gt-mcp-custom-add-hint">没有检测到必填参数。添加后会写入当前项目的 OpenCode 配置。</div>
-                    )}
-                  </aside>
-                </div>
-                <footer className="gt-mcp-custom-add-actions">
-                  <button type="button" className="chip" onClick={() => setShowMcpAddForm(false)}>取消</button>
-                  <button type="button" className="chip primary" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName || !opencodeMcpJson.trim()}>{opencodeMcpBusyName ? "添加中..." : "添加 MCP"}</button>
-                </footer>
-              </section>
-            </div>
-          );
-        })(), document.body) : null}
-
-        {editingMcpName && typeof document !== "undefined" ? createPortal((() => {
-          const status = opencodeMcpStatus[editingMcpName];
-          const s: any = status || {};
-          const specs = getInstalledMcpParamSpecs(editingMcpName, status);
-          const tools = getInstalledMcpTools(editingMcpName);
-          const paramKind = s.type === "remote" ? "Headers" : "Environment";
-          return (
-            <div className="gt-mcp-config-popover" role="dialog" aria-modal="true" onClick={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}>
-              <div className="gt-mcp-config-card" onClick={(e) => e.stopPropagation()}>
-                <div className="gt-mcp-config-head"><div><span className="gt-module-kicker">update mcp params</span><strong>{editingMcpName}</strong></div></div>
-                <p>更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
-                {specs.length === 0 ? <div className="gt-module-empty">这个 MCP 当前没有可编辑参数。</div> : (
-                  <div className="gt-mcp-config-fields">
-                    {specs.map((spec) => <label key={spec.key}><span>{spec.key}{spec.required ? " *" : ""}</span>{spec.description ? <small>{spec.description}</small> : null}<input className="path-input" value={editingMcpParamValues[spec.key] || ""} placeholder={spec.example || spec.key} onChange={(e) => setEditingMcpParamValues((prev) => ({ ...prev, [spec.key]: e.target.value }))} /></label>)}
-                  </div>
-                )}
-                <div className="gt-mcp-config-tools"><div className="gt-mcp-config-tools-head"><strong>工具列表</strong><span>{tools.length} tools</span></div>{tools.length === 0 ? <div className="gt-module-empty">暂无工具清单。</div> : <div className="gt-mcp-config-tool-grid">{tools.map((tool: any) => <div key={tool.name} className="gt-mcp-config-tool-cell"><code>{tool.name}</code><p>{tool.description || "No description"}</p></div>)}</div>}</div>
-                <div className="gt-mcp-config-actions"><button type="button" className="chip danger" onClick={() => void removeOpencodeMcpServer(editingMcpName)} disabled={!!opencodeMcpBusyName}>{opencodeMcpBusyName.endsWith(":remove") ? "删除中..." : "删除"}</button><button type="button" className="chip primary" onClick={() => void saveMcpParams(editingMcpName, status)} disabled={!!opencodeMcpBusyName || specs.length === 0}>{opencodeMcpBusyName.endsWith(":update") ? "保存中..." : "保存参数"}</button></div>
-              </div>
-            </div>
-          );
-        })(), document.body) : null}
+        <OpencodeMcpDialogs
+          showCustomAdd={showMcpAddForm}
+          customName={opencodeMcpAddForm.name}
+          customJson={opencodeMcpAddForm.json}
+          customParamValues={opencodeMcpAddForm.paramValues}
+          busyName={opencodeMcpBusyName}
+          customParamSpecs={getCustomMcpParamSpecs(opencodeMcpAddForm.json, opencodeMcpAddForm.name)}
+          normalizeConfig={normalizeCustomMcpJson}
+          onCloseCustomAdd={() => setShowMcpAddForm(false)}
+          onCustomNameChange={opencodeMcpAddForm.setName}
+          onCustomJsonChange={opencodeMcpAddForm.setJson}
+          onCustomParamChange={opencodeMcpAddForm.setParamValue}
+          onAddCustomMcp={addOpencodeMcpServer}
+          editingName={editingMcpName}
+          editingStatus={opencodeMcpStatus[editingMcpName]}
+          editingSpecs={getInstalledMcpParamSpecs(editingMcpName, opencodeMcpStatus[editingMcpName])}
+          editingTools={getInstalledMcpTools(editingMcpName)}
+          editingParamValues={editingMcpParamValues}
+          onCloseEditing={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}
+          onEditingParamChange={(key, value) => setEditingMcpParamValues((prev) => ({ ...prev, [key]: value }))}
+          onRemoveEditingMcp={() => removeOpencodeMcpServer(editingMcpName)}
+          onSaveEditingMcp={() => saveMcpParams(editingMcpName, opencodeMcpStatus[editingMcpName])}
+        />
 
         {rightPaneTab === "terminal" ? (
-          <div className="gt-panel-stack gt-panel-stack-terminal">
-            <div className="gt-terminal-header">
-              <button
-                type="button"
-                className={terminalSidebarVisible ? "chip" : "chip active"}
-                onClick={() => setTerminalSidebarVisible((v) => !v)}
-                title={terminalSidebarVisible ? "隐藏终端列表" : "显示终端列表"}
-              >
-                <MenuIcon />
-              </button>
-              <span className="gt-terminal-label">zsh</span>
-              <div className="gt-terminal-actions">
-                <button className="chip" onClick={async () => {
-                  if (!selectedRepo || !activeTerminalTab) return;
-                  await clearRepoTerminalSession(selectedRepo.path, activeTerminalTab.id);
-                  terminalSeqRef.current[activeTerminalTab.id] = 0;
-                  updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
-                }}>Clear</button>
-              </div>
-            </div>
-            <div className={terminalSidebarVisible ? "gt-terminal-layout" : "gt-terminal-layout sidebar-hidden"}>
-              {terminalSidebarVisible ? (
-                <aside className="gt-terminal-sidebar">
-                  <div className="gt-terminal-sidebar-head">
-                    <strong>{terminalTabs.length} Terminals</strong>
-                    <button type="button" className="chip" onClick={createTerminalTab} title="新建终端"><PlusIcon /></button>
-                  </div>
-                  <div className="gt-terminal-sidebar-list">
-                    {terminalTabs.map((tab) => (
-                      <button
-                        key={`terminal-side-${tab.id}`}
-                        type="button"
-                        className={tab.id === activeTerminalTabId ? "gt-terminal-side-item active" : "gt-terminal-side-item"}
-                        onClick={() => setActiveTerminalTabId(tab.id)}
-                      >
-                        <span className="gt-terminal-side-item-title">{tab.title}</span>
-                        {terminalTabs.length > 1 ? (
-                          <span
-                            className="gt-terminal-side-item-close"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void closeTerminalTab(tab.id);
-                            }}
-                            aria-hidden="true"
-                          >
-                            <CloseIcon width={14} height={14} />
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                  </div>
-                </aside>
-              ) : null}
-              <div className="gt-terminal-body" ref={terminalBodyRef} onClick={() => {
-                if (terminalHasTextSelection()) return;
-                terminalInputRef.current?.focus();
-              }}>
-                <div
-                  ref={terminalLogRef}
-                  className="gt-terminal-console"
-                  onMouseDown={(e) => {
-                    if ((e.target as HTMLElement).closest(".gt-terminal-output")) terminalTextSelectingRef.current = true;
-                  }}
-                  onMouseUp={() => {
-                    window.setTimeout(() => {
-                      if (terminalHasTextSelection()) return;
-                      terminalTextSelectingRef.current = false;
-                      flushBufferedTerminalOutput(activeTerminalTabId);
-                    }, 0);
-                  }}
-                  onCopy={() => {
-                    window.setTimeout(() => {
-                      terminalTextSelectingRef.current = false;
-                      flushBufferedTerminalOutput(activeTerminalTabId);
-                    }, 0);
-                  }}
-                >
-                <pre className="gt-terminal-output">{activeTerminalView.body || ""}</pre>
-                <div className="gt-terminal-inline-input">
-                  <span className="gt-terminal-prompt">{activeTerminalView.prompt || ""}</span>
-                  <div className="gt-terminal-input-shell" ref={terminalInputShellRef}>
-                    <textarea
-                      ref={terminalInputRef}
-                      className="gt-terminal-input"
-                      rows={1}
-                      value={activeTerminalTab?.input || ""}
-                      onChange={(e) => {
-                        if (!activeTerminalTab) return;
-                        updateTerminalTabById(activeTerminalTab.id, (prev) => ({
-                          ...prev,
-                          input: e.target.value,
-                          historyIndex: -1,
-                          historyDraft: e.target.value,
-                          completionItems: [],
-                          completionIndex: 0,
-                          completionToken: ""
-                        }));
-                      }}
-                      onKeyDown={(e) => {
-                        if (!activeTerminalTab) return;
-                        if (e.key === "Escape") {
-                          updateTerminalTabById(activeTerminalTab.id, { completionItems: [], completionIndex: 0, completionToken: "" });
-                          return;
-                        }
-                        if (activeTerminalTab.completionItems.length > 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-                          e.preventDefault();
-                          updateTerminalTabById(activeTerminalTab.id, (prev) => ({
-                            ...prev,
-                            completionIndex: e.key === "ArrowUp"
-                              ? (prev.completionIndex - 1 + prev.completionItems.length) % prev.completionItems.length
-                              : (prev.completionIndex + 1) % prev.completionItems.length
-                          }));
-                          return;
-                        }
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          void runTerminalCommand();
-                          return;
-                        }
-                        if (e.key === "ArrowUp") {
-                          e.preventDefault();
-                          browseTerminalHistory(activeTerminalTab.id, "older");
-                          return;
-                        }
-                        if (e.key === "ArrowDown") {
-                          e.preventDefault();
-                          browseTerminalHistory(activeTerminalTab.id, "newer");
-                          return;
-                        }
-                        if (e.key === "Tab") {
-                          e.preventDefault();
-                          void applyTerminalTabCompletion(activeTerminalTab);
-                          return;
-                        }
-                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !activeTerminalTab.input.trim()) {
-                          e.preventDefault();
-                          void sendRepoTerminalInput(repoPath, "\u0003", activeTerminalTab.id).catch(() => {
-                            // ignore
-                          });
-                        }
-                      }}
-                      placeholder=""
-                      spellCheck={false}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                    />
-                    {activeTerminalGhostText ? (
-                      <span
-                        className="gt-terminal-ghost"
-                        style={{ left: `${Math.max(0, (activeTerminalTab?.input || "").length) * 7.05}px` }}
-                      >
-                        {activeTerminalGhostText}
-                      </span>
-                    ) : null}
-                    {activeTerminalTab?.completionItems?.length ? (() => {
-                      const items = activeTerminalTab.completionItems;
-                      const idx = activeTerminalTab.completionIndex;
-                      const popoverContent = (
-                        <div className={`gt-terminal-completion-popover${terminalInputNearTop ? " is-below" : ""}`}>
-                          {items.map((item, i) => {
-                            const group = getTerminalCompletionGroup(activeTerminalTab.input, item);
-                            const prev = i > 0 ? getTerminalCompletionGroup(activeTerminalTab.input, items[i - 1]) : "";
-                            return (
-                              <Fragment key={`terminal-completion-wrap-${item}-${i}`}>
-                                {group !== prev ? <div className="gt-terminal-completion-group">{group}</div> : null}
-                                <button
-                                  type="button"
-                                  className={i === idx ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
-                                  onMouseDown={(event) => event.preventDefault()}
-                                  onClick={() => selectTerminalCompletion(activeTerminalTab, i)}
-                                >
-                                  <span>{item}</span>
-                                  {i === idx ? <kbd>TAB</kbd> : null}
-                                </button>
-                              </Fragment>
-                            );
-                          })}
-                        </div>
-                      );
-                      if (terminalInputNearTop) {
-                        const inputRect = terminalInputShellRef.current?.getBoundingClientRect();
-                        const style: CSSProperties = inputRect ? {
-                          position: "fixed",
-                          left: inputRect.left,
-                          top: inputRect.bottom + 6,
-                          minWidth: Math.min(420, inputRect.width),
-                          maxWidth: Math.min(560, inputRect.width),
-                          zIndex: 9999
-                        } : {};
-                        return createPortal(
-                          <div style={style}>{popoverContent}</div>,
-                          document.body
-                        );
-                      }
-                      return popoverContent;
-                    })() : null}
-                  </div>
-                </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <TerminalPanel
+            tabs={terminalTabs}
+            activeTabId={activeTerminalTabId}
+            activeTab={activeTerminalTab}
+            activeView={activeTerminalView}
+            ghostText={activeTerminalGhostText}
+            sidebarVisible={terminalSidebarVisible}
+            inputNearTop={terminalInputNearTop}
+            bodyRef={terminalBodyRef}
+            logRef={terminalLogRef}
+            inputShellRef={terminalInputShellRef}
+            inputRef={terminalInputRef}
+            hasTextSelection={terminalHasTextSelection}
+            markTextSelecting={(selecting) => { terminalTextSelectingRef.current = selecting; }}
+            flushBufferedOutput={flushBufferedTerminalOutput}
+            onToggleSidebar={() => setTerminalSidebarVisible((visible) => !visible)}
+            onCreateTab={createTerminalTab}
+            onCloseTab={closeTerminalTab}
+            onSelectTab={setActiveTerminalTabId}
+            onClearActiveTab={async () => {
+              if (!selectedRepo || !activeTerminalTab) return;
+              await clearRepoTerminalSession(selectedRepo.path, activeTerminalTab.id);
+              terminalSeqRef.current[activeTerminalTab.id] = 0;
+              updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
+            }}
+            onUpdateTab={updateTerminalTabById}
+            onRunCommand={runTerminalCommand}
+            onBrowseHistory={browseTerminalHistory}
+            onApplyCompletion={applyTerminalTabCompletion}
+            onSelectCompletion={selectTerminalCompletion}
+            onInterrupt={(tab) => sendRepoTerminalInput(repoPath, "\u0003", tab.id).catch(() => {
+              // ignore
+            })}
+          />
         ) : null}
       </div>
     </div>
@@ -11418,7 +6428,11 @@ branches.forEach((b) => {
     }
   }
 
-  async function saveOpencodeAuthKey(providerId: string) {
+  async function submitOpencodeProviderAuthKey(
+    providerId: string,
+    connected: boolean,
+    options?: { closeDialog?: boolean; closeInlineAuth?: boolean }
+  ) {
     if (!ensureRepoSelected()) return;
     const authPid = providerId.trim();
     const key = opencodeConnectApiKey.trim();
@@ -11432,15 +6446,24 @@ branches.forEach((b) => {
         await fetchOpencodeModels(authPid);
       }
       setOpencodeProviderPickerProvider(authPid);
-      setMessage(`已更新密钥: ${authPid}`);
+      setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
       setOpencodeConnectApiKey("");
-      setShowOpencodeAuthDialogFor("");
+      if (options?.closeDialog) {
+        setShowOpencodeAuthDialogFor("");
+      }
+      if (options?.closeInlineAuth) {
+        setOpencodeInlineAuthOpenFor("");
+      }
     } catch (e) {
       setError(String(e));
-      setMessage("更新密钥失败");
+      setMessage(connected ? "更新密钥失败" : "连接失败");
     } finally {
       setOpencodeConnectBusy(false);
     }
+  }
+
+  async function saveOpencodeAuthKey(providerId: string) {
+    await submitOpencodeProviderAuthKey(providerId, true, { closeDialog: true });
   }
 
   const panel = <div className="wb-panel-inner" />;
@@ -11754,7 +6777,7 @@ branches.forEach((b) => {
             generalSettings={generalSettings}
             onGeneralSettingsChange={(next) => {
               setGeneralSettings(next);
-              saveGeneralSettings(next);
+              saveGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
               if (next.autoAcceptPermissions !== opencodeAutoAcceptPermissions) {
                 setOpencodeAutoAcceptPermissions(next.autoAcceptPermissions);
                 saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next.autoAcceptPermissions);
@@ -11810,13 +6833,7 @@ branches.forEach((b) => {
             onSkillsVisible={() => {
               if (opencodeSkillsRepoPathRef.current !== repoPath) {
                 opencodeSkillsRepoPathRef.current = repoPath;
-                const cached = opencodeSkillsByRepoRef.current[repoPath] || null;
-                startTransition(() => {
-                  if (cached) setOpencodeSkills(cached);
-                  setOpencodeSkillsLoadedOnce(Boolean(cached));
-                  setOpencodeSkillsLoading(!cached);
-                  setOpencodeSkillsError("");
-                });
+                const cached = restoreCachedSkillsForRepo(repoPath);
                 if (!cached) scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
                 return;
               }
@@ -11835,252 +6852,75 @@ branches.forEach((b) => {
               </div>
             ) : null}
             modelsContent={(
-              <div className="settings-model-inline">
-                <div className="settings-model-head opencode-provider-picker-toolbar">
-                  <input className="path-input" placeholder="搜索提供商..." value={opencodeProviderPickerSearch} onChange={(e) => setOpencodeProviderPickerSearch(e.target.value)} />
-                  <input className="path-input" placeholder="搜索模型..." value={opencodeProviderPickerModelSearch} onChange={(e) => setOpencodeProviderPickerModelSearch(e.target.value)} />
-                </div>
-                <div className="settings-model-lists opencode-provider-picker-grid">
-                  <div className="settings-model-col">
-                    <OpenCodeProviderList
-                      providers={opencodeProviderPickerCandidates}
-                      selectedProvider={opencodeProviderPickerProvider}
-                      connectedProviders={opencodeConnectedProviders}
-                      providerNames={opencodeProviderNames}
-                      modelCountsByProvider={opencodeProviderPickerModelCounts}
-                      getProviderTag={getOpencodeProviderTag}
-                      getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                      onSelectProvider={(provider, connected) => {
-                        setOpencodeProviderPickerProvider(provider);
-                        const pretty = opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider;
-                        setOpencodeConnectProviderId(provider);
-                        setOpencodeConnectProviderName(pretty);
-                        setOpencodeInlineAuthOpenFor(connected ? "" : provider);
-                        if (!connected) setOpencodeConnectApiKey("");
-                      }}
-                    />
-                  </div>
-                  <div className="settings-model-col">
-                    {(() => {
-                      const resolved = resolveProviderAliasWithNames(opencodeProviderPickerProvider, opencodeModelsByProvider, opencodeProviderNames);
-                      const cfgResolved = resolveProviderAliasWithNames(opencodeProviderPickerProvider, opencodeConfiguredModelsByProvider, opencodeProviderNames);
-                      const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
-                      const cfgPid = (cfgResolved || pid) || "";
-                      const pool = (pid ? (opencodeModelsByProvider[pid] ?? []) : []).slice().sort((a, b) => a.localeCompare(b));
-                      const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
-                      const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
-                      if (!pid) return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
-                      const connected = opencodeConnectedProviders.includes(pid);
-                      const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                      const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                      const authOpen = !connected || opencodeInlineAuthOpenFor === pid;
-                      const authHint = connected
-                        ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
-                        : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
-                      return <div className="opencode-provider-right-panel">
-                        <div className="opencode-provider-connect">
-                          <div className="toolbar" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: authOpen ? "var(--gt-space-2)" : "var(--gt-space-3)" }}>
-                            <div className="small muted">{authHint}</div>
-                            {connected ? <button className="chip" onClick={() => {
-                              setOpencodeConnectProviderId(pid);
-                              setOpencodeConnectProviderName(pretty);
-                              setOpencodeInlineAuthOpenFor((prev) => prev === pid ? "" : pid);
-                            }}>{authOpen ? "收起密钥编辑" : "更新 API Key"}</button> : null}
-                          </div>
-                          {authOpen ? <>
-                            <input
-                              className="path-input"
-                              placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
-                              value={keyValue}
-                              onChange={(e) => {
-                                setOpencodeConnectProviderId(pid);
-                                setOpencodeConnectProviderName(pretty);
-                                setOpencodeConnectApiKey(e.target.value);
-                              }}
-                            />
-                            <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)", marginBottom: connected ? "0" : "var(--gt-space-3)" }}>
-                              <button
-                                className="chip"
-                                disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                                onClick={async () => {
-                                  if (!ensureRepoSelected()) return;
-                                  const authPid = pid.trim();
-                                  const key = opencodeConnectApiKey.trim();
-                                  if (!authPid || !key) return;
-                                  setOpencodeConnectBusy(true);
-                                  setError("");
-                                  try {
-                                    await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                                    await refreshOpencodeCatalog();
-                                    if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                                      await fetchOpencodeModels(authPid);
-                                    }
-                                    setOpencodeProviderPickerProvider(authPid);
-                                    setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
-                                    setOpencodeConnectApiKey("");
-                                    if (connected) setOpencodeInlineAuthOpenFor("");
-                                  } catch (e) {
-                                    setError(String(e));
-                                    setMessage(connected ? "更新密钥失败" : "连接失败");
-                                  } finally {
-                                    setOpencodeConnectBusy(false);
-                                  }
-                                }}
-                              >
-                                {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
-                              </button>
-                            </div>
-                          </> : null}
-                        </div>
-                        {connected ? <OpenCodeProviderModelList models={filtered} providerId={pid} configuredProviderId={cfgPid} activeModel={activeOpencodeModel} configuredModelsByProvider={opencodeConfiguredModelsByProvider} configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider} modelNamesByProvider={opencodeModelNamesByProvider} hiddenModels={opencodeHiddenModels} enabledModels={opencodeEnabledModels} onSelectModel={(ref) => void applyOpencodeModel(ref)} onHideModel={(ref) => { setOpencodeHiddenModels((prev) => new Set([...prev, ref])); setOpencodeEnabledModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); }} onEnableModel={(ref) => { setOpencodeHiddenModels((prev) => { const next = new Set(prev); next.delete(ref); return next; }); setOpencodeEnabledModels((prev) => new Set([...prev, ref])); }} /> : null}
-                      </div>;
-                    })()}
-                  </div>
-                </div>
-              </div>
+              <OpenCodeProviderSettingsPanel
+                providerSearch={opencodeProviderPickerSearch}
+                modelSearch={opencodeProviderPickerModelSearch}
+                providers={opencodeProviderPickerCandidates}
+                selectedProvider={opencodeProviderPickerProvider}
+                connectedProviders={opencodeConnectedProviders}
+                providerNames={opencodeProviderNames}
+                modelCountsByProvider={opencodeProviderPickerModelCounts}
+                modelsByProvider={opencodeModelsByProvider}
+                configuredModelsByProvider={opencodeConfiguredModelsByProvider}
+                configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
+                modelNamesByProvider={opencodeModelNamesByProvider}
+                activeModel={activeOpencodeModel}
+                hiddenModels={opencodeHiddenModels}
+                enabledModels={opencodeEnabledModels}
+                connectBusy={opencodeConnectBusy}
+                connectProviderId={opencodeConnectProviderId}
+                connectApiKey={opencodeConnectApiKey}
+                inlineAuthOpenFor={opencodeInlineAuthOpenFor}
+                onProviderSearchChange={setOpencodeProviderPickerSearch}
+                onModelSearchChange={setOpencodeProviderPickerModelSearch}
+                onSelectProvider={(provider, connected) => {
+                  setOpencodeProviderPickerProvider(provider);
+                  const pretty = resolveProviderDisplayName(provider);
+                  setOpencodeConnectProviderId(provider);
+                  setOpencodeConnectProviderName(pretty);
+                  setOpencodeInlineAuthOpenFor(connected ? "" : provider);
+                  if (!connected) setOpencodeConnectApiKey("");
+                }}
+                onConnectApiKeyChange={(providerId, providerName, value) => {
+                  setOpencodeConnectProviderId(providerId);
+                  setOpencodeConnectProviderName(providerName);
+                  setOpencodeConnectApiKey(value);
+                }}
+                onToggleInlineAuth={(providerId, providerName) => {
+                  setOpencodeConnectProviderId(providerId);
+                  setOpencodeConnectProviderName(providerName);
+                  setOpencodeInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
+                }}
+                onConnectProvider={(providerId, connected) => void submitOpencodeProviderAuthKey(providerId, connected, { closeInlineAuth: connected })}
+                onSelectModel={(ref) => void applyOpencodeModel(ref)}
+                onHideModel={hideOpencodeModel}
+                onEnableModel={enableOpencodeModel}
+                getProviderTag={getOpencodeProviderTag}
+                getProviderDisplayName={resolveProviderDisplayName}
+              />
             )}
           />
         ) : null}
 
         {showMobileControlDialog && runtimeStatus.giteam.installed ? (
-          <div className="modal-mask" onClick={() => void closeMobileControlDialog()}>
-            <div className="modal-card settings-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
-              <div className="env-setup-head">
-                <h3>Mobile Control API</h3>
-                <div className="mobile-control-head-right">
-                  <span className="small muted">Service</span>
-                  <button
-                    type="button"
-                    className={controlServerSettings.enabled ? "gt-switch on" : "gt-switch"}
-                    disabled={controlServerSettingsBusy}
-                    onClick={() => void toggleControlServiceEnabled(!controlServerSettings.enabled)}
-                    title={controlServerSettings.enabled ? "Disable service" : "Enable service"}
-                  >
-                    <span className="gt-switch-thumb" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-              <div className="settings-provider-form settings-mobile-control">
-                <div className="mobile-control-section-title">Connection</div>
-                <div className="mobile-control-config">
-                  <div className="mobile-control-field">
-                    <div className="small muted">Port</div>
-                    <input
-                      className="path-input"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      disabled={!controlServiceEnabled}
-                      placeholder="Port"
-                      value={String(controlServerSettings.port)}
-                      onChange={(e) =>
-                        setControlServerSettings((prev) => ({
-                          ...prev,
-                          port: Number(e.target.value || "0")
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="mobile-control-field">
-                    <div className="small muted">Public URL (optional)</div>
-                    <input
-                      className="path-input"
-                      disabled={!controlServiceEnabled}
-                      placeholder="Public URL（默认自动取局域网 IPv4）"
-                      value={controlServerSettings.publicBaseUrl}
-                      onChange={(e) =>
-                        setControlServerSettings((prev) => ({
-                          ...prev,
-                          publicBaseUrl: e.target.value
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="mobile-control-section-title">Authentication</div>
-                <div className="mobile-control-auth-row">
-                  <div className="mobile-control-field">
-                    <div className="small muted">Pair Code Validity</div>
-                    <select
-                      className="path-input"
-                      disabled={!controlServiceEnabled}
-                      value={controlServerSettings.pairCodeTtlMode}
-                      onChange={(e) =>
-                        setControlServerSettings((prev) => ({
-                          ...prev,
-                          pairCodeTtlMode: normalizeControlPairMode(e.target.value)
-                        }))
-                      }
-                    >
-                      <option value="none">No Auth (no pair code)</option>
-                      <option value="24h">Pair code valid for 24 hours</option>
-                      <option value="7d">Pair code valid for 7 days</option>
-                      <option value="forever">Pair code valid indefinitely</option>
-                    </select>
-                  </div>
-                  <div className="mobile-control-field">
-                    <div className="small muted">Actions</div>
-                    <div className="toolbar" style={{ justifyContent: "flex-start", minHeight: 36 }}>
-                      <button
-                        className="chip"
-                        disabled={!controlServiceEnabled || controlServerSettingsBusy}
-                        onClick={() => {
-                          void forceRefreshControlPairCode();
-                          void loadControlAccessInfo();
-                        }}
-                      >
-                        Refresh code
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="toolbar mobile-control-status">
-                  <span className="small muted">
-                    {!controlServiceEnabled
-                      ? "Service is disabled"
-                      : controlAuthNoAuth
-                        ? "Current mode: No Auth"
-                        : `Pair code: ${controlPairCode || "------"}`}
-                  </span>
-                </div>
-                <div className="mobile-control-divider" />
-                <div className="mobile-control-section-title">QR Connection</div>
-                <div className="mobile-qr-card">
-                  <div className="mobile-qr-visual">
-                    {controlServiceEnabled && controlPairQrUrl ? (
-                      <img src={controlPairQrUrl} alt="Mobile pair QR code" />
-                    ) : (
-                      <div className="small muted">{controlServiceEnabled ? "QR unavailable" : "Service disabled"}</div>
-                    )}
-                  </div>
-                  <div className="mobile-qr-meta">
-                    <div className="small muted">
-                      {!controlServiceEnabled
-                        ? "Enable the service to generate a QR code for mobile pairing."
-                        : controlAuthNoAuth
-                          ? "Scan to connect directly (No Auth mode)"
-                          : "Scan, then connect on mobile with pair code (manual or auto-filled)"}
-                    </div>
-                    <div className="mobile-qr-code">{!controlServiceEnabled ? "Disabled" : controlAuthNoAuth ? "No Auth" : controlPairCode || "------"}</div>
-                    <div className="mobile-qr-url">{controlServiceEnabled ? controlBaseUrl || "Waiting for local address..." : "Service disabled"}</div>
-                    <div className="toolbar">
-                      <button
-                        className="chip"
-                        disabled={!controlServiceEnabled || !controlBaseUrl}
-                        onClick={() => {
-                          void navigator.clipboard.writeText(controlBaseUrl);
-                          setMessage("Control server URL copied");
-                        }}
-                      >
-                        Copy URL
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                {controlServerSettingsBusy ? <span className="small muted">Saving control server settings...</span> : null}
-              </div>
-            </div>
-          </div>
+          <MobileControlDialog
+            settings={controlServerSettings}
+            busy={controlServerSettingsBusy}
+            serviceEnabled={controlServiceEnabled}
+            authNoAuth={controlAuthNoAuth}
+            pairCode={controlPairCode}
+            baseUrl={controlBaseUrl}
+            pairQrUrl={controlPairQrUrl}
+            onClose={() => void closeMobileControlDialog()}
+            onToggleService={(enabled) => void toggleControlServiceEnabled(enabled)}
+            onSettingsChange={(patch) => setControlServerSettings((prev) => ({ ...prev, ...patch }))}
+            onPairModeChange={(mode) => setControlServerSettings((prev) => ({ ...prev, pairCodeTtlMode: normalizeControlPairMode(mode) }))}
+            onRefreshCode={() => {
+              void forceRefreshControlPairCode();
+              void loadControlAccessInfo();
+            }}
+            onCopiedUrl={() => setMessage("Control server URL copied")}
+          />
         ) : null}
 
         {showSkillsmpSettings ? (
@@ -12127,263 +6967,74 @@ branches.forEach((b) => {
         ) : null}
 
         {showOpencodeProviderPicker ? (
-          <div className="modal-mask" onClick={() => setShowOpencodeProviderPicker(false)}>
-            <div className="modal-card settings-card opencode-provider-picker-card" onClick={(e) => e.stopPropagation()}>
-              <div className="env-setup-head">
-                <div className="opencode-provider-picker-title">
-                  <h3>Provider & Model Manager</h3>
-                </div>
-                <div className="toolbar">
-                  {opencodeCatalogLoading ? (
-                    <span className="opencode-inline-loading" aria-live="polite">
-                      <span />
-                      读取中
-                    </span>
-                  ) : null}
-                  <button className="chip" onClick={() => setShowOpencodeProviderPicker(false)}>Close</button>
-                </div>
-              </div>
-            <div className="settings-model-head opencode-provider-picker-toolbar">
-              <input
-                className="path-input"
-                placeholder="搜索提供商..."
-                value={opencodeProviderPickerSearch}
-                onChange={(e) => setOpencodeProviderPickerSearch(e.target.value)}
-              />
-              <input
-                className="path-input"
-                placeholder="搜索模型..."
-                value={opencodeProviderPickerModelSearch}
-                onChange={(e) => setOpencodeProviderPickerModelSearch(e.target.value)}
-              />
-              <button
-                className="chip opencode-provider-add-btn"
-                title="新增自定义提供商"
-                aria-label="新增自定义提供商"
-                onClick={() => {
-                  setShowOpencodeProviderPicker(false);
-                  setShowOpencodeCustomProvider(true);
-                }}
-              >
-                <PlusIcon />
-              </button>
-            </div>
-              <div className="settings-model-lists opencode-provider-picker-grid">
-                <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                  <OpenCodeProviderList
-                    providers={opencodeProviderPickerCandidates}
-                    selectedProvider={opencodeProviderPickerProvider}
-                    connectedProviders={opencodeConnectedProviders}
-                    providerNames={opencodeProviderNames}
-                    modelCountsByProvider={opencodeProviderPickerModelCounts}
-                    getProviderTag={getOpencodeProviderTag}
-                    getProviderDisplayName={(provider) => opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider}
-                    onSelectProvider={(provider, connected) => {
-                      setOpencodeProviderPickerProvider(provider);
-                      if (!connected) {
-                        setOpencodeConnectProviderId(provider);
-                        setOpencodeConnectProviderName(opencodeProviderNames[provider] || PROVIDER_PRESETS.find((p) => p.id === provider)?.name || provider);
-                        setOpencodeConnectApiKey("");
-                        return;
-                      }
-                      setShowOpencodeAuthDialogFor("");
-                    }}
-                  />
-                </div>
-                <div className="settings-model-col" style={{ maxHeight: 420 }}>
-                  {(() => {
-                    const resolved = resolveProviderAliasWithNames(
-                      opencodeProviderPickerProvider,
-                      opencodeModelsByProvider,
-                      opencodeProviderNames
-                    );
-                    const cfgResolved = resolveProviderAliasWithNames(
-                      opencodeProviderPickerProvider,
-                      opencodeConfiguredModelsByProvider,
-                      opencodeProviderNames
-                    );
-                    const pid = (resolved || opencodeProviderPickerProvider.trim()) || "";
-                    const cfgPid = (cfgResolved || pid) || "";
-                    const connected = pid ? opencodeConnectedProviders.includes(pid) : false;
-                  const configuredPool = cfgPid ? (opencodeConfiguredModelsByProvider[cfgPid] ?? []) : [];
-                  const providerPool = pid ? (opencodeModelsByProvider[pid] ?? []) : [];
-                  // Prefer live /provider models. Config-only rows are shown only before the provider catalog is available.
-                  const pool = (providerPool.length > 0 ? providerPool : configuredPool).slice().sort((a, b) => a.localeCompare(b));
-                    const q = opencodeProviderPickerModelSearch.trim().toLowerCase();
-                    const filtered = q ? pool.filter((m) => m.toLowerCase().includes(q)) : pool;
-                    if (!opencodeProviderPickerProvider) {
-                      return <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>;
-                    }
-                    const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
-                    const tag = getOpencodeProviderTag(pid);
-                    const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
-                    const showAuthEditor = true;
-                    const menuOpen = opencodeProviderActionMenuFor === pid;
-                    const openAuthEditor = () => {
-                      setOpencodeConnectProviderId(pid);
-                      setOpencodeConnectProviderName(pretty);
-                      setOpencodeConnectApiKey("");
-                      setShowOpencodeAuthDialogFor(pid);
-                      setOpencodeProviderActionMenuFor("");
-                    };
-                    const authHint = connected
-                      ? `${pretty} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
-                      : `${pretty} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`;
-                    const authBlock = showAuthEditor ? (
-                      <div className="opencode-provider-connect">
-                        <div className="small muted" style={{ marginBottom: "var(--gt-space-2)" }}>{authHint}</div>
-                        <input
-                          className="path-input"
-                          placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
-                          value={keyValue}
-                          onChange={(e) => {
-                            setOpencodeConnectProviderId(pid);
-                            setOpencodeConnectProviderName(pretty);
-                            setOpencodeConnectApiKey(e.target.value);
-                          }}
-                        />
-                        <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)" }}>
-                          <button
-                            className="chip"
-                            disabled={opencodeConnectBusy || opencodeConnectProviderId !== pid || !opencodeConnectApiKey.trim()}
-                            onClick={async () => {
-                              if (!ensureRepoSelected()) return;
-                              const authPid = pid.trim();
-                              const key = opencodeConnectApiKey.trim();
-                              if (!authPid || !key) return;
-                              setOpencodeConnectBusy(true);
-                              setError("");
-                              try {
-                                await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-                                await refreshOpencodeCatalog();
-                                if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-                                  await fetchOpencodeModels(authPid);
-                                }
-                                setOpencodeProviderPickerProvider(authPid);
-                                setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
-                                setOpencodeConnectApiKey("");
-                              } catch (e) {
-                                setError(String(e));
-                                setMessage(connected ? "更新密钥失败" : "连接失败");
-                              } finally {
-                                setOpencodeConnectBusy(false);
-                              }
-                            }}
-                          >
-                            {opencodeConnectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="opencode-provider-connect-compact">
-                        <div className="small muted">
-                          {`${pretty}（${tag}）已连接。`}
-                        </div>
-                        <span className="small muted">通过右上角菜单操作</span>
-                      </div>
-                    );
-                    const providerHeader = (
-                      <div className="opencode-provider-panel-head">
-                        <div className="opencode-provider-panel-title">
-                          <strong>{pretty}</strong>
-                          <small className="small muted">{`${pid} · ${tag}`}</small>
-                        </div>
-                        <div className="opencode-provider-panel-actions">
-                          <button
-                            type="button"
-                            className="chip opencode-provider-menu-trigger"
-                            title="更多操作"
-                            onClick={() => setOpencodeProviderActionMenuFor((prev) => (prev === pid ? "" : pid))}
-                          >
-                            ...
-                          </button>
-                          {menuOpen ? (
-                            <div className="opencode-provider-menu">
-                              <button
-                                type="button"
-                                className="opencode-provider-menu-item"
-                                onClick={openAuthEditor}
-                              >
-                                更新 API Key
-                              </button>
-                              {getOpencodeProviderSource(pid) !== "env" ? (
-                                <button
-                                  type="button"
-                                  className="opencode-provider-menu-item danger"
-                                  disabled={opencodeDisconnectingProvider === pid}
-                                  onClick={async () => {
-                                    setOpencodeProviderActionMenuFor("");
-                                    await disconnectOpencodeProvider(pid);
-                                  }}
-                                >
-                                  {opencodeDisconnectingProvider === pid ? "处理中..." : "断开连接"}
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                    if (!connected) {
-                      return (
-                        <div className="opencode-provider-right-panel">
-                          {providerHeader}
-                          {authBlock}
-                        </div>
-                      );
-                    }
-                    return (
-                      <div className="opencode-provider-right-panel">
-                        {providerHeader}
-                        {authBlock}
-                        <OpenCodeProviderModelList
-                          models={filtered}
-                          providerId={pid}
-                          configuredProviderId={cfgPid}
-                          activeModel={activeOpencodeModel}
-                          configuredModelsByProvider={opencodeConfiguredModelsByProvider}
-                          configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
-                          modelNamesByProvider={opencodeModelNamesByProvider}
-                          hiddenModels={opencodeHiddenModels}
-                          enabledModels={opencodeEnabledModels}
-                          onSelectModel={(ref) => void applyOpencodeModel(ref)}
-                          onHideModel={(ref) => {
-                            setOpencodeHiddenModels((prev) => {
-                              const next = new Set(prev);
-                              next.add(ref);
-                              return next;
-                            });
-                            setOpencodeEnabledModels((prev) => {
-                              const next = new Set(prev);
-                              next.delete(ref);
-                              return next;
-                            });
-                          }}
-                          onEnableModel={(ref) => {
-                            setOpencodeHiddenModels((prev) => {
-                              const next = new Set(prev);
-                              next.delete(ref);
-                              return next;
-                            });
-                            setOpencodeEnabledModels((prev) => {
-                              const next = new Set(prev);
-                              next.add(ref);
-                              return next;
-                            });
-                          }}
-                        />
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
+          <OpenCodeProviderPickerDialog
+            loading={opencodeCatalogLoading}
+            providerSearch={opencodeProviderPickerSearch}
+            modelSearch={opencodeProviderPickerModelSearch}
+            providers={opencodeProviderPickerCandidates}
+            selectedProvider={opencodeProviderPickerProvider}
+            connectedProviders={opencodeConnectedProviders}
+            providerNames={opencodeProviderNames}
+            modelCountsByProvider={opencodeProviderPickerModelCounts}
+            modelsByProvider={opencodeModelsByProvider}
+            configuredModelsByProvider={opencodeConfiguredModelsByProvider}
+            configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
+            modelNamesByProvider={opencodeModelNamesByProvider}
+            activeModel={activeOpencodeModel}
+            hiddenModels={opencodeHiddenModels}
+            enabledModels={opencodeEnabledModels}
+            connectBusy={opencodeConnectBusy}
+            connectProviderId={opencodeConnectProviderId}
+            connectApiKey={opencodeConnectApiKey}
+            providerActionMenuFor={opencodeProviderActionMenuFor}
+            disconnectingProvider={opencodeDisconnectingProvider}
+            onClose={() => setShowOpencodeProviderPicker(false)}
+            onOpenCustomProvider={() => {
+              setShowOpencodeProviderPicker(false);
+              setShowOpencodeCustomProvider(true);
+            }}
+            onProviderSearchChange={setOpencodeProviderPickerSearch}
+            onModelSearchChange={setOpencodeProviderPickerModelSearch}
+            onSelectProvider={(provider, connected) => {
+              setOpencodeProviderPickerProvider(provider);
+              if (!connected) {
+                setOpencodeConnectProviderId(provider);
+                setOpencodeConnectProviderName(resolveProviderDisplayName(provider));
+                setOpencodeConnectApiKey("");
+                return;
+              }
+              setShowOpencodeAuthDialogFor("");
+            }}
+            onConnectApiKeyChange={(providerId, providerName, value) => {
+              setOpencodeConnectProviderId(providerId);
+              setOpencodeConnectProviderName(providerName);
+              setOpencodeConnectApiKey(value);
+            }}
+            onToggleProviderMenu={(providerId) => setOpencodeProviderActionMenuFor((prev) => (prev === providerId ? "" : providerId))}
+            onOpenAuthDialog={(providerId, providerName) => {
+              setOpencodeConnectProviderId(providerId);
+              setOpencodeConnectProviderName(providerName);
+              setOpencodeConnectApiKey("");
+              setShowOpencodeAuthDialogFor(providerId);
+              setOpencodeProviderActionMenuFor("");
+            }}
+            onConnectProvider={(providerId, connected) => void submitOpencodeProviderAuthKey(providerId, connected)}
+            onDisconnectProvider={(providerId) => {
+              setOpencodeProviderActionMenuFor("");
+              void disconnectOpencodeProvider(providerId);
+            }}
+            onSelectModel={(ref) => void applyOpencodeModel(ref)}
+            onHideModel={hideOpencodeModel}
+            onEnableModel={enableOpencodeModel}
+            getProviderTag={getOpencodeProviderTag}
+            getProviderSource={getOpencodeProviderSource}
+            getProviderDisplayName={resolveProviderDisplayName}
+          />
         ) : null}
 
         {showOpencodeAuthDialogFor ? (() => {
           const pid = showOpencodeAuthDialogFor.trim();
-          const pretty = opencodeProviderNames[pid] || PROVIDER_PRESETS.find((p) => p.id === pid)?.name || pid;
+          const pretty = resolveProviderDisplayName(pid);
           const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
           return (
             <OpenCodeAuthDialog
@@ -12430,7 +7081,7 @@ branches.forEach((b) => {
             expandedLogDep={expandedLogDep}
             onClose={() => setShowEnvSetup(false)}
             onDismiss={() => {
-              window.localStorage.setItem("giteam.runtime.setup.dismissed.v1", "1");
+              setRuntimeSetupDismissed(true);
               setShowEnvSetup(false);
             }}
             onRefresh={() => void refreshRuntimeRequirements()}
@@ -12461,294 +7112,70 @@ branches.forEach((b) => {
           );
         })() : null}
 
-        {showOpencodeModulePanel ? createPortal(
-          <div className="gt-module-layer" onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setShowOpencodeModulePanel(false);
-          }}>
-            <div className="gt-module-panel" onMouseDown={(e) => e.stopPropagation()}>
-              <div className="gt-module-head">
-                <div>
-                  <div className="gt-module-kicker">OpenCode Modules</div>
-                  <h2>Agent / 权限 / MCP / Skills</h2>
-                </div>
-                <button type="button" className="modal-close" onClick={() => setShowOpencodeModulePanel(false)}><CloseIcon /></button>
-              </div>
-              <div className="gt-module-tabs">
-                {([
-                  ["agents", "Agents"],
-                  ["permissions", `权限${opencodeActivePermissions.length ? ` (${opencodeActivePermissions.length})` : ""}`],
-                  ["mcp", "MCP"],
-                  ["skills", "Skills"]
-                ] as Array<[OpencodeModuleTab, string]>).map(([tab, label]) => (
-                  <button key={tab} type="button" className={opencodeModuleTab === tab ? "active" : ""} onClick={() => setOpencodeModuleTab(tab)}>{label}</button>
-                ))}
-              </div>
-              <div className="gt-module-body">
-                {opencodeModuleTab === "agents" ? (
-                  <div className="gt-module-section">
-                    <div className="gt-module-toolbar">
-                      <input className="path-input" placeholder="搜索 agent" value={opencodeAgentSearch} onChange={(e) => setOpencodeAgentSearch(e.target.value)} />
-                      <button className="chip" onClick={() => void refreshOpencodeAgents()} disabled={opencodeAgentsLoading}>刷新</button>
-                    </div>
-                    {opencodeAgentsError ? <div className="small" style={{ color: "var(--danger)" }}>{opencodeAgentsError}</div> : null}
-                    <div className="gt-module-list">
-                      {visibleOpencodeAgents.map((agent) => (
-                        <button key={agent.name} type="button" className={agent.name === activeOpencodeAgent ? "gt-module-row selected" : "gt-module-row"} onClick={() => applyOpencodeAgent(agent.name)}>
-                          <span className="gt-module-row-title">@{agent.name}</span>
-                          <span className="gt-module-row-desc">{agent.description || agent.mode || "agent"}</span>
-                          <span className="gt-module-row-meta">{agent.mode || "all"}{agent.native ? " · native" : ""}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                {opencodeModuleTab === "permissions" ? (
-                  <div className="gt-module-section">
-                    <label className="gt-switch-row">
-                      <span>
-                        <strong>自动接受权限</strong>
-                        <small>为当前会话写入 allow-all 规则，并自动回复后续 permission.asked。</small>
-                      </span>
-                      <button
-                        type="button"
-                        className={opencodeAutoAcceptPermissions ? "gt-switch active" : "gt-switch"}
-                        onClick={() => {
-                          const next = !opencodeAutoAcceptPermissions;
-                          setOpencodeAutoAcceptPermissions(next);
-                          saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-                          if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
-                        }}
-                      >
-                        {opencodeAutoAcceptPermissions ? "ON" : "OFF"}
-                      </button>
-                    </label>
-                    <div className="gt-module-toolbar">
-                      <button className="chip" onClick={() => void refreshPendingPermissions()} disabled={opencodePermissionLoading}>刷新权限请求</button>
-                    </div>
-                    {opencodeActivePermissions.length === 0 ? (
-                      <div className="gt-module-empty">当前没有待处理授权。</div>
-                    ) : (
-                      <div className="gt-module-list">
-                        {opencodeActivePermissions.map((req) => (
-                          <div key={req.id} className="gt-module-row gt-module-row-static">
-                            <span className="gt-module-row-title">{req.permission || "permission"}</span>
-                            <span className="gt-module-row-desc">{(req.patterns || []).join(", ") || "*"}</span>
-                            <span className="gt-module-row-meta">{req.id}</span>
-                            <span className="gt-module-row-actions">
-                              <button className="chip" onClick={() => void sendPermissionReply(req.id, "once")}>本次</button>
-                              <button className="chip primary" onClick={() => void sendPermissionReply(req.id, "always")}>总是</button>
-                              <button className="chip danger" onClick={() => void sendPermissionReply(req.id, "reject")}>拒绝</button>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-                {opencodeModuleTab === "mcp" ? (
-                  <div className="gt-module-section">
-                    <div className="gt-module-toolbar">
-                      <button className="chip" onClick={() => void refreshOpencodeMcpStatus()} disabled={opencodeMcpLoading}>刷新 MCP</button>
-                      {opencodeMcpError ? <span className="small" style={{ color: "var(--danger)" }}>{opencodeMcpError}</span> : null}
-                    </div>
-                    <div className="gt-module-form">
-                      <input className="path-input" placeholder="mcp 名称，例如 context7" value={opencodeMcpName} onChange={(e) => setOpencodeMcpName(e.target.value)} />
-                      <select className="path-input" value={opencodeMcpType} onChange={(e) => setOpencodeMcpType(e.target.value as OpencodeMcpType)}>
-                        <option value="remote">remote</option>
-                        <option value="local">local</option>
-                      </select>
-                      {opencodeMcpType === "remote" ? (
-                        <>
-                          <input className="path-input" placeholder="https://mcp.example.com/mcp" value={opencodeMcpUrl} onChange={(e) => setOpencodeMcpUrl(e.target.value)} />
-                          <textarea className="path-input gt-module-textarea" placeholder="Headers，每行 KEY=VALUE（可选）" value={opencodeMcpHeaders} onChange={(e) => setOpencodeMcpHeaders(e.target.value)} />
-                        </>
-                      ) : (
-                        <>
-                          <input className="path-input" placeholder={'npx -y @modelcontextprotocol/server-everything'} value={opencodeMcpCommand} onChange={(e) => setOpencodeMcpCommand(e.target.value)} />
-                          <textarea className="path-input gt-module-textarea" placeholder="Environment，每行 KEY=VALUE（可选）" value={opencodeMcpEnv} onChange={(e) => setOpencodeMcpEnv(e.target.value)} />
-                        </>
-                      )}
-                      <button className="chip primary" onClick={() => void addOpencodeMcpServer()} disabled={!!opencodeMcpBusyName}>添加 MCP</button>
-                    </div>
-                    {opencodeMcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。可添加 Context7、Sentry、Grep 等。</div> : null}
-                    <div className="gt-module-list">
-                      {opencodeMcpRows.map(([name, status]) => {
-                        const statusLabel = String(status?.status || status?.state || (status?.enabled === false ? "disabled" : "configured"));
-                        const tools = Array.isArray((status as any)?.tools) ? (status as any).tools.length : undefined;
-                        return (
-                          <div key={name} className="gt-module-row gt-module-row-static">
-                            <span className="gt-module-row-title">{name}</span>
-                            <span className="gt-module-row-desc">{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</span>
-                            <span className="gt-module-row-meta">{String((status as any)?.type || "mcp")}</span>
-                            <span className="gt-module-row-actions">
-                              <button className="chip" onClick={() => void runMcpAction(name, "connect")} disabled={!!opencodeMcpBusyName}>连接</button>
-                              <button className="chip" onClick={() => void runMcpAction(name, "disconnect")} disabled={!!opencodeMcpBusyName}>断开</button>
-                              <button className="chip" onClick={() => void runMcpAction(name, "auth")} disabled={!!opencodeMcpBusyName}>OAuth</button>
-                              <button className="chip danger" onClick={() => void runMcpAction(name, "logout")} disabled={!!opencodeMcpBusyName}>登出</button>
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-                {opencodeModuleTab === "skills" ? (
-                  <div className="gt-module-section">
-                    <div className="gt-module-toolbar">
-                      <button className="chip" onClick={() => void refreshOpencodeSkills()} disabled={opencodeSkillsLoading}>刷新 Skills</button>
-                      {opencodeSkillsError ? <span className="small" style={{ color: "var(--danger)" }}>{opencodeSkillsError}</span> : null}
-                    </div>
-                    <div className="gt-skills-hero">
-                      <div className="gt-skills-hero-copy">
-                        <span className="gt-module-kicker">Skill command center</span>
-                        <h3>搜索、安装、区分范围，一屏完成</h3>
-                        <p>默认推荐全局安装通用能力；项目特定规范、私有工作流或团队模板建议安装到当前仓库。</p>
-                      </div>
-                      <div className="gt-skills-hero-stats">
-                        <span><strong>{opencodeSkills.filter((skill) => skill.scope === "global").length}</strong> Global</span>
-                        <span><strong>{opencodeSkills.filter((skill) => skill.scope === "project").length}</strong> Repo</span>
-                        <span><strong>{opencodeSkillSearchResults.length}</strong> Results</span>
-                      </div>
-                    </div>
-                    <div className="gt-skill-scope-picker">
-                      <span>安装范围</span>
-                      <button type="button" className={opencodeSkillInstallScope === "project" ? "active" : ""} onClick={() => setOpencodeSkillInstallScope("project")}>当前仓库</button>
-                      <button type="button" className={opencodeSkillInstallScope === "global" ? "active" : ""} onClick={() => setOpencodeSkillInstallScope("global")}>全局通用</button>
-                    </div>
-                    {opencodeSkillBusy ? (
-                      <div className="gt-skill-progress">
-                        <span className="gt-skill-progress-orb" />
-                        <div>
-                          <strong>正在安装 Skill</strong>
-                          <small>会从 skills.sh / GitHub 拉取内容，完成后自动刷新 OpenCode Skills 列表。</small>
-                        </div>
-                      </div>
-                    ) : null}
-                    {(opencodeSkillBusy || opencodeSkillInstallingSpec || opencodeSkillInstallLog) ? (
-                      <div className="gt-skill-install-log">
-                        <div><strong>安装日志</strong><span>{opencodeSkillInstallingSpec || "最近一次安装"}</span></div>
-                        <pre>{opencodeSkillInstallLog || `正在启动安装 ${opencodeSkillInstallingSpec || "skill"}...`}</pre>
-                      </div>
-                    ) : null}
-                    <div className="gt-skill-recommend-grid">
-                      {OPENCODE_RECOMMENDED_SKILLS.map((skill) => (
-                        <div key={skill.spec} className="gt-skill-recommend-card">
-                          <div className="gt-skill-recommend-top">
-                            <span>{skill.tone}</span>
-                            <small>{skill.installs}</small>
-                          </div>
-                          <strong>{skill.title}</strong>
-                          <p>{skill.description}</p>
-                          <div className="gt-skill-recommend-actions">
-                            <button className="chip" onClick={() => setOpencodeSkillInstallSpec(skill.spec)}>填入</button>
-                            <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry(skill.spec)} disabled={opencodeSkillBusy}>安装</button>
-                          </div>
-                          <code>{skill.spec}</code>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="gt-module-form compact gt-skill-enter-search">
-                      <input
-                        className="path-input"
-                        placeholder="搜索 skills，例如 frontend / react / testing"
-                        value={opencodeSkillSearchQuery}
-                        onChange={(e) => setOpencodeSkillSearchQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void searchOpencodeSkillRegistry();
-                        }}
-                      />
-                    </div>
-                    {opencodeSkillSearchLoading ? (
-                      <div className="gt-skill-skeleton-grid" aria-label="正在搜索 skills">
-                        <span /><span /><span />
-                      </div>
-                    ) : null}
-                    {opencodeSkillSearchResults.length > 0 ? (
-                      <div className="gt-module-list gt-skill-search-list">
-                        {opencodeSkillSearchResults.map((result) => (
-                          <div key={result.spec} className="gt-module-row gt-module-row-static">
-                            <span className="gt-module-row-title">{result.skill}</span>
-                            <span className="gt-module-row-desc">{result.package}</span>
-                            <span className="gt-module-row-meta">{result.installs ? `${result.installs} installs` : result.url}</span>
-                            <span className="gt-module-row-actions">
-                              <button className="chip" onClick={() => setOpencodeSkillInstallSpec(result.installSpec || result.spec)}>填入</button>
-                              <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry(result.installSpec || result.spec, opencodeSkillInstallScope, [result.installUrl || "", result.url || "", result.spec])} disabled={opencodeSkillBusy}>安装</button>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    <div className="gt-module-form">
-                      <input className="path-input" placeholder="skills.sh 条目，如 anthropics/skills@frontend-design" value={opencodeSkillInstallSpec} onChange={(e) => setOpencodeSkillInstallSpec(e.target.value)} />
-                      <button className="chip primary" onClick={() => void installOpencodeSkillFromRegistry()} disabled={opencodeSkillBusy}>从 skills.sh 安装</button>
-                    </div>
-                    <div className="gt-module-form compact">
-                      <select className="path-input" value={opencodeSkillSourceKind} onChange={(e) => setOpencodeSkillSourceKind(e.target.value as "url" | "path")}>
-                        <option value="url">skills.urls</option>
-                        <option value="path">skills.paths</option>
-                      </select>
-                      <input className="path-input" placeholder={opencodeSkillSourceKind === "url" ? "https://example.com/.well-known/skills/" : "/path/to/skills"} value={opencodeSkillSourceInput} onChange={(e) => setOpencodeSkillSourceInput(e.target.value)} />
-                      <button className="chip" onClick={() => void addOpencodeSkillSource()} disabled={opencodeSkillBusy}>添加来源</button>
-                    </div>
-                    <div className="gt-installed-skill-tools">
-                      <div className="gt-skill-filter-tabs">
-                        {([
-                          ["all", `全部 ${opencodeSkills.length}`],
-                          ["global", `Global ${opencodeSkills.filter((skill) => skill.scope === "global").length}`],
-                          ["project", `Repo ${opencodeSkills.filter((skill) => skill.scope === "project").length}`],
-                          ["source", `Source ${opencodeSkills.filter((skill) => (skill.scope || "source") === "source").length}`]
-                        ] as Array<["all" | "global" | "project" | "source", string]>).map(([filter, label]) => (
-                          <button key={filter} type="button" className={opencodeSkillListFilter === filter ? "active" : ""} onClick={() => setOpencodeSkillListFilter(filter)}>{label}</button>
-                        ))}
-                      </div>
-                      <input className="path-input" placeholder="过滤已安装 skills" value={opencodeSkillListQuery} onChange={(e) => setOpencodeSkillListQuery(e.target.value)} />
-                    </div>
-                    {opencodeSkills.length === 0 ? <div className="gt-module-empty">暂无 Skills。OpenCode 会扫描 .opencode/skills、.claude/skills 和全局 skills。</div> : null}
-                    {opencodeSkills.length > 0 && filteredOpencodeSkills.length === 0 ? <div className="gt-module-empty">没有匹配当前过滤条件的 Skill。</div> : null}
-                    <div className="gt-module-list">
-                      {groupedOpencodeSkills.map((group) => {
-                        const removing = group.removableItems.some((skill) => opencodeSkillRemovingKey === `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`);
-                        const singleSkill = group.items[0];
-                        const canRenderFlat = group.items.length === 1
-                          && !!singleSkill
-                          && (singleSkill.sourceGroup || "").trim() === ""
-                          && group.name.trim() === singleSkill.name.trim();
-                        if (canRenderFlat) {
-                          const skill = singleSkill;
-                          const scope = skill.scope || "source";
-                          const scopeLabel = scope === "global" ? "Global" : scope === "project" ? "Repo" : "Source";
-                          return (
-                            <div key={group.name} className="gt-module-row gt-module-row-static">
-                              <span className="gt-module-row-title">{skill.name}<span className={`gt-scope-badge ${scope}`}>{scopeLabel}</span></span>
-                              <span className="gt-module-row-desc">{skill.description || "Installed via skills.sh"}</span>
-                              <span className="gt-module-row-meta">{skill.path || skill.location || skill.license || "skill"}</span>
-                              <span className="gt-module-row-actions">
-                                <button className="chip" onClick={() => referenceOpencodeSkill(skill)}>查看</button>
-                                <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkill(skill)}>{removing ? "Removing" : "Uninstall"}</button>
-                              </span>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div key={group.name} className="gt-module-row gt-module-row-static">
-                            <span className="gt-module-row-title">{group.name}<span className="gt-scope-badge project">{group.items.length} 项</span></span>
-                            <span className="gt-module-row-desc">{group.items.map((skill) => skill.name).join(" · ") || "No description"}</span>
-                            <span className="gt-module-row-meta">{group.items[0]?.path || group.items[0]?.location || group.items[0]?.license || "skill"}</span>
-                            <span className="gt-module-row-actions">
-                              <button className="chip" onClick={() => referenceOpencodeSkill(group.items[0])}>查看</button>
-                              <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => void removeOpencodeSkillGroup(group)}>{removing ? "Removing" : "Uninstall"}</button>
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </div>,
-          document.body
-        ) : null}
+        <OpenCodeModulePanel
+          open={showOpencodeModulePanel}
+          activeTab={opencodeModuleTab}
+          agentSearch={opencodeAgentSearch}
+          agentsLoading={opencodeAgentsLoading}
+          agentsError={opencodeAgentsError}
+          visibleAgents={visibleOpencodeAgents}
+          activeAgent={activeOpencodeAgent}
+          autoAcceptPermissions={opencodeAutoAcceptPermissions}
+          permissionLoading={opencodePermissionLoading}
+          activePermissions={opencodeActivePermissions}
+          mcpLoading={opencodeMcpLoading}
+          mcpError={opencodeMcpError}
+          mcpBusyName={opencodeMcpBusyName}
+          mcpRows={opencodeMcpRows as Array<[string, Record<string, any>]>}
+          mcpAddForm={opencodeMcpAddForm}
+          skillsLoading={opencodeSkillsLoading}
+          skillsError={opencodeSkillsError}
+          skills={opencodeSkills}
+          filteredSkills={filteredOpencodeSkills}
+          groupedSkills={groupedOpencodeSkills}
+          skillSearchResults={opencodeSkillSearchResults}
+          skillInstallScope={opencodeSkillInstallScope}
+          skillBusy={opencodeSkillBusy}
+          skillInstallingSpec={opencodeSkillInstallingSpec}
+          skillInstallLog={opencodeSkillInstallLog}
+          skillInstallSpec={opencodeSkillInstallSpec}
+          skillSearchQuery={opencodeSkillSearchQuery}
+          skillSourceKind={opencodeSkillSourceKind}
+          skillSourceInput={opencodeSkillSourceInput}
+          skillListFilter={opencodeSkillListFilter}
+          skillListQuery={opencodeSkillListQuery}
+          skillRemovingKey={opencodeSkillRemovingKey}
+          onClose={() => setShowOpencodeModulePanel(false)}
+          onTabChange={setOpencodeModuleTab}
+          onAgentSearchChange={setOpencodeAgentSearch}
+          onRefreshAgents={() => void refreshOpencodeAgents()}
+          onApplyAgent={applyOpencodeAgent}
+          onToggleAutoAccept={() => {
+            const next = !opencodeAutoAcceptPermissions;
+            setOpencodeAutoAcceptPermissions(next);
+            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+          }}
+          onRefreshPermissions={() => void refreshPendingPermissions()}
+          onSendPermissionReply={(requestId, reply) => void sendPermissionReply(requestId, reply)}
+          onRefreshMcp={() => void refreshOpencodeMcpStatus()}
+          onRefreshSkills={() => void refreshOpencodeSkills()}
+          onAddMcp={() => void addOpencodeMcpServer()}
+          onRunMcpAction={(name, action) => void runMcpAction(name, action)}
+          onSkillInstallScopeChange={setOpencodeSkillInstallScope}
+          onSkillInstallSpecChange={setOpencodeSkillInstallSpec}
+          onSkillSearchQueryChange={setOpencodeSkillSearchQuery}
+          onSearchSkillRegistry={() => void searchOpencodeSkillRegistry()}
+          onInstallSkill={(spec, scope) => void installOpencodeSkillFromRegistry(spec, scope)}
+          onSkillSourceKindChange={setOpencodeSkillSourceKind}
+          onSkillSourceInputChange={setOpencodeSkillSourceInput}
+          onAddSkillSource={() => void addOpencodeSkillSource()}
+          onSkillListFilterChange={setOpencodeSkillListFilter}
+          onSkillListQueryChange={setOpencodeSkillListQuery}
+          onReferenceSkill={referenceOpencodeSkill}
+          onRemoveSkill={(skill) => void removeOpencodeSkill(skill)}
+          onRemoveSkillGroup={(group) => void removeOpencodeSkillGroup(group)}
+        />
 
         {repoContextMenu ? (
           <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>

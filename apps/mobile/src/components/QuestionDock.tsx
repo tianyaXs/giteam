@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React from "react";
 import {
   View,
   Text,
@@ -9,7 +9,8 @@ import {
   Platform,
   useWindowDimensions,
 } from "react-native";
-import type { QuestionRequest, QuestionAnswer, QuestionInfo } from "../types";
+import type { QuestionRequest, QuestionAnswer } from "../types";
+import { useQuestionDockController } from "../features/questions/useQuestionDockController";
 
 interface QuestionDockProps {
   request: QuestionRequest;
@@ -22,158 +23,41 @@ interface QuestionDockProps {
 
 export function QuestionDock({ request, onReply, onDismiss, disabledReason, submitState = 'idle', submitError }: QuestionDockProps) {
   const { height: windowHeight } = useWindowDimensions();
-  const [currentTab, setCurrentTab] = useState(0);
-  const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
-  const [customInputs, setCustomInputs] = useState<string[]>([]);
-  const [selectedOption, setSelectedOption] = useState<number>(0);
-  const [isEditing, setIsEditing] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-
-  const questions = useMemo(() => request.questions || [], [request.questions]);
-  const singleQuestion = useMemo(() => questions.length === 1, [questions.length]);
-  const isConfirmTab = useMemo(() => !singleQuestion && currentTab === questions.length, [singleQuestion, currentTab, questions.length]);
-
-  const currentQuestion: QuestionInfo | undefined = questions[currentTab];
-  const options = useMemo(() => currentQuestion?.options || [], [currentQuestion]);
-  const isMultiSelect = useMemo(() => currentQuestion?.multiple === true, [currentQuestion]);
-  const allowCustom = useMemo(() => currentQuestion?.custom !== false, [currentQuestion]);
+  const locked = !!disabledReason || submitState === 'submitting' || submitState === 'submitted';
+  const {
+    allowCustom,
+    answers,
+    collapsed,
+    currentCustomInput,
+    currentQuestion,
+    currentTab,
+    goNext,
+    goToQuestionTab,
+    handleCustomSubmit,
+    handleDismiss,
+    handleSelectOption,
+    handleSubmitAll,
+    isConfirmTab,
+    isCustomPicked,
+    isEditing,
+    isMultiSelect,
+    isOptionSelected,
+    isOtherOption,
+    options,
+    questions,
+    selectedOption,
+    setCollapsed,
+    singleQuestion,
+    updateCurrentCustomInput
+  } = useQuestionDockController({
+    request,
+    locked,
+    onReply,
+    onDismiss
+  });
   const denseOptions = options.length + (allowCustom ? 1 : 0) >= 5;
   const maxDockHeight = Math.max(360, Math.round(windowHeight * 0.68));
   const maxBodyHeight = Math.max(230, Math.round(windowHeight * 0.48));
-  const isOtherOption = useMemo(() => allowCustom && selectedOption === options.length, [allowCustom, selectedOption, options.length]);
-  const locked = !!disabledReason || submitState === 'submitting' || submitState === 'submitted';
-
-  const currentCustomInput = customInputs[currentTab] || "";
-  const isCustomPicked = useMemo(() => {
-    if (!currentCustomInput) return false;
-    return (answers[currentTab] || []).includes(currentCustomInput);
-  }, [currentCustomInput, answers, currentTab]);
-
-  const isOptionSelected = useCallback((optionLabel: string) => {
-    return (answers[currentTab] || []).includes(optionLabel);
-  }, [answers, currentTab]);
-
-  const handlePick = useCallback((answer: string, isCustom: boolean = false) => {
-    if (locked) return;
-    const newAnswers = [...answers];
-    newAnswers[currentTab] = [answer];
-    setAnswers(newAnswers);
-
-    if (isCustom) {
-      const newCustomInputs = [...customInputs];
-      newCustomInputs[currentTab] = answer;
-      setCustomInputs(newCustomInputs);
-    }
-
-    if (singleQuestion) return;
-
-    setCurrentTab(currentTab + 1);
-    setSelectedOption(0);
-  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, locked]);
-
-  const handleToggle = useCallback((answer: string) => {
-    if (locked) return;
-    const existing = answers[currentTab] || [];
-    const index = existing.indexOf(answer);
-    let next: string[];
-
-    if (index === -1) {
-      next = [...existing, answer];
-    } else {
-      next = existing.filter((_, i) => i !== index);
-    }
-
-    const newAnswers = [...answers];
-    newAnswers[currentTab] = next;
-    setAnswers(newAnswers);
-  }, [answers, currentTab, locked]);
-
-  const handleSelectOption = useCallback((index: number) => {
-    if (locked) return;
-    if (allowCustom && index === options.length) {
-      setSelectedOption(index);
-      if (!isMultiSelect) {
-        setIsEditing(true);
-      } else if (currentCustomInput && isCustomPicked) {
-        handleToggle(currentCustomInput);
-      } else {
-        setIsEditing(true);
-      }
-      return;
-    }
-
-    const opt = options[index];
-    if (!opt) return;
-
-    setSelectedOption(index);
-    if (isMultiSelect) {
-      handleToggle(opt.label);
-    } else {
-      handlePick(opt.label);
-    }
-  }, [allowCustom, options, isMultiSelect, currentCustomInput, isCustomPicked, handleToggle, handlePick, locked]);
-
-  const handleCustomSubmit = useCallback(() => {
-    const text = currentCustomInput.trim();
-    const prev = customInputs[currentTab];
-
-    if (!text) {
-      if (prev) {
-        const newCustomInputs = [...customInputs];
-        newCustomInputs[currentTab] = "";
-        setCustomInputs(newCustomInputs);
-
-        const newAnswers = [...answers];
-        newAnswers[currentTab] = (newAnswers[currentTab] || []).filter((x) => x !== prev);
-        setAnswers(newAnswers);
-      }
-      setIsEditing(false);
-      return;
-    }
-
-    if (isMultiSelect) {
-      const newCustomInputs = [...customInputs];
-      newCustomInputs[currentTab] = text;
-      setCustomInputs(newCustomInputs);
-
-      const existing = answers[currentTab] || [];
-      let next = [...existing];
-      if (prev) {
-        next = next.filter((x) => x !== prev);
-      }
-      if (!next.includes(text)) {
-        next.push(text);
-      }
-
-      const newAnswers = [...answers];
-      newAnswers[currentTab] = next;
-      setAnswers(newAnswers);
-      setIsEditing(false);
-    } else {
-      const newCustomInputs = [...customInputs];
-      newCustomInputs[currentTab] = text;
-      setCustomInputs(newCustomInputs);
-      const newAnswers = [...answers];
-      newAnswers[currentTab] = [text];
-      setAnswers(newAnswers);
-      setSelectedOption(options.length);
-      setIsEditing(false);
-      if (!singleQuestion) setCurrentTab(currentTab + 1);
-    }
-  }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, options.length, singleQuestion, locked]);
-
-  const handleSubmitAll = useCallback(() => {
-    if (locked) return;
-    const finalAnswers = questions.map((_, i) => answers[i] || []);
-    if (finalAnswers.some((answer) => answer.length === 0)) return;
-    onReply(request.id, finalAnswers);
-  }, [questions, answers, request.id, onReply, locked]);
-
-  const handleDismiss = useCallback(() => {
-    if (onDismiss) {
-      onDismiss(request.id);
-    }
-  }, [onDismiss, request.id]);
 
   if (questions.length === 0) return null;
 
@@ -198,8 +82,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                   ]}
                   onPress={(e) => {
                     e.stopPropagation();
-                    setCurrentTab(idx);
-                    setSelectedOption(0);
+                    goToQuestionTab(idx);
                   }}
                 />
               ))}
@@ -226,8 +109,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                     style={styles.confirmItem}
                     onPress={() => {
                       if (locked) return;
-                      setCurrentTab(idx);
-                      setSelectedOption(0);
+                      goToQuestionTab(idx);
                     }}
                   >
                     <Text style={styles.confirmQ}>{q.question}</Text>
@@ -331,17 +213,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                           <TextInput
                             style={styles.customInput}
                             value={currentCustomInput}
-                            onChangeText={(text) => {
-                              const newCustomInputs = [...customInputs];
-                              newCustomInputs[currentTab] = text;
-                              setCustomInputs(newCustomInputs);
-                              if (!isMultiSelect) {
-                                const trimmed = text.trim();
-                                const newAnswers = [...answers];
-                                newAnswers[currentTab] = trimmed ? [trimmed] : [];
-                                setAnswers(newAnswers);
-                              }
-                            }}
+                            onChangeText={updateCurrentCustomInput}
                             onSubmitEditing={handleCustomSubmit}
                             onBlur={handleCustomSubmit}
                             autoFocus
@@ -403,10 +275,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                   styles.btnPrimary,
                   (currentTab >= questions.length - 1 && (answers[currentTab] || []).length === 0) && styles.btnDisabled,
                 ]}
-                onPress={() => {
-                  setCurrentTab(currentTab + 1);
-                  setSelectedOption(0);
-                }}
+                onPress={goNext}
                 disabled={currentTab >= questions.length - 1 && (answers[currentTab] || []).length === 0}
               >
                 <Text style={styles.btnPrimaryText}>下一步</Text>

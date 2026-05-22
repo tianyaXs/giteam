@@ -32,6 +32,18 @@ export type WorktreeTreeNode = {
   entry?: GitWorktreeEntry;
 };
 
+export type WorktreePatchStats = {
+  added: number;
+  deleted: number;
+  hunks: number;
+};
+
+export type WorktreeChangeStats = {
+  total: number;
+  staged: number;
+  unstaged: number;
+};
+
 export function buildWorktreeTree(entries: GitWorktreeEntry[]): WorktreeTreeNode[] {
   const root: WorktreeTreeNode[] = [];
   const dirMap = new Map<string, WorktreeTreeNode>();
@@ -256,4 +268,24 @@ export function toDiffRows(patch: string): DiffRow[] {
     });
   }
   return rows;
+}
+
+export function getWorktreePatchStats(rows: SplitDiffRow[]): WorktreePatchStats {
+  return {
+    added: rows.filter((row) => row.right.tone === "add").length,
+    deleted: rows.filter((row) => row.left.tone === "del").length,
+    hunks: rows.filter((row) => row.kind === "hunk").length
+  };
+}
+
+export function getWorktreeChangeStats(entries: GitWorktreeEntry[]): WorktreeChangeStats {
+  return {
+    total: entries.length,
+    staged: entries.filter((entry) => entry.staged).length,
+    unstaged: entries.filter((entry) => entry.unstaged || entry.untracked).length
+  };
+}
+
+export function getDiscardableWorktreeEntryCount(entries: GitWorktreeEntry[]): number {
+  return entries.filter((entry) => entry.staged || entry.unstaged || entry.untracked).length;
 }
