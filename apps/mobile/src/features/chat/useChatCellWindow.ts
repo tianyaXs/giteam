@@ -25,8 +25,6 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
     : 1;
   const historyProgressWidth = `${Math.max(6, Math.round(historyProgress * 100))}%` as `${number}%`;
 
-  const initialChatScrollIndex = undefined;
-  const initialChatScrollOffset = undefined;
   const chatListMountKey = `chat-list-${chatListResetKey}-${sessionId || 'draft'}`;
 
   displayedTurnCellsRef.current = displayedTurnCells;
@@ -38,8 +36,6 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
     visibleCellCountRef,
     hasHiddenCells,
     historyProgressWidth,
-    initialChatScrollIndex,
-    initialChatScrollOffset,
     chatListMountKey,
     bumpCellWindowVersion: () => {}
   };

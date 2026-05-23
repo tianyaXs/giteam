@@ -12,6 +12,7 @@ export function useChatWorkspaceEvents(params: {
   ) => void;
   handleListLayout: (height: number) => void;
   loadingOlder: boolean;
+  markHistoryLoadAnchor: (source?: string) => boolean;
   onLoadOlderMessages: () => Promise<void>;
   onMessageListScroll: (scrollY: number, viewportHeight: number, contentHeight: number) => void;
 }) {
@@ -20,13 +21,15 @@ export function useChatWorkspaceEvents(params: {
     handleContentSizeChange,
     handleListLayout,
     loadingOlder,
+    markHistoryLoadAnchor,
     onLoadOlderMessages,
     onMessageListScroll
   } = params;
 
   const handleLoadOlderMessages = useCallback(() => {
+    if (!markHistoryLoadAnchor('endReached')) return;
     void onLoadOlderMessages();
-  }, [onLoadOlderMessages]);
+  }, [markHistoryLoadAnchor, onLoadOlderMessages]);
 
   const handleWorkspaceScroll = useCallback((evt: any) => {
     const y = Number(evt.nativeEvent.contentOffset?.y || 0);

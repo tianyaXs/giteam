@@ -1,6 +1,5 @@
-import React, { useCallback, useMemo } from 'react';
-import { Animated, Platform, Pressable, Text, View } from 'react-native';
-import { FlashList } from '@shopify/flash-list';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Animated, FlatList, Platform, Pressable, Text, View } from 'react-native';
 
 type NotebookColors = {
   text: string;
@@ -25,9 +24,6 @@ export function ChatConversationStage(props: {
   messageScrollRef: React.RefObject<any>;
   messageBottomInset: number;
   displayedTurnCells: any[];
-  getChatCellType: (item: any) => string;
-  initialChatScrollIndex?: number;
-  initialChatScrollOffset?: number;
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   canLoadEarlierHistory: boolean;
@@ -53,10 +49,7 @@ export function ChatConversationStage(props: {
     chatViewabilityConfig,
     currentWorkspaceName,
     displayedTurnCells,
-    getChatCellType,
     historyProgressWidth,
-    initialChatScrollIndex,
-    initialChatScrollOffset,
     inputDockHeight,
     loadingOlder,
     messageBottomInset,
@@ -84,28 +77,36 @@ export function ChatConversationStage(props: {
     styles,
     windowWidth
   } = props;
-  const chatDrawDistance = useMemo(() => Math.max(720, windowWidth * 1.6), [windowWidth]);
   const chatContentContainerStyle = useMemo(
     () => ({
+      flexGrow: 1,
+      justifyContent: 'flex-end' as const,
       paddingTop: 8,
       paddingBottom: messageBottomInset,
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
   );
-  const maintainChatPosition = useMemo(
-    () => ({
-      startRenderingFromBottom: false,
-      autoscrollToTopThreshold: 0.08,
-      autoscrollToBottomThreshold: 0,
-      animateAutoScrollToBottom: false
-    }),
-    []
-  );
   const keyExtractor = useCallback((item: any) => item.id, []);
+  const latestSettledKeyRef = useRef('');
+  const maintainHistoryPosition = useMemo(
+    () => (loadingOlder ? { minIndexForVisible: 0 } : undefined),
+    [loadingOlder]
+  );
   const handleStartReached = useCallback(() => {
     if (canLoadEarlierHistory && !loadingOlder) onLoadOlderMessages();
   }, [canLoadEarlierHistory, loadingOlder, onLoadOlderMessages]);
+  useEffect(() => {
+    if (latestSettledKeyRef.current === chatListMountKey) return;
+    latestSettledKeyRef.current = chatListMountKey;
+    [0, 80, 220].forEach((delay) => {
+      setTimeout(() => {
+        try {
+          messageScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+        } catch {}
+      }, delay);
+    });
+  }, [chatListMountKey, messageScrollRef]);
 
   return (
     <View style={styles.chatBodyWrap}>
@@ -158,17 +159,13 @@ export function ChatConversationStage(props: {
         </View>
       ) : (
         <View style={styles.chatListStage}>
-          <FlashList
+          <FlatList
             key={chatListMountKey}
             ref={messageScrollRef}
-            drawDistance={chatDrawDistance}
             contentContainerStyle={chatContentContainerStyle}
             onLayout={onListLayout}
             data={displayedTurnCells}
             inverted
-            getItemType={getChatCellType}
-            initialScrollIndex={typeof initialChatScrollIndex === 'number' ? initialChatScrollIndex : undefined}
-            initialScrollIndexParams={typeof initialChatScrollOffset === 'number' ? { viewOffset: initialChatScrollOffset } : undefined}
             removeClippedSubviews={Platform.OS === 'web'}
             alwaysBounceVertical
             bounces
@@ -176,7 +173,7 @@ export function ChatConversationStage(props: {
             showsVerticalScrollIndicator={false}
             showsHorizontalScrollIndicator={false}
             scrollEventThrottle={16}
-            maintainVisibleContentPosition={maintainChatPosition}
+            maintainVisibleContentPosition={maintainHistoryPosition}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
             onEndReached={handleStartReached}

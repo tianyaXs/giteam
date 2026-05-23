@@ -2983,6 +2983,14 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         } else {
             Vec::new()
         };
+        let cached_only = req
+            .query
+            .get("cachedOnly")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if cached_only {
+            return (200, Value::Array(cached));
+        }
         match opencode::list_opencode_questions(repo.as_str()) {
             Ok(v) => {
                 let mut rows = v.as_array().cloned().unwrap_or_default();

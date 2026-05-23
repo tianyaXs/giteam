@@ -505,11 +505,15 @@ export async function getPendingQuestions(args: {
   token: string;
   repoPath: string;
   sessionId?: string;
+  cachedOnly?: boolean;
 }): Promise<QuestionRequest[]> {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const params = new URLSearchParams({ repoPath: args.repoPath });
   if (args.sessionId) {
     params.append('sessionId', args.sessionId);
+  }
+  if (args.cachedOnly) {
+    params.append('cachedOnly', '1');
   }
   const url = `${baseUrl}/api/v1/opencode/question?${params.toString()}`;
   const result = await fetchTextWithTrace(url, {

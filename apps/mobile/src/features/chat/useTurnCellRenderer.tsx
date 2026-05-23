@@ -53,12 +53,6 @@ export function useTurnCellRenderer(params: {
     chatCellHeightMapRef.current[key] = height;
   }, [chatCellHeightMapRef, settleCellLayoutAdjustment]);
 
-  const getChatCellType = useCallback((item: DisplayedTurnCell) => {
-    if (item.userMessage) return 'user';
-    const timelineItem = item.items[0];
-    return timelineItem?.kind || 'unknown';
-  }, []);
-
   const renderTurnCell = useCallback(({ item }: { item: DisplayedTurnCell; index: number }) => {
     const interaction = interactionByCellId[item.id] || {
       interactionSignature: '',
@@ -119,7 +113,6 @@ export function useTurnCellRenderer(params: {
   ]);
 
   return {
-    getChatCellType,
     renderTurnCell
   };
 }

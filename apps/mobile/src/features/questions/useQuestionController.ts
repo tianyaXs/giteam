@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPendingQuestions, rejectQuestion, replyQuestion } from '../../api/controlApi';
 import { toText } from '../../lib/text';
 import { loadQuestionDismissals, saveQuestionDismissal } from '../../storage/questionDismissals';
@@ -58,6 +58,9 @@ export function useQuestionController({
   const [questionSubmitState, setQuestionSubmitState] = useState<Record<string, QuestionSubmitState>>({});
   const [expandedTimelineQuestions, setExpandedTimelineQuestions] = useState<Set<string>>(new Set());
   const [timelineQuestionTabs, setTimelineQuestionTabs] = useState<Map<string, number>>(new Map());
+  const questionListInFlightRef = useRef<Record<string, Promise<void>>>({});
+  const questionListBackoffRef = useRef<Record<string, { failures: number; retryAt: number }>>({});
+  const questionListLastFullRefreshRef = useRef<Record<string, number>>({});
 
   const activeQuestionRequest = useMemo(() => questionRequests[0] || null, [questionRequests]);
 
@@ -139,36 +142,67 @@ export function useQuestionController({
       setQuestionRequests([]);
       return;
     }
-    try {
-      const requests = await getPendingQuestions({
-        baseUrl: serverUrl,
-        token,
-        repoPath,
-        sessionId: sid
-      });
-      pushConnLog(`question.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
-      requests.forEach((req) => upsertStreamQuestion(getOpenCodeStreamStores(), req));
-      const deduped = new Map<string, QuestionRequest>();
-      for (const req of requests) {
-        if (req.sessionID !== sid || dismissedQuestions.has(req.id)) continue;
-        const tool: { messageID?: string; callID?: string } = req.tool || {};
-        const key = tool.callID || tool.messageID || req.id;
-        const existing = deduped.get(key);
-        if (!existing || (req.id.startsWith('que_') && !existing.id.startsWith('que_'))) {
-          deduped.set(key, req);
-        }
-      }
-      const liveIds = new Set([...deduped.values()].map((req) => req.id));
+    const existing = questionListInFlightRef.current[sid];
+    if (existing) return existing;
+    const backoff = questionListBackoffRef.current[sid];
+    if (backoff && backoff.retryAt > Date.now()) {
       refreshQuestionRequestsFromStore(sid);
-      setQuestionSubmitState((prev) => {
-        const next: Record<string, QuestionSubmitState> = {};
-        for (const [id, state] of Object.entries(prev)) {
-          if (liveIds.has(id)) next[id] = state;
+      return;
+    }
+    const run = (async () => {
+      const shouldFullRefresh = Date.now() - (questionListLastFullRefreshRef.current[sid] || 0) > 15000;
+      try {
+        const requests = await getPendingQuestions({
+          baseUrl: serverUrl,
+          token,
+          repoPath,
+          sessionId: sid,
+          cachedOnly: !shouldFullRefresh
+        });
+        if (shouldFullRefresh) {
+          questionListLastFullRefreshRef.current[sid] = Date.now();
         }
-        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
-      });
-    } catch (e) {
-      pushConnLog(`question.list error ${String(e)}`, 'error');
+        if (requests.length > 0) {
+          pushConnLog(`question.list ok${shouldFullRefresh ? '' : ' cached'} count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
+        }
+        delete questionListBackoffRef.current[sid];
+        requests.forEach((req) => upsertStreamQuestion(getOpenCodeStreamStores(), req));
+        const deduped = new Map<string, QuestionRequest>();
+        for (const req of requests) {
+          if (req.sessionID !== sid || dismissedQuestions.has(req.id)) continue;
+          const tool: { messageID?: string; callID?: string } = req.tool || {};
+          const key = tool.callID || tool.messageID || req.id;
+          const existing = deduped.get(key);
+          if (!existing || (req.id.startsWith('que_') && !existing.id.startsWith('que_'))) {
+            deduped.set(key, req);
+          }
+        }
+        const liveIds = new Set([...deduped.values()].map((req) => req.id));
+        refreshQuestionRequestsFromStore(sid);
+        setQuestionSubmitState((prev) => {
+          const next: Record<string, QuestionSubmitState> = {};
+          for (const [id, state] of Object.entries(prev)) {
+            if (liveIds.has(id)) next[id] = state;
+          }
+          return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+        });
+      } catch (e) {
+        pushConnLog(`question.list error ${String(e)}`, 'error');
+        const failures = Math.min(5, (questionListBackoffRef.current[sid]?.failures || 0) + 1);
+        questionListBackoffRef.current[sid] = {
+          failures,
+          retryAt: Date.now() + Math.min(15000, 1800 * 2 ** (failures - 1))
+        };
+        refreshQuestionRequestsFromStore(sid);
+      }
+    })();
+    questionListInFlightRef.current[sid] = run;
+    try {
+      return await run;
+    } finally {
+      if (questionListInFlightRef.current[sid] === run) {
+        delete questionListInFlightRef.current[sid];
+      }
     }
   }, [
     dismissedQuestions,
@@ -269,7 +303,7 @@ export function useQuestionController({
     if (!streaming && sessionStatusMap[sid]?.type !== 'busy' && questionRequests.length === 0) return;
     const timer = setInterval(() => {
       void refreshPendingQuestions(sid);
-    }, 1200);
+    }, 3000);
     return () => clearInterval(timer);
   }, [
     authed,

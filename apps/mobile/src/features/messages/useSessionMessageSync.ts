@@ -22,10 +22,6 @@ type SyncOptions = {
   forceVisibleCount?: number;
 };
 
-const BACKGROUND_PREFETCH_FETCH_LIMIT = 96;
-const BACKGROUND_PREFETCH_MAX_PAGES = 12;
-const BACKGROUND_PREFETCH_MAX_ROWS = 800;
-
 function formatRetryDelay(ms: number): string {
   const seconds = Math.max(1, Math.ceil(ms / 1000));
   return `${seconds}s 后可重试`;
@@ -102,7 +98,6 @@ export function useSessionMessageSync<Cell>(params: {
   const inflightSessionSyncRef = useRef<Record<string, Promise<any>>>({});
   const olderCursorBackoffRef = useRef<Record<string, { cursor: string; retryAt: number; failures: number }>>({});
   const olderLoadInFlightRef = useRef(false);
-  const backgroundPrefetchRef = useRef<Record<string, boolean>>({});
 
   return useMemo(() => {
     const getOlderCursorBackoff = (sessionKey: string, cursor: string): { retryAt: number; failures: number } | null => {
@@ -284,9 +279,6 @@ export function useSessionMessageSync<Cell>(params: {
             setStreaming(false);
             setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
           }
-          if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
-            scheduleBackgroundHistoryPrefetch(targetSessionId);
-          }
           return rendered;
         } finally {
           if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
@@ -303,48 +295,12 @@ export function useSessionMessageSync<Cell>(params: {
       }
     };
 
-    const scheduleBackgroundHistoryPrefetch = (targetSessionId: string) => {
-      const sid = toText(targetSessionId).trim();
-      if (!sid || backgroundPrefetchRef.current[sid]) return;
-      const initialCursor = toText(sessionNextCursor[sid]).trim();
-      if (!initialCursor) return;
-      if ((sessionRawMapRef.current[sid] || []).length >= BACKGROUND_PREFETCH_MAX_ROWS) return;
-      backgroundPrefetchRef.current[sid] = true;
-      setTimeout(async () => {
-        let cursor = initialCursor;
-        let pageCount = 0;
-        try {
-          while (sid === sessionIdRef.current && cursor && pageCount < BACKGROUND_PREFETCH_MAX_PAGES) {
-            if ((sessionRawMapRef.current[sid] || []).length >= BACKGROUND_PREFETCH_MAX_ROWS) break;
-            const res = await refreshMessages(sid, {
-              fetchLimit: BACKGROUND_PREFETCH_FETCH_LIMIT,
-              before: cursor,
-              reason: 'prefetch'
-            });
-            if (!res || sid !== sessionIdRef.current) break;
-            sessionTotalTurnCountRef.current[sid] = Math.max(
-              Number(sessionTotalTurnCountRef.current[sid] || 0),
-              Number(res.totalTurnCount || 0)
-            );
-            const visibleTurns = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
-            setSessionHasMore((prev) => ({
-              ...prev,
-              [sid]: !!toText(res.nextCursor).trim() || res.totalTurnCount > visibleTurns
-            }));
-            cursor = toText(res.nextCursor).trim();
-            pageCount += 1;
-            if (!cursor) break;
-            await new Promise((resolve) => setTimeout(resolve, 120));
-          }
-        } finally {
-          delete backgroundPrefetchRef.current[sid];
-        }
-      }, 0);
-    };
-
     const onLoadOlderMessages = async () => {
       const sid = toText(sessionId).trim();
-      if (!sid || loadingOlder || olderLoadInFlightRef.current) return;
+      if (!sid || loadingOlder || olderLoadInFlightRef.current) {
+        pushConnLog(`chat.history.load skipped sid=${sid || '-'} loading=${loadingOlder ? 1 : 0} inflight=${olderLoadInFlightRef.current ? 1 : 0}`);
+        return;
+      }
       olderLoadInFlightRef.current = true;
       const finishLocalHistoryMutation = () => {
         setTimeout(() => {
@@ -359,9 +315,11 @@ export function useSessionMessageSync<Cell>(params: {
       setLoadingOlder(true);
       const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
       const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
+      pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} cursor=${toText(sessionNextCursor[sid]).trim() ? 1 : 0}`);
       if (cached > visible) {
         const nextVisible = Math.min(cached, visible + olderSessionLimit);
         applyTurnWindow(sid, nextVisible);
+        pushConnLog(`chat.history.load cached sid=${sid} from=${visible} to=${nextVisible} cached=${cached}`);
         setSessionHasMore((prev) => ({
           ...prev,
           [sid]: cached > nextVisible || !!toText(sessionNextCursor[sid]).trim()
@@ -372,6 +330,7 @@ export function useSessionMessageSync<Cell>(params: {
       const cursor = toText(sessionNextCursor[sid]).trim();
       const backoff = cursor ? getOlderCursorBackoff(sid, cursor) : null;
       if (backoff) {
+        pushConnLog(`chat.history.load backoff sid=${sid} retryMs=${Math.max(0, backoff.retryAt - Date.now())}`);
         setSessionHistoryRetryHint((prev) => ({
           ...prev,
           [sid]: `历史加载失败，${formatRetryDelay(backoff.retryAt - Date.now())}`
@@ -388,10 +347,12 @@ export function useSessionMessageSync<Cell>(params: {
             before: cursor,
             loadingOlder: true
           });
+          pushConnLog(`chat.history.load remote done sid=${sid}`);
         } finally {
           olderLoadInFlightRef.current = false;
         }
       } else {
+        pushConnLog(`chat.history.load exhausted sid=${sid} cached=${cached} visible=${visible}`);
         setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
         olderLoadInFlightRef.current = false;
         setLoadingOlder(false);
@@ -403,7 +364,6 @@ export function useSessionMessageSync<Cell>(params: {
       inflightSessionSyncRef.current = {};
       olderCursorBackoffRef.current = {};
       olderLoadInFlightRef.current = false;
-      backgroundPrefetchRef.current = {};
     };
 
     return {

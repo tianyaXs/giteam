@@ -42,9 +42,6 @@ export function ChatWorkspaceScreen(props: {
   messageScrollRef: React.RefObject<any>;
   messageBottomInset: number;
   displayedTurnCells: any[];
-  getChatCellType: (item: any) => string;
-  initialChatScrollIndex?: number;
-  initialChatScrollOffset?: number;
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   canLoadEarlierHistory: boolean;
@@ -63,6 +60,7 @@ export function ChatWorkspaceScreen(props: {
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
   onJumpToLatest: () => void;
+  suppressFloatingDocks: boolean;
   latestTodoCard: any | null;
   dismissedTodoCardId: string;
   todoDockCollapsed: boolean;
@@ -92,10 +90,7 @@ export function ChatWorkspaceScreen(props: {
     currentWorkspaceName,
     dismissedTodoCardId,
     displayedTurnCells,
-    getChatCellType,
     historyProgressWidth,
-    initialChatScrollIndex,
-    initialChatScrollOffset,
     inputDockHeight,
     latestTodoCard,
     leftDrawer,
@@ -133,6 +128,7 @@ export function ChatWorkspaceScreen(props: {
     showLatestJump,
     showNotebookSessionTitle,
     showStreamTopGlow,
+    suppressFloatingDocks,
     streamTopGlowAnim,
     styles,
     thinkingPulse,
@@ -181,9 +177,6 @@ export function ChatWorkspaceScreen(props: {
               messageScrollRef={messageScrollRef}
               messageBottomInset={messageBottomInset}
               displayedTurnCells={displayedTurnCells}
-              getChatCellType={getChatCellType}
-              initialChatScrollIndex={initialChatScrollIndex}
-              initialChatScrollOffset={initialChatScrollOffset}
               chatViewabilityConfig={chatViewabilityConfig}
               onChatViewableItemsChanged={onChatViewableItemsChanged}
               canLoadEarlierHistory={canLoadEarlierHistory}
@@ -203,8 +196,20 @@ export function ChatWorkspaceScreen(props: {
               showLatestJump={showLatestJump}
               onJumpToLatest={onJumpToLatest}
             />
-            {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id ? (
-              <View style={styles.todoDockWrap}>
+            {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
+              <View
+                pointerEvents="box-none"
+                style={[
+                  styles.todoDockWrap,
+                  {
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: Math.max(104, inputDockHeight + 14),
+                    zIndex: 30
+                  }
+                ]}
+              >
                 <MobileTodoCardView
                   card={latestTodoCard}
                   compact

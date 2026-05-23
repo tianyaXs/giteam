@@ -262,6 +262,7 @@ export default function App() {
 
   const {
     showLatestJump,
+    suppressFloatingDocks,
     messageScrollRef,
     forceScrollToLatestUntilRef,
     messageScrollYRef,
@@ -272,6 +273,7 @@ export default function App() {
     onChatViewableItemsChanged,
     scrollToLatest,
     jumpToLatest,
+    markHistoryLoadAnchor,
     prepareCellLayoutAdjustment,
     settleCellLayoutAdjustment,
     onMessageListScroll,
@@ -287,6 +289,7 @@ export default function App() {
     initialCellLimit: INITIAL_CELL_LIMIT,
     chatBottomProximity: CHAT_BOTTOM_PROXIMITY,
     historyPrefetchCooldownMs: HISTORY_PREFETCH_COOLDOWN_MS,
+    debugLog: pushConnLog,
   });
   const {
     leftDrawerPulse,
@@ -756,8 +759,6 @@ export default function App() {
     displayedTurnCellsRef,
     visibleCellCountRef,
     historyProgressWidth,
-    initialChatScrollIndex,
-    initialChatScrollOffset,
     chatListMountKey,
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
@@ -1077,7 +1078,7 @@ export default function App() {
     newestFirst: true,
     timelineQuestionTabs,
   });
-  const { getChatCellType, renderTurnCell } = useTurnCellRenderer({
+  const { renderTurnCell } = useTurnCellRenderer({
     activeQuestionsForTurn,
     bodyFontFamily: FONT_UI_REGULAR,
     chatCellHeightMapRef,
@@ -1105,6 +1106,7 @@ export default function App() {
     canLoadEarlierHistory,
     handleContentSizeChange,
     handleListLayout,
+    markHistoryLoadAnchor,
     loadingOlder,
     onLoadOlderMessages,
     onMessageListScroll,
@@ -1238,9 +1240,6 @@ export default function App() {
       messageScrollRef={messageScrollRef}
       messageBottomInset={messageBottomInset}
       displayedTurnCells={displayedTurnCells}
-      getChatCellType={getChatCellType}
-      initialChatScrollIndex={initialChatScrollIndex}
-      initialChatScrollOffset={initialChatScrollOffset}
       chatViewabilityConfig={chatViewabilityConfig}
       onChatViewableItemsChanged={onChatViewableItemsChanged}
       canLoadEarlierHistory={canLoadEarlierHistory}
@@ -1261,6 +1260,7 @@ export default function App() {
       historyProgressWidth={historyProgressWidth}
       showLatestJump={showLatestJump}
       onJumpToLatest={jumpToLatest}
+      suppressFloatingDocks={suppressFloatingDocks || loadingOlder}
       latestTodoCard={latestTodoCard}
       dismissedTodoCardId={dismissedTodoCardId}
       todoDockCollapsed={todoDockCollapsed}
