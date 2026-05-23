@@ -12,6 +12,9 @@ export function useNotebookNavigationController(props: {
   const [notebookPage, setNotebookPage] = useState<'left' | 'main' | 'right'>('main');
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const notebookTrackX = useRef(new Animated.Value(-windowWidth)).current;
+  const callbacksRef = useRef({ onBeforeOpenDrawer, onOpenLeftDrawer, onOpenRightDrawer });
+  const drawerSideRef = useRef<'left' | 'right' | ''>('');
+  const notebookPageRef = useRef<'left' | 'main' | 'right'>('main');
   const notebookPageIndexRef = useRef(1);
   const notebookDraggingRef = useRef(false);
   const notebookGestureStartIndexRef = useRef(1);
@@ -63,25 +66,32 @@ export function useNotebookNavigationController(props: {
     });
   }, [notebookTrackX, windowWidth]);
 
+  useEffect(() => {
+    callbacksRef.current = { onBeforeOpenDrawer, onOpenLeftDrawer, onOpenRightDrawer };
+  }, [onBeforeOpenDrawer, onOpenLeftDrawer, onOpenRightDrawer]);
+
   const switchNotebookPage = useCallback((next: 'left' | 'main' | 'right') => {
+    notebookPageRef.current = next;
     setNotebookPage((prev) => (prev === next ? prev : next));
   }, []);
 
   const closeDrawer = useCallback(() => {
+    drawerSideRef.current = '';
     setDrawerSide('');
     setWorkspaceSwitcherOpen(false);
     switchNotebookPage('main');
   }, [switchNotebookPage]);
 
   const openDrawer = useCallback((side: 'left' | 'right') => {
-    if (drawerSide === side && notebookPage === side) return;
-    onBeforeOpenDrawer();
+    if (drawerSideRef.current === side && notebookPageRef.current === side) return;
+    callbacksRef.current.onBeforeOpenDrawer();
+    drawerSideRef.current = side;
     setWorkspaceSwitcherOpen(false);
     setDrawerSide(side);
     switchNotebookPage(side);
-    if (side === 'left') onOpenLeftDrawer();
-    else onOpenRightDrawer();
-  }, [drawerSide, notebookPage, onBeforeOpenDrawer, onOpenLeftDrawer, onOpenRightDrawer, switchNotebookPage]);
+    if (side === 'left') callbacksRef.current.onOpenLeftDrawer();
+    else callbacksRef.current.onOpenRightDrawer();
+  }, [switchNotebookPage]);
 
   const toggleWorkspaceSwitcher = useCallback(() => {
     setWorkspaceSwitcherOpen((v) => !v);
@@ -92,14 +102,14 @@ export function useNotebookNavigationController(props: {
     const rawIndex = Math.round(Math.abs(notebookTrackXValueRef.current) / Math.max(1, windowWidth));
     const nextIndex = Math.max(0, Math.min(2, rawIndex));
     const nextPage = nextIndex === 0 ? 'left' : nextIndex === 2 ? 'right' : 'main';
-    if (nextPage === notebookPage) {
+    if (nextPage === notebookPageRef.current) {
       animateNotebookToIndex(nextIndex);
       return;
     }
     if (nextPage === 'left') openDrawer('left');
     else if (nextPage === 'right') openDrawer('right');
     else closeDrawer();
-  }, [animateNotebookToIndex, closeDrawer, notebookPage, openDrawer, windowWidth]);
+  }, [animateNotebookToIndex, closeDrawer, openDrawer, windowWidth]);
 
   useEffect(() => {
     if (notebookTouchActiveRef.current || notebookDraggingRef.current) return;
@@ -121,6 +131,7 @@ export function useNotebookNavigationController(props: {
     onMoveShouldSetPanResponder: (_, gesture) => shouldStartNotebookPan(gesture),
     onMoveShouldSetPanResponderCapture: (_, gesture) => shouldStartNotebookPan(gesture),
     onPanResponderGrant: () => {
+      notebookTouchActiveRef.current = true;
       notebookDraggingRef.current = true;
       notebookTerminatedDuringTouchRef.current = false;
       notebookGestureStartIndexRef.current = notebookPageIndexRef.current;
