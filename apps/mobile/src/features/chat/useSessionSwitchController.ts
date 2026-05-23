@@ -1,5 +1,4 @@
 import { useCallback, useState } from 'react';
-import type { ChatViewportSnapshot } from './useChatListController';
 import type { SessionStatusInfo } from '../../types';
 
 export function useSessionSwitchController<Cell extends { id: string }>(props: {
@@ -11,7 +10,6 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
   visibleCellCountRef: React.MutableRefObject<number>;
   messagesRef: React.MutableRefObject<any[]>;
   renderedTurnsRef: React.MutableRefObject<any[]>;
-  chatViewportSnapshotRef: React.MutableRefObject<Record<string, ChatViewportSnapshot>>;
   sessionNextCursor: Record<string, string>;
   rememberCurrentSessionViewport: (targetSessionId: string, params: {
     displayedTurnCells: Cell[];
@@ -29,7 +27,6 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
 }) {
   const {
     applyTurnWindow,
-    chatViewportSnapshotRef,
     displayedTurnCellsRef,
     initialSessionLimit,
     messagesRef,
@@ -89,7 +86,6 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
     setRenderedTurns([]);
   }, [
     applyTurnWindow,
-    chatViewportSnapshotRef,
     displayedTurnCellsRef,
     initialSessionLimit,
     messagesRef,

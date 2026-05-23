@@ -595,10 +595,22 @@ export const MobileTurnCell = React.memo(
       turn
     } = props;
     const measuredHeightRef = useRef(0);
+    const cellOpacity = useRef(new Animated.Value(0.94)).current;
+
+    useEffect(() => {
+      cellOpacity.setValue(0.94);
+      const animation = Animated.timing(cellOpacity, {
+        toValue: 1,
+        duration: 120,
+        useNativeDriver: true
+      });
+      animation.start();
+      return () => animation.stop();
+    }, [cellOpacity, turn.id]);
 
     return (
-      <View
-        style={styles.turnWrap}
+      <Animated.View
+        style={[styles.turnWrap, { opacity: cellOpacity }]}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h <= 0) return;
@@ -788,7 +800,7 @@ export const MobileTurnCell = React.memo(
           }
           return null;
         })}
-      </View>
+      </Animated.View>
     );
   },
   (prev, next) =>

@@ -264,7 +264,6 @@ export default function App() {
     showLatestJump,
     messageScrollRef,
     forceScrollToLatestUntilRef,
-    chatViewportSnapshotRef,
     messageScrollYRef,
     messageViewportHRef,
     messageContentHRef,
@@ -765,7 +764,6 @@ export default function App() {
     allDisplayedTurnCells,
     sessionId,
     chatListResetKey,
-    chatViewportSnapshotRef,
   });
   const { sessionSwitchingTo, setSessionSwitchingTo, setActiveSession } =
     useSessionSwitchController<DisplayedTurnCell>({
@@ -777,7 +775,6 @@ export default function App() {
       visibleCellCountRef,
       messagesRef,
       renderedTurnsRef,
-      chatViewportSnapshotRef,
       sessionNextCursor,
       rememberCurrentSessionViewport,
       resetListInteractionState,

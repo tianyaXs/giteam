@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Animated, Platform, Pressable, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 
@@ -86,6 +86,27 @@ export function ChatConversationStage(props: {
     styles,
     windowWidth
   } = props;
+  const chatDrawDistance = useMemo(() => Math.max(720, windowWidth * 1.6), [windowWidth]);
+  const chatContentContainerStyle = useMemo(
+    () => ({
+      paddingTop: 8,
+      paddingBottom: messageBottomInset,
+      backgroundColor: 'transparent'
+    }),
+    [messageBottomInset]
+  );
+  const maintainChatPosition = useMemo(
+    () => ({
+      startRenderingFromBottom: chatStartsFromBottom,
+      autoscrollToBottomThreshold: 0.12,
+      animateAutoScrollToBottom: false
+    }),
+    [chatStartsFromBottom]
+  );
+  const keyExtractor = useCallback((item: any) => item.id, []);
+  const handleStartReached = useCallback(() => {
+    if (canLoadEarlierHistory && !loadingOlder) onLoadOlderMessages();
+  }, [canLoadEarlierHistory, loadingOlder, onLoadOlderMessages]);
 
   return (
     <View style={styles.chatBodyWrap}>
@@ -141,8 +162,8 @@ export function ChatConversationStage(props: {
           <FlashList
             key={chatListMountKey}
             ref={messageScrollRef}
-            drawDistance={Math.max(560, windowWidth * 1.35)}
-            contentContainerStyle={{ paddingTop: 8, paddingBottom: messageBottomInset, backgroundColor: 'transparent' }}
+            drawDistance={chatDrawDistance}
+            contentContainerStyle={chatContentContainerStyle}
             onLayout={onListLayout}
             data={displayedTurnCells}
             getItemType={getChatCellType}
@@ -155,24 +176,18 @@ export function ChatConversationStage(props: {
             showsVerticalScrollIndicator={false}
             showsHorizontalScrollIndicator={false}
             scrollEventThrottle={16}
-            maintainVisibleContentPosition={{
-              startRenderingFromBottom: chatStartsFromBottom,
-              autoscrollToBottomThreshold: 0,
-              animateAutoScrollToBottom: false
-            }}
+            maintainVisibleContentPosition={maintainChatPosition}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
-            onStartReached={() => {
-              if (canLoadEarlierHistory && !loadingOlder) onLoadOlderMessages();
-            }}
-            onStartReachedThreshold={0.4}
+            onStartReached={handleStartReached}
+            onStartReachedThreshold={0.16}
             onScrollBeginDrag={onScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}
             onMomentumScrollEnd={onMomentumScrollEnd}
             onScroll={onScroll}
             onContentSizeChange={onContentSizeChange}
-            keyExtractor={(item) => item.id}
+            keyExtractor={keyExtractor}
             renderItem={renderTurnCell}
             ListHeaderComponent={null}
             ListFooterComponent={null}
