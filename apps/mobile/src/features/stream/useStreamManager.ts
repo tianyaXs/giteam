@@ -77,6 +77,14 @@ export function useStreamManager(deps: StreamManagerDeps) {
   depsRef.current = deps;
 
   const getDeps = useCallback(() => depsRef.current, []);
+  const shouldFollowLatest = useCallback(() => {
+    const d = getDeps();
+    const distanceFromBottom = Math.max(
+      0,
+      Number(d.messageContentHRef.current || 0) - Number(d.messageViewportHRef.current || 0) - Number(d.messageScrollYRef.current || 0)
+    );
+    return !d.messageUserScrollingRef.current && distanceFromBottom < 96;
+  }, [getDeps]);
 
   const stopStream = useCallback(() => {
     const d = getDeps();
@@ -448,7 +456,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       upsertStreamPart(sid, messageId, part);
       flushPendingStreamPartEvents(sid, messageId);
       renderStreamWindow(sid);
-      if (!d.messageUserScrollingRef.current) {
+      if (shouldFollowLatest()) {
         d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
         requestAnimationFrame(() => d.scrollToLatest(false));
       }
@@ -513,8 +521,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       d.streamRenderTimerRef.current = setTimeout(() => {
         d.streamRenderTimerRef.current = null;
         if (sid !== d.sessionIdRef.current) return;
-        const distanceFromBottom = Math.max(0, d.messageContentHRef.current - d.messageViewportHRef.current - d.messageScrollYRef.current);
-        const shouldFollowStream = !d.messageUserScrollingRef.current && distanceFromBottom < 96;
+        const shouldFollowStream = shouldFollowLatest();
         renderStreamWindow(sid);
         if (shouldFollowStream) {
           requestAnimationFrame(() => d.scrollToLatest(false));
@@ -755,7 +762,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         d.setSessionStatusMap((prev: Record<string, any>) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
       });
     });
-  }, [getDeps, stopStream]);
+  }, [getDeps, shouldFollowLatest, stopStream]);
 
   return { startStream, stopStream };
 }

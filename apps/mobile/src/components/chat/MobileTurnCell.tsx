@@ -7,13 +7,15 @@ import {
   Platform,
   Pressable,
   Text,
-  View
+  View,
+  type TextStyle
 } from 'react-native';
-import { StreamdownText } from 'react-native-streamdown';
-import type { MarkdownStyle } from 'react-native-enriched-markdown';
+import type { MarkedStyles } from 'react-native-marked';
 import { formatClock } from '../../lib/time';
 import { toText } from '../../lib/text';
 import type { MobileQuestionCard, MobileRenderedTurn, MobileTodoCard } from '../../types';
+import type { TurnCellInteractionState } from '../../features/chat/useInteractiveTurnCells';
+import { MobileMarkedMarkdown } from './MobileMarkedMarkdown';
 
 function normalizeMarkdownForMobile(input: string) {
   return toText(input).replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
@@ -45,8 +47,9 @@ function MarkdownMessage(props: {
   styles: Record<string, any>;
   text: string;
   tone: 'user' | 'assistant' | 'think';
+  streaming: boolean;
 }) {
-  const { bodyFontFamily, styles, text, tone } = props;
+  const { bodyFontFamily, streaming, styles, text, tone } = props;
   const src = normalizeMarkdownForMobile(text);
   const isUser = tone === 'user';
   const isThink = tone === 'think';
@@ -55,19 +58,21 @@ function MarkdownMessage(props: {
   const headingColor = isUser ? '#ffffff' : isThink ? '#5f5749' : '#211e19';
   const codeBg = isUser ? 'rgba(38, 35, 29, 0.34)' : isThink ? '#eee8dc' : '#ece8df';
   const codeColor = isUser ? '#fffaf2' : '#3a352e';
-  const markdownStyles = useMemo<MarkdownStyle>(
+  const markdownStyles = useMemo<MarkedStyles>(
     () => ({
-      paragraph: {
+      text: {
         color: textColor,
         fontSize: isThink ? 14 : 15,
         lineHeight: isThink ? 22 : 24,
-        marginTop: 3,
-        marginBottom: 3,
         fontFamily: bodyFontFamily
+      },
+      paragraph: {
+        marginTop: 2,
+        marginBottom: 2
       },
       strong: { color: headingColor, fontWeight: 'bold', fontFamily: bodyFontFamily },
       em: { color: mutedColor, fontStyle: 'italic', fontFamily: bodyFontFamily },
-      link: { color: isUser ? '#bfdbfe' : '#1768c2', underline: true, fontFamily: bodyFontFamily },
+      link: { color: isUser ? '#bfdbfe' : '#1768c2', textDecorationLine: 'underline', fontFamily: bodyFontFamily },
       h1: { color: headingColor, fontSize: 20, lineHeight: 27, fontWeight: '800', marginTop: 8, marginBottom: 6, fontFamily: bodyFontFamily },
       h2: { color: headingColor, fontSize: 18, lineHeight: 25, fontWeight: '800', marginTop: 6, marginBottom: 5, fontFamily: bodyFontFamily },
       h3: { color: headingColor, fontSize: 16, lineHeight: 23, fontWeight: '800', marginTop: 5, marginBottom: 4, fontFamily: bodyFontFamily },
@@ -75,26 +80,28 @@ function MarkdownMessage(props: {
       h5: { color: headingColor, fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: bodyFontFamily },
       h6: { color: mutedColor, fontSize: 13, lineHeight: 20, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: bodyFontFamily },
       list: {
+        marginTop: 4,
+        marginBottom: 4,
+        marginLeft: 14
+      },
+      li: {
         color: textColor,
         fontSize: isThink ? 14 : 15,
         lineHeight: isThink ? 22 : 24,
-        marginTop: 4,
-        marginBottom: 4,
-        marginLeft: 14,
-        bulletColor: mutedColor,
-        markerColor: mutedColor,
-        gapWidth: 8,
         fontFamily: bodyFontFamily
       },
-      code: {
-        color: codeColor,
+      codespan: {
+        color: textColor,
         backgroundColor: codeBg,
         borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
+        borderWidth: 1,
+        borderRadius: 5,
         fontSize: 13,
-        fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
+        fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+        paddingHorizontal: 4,
+        paddingVertical: 1
       },
-      codeBlock: {
-        color: codeColor,
+      code: {
         backgroundColor: codeBg,
         borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
         borderRadius: 12,
@@ -110,46 +117,51 @@ function MarkdownMessage(props: {
         backgroundColor: isUser ? 'rgba(38, 35, 29, 0.18)' : '#f3eee5',
         borderColor: isUser ? '#eadfce' : '#c9b99f',
         borderWidth: 3,
-        gapWidth: 9,
+        borderLeftWidth: 3,
         marginTop: 8,
         marginBottom: 8,
-        fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 22 : 24,
-        fontFamily: bodyFontFamily
+        paddingLeft: 9
       },
-      thematicBreak: {
-        color: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca',
+      hr: {
+        backgroundColor: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca',
         height: 1,
         marginTop: 10,
         marginBottom: 10
       },
       table: {
-        color: textColor,
-        fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 22 : 24,
         borderColor: isUser ? 'rgba(234,223,206,0.35)' : '#ddd4c5',
         borderWidth: 1,
-        borderRadius: 10,
-        cellPaddingHorizontal: 8,
-        cellPaddingVertical: 8,
-        headerTextColor: headingColor,
-        headerBackgroundColor: isUser ? 'rgba(38, 35, 29, 0.20)' : '#f1eadf',
-        rowEvenBackgroundColor: 'transparent',
-        rowOddBackgroundColor: isUser ? 'rgba(38, 35, 29, 0.10)' : '#fbf7ef',
-        fontFamily: bodyFontFamily
+        borderRadius: 10
+      },
+      tableRow: {
+        borderColor: isUser ? 'rgba(234,223,206,0.24)' : '#ddd4c5',
+        borderBottomWidth: 1
+      },
+      tableCell: {
+        paddingHorizontal: 8,
+        paddingVertical: 8
       }
     }),
     [bodyFontFamily, codeBg, codeColor, headingColor, isThink, isUser, mutedColor, textColor]
   );
+  const codeTextStyle = useMemo<TextStyle>(
+    () => ({
+      color: codeColor,
+      fontSize: 13,
+      lineHeight: 20,
+      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
+    }),
+    [codeColor]
+  );
 
   return (
     <View style={styles.markdownBlock}>
-      <StreamdownText
-        markdown={src}
-        markdownStyle={markdownStyles}
+      <MobileMarkedMarkdown
+        codeTextStyle={codeTextStyle}
         containerStyle={styles.streamdownTextContainer}
-        selectable
-        remendConfig={{ katex: false }}
+        streaming={streaming}
+        styles={markdownStyles}
+        value={src}
       />
     </View>
   );
@@ -159,9 +171,10 @@ function renderMarkdown(
   styles: Record<string, any>,
   bodyFontFamily: string,
   text: unknown,
-  tone: 'user' | 'assistant' | 'think'
+  tone: 'user' | 'assistant' | 'think',
+  streaming: boolean
 ) {
-  return <MarkdownMessage bodyFontFamily={bodyFontFamily} styles={styles} text={toText(text)} tone={tone} />;
+  return <MarkdownMessage bodyFontFamily={bodyFontFamily} streaming={streaming} styles={styles} text={toText(text)} tone={tone} />;
 }
 
 function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; pulse: boolean; styles: Record<string, any> }) {
@@ -552,23 +565,20 @@ export const MobileTurnCell = React.memo(
     thinkingPulse: boolean;
     hasLiveQuestion: boolean;
     liveQuestions: MobileQuestionCard[];
+    interaction: TurnCellInteractionState;
     onQuestionReply: (requestId: string, answers: string[][]) => void;
     onCopyMessage: (text: string) => void;
     onOpenImage: (item: { id: string; uri: string; filename?: string }) => void;
     onCopyImage: (uri: string) => void;
-    expandedTimelineQuestions: Set<string>;
     onToggleTimelineQuestion: (id: string) => void;
-    expandedThinkCards: Set<string>;
     onToggleThinkCard: (id: string) => void;
-    timelineQuestionTabs: Map<string, number>;
     onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
     onMeasuredHeight: (id: string, height: number) => void;
   }) {
     const {
       bodyFontFamily,
-      expandedThinkCards,
-      expandedTimelineQuestions,
       hasLiveQuestion,
+      interaction,
       isLastTurn,
       liveQuestions,
       onChangeTimelineTab,
@@ -582,20 +592,19 @@ export const MobileTurnCell = React.memo(
       streaming,
       styles,
       thinkingPulse,
-      timelineQuestionTabs,
       turn
     } = props;
-    const [, setMeasuredHeight] = useState(0);
+    const measuredHeightRef = useRef(0);
 
     return (
       <View
         style={styles.turnWrap}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
-          if (h > 0) {
-            setMeasuredHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
-            onMeasuredHeight(turn.id, h);
-          }
+          if (h <= 0) return;
+          if (Math.abs(measuredHeightRef.current - h) <= 1) return;
+          measuredHeightRef.current = h;
+          onMeasuredHeight(turn.id, h);
         }}
       >
         {turn.userMessage ? (
@@ -613,7 +622,7 @@ export const MobileTurnCell = React.memo(
             return (
               <View key={m.id} style={styles.bubbleAssistantWrap}>
                 <Pressable style={styles.bubbleAssistant} onLongPress={() => onCopyMessage(toText(m.text))} delayLongPress={280}>
-                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(m.text || '...'), 'assistant')}</View>
+                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(m.text || '...'), 'assistant', streaming && isLastTurn)}</View>
                 </Pressable>
               </View>
             );
@@ -712,8 +721,8 @@ export const MobileTurnCell = React.memo(
             return (
               <QuestionTimelineCard
                 key={item.question.id}
-                activeTab={timelineQuestionTabs.get(item.question.id) || 0}
-                expanded={expandedTimelineQuestions.has(item.question.id)}
+                activeTab={interaction.timelineQuestionTabs[item.question.id] || 0}
+                expanded={!!interaction.expandedTimelineQuestionIds[item.question.id]}
                 hasLiveQuestion={hasLiveQuestion}
                 liveQuestions={liveQuestions}
                 onChangeTab={onChangeTimelineTab}
@@ -738,15 +747,26 @@ export const MobileTurnCell = React.memo(
                 <View style={styles.errorCard}>
                   <Text style={styles.errorTitle}>{toText(item.error.title || 'Run failed')}</Text>
                   {toText(item.error.code) ? <Text style={styles.errorCode}>{toText(item.error.code)}</Text> : null}
-                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(item.error.text || 'Unknown error'), 'assistant')}</View>
+                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(item.error.text || 'Unknown error'), 'assistant', false)}</View>
                 </View>
               </View>
             );
           }
-          if (item.kind === 'think' || item.kind === 'todo') {
-            const card = 'card' in item ? item.card : null;
+          if (item.kind === 'todo') {
+            return (
+              <View key={item.todo.id} style={styles.todoInlineWrap}>
+                <MobileTodoCardView
+                  card={item.todo}
+                  pulse={streaming && isLastTurn && !item.todo.finished}
+                  styles={styles}
+                />
+              </View>
+            );
+          }
+          if (item.kind === 'think') {
+            const card = item.card;
             if (!card) return null;
-            const isThinkExpanded = expandedThinkCards.has(card.id);
+            const isThinkExpanded = !!interaction.expandedThinkIds[card.id];
             const contentText = normalizeReasoningText(card.text);
             return (
               <View key={card.id} style={styles.thinkWrap}>
@@ -757,7 +777,7 @@ export const MobileTurnCell = React.memo(
                         <Text style={styles.thinkExpandedTitle}>过程详情</Text>
                         <Text style={styles.thinkToggleText}>收起</Text>
                       </View>
-                      <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, contentText, 'think')}</View>
+                      <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, contentText, 'think', streaming && isLastTurn && !card.finished)}</View>
                     </>
                   ) : (
                     <ThinkPreviewLines active={streaming && isLastTurn && !card.finished} styles={styles} text={contentText} />
@@ -776,15 +796,13 @@ export const MobileTurnCell = React.memo(
     prev.turn.signature === next.turn.signature &&
     prev.streaming === next.streaming &&
     prev.isLastTurn === next.isLastTurn &&
+    prev.interaction.interactionSignature === next.interaction.interactionSignature &&
     prev.thinkingPulse === next.thinkingPulse &&
     prev.hasLiveQuestion === next.hasLiveQuestion &&
     prev.liveQuestions === next.liveQuestions &&
     prev.onCopyMessage === next.onCopyMessage &&
-    prev.expandedTimelineQuestions === next.expandedTimelineQuestions &&
     prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion &&
-    prev.expandedThinkCards === next.expandedThinkCards &&
     prev.onToggleThinkCard === next.onToggleThinkCard &&
-    prev.timelineQuestionTabs === next.timelineQuestionTabs &&
     prev.onChangeTimelineTab === next.onChangeTimelineTab &&
     prev.onMeasuredHeight === next.onMeasuredHeight
 );

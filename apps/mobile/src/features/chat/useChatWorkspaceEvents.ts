@@ -12,7 +12,6 @@ export function useChatWorkspaceEvents(params: {
   ) => void;
   handleListLayout: (height: number) => void;
   loadingOlder: boolean;
-  messageUserScrollingRef: React.MutableRefObject<boolean>;
   onLoadOlderMessages: () => Promise<void>;
   onMessageListScroll: (scrollY: number, viewportHeight: number, contentHeight: number) => void;
 }) {
@@ -21,7 +20,6 @@ export function useChatWorkspaceEvents(params: {
     handleContentSizeChange,
     handleListLayout,
     loadingOlder,
-    messageUserScrollingRef,
     onLoadOlderMessages,
     onMessageListScroll
   } = params;
@@ -43,14 +41,11 @@ export function useChatWorkspaceEvents(params: {
       loadingOlder,
       onLoadOlderMessages: handleLoadOlderMessages
     });
-    if (loadingOlder) return;
-    if (messageUserScrollingRef.current) return;
   }, [
     canLoadEarlierHistory,
     handleContentSizeChange,
     handleLoadOlderMessages,
-    loadingOlder,
-    messageUserScrollingRef
+    loadingOlder
   ]);
 
   const handleWorkspaceListLayout = useCallback((evt: any) => {

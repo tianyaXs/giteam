@@ -1,7 +1,7 @@
 import { useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { getMessages } from '../../api/controlApi';
 import { toText } from '../../lib/text';
-import type { MobileRenderedTurn, SessionStatusInfo } from '../../types';
+import type { SessionStatusInfo } from '../../types';
 import { computeVisibleTurnCount, fetchWithRetry } from './history';
 import { inspectTurnWindow, mergeMessageRows } from './turns';
 
@@ -22,6 +22,10 @@ type SyncOptions = {
   forceVisibleCount?: number;
 };
 
+const BACKGROUND_PREFETCH_FETCH_LIMIT = 96;
+const BACKGROUND_PREFETCH_MAX_PAGES = 12;
+const BACKGROUND_PREFETCH_MAX_ROWS = 800;
+
 function formatRetryDelay(ms: number): string {
   const seconds = Math.max(1, Math.ceil(ms / 1000));
   return `${seconds}s 后可重试`;
@@ -36,16 +40,13 @@ export function useSessionMessageSync<Cell>(params: {
   initialSessionLimit: number;
   olderSessionLimit: number;
   olderMessageFetchLimit: number;
-  olderCellLimit: number;
   sessionIdRef: MutableRefObject<string>;
   pendingPromptSessionRef: MutableRefObject<Record<string, { id: string; startedAt: number }>>;
   sessionRawMapRef: MutableRefObject<Record<string, any[]>>;
   sessionVisibleTurnCountRef: MutableRefObject<Record<string, number>>;
   sessionTotalTurnCountRef: MutableRefObject<Record<string, number>>;
-  sessionVisibleCellCountRef: MutableRefObject<Record<string, number>>;
   displayedTurnCellsRef: MutableRefObject<Cell[]>;
   visibleCellCountRef: MutableRefObject<number>;
-  renderedTurnsRef: MutableRefObject<MobileRenderedTurn[]>;
   sessionNextCursor: Record<string, string>;
   loadingOlder: boolean;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
@@ -61,29 +62,21 @@ export function useSessionMessageSync<Cell>(params: {
   applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
   syncSessionStatus: (targetSessionId?: string) => Promise<SessionStatusInfo | undefined>;
   rememberCurrentSessionViewport: (sessionId: string, snapshot: { displayedTurnCells: Cell[]; visibleCellCount: number }) => void;
-  flattenTurnsForList: (turns: MobileRenderedTurn[]) => Cell[];
-  getInitialVisibleCellLimit: (cells: Cell[]) => number;
-  bumpCellWindowVersion: () => void;
   streamDebug?: (label: string, payload?: Record<string, unknown>) => void;
 }) {
   const {
     applyTurnWindow,
     authed,
-    bumpCellWindowVersion,
     displayedTurnCellsRef,
-    flattenTurnsForList,
-    getInitialVisibleCellLimit,
     ingestStreamRows,
     initialSessionLimit,
     loadingOlder,
-    olderCellLimit,
     olderMessageFetchLimit,
     olderSessionLimit,
     pendingPromptSessionRef,
     pushConnLog,
     recordStreamMessageRoles,
     rememberCurrentSessionViewport,
-    renderedTurnsRef,
     repoPath,
     serverUrl,
     sessionId,
@@ -91,7 +84,6 @@ export function useSessionMessageSync<Cell>(params: {
     sessionNextCursor,
     sessionRawMapRef,
     sessionTotalTurnCountRef,
-    sessionVisibleCellCountRef,
     sessionVisibleTurnCountRef,
     setLoadingOlder,
     setSessionHasMore,
@@ -109,6 +101,8 @@ export function useSessionMessageSync<Cell>(params: {
   const inflightMessageReqRef = useRef<Record<string, Promise<RefreshMessagesResult | undefined>>>({});
   const inflightSessionSyncRef = useRef<Record<string, Promise<any>>>({});
   const olderCursorBackoffRef = useRef<Record<string, { cursor: string; retryAt: number; failures: number }>>({});
+  const olderLoadInFlightRef = useRef(false);
+  const backgroundPrefetchRef = useRef<Record<string, boolean>>({});
 
   return useMemo(() => {
     const getOlderCursorBackoff = (sessionKey: string, cursor: string): { retryAt: number; failures: number } | null => {
@@ -214,7 +208,9 @@ export function useSessionMessageSync<Cell>(params: {
         } catch (e) {
           if (before && opts?.reason === 'loadingOlder') markOlderCursorFailure(targetSessionId, before, e);
           pushConnLog(`GET messages error ${String(e)}`, 'error');
-          setStatus(String(e));
+          if (opts?.reason !== 'prefetch') {
+            setStatus(String(e));
+          }
           return undefined;
         }
       })();
@@ -288,6 +284,9 @@ export function useSessionMessageSync<Cell>(params: {
             setStreaming(false);
             setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
           }
+          if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
+            scheduleBackgroundHistoryPrefetch(targetSessionId);
+          }
           return rendered;
         } finally {
           if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
@@ -304,27 +303,70 @@ export function useSessionMessageSync<Cell>(params: {
       }
     };
 
+    const scheduleBackgroundHistoryPrefetch = (targetSessionId: string) => {
+      const sid = toText(targetSessionId).trim();
+      if (!sid || backgroundPrefetchRef.current[sid]) return;
+      const initialCursor = toText(sessionNextCursor[sid]).trim();
+      if (!initialCursor) return;
+      if ((sessionRawMapRef.current[sid] || []).length >= BACKGROUND_PREFETCH_MAX_ROWS) return;
+      backgroundPrefetchRef.current[sid] = true;
+      setTimeout(async () => {
+        let cursor = initialCursor;
+        let pageCount = 0;
+        try {
+          while (sid === sessionIdRef.current && cursor && pageCount < BACKGROUND_PREFETCH_MAX_PAGES) {
+            if ((sessionRawMapRef.current[sid] || []).length >= BACKGROUND_PREFETCH_MAX_ROWS) break;
+            const res = await refreshMessages(sid, {
+              fetchLimit: BACKGROUND_PREFETCH_FETCH_LIMIT,
+              before: cursor,
+              reason: 'prefetch'
+            });
+            if (!res || sid !== sessionIdRef.current) break;
+            sessionTotalTurnCountRef.current[sid] = Math.max(
+              Number(sessionTotalTurnCountRef.current[sid] || 0),
+              Number(res.totalTurnCount || 0)
+            );
+            const visibleTurns = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
+            setSessionHasMore((prev) => ({
+              ...prev,
+              [sid]: !!toText(res.nextCursor).trim() || res.totalTurnCount > visibleTurns
+            }));
+            cursor = toText(res.nextCursor).trim();
+            pageCount += 1;
+            if (!cursor) break;
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          }
+        } finally {
+          delete backgroundPrefetchRef.current[sid];
+        }
+      }, 0);
+    };
+
     const onLoadOlderMessages = async () => {
       const sid = toText(sessionId).trim();
-      if (!sid || loadingOlder) return;
+      if (!sid || loadingOlder || olderLoadInFlightRef.current) return;
+      olderLoadInFlightRef.current = true;
+      const finishLocalHistoryMutation = () => {
+        setTimeout(() => {
+          olderLoadInFlightRef.current = false;
+          setLoadingOlder(false);
+        }, 80);
+      };
       rememberCurrentSessionViewport(sid, {
         displayedTurnCells: displayedTurnCellsRef.current,
         visibleCellCount: visibleCellCountRef.current
       });
-      const flattenedCells = flattenTurnsForList(renderedTurnsRef.current);
-      const totalCells = flattenedCells.length;
-      const seededVisibleCells = getInitialVisibleCellLimit(flattenedCells);
-      const visibleCells = Math.max(seededVisibleCells, Number(sessionVisibleCellCountRef.current[sid] || 0));
-      if (totalCells > visibleCells) {
-        sessionVisibleCellCountRef.current[sid] = Math.min(totalCells, visibleCells + olderCellLimit);
-        bumpCellWindowVersion();
-        setSessionHasMore((prev) => ({ ...prev, [sid]: totalCells > sessionVisibleCellCountRef.current[sid] }));
-        return;
-      }
+      setLoadingOlder(true);
       const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
       const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
       if (cached > visible) {
-        applyTurnWindow(sid, Math.min(cached, visible + olderSessionLimit));
+        const nextVisible = Math.min(cached, visible + olderSessionLimit);
+        applyTurnWindow(sid, nextVisible);
+        setSessionHasMore((prev) => ({
+          ...prev,
+          [sid]: cached > nextVisible || !!toText(sessionNextCursor[sid]).trim()
+        }));
+        finishLocalHistoryMutation();
         return;
       }
       const cursor = toText(sessionNextCursor[sid]).trim();
@@ -334,18 +376,24 @@ export function useSessionMessageSync<Cell>(params: {
           ...prev,
           [sid]: `历史加载失败，${formatRetryDelay(backoff.retryAt - Date.now())}`
         }));
+        olderLoadInFlightRef.current = false;
+        setLoadingOlder(false);
         return;
       }
-      setLoadingOlder(true);
       if (cursor) {
-        await syncSessionMessages(sid, {
-          limit: olderSessionLimit,
-          fetchLimit: olderMessageFetchLimit,
-          before: cursor,
-          loadingOlder: true
-        });
+        try {
+          await syncSessionMessages(sid, {
+            limit: olderSessionLimit,
+            fetchLimit: olderMessageFetchLimit,
+            before: cursor,
+            loadingOlder: true
+          });
+        } finally {
+          olderLoadInFlightRef.current = false;
+        }
       } else {
         setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
+        olderLoadInFlightRef.current = false;
         setLoadingOlder(false);
       }
     };
@@ -354,6 +402,8 @@ export function useSessionMessageSync<Cell>(params: {
       inflightMessageReqRef.current = {};
       inflightSessionSyncRef.current = {};
       olderCursorBackoffRef.current = {};
+      olderLoadInFlightRef.current = false;
+      backgroundPrefetchRef.current = {};
     };
 
     return {
@@ -365,21 +415,16 @@ export function useSessionMessageSync<Cell>(params: {
   }, [
     applyTurnWindow,
     authed,
-    bumpCellWindowVersion,
     displayedTurnCellsRef,
-    flattenTurnsForList,
-    getInitialVisibleCellLimit,
     ingestStreamRows,
     initialSessionLimit,
     loadingOlder,
-    olderCellLimit,
     olderMessageFetchLimit,
     olderSessionLimit,
     pendingPromptSessionRef,
     pushConnLog,
     recordStreamMessageRoles,
     rememberCurrentSessionViewport,
-    renderedTurnsRef,
     repoPath,
     serverUrl,
     sessionId,
@@ -387,7 +432,6 @@ export function useSessionMessageSync<Cell>(params: {
     sessionNextCursor,
     sessionRawMapRef,
     sessionTotalTurnCountRef,
-    sessionVisibleCellCountRef,
     sessionVisibleTurnCountRef,
     setLoadingOlder,
     setSessionHasMore,

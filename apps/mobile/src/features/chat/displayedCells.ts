@@ -19,50 +19,6 @@ function timelineItemKey(item: MobileTimelineItem, index: number): string {
   return `error:${toText(item.error.id) || index}`;
 }
 
-function splitAssistantTextForList(text: string): string[] {
-  const raw = toText(text);
-  if (raw.length <= 420) return raw ? [raw] : [''];
-  const parts = raw.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-  const chunks: string[] = [];
-  let current = '';
-  for (const part of parts) {
-    if (!current) {
-      current = part;
-      continue;
-    }
-    if (current.length + part.length + 2 > 420) {
-      chunks.push(current);
-      current = part;
-    } else {
-      current = `${current}\n\n${part}`;
-    }
-  }
-  if (current) chunks.push(current);
-  if (chunks.length > 0) return chunks.flatMap((chunk) => {
-    if (chunk.length <= 520) return [chunk];
-    const out: string[] = [];
-    for (let i = 0; i < chunk.length; i += 420) out.push(chunk.slice(i, i + 420));
-    return out;
-  });
-  const out: string[] = [];
-  for (let i = 0; i < raw.length; i += 420) out.push(raw.slice(i, i + 420));
-  return out;
-}
-
-function splitTimelineItemForList(item: MobileTimelineItem, index: number): MobileTimelineItem[] {
-  if (item.kind !== 'chat' || item.message.role === 'user') return [item];
-  const chunks = splitAssistantTextForList(item.message.text);
-  if (chunks.length <= 1) return [item];
-  return chunks.map((text, chunkIndex) => ({
-    ...item,
-    message: {
-      ...item.message,
-      id: `${item.message.id}:chunk:${chunkIndex}`,
-      text
-    }
-  }));
-}
-
 export function flattenTurnsForList(turns: MobileRenderedTurn[]): DisplayedTurnCell[] {
   const out: DisplayedTurnCell[] = [];
   turns.forEach((turn) => {
@@ -77,15 +33,13 @@ export function flattenTurnsForList(turns: MobileRenderedTurn[]): DisplayedTurnC
     }
     turn.items.forEach((item, itemIndex) => {
       if (item.kind === 'chat' && item.message.role === 'user') return;
-      splitTimelineItemForList(item, itemIndex).forEach((cellItem, chunkIndex) => {
-        const key = `${timelineItemKey(cellItem, itemIndex)}:${chunkIndex}`;
-        out.push({
-          id: `${turn.id}:cell:${itemIndex}:${key}`,
-          parentTurnId: turn.id,
-          createdAt: cellItem.createdAt || turn.createdAt,
-          items: [cellItem],
-          signature: `${turn.signature}:cell:${itemIndex}:${key}:${cellItem.createdAt || 0}`
-        });
+      const key = timelineItemKey(item, itemIndex);
+      out.push({
+        id: `${turn.id}:cell:${itemIndex}:${key}`,
+        parentTurnId: turn.id,
+        createdAt: item.createdAt || turn.createdAt,
+        items: [item],
+        signature: `${turn.signature}:cell:${itemIndex}:${key}:${item.createdAt || 0}`
       });
     });
   });

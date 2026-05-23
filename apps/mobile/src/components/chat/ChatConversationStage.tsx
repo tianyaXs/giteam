@@ -51,12 +51,12 @@ export function ChatConversationStage(props: {
   const {
     canLoadEarlierHistory,
     chatListMountKey,
-    chatStartsFromBottom,
     chatViewabilityConfig,
     currentWorkspaceName,
     displayedTurnCells,
     getChatCellType,
     historyProgressWidth,
+    chatStartsFromBottom,
     initialChatScrollIndex,
     initialChatScrollOffset,
     inputDockHeight,
@@ -141,7 +141,7 @@ export function ChatConversationStage(props: {
           <FlashList
             key={chatListMountKey}
             ref={messageScrollRef}
-            drawDistance={Math.max(320, windowWidth * 1.15)}
+            drawDistance={Math.max(560, windowWidth * 1.35)}
             contentContainerStyle={{ paddingTop: 8, paddingBottom: messageBottomInset, backgroundColor: 'transparent' }}
             onLayout={onListLayout}
             data={displayedTurnCells}
@@ -156,17 +156,16 @@ export function ChatConversationStage(props: {
             showsHorizontalScrollIndicator={false}
             scrollEventThrottle={16}
             maintainVisibleContentPosition={{
-              autoscrollToBottomThreshold: 80,
-              autoscrollToTopThreshold: 92,
-              animateAutoScrollToBottom: false,
-              startRenderingFromBottom: chatStartsFromBottom
+              startRenderingFromBottom: chatStartsFromBottom,
+              autoscrollToBottomThreshold: 0,
+              animateAutoScrollToBottom: false
             }}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
             onStartReached={() => {
               if (canLoadEarlierHistory && !loadingOlder) onLoadOlderMessages();
             }}
-            onStartReachedThreshold={0.35}
+            onStartReachedThreshold={0.4}
             onScrollBeginDrag={onScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}

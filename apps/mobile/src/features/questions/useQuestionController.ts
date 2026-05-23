@@ -198,6 +198,11 @@ export function useQuestionController({
     });
   }, []);
 
+  const resetTimelineQuestionState = useCallback(() => {
+    setExpandedTimelineQuestions(new Set());
+    setTimelineQuestionTabs(new Map());
+  }, []);
+
   const handleQuestionReply = useCallback((requestId: string, answers: string[][]) => {
     const sid = toText(sessionIdRef.current).trim();
     setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitting' } }));
@@ -316,6 +321,7 @@ export function useQuestionController({
     questionSubmitState,
     refreshPendingQuestions,
     refreshQuestionRequestsFromStore,
+    resetTimelineQuestionState,
     setDismissedQuestions,
     setQuestionRequests,
     setQuestionSubmitState,

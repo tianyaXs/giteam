@@ -3,11 +3,13 @@ import type { MobileRenderedTurn, MobileTodoCard } from '../../types';
 
 export function useTodoDockController(params: {
   displayedTurns: MobileRenderedTurn[];
+  sessionId: string;
   sessionWorking: boolean;
   streamTodoCard: MobileTodoCard | null;
 }) {
   const {
     displayedTurns,
+    sessionId,
     sessionWorking,
     streamTodoCard
   } = params;
@@ -15,7 +17,13 @@ export function useTodoDockController(params: {
   const [todoDockCollapsed, setTodoDockCollapsed] = useState(false);
   const [dismissedTodoCardId, setDismissedTodoCardId] = useState('');
 
+  useEffect(() => {
+    setDismissedTodoCardId('');
+    setTodoDockCollapsed(false);
+  }, [sessionId]);
+
   const latestTodoCard = useMemo(() => {
+    if (sessionWorking && streamTodoCard) return streamTodoCard;
     for (let turnIdx = displayedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
       const turn = displayedTurns[turnIdx];
       for (let itemIdx = turn.items.length - 1; itemIdx >= 0; itemIdx -= 1) {
@@ -24,7 +32,7 @@ export function useTodoDockController(params: {
       }
     }
     return streamTodoCard;
-  }, [displayedTurns, streamTodoCard]);
+  }, [displayedTurns, sessionWorking, streamTodoCard]);
 
   useEffect(() => {
     if (!latestTodoCard) {

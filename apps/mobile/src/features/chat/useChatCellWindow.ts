@@ -1,77 +1,28 @@
-import { useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { useMemo, useRef, type MutableRefObject } from 'react';
 import type { ChatViewportSnapshot } from './useChatListController';
 
 export function useChatCellWindow<Cell extends { id: string }>(props: {
   allDisplayedTurnCells: Cell[];
   sessionId: string;
-  windowHeight: number;
-  messageBottomInset: number;
   chatListResetKey: number;
-  initialCellLimit: number;
-  messageViewportHRef: MutableRefObject<number>;
-  chatCellHeightMapRef: MutableRefObject<Record<string, number>>;
   chatViewportSnapshotRef: MutableRefObject<Record<string, ChatViewportSnapshot>>;
-  takeTailCells: (cells: Cell[], visibleCount: number) => Cell[];
-  getInitialVisibleCellLimit: (cells: Cell[]) => number;
-  getViewportAwareVisibleCellLimit: (
-    cells: Cell[],
-    viewportH: number,
-    bottomInset: number,
-    measuredHeights: Record<string, number>
-  ) => number;
 }) {
   const {
     allDisplayedTurnCells,
-    chatCellHeightMapRef,
     chatListResetKey,
     chatViewportSnapshotRef,
-    getInitialVisibleCellLimit,
-    getViewportAwareVisibleCellLimit,
-    initialCellLimit,
-    messageBottomInset,
-    messageViewportHRef,
     sessionId,
-    takeTailCells,
-    windowHeight
   } = props;
 
-  const [cellWindowVersion, setCellWindowVersion] = useState(0);
   const displayedTurnCellsRef = useRef<Cell[]>([]);
-  const visibleCellCountRef = useRef(initialCellLimit);
-  const sessionVisibleCellCountRef = useRef<Record<string, number>>({});
-
-  const seededVisibleCellCount = useMemo(
-    () => Math.max(
-      getInitialVisibleCellLimit(allDisplayedTurnCells),
-      getViewportAwareVisibleCellLimit(
-        allDisplayedTurnCells,
-        messageViewportHRef.current || windowHeight,
-        messageBottomInset,
-        chatCellHeightMapRef.current
-      )
-    ),
-    [
-      allDisplayedTurnCells,
-      chatCellHeightMapRef,
-      getInitialVisibleCellLimit,
-      getViewportAwareVisibleCellLimit,
-      messageBottomInset,
-      messageViewportHRef,
-      windowHeight
-    ]
-  );
-
-  const visibleCellCount = Math.max(
-    seededVisibleCellCount,
-    Number(sessionVisibleCellCountRef.current[sessionId] || 0)
-  );
-
+  const visibleCellCountRef = useRef(0);
   const displayedTurnCells = useMemo(
-    () => takeTailCells(allDisplayedTurnCells, visibleCellCount),
-    [allDisplayedTurnCells, cellWindowVersion, takeTailCells, visibleCellCount]
+    () => allDisplayedTurnCells,
+    [allDisplayedTurnCells]
   );
 
-  const hasHiddenCells = allDisplayedTurnCells.length > displayedTurnCells.length;
+  const visibleCellCount = displayedTurnCells.length;
+  const hasHiddenCells = false;
   const historyProgress = allDisplayedTurnCells.length > 0
     ? Math.min(1, Math.max(0, displayedTurnCells.length / allDisplayedTurnCells.length))
     : 1;
@@ -88,6 +39,9 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
       const exact = displayedTurnCells.findIndex((cell) => cell.id === activeViewportSnapshot.firstVisibleCellId);
       if (exact >= 0) return exact;
     }
+    if (typeof activeViewportSnapshot.firstVisibleIndex === 'number') {
+      return Math.max(0, Math.min(displayedTurnCells.length - 1, activeViewportSnapshot.firstVisibleIndex));
+    }
     if (typeof activeViewportSnapshot.firstVisibleIndexFromEnd === 'number') {
       return Math.max(0, displayedTurnCells.length - 1 - activeViewportSnapshot.firstVisibleIndexFromEnd);
     }
@@ -98,23 +52,21 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
     ? Math.max(0, Number(activeViewportSnapshot?.firstVisibleOffset || 0))
     : undefined;
   const chatStartsFromBottom = !canRestoreChatSnapshot;
-  const chatListMountKey = `chat-list-${chatListResetKey}-${canRestoreChatSnapshot ? sessionId || 'draft' : 'bottom'}`;
+  const chatListMountKey = `chat-list-${chatListResetKey}-${sessionId || 'draft'}-${chatStartsFromBottom ? 'bottom' : 'restore'}`;
 
   displayedTurnCellsRef.current = displayedTurnCells;
   visibleCellCountRef.current = visibleCellCount;
-
   return {
     displayedTurnCells,
     displayedTurnCellsRef,
     visibleCellCount,
     visibleCellCountRef,
-    sessionVisibleCellCountRef,
     hasHiddenCells,
     historyProgressWidth,
     initialChatScrollIndex,
     initialChatScrollOffset,
     chatStartsFromBottom,
     chatListMountKey,
-    bumpCellWindowVersion: () => setCellWindowVersion((value) => value + 1)
+    bumpCellWindowVersion: () => {}
   };
 }

@@ -33,8 +33,8 @@ export function useLeftDrawerController(props: {
   sessionDisplayedCount: number;
   sessionId: string;
   messages: any[];
-  sessionRawMapRefCurrent: Record<string, any[]>;
-  sessionIdRefCurrent: string;
+  sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
+  sessionIdRef: React.MutableRefObject<string>;
   pickSessionDisplayTitle: (item: Pick<SessionItemLike, 'title' | 'preview' | 'id'>, fallbackMessages?: any[]) => string;
   projectNameFromPath: (path: string) => string;
   sanitizeProjectOptions: (items: ProjectOptionLike[]) => ProjectOptionLike[];
@@ -51,6 +51,8 @@ export function useLeftDrawerController(props: {
   onSwitchProject: (worktree: string) => Promise<void>;
   setActiveSession: (sessionId: string) => void;
   syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number }) => Promise<any>;
+  syncSessionStatus: (targetSessionId?: string) => Promise<any>;
+  startStream: (targetSessionId: string) => void;
   initialSessionLimit: number;
   initialMessageFetchLimit: number;
   messagesRef: React.MutableRefObject<any[]>;
@@ -74,8 +76,8 @@ export function useLeftDrawerController(props: {
     sanitizeProjectOptions,
     sessionDisplayedCount,
     sessionId,
-    sessionIdRefCurrent,
-    sessionRawMapRefCurrent,
+    sessionIdRef,
+    sessionRawMapRef,
     sessionSearch,
     sessions,
     setActiveSession,
@@ -85,9 +87,23 @@ export function useLeftDrawerController(props: {
     setSessionSearch,
     setSessionSwitchingTo,
     setWorkspaceSwitcherOpen,
+    startStream,
     stopStream,
+    syncSessionStatus,
     syncSessionMessages,
   } = props;
+
+  const reconnectRunningSession = useCallback(async (targetSessionId: string) => {
+    try {
+      const status = await syncSessionStatus(targetSessionId);
+      if (sessionIdRef.current !== targetSessionId) return;
+      if (status?.type === 'busy' || status?.type === 'retry') {
+        startStream(targetSessionId);
+      }
+    } catch {
+      // Status refresh is best-effort; message sync still owns visible recovery.
+    }
+  }, [sessionIdRef, startStream, syncSessionStatus]);
 
   const currentWorkspaceName = useMemo(
     () => (repoPath ? projectNameFromPath(repoPath) : '选择工作空间'),
@@ -134,8 +150,9 @@ export function useLeftDrawerController(props: {
   const handleDrawerProjectSelect = useCallback((worktree: string, active: boolean) => {
     setWorkspaceSwitcherOpen(false);
     if (active) return;
+    closeDrawer();
     void onSwitchProject(worktree);
-  }, [onSwitchProject, setWorkspaceSwitcherOpen]);
+  }, [closeDrawer, onSwitchProject, setWorkspaceSwitcherOpen]);
 
   const handleDrawerSessionSelect = useCallback((targetSessionId: string, active: boolean) => {
     if (active) {
@@ -144,22 +161,23 @@ export function useLeftDrawerController(props: {
     }
     void (async () => {
       stopStream();
-      const hasCachedRows = (sessionRawMapRefCurrent[targetSessionId] || []).length > 0;
+      const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
       setActiveSession(targetSessionId);
+      closeDrawer();
       if (!hasCachedRows) {
         const repo = toText(repoPath).trim();
         const snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
-        if (snapshot && sessionIdRefCurrent === targetSessionId) {
+        if (snapshot && sessionIdRef.current === targetSessionId) {
           setMessages(snapshot.messages);
           setRenderedTurns(snapshot.renderedTurns);
           messagesRef.current = snapshot.messages;
           renderedTurnsRef.current = snapshot.renderedTurns;
           setSessionSwitchingTo('');
-          closeDrawer();
           void syncSessionMessages(targetSessionId, {
             limit: initialSessionLimit,
             fetchLimit: initialMessageFetchLimit
           });
+          void reconnectRunningSession(targetSessionId);
           return;
         }
         await syncSessionMessages(targetSessionId, {
@@ -167,17 +185,18 @@ export function useLeftDrawerController(props: {
           fetchLimit: initialMessageFetchLimit
         }).catch(() => undefined);
       }
-      if (sessionIdRefCurrent === targetSessionId) closeDrawer();
+      void reconnectRunningSession(targetSessionId);
     })();
   }, [
     closeDrawer,
     initialMessageFetchLimit,
     initialSessionLimit,
     messagesRef,
+    reconnectRunningSession,
     renderedTurnsRef,
     repoPath,
-    sessionIdRefCurrent,
-    sessionRawMapRefCurrent,
+    sessionIdRef,
+    sessionRawMapRef,
     setActiveSession,
     setMessages,
     setRenderedTurns,

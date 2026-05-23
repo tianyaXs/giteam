@@ -63,6 +63,14 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
   const rawMessageId = useCallback((row: any) => storeRawMessageId(row), []);
   const rawPartId = useCallback((part: any, index = 0) => storeRawPartId(part, index), []);
   const mergeStreamPart = useCallback((prev: any, incoming: any) => storeMergeStreamPart(prev, incoming), []);
+  const shouldFollowLatest = useCallback(() => {
+    const d = getParams();
+    const distanceFromBottom = Math.max(
+      0,
+      Number(d.messageContentHRef.current || 0) - Number(d.messageViewportHRef.current || 0) - Number(d.messageScrollYRef.current || 0)
+    );
+    return !d.messageUserScrollingRef.current && distanceFromBottom < 96;
+  }, [getParams]);
 
   const resetOpenCodeStreamStores = useCallback(() => {
     const d = getParams();
@@ -231,12 +239,12 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     upsertStreamPart(targetSessionId, messageId, part);
     flushPendingStreamPartEvents(targetSessionId, messageId);
     renderStreamWindowRef.current(targetSessionId);
-    if (!d.messageUserScrollingRef.current) {
+    if (shouldFollowLatest()) {
       d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
       requestAnimationFrame(() => d.scrollToLatest(false));
     }
     d.setStreaming(true);
-  }, [flushPendingStreamPartEvents, getParams, upsertStreamPart]);
+  }, [flushPendingStreamPartEvents, getParams, shouldFollowLatest, upsertStreamPart]);
 
   const applyPartRemovedNow = useCallback((targetSessionId: string, payload: unknown) => {
     const d = getParams();
@@ -294,14 +302,13 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       const latest = getParams();
       latest.streamRenderTimerRef.current = null;
       if (targetSessionId !== latest.sessionIdRef.current) return;
-      const distanceFromBottom = Math.max(0, latest.messageContentHRef.current - latest.messageViewportHRef.current - latest.messageScrollYRef.current);
-      const shouldFollowStream = !latest.messageUserScrollingRef.current && distanceFromBottom < 96;
+      const shouldFollowStream = shouldFollowLatest();
       renderStreamWindowRef.current(targetSessionId);
       if (shouldFollowStream) {
         requestAnimationFrame(() => latest.scrollToLatest(false));
       }
     }, 24);
-  }, [getParams]);
+  }, [getParams, shouldFollowLatest]);
 
   const renderStreamWindow = useCallback((targetSessionId: string) => {
     const d = getParams();

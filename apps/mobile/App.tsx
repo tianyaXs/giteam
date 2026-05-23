@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { CameraView } from "expo-camera";
 import { useFonts } from "expo-font";
@@ -8,9 +8,6 @@ import { useChatListController } from "./src/features/chat/useChatListController
 import { useChatCellWindow } from "./src/features/chat/useChatCellWindow";
 import {
   flattenTurnsForList,
-  getInitialVisibleCellLimit,
-  getViewportAwareVisibleCellLimit,
-  takeTailCells,
   type DisplayedTurnCell,
 } from "./src/features/chat/displayedCells";
 import { useBootstrapPersistence } from "./src/features/chat/useBootstrapPersistence";
@@ -24,7 +21,6 @@ import {
   INITIAL_CELL_LIMIT,
   INITIAL_MESSAGE_FETCH_LIMIT,
   INITIAL_SESSION_LIMIT,
-  OLDER_CELL_LIMIT,
   OLDER_MESSAGE_FETCH_LIMIT,
   OLDER_SESSION_LIMIT,
   stableSortSessionItems,
@@ -57,6 +53,7 @@ import { useSessionLifecycleActions } from "./src/features/chat/useSessionLifecy
 import { useSessionSwitchController } from "./src/features/chat/useSessionSwitchController";
 import { useSyncedLatestRefs } from "./src/features/chat/useSyncedLatestRefs";
 import { useTodoDockController } from "./src/features/chat/useTodoDockController";
+import { useInteractiveTurnCells } from "./src/features/chat/useInteractiveTurnCells";
 import { useTurnCellRenderer } from "./src/features/chat/useTurnCellRenderer";
 import {
   assistantTextWeight,
@@ -122,7 +119,7 @@ export default function App() {
     [FONT_UI_REGULAR]: require("./assets/fonts/StyreneA-Regular-Trial-BF63f6cbd970ee9.otf"),
     [FONT_UI_MEDIUM]: require("./assets/fonts/StyreneA-Medium-Trial-BF63f6cbdb24b6d.otf"),
   });
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const {
     loaded,
     setLoaded,
@@ -276,6 +273,8 @@ export default function App() {
     onChatViewableItemsChanged,
     scrollToLatest,
     jumpToLatest,
+    prepareCellLayoutAdjustment,
+    settleCellLayoutAdjustment,
     onMessageListScroll,
     handleScrollBeginDrag,
     handleScrollEndDrag,
@@ -340,6 +339,7 @@ export default function App() {
     persistQuestionDismissal,
     questionRequests,
     questionSubmitState,
+    resetTimelineQuestionState,
     setDismissedQuestions,
     setQuestionRequests,
     setQuestionSubmitState,
@@ -410,6 +410,11 @@ export default function App() {
     startStream: startStreamManager,
     stopStream: stopStreamManager,
   };
+
+  const resetSessionInteractionState = useCallback(() => {
+    setExpandedThinkCards(new Set());
+    resetTimelineQuestionState();
+  }, [resetTimelineQuestionState, setExpandedThinkCards]);
 
   const streamTopGlowRequested = false;
   const { thinkingPulse, showStreamTopGlow, streamTopGlowAnim } =
@@ -750,29 +755,17 @@ export default function App() {
   const {
     displayedTurnCells,
     displayedTurnCellsRef,
-    visibleCellCount,
     visibleCellCountRef,
-    sessionVisibleCellCountRef,
-    hasHiddenCells,
     historyProgressWidth,
     initialChatScrollIndex,
     initialChatScrollOffset,
     chatStartsFromBottom,
     chatListMountKey,
-    bumpCellWindowVersion,
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
     sessionId,
-    windowHeight,
-    messageBottomInset,
     chatListResetKey,
-    initialCellLimit: INITIAL_CELL_LIMIT,
-    messageViewportHRef,
-    chatCellHeightMapRef,
     chatViewportSnapshotRef,
-    takeTailCells,
-    getInitialVisibleCellLimit,
-    getViewportAwareVisibleCellLimit,
   });
   const { sessionSwitchingTo, setSessionSwitchingTo, setActiveSession } =
     useSessionSwitchController<DisplayedTurnCell>({
@@ -780,7 +773,6 @@ export default function App() {
       sessionIdRef,
       sessionRawMapRef,
       sessionVisibleTurnCountRef,
-      sessionVisibleCellCountRef,
       displayedTurnCellsRef,
       visibleCellCountRef,
       messagesRef,
@@ -789,7 +781,7 @@ export default function App() {
       sessionNextCursor,
       rememberCurrentSessionViewport,
       resetListInteractionState,
-      bumpCellWindowVersion,
+      resetSessionInteractionState,
       applyTurnWindow,
       setSessionId,
       setQuestionRequests,
@@ -850,16 +842,13 @@ export default function App() {
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     olderSessionLimit: OLDER_SESSION_LIMIT,
     olderMessageFetchLimit: OLDER_MESSAGE_FETCH_LIMIT,
-    olderCellLimit: OLDER_CELL_LIMIT,
     sessionIdRef,
     pendingPromptSessionRef,
     sessionRawMapRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
-    sessionVisibleCellCountRef,
     displayedTurnCellsRef,
     visibleCellCountRef,
-    renderedTurnsRef,
     sessionNextCursor,
     loadingOlder,
     pushConnLog,
@@ -875,9 +864,6 @@ export default function App() {
     applyTurnWindow,
     syncSessionStatus,
     rememberCurrentSessionViewport,
-    flattenTurnsForList,
-    getInitialVisibleCellLimit,
-    bumpCellWindowVersion,
     streamDebug,
   });
   sessionMessageSyncRef.current = sessionMessageSync;
@@ -968,8 +954,8 @@ export default function App() {
     sessionDisplayedCount,
     sessionId,
     messages,
-    sessionRawMapRefCurrent: sessionRawMapRef.current,
-    sessionIdRefCurrent: sessionIdRef.current,
+    sessionRawMapRef,
+    sessionIdRef,
     pickSessionDisplayTitle,
     projectNameFromPath,
     sanitizeProjectOptions,
@@ -986,6 +972,8 @@ export default function App() {
     onSwitchProject,
     setActiveSession,
     syncSessionMessages,
+    syncSessionStatus,
+    startStream,
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     messagesRef,
@@ -1035,7 +1023,7 @@ export default function App() {
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages,
   });
-  const canLoadEarlierHistory = hasHiddenCells || !!sessionHasMore[sessionId];
+  const canLoadEarlierHistory = !!sessionHasMore[sessionId] || !!toText(sessionNextCursor[sessionId]).trim();
   const { composerModeOptions, inputModelLabel } = useComposerPresentationState(
     {
       model,
@@ -1082,16 +1070,22 @@ export default function App() {
     toggleTodoDock,
   } = useTodoDockController({
     displayedTurns,
+    sessionId,
     sessionWorking,
     streamTodoCard,
+  });
+  const interactionByCellId = useInteractiveTurnCells({
+    displayedTurnCells,
+    expandedThinkCards,
+    expandedTimelineQuestions,
+    newestFirst: true,
+    timelineQuestionTabs,
   });
   const { getChatCellType, renderTurnCell } = useTurnCellRenderer({
     activeQuestionsForTurn,
     bodyFontFamily: FONT_UI_REGULAR,
     chatCellHeightMapRef,
-    displayedTurnCells,
-    expandedThinkCards,
-    expandedTimelineQuestions,
+    interactionByCellId,
     handleCopyImage,
     handleCopyMessage,
     handleOpenPreviewImage,
@@ -1099,11 +1093,12 @@ export default function App() {
     handleThinkCardToggle,
     handleTimelineQuestionToggle,
     handleTimelineTabChange,
+    prepareCellLayoutAdjustment,
+    settleCellLayoutAdjustment,
     liveQuestionTurnId,
     sessionWorking,
     styles,
     thinkingPulse,
-    timelineQuestionTabs,
   });
   const {
     handleLoadOlderMessages,
@@ -1115,7 +1110,6 @@ export default function App() {
     handleContentSizeChange,
     handleListLayout,
     loadingOlder,
-    messageUserScrollingRef,
     onLoadOlderMessages,
     onMessageListScroll,
   });
