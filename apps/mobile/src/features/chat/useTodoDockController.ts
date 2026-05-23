@@ -18,8 +18,8 @@ export function useTodoDockController(params: {
   const [dismissedTodoCardId, setDismissedTodoCardId] = useState('');
 
   useEffect(() => {
-    setDismissedTodoCardId('');
-    setTodoDockCollapsed(false);
+    setDismissedTodoCardId((prev) => (prev ? '' : prev));
+    setTodoDockCollapsed((prev) => (prev ? false : prev));
   }, [sessionId]);
 
   const latestTodoCard = useMemo(() => {
@@ -36,17 +36,17 @@ export function useTodoDockController(params: {
 
   useEffect(() => {
     if (!latestTodoCard) {
-      setTodoDockCollapsed(false);
+      setTodoDockCollapsed((prev) => (prev ? false : prev));
       return;
     }
     if (dismissedTodoCardId && latestTodoCard.id !== dismissedTodoCardId) {
-      setDismissedTodoCardId('');
+      setDismissedTodoCardId((prev) => (prev ? '' : prev));
     }
     if (sessionWorking) {
-      setTodoDockCollapsed(false);
+      setTodoDockCollapsed((prev) => (prev ? false : prev));
       return;
     }
-    setTodoDockCollapsed(true);
+    setTodoDockCollapsed((prev) => (prev ? prev : true));
   }, [dismissedTodoCardId, latestTodoCard?.id, latestTodoCard?.summary, latestTodoCard?.finished, sessionWorking]);
 
   const toggleTodoDock = useCallback(() => {

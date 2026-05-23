@@ -71,6 +71,7 @@ function MarkdownMessage(props: {
 }) {
   const { bodyFontFamily, streaming, styles, text, tone } = props;
   const src = normalizeMarkdownForMobile(text);
+  const flowAnim = useRef(new Animated.Value(streaming ? 0 : 1)).current;
   const isUser = tone === 'user';
   const isThink = tone === 'think';
   const textColor = isUser ? '#fffaf2' : isThink ? '#746b5e' : '#24211d';
@@ -176,15 +177,44 @@ function MarkdownMessage(props: {
     [codeColor]
   );
 
+  useEffect(() => {
+    if (!streaming) {
+      flowAnim.stopAnimation();
+      flowAnim.setValue(1);
+      return;
+    }
+    flowAnim.stopAnimation();
+    flowAnim.setValue(0);
+    const animation = Animated.timing(flowAnim, {
+      toValue: 1,
+      duration: 120,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [flowAnim, src, streaming]);
+
   return (
     <View style={styles.markdownBlock}>
-      <MobileMarkedMarkdown
-        codeTextStyle={codeTextStyle}
-        containerStyle={styles.streamdownTextContainer}
-        streaming={streaming}
-        styles={markdownStyles}
-        value={src}
-      />
+      <Animated.View
+        style={{
+          opacity: flowAnim.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] }),
+          transform: [
+            {
+              translateY: flowAnim.interpolate({ inputRange: [0, 1], outputRange: [3, 0] })
+            }
+          ]
+        }}
+      >
+        <MobileMarkedMarkdown
+          codeTextStyle={codeTextStyle}
+          containerStyle={styles.streamdownTextContainer}
+          streaming={streaming}
+          styles={markdownStyles}
+          value={src}
+        />
+      </Animated.View>
     </View>
   );
 }
@@ -624,23 +654,10 @@ export const MobileTurnCell = React.memo(
       turn
     } = props;
     const measuredHeightRef = useRef(0);
-    const cellOpacity = useRef(new Animated.Value(0.94)).current;
-
-    useEffect(() => {
-      if (streaming && isLastTurn) return;
-      cellOpacity.setValue(0.94);
-      const animation = Animated.timing(cellOpacity, {
-        toValue: 1,
-        duration: 120,
-        useNativeDriver: true
-      });
-      animation.start();
-      return () => animation.stop();
-    }, [cellOpacity, isLastTurn, streaming, turn.id]);
 
     return (
-      <Animated.View
-        style={[styles.turnWrap, { opacity: cellOpacity }]}
+      <View
+        style={styles.turnWrap}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h <= 0) return;
@@ -830,7 +847,7 @@ export const MobileTurnCell = React.memo(
           }
           return null;
         })}
-      </Animated.View>
+      </View>
     );
   },
   (prev, next) =>

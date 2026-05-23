@@ -2,10 +2,12 @@ import { useMemo, useRef } from 'react';
 
 export function useChatCellWindow<Cell extends { id: string }>(props: {
   allDisplayedTurnCells: Cell[];
+  resetKey?: number;
   sessionId: string;
 }) {
   const {
     allDisplayedTurnCells,
+    resetKey = 0,
     sessionId,
   } = props;
 
@@ -23,7 +25,7 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
     : 1;
   const historyProgressWidth = `${Math.max(6, Math.round(historyProgress * 100))}%` as `${number}%`;
 
-  const chatListMountKey = `chat-list-${sessionId || 'draft'}`;
+  const chatListMountKey = `chat-list-${sessionId || 'draft'}-${resetKey}`;
 
   displayedTurnCellsRef.current = displayedTurnCells;
   visibleCellCountRef.current = visibleCellCount;

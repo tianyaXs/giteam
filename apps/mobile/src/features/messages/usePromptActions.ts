@@ -283,6 +283,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setBusy(true);
     stopStream();
     clearSessionOptimisticMessages(sid);
+    setChatListResetKey((prev) => prev + 1);
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     try {
       pushConnLog(`POST abort sid=${sid}`);

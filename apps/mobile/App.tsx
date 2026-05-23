@@ -761,6 +761,7 @@ export default function App() {
     chatListMountKey,
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
+    resetKey: chatListResetKey,
     sessionId,
   });
   const { sessionSwitchingTo, setSessionSwitchingTo, setActiveSession } =
@@ -1257,6 +1258,7 @@ export default function App() {
       ).trim()}
       historyProgressWidth={historyProgressWidth}
       showLatestJump={showLatestJump}
+      maintainVisibleAnchor={loadingOlder}
       onJumpToLatest={jumpToLatest}
       suppressFloatingDocks={suppressFloatingDocks || loadingOlder}
       latestTodoCard={latestTodoCard}

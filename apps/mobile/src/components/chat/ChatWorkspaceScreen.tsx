@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Animated, StatusBar, Text, View } from 'react-native';
 import { ChatComposer, ComposerPickerSheet } from './ChatComposer';
 import { AlbumPickerOverlay, ImagePreviewOverlay } from './MediaOverlays';
@@ -57,6 +57,7 @@ export function ChatWorkspaceScreen(props: {
   sessionHistoryRetryHintText: string;
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
+  maintainVisibleAnchor: boolean;
   onJumpToLatest: () => void;
   suppressFloatingDocks: boolean;
   latestTodoCard: any | null;
@@ -92,6 +93,7 @@ export function ChatWorkspaceScreen(props: {
     latestTodoCard,
     leftDrawer,
     loadingOlder,
+    maintainVisibleAnchor,
     messageBottomInset,
     messageScrollRef,
     notebookColors,
@@ -132,6 +134,64 @@ export function ChatWorkspaceScreen(props: {
     windowWidth
   } = props;
 
+  const leftPageMotionStyle = useMemo(
+    () => ({
+      opacity: notebookTrackX.interpolate({
+        inputRange: [-windowWidth, 0],
+        outputRange: [0.9, 1],
+        extrapolate: 'clamp'
+      }),
+      transform: [
+        {
+          scale: notebookTrackX.interpolate({
+            inputRange: [-windowWidth, 0],
+            outputRange: [0.985, 1],
+            extrapolate: 'clamp'
+          })
+        }
+      ]
+    }),
+    [notebookTrackX, windowWidth]
+  );
+  const mainPageMotionStyle = useMemo(
+    () => ({
+      opacity: notebookTrackX.interpolate({
+        inputRange: [-windowWidth * 2, -windowWidth, 0],
+        outputRange: [0.9, 1, 0.9],
+        extrapolate: 'clamp'
+      }),
+      transform: [
+        {
+          scale: notebookTrackX.interpolate({
+            inputRange: [-windowWidth * 2, -windowWidth, 0],
+            outputRange: [0.982, 1, 0.982],
+            extrapolate: 'clamp'
+          })
+        }
+      ]
+    }),
+    [notebookTrackX, windowWidth]
+  );
+  const rightPageMotionStyle = useMemo(
+    () => ({
+      opacity: notebookTrackX.interpolate({
+        inputRange: [-windowWidth * 2, -windowWidth],
+        outputRange: [1, 0.9],
+        extrapolate: 'clamp'
+      }),
+      transform: [
+        {
+          scale: notebookTrackX.interpolate({
+            inputRange: [-windowWidth * 2, -windowWidth],
+            outputRange: [1, 0.985],
+            extrapolate: 'clamp'
+          })
+        }
+      ]
+    }),
+    [notebookTrackX, windowWidth]
+  );
+
   return (
     <>
       <View style={[styles.notebookShell, { backgroundColor: notebookColors.shell }]} {...notebookPanHandlers}>
@@ -144,8 +204,8 @@ export function ChatWorkspaceScreen(props: {
             }
           ]}
         >
-          <View style={[styles.notebookPageFrame, { width: windowWidth }]}>{leftDrawer}</View>
-          <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main, width: windowWidth }]}>
+          <Animated.View style={[styles.notebookPageFrame, { width: windowWidth }, leftPageMotionStyle]}>{leftDrawer}</Animated.View>
+          <Animated.View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main, width: windowWidth }, mainPageMotionStyle]}>
             <StatusBar barStyle="dark-content" backgroundColor={notebookColors.shell} />
             <View style={[styles.topBar, { backgroundColor: notebookColors.main }]}>
               <View style={styles.topSideSlot} />
@@ -188,6 +248,7 @@ export function ChatWorkspaceScreen(props: {
               sessionHistoryRetryHintText={sessionHistoryRetryHintText}
               historyProgressWidth={historyProgressWidth}
               showLatestJump={showLatestJump}
+              maintainVisibleAnchor={maintainVisibleAnchor}
               onJumpToLatest={onJumpToLatest}
             />
             {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
@@ -227,8 +288,8 @@ export function ChatWorkspaceScreen(props: {
               </View>
             ) : null}
             <ChatComposer {...composerProps} />
-          </View>
-          <View style={[styles.notebookPageFrame, { width: windowWidth }]}>{rightDrawer}</View>
+          </Animated.View>
+          <Animated.View style={[styles.notebookPageFrame, { width: windowWidth }, rightPageMotionStyle]}>{rightDrawer}</Animated.View>
         </Animated.View>
       </View>
       <AlbumPickerOverlay {...albumPickerProps} />

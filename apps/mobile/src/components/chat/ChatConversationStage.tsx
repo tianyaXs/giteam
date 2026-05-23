@@ -40,6 +40,7 @@ export function ChatConversationStage(props: {
   sessionHistoryRetryHintText: string;
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
+  maintainVisibleAnchor: boolean;
   onJumpToLatest: () => void;
 }) {
   const {
@@ -50,6 +51,7 @@ export function ChatConversationStage(props: {
     historyProgressWidth,
     inputDockHeight,
     loadingOlder,
+    maintainVisibleAnchor,
     messageBottomInset,
     messageScrollRef,
     notebookColors,
@@ -84,6 +86,10 @@ export function ChatConversationStage(props: {
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
+  );
+  const maintainVisibleContentPosition = useMemo(
+    () => (maintainVisibleAnchor ? { autoscrollToBottomThreshold: 0 } : undefined),
+    [maintainVisibleAnchor]
   );
   const keyExtractor = useCallback((item: any) => item.id, []);
   const latestSettledKeyRef = useRef('');
@@ -155,9 +161,7 @@ export function ChatConversationStage(props: {
             onLayout={onListLayout}
             data={displayedTurnCells}
             inverted
-            maintainVisibleContentPosition={{
-              autoscrollToBottomThreshold: 24
-            }}
+            maintainVisibleContentPosition={maintainVisibleContentPosition}
             alwaysBounceVertical
             bounces
             overScrollMode="always"

@@ -1,5 +1,5 @@
-import React, { memo, type ReactElement, type ReactNode, useCallback, useMemo, useRef } from 'react';
-import { FlatList, Platform, ScrollView, Text, View, type TextStyle, type ViewStyle } from 'react-native';
+import React, { memo, type ReactElement, type ReactNode, useMemo, useRef } from 'react';
+import { ScrollView, Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { lexer, type Token, type Tokenizer } from 'marked';
 import Renderer from 'react-native-marked/dist/commonjs/lib/Renderer';
 import Parser from 'react-native-marked/dist/commonjs/lib/Parser';
@@ -153,20 +153,11 @@ export const MobileMarkedMarkdown = memo(function MobileMarkedMarkdown(props: {
   const renderer = useMemo(() => new MobileMarkdownRenderer(codeTextStyle), [codeTextStyle]);
   const rnElements = useStreamingMarkdown(value, { renderer, styles, streaming });
 
-  const renderItem = useCallback(({ item }: { item: ReactNode }) => item as ReactElement, []);
-  const keyExtractor = useCallback((_: ReactNode, index: number) => String(index), []);
-
   return (
-    <FlatList
-      data={rnElements}
-      initialNumToRender={rnElements.length}
-      keyExtractor={keyExtractor}
-      keyboardShouldPersistTaps="handled"
-      nestedScrollEnabled={Platform.OS === 'android'}
-      removeClippedSubviews={false}
-      renderItem={renderItem}
-      scrollEnabled={false}
-      style={containerStyle}
-    />
+    <View style={containerStyle}>
+      {rnElements.map((node: ReactNode, index: number) => (
+        <React.Fragment key={String(index)}>{node as ReactElement}</React.Fragment>
+      ))}
+    </View>
   );
 });

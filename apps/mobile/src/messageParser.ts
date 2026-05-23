@@ -405,7 +405,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     const errText = errorText(info?.error);
     const errCode = normalizeText(info?.error?.code) || normalizeText(info?.error?.data?.code);
     const hasAssistantError = !!errText;
-    if (hasAssistantError) {
+    if (hasAssistantError && !isAbortLikeMessageError(errText, errCode)) {
       timelineRows.push({
         order: seq++,
         item: {
@@ -624,4 +624,9 @@ export function parseConversation(raw: unknown): ParsedConversation {
   }
 
   return { chatMessages, timeline, writing, hasError };
+}
+
+function isAbortLikeMessageError(text: string, code: string) {
+  const merged = `${normalizeText(text)} ${normalizeText(code)}`.toLowerCase();
+  return merged.includes('messageabortederror') || merged.includes('the operation was aborted');
 }

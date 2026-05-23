@@ -16,6 +16,9 @@ export type OptimisticUserMessage = {
   }>;
 };
 
+const OPTIMISTIC_MATCH_PAST_GRACE_MS = 20 * 1000;
+const OPTIMISTIC_MATCH_FUTURE_WINDOW_MS = 2 * 60 * 1000;
+
 type TurnWindowResult = ReturnType<typeof buildTurnWindow>;
 
 export function useOptimisticUserMessages(params: {
@@ -94,11 +97,21 @@ export function useOptimisticUserMessages(params: {
           serverUsers.find((item) => {
             if (usedIds.has(item.id)) return false;
             if (toText(item.text) !== text) return false;
-            const delta = Math.abs((Number(item.createdAt || 0) || 0) - local.createdAt);
-            return delta <= 10 * 60 * 1000;
+            if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
+            const serverCreatedAt = Number(item.createdAt || 0) || 0;
+            if (serverCreatedAt < local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS) return false;
+            if (serverCreatedAt > local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS) return false;
+            return true;
           }) ||
           serverUsers
-            .filter((item) => !usedIds.has(item.id) && toText(item.text) === text)
+            .filter((item) => {
+              if (usedIds.has(item.id)) return false;
+              if (toText(item.text) !== text) return false;
+              if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
+              const serverCreatedAt = Number(item.createdAt || 0) || 0;
+              return serverCreatedAt >= local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS &&
+                serverCreatedAt <= local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS;
+            })
             .sort((a, b) => {
               const da = Math.abs((Number(a.createdAt || 0) || 0) - local.createdAt);
               const db = Math.abs((Number(b.createdAt || 0) || 0) - local.createdAt);

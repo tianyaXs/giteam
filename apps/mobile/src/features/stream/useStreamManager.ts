@@ -32,6 +32,11 @@ import {
   takeStreamTypewriterChunk
 } from './streamTypewriter';
 
+function isAbortLikeStreamError(detail: string) {
+  const text = toText(detail).toLowerCase();
+  return text.includes('messageabortederror') || text.includes('the operation was aborted');
+}
+
 const INITIAL_SESSION_LIMIT = 1;
 const INITIAL_MESSAGE_FETCH_LIMIT = 8;
 const OLDER_SESSION_LIMIT = 1;
@@ -598,6 +603,10 @@ export function useStreamManager(deps: StreamManagerDeps) {
       try {
         const detail = typeof e?.data === 'string' ? e.data : JSON.stringify(e);
         d.streamDebug('sse.error', { sid: targetSessionId, detail: toText(detail).slice(0, 180) });
+        if (isAbortLikeStreamError(detail)) {
+          d.pushConnLog(`SSE aborted ${toText(detail) || 'unknown'}`);
+          return;
+        }
         d.pushConnLog(`SSE error ${toText(detail) || 'unknown'}`, 'error');
         if (toText(detail).includes('invalid bearer token') && d.pairCode.trim()) {
           d.pushConnLog('SSE auto pairAuth retry');

@@ -6,6 +6,24 @@ import type { OpenCodeStreamStoreRefs } from '../messages/opencodeStore';
 import { upsertStreamQuestion } from '../messages/opencodeStore';
 import type { QuestionRequest, SessionStatusInfo } from '../../types';
 
+function sameQuestionIdSet(a: QuestionRequest[], b: QuestionRequest[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.id !== b[i]?.id) return false;
+  }
+  return true;
+}
+
+function sameStringSet(a: Set<string>, b: Set<string>) {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const item of a) {
+    if (!b.has(item)) return false;
+  }
+  return true;
+}
+
 export type QuestionSubmitState = {
   status: 'submitting' | 'submitted' | 'failed';
   error?: string;
@@ -118,7 +136,8 @@ export function useQuestionController({
       if (!req?.id || dismissedQuestions.has(req.id)) return;
       merged.set(req.id, req);
     });
-    setQuestionRequests([...merged.values()]);
+    const nextRows = [...merged.values()];
+    setQuestionRequests((prev) => (sameQuestionIdSet(prev, nextRows) ? prev : nextRows));
   }, [dismissedQuestions, extractQuestionRequests, getOpenCodeStreamStores, sessionRawMapRef]);
 
   const dismissQuestionRequest = useCallback((requestId: string, targetSessionId: string = sessionIdRef.current) => {
@@ -322,7 +341,7 @@ export function useQuestionController({
     const sid = toText(sessionId).trim();
     const repo = toText(repoPath).trim();
     if (!sid || !repo) {
-      setDismissedQuestions(new Set());
+      setDismissedQuestions((prev) => (prev.size === 0 ? prev : new Set()));
       return;
     }
     let alive = true;
@@ -330,7 +349,7 @@ export function useQuestionController({
       try {
         const ids = loadQuestionDismissals(repo, sid);
         if (!alive) return;
-        setDismissedQuestions(ids);
+        setDismissedQuestions((prev) => (sameStringSet(prev, ids) ? prev : ids));
       } catch {
         // ignore persistence failures; pending questions can still render.
       }

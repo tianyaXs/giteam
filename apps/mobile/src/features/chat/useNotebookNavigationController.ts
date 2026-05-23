@@ -53,9 +53,9 @@ export function useNotebookNavigationController(props: {
     notebookAnimationRef.current?.stop();
     const animation = Animated.spring(notebookTrackX, {
       toValue: -windowWidth * index,
-      stiffness: 240,
-      damping: 28,
-      mass: 0.9,
+      stiffness: 180,
+      damping: 24,
+      mass: 0.82,
       useNativeDriver: true
     });
     notebookAnimationRef.current = animation;
@@ -164,7 +164,7 @@ export function useNotebookNavigationController(props: {
       notebookTerminatedDuringTouchRef.current = false;
       const baseIndex = notebookGestureStartIndexRef.current;
       const threshold = Math.max(windowWidth * 0.22, 72);
-      const projectedDx = Number(gesture.dx || 0) + gesture.vx * 90;
+      const projectedDx = Number(gesture.dx || 0) + gesture.vx * 110;
       let nextIndex = baseIndex;
       if (projectedDx < -threshold || gesture.vx < -0.75) nextIndex = Math.min(2, baseIndex + 1);
       else if (projectedDx > threshold || gesture.vx > 0.75) nextIndex = Math.max(0, baseIndex - 1);

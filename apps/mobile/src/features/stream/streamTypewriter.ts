@@ -1,14 +1,10 @@
 import { toText } from '../../lib/text';
 
-export const STREAM_TYPEWRITER_TICK_MS = 40;
+export const STREAM_TYPEWRITER_TICK_MS = 16;
 
 export function takeStreamTypewriterChunk(buffer: string): { chunk: string; rest: string } {
   if (!buffer) return { chunk: '', rest: '' };
-  const sentenceMatch = buffer.match(/^[\s\S]*?(?:[。！？!?…][）)"』」\s]*|\n)/);
-  if (sentenceMatch?.[0] && sentenceMatch[0].length > 0 && sentenceMatch[0].length <= 120) {
-    return { chunk: sentenceMatch[0], rest: buffer.slice(sentenceMatch[0].length) };
-  }
-  const size = buffer.length > 240 ? 8 : buffer.length > 96 ? 5 : buffer.length > 32 ? 3 : 2;
+  const size = buffer.length > 320 ? 4 : buffer.length > 144 ? 3 : buffer.length > 48 ? 2 : 1;
   return { chunk: buffer.slice(0, size), rest: buffer.slice(size) };
 }
 
