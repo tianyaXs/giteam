@@ -43,7 +43,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   }, []);
 
   const getDistanceFromBottom = useCallback((scrollY = messageScrollYRef.current) => {
-    return Math.max(0, messageContentHRef.current - messageViewportHRef.current - scrollY);
+    return Math.max(0, scrollY);
   }, []);
 
   const updateLatestJumpVisibility = useCallback((distanceFromBottom: number, immediate = false) => {
@@ -78,7 +78,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   const scrollToLatest = useCallback((animated?: boolean) => {
     if (messageUserScrollingRef.current) return;
     try {
-      messageScrollRef.current?.scrollToEnd({ animated });
+      messageScrollRef.current?.scrollToOffset({ offset: 0, animated });
     } catch {}
   }, []);
 
@@ -176,7 +176,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       const currentOffset = Number(messageScrollRef.current?.getAbsoluteLastScrollOffset?.());
       if (Number.isFinite(currentOffset)) scrollY = Math.max(0, currentOffset);
     } catch {}
-    const distanceFromBottom = Math.max(0, contentH - viewportH - scrollY);
+    const distanceFromBottom = Math.max(0, scrollY);
     const viewableRange = chatViewableRangeRef.current;
     let firstVisibleIndex = Math.max(0, Math.floor(viewableRange.startIndex || 0));
     let lastVisibleIndex = Math.max(firstVisibleIndex, Math.floor(viewableRange.endIndex || firstVisibleIndex));
@@ -205,7 +205,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
         firstVisibleOffset = Math.max(0, scrollY - Number(layout.y));
       }
     } catch {}
-    const latestCellVisible = cells.length > 0 && lastVisibleIndex >= cells.length - 1;
+    const latestCellVisible = cells.length > 0 && firstVisibleIndex <= 0;
     chatViewportSnapshotRef.current[sid] = {
       scrollY,
       viewportH,

@@ -45,7 +45,6 @@ export function ChatWorkspaceScreen(props: {
   getChatCellType: (item: any) => string;
   initialChatScrollIndex?: number;
   initialChatScrollOffset?: number;
-  chatStartsFromBottom: boolean;
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   canLoadEarlierHistory: boolean;
@@ -92,7 +91,6 @@ export function ChatWorkspaceScreen(props: {
     currentSessionTitle,
     currentWorkspaceName,
     dismissedTodoCardId,
-    chatStartsFromBottom,
     displayedTurnCells,
     getChatCellType,
     historyProgressWidth,
@@ -186,7 +184,6 @@ export function ChatWorkspaceScreen(props: {
               getChatCellType={getChatCellType}
               initialChatScrollIndex={initialChatScrollIndex}
               initialChatScrollOffset={initialChatScrollOffset}
-              chatStartsFromBottom={chatStartsFromBottom}
               chatViewabilityConfig={chatViewabilityConfig}
               onChatViewableItemsChanged={onChatViewableItemsChanged}
               canLoadEarlierHistory={canLoadEarlierHistory}

@@ -28,7 +28,6 @@ export function ChatConversationStage(props: {
   getChatCellType: (item: any) => string;
   initialChatScrollIndex?: number;
   initialChatScrollOffset?: number;
-  chatStartsFromBottom: boolean;
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   canLoadEarlierHistory: boolean;
@@ -56,7 +55,6 @@ export function ChatConversationStage(props: {
     displayedTurnCells,
     getChatCellType,
     historyProgressWidth,
-    chatStartsFromBottom,
     initialChatScrollIndex,
     initialChatScrollOffset,
     inputDockHeight,
@@ -97,11 +95,12 @@ export function ChatConversationStage(props: {
   );
   const maintainChatPosition = useMemo(
     () => ({
-      startRenderingFromBottom: chatStartsFromBottom,
-      autoscrollToBottomThreshold: 0.12,
+      startRenderingFromBottom: false,
+      autoscrollToTopThreshold: 0.08,
+      autoscrollToBottomThreshold: 0,
       animateAutoScrollToBottom: false
     }),
-    [chatStartsFromBottom]
+    []
   );
   const keyExtractor = useCallback((item: any) => item.id, []);
   const handleStartReached = useCallback(() => {
@@ -166,6 +165,7 @@ export function ChatConversationStage(props: {
             contentContainerStyle={chatContentContainerStyle}
             onLayout={onListLayout}
             data={displayedTurnCells}
+            inverted
             getItemType={getChatCellType}
             initialScrollIndex={typeof initialChatScrollIndex === 'number' ? initialChatScrollIndex : undefined}
             initialScrollIndexParams={typeof initialChatScrollOffset === 'number' ? { viewOffset: initialChatScrollOffset } : undefined}
@@ -179,8 +179,8 @@ export function ChatConversationStage(props: {
             maintainVisibleContentPosition={maintainChatPosition}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
-            onStartReached={handleStartReached}
-            onStartReachedThreshold={0.16}
+            onEndReached={handleStartReached}
+            onEndReachedThreshold={0.16}
             onScrollBeginDrag={onScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}
@@ -202,7 +202,7 @@ export function ChatConversationStage(props: {
           ) : null}
           {showLatestJump ? (
             <Pressable style={styles.latestJumpBtn} onPress={onJumpToLatest}>
-              <Text style={styles.latestJumpTxt}>↑</Text>
+              <Text style={styles.latestJumpTxt}>↓</Text>
             </Pressable>
           ) : null}
         </View>

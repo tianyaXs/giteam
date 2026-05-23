@@ -14,7 +14,7 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
   const displayedTurnCellsRef = useRef<Cell[]>([]);
   const visibleCellCountRef = useRef(0);
   const displayedTurnCells = useMemo(
-    () => allDisplayedTurnCells,
+    () => [...allDisplayedTurnCells].reverse(),
     [allDisplayedTurnCells]
   );
 
@@ -27,7 +27,6 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
 
   const initialChatScrollIndex = undefined;
   const initialChatScrollOffset = undefined;
-  const chatStartsFromBottom = true;
   const chatListMountKey = `chat-list-${chatListResetKey}-${sessionId || 'draft'}`;
 
   displayedTurnCellsRef.current = displayedTurnCells;
@@ -41,7 +40,6 @@ export function useChatCellWindow<Cell extends { id: string }>(props: {
     historyProgressWidth,
     initialChatScrollIndex,
     initialChatScrollOffset,
-    chatStartsFromBottom,
     chatListMountKey,
     bumpCellWindowVersion: () => {}
   };

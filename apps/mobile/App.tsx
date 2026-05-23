@@ -758,7 +758,6 @@ export default function App() {
     historyProgressWidth,
     initialChatScrollIndex,
     initialChatScrollOffset,
-    chatStartsFromBottom,
     chatListMountKey,
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
@@ -1242,7 +1241,6 @@ export default function App() {
       getChatCellType={getChatCellType}
       initialChatScrollIndex={initialChatScrollIndex}
       initialChatScrollOffset={initialChatScrollOffset}
-      chatStartsFromBottom={chatStartsFromBottom}
       chatViewabilityConfig={chatViewabilityConfig}
       onChatViewableItemsChanged={onChatViewableItemsChanged}
       canLoadEarlierHistory={canLoadEarlierHistory}

@@ -79,10 +79,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
   const getDeps = useCallback(() => depsRef.current, []);
   const shouldFollowLatest = useCallback(() => {
     const d = getDeps();
-    const distanceFromBottom = Math.max(
-      0,
-      Number(d.messageContentHRef.current || 0) - Number(d.messageViewportHRef.current || 0) - Number(d.messageScrollYRef.current || 0)
-    );
+    const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
     return !d.messageUserScrollingRef.current && distanceFromBottom < 96;
   }, [getDeps]);
 
