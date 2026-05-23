@@ -1,3 +1,10 @@
+import {
+  buildOpencodeAssistantRenderGroups,
+  isOpencodeRenderablePart,
+  mergeAssistantTextChunks,
+  summarizeOpencodeContextProgress,
+  summarizeOpencodeContextToolCounts
+} from './lib/opencodeParts';
 import type {
   MobileChatMessage,
   MobileContextCard,
@@ -177,17 +184,6 @@ function isContextTool(tool: string): boolean {
   return tool === 'read' || tool === 'glob' || tool === 'grep' || tool === 'list';
 }
 
-function isRenderablePart(p: any): boolean {
-  if (!p) return false;
-  const t = normalizeText(p?.type);
-  if (t === 'text') return !!normalizeText(p?.text);
-  if (t === 'reasoning') return !!normalizeText(p?.text);
-  if (t === 'step-start' || t === 'step-finish' || t === 'patch') return false;
-  if (t === 'tool') {
-    return true;
-  }
-  return false;
-}
 
 function parseTodoItems(input: unknown): MobileTodoItem[] {
   if (!Array.isArray(input)) return [];
@@ -276,42 +272,6 @@ function buildQuestionCard(part: any, id: string, createdAt: number, messageId?:
     },
     error: errorText
   };
-}
-
-function summarizeContextToolCounts(parts: any[]): { read: number; search: number; list: number } {
-  let read = 0;
-  let search = 0;
-  let list = 0;
-  for (const p of parts) {
-    if (normalizeText(p?.type) !== 'tool') continue;
-    const tool = normalizeText(p?.tool);
-    if (tool === 'read') read += 1;
-    else if (tool === 'glob' || tool === 'grep') search += 1;
-    else if (tool === 'list') list += 1;
-  }
-  return { read, search, list };
-}
-
-function summarizeContextProgress(parts: any[]): { active: boolean; mode: string; detail: string } {
-  for (let i = parts.length - 1; i >= 0; i -= 1) {
-    const p = parts[i] || {};
-    if (normalizeText(p?.type) !== 'tool') continue;
-    const st = normalizeText(p?.state?.status).toLowerCase();
-    if (st !== 'running' && st !== 'pending') continue;
-    const title = normalizeText(p?.state?.title);
-    const tool = normalizeText(p?.tool);
-    const input = p?.state?.input || {};
-    const subtitle = normalizeText(input?.description) || normalizeText(input?.filePath) || normalizeText(input?.pattern) || normalizeText(input?.path);
-    const detail = [tool, title || subtitle].filter(Boolean).join(' · ');
-    const mode =
-      tool === 'read' || tool === 'list' || tool === 'glob' || tool === 'grep'
-        ? '读取'
-        : tool === 'write' || tool === 'edit' || tool === 'apply_patch'
-          ? '写入'
-          : '处理中';
-    return { active: true, mode, detail };
-  }
-  return { active: false, mode: '', detail: '' };
 }
 
 function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCard {
@@ -423,52 +383,96 @@ export function parseConversation(raw: unknown): ParsedConversation {
       hasAssistantRenderable = true;
       hasError = true;
     }
-    const renderParts = parts.filter(isRenderablePart);
-    let pidx = 0;
-    while (pidx < renderParts.length) {
-      const p: any = renderParts[pidx];
-      const t = normalizeText(p?.type);
-      const partId = normalizeText(p?.id) || `${id}:${pidx}`;
-      const partCreatedAt = createdAt + pidx;
-
-      if (t === 'tool' && isContextTool(normalizeText(p?.tool))) {
-        const batch: any[] = [p];
-        let j = pidx + 1;
-        while (j < renderParts.length) {
-          const nxt: any = renderParts[j];
-          if (normalizeText(nxt?.type) === 'tool' && isContextTool(normalizeText(nxt?.tool))) {
-            batch.push(nxt);
-            j += 1;
-            continue;
+    const renderParts = parts.filter((p: any) => isOpencodeRenderablePart(p, true));
+    let groupIndex = 0;
+    let assistantTextRun: string[] = [];
+    const flushAssistantTextRun = (partCreatedAt: number) => {
+      const text = mergeAssistantTextChunks(assistantTextRun);
+      assistantTextRun = [];
+      if (!text) return;
+      timelineRows.push({
+        order: seq++,
+        item: {
+          kind: 'chat',
+          createdAt: partCreatedAt,
+          message: {
+            id: `chat:assistant:${id}`,
+            role: 'assistant',
+            text,
+            createdAt: partCreatedAt
           }
-          break;
         }
-        const counts = summarizeContextToolCounts(batch);
-        const progress = summarizeContextProgress(batch);
+      });
+      hasAssistantRenderable = true;
+    };
+    for (const group of buildOpencodeAssistantRenderGroups(renderParts)) {
+      const partCreatedAt = createdAt + groupIndex;
+      groupIndex += 1;
+
+      if (group.kind === 'context') {
+        flushAssistantTextRun(partCreatedAt);
+        const batch = group.parts;
+        const firstId = normalizeText((batch[0] as any)?.id) || `${id}:ctx`;
+        const counts = summarizeOpencodeContextToolCounts(batch);
+        const progress = summarizeOpencodeContextProgress(batch);
         const summary = progress.detail
           ? `${progress.mode} · ${progress.detail} · ${counts.read} read · ${counts.search} search · ${counts.list} list`
           : `${counts.read} read · ${counts.search} search · ${counts.list} list`;
         const tools: MobileEventCard[] = batch.map((bp: any, bidx: number) => {
-          const bid = normalizeText(bp?.id) || `${partId}:ctx:${bidx}`;
+          const bid = normalizeText(bp?.id) || `${firstId}:ctx:${bidx}`;
           return buildToolEvent(bp, `event:${bid}`, partCreatedAt + bidx);
         });
-        const context: MobileContextCard = {
-          id: `context:${partId}`,
-          title: progress.active ? 'Gathering Context' : 'Context',
-          summary,
-          createdAt: partCreatedAt,
-          tools
-        };
         timelineRows.push({
           order: seq++,
-          item: { kind: 'context', createdAt: partCreatedAt, context }
+          item: {
+            kind: 'context',
+            createdAt: partCreatedAt,
+            context: {
+              id: `context:${group.key}`,
+              title: progress.active ? 'Gathering Context' : 'Context',
+              summary,
+              createdAt: partCreatedAt,
+              tools
+            }
+          }
         });
         hasAssistantRenderable = true;
-        pidx = j;
         continue;
       }
 
+      if (group.kind === 'reasoning') {
+        flushAssistantTextRun(partCreatedAt);
+        const text = group.parts
+          .map((part: any) => normalizeText(part?.text))
+          .filter(Boolean)
+          .join('\n\n');
+        if (!text) continue;
+        const lastPart: any = group.parts[group.parts.length - 1];
+        const partFinished = Boolean(lastPart?.finish || lastPart?.time?.end || lastPart?.time?.completed);
+        timelineRows.push({
+          order: seq++,
+          item: {
+            kind: 'think',
+            createdAt: partCreatedAt,
+            card: {
+              id: `think:${group.key}`,
+              title: 'Think',
+              text,
+              createdAt: partCreatedAt,
+              finished: finished || partFinished
+            }
+          }
+        });
+        hasAssistantRenderable = true;
+        continue;
+      }
+
+      const p: any = group.part;
+      const t = normalizeText(p?.type);
+      const partId = normalizeText(p?.id) || `${id}:${group.key}`;
+
       if (t === 'tool' && normalizeText(p?.tool) === 'todowrite') {
+        flushAssistantTextRun(partCreatedAt);
         const todo = buildTodoCard(p, `todo:${partId}`, partCreatedAt, finished);
         if (todo) {
           timelineRows.push({
@@ -477,11 +481,11 @@ export function parseConversation(raw: unknown): ParsedConversation {
           });
           hasAssistantRenderable = true;
         }
-        pidx += 1;
         continue;
       }
 
       if (t === 'tool' && normalizeText(p?.tool) === 'question') {
+        flushAssistantTextRun(partCreatedAt);
         const question = buildQuestionCard(p, `question:${partId}`, partCreatedAt, id);
         if (question) {
           timelineRows.push({
@@ -490,44 +494,17 @@ export function parseConversation(raw: unknown): ParsedConversation {
           });
           hasAssistantRenderable = true;
         }
-        pidx += 1;
         continue;
       }
 
       if (t === 'text') {
         const text = normalizeText(p?.text);
-        if (text) {
-          timelineRows.push({
-            order: seq++,
-            item: {
-              kind: 'chat',
-              createdAt: partCreatedAt,
-              message: { id: `chat:${partId}`, role: 'assistant', text, createdAt: partCreatedAt }
-            }
-          });
-          hasAssistantRenderable = true;
-        }
-      } else if (t === 'reasoning') {
-        const text = normalizeText(p?.text);
-        if (text) {
-          const partFinished = Boolean(p?.finish || p?.time?.end || p?.time?.completed);
-          timelineRows.push({
-            order: seq++,
-            item: {
-              kind: 'think',
-              createdAt: partCreatedAt,
-              card: {
-                id: `think:${partId}`,
-                title: 'Think',
-                text,
-                createdAt: partCreatedAt,
-                finished: finished || partFinished
-              }
-            }
-          });
-          hasAssistantRenderable = true;
-        }
-      } else if (t === 'tool') {
+        if (text) assistantTextRun.push(text);
+        continue;
+      }
+
+      if (t === 'tool') {
+        flushAssistantTextRun(partCreatedAt);
         const card = buildToolEvent(p, `event:${partId}`, partCreatedAt);
         timelineRows.push({
           order: seq++,
@@ -535,8 +512,8 @@ export function parseConversation(raw: unknown): ParsedConversation {
         });
         hasAssistantRenderable = true;
       }
-      pidx += 1;
     }
+    flushAssistantTextRun(createdAt + groupIndex);
 
     writing = !finished && !hasAssistantError;
   }
@@ -550,7 +527,9 @@ export function parseConversation(raw: unknown): ParsedConversation {
   for (const item of ordered) {
     let sig: string = item.kind;
     // 仅用稳定 id 去重：长正文拼进 key 会导致超长会话下 Set/字符串成本极高、主线程卡顿。
-    if (item.kind === 'chat') sig = `${sig}:${item.message.role}:${item.message.id}`;
+    if (item.kind === 'chat') {
+      sig = `${sig}:${item.message.role}:${item.message.id}:${normalizeText(item.message.text).length}`;
+    }
     if (item.kind === 'think') sig = `${sig}:${item.card.id}`;
     if (item.kind === 'event') sig = `${sig}:${item.event.id}`;
     if (item.kind === 'todo') sig = `${sig}:${item.todo.id}`;

@@ -1,3 +1,4 @@
+import { mergeOpencodeStreamText } from '../../lib/opencodeParts';
 import { parseConversation } from '../../messageParser';
 import type { MobileChatMessage, MobileRenderedTurn, MobileTimelineItem } from '../../types';
 
@@ -66,8 +67,8 @@ function mergeMessagePart(prev: any, incoming: any): any {
   const next = { ...(prev || {}), ...(incoming || {}) };
   const prevText = typeof prev?.text === 'string' ? prev.text : '';
   const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
-  if (prevText && (!incomingText || incomingText.length < prevText.length)) {
-    next.text = prevText;
+  if (prevText || incomingText) {
+    next.text = mergeOpencodeStreamText(prevText, incomingText);
   }
   return next;
 }
@@ -136,47 +137,51 @@ function itemSignature(item: MobileTimelineItem): string {
 export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRenderedTurn[] {
   const out: MobileRenderedTurn[] = [];
   let current: { id: string; createdAt: number; userMessage?: MobileChatMessage; items: MobileTimelineItem[] } | null = null;
+  let pendingAssistant: MobileTimelineItem[] = [];
   let seq = 0;
+
+  const isUserChat = (item: MobileTimelineItem): item is Extract<MobileTimelineItem, { kind: 'chat' }> =>
+    item.kind === 'chat' && item.message.role === 'user';
 
   const flush = () => {
     if (!current || current.items.length === 0) return;
+    if (!current.userMessage) {
+      pendingAssistant.push(...current.items.filter((item) => !isUserChat(item)));
+      current = null;
+      return;
+    }
     out.push({
       id: current.id,
       createdAt: current.createdAt,
       userMessage: current.userMessage,
       items: current.items,
       signature: [
-        current.userMessage
-          ? `user:${toText(current.userMessage.id)}:${toText(current.userMessage.text).length}`
-          : 'user:none',
+        `user:${toText(current.userMessage.id)}:${toText(current.userMessage.text).length}`,
         ...current.items.map(itemSignature)
       ].join('|')
     });
+    current = null;
   };
 
   for (const item of timeline) {
-    if (item.kind === 'chat' && item.message.role === 'user') {
+    if (isUserChat(item)) {
       flush();
       seq += 1;
       const stable = timelineStableKey(item);
       const fallback = `turn:seq:${seq}:${item.createdAt || 0}`;
+      const assistantBeforeUser = pendingAssistant.length > 0 ? [...pendingAssistant] : [];
+      pendingAssistant = [];
       current = {
-        // IMPORTANT: turn.id must be unique & stable, otherwise FlatList cells can overlap.
         id: stable && !stable.endsWith(':') ? `turn:${stable}` : fallback,
         createdAt: item.createdAt,
         userMessage: item.message,
-        items: [item]
+        items: [item, ...assistantBeforeUser]
       };
       continue;
     }
 
     if (!current) {
-      seq += 1;
-      current = {
-        id: `turn:fallback:${timelineStableKey(item) || `seq:${seq}:${item.createdAt || 0}`}`,
-        createdAt: item.createdAt,
-        items: [item]
-      };
+      pendingAssistant.push(item);
       continue;
     }
 
@@ -184,6 +189,16 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
   }
 
   flush();
+  if (pendingAssistant.length > 0 && out.length > 0) {
+    const last = out[out.length - 1];
+    last.items = [...last.items, ...pendingAssistant];
+    last.signature = [
+      last.userMessage
+        ? `user:${toText(last.userMessage.id)}:${toText(last.userMessage.text).length}`
+        : 'user:none',
+      ...last.items.map(itemSignature)
+    ].join('|');
+  }
   return out;
 }
 

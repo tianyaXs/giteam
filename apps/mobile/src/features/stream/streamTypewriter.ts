@@ -13,9 +13,7 @@ export function isStreamTextPart(part: any): boolean {
   return type === 'text' || type === 'reasoning';
 }
 
-export function streamPartWriteField(field: string, kind?: string): string {
+export function streamPartWriteField(field: string, _kind?: string): string {
   const key = toText(field).trim();
-  const type = toText(kind).trim();
-  if (type === 'reasoning' || key === 'reasoning') return 'text';
   return key || 'text';
 }

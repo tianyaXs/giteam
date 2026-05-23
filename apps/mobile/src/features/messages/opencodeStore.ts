@@ -1,3 +1,4 @@
+import { mergeOpencodeStreamText } from '../../lib/opencodeParts';
 import { toText } from '../../lib/text';
 import { mergeMessageRows } from './turns';
 
@@ -8,10 +9,16 @@ export type StreamPartEvent =
   | { kind: 'part'; payload: unknown }
   | { kind: 'part_removed'; payload: unknown };
 
+/** Ordered part list per message — matches OpenCode Web `part[messageID]` binary insert by id. */
+export type StreamPartBucket = {
+  order: string[];
+  byId: Record<string, any>;
+};
+
 export type OpenCodeStreamStoreRefs = {
   messageRole: RefLike<Record<string, Record<string, string>>>;
   message: RefLike<Record<string, Record<string, any>>>;
-  part: RefLike<Record<string, Record<string, Record<string, any>>>>;
+  part: RefLike<Record<string, Record<string, StreamPartBucket>>>;
   sessionStatus: RefLike<Record<string, any>>;
   permission: RefLike<Record<string, any[]>>;
   question: RefLike<Record<string, any[]>>;
@@ -20,7 +27,7 @@ export type OpenCodeStreamStoreRefs = {
   rawRows: RefLike<Record<string, any[]>>;
 };
 
-const SKIP_PARTS = new Set(['patch', 'step-start', 'step-finish']);
+export const SKIP_STREAM_PART_TYPES = new Set(['patch', 'step-start', 'step-finish']);
 
 export function rawMessageRole(row: any) {
   return toText(row?.info?.role || row?.role).trim();
@@ -39,18 +46,81 @@ export function rawPartId(part: any, index = 0) {
   return toText(part?.id || part?.partID || part?.callID).trim() || `${toText(part?.type).trim() || 'part'}:${index}`;
 }
 
+export function emptyStreamPartBucket(): StreamPartBucket {
+  return { order: [], byId: {} };
+}
+
+function binaryPartInsertIndex(order: string[], partId: string) {
+  let left = 0;
+  let right = order.length;
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    if (order[mid] < partId) left = mid + 1;
+    else right = mid;
+  }
+  return left;
+}
+
 export function mergeStreamPart(prev: any, incoming: any) {
   const next = { ...(prev || {}), ...(incoming || {}) };
   const prevText = typeof prev?.text === 'string' ? prev.text : '';
   const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
-  if (prevText && (!incomingText || incomingText.length < prevText.length)) {
-    next.text = prevText;
+  if (prevText || incomingText) {
+    next.text = mergeOpencodeStreamText(prevText, incomingText);
   }
   return next;
 }
 
 export function shouldStoreStreamPart(part: any) {
-  return !SKIP_PARTS.has(toText(part?.type).trim());
+  return !SKIP_STREAM_PART_TYPES.has(toText(part?.type).trim());
+}
+
+export function listBucketParts(bucket: StreamPartBucket | undefined): any[] {
+  if (!bucket) return [];
+  return bucket.order.map((id) => bucket.byId[id]).filter(Boolean);
+}
+
+export function upsertStreamPartBucket(
+  bucket: StreamPartBucket,
+  part: any,
+  opts?: { preserveApiOrder?: boolean },
+) {
+  if (!shouldStoreStreamPart(part)) return bucket;
+  const pid = rawPartId(part);
+  if (!pid) return bucket;
+  const merged = mergeStreamPart(bucket.byId[pid], { ...part, id: pid });
+  bucket.byId[pid] = merged;
+  if (opts?.preserveApiOrder) {
+    if (!bucket.order.includes(pid)) bucket.order.push(pid);
+    return bucket;
+  }
+  if (!bucket.order.includes(pid)) {
+    const index = binaryPartInsertIndex(bucket.order, pid);
+    bucket.order.splice(index, 0, pid);
+  }
+  return bucket;
+}
+
+export function ingestSnapshotPartsIntoBucket(prev: StreamPartBucket, parts: any[]): StreamPartBucket {
+  const apiOrder: string[] = [];
+  const byId: Record<string, any> = {};
+  parts.forEach((part, index) => {
+    if (!shouldStoreStreamPart(part)) return;
+    const pid = rawPartId(part, index);
+    if (!pid) return;
+    if (!apiOrder.includes(pid)) apiOrder.push(pid);
+    byId[pid] = mergeStreamPart(prev.byId[pid], { ...part, id: pid });
+  });
+  if (apiOrder.length <= 0) return prev;
+  return { order: apiOrder, byId };
+}
+
+export function removeStreamPartFromBucket(bucket: StreamPartBucket, partId: string) {
+  const pid = toText(partId).trim();
+  if (!pid || !bucket.byId[pid]) return bucket;
+  delete bucket.byId[pid];
+  bucket.order = bucket.order.filter((id) => id !== pid);
+  return bucket;
 }
 
 export function resetOpenCodeStreamStores(stores: OpenCodeStreamStoreRefs) {
@@ -133,8 +203,7 @@ export function composeStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
   return Object.values(messages)
     .map((info: any) => {
       const mid = toText(info?.id).trim();
-      const partMap = partsByMessage[mid] || {};
-      const parts = Object.values(partMap).sort((a: any, b: any) => rawPartId(a).localeCompare(rawPartId(b)));
+      const parts = listBucketParts(partsByMessage[mid]);
       return { info, parts };
     })
     .sort((a: any, b: any) => {
@@ -156,9 +225,9 @@ export function publishStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
   return merged;
 }
 
-export function ingestStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+function applyRowsToStreamStores(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
   const sid = ensureStreamSessionStores(stores, targetSessionId);
-  if (!sid || !Array.isArray(rows)) return publishStreamRows(stores, targetSessionId);
+  if (!sid || !Array.isArray(rows)) return sid;
   const messageStore = stores.message.current[sid];
   const partStore = stores.part.current[sid];
   const roleStore = stores.messageRole.current[sid];
@@ -173,14 +242,61 @@ export function ingestStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionI
     const role = rawMessageRole({ info: messageStore[mid] });
     if (role) roleStore[mid] = role;
     const parts = Array.isArray(row?.parts) ? row.parts : [];
-    if (!partStore[mid]) partStore[mid] = {};
-    parts.forEach((part: any, index: number) => {
-      if (!shouldStoreStreamPart(part)) return;
-      const pid = rawPartId(part, index);
-      partStore[mid][pid] = mergeStreamPart(partStore[mid][pid], { ...part, id: pid, messageID: mid });
-    });
+    const prevBucket = partStore[mid] || emptyStreamPartBucket();
+    partStore[mid] = parts.length > 0
+      ? ingestSnapshotPartsIntoBucket(prevBucket, parts)
+      : prevBucket;
   }
+  return sid;
+}
+
+/** Authoritative server snapshot — replaces stream store and raw rows (after prompt / SSE messages). */
+export function replaceStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+  const sid = toText(targetSessionId).trim();
+  if (!sid || !Array.isArray(rows)) return stores.rawRows.current[sid] || [];
+  stores.message.current[sid] = {};
+  stores.part.current[sid] = {};
+  stores.messageRole.current[sid] = {};
+  applyRowsToStreamStores(stores, sid, rows);
+  const composed = composeStreamRows(stores, sid);
+  stores.rawRows.current[sid] = composed;
+  return composed;
+}
+
+export function ingestStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+  const sid = applyRowsToStreamStores(stores, targetSessionId, rows);
+  if (!sid) return publishStreamRows(stores, targetSessionId);
   return publishStreamRows(stores, sid);
+}
+
+export function upsertStreamPartRecord(
+  stores: OpenCodeStreamStoreRefs,
+  targetSessionId: string,
+  messageId: string,
+  part: any,
+) {
+  const sid = ensureStreamSessionStores(stores, targetSessionId);
+  const mid = toText(messageId).trim();
+  if (!sid || !mid || !shouldStoreStreamPart(part)) return;
+  const partStore = stores.part.current[sid];
+  const bucket = partStore[mid] || emptyStreamPartBucket();
+  upsertStreamPartBucket(bucket, { ...part, messageID: mid });
+  partStore[mid] = bucket;
+}
+
+export function removeStreamPartRecord(
+  stores: OpenCodeStreamStoreRefs,
+  targetSessionId: string,
+  messageId: string,
+  partId: string,
+) {
+  const sid = ensureStreamSessionStores(stores, targetSessionId);
+  const mid = toText(messageId).trim();
+  const pid = toText(partId).trim();
+  if (!sid || !mid || !pid) return;
+  const bucket = stores.part.current[sid]?.[mid];
+  if (!bucket) return;
+  removeStreamPartFromBucket(bucket, pid);
 }
 
 export function getKnownStreamMessageRole(stores: OpenCodeStreamStoreRefs, targetSessionId: string, messageId: string) {
@@ -200,14 +316,13 @@ export function getStoredStreamPart(stores: OpenCodeStreamStoreRefs, targetSessi
   const mid = toText(messageId).trim();
   const pid = toText(partId).trim();
   if (!sid || !mid || !pid) return undefined;
-  return stores.part.current[sid]?.[mid]?.[pid];
+  return stores.part.current[sid]?.[mid]?.byId[pid];
 }
 
 export function resolveStreamPartWriteField(part: any, field: string): string {
   const key = toText(field).trim();
-  const type = toText(part?.type).trim();
-  if (type === 'reasoning' || key === 'reasoning') return 'text';
-  return key || 'text';
+  if (key) return key;
+  return 'text';
 }
 
 export function patchStoredStreamPartDelta(
@@ -216,20 +331,29 @@ export function patchStoredStreamPartDelta(
   messageId: string,
   partId: string,
   field: string,
-  delta: string
+  delta: string,
+  partTypeHint?: string,
 ) {
   const sid = ensureStreamSessionStores(stores, targetSessionId);
   const mid = toText(messageId).trim();
   const pid = toText(partId).trim();
   if (!sid || !mid || !pid || !delta) return false;
-  const byMessage = stores.part.current[sid] || {};
-  const partMap = byMessage[mid] || {};
-  const current = partMap[pid];
-  if (!current) return false;
+  const partStore = stores.part.current[sid];
+  let bucket = partStore[mid];
+  if (!bucket) {
+    bucket = emptyStreamPartBucket();
+    partStore[mid] = bucket;
+  }
+  let current = bucket.byId[pid];
+  if (!current) {
+    const type = toText(partTypeHint).trim() || (toText(field).trim() === 'reasoning' ? 'reasoning' : 'text');
+    current = { id: pid, messageID: mid, type, text: '' };
+    upsertStreamPartBucket(bucket, current);
+    current = bucket.byId[pid];
+  }
   const writeField = resolveStreamPartWriteField(current, field);
   const nextPart = { ...current, [writeField]: `${toText(current[writeField])}${delta}` };
-  byMessage[mid] = { ...partMap, [pid]: nextPart };
-  stores.part.current[sid] = byMessage;
+  bucket.byId[pid] = nextPart;
   publishStreamRows(stores, sid);
   return true;
 }

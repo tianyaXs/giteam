@@ -9,14 +9,16 @@ import {
 import {
   getStoredStreamPart as storeGetStoredStreamPart,
   ingestStreamRows as storeIngestStreamRows,
-  mergeStreamPart as storeMergeStreamPart,
+  listBucketParts,
   patchStoredStreamPartDelta as storePatchStoredStreamPartDelta,
   publishStreamRows as storePublishStreamRows,
+  replaceStreamRows as storeReplaceStreamRows,
   rawMessageId as storeRawMessageId,
   rawMessageRole as storeRawMessageRole,
-  rawPartId as storeRawPartId,
+  removeStreamPartRecord as storeRemoveStreamPartRecord,
   resetOpenCodeStreamStores as storeResetOpenCodeStreamStores,
   shouldStoreStreamPart as storeShouldStoreStreamPart,
+  upsertStreamPartRecord as storeUpsertStreamPartRecord,
   type OpenCodeStreamStoreRefs,
   type StreamPartEvent
 } from '../messages/opencodeStore';
@@ -27,6 +29,7 @@ type TypewriterQueueItem = {
   partId: string;
   field: string;
   text: string;
+  partTypeHint?: string;
 };
 
 type UseOpenCodeStreamRuntimeParams = {
@@ -34,7 +37,7 @@ type UseOpenCodeStreamRuntimeParams = {
   sessionIdRef: React.MutableRefObject<string>;
   streamMessageRoleRef: React.MutableRefObject<Record<string, Record<string, string>>>;
   streamMessageStoreRef: React.MutableRefObject<Record<string, Record<string, any>>>;
-  streamPartStoreRef: React.MutableRefObject<Record<string, Record<string, Record<string, any>>>>;
+  streamPartStoreRef: React.MutableRefObject<Record<string, Record<string, import('../messages/opencodeStore').StreamPartBucket>>>;
   streamPendingPartEventsRef: React.MutableRefObject<Record<string, Record<string, StreamPartEvent[]>>>;
   streamRenderTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   streamTypewriterTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
@@ -61,8 +64,6 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
 
   const rawMessageRole = useCallback((row: any) => storeRawMessageRole(row), []);
   const rawMessageId = useCallback((row: any) => storeRawMessageId(row), []);
-  const rawPartId = useCallback((part: any, index = 0) => storeRawPartId(part, index), []);
-  const mergeStreamPart = useCallback((prev: any, incoming: any) => storeMergeStreamPart(prev, incoming), []);
   const shouldFollowLatest = useCallback(() => {
     const d = getParams();
     const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
@@ -84,14 +85,34 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     return storeIngestStreamRows(d.getOpenCodeStreamStores(), targetSessionId, rows);
   }, [getParams]);
 
+  const replaceStreamRows = useCallback((targetSessionId: string, rows: any[]) => {
+    const d = getParams();
+    return storeReplaceStreamRows(d.getOpenCodeStreamStores(), targetSessionId, rows);
+  }, [getParams]);
+
   const getStoredStreamPart = useCallback((targetSessionId: string, messageId: string, partId: string) => {
     const d = getParams();
     return storeGetStoredStreamPart(d.getOpenCodeStreamStores(), targetSessionId, messageId, partId);
   }, [getParams]);
 
-  const patchStoredStreamPartDelta = useCallback((targetSessionId: string, messageId: string, partId: string, field: string, delta: string) => {
+  const patchStoredStreamPartDelta = useCallback((
+    targetSessionId: string,
+    messageId: string,
+    partId: string,
+    field: string,
+    delta: string,
+    partTypeHint?: string,
+  ) => {
     const d = getParams();
-    return storePatchStoredStreamPartDelta(d.getOpenCodeStreamStores(), targetSessionId, messageId, partId, field, delta);
+    return storePatchStoredStreamPartDelta(
+      d.getOpenCodeStreamStores(),
+      targetSessionId,
+      messageId,
+      partId,
+      field,
+      delta,
+      partTypeHint,
+    );
   }, [getParams]);
 
   const ensureStreamSessionStores = useCallback((targetSessionId: string) => {
@@ -115,8 +136,8 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     const d = getParams();
     const sid = ensureStreamSessionStores(targetSessionId);
     if (!sid) return;
-    const partMap = d.streamPartStoreRef.current[sid]?.[messageId] || {};
-    const parts = Object.values(partMap);
+    const bucket = d.streamPartStoreRef.current[sid]?.[messageId];
+    const parts = listBucketParts(bucket);
     d.streamDebug('stream.row.rewrite', {
       sid: targetSessionId,
       messageId,
@@ -134,19 +155,11 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
   }, [ensureStreamSessionStores, getParams, publishStreamRows]);
 
   const upsertStreamPart = useCallback((targetSessionId: string, messageId: string, part: any, createdAt: number = Date.now()) => {
-    const d = getParams();
     if (!storeShouldStoreStreamPart(part)) return;
-    const partId = rawPartId(part, Object.keys(d.streamPartStoreRef.current[targetSessionId]?.[messageId] || {}).length);
-    if (!targetSessionId || !messageId || !partId) return;
-    const sid = ensureStreamSessionStores(targetSessionId);
-    if (!sid) return;
-    const byMessage = d.streamPartStoreRef.current[sid] || {};
-    const existingParts = byMessage[messageId] || {};
-    const nextPart = { ...(existingParts[partId] || {}), ...part, id: partId, messageID: messageId };
-    byMessage[messageId] = { ...existingParts, [partId]: mergeStreamPart(existingParts[partId], nextPart) };
-    d.streamPartStoreRef.current[sid] = byMessage;
+    if (!targetSessionId || !messageId) return;
+    storeUpsertStreamPartRecord(getParams().getOpenCodeStreamStores(), targetSessionId, messageId, part);
     rewriteStreamMessageRow(targetSessionId, messageId, createdAt);
-  }, [ensureStreamSessionStores, getParams, mergeStreamPart, rawPartId, rewriteStreamMessageRow]);
+  }, [getParams, rewriteStreamMessageRow]);
 
   const dropPendingStreamPartEvents = useCallback((targetSessionId: string, messageId: string) => {
     const d = getParams();
@@ -188,7 +201,14 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     }
   }, [dropPendingStreamPartEvents, flushPendingStreamPartEvents, getParams, rawMessageId, rawMessageRole]);
 
-  const enqueueStreamTypewriterDelta = useCallback((targetSessionId: string, messageId: string, partId: string, field: string, delta: string) => {
+  const enqueueStreamTypewriterDelta = useCallback((
+    targetSessionId: string,
+    messageId: string,
+    partId: string,
+    field: string,
+    delta: string,
+    partTypeHint?: string,
+  ) => {
     const d = getParams();
     const sid = toText(targetSessionId).trim();
     const mid = toText(messageId).trim();
@@ -201,7 +221,8 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       messageId: mid,
       partId: pid,
       field,
-      text: `${current?.text || ''}${delta}`
+      text: `${current?.text || ''}${delta}`,
+      partTypeHint: partTypeHint || current?.partTypeHint
     };
     scheduleStreamTypewriterDrainRef.current();
   }, [getParams]);
@@ -221,7 +242,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       return;
     }
     const writeField = streamPartWriteField(field, kind);
-    enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, writeField, delta);
+    enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, writeField, delta, kind);
     const nextLen = toText(getStoredStreamPart(targetSessionId, messageId, partId)?.text).length + delta.length;
     d.streamDebug('delta.enqueued', { sid: targetSessionId, messageId, partId, kind, totalLen: nextLen });
     d.setStreaming(true);
@@ -239,17 +260,35 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     if (isStreamTextPart(part) && incomingText) {
       const stored = getStoredStreamPart(targetSessionId, messageId, partId);
       const prevText = toText(stored?.text);
-      if (incomingText.length > prevText.length) {
+      const queueKey = `${targetSessionId}:${messageId}:${partId}:text`;
+      const queuedItem = d.streamTypewriterQueueRef.current[queueKey];
+      const queuedText = toText(queuedItem?.text);
+      const logicalText = `${prevText}${queuedText}`;
+      if (incomingText === logicalText) {
+        d.setStreaming(true);
+        return;
+      }
+      if (incomingText.startsWith(logicalText)) {
         if (!stored) {
           upsertStreamPart(targetSessionId, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
         }
-        const delta = incomingText.slice(prevText.length);
+        const delta = incomingText.slice(logicalText.length);
         if (delta.length > 0) {
           enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, 'text', delta);
-          d.setStreaming(true);
-          return;
         }
+        d.setStreaming(true);
+        return;
       }
+      if (logicalText.startsWith(incomingText) && incomingText.length < logicalText.length) {
+        d.setStreaming(true);
+        return;
+      }
+      delete d.streamTypewriterQueueRef.current[queueKey];
+      upsertStreamPart(targetSessionId, messageId, { ...part, id: partId, messageID: messageId, text: incomingText });
+      flushPendingStreamPartEvents(targetSessionId, messageId);
+      renderStreamWindowRef.current(targetSessionId);
+      d.setStreaming(true);
+      return;
     }
     upsertStreamPart(targetSessionId, messageId, part);
     flushPendingStreamPartEvents(targetSessionId, messageId);
@@ -271,10 +310,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     const messageId = toText(source?.messageId || source?.messageID).trim();
     const partId = toText(source?.partId || source?.partID).trim();
     if (!sid || sid !== d.sessionIdRef.current || !messageId || !partId) return;
-    const partMap = d.streamPartStoreRef.current[sid]?.[messageId];
-    if (!partMap?.[partId]) return;
-    delete partMap[partId];
-    if (Object.keys(partMap).length === 0 && d.streamPartStoreRef.current[sid]) delete d.streamPartStoreRef.current[sid][messageId];
+    storeRemoveStreamPartRecord(d.getOpenCodeStreamStores(), sid, messageId, partId);
     publishStreamRows(sid);
     renderStreamWindowRef.current(sid);
   }, [getParams, publishStreamRows]);
@@ -295,7 +331,14 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
         }
         const { chunk, rest } = takeStreamTypewriterChunk(item.text);
         if (chunk) {
-          const ok = patchStoredStreamPartDelta(item.sid, item.messageId, item.partId, item.field, chunk);
+          const ok = patchStoredStreamPartDelta(
+            item.sid,
+            item.messageId,
+            item.partId,
+            item.field,
+            chunk,
+            item.partTypeHint,
+          );
           if (ok) touchedSessions.add(item.sid);
         }
         if (rest) latest.streamTypewriterQueueRef.current[key] = { ...item, text: rest };
@@ -353,6 +396,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
 
   return {
     ingestStreamRows,
+    replaceStreamRows,
     publishStreamRows,
     recordStreamMessageRoles,
     renderStreamWindow,

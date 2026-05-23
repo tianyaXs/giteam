@@ -154,7 +154,8 @@ export async function getMessages(args: {
   const baseUrl = normalizeBaseUrl(args.baseUrl);
   const params = new URLSearchParams({
     repoPath: args.repoPath,
-    sessionId: args.sessionId
+    sessionId: args.sessionId,
+    raw: '1'
   });
   if (typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0) {
     params.set('limit', String(Math.floor(args.limit)));
@@ -535,7 +536,8 @@ export function buildStreamUrl(args: {
   const params = new URLSearchParams({
     repoPath: args.repoPath,
     sessionId: args.sessionId,
-    intervalMs: String(args.intervalMs ?? 700)
+    intervalMs: String(args.intervalMs ?? 700),
+    raw: '1'
   });
   return `${baseUrl}/api/v1/opencode/stream?${params.toString()}`;
 }

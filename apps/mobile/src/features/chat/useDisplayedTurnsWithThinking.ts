@@ -4,10 +4,16 @@ import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from '.
 
 type StreamDebug = (label: string, payload?: Record<string, unknown>) => void;
 
-function turnHasAssistantReplyText(turn: MobileRenderedTurn): boolean {
-  return turn.items.some(
-    (item) => item.kind === 'chat' && item.message.role === 'assistant' && !!toText(item.message.text).trim()
-  );
+function turnHasAssistantRenderableContent(turn: MobileRenderedTurn): boolean {
+  return turn.items.some((item) => {
+    if (item.kind === 'think') return !!toText(item.card?.text).trim();
+    if (item.kind === 'context') return true;
+    if (item.kind === 'event' || item.kind === 'todo' || item.kind === 'question') return true;
+    if (item.kind === 'chat' && item.message.role === 'assistant') {
+      return !!toText(item.message.text).trim();
+    }
+    return false;
+  });
 }
 
 function shouldShowThinkingPlaceholder(params: {
@@ -31,7 +37,7 @@ function shouldShowThinkingPlaceholder(params: {
     const turn = renderedTurns[turnIdx];
     if (turn.items.some((item) => item.kind === 'error')) return false;
     if (turn.userMessage) {
-      const show = !turnHasAssistantReplyText(turn);
+      const show = !turnHasAssistantRenderableContent(turn);
       streamDebug?.('pending.placeholder.check', {
         turnId: turn.id,
         show,

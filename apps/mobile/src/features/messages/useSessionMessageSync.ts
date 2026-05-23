@@ -73,10 +73,12 @@ export function useSessionMessageSync<Cell>(params: {
   setStreaming: Dispatch<SetStateAction<boolean>>;
   setSessionSwitchingTo: Dispatch<SetStateAction<string>>;
   ingestStreamRows: (targetSessionId: string, rows: any[]) => any[];
+  replaceStreamRows: (targetSessionId: string, rows: any[]) => any[];
   recordStreamMessageRoles: (targetSessionId: string, rows: any[]) => void;
   applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
   syncSessionStatus: (targetSessionId?: string) => Promise<SessionStatusInfo | undefined>;
   rememberCurrentSessionViewport: (sessionId: string, snapshot: { displayedTurnCells: Cell[]; visibleCellCount: number }) => void;
+  streamTypewriterQueueRef?: MutableRefObject<Record<string, unknown>>;
   streamDebug?: (label: string, payload?: Record<string, unknown>) => void;
 }) {
   const {
@@ -84,6 +86,7 @@ export function useSessionMessageSync<Cell>(params: {
     authed,
     displayedTurnCellsRef,
     ingestStreamRows,
+    replaceStreamRows,
     initialSessionLimit,
     loadingOlder,
     olderMessageFetchLimit,
@@ -108,6 +111,7 @@ export function useSessionMessageSync<Cell>(params: {
     setStatus,
     setStreaming,
     streamDebug,
+    streamTypewriterQueueRef,
     syncSessionStatus,
     token,
     visibleCellCountRef
@@ -247,14 +251,22 @@ export function useSessionMessageSync<Cell>(params: {
             return;
           }
           const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
-          const merged = before || prevRaw.length > 0
-            ? mergeMessageRows(prevRaw, incoming)
-            : ingestStreamRows(targetSessionId, incoming);
-          if (before || prevRaw.length > 0) {
-            sessionRawMapRef.current[targetSessionId] = merged;
+          const authoritativeTail = !before && opts?.reason === 'tailOnly';
+          if (authoritativeTail && streamTypewriterQueueRef?.current) {
+            const prefix = `${targetSessionId}:`;
+            const queue = streamTypewriterQueueRef.current;
+            for (const key of Object.keys(queue)) {
+              if (key.startsWith(prefix)) delete queue[key];
+            }
+          }
+          const merged = authoritativeTail
+            ? replaceStreamRows(targetSessionId, incoming)
+            : before || prevRaw.length > 0
+              ? mergeMessageRows(prevRaw, incoming)
+              : ingestStreamRows(targetSessionId, incoming);
+          sessionRawMapRef.current[targetSessionId] = merged;
+          if (!authoritativeTail && (before || prevRaw.length > 0)) {
             ingestStreamRows(targetSessionId, merged);
-          } else {
-            sessionRawMapRef.current[targetSessionId] = merged;
           }
           recordStreamMessageRoles(targetSessionId, merged);
           const turnInfo = inspectTurnWindow(merged);
@@ -565,6 +577,8 @@ export function useSessionMessageSync<Cell>(params: {
     authed,
     displayedTurnCellsRef,
     ingestStreamRows,
+    replaceStreamRows,
+    streamTypewriterQueueRef,
     initialSessionLimit,
     loadingOlder,
     olderMessageFetchLimit,

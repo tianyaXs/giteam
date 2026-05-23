@@ -1599,6 +1599,23 @@ fn mobile_message_is_completed_summary(item: &Value) -> bool {
     summary && finish.is_some() && !finish.is_some_and(|v| v.is_null())
 }
 
+fn wants_raw_opencode_messages(req: &HttpRequest) -> bool {
+    req.query.get("raw").is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn prepare_opencode_messages_for_client(v: Value, repo_path: &str, raw: bool) -> Value {
+    if raw {
+        return v;
+    }
+    let filtered = filter_mobile_compacted_messages(v);
+    compact_mobile_message_payload(filtered, repo_path)
+}
+
 fn filter_mobile_compacted_messages(v: Value) -> Value {
     let Some(arr) = v.as_array() else {
         return v;
@@ -2249,13 +2266,14 @@ fn handle_stream_messages_sse(mut stream: TcpStream, req: &HttpRequest) {
                     );
                     break;
                 }
-                let filtered_v = filter_mobile_compacted_messages(v);
-                let compact_v = compact_mobile_message_payload(filtered_v, repo.as_str());
-                let fp = serde_json::to_string(&compact_v).unwrap_or_default();
+                let raw_payload = wants_raw_opencode_messages(req);
+                let client_v =
+                    prepare_opencode_messages_for_client(v, repo.as_str(), raw_payload);
+                let fp = serde_json::to_string(&client_v).unwrap_or_default();
                 if fp != prev_fingerprint {
                     prev_fingerprint = fp;
                     unchanged_since = now_unix_secs();
-                    if write_sse_event(&mut stream, "messages", &compact_v).is_err() {
+                    if write_sse_event(&mut stream, "messages", &client_v).is_err() {
                         break;
                     }
                 } else if write_sse_event(
@@ -2853,6 +2871,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/opencode/messages" {
         let repo = req.query.get("repoPath").cloned().unwrap_or_default();
         let sid = req.query.get("sessionId").cloned().unwrap_or_default();
+        let raw_payload = wants_raw_opencode_messages(&req);
         if repo.trim().is_empty() || sid.trim().is_empty() {
             return (
                 400,
@@ -2876,12 +2895,12 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 } else {
                     items
                 };
-                let filtered_items = filter_mobile_compacted_messages(final_items);
-                let compact_items = compact_mobile_message_payload(filtered_items, repo.as_str());
+                let client_items =
+                    prepare_opencode_messages_for_client(final_items, repo.as_str(), raw_payload);
                 (
                     200,
                     serde_json::json!({
-                        "items": compact_items,
+                        "items": client_items,
                         "nextCursor": next_cursor
                     }),
                 )

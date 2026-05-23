@@ -84,7 +84,7 @@ export function useMobileAppRefs() {
   );
   const streamMessageStoreRef = useRef<Record<string, Record<string, any>>>({});
   const streamPartStoreRef = useRef<
-    Record<string, Record<string, Record<string, any>>>
+    Record<string, Record<string, import('../messages/opencodeStore').StreamPartBucket>>
   >({});
   const streamSessionStatusStoreRef = useRef<Record<string, SessionStatusInfo>>(
     {},

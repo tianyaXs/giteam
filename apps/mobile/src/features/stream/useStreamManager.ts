@@ -8,12 +8,15 @@ import {
   getStoredStreamPart as storeGetStoredStreamPart,
   ingestStreamRows as storeIngestStreamRows,
   mergeStreamPart as storeMergeStreamPart,
+  replaceStreamRows as storeReplaceStreamRows,
   patchStoredStreamPartDelta as storePatchStoredStreamPartDelta,
   publishStreamRows as storePublishStreamRows,
   rawMessageId as storeRawMessageId,
   rawMessageRole as storeRawMessageRole,
   rawPartId as storeRawPartId,
+  removeStreamPartRecord as storeRemoveStreamPartRecord,
   shouldStoreStreamPart as storeShouldStoreStreamPart,
+  upsertStreamPartRecord as storeUpsertStreamPartRecord,
   removeStreamPermission,
   removeStreamQuestion,
   setStreamSessionStatus,
@@ -55,7 +58,7 @@ export interface StreamManagerDeps {
   sessionStatusEpochRef: React.MutableRefObject<number>;
   streamRenderTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   streamTypewriterTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
-  streamTypewriterQueueRef: React.MutableRefObject<Record<string, { sid: string; messageId: string; partId: string; field: string; text: string }>>;
+  streamTypewriterQueueRef: React.MutableRefObject<Record<string, { sid: string; messageId: string; partId: string; field: string; text: string; partTypeHint?: string }>>;
   messageContentHRef: React.MutableRefObject<number>;
   messageViewportHRef: React.MutableRefObject<number>;
   messageScrollYRef: React.MutableRefObject<number>;
@@ -220,8 +223,15 @@ export function useStreamManager(deps: StreamManagerDeps) {
       return storeGetStoredStreamPart(getStores(), sid, messageId, partId);
     };
 
-    const patchStoredStreamPartDelta = (sid: string, messageId: string, partId: string, field: string, delta: string) => {
-      return storePatchStoredStreamPartDelta(getStores(), sid, messageId, partId, field, delta);
+    const patchStoredStreamPartDelta = (
+      sid: string,
+      messageId: string,
+      partId: string,
+      field: string,
+      delta: string,
+      partTypeHint?: string,
+    ) => {
+      return storePatchStoredStreamPartDelta(getStores(), sid, messageId, partId, field, delta, partTypeHint);
     };
 
     const publishStreamRows = (sid: string) => {
@@ -248,11 +258,20 @@ export function useStreamManager(deps: StreamManagerDeps) {
       flushPendingStreamPartEvents(sid, mid);
     };
 
+    const dropTypewriterQueueForSession = (sid: string) => {
+      const prefix = `${sid}:`;
+      const queue = d.streamTypewriterQueueRef.current;
+      for (const key of Object.keys(queue)) {
+        if (key.startsWith(prefix)) delete queue[key];
+      }
+    };
+
     const applyStreamMessageSnapshot = (sid: string, payload: unknown) => {
       if (sid !== d.sessionIdRef.current) return undefined;
       const incoming = Array.isArray(payload) ? payload : Array.isArray((payload as any)?.items) ? (payload as any).items : [];
       if (incoming.length === 0) return undefined;
-      const merged = ingestStreamRows(sid, incoming);
+      dropTypewriterQueueForSession(sid);
+      const merged = storeReplaceStreamRows(getStores(), sid, incoming);
       recordStreamMessageRoles(sid, merged);
       const turnInfo = inspectTurnWindow(merged);
       const prevVisibleTurnCount = Math.max(0, Number(d.sessionVisibleTurnCountRef.current[sid] || 0));
@@ -304,11 +323,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const messageId = toText(source?.messageId || source?.messageID).trim();
       const partId = toText(source?.partId || source?.partID).trim();
       if (!targetSid || targetSid !== d.sessionIdRef.current || !messageId || !partId) return;
-      const stores = getStores();
-      const partMap = stores.part.current[targetSid]?.[messageId];
-      if (!partMap?.[partId]) return;
-      delete partMap[partId];
-      if (Object.keys(partMap).length === 0 && stores.part.current[targetSid]) delete stores.part.current[targetSid][messageId];
+      storeRemoveStreamPartRecord(getStores(), targetSid, messageId, partId);
       publishStreamRows(targetSid);
       renderStreamWindow(targetSid);
     };
@@ -377,23 +392,16 @@ export function useStreamManager(deps: StreamManagerDeps) {
 
     const upsertStreamPart = (sid: string, messageId: string, part: any, createdAt: number = Date.now()) => {
       if (!storeShouldStoreStreamPart(part)) return;
-      const stores = getStores();
-      const partId = storeRawPartId(part, Object.keys(stores.part.current[sid]?.[messageId] || {}).length);
-      if (!sid || !messageId || !partId) return;
-      ensureStreamSessionStores(sid);
-      const byMessage = stores.part.current[sid] || {};
-      const existingParts = byMessage[messageId] || {};
-      const nextPart = { ...(existingParts[partId] || {}), ...part, id: partId, messageID: messageId };
-      byMessage[messageId] = { ...existingParts, [partId]: storeMergeStreamPart(existingParts[partId], nextPart) };
-      stores.part.current[sid] = byMessage;
+      if (!sid || !messageId) return;
+      storeUpsertStreamPartRecord(getStores(), sid, messageId, part);
       rewriteStreamMessageRow(sid, messageId, createdAt);
     };
 
     const rewriteStreamMessageRow = (sid: string, messageId: string, createdAt: number = Date.now()) => {
       const stores = getStores();
       ensureStreamSessionStores(sid);
-      const partMap = stores.part.current[sid]?.[messageId] || {};
-      const parts = Object.values(partMap);
+      const bucket = stores.part.current[sid]?.[messageId];
+      const parts = bucket ? bucket.order.map((id) => bucket.byId[id]).filter(Boolean) : [];
       d.streamDebug('stream.row.rewrite', {
         sid,
         messageId,
@@ -424,7 +432,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         return;
       }
       const writeField = streamPartWriteField(field, kind);
-      enqueueStreamTypewriterDelta(sid, messageId, partId, writeField, delta);
+      enqueueStreamTypewriterDelta(sid, messageId, partId, writeField, delta, kind);
       const nextLen = toText(getStoredStreamPart(sid, messageId, partId)?.text).length + delta.length;
       d.streamDebug('delta.enqueued', { sid, messageId, partId, kind, totalLen: nextLen });
       d.setStreaming(true);
@@ -464,17 +472,40 @@ export function useStreamManager(deps: StreamManagerDeps) {
       if (isStreamTextPart(part) && incomingText) {
         const stored = getStoredStreamPart(sid, messageId, partId);
         const prevText = toText(stored?.text);
-        if (incomingText.length > prevText.length) {
+        // Logical text = stored.text + pending typewriter queue chunks for this part/field=text.
+        // Snapshots (`message.part.updated`) include the full text up to that moment, so we
+        // must NOT recompute delta against stored alone — that double-counts queued chunks.
+        const queueKey = `${sid}:${messageId}:${partId}:text`;
+        const queuedItem = d.streamTypewriterQueueRef.current[queueKey];
+        const queuedText = toText(queuedItem?.text);
+        const logicalText = `${prevText}${queuedText}`;
+        if (incomingText === logicalText) {
+          d.setStreaming(true);
+          return;
+        }
+        if (incomingText.startsWith(logicalText)) {
           if (!stored) {
             upsertStreamPart(sid, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
           }
-          const delta = incomingText.slice(prevText.length);
+          const delta = incomingText.slice(logicalText.length);
           if (delta.length > 0) {
             enqueueStreamTypewriterDelta(sid, messageId, partId, 'text', delta);
-            d.setStreaming(true);
-            return;
           }
+          d.setStreaming(true);
+          return;
         }
+        if (logicalText.startsWith(incomingText) && incomingText.length < logicalText.length) {
+          // Stale snapshot; we already have a longer prefix.
+          d.setStreaming(true);
+          return;
+        }
+        // Diverged — snapshot is authoritative. Drop queue and write directly.
+        delete d.streamTypewriterQueueRef.current[queueKey];
+        upsertStreamPart(sid, messageId, { ...part, id: partId, messageID: messageId, text: incomingText });
+        flushPendingStreamPartEvents(sid, messageId);
+        renderStreamWindow(sid);
+        d.setStreaming(true);
+        return;
       }
       upsertStreamPart(sid, messageId, part);
       flushPendingStreamPartEvents(sid, messageId);
@@ -517,7 +548,14 @@ export function useStreamManager(deps: StreamManagerDeps) {
           }
           const { chunk, rest } = takeStreamTypewriterChunk(item.text);
           if (chunk) {
-            const ok = patchStoredStreamPartDelta(item.sid, item.messageId, item.partId, item.field, chunk);
+            const ok = patchStoredStreamPartDelta(
+              item.sid,
+              item.messageId,
+              item.partId,
+              item.field,
+              chunk,
+              item.partTypeHint,
+            );
             if (ok) touchedSessions.add(item.sid);
           }
           if (rest) d.streamTypewriterQueueRef.current[key] = { ...item, text: rest };
@@ -563,7 +601,14 @@ export function useStreamManager(deps: StreamManagerDeps) {
       });
     };
 
-    const enqueueStreamTypewriterDelta = (sid: string, messageId: string, partId: string, field: string, delta: string) => {
+    const enqueueStreamTypewriterDelta = (
+      sid: string,
+      messageId: string,
+      partId: string,
+      field: string,
+      delta: string,
+      partTypeHint?: string,
+    ) => {
       const mid = toText(messageId).trim();
       const pid = toText(partId).trim();
       const key = `${sid}:${mid}:${pid}:${field}`;
@@ -574,7 +619,8 @@ export function useStreamManager(deps: StreamManagerDeps) {
         messageId: mid,
         partId: pid,
         field,
-        text: `${current?.text || ''}${delta}`
+        text: `${current?.text || ''}${delta}`,
+        partTypeHint: partTypeHint || current?.partTypeHint
       };
       scheduleStreamTypewriterDrain();
     };

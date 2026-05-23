@@ -298,6 +298,7 @@ export default function App() {
   const slashCommands = useSlashCommandCatalog({ repoPath, serverUrl, token });
   const {
     ingestStreamRows,
+    replaceStreamRows,
     publishStreamRows,
     recordStreamMessageRoles,
     renderStreamWindow,
@@ -858,6 +859,8 @@ export default function App() {
     setStreaming,
     setSessionSwitchingTo,
     ingestStreamRows,
+    replaceStreamRows,
+    streamTypewriterQueueRef,
     recordStreamMessageRoles,
     applyTurnWindow,
     syncSessionStatus,
