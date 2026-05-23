@@ -16,7 +16,6 @@ import {
   CHAT_BOTTOM_PROXIMITY,
   CHAT_LIST_BOTTOM_AIR,
   COMPOSER_MODE_OPTIONS,
-  HISTORY_PREFETCH_COOLDOWN_MS,
   IMAGE_SEND_TIMEOUT_MS,
   INITIAL_CELL_LIMIT,
   INITIAL_MESSAGE_FETCH_LIMIT,
@@ -119,7 +118,7 @@ export default function App() {
     [FONT_UI_REGULAR]: require("./assets/fonts/StyreneA-Regular-Trial-BF63f6cbd970ee9.otf"),
     [FONT_UI_MEDIUM]: require("./assets/fonts/StyreneA-Medium-Trial-BF63f6cbdb24b6d.otf"),
   });
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const {
     loaded,
     setLoaded,
@@ -252,7 +251,6 @@ export default function App() {
     refreshSessionsFromServer,
     refreshMessages,
     syncSessionMessages,
-    onLoadOlderMessages,
     refreshModelCatalog,
     refreshProjectsCatalog,
   } = useMobileAppServices({
@@ -273,7 +271,6 @@ export default function App() {
     onChatViewableItemsChanged,
     scrollToLatest,
     jumpToLatest,
-    markHistoryLoadAnchor,
     prepareCellLayoutAdjustment,
     settleCellLayoutAdjustment,
     onMessageListScroll,
@@ -288,7 +285,6 @@ export default function App() {
   } = useChatListController<DisplayedTurnCell>({
     initialCellLimit: INITIAL_CELL_LIMIT,
     chatBottomProximity: CHAT_BOTTOM_PROXIMITY,
-    historyPrefetchCooldownMs: HISTORY_PREFETCH_COOLDOWN_MS,
     debugLog: pushConnLog,
   });
   const {
@@ -509,9 +505,10 @@ export default function App() {
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
     forceScrollToLatestUntilRef,
+    scrollToLatest,
     sessionVisibleTurnCountRef,
-    setMessages,
-    setRenderedTurns,
+    renderedTurnsRef,
+    applyTurnWindowRef,
   });
   const turnWindowController = useTurnWindowController({
     initialSessionLimit: INITIAL_SESSION_LIMIT,
@@ -723,6 +720,8 @@ export default function App() {
     toggleWorkspaceSwitcher,
   } = useNotebookNavigationController({
     windowWidth,
+    windowHeight,
+    composerBandHeight: Math.max(220, inputDockHeight + 160),
     onBeforeOpenDrawer: closeComposerPicker,
     onOpenLeftDrawer: () => {
       void InteractionManager.runAfterInteractions(() => {
@@ -753,7 +752,7 @@ export default function App() {
     () => flattenTurnsForList(displayedTurns),
     [displayedTurns],
   );
-  const messageBottomInset = CHAT_LIST_BOTTOM_AIR;
+  const messageBottomInset = Math.max(CHAT_LIST_BOTTOM_AIR, Math.round(inputDockHeight + 16));
   const {
     displayedTurnCells,
     displayedTurnCellsRef,
@@ -763,7 +762,6 @@ export default function App() {
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
     sessionId,
-    chatListResetKey,
   });
   const { sessionSwitchingTo, setSessionSwitchingTo, setActiveSession } =
     useSessionSwitchController<DisplayedTurnCell>({
@@ -824,6 +822,8 @@ export default function App() {
     pairCodeMapRef,
     sessionCacheRef,
     sessionRawMapRef,
+    sessionVisibleTurnCountRef,
+    sessionTotalTurnCountRef,
     messagesRef,
     renderedTurnsRef,
     stopStream,
@@ -952,6 +952,8 @@ export default function App() {
     sessionId,
     messages,
     sessionRawMapRef,
+    sessionVisibleTurnCountRef,
+    sessionTotalTurnCountRef,
     sessionIdRef,
     pickSessionDisplayTitle,
     projectNameFromPath,
@@ -962,6 +964,8 @@ export default function App() {
     setWorkspaceSwitcherOpen,
     setMessages,
     setRenderedTurns,
+    setSessionNextCursor,
+    setSessionHasMore,
     setSessionSearch,
     setSessionDisplayedCount,
     setSessionSwitchingTo,
@@ -998,6 +1002,7 @@ export default function App() {
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     sessionIdRef,
+    sessionVisibleTurnCountRef,
     pendingPromptSessionRef,
     sentAttachmentCacheRef,
     setStatus,
@@ -1020,7 +1025,6 @@ export default function App() {
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages,
   });
-  const canLoadEarlierHistory = !!sessionHasMore[sessionId] || !!toText(sessionNextCursor[sessionId]).trim();
   const { composerModeOptions, inputModelLabel } = useComposerPresentationState(
     {
       model,
@@ -1098,17 +1102,13 @@ export default function App() {
     thinkingPulse,
   });
   const {
-    handleLoadOlderMessages,
     handleWorkspaceContentSizeChange,
     handleWorkspaceListLayout,
     handleWorkspaceScroll,
   } = useChatWorkspaceEvents({
-    canLoadEarlierHistory,
     handleContentSizeChange,
     handleListLayout,
-    markHistoryLoadAnchor,
     loadingOlder,
-    onLoadOlderMessages,
     onMessageListScroll,
   });
   const {
@@ -1242,9 +1242,7 @@ export default function App() {
       displayedTurnCells={displayedTurnCells}
       chatViewabilityConfig={chatViewabilityConfig}
       onChatViewableItemsChanged={onChatViewableItemsChanged}
-      canLoadEarlierHistory={canLoadEarlierHistory}
       loadingOlder={loadingOlder}
-      onLoadOlderMessages={handleLoadOlderMessages}
       onScrollBeginDrag={handleScrollBeginDrag}
       onScrollEndDrag={handleScrollEndDrag}
       onMomentumScrollBegin={handleMomentumScrollBegin}

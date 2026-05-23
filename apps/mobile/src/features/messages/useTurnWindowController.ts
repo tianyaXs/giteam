@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, type Dispatch, type SetStateAction } from 'react';
 import { buildTurnWindow } from './turns';
 import { saveChatSnapshot } from '../../storage/chatSnapshot';
 import { toText } from '../../lib/text';
@@ -38,7 +38,7 @@ export function useTurnWindowController(params: {
   stabilizeServerUserTurnIds: (targetSessionId: string, rendered: any) => any;
   overlayOptimisticTurns: (rendered: any, optimistic: any[]) => any;
   setMessages: (value: MobileChatMessage[]) => void;
-  setRenderedTurns: (value: MobileRenderedTurn[]) => void;
+  setRenderedTurns: Dispatch<SetStateAction<MobileRenderedTurn[]>>;
   setSessions: React.Dispatch<React.SetStateAction<SessionItemLike[]>>;
   setSessionHasMore: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
 }) {
@@ -138,13 +138,28 @@ export function useTurnWindowController(params: {
         }, 1200);
       }
     }
+    const commitRenderedTurns = (prev: MobileRenderedTurn[]): MobileRenderedTurn[] => {
+      if (prev.length === 0 || prev.length !== nextTurns.length) return nextTurns;
+      const prevIds = prev.map((turn: MobileRenderedTurn) => turn.id).join('|');
+      const nextIds = nextTurns.map((turn: MobileRenderedTurn) => turn.id).join('|');
+      if (prevIds !== nextIds) return nextTurns;
+      const prevLast = prev[prev.length - 1];
+      const nextLast = nextTurns[nextTurns.length - 1];
+      if (!prevLast || !nextLast || prevLast.id !== nextLast.id) return nextTurns;
+      return [...prev.slice(0, -1), nextLast];
+    };
     setMessages(nextMessages);
-    setRenderedTurns(nextTurns);
+    setRenderedTurns(commitRenderedTurns);
+    const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     if (targetSessionId === sessionIdRef.current && repoPath.trim() && nextTurns.length > 0) {
       try {
         saveChatSnapshot({
           repoPath,
           sessionId: targetSessionId,
+          rawRows: merged,
+          nextCursor,
+          visibleTurnCount: rendered.visibleTurnCount,
+          totalTurnCount: rendered.totalTurnCount,
           messages: nextMessages,
           renderedTurns: nextTurns,
           updatedAt: Date.now()
@@ -154,7 +169,6 @@ export function useTurnWindowController(params: {
       }
     }
     upsertSession(targetSessionId, nextMessages);
-    const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
     setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
     return rendered;

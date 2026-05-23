@@ -44,9 +44,7 @@ export function ChatWorkspaceScreen(props: {
   displayedTurnCells: any[];
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
-  canLoadEarlierHistory: boolean;
   loadingOlder: boolean;
-  onLoadOlderMessages: () => void;
   onScrollBeginDrag: () => void;
   onScrollEndDrag: () => void;
   onMomentumScrollBegin: () => void;
@@ -81,7 +79,6 @@ export function ChatWorkspaceScreen(props: {
   const {
     activeQuestionRequest,
     albumPickerProps,
-    canLoadEarlierHistory,
     chatListMountKey,
     chatViewabilityConfig,
     composerPickerProps,
@@ -107,7 +104,6 @@ export function ChatWorkspaceScreen(props: {
     onDismissTodoDock,
     onJumpToLatest,
     onListLayout,
-    onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
     onReplyQuestion,
@@ -179,9 +175,7 @@ export function ChatWorkspaceScreen(props: {
               displayedTurnCells={displayedTurnCells}
               chatViewabilityConfig={chatViewabilityConfig}
               onChatViewableItemsChanged={onChatViewableItemsChanged}
-              canLoadEarlierHistory={canLoadEarlierHistory}
               loadingOlder={loadingOlder}
-              onLoadOlderMessages={onLoadOlderMessages}
               onScrollBeginDrag={onScrollBeginDrag}
               onScrollEndDrag={onScrollEndDrag}
               onMomentumScrollBegin={onMomentumScrollBegin}

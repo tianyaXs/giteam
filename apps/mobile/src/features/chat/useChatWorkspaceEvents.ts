@@ -1,35 +1,22 @@
 import { useCallback } from 'react';
 
 export function useChatWorkspaceEvents(params: {
-  canLoadEarlierHistory: boolean;
   handleContentSizeChange: (
     contentHeight: number,
     opts: {
-      canLoadEarlierHistory: boolean;
       loadingOlder: boolean;
-      onLoadOlderMessages: () => void;
     }
   ) => void;
   handleListLayout: (height: number) => void;
   loadingOlder: boolean;
-  markHistoryLoadAnchor: (source?: string) => boolean;
-  onLoadOlderMessages: () => Promise<void>;
   onMessageListScroll: (scrollY: number, viewportHeight: number, contentHeight: number) => void;
 }) {
   const {
-    canLoadEarlierHistory,
     handleContentSizeChange,
     handleListLayout,
     loadingOlder,
-    markHistoryLoadAnchor,
-    onLoadOlderMessages,
     onMessageListScroll
   } = params;
-
-  const handleLoadOlderMessages = useCallback(() => {
-    if (!markHistoryLoadAnchor('endReached')) return;
-    void onLoadOlderMessages();
-  }, [markHistoryLoadAnchor, onLoadOlderMessages]);
 
   const handleWorkspaceScroll = useCallback((evt: any) => {
     const y = Number(evt.nativeEvent.contentOffset?.y || 0);
@@ -40,14 +27,10 @@ export function useChatWorkspaceEvents(params: {
 
   const handleWorkspaceContentSizeChange = useCallback((_width: number, height: number) => {
     handleContentSizeChange(Number(height || 0), {
-      canLoadEarlierHistory,
-      loadingOlder,
-      onLoadOlderMessages: handleLoadOlderMessages
+      loadingOlder
     });
   }, [
-    canLoadEarlierHistory,
     handleContentSizeChange,
-    handleLoadOlderMessages,
     loadingOlder
   ]);
 
@@ -56,7 +39,6 @@ export function useChatWorkspaceEvents(params: {
   }, [handleListLayout]);
 
   return {
-    handleLoadOlderMessages,
     handleWorkspaceContentSizeChange,
     handleWorkspaceListLayout,
     handleWorkspaceScroll

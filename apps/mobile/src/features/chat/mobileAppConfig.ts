@@ -1,14 +1,14 @@
 import { toText } from "../../lib/text";
 
 export const INITIAL_SESSION_LIMIT = 1;
-export const OLDER_SESSION_LIMIT = 3;
+export const OLDER_SESSION_LIMIT = 1;
 export const INITIAL_CELL_LIMIT = 6;
 export const OLDER_CELL_LIMIT = 24;
 export const HISTORY_PREFETCH_COOLDOWN_MS = 350;
 export const CHAT_BOTTOM_PROXIMITY = 96;
 export const CHAT_LIST_BOTTOM_AIR = 24;
 export const INITIAL_MESSAGE_FETCH_LIMIT = 8;
-export const OLDER_MESSAGE_FETCH_LIMIT = 24;
+export const OLDER_MESSAGE_FETCH_LIMIT = 8;
 export const IMAGE_SEND_TIMEOUT_MS = 180000;
 
 export type SessionItem = {

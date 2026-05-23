@@ -1,6 +1,12 @@
 import { useCallback, useRef } from 'react';
 import { toText } from '../../lib/text';
 import {
+  isStreamTextPart,
+  streamPartWriteField,
+  STREAM_TYPEWRITER_TICK_MS,
+  takeStreamTypewriterChunk
+} from './streamTypewriter';
+import {
   getStoredStreamPart as storeGetStoredStreamPart,
   ingestStreamRows as storeIngestStreamRows,
   mergeStreamPart as storeMergeStreamPart,
@@ -47,12 +53,6 @@ type UseOpenCodeStreamRuntimeParams = {
   setStreaming: (value: boolean | ((prev: boolean) => boolean)) => void;
 };
 
-function streamTypewriterChunkSize(length: number) {
-  if (length > 480) return 18;
-  if (length > 180) return 10;
-  if (length > 64) return 6;
-  return 3;
-}
 
 export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams) {
   const paramsRef = useRef(params);
@@ -220,8 +220,9 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       d.streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
       return;
     }
-    enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, field || 'text', delta);
-    const nextLen = toText(getStoredStreamPart(targetSessionId, messageId, partId)?.[field || 'text']).length + delta.length;
+    const writeField = streamPartWriteField(field, kind);
+    enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, writeField, delta);
+    const nextLen = toText(getStoredStreamPart(targetSessionId, messageId, partId)?.text).length + delta.length;
     d.streamDebug('delta.enqueued', { sid: targetSessionId, messageId, partId, kind, totalLen: nextLen });
     d.setStreaming(true);
   }, [enqueueStreamTypewriterDelta, getParams, getStoredStreamPart]);
@@ -233,12 +234,32 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     const part = source?.part;
     const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
     if (!messageId || !part || typeof part !== 'object') return;
+    const partId = toText(part?.id || part?.partID).trim() || 'text';
+    const incomingText = typeof part?.text === 'string' ? part.text : '';
+    if (isStreamTextPart(part) && incomingText) {
+      const stored = getStoredStreamPart(targetSessionId, messageId, partId);
+      const prevText = toText(stored?.text);
+      if (incomingText.length > prevText.length) {
+        if (!stored) {
+          upsertStreamPart(targetSessionId, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
+        }
+        const delta = incomingText.slice(prevText.length);
+        if (delta.length > 0) {
+          enqueueStreamTypewriterDelta(targetSessionId, messageId, partId, 'text', delta);
+          d.setStreaming(true);
+          return;
+        }
+      }
+    }
     upsertStreamPart(targetSessionId, messageId, part);
     flushPendingStreamPartEvents(targetSessionId, messageId);
     renderStreamWindowRef.current(targetSessionId);
     if (shouldFollowLatest()) {
       d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
-      requestAnimationFrame(() => d.scrollToLatest(false));
+      const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
+      if (distanceFromBottom > 48) {
+        requestAnimationFrame(() => d.scrollToLatest(false));
+      }
     }
     d.setStreaming(true);
   }, [flushPendingStreamPartEvents, getParams, shouldFollowLatest, upsertStreamPart]);
@@ -272,9 +293,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
           delete latest.streamTypewriterQueueRef.current[key];
           continue;
         }
-        const take = streamTypewriterChunkSize(item.text.length);
-        const chunk = item.text.slice(0, take);
-        const rest = item.text.slice(take);
+        const { chunk, rest } = takeStreamTypewriterChunk(item.text);
         if (chunk) {
           const ok = patchStoredStreamPartDelta(item.sid, item.messageId, item.partId, item.field, chunk);
           if (ok) touchedSessions.add(item.sid);
@@ -287,9 +306,9 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
         latest.streamTypewriterTimerRef.current = setTimeout(() => {
           latest.streamTypewriterTimerRef.current = null;
           scheduleStreamTypewriterDrainRef.current();
-        }, 16);
+        }, STREAM_TYPEWRITER_TICK_MS);
       }
-    }, 16);
+    }, STREAM_TYPEWRITER_TICK_MS);
   }, [getParams, patchStoredStreamPartDelta]);
 
   const scheduleStreamRender = useCallback((targetSessionId: string) => {
@@ -302,7 +321,10 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       const shouldFollowStream = shouldFollowLatest();
       renderStreamWindowRef.current(targetSessionId);
       if (shouldFollowStream) {
-        requestAnimationFrame(() => latest.scrollToLatest(false));
+        const distanceFromBottom = Math.max(0, Number(latest.messageScrollYRef.current || 0));
+        if (distanceFromBottom > 48) {
+          requestAnimationFrame(() => latest.scrollToLatest(false));
+        }
       }
     }, 24);
   }, [getParams, shouldFollowLatest]);

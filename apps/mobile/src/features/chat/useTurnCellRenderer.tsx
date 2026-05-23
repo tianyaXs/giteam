@@ -70,7 +70,7 @@ export function useTurnCellRenderer(params: {
         bodyFontFamily={bodyFontFamily}
         styles={styles}
         turn={item}
-        streaming={sessionWorking}
+        streaming={sessionWorking && interaction.isLastVisible}
         isLastTurn={interaction.isLastVisible}
         thinkingPulse={thinkingPulse}
         hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}

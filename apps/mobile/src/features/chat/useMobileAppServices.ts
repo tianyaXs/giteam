@@ -8,6 +8,7 @@ type RefreshMessagesOptions = {
 };
 
 type SyncSessionMessagesOptions = {
+  tailOnly?: boolean;
   limit?: number;
   fetchLimit?: number;
   loadingOlder?: boolean;

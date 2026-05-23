@@ -2,11 +2,15 @@ import { mmkvGetString, mmkvSetString } from './mmkv';
 import type { MobileChatMessage, MobileRenderedTurn } from '../types';
 
 const CHAT_SNAPSHOT_KEY = 'giteam.mobile.chat-snapshot.v1';
-const MAX_SNAPSHOTS = 8;
+const MAX_SNAPSHOTS = 16;
 
 export type ChatSnapshot = {
   repoPath: string;
   sessionId: string;
+  rawRows?: any[];
+  nextCursor?: string;
+  visibleTurnCount?: number;
+  totalTurnCount?: number;
   messages: MobileChatMessage[];
   renderedTurns: MobileRenderedTurn[];
   updatedAt: number;

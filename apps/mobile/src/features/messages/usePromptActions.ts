@@ -27,6 +27,7 @@ type UsePromptActionsParams = {
   initialSessionLimit: number;
   initialMessageFetchLimit: number;
   sessionIdRef: React.MutableRefObject<string>;
+  sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
   pendingPromptSessionRef: React.MutableRefObject<Record<string, { id: string; startedAt: number }>>;
   sentAttachmentCacheRef: React.MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   setStatus: (value: string | ((prev: string) => string)) => void;
@@ -40,7 +41,7 @@ type UsePromptActionsParams = {
   setActiveSession: (sessionId: string) => void;
   startStream: (targetSessionId: string) => void;
   stopStream: () => void;
-  syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number }) => Promise<any>;
+  syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number; tailOnly?: boolean }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
   refreshSessionsFromServer: (targetRepoPath?: string) => Promise<any>;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
@@ -72,6 +73,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     sentAttachmentCacheRef,
     serverUrl,
     sessionIdRef,
+    sessionVisibleTurnCountRef,
     setActiveSession,
     setBusy,
     setChatListResetKey,
@@ -146,7 +148,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
         targetSessionId = created.id;
         setActiveSession(targetSessionId);
       }
-      setChatListResetKey((value) => value + 1);
       if (optimisticMessage.attachments?.length) {
         sentAttachmentCacheRef.current[targetSessionId] = {
           ...(sentAttachmentCacheRef.current[targetSessionId] || {}),
@@ -197,12 +198,13 @@ export function usePromptActions(params: UsePromptActionsParams) {
         parts: parts.length > 0 ? parts : undefined,
         timeoutMs: images.length > 0 ? imageSendTimeoutMs : undefined
       });
-      delete pendingPromptSessionRef.current[targetSessionId];
       pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
       setActiveSession(res.sessionId);
       void syncSessionMessages(res.sessionId, {
-        limit: initialSessionLimit,
-        fetchLimit: initialMessageFetchLimit
+        limit: Math.max(initialSessionLimit, Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0)),
+        tailOnly: true
+      }).finally(() => {
+        delete pendingPromptSessionRef.current[targetSessionId];
       });
       void refreshSessionsFromServer();
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Animated, FlatList, Platform, Pressable, Text, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
+import { Animated, Pressable, Text, View } from 'react-native';
 
 type NotebookColors = {
   text: string;
@@ -26,9 +27,7 @@ export function ChatConversationStage(props: {
   displayedTurnCells: any[];
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
-  canLoadEarlierHistory: boolean;
   loadingOlder: boolean;
-  onLoadOlderMessages: () => void;
   onScrollBeginDrag: () => void;
   onScrollEndDrag: () => void;
   onMomentumScrollBegin: () => void;
@@ -44,7 +43,6 @@ export function ChatConversationStage(props: {
   onJumpToLatest: () => void;
 }) {
   const {
-    canLoadEarlierHistory,
     chatListMountKey,
     chatViewabilityConfig,
     currentWorkspaceName,
@@ -59,7 +57,6 @@ export function ChatConversationStage(props: {
     onContentSizeChange,
     onJumpToLatest,
     onListLayout,
-    onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
     onScroll,
@@ -81,30 +78,22 @@ export function ChatConversationStage(props: {
     () => ({
       flexGrow: 1,
       justifyContent: 'flex-end' as const,
-      paddingTop: 8,
-      paddingBottom: messageBottomInset,
+      // inverted 列表：paddingTop 贴近输入框一侧，需留出 composer 高度
+      paddingTop: messageBottomInset,
+      paddingBottom: 12,
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
   );
   const keyExtractor = useCallback((item: any) => item.id, []);
   const latestSettledKeyRef = useRef('');
-  const maintainHistoryPosition = useMemo(
-    () => (loadingOlder ? { minIndexForVisible: 0 } : undefined),
-    [loadingOlder]
-  );
-  const handleStartReached = useCallback(() => {
-    if (canLoadEarlierHistory && !loadingOlder) onLoadOlderMessages();
-  }, [canLoadEarlierHistory, loadingOlder, onLoadOlderMessages]);
   useEffect(() => {
     if (latestSettledKeyRef.current === chatListMountKey) return;
     latestSettledKeyRef.current = chatListMountKey;
-    [0, 80, 220].forEach((delay) => {
-      setTimeout(() => {
-        try {
-          messageScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
-        } catch {}
-      }, delay);
+    requestAnimationFrame(() => {
+      try {
+        messageScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+      } catch {}
     });
   }, [chatListMountKey, messageScrollRef]);
 
@@ -159,25 +148,24 @@ export function ChatConversationStage(props: {
         </View>
       ) : (
         <View style={styles.chatListStage}>
-          <FlatList
+          <FlashList
             key={chatListMountKey}
             ref={messageScrollRef}
             contentContainerStyle={chatContentContainerStyle}
             onLayout={onListLayout}
             data={displayedTurnCells}
             inverted
-            removeClippedSubviews={Platform.OS === 'web'}
+            maintainVisibleContentPosition={{
+              autoscrollToBottomThreshold: 24
+            }}
             alwaysBounceVertical
             bounces
             overScrollMode="always"
             showsVerticalScrollIndicator={false}
             showsHorizontalScrollIndicator={false}
             scrollEventThrottle={16}
-            maintainVisibleContentPosition={maintainHistoryPosition}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
-            onEndReached={handleStartReached}
-            onEndReachedThreshold={0.16}
             onScrollBeginDrag={onScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}

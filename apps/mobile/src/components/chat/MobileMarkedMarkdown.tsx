@@ -119,15 +119,18 @@ function useStreamingMarkdown(value: string, options: {
 
     const newTokens = lexer(combinedText, { gfm: true, tokenizer });
     const newElements = parser.parse(newTokens);
-    const removeCount = lastToken.type === 'space' && lastTokenIndex > 0 ? 2 : 1;
-    const mergedTokens = [
-      ...cacheRef.current.cachedTokens.slice(0, Math.max(0, cacheRef.current.cachedTokens.length - removeCount)),
-      ...newTokens
-    ];
-    const mergedElements = [
-      ...cacheRef.current.cachedElements.slice(0, Math.max(0, cacheRef.current.cachedElements.length - removeCount)),
-      ...newElements
-    ];
+    const mergedTokens = cacheRef.current.cachedTokens;
+    if (mergedTokens.length > 0) {
+      mergedTokens.splice(mergedTokens.length - 1, 1, ...newTokens);
+    } else {
+      mergedTokens.push(...newTokens);
+    }
+    const mergedElements = cacheRef.current.cachedElements;
+    if (mergedElements.length > 0) {
+      mergedElements.splice(mergedElements.length - 1, 1, ...newElements);
+    } else {
+      mergedElements.push(...newElements);
+    }
 
     cacheRef.current = {
       lastValue: value,

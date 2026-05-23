@@ -510,12 +510,19 @@ export function parseConversation(raw: unknown): ParsedConversation {
       } else if (t === 'reasoning') {
         const text = normalizeText(p?.text);
         if (text) {
+          const partFinished = Boolean(p?.finish || p?.time?.end || p?.time?.completed);
           timelineRows.push({
             order: seq++,
             item: {
               kind: 'think',
               createdAt: partCreatedAt,
-              card: { id: `think:${partId}`, title: 'Think', text, createdAt: partCreatedAt, finished }
+              card: {
+                id: `think:${partId}`,
+                title: 'Think',
+                text,
+                createdAt: partCreatedAt,
+                finished: finished || partFinished
+              }
             }
           });
           hasAssistantRenderable = true;

@@ -10,6 +10,10 @@ type ProjectOptionLike = {
 };
 
 type ChatSnapshotLike = {
+  rawRows?: any[];
+  nextCursor?: string;
+  visibleTurnCount?: number;
+  totalTurnCount?: number;
   messages: any[];
   renderedTurns: any[];
 };
@@ -51,6 +55,8 @@ export function useBootstrapPersistence(params: {
   pairCodeMapRef: React.MutableRefObject<Record<string, string>>;
   sessionCacheRef: React.MutableRefObject<Record<string, any[]>>;
   sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
+  sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
+  sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   messagesRef: React.MutableRefObject<any[]>;
   renderedTurnsRef: React.MutableRefObject<any[]>;
   stopStream: () => void;
@@ -76,6 +82,8 @@ export function useBootstrapPersistence(params: {
     sessionId,
     sessionIdRef,
     sessionRawMapRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setAutoAcceptPermissions,
     setComposerAgent,
     setLoaded,
@@ -131,6 +139,15 @@ export function useBootstrapPersistence(params: {
         setAutoAcceptPermissions(Boolean((prefs as any).autoAcceptPermissions));
         setNotebookTheme(prefs.notebookTheme || 'paper');
         if (cachedChat) {
+          const sid = toText(prefs.sessionId).trim();
+          const rawRows = Array.isArray(cachedChat.rawRows) ? cachedChat.rawRows : [];
+          const visibleTurnCount = Math.max(0, Number(cachedChat.visibleTurnCount || cachedChat.renderedTurns.length || 0));
+          const totalTurnCount = Math.max(visibleTurnCount, Number(cachedChat.totalTurnCount || visibleTurnCount));
+          if (sid && rawRows.length > 0) {
+            sessionRawMapRef.current[sid] = rawRows;
+            sessionVisibleTurnCountRef.current[sid] = visibleTurnCount;
+            sessionTotalTurnCountRef.current[sid] = totalTurnCount;
+          }
           setMessages(cachedChat.messages);
           setRenderedTurns(cachedChat.renderedTurns);
           messagesRef.current = cachedChat.messages;
@@ -162,7 +179,10 @@ export function useBootstrapPersistence(params: {
     messagesRef,
     pairCodeMapRef,
     renderedTurnsRef,
+    sessionRawMapRef,
     sessionIdRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setAutoAcceptPermissions,
     setComposerAgent,
     setLoaded,
@@ -254,6 +274,14 @@ export function useBootstrapPersistence(params: {
         }
       })();
       if (cancelled || sid !== sessionIdRef.current || repo !== toText(repoPath).trim() || !snapshot) return;
+      const rawRows = Array.isArray(snapshot.rawRows) ? snapshot.rawRows : [];
+      const visibleTurnCount = Math.max(0, Number(snapshot.visibleTurnCount || snapshot.renderedTurns.length || 0));
+      const totalTurnCount = Math.max(visibleTurnCount, Number(snapshot.totalTurnCount || visibleTurnCount));
+      if (rawRows.length > 0) {
+        sessionRawMapRef.current[sid] = rawRows;
+        sessionVisibleTurnCountRef.current[sid] = visibleTurnCount;
+        sessionTotalTurnCountRef.current[sid] = totalTurnCount;
+      }
       setMessages(snapshot.messages);
       setRenderedTurns(snapshot.renderedTurns);
       messagesRef.current = snapshot.messages;
@@ -270,6 +298,8 @@ export function useBootstrapPersistence(params: {
     sessionId,
     sessionIdRef,
     sessionRawMapRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setMessages,
     setRenderedTurns,
     setSessionSwitchingTo

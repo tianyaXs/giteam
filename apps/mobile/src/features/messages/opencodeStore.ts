@@ -1,4 +1,5 @@
 import { toText } from '../../lib/text';
+import { mergeMessageRows } from './turns';
 
 export type RefLike<T> = { current: T };
 
@@ -145,9 +146,14 @@ export function composeStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
 }
 
 export function publishStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string) {
-  const rows = composeStreamRows(stores, targetSessionId);
-  stores.rawRows.current[targetSessionId] = rows;
-  return rows;
+  const sid = toText(targetSessionId).trim();
+  if (!sid) return [];
+  const composed = composeStreamRows(stores, targetSessionId);
+  const prevRaw = Array.isArray(stores.rawRows.current[sid]) ? stores.rawRows.current[sid] : [];
+  if (composed.length <= 0) return prevRaw;
+  const merged = prevRaw.length > 0 ? mergeMessageRows(prevRaw, composed) : composed;
+  stores.rawRows.current[sid] = merged;
+  return merged;
 }
 
 export function ingestStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
@@ -197,6 +203,13 @@ export function getStoredStreamPart(stores: OpenCodeStreamStoreRefs, targetSessi
   return stores.part.current[sid]?.[mid]?.[pid];
 }
 
+export function resolveStreamPartWriteField(part: any, field: string): string {
+  const key = toText(field).trim();
+  const type = toText(part?.type).trim();
+  if (type === 'reasoning' || key === 'reasoning') return 'text';
+  return key || 'text';
+}
+
 export function patchStoredStreamPartDelta(
   stores: OpenCodeStreamStoreRefs,
   targetSessionId: string,
@@ -208,12 +221,13 @@ export function patchStoredStreamPartDelta(
   const sid = ensureStreamSessionStores(stores, targetSessionId);
   const mid = toText(messageId).trim();
   const pid = toText(partId).trim();
-  if (!sid || !mid || !pid || !field || !delta) return false;
+  if (!sid || !mid || !pid || !delta) return false;
   const byMessage = stores.part.current[sid] || {};
   const partMap = byMessage[mid] || {};
   const current = partMap[pid];
   if (!current) return false;
-  const nextPart = { ...current, [field]: `${toText(current[field])}${delta}` };
+  const writeField = resolveStreamPartWriteField(current, field);
+  const nextPart = { ...current, [writeField]: `${toText(current[writeField])}${delta}` };
   byMessage[mid] = { ...partMap, [pid]: nextPart };
   stores.part.current[sid] = byMessage;
   publishStreamRows(stores, sid);

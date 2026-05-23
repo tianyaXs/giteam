@@ -34,6 +34,8 @@ export function useLeftDrawerController(props: {
   sessionId: string;
   messages: any[];
   sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
+  sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
+  sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   sessionIdRef: React.MutableRefObject<string>;
   pickSessionDisplayTitle: (item: Pick<SessionItemLike, 'title' | 'preview' | 'id'>, fallbackMessages?: any[]) => string;
   projectNameFromPath: (path: string) => string;
@@ -44,6 +46,8 @@ export function useLeftDrawerController(props: {
   setWorkspaceSwitcherOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   setMessages: (value: any[]) => void;
   setRenderedTurns: (value: any[]) => void;
+  setSessionNextCursor: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setSessionHasMore: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   setSessionSearch: (value: string) => void;
   setSessionDisplayedCount: (value: number | ((prev: number) => number)) => void;
   setSessionSwitchingTo: (value: string | ((prev: string) => string)) => void;
@@ -78,11 +82,15 @@ export function useLeftDrawerController(props: {
     sessionId,
     sessionIdRef,
     sessionRawMapRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     sessionSearch,
     sessions,
     setActiveSession,
     setMessages,
     setRenderedTurns,
+    setSessionHasMore,
+    setSessionNextCursor,
     setSessionDisplayedCount,
     setSessionSearch,
     setSessionSwitchingTo,
@@ -161,22 +169,32 @@ export function useLeftDrawerController(props: {
     }
     void (async () => {
       stopStream();
+      const repo = toText(repoPath).trim();
+      const snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
+      const snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
+      const snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
+      if ((sessionRawMapRef.current[targetSessionId] || []).length <= 0 && snapshotRawRows.length > 0) {
+        const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
+        const totalTurnCount = Math.max(visibleTurnCount, Number(snapshot?.totalTurnCount || visibleTurnCount));
+        sessionRawMapRef.current[targetSessionId] = snapshotRawRows;
+        sessionVisibleTurnCountRef.current[targetSessionId] = visibleTurnCount;
+        sessionTotalTurnCountRef.current[targetSessionId] = totalTurnCount;
+        setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: toText(snapshot?.nextCursor).trim() }));
+        setSessionHasMore((prev) => ({
+          ...prev,
+          [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
+        }));
+      }
       const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
       setActiveSession(targetSessionId);
       closeDrawer();
       if (!hasCachedRows) {
-        const repo = toText(repoPath).trim();
-        const snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
         if (snapshot && sessionIdRef.current === targetSessionId) {
           setMessages(snapshot.messages);
           setRenderedTurns(snapshot.renderedTurns);
           messagesRef.current = snapshot.messages;
           renderedTurnsRef.current = snapshot.renderedTurns;
           setSessionSwitchingTo('');
-          void syncSessionMessages(targetSessionId, {
-            limit: initialSessionLimit,
-            fetchLimit: initialMessageFetchLimit
-          });
           void reconnectRunningSession(targetSessionId);
           return;
         }
@@ -197,9 +215,13 @@ export function useLeftDrawerController(props: {
     repoPath,
     sessionIdRef,
     sessionRawMapRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setActiveSession,
     setMessages,
     setRenderedTurns,
+    setSessionHasMore,
+    setSessionNextCursor,
     setSessionSwitchingTo,
     stopStream,
     syncSessionMessages

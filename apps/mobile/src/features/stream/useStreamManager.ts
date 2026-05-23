@@ -25,6 +25,12 @@ import {
 import { computeVisibleTurnCount } from '../messages/history';
 import { inspectTurnWindow } from '../messages/turns';
 import { buildStreamUrl, pairAuth } from '../../api/controlApi';
+import {
+  isStreamTextPart,
+  streamPartWriteField,
+  STREAM_TYPEWRITER_TICK_MS,
+  takeStreamTypewriterChunk
+} from './streamTypewriter';
 
 const INITIAL_SESSION_LIMIT = 1;
 const INITIAL_MESSAGE_FETCH_LIMIT = 8;
@@ -64,7 +70,7 @@ export interface StreamManagerDeps {
   setDismissedQuestions: (value: React.SetStateAction<Set<string>>) => void;
   applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
   scrollToLatest: (animated?: boolean) => void;
-  syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number }) => Promise<any>;
+  syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number; tailOnly?: boolean }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
   extractQuestionRequests: (raw: any[], targetSessionId: string) => any[];
   buildLiveTodoCard: (sid: string, todos: any[]) => any;
@@ -140,10 +146,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const now = Date.now();
       if (now - lastSyncAt < 300) return;
       lastSyncAt = now;
-      void d.syncSessionMessages(targetSessionId, {
-        limit: INITIAL_SESSION_LIMIT,
-        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
-      });
+      void d.syncSessionMessages(targetSessionId, { tailOnly: true });
       void d.syncSessionStatus(targetSessionId);
     };
     const syncStatusSoon = () => {
@@ -251,7 +254,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const nextVisibleTurnCount = computeVisibleTurnCount({
         prevVisibleTurnCount,
         totalTurnCount: turnInfo.totalTurnCount,
-        requestedVisibleTurnCount: INITIAL_SESSION_LIMIT,
+        requestedVisibleTurnCount: Math.max(INITIAL_SESSION_LIMIT, prevVisibleTurnCount, turnInfo.totalTurnCount),
         initialTurnLimit: INITIAL_SESSION_LIMIT,
         olderTurnLimit: OLDER_SESSION_LIMIT,
         mode: 'default',
@@ -415,8 +418,9 @@ export function useStreamManager(deps: StreamManagerDeps) {
         d.streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
         return;
       }
-      enqueueStreamTypewriterDelta(sid, messageId, partId, field || 'text', delta);
-      const nextLen = toText(getStoredStreamPart(sid, messageId, partId)?.[field || 'text']).length + delta.length;
+      const writeField = streamPartWriteField(field, kind);
+      enqueueStreamTypewriterDelta(sid, messageId, partId, writeField, delta);
+      const nextLen = toText(getStoredStreamPart(sid, messageId, partId)?.text).length + delta.length;
       d.streamDebug('delta.enqueued', { sid, messageId, partId, kind, totalLen: nextLen });
       d.setStreaming(true);
     };
@@ -450,12 +454,32 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const part = source?.part;
       const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
       if (!messageId || !part || typeof part !== 'object') return;
+      const partId = toText(part?.id || part?.partID).trim() || 'text';
+      const incomingText = typeof part?.text === 'string' ? part.text : '';
+      if (isStreamTextPart(part) && incomingText) {
+        const stored = getStoredStreamPart(sid, messageId, partId);
+        const prevText = toText(stored?.text);
+        if (incomingText.length > prevText.length) {
+          if (!stored) {
+            upsertStreamPart(sid, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
+          }
+          const delta = incomingText.slice(prevText.length);
+          if (delta.length > 0) {
+            enqueueStreamTypewriterDelta(sid, messageId, partId, 'text', delta);
+            d.setStreaming(true);
+            return;
+          }
+        }
+      }
       upsertStreamPart(sid, messageId, part);
       flushPendingStreamPartEvents(sid, messageId);
       renderStreamWindow(sid);
       if (shouldFollowLatest()) {
         d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
-        requestAnimationFrame(() => d.scrollToLatest(false));
+        const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
+        if (distanceFromBottom > 48) {
+          requestAnimationFrame(() => d.scrollToLatest(false));
+        }
       }
       d.setStreaming(true);
     };
@@ -474,13 +498,6 @@ export function useStreamManager(deps: StreamManagerDeps) {
     };
 
     // --- Render Scheduling ---
-    const streamTypewriterChunkSize = (length: number) => {
-      if (length > 480) return 18;
-      if (length > 180) return 10;
-      if (length > 64) return 6;
-      return 3;
-    };
-
     const scheduleStreamTypewriterDrain = () => {
       if (d.streamTypewriterTimerRef.current) return;
       d.streamTypewriterTimerRef.current = setTimeout(() => {
@@ -493,9 +510,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
             delete d.streamTypewriterQueueRef.current[key];
             continue;
           }
-          const take = streamTypewriterChunkSize(item.text.length);
-          const chunk = item.text.slice(0, take);
-          const rest = item.text.slice(take);
+          const { chunk, rest } = takeStreamTypewriterChunk(item.text);
           if (chunk) {
             const ok = patchStoredStreamPartDelta(item.sid, item.messageId, item.partId, item.field, chunk);
             if (ok) touchedSessions.add(item.sid);
@@ -508,9 +523,9 @@ export function useStreamManager(deps: StreamManagerDeps) {
           d.streamTypewriterTimerRef.current = setTimeout(() => {
             d.streamTypewriterTimerRef.current = null;
             scheduleStreamTypewriterDrain();
-          }, 16);
+          }, STREAM_TYPEWRITER_TICK_MS);
         }
-      }, 16);
+      }, STREAM_TYPEWRITER_TICK_MS);
     };
 
     const scheduleStreamRender = (sid: string) => {
@@ -521,7 +536,10 @@ export function useStreamManager(deps: StreamManagerDeps) {
         const shouldFollowStream = shouldFollowLatest();
         renderStreamWindow(sid);
         if (shouldFollowStream) {
-          requestAnimationFrame(() => d.scrollToLatest(false));
+          const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
+          if (distanceFromBottom > 48) {
+            requestAnimationFrame(() => d.scrollToLatest(false));
+          }
         }
       }, 24);
     };
@@ -750,10 +768,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       d.setStreaming(false);
       d.setSessionStatusMap((prev: Record<string, any>) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
       d.setStatus('本轮回复完成');
-      void d.syncSessionMessages(targetSessionId, {
-        limit: INITIAL_SESSION_LIMIT,
-        fetchLimit: INITIAL_MESSAGE_FETCH_LIMIT
-      }).finally(() => {
+      void d.syncSessionMessages(targetSessionId, { tailOnly: true }).finally(() => {
         if (d.streamRunIdRef.current !== streamRunId || d.sessionIdRef.current !== targetSessionId) return;
         d.setStreaming(false);
         d.setSessionStatusMap((prev: Record<string, any>) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));

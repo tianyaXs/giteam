@@ -1,7 +1,14 @@
 import { useMemo } from 'react';
+import { toText } from '../../lib/text';
 import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from '../../types';
 
 type StreamDebug = (label: string, payload?: Record<string, unknown>) => void;
+
+function turnHasAssistantReplyText(turn: MobileRenderedTurn): boolean {
+  return turn.items.some(
+    (item) => item.kind === 'chat' && item.message.role === 'assistant' && !!toText(item.message.text).trim()
+  );
+}
 
 function shouldShowThinkingPlaceholder(params: {
   currentSessionStatus: SessionStatusInfo;
@@ -22,18 +29,13 @@ function shouldShowThinkingPlaceholder(params: {
   if (currentSessionStatus.type === 'retry') return false;
   for (let turnIdx = renderedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
     const turn = renderedTurns[turnIdx];
-    let hasAssistantProgress = false;
-    for (let itemIdx = turn.items.length - 1; itemIdx >= 0; itemIdx -= 1) {
-      const item = turn.items[itemIdx];
-      if (item.kind === 'error') return false;
-      if (item.kind !== 'chat' || item.message.role !== 'user') hasAssistantProgress = true;
-    }
+    if (turn.items.some((item) => item.kind === 'error')) return false;
     if (turn.userMessage) {
-      const show = !hasAssistantProgress;
+      const show = !turnHasAssistantReplyText(turn);
       streamDebug?.('pending.placeholder.check', {
         turnId: turn.id,
         show,
-        hasAssistantProgress,
+        hasAssistantText: !show,
         itemKinds: turn.items.map((item: any) => item.kind).join(','),
         sessionWorking,
         status: currentSessionStatus.type

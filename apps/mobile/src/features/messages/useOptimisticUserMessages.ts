@@ -25,20 +25,22 @@ export function useOptimisticUserMessages(params: {
   optimisticUserIdAliasRef: MutableRefObject<Record<string, Record<string, string>>>;
   sentAttachmentCacheRef: MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   forceScrollToLatestUntilRef: MutableRefObject<number>;
+  scrollToLatest: (animated?: boolean) => void;
   sessionVisibleTurnCountRef: MutableRefObject<Record<string, number>>;
-  setMessages: Dispatch<SetStateAction<MobileChatMessage[]>>;
-  setRenderedTurns: Dispatch<SetStateAction<MobileRenderedTurn[]>>;
+  renderedTurnsRef: MutableRefObject<MobileRenderedTurn[]>;
+  applyTurnWindowRef: MutableRefObject<(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => unknown>;
 }) {
   const {
+    applyTurnWindowRef,
     forceScrollToLatestUntilRef,
+    renderedTurnsRef,
+    scrollToLatest,
     initialSessionLimit,
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
     sessionIdRef,
     sessionOptimisticUserMapRef,
-    sessionVisibleTurnCountRef,
-    setMessages,
-    setRenderedTurns
+    sessionVisibleTurnCountRef
   } = params;
   const [optimisticVersion, setOptimisticVersion] = useState(0);
 
@@ -67,11 +69,15 @@ export function useOptimisticUserMessages(params: {
       const next = prev.filter((item) => item.id !== optimisticId);
       if (next.length > 0) sessionOptimisticUserMapRef.current[sid] = next;
       else delete sessionOptimisticUserMapRef.current[sid];
-      setMessages((prevMessages) => prevMessages.filter((item) => item.id !== optimisticId));
-      setRenderedTurns((prevTurns) => prevTurns.filter((item) => item.id !== `turn:optimistic:${optimisticId}`));
       bumpOptimisticVersion();
+      const visible = Math.max(
+        initialSessionLimit,
+        Number(sessionVisibleTurnCountRef.current[sid] || 0),
+        renderedTurnsRef.current.length
+      );
+      applyTurnWindowRef.current(sid, visible);
     },
-    [bumpOptimisticVersion, sessionOptimisticUserMapRef, setMessages, setRenderedTurns]
+    [applyTurnWindowRef, bumpOptimisticVersion, initialSessionLimit, renderedTurnsRef, sessionOptimisticUserMapRef, sessionVisibleTurnCountRef]
   );
 
   const reconcileOptimisticUserMessages = useCallback(
@@ -155,49 +161,64 @@ export function useOptimisticUserMessages(params: {
   const overlayOptimisticTurns = useCallback(
     (base: TurnWindowResult, optimistic: OptimisticUserMessage[]): TurnWindowResult => {
       if (optimistic.length === 0) return base;
-      const keepBaseTurns = base.visibleTurnCount > initialSessionLimit;
+      const keepBaseTurns = base.renderedTurns.length > 0;
       const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
       const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
+      const existingTurnIds = new Set(nextTurns.map((turn) => turn.id));
+      const existingMessageIds = new Set(nextMessages.map((message) => message.id));
+      let appended = 0;
       for (const item of optimistic) {
-        nextMessages.push({ id: item.id, role: 'user', text: item.text, createdAt: item.createdAt, attachments: item.attachments });
+        const turnId = `turn:optimistic:${item.id}`;
+        if (existingTurnIds.has(turnId)) continue;
+        if (!existingMessageIds.has(item.id)) {
+          nextMessages.push({
+            id: item.id,
+            role: 'user',
+            text: item.text,
+            createdAt: item.createdAt,
+            attachments: item.attachments
+          });
+          existingMessageIds.add(item.id);
+        }
         nextTurns.push({
-          id: `turn:optimistic:${item.id}`,
+          id: turnId,
           createdAt: item.createdAt,
           userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt, attachments: item.attachments },
           items: [],
           signature: `optimistic:${item.id}:${item.text.length}:${item.attachments?.length || 0}`
         });
+        existingTurnIds.add(turnId);
+        appended += 1;
       }
+      if (appended === 0) return base;
       return {
         ...base,
         chatMessages: nextMessages,
         renderedTurns: nextTurns,
-        mergedCount: base.mergedCount + optimistic.length,
-        visibleTurnCount: keepBaseTurns ? base.visibleTurnCount + optimistic.length : optimistic.length,
-        totalTurnCount: base.totalTurnCount + optimistic.length,
+        mergedCount: base.mergedCount + appended,
+        visibleTurnCount: keepBaseTurns ? Math.max(base.visibleTurnCount, nextTurns.length) : nextTurns.length,
+        totalTurnCount: Math.max(base.totalTurnCount, nextTurns.length),
         hasUserTurn: true
       };
     },
-    [initialSessionLimit]
+    []
   );
 
   const appendOptimisticTurnAndStick = useCallback(
     (message: OptimisticUserMessage) => {
+      const sid = toText(sessionIdRef.current).trim();
+      if (!sid) return;
       forceScrollToLatestUntilRef.current = Date.now() + 45000;
-      setMessages([{ id: message.id, role: 'user', text: message.text, createdAt: message.createdAt, attachments: message.attachments }]);
-      setRenderedTurns([
-        {
-          id: `turn:optimistic:${message.id}`,
-          createdAt: message.createdAt,
-          userMessage: { id: message.id, role: 'user', text: message.text, createdAt: message.createdAt, attachments: message.attachments },
-          items: [],
-          signature: `optimistic:${message.id}:${message.text.length}:${message.attachments?.length || 0}`
-        }
-      ]);
-      sessionVisibleTurnCountRef.current[sessionIdRef.current] = initialSessionLimit;
-      bumpOptimisticVersion();
+      const nextVisible = Math.max(
+        initialSessionLimit,
+        Number(sessionVisibleTurnCountRef.current[sid] || 0),
+        renderedTurnsRef.current.length + 1
+      );
+      sessionVisibleTurnCountRef.current[sid] = nextVisible;
+      applyTurnWindowRef.current(sid, nextVisible);
+      requestAnimationFrame(() => scrollToLatest(false));
     },
-    [bumpOptimisticVersion, forceScrollToLatestUntilRef, initialSessionLimit, sessionIdRef, sessionVisibleTurnCountRef, setMessages, setRenderedTurns]
+    [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, renderedTurnsRef, scrollToLatest, sessionIdRef, sessionVisibleTurnCountRef]
   );
 
   const clearSessionOptimisticMessages = useCallback(
@@ -208,11 +229,15 @@ export function useOptimisticUserMessages(params: {
       if (!pending.length) return;
       const ids = new Set(pending.map((item) => item.id));
       delete sessionOptimisticUserMapRef.current[sid];
-      setMessages((prev) => prev.filter((item) => !ids.has(item.id)));
-      setRenderedTurns((prev) => prev.filter((item) => !ids.has(item.id.replace(/^turn:optimistic:/, ''))));
       bumpOptimisticVersion();
+      const visible = Math.max(
+        initialSessionLimit,
+        Number(sessionVisibleTurnCountRef.current[sid] || 0),
+        renderedTurnsRef.current.length
+      );
+      applyTurnWindowRef.current(sid, visible);
     },
-    [bumpOptimisticVersion, sessionOptimisticUserMapRef, setMessages, setRenderedTurns]
+    [applyTurnWindowRef, bumpOptimisticVersion, initialSessionLimit, renderedTurnsRef, sessionOptimisticUserMapRef, sessionVisibleTurnCountRef]
   );
 
   return {

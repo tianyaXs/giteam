@@ -1,9 +1,10 @@
 import { useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { getMessages } from '../../api/controlApi';
 import { toText } from '../../lib/text';
+import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import type { SessionStatusInfo } from '../../types';
 import { computeVisibleTurnCount, fetchWithRetry } from './history';
-import { inspectTurnWindow, mergeMessageRows } from './turns';
+import { inspectTurnWindow, mergeMessageRows, rowId } from './turns';
 
 export type RefreshMessagesResult = {
   nextCursor: string;
@@ -11,6 +12,7 @@ export type RefreshMessagesResult = {
   mergedCount: number;
   prevMergedCount: number;
   totalTurnCount: number;
+  incomingIds: string[];
 };
 
 type SyncOptions = {
@@ -20,11 +22,28 @@ type SyncOptions = {
   before?: string;
   anchorStableKey?: string;
   forceVisibleCount?: number;
+  /** 仅拉取并合并最新消息，不触发全量 hydrate */
+  tailOnly?: boolean;
 };
 
 function formatRetryDelay(ms: number): string {
   const seconds = Math.max(1, Math.ceil(ms / 1000));
   return `${seconds}s 后可重试`;
+}
+
+const HISTORY_LOAD_SETTLE_MS = 650;
+const HISTORY_TURN_BOUNDARY_SCAN_PAGES = 4;
+const FULL_SESSION_FETCH_LIMIT = 24;
+const FULL_SESSION_MAX_PAGES = 200;
+const FULL_SESSION_MAX_ROWS = 5000;
+const LATEST_REFRESH_MAX_PAGES = 20;
+
+function waitForHistoryListCommit(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
 }
 
 export function useSessionMessageSync<Cell>(params: {
@@ -138,6 +157,48 @@ export function useSessionMessageSync<Cell>(params: {
       pushConnLog(`GET messages backoff sid=${sessionKey} failures=${failures} delay=${delayMs} cursor=1 cause=${String(error)}`, 'error');
     };
 
+    const restoreLocalSnapshot = (targetSessionId: string) => {
+      const sid = toText(targetSessionId).trim();
+      const repo = toText(repoPath).trim();
+      if (!sid || !repo) return null;
+      const existingRows = Array.isArray(sessionRawMapRef.current[sid]) ? sessionRawMapRef.current[sid] : [];
+      let rows = existingRows;
+      let visibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
+      let totalTurnCount = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
+      let nextCursor = toText(sessionNextCursor[sid]).trim();
+      if (rows.length <= 0) {
+        const snapshot = (() => {
+          try {
+            return loadChatSnapshot(repo, sid);
+          } catch {
+            return null;
+          }
+        })();
+        if (!snapshot || !Array.isArray(snapshot.rawRows) || snapshot.rawRows.length <= 0) return null;
+        rows = snapshot.rawRows;
+        visibleTurnCount = Math.max(0, Number(snapshot.visibleTurnCount || snapshot.renderedTurns.length || 0));
+        totalTurnCount = Math.max(visibleTurnCount, Number(snapshot.totalTurnCount || visibleTurnCount));
+        nextCursor = toText(snapshot.nextCursor).trim();
+        sessionRawMapRef.current[sid] = rows;
+        sessionVisibleTurnCountRef.current[sid] = visibleTurnCount;
+        sessionTotalTurnCountRef.current[sid] = totalTurnCount;
+        setSessionNextCursor((prev) => ({ ...prev, [sid]: nextCursor }));
+        setSessionHasMore((prev) => ({
+          ...prev,
+          [sid]: !!nextCursor || totalTurnCount > visibleTurnCount
+        }));
+      }
+      if (rows.length > 0 && totalTurnCount <= 0) {
+        const inspected = inspectTurnWindow(rows);
+        totalTurnCount = inspected.totalTurnCount;
+        visibleTurnCount = Math.max(visibleTurnCount, totalTurnCount);
+        sessionVisibleTurnCountRef.current[sid] = visibleTurnCount;
+        sessionTotalTurnCountRef.current[sid] = totalTurnCount;
+      }
+      if (rows.length <= 0 || totalTurnCount <= 0) return null;
+      return { rows, visibleTurnCount, totalTurnCount, nextCursor };
+    };
+
     const refreshMessages = async (
       targetSessionId: string,
       opts?: {
@@ -177,15 +238,23 @@ export function useSessionMessageSync<Cell>(params: {
 
           const incoming = Array.isArray(res.items) ? res.items : [];
           if (targetSessionId !== sessionIdRef.current) return;
+          if (opts?.reason === 'cache' && olderLoadInFlightRef.current) {
+            pushConnLog(`GET messages cache paused sid=${targetSessionId} reason=history-active`);
+            return undefined;
+          }
           if (!before && pendingPromptSessionRef.current[targetSessionId]) {
             pushConnLog(`GET messages skip sid=${targetSessionId} reason=pending prompt`);
             return;
           }
           const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
-          const merged = before ? mergeMessageRows(prevRaw, incoming) : ingestStreamRows(targetSessionId, incoming);
-          if (before) {
+          const merged = before || prevRaw.length > 0
+            ? mergeMessageRows(prevRaw, incoming)
+            : ingestStreamRows(targetSessionId, incoming);
+          if (before || prevRaw.length > 0) {
             sessionRawMapRef.current[targetSessionId] = merged;
             ingestStreamRows(targetSessionId, merged);
+          } else {
+            sessionRawMapRef.current[targetSessionId] = merged;
           }
           recordStreamMessageRoles(targetSessionId, merged);
           const turnInfo = inspectTurnWindow(merged);
@@ -195,6 +264,7 @@ export function useSessionMessageSync<Cell>(params: {
           setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: nextCursor }));
           return {
             nextCursor,
+            incomingIds: incoming.map(rowId).filter(Boolean),
             incomingCount: incoming.length,
             mergedCount: merged.length,
             prevMergedCount: prevRaw.length,
@@ -203,7 +273,7 @@ export function useSessionMessageSync<Cell>(params: {
         } catch (e) {
           if (before && opts?.reason === 'loadingOlder') markOlderCursorFailure(targetSessionId, before, e);
           pushConnLog(`GET messages error ${String(e)}`, 'error');
-          if (opts?.reason !== 'prefetch') {
+          if (opts?.reason !== 'prefetch' && opts?.reason !== 'cache') {
             setStatus(String(e));
           }
           return undefined;
@@ -227,15 +297,124 @@ export function useSessionMessageSync<Cell>(params: {
       const run = (async () => {
         const requestedVisibleTurnCount = Math.max(1, Number(opts?.limit || initialSessionLimit));
         const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
-        const statusPromise = syncSessionStatus(targetSessionId);
+        const cachedRowCount = (sessionRawMapRef.current[targetSessionId] || []).length;
+        const tailOnly = !!opts?.tailOnly;
+        const localSnapshot = !before && !opts?.loadingOlder && !tailOnly ? restoreLocalSnapshot(targetSessionId) : null;
+        if (localSnapshot) {
+          const visible = Math.max(requestedVisibleTurnCount, prevVisibleTurnCount, localSnapshot.totalTurnCount);
+          pushConnLog(`chat.history.local restore sid=${targetSessionId} rows=${localSnapshot.rows.length} turns=${localSnapshot.totalTurnCount}`);
+          const rendered = applyTurnWindow(targetSessionId, visible, localSnapshot.nextCursor);
+          setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
+          void (async () => {
+            const cachedIds = new Set(localSnapshot.rows.map(rowId).filter(Boolean));
+            let latest = await refreshMessages(targetSessionId, {
+              limit: requestedVisibleTurnCount,
+              fetchLimit: FULL_SESSION_FETCH_LIMIT,
+              reason: 'refreshLatest'
+            });
+            if (!latest || targetSessionId !== sessionIdRef.current) return;
+            let pages = 1;
+            while (
+              latest.nextCursor
+              && targetSessionId === sessionIdRef.current
+              && pages < LATEST_REFRESH_MAX_PAGES
+              && latest.incomingIds.length > 0
+              && latest.incomingIds.every((id) => !cachedIds.has(id))
+            ) {
+              pages += 1;
+              const nextLatest = await refreshMessages(targetSessionId, {
+                limit: requestedVisibleTurnCount,
+                fetchLimit: FULL_SESSION_FETCH_LIMIT,
+                before: latest.nextCursor,
+                reason: 'refreshLatest'
+              });
+              if (!nextLatest || targetSessionId !== sessionIdRef.current) return;
+              latest = nextLatest;
+            }
+            const nextVisible = Math.max(
+              prevVisibleTurnCount,
+              requestedVisibleTurnCount,
+              localSnapshot.totalTurnCount,
+              Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0),
+              Number(latest.totalTurnCount || 0)
+            );
+            pushConnLog(`chat.history.local refreshed sid=${targetSessionId} pages=${pages} rows=${latest.mergedCount} turns=${latest.totalTurnCount} next=${latest.nextCursor ? 1 : 0}`);
+            applyTurnWindow(targetSessionId, nextVisible, latest.nextCursor || localSnapshot.nextCursor);
+          })();
+          return rendered;
+        }
+        const statusPromise = tailOnly ? Promise.resolve(undefined) : syncSessionStatus(targetSessionId);
         try {
-          const res = await refreshMessages(targetSessionId, {
+          let res = await refreshMessages(targetSessionId, {
             limit: requestedVisibleTurnCount,
-            fetchLimit: opts?.fetchLimit,
+            fetchLimit: tailOnly ? FULL_SESSION_FETCH_LIMIT : opts?.fetchLimit,
             before,
-            reason: mode
+            reason: tailOnly ? 'tailOnly' : mode
           });
           if (!res || targetSessionId !== sessionIdRef.current) return undefined;
+          let fullSessionVisibleTurnCount = opts?.forceVisibleCount;
+          const shouldHydrate =
+            !tailOnly &&
+            !opts?.loadingOlder &&
+            !before &&
+            !!res.nextCursor &&
+            cachedRowCount <= FULL_SESSION_FETCH_LIMIT &&
+            prevVisibleTurnCount <= res.totalTurnCount;
+          if (shouldHydrate) {
+            let cursor = res.nextCursor;
+            let pages = 0;
+            pushConnLog(`chat.history.hydrate start sid=${targetSessionId} rows=${res.mergedCount} turns=${res.totalTurnCount} next=1`);
+            while (
+              cursor
+              && targetSessionId === sessionIdRef.current
+              && pages < FULL_SESSION_MAX_PAGES
+              && res.mergedCount < FULL_SESSION_MAX_ROWS
+            ) {
+              pages += 1;
+              const nextRes = await refreshMessages(targetSessionId, {
+                limit: requestedVisibleTurnCount,
+                fetchLimit: FULL_SESSION_FETCH_LIMIT,
+                before: cursor,
+                reason: 'hydrate'
+              });
+              if (!nextRes || targetSessionId !== sessionIdRef.current) return undefined;
+              res = nextRes;
+              cursor = res.nextCursor;
+            }
+            fullSessionVisibleTurnCount = res.totalTurnCount;
+            pushConnLog(`chat.history.hydrate done sid=${targetSessionId} pages=${pages} rows=${res.mergedCount} turns=${res.totalTurnCount} next=${res.nextCursor ? 1 : 0}`);
+          }
+          if (opts?.loadingOlder) {
+            let boundaryScanCount = 0;
+            while (
+              res
+              && res.nextCursor
+              && res.totalTurnCount <= prevVisibleTurnCount
+              && boundaryScanCount < HISTORY_TURN_BOUNDARY_SCAN_PAGES
+            ) {
+              boundaryScanCount += 1;
+              pushConnLog(`chat.history.boundary scan sid=${targetSessionId} turns=${res.totalTurnCount} visible=${prevVisibleTurnCount} next=1 page=${boundaryScanCount}`);
+              res = await refreshMessages(targetSessionId, {
+                limit: requestedVisibleTurnCount,
+                fetchLimit: opts?.fetchLimit,
+                before: res.nextCursor,
+                reason: mode
+              });
+              if (!res || targetSessionId !== sessionIdRef.current) return undefined;
+            }
+            if (res.totalTurnCount <= prevVisibleTurnCount) {
+              pushConnLog(`chat.history.boundary skipped sid=${targetSessionId} turns=${res.totalTurnCount} visible=${prevVisibleTurnCount} next=${res.nextCursor ? 1 : 0}`);
+              sessionTotalTurnCountRef.current[targetSessionId] = Math.max(
+                Number(sessionTotalTurnCountRef.current[targetSessionId] || 0),
+                Number(res.totalTurnCount || 0)
+              );
+              setSessionHasMore((prev) => ({
+                ...prev,
+                [targetSessionId]: !!res?.nextCursor || Number(res?.totalTurnCount || 0) > prevVisibleTurnCount
+              }));
+              return undefined;
+            }
+          }
           streamDebug?.('sync.messages.result', {
             sid: targetSessionId,
             mergedCount: res.mergedCount,
@@ -244,17 +423,22 @@ export function useSessionMessageSync<Cell>(params: {
             status: 'pending'
           });
 
-          const nextVisibleTurnCount = computeVisibleTurnCount({
+          const nextVisibleTurnCount = Math.max(
             prevVisibleTurnCount,
-            totalTurnCount: res.totalTurnCount,
-            requestedVisibleTurnCount,
-            initialTurnLimit: initialSessionLimit,
-            olderTurnLimit: olderSessionLimit,
-            mode,
-            forceVisibleTurnCount: opts?.forceVisibleCount,
-            userAtTop: false,
-            hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
-          });
+            computeVisibleTurnCount({
+              prevVisibleTurnCount,
+              totalTurnCount: res.totalTurnCount,
+              requestedVisibleTurnCount: tailOnly
+                ? Math.max(requestedVisibleTurnCount, prevVisibleTurnCount, res.totalTurnCount)
+                : requestedVisibleTurnCount,
+              initialTurnLimit: initialSessionLimit,
+              olderTurnLimit: olderSessionLimit,
+              mode,
+              forceVisibleTurnCount: fullSessionVisibleTurnCount,
+              userAtTop: false,
+              hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
+            })
+          );
           const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
           if (targetSessionId === sessionIdRef.current) {
             setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
@@ -284,7 +468,6 @@ export function useSessionMessageSync<Cell>(params: {
           if (!opts?.loadingOlder && targetSessionId === sessionIdRef.current) {
             setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
           }
-          if (opts?.loadingOlder) setLoadingOlder(false);
         }
       })();
       inflightSessionSyncRef.current[syncKey] = run;
@@ -306,13 +489,18 @@ export function useSessionMessageSync<Cell>(params: {
         setTimeout(() => {
           olderLoadInFlightRef.current = false;
           setLoadingOlder(false);
-        }, 80);
+        }, HISTORY_LOAD_SETTLE_MS);
       };
       rememberCurrentSessionViewport(sid, {
         displayedTurnCells: displayedTurnCellsRef.current,
         visibleCellCount: visibleCellCountRef.current
       });
       setLoadingOlder(true);
+      await waitForHistoryListCommit();
+      if (sid !== sessionIdRef.current) {
+        finishLocalHistoryMutation();
+        return;
+      }
       const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
       const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
       pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} cursor=${toText(sessionNextCursor[sid]).trim() ? 1 : 0}`);
@@ -341,15 +529,15 @@ export function useSessionMessageSync<Cell>(params: {
       }
       if (cursor) {
         try {
-          await syncSessionMessages(sid, {
+          const rendered = await syncSessionMessages(sid, {
             limit: olderSessionLimit,
             fetchLimit: olderMessageFetchLimit,
             before: cursor,
             loadingOlder: true
           });
-          pushConnLog(`chat.history.load remote done sid=${sid}`);
+          pushConnLog(`chat.history.load remote ${rendered ? 'done' : 'no-visible-boundary'} sid=${sid}`);
         } finally {
-          olderLoadInFlightRef.current = false;
+          finishLocalHistoryMutation();
         }
       } else {
         pushConnLog(`chat.history.load exhausted sid=${sid} cached=${cached} visible=${visible}`);

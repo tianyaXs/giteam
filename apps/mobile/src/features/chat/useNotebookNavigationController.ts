@@ -3,11 +3,20 @@ import { Animated, PanResponder } from 'react-native';
 
 export function useNotebookNavigationController(props: {
   windowWidth: number;
+  windowHeight: number;
+  composerBandHeight?: number;
   onBeforeOpenDrawer: () => void;
   onOpenLeftDrawer: () => void;
   onOpenRightDrawer: () => void;
 }) {
-  const { onBeforeOpenDrawer, onOpenLeftDrawer, onOpenRightDrawer, windowWidth } = props;
+  const {
+    composerBandHeight = 280,
+    onBeforeOpenDrawer,
+    onOpenLeftDrawer,
+    onOpenRightDrawer,
+    windowHeight,
+    windowWidth
+  } = props;
   const [drawerSide, setDrawerSide] = useState<'left' | 'right' | ''>('');
   const [notebookPage, setNotebookPage] = useState<'left' | 'main' | 'right'>('main');
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
@@ -25,16 +34,18 @@ export function useNotebookNavigationController(props: {
   const notebookAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
 
   const notebookDragActivationPx = Math.max(24, Math.min(36, windowWidth * 0.07));
-  const shouldStartNotebookPan = useCallback((gesture: { dx: number; dy: number }) => {
+  const shouldStartNotebookPan = useCallback((gesture: { dx: number; dy: number; y0?: number }) => {
     const absDx = Math.abs(gesture.dx);
     const absDy = Math.abs(gesture.dy);
+    const touchY = Number(gesture.y0 || 0);
+    if (touchY >= windowHeight - composerBandHeight && absDx >= absDy) return false;
     if (absDx < notebookDragActivationPx) return false;
     if (absDx < absDy * 1.7) return false;
     const index = notebookPageIndexRef.current;
     if (index <= 0 && gesture.dx > 0) return false;
     if (index >= 2 && gesture.dx < 0) return false;
     return true;
-  }, [notebookDragActivationPx]);
+  }, [composerBandHeight, notebookDragActivationPx, windowHeight]);
 
   const animateNotebookToIndex = useCallback((index: number) => {
     if (notebookTouchActiveRef.current) return;

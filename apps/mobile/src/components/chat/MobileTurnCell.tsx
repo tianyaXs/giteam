@@ -17,8 +17,28 @@ import type { MobileQuestionCard, MobileRenderedTurn, MobileTodoCard } from '../
 import type { TurnCellInteractionState } from '../../features/chat/useInteractiveTurnCells';
 import { MobileMarkedMarkdown } from './MobileMarkedMarkdown';
 
+const CODE_SEGMENT_RE = /(```[\s\S]*?```|`[^`\n]+`)/g;
+
+function escapeUnderscoresInPaths(input: string) {
+  return input
+    .split(CODE_SEGMENT_RE)
+    .map((segment, index) => {
+      if (index % 2 === 1) return segment;
+      return segment.replace(
+        /(^|[\s([{>"'「『（，,：:;—-])((?:\.?[A-Za-z0-9][A-Za-z0-9._-]*)(?:[\\/][A-Za-z0-9._-]+)+(?::\d+(?::\d+)?)?)/gm,
+        (full, prefix, token) => {
+          if (!token.includes('_')) return full;
+          return `${prefix}${token.replace(/_/g, '\\_')}`;
+        }
+      );
+    })
+    .join('');
+}
+
 function normalizeMarkdownForMobile(input: string) {
-  return toText(input).replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
+  const trimmed = toText(input);
+  const withoutListIndent = trimmed.replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
+  return escapeUnderscoresInPaths(withoutListIndent);
 }
 
 function normalizeReasoningText(input: string) {
@@ -67,8 +87,9 @@ function MarkdownMessage(props: {
         fontFamily: bodyFontFamily
       },
       paragraph: {
-        marginTop: 2,
-        marginBottom: 2
+        paddingVertical: 2,
+        marginTop: 0,
+        marginBottom: 0
       },
       strong: { color: headingColor, fontWeight: 'bold', fontFamily: bodyFontFamily },
       em: { color: mutedColor, fontStyle: 'italic', fontFamily: bodyFontFamily },
@@ -91,24 +112,25 @@ function MarkdownMessage(props: {
         fontFamily: bodyFontFamily
       },
       codespan: {
-        color: textColor,
+        color: codeColor,
         backgroundColor: codeBg,
-        borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
-        borderWidth: 1,
-        borderRadius: 5,
+        fontStyle: 'normal',
+        fontWeight: '400',
+        borderWidth: 0,
+        borderRadius: 4,
         fontSize: 13,
+        lineHeight: 20,
         fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
-        paddingHorizontal: 4,
+        paddingHorizontal: 5,
         paddingVertical: 1
       },
       code: {
         backgroundColor: codeBg,
-        borderColor: isUser ? 'rgba(234,223,206,0.22)' : '#ddd4c5',
-        borderRadius: 12,
-        borderWidth: 1,
-        padding: 12,
-        marginTop: 8,
-        marginBottom: 8,
+        borderWidth: 0,
+        borderRadius: 10,
+        padding: 10,
+        marginTop: 6,
+        marginBottom: 6,
         fontSize: 13,
         fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
       },
@@ -324,14 +346,16 @@ export const MobileTodoCardView = React.memo(function MobileTodoCardView(props: 
   const swipeResponder = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gesture) => !!onClose && gesture.dx > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+        onMoveShouldSetPanResponder: (_, gesture) => !!onClose && gesture.dx > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.1,
+        onMoveShouldSetPanResponderCapture: (_, gesture) => !!onClose && gesture.dx > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.1,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_, gesture) => {
           if (!onClose) return;
           swipeX.setValue(Math.min(96, Math.max(0, gesture.dx)));
         },
         onPanResponderRelease: (_, gesture) => {
           if (!onClose) return;
-          if (gesture.dx > 72) {
+          if (gesture.dx > 56 || gesture.vx > 0.65) {
             Animated.timing(swipeX, { toValue: 140, duration: 140, useNativeDriver: true }).start(() => onClose());
             return;
           }
@@ -364,10 +388,15 @@ export const MobileTodoCardView = React.memo(function MobileTodoCardView(props: 
           </View>
         </View>
         <View style={styles.todoActions}>
+          {onClose ? (
+            <Pressable hitSlop={10} style={styles.todoCloseBtn} onPress={onClose}>
+              <Text style={styles.todoCloseText}>×</Text>
+            </Pressable>
+          ) : null}
           {onToggle ? (
-            <View style={styles.todoToggleBtn}>
+            <Pressable hitSlop={8} style={styles.todoToggleBtn} onPress={onToggle}>
               <View style={[styles.todoArrow, collapsed && styles.todoArrowUp]} />
-            </View>
+            </Pressable>
           ) : null}
         </View>
       </View>
@@ -395,9 +424,9 @@ export const MobileTodoCardView = React.memo(function MobileTodoCardView(props: 
   if (!onToggle) return <View style={compact ? styles.todoInlineCardCompact : styles.todoInlineCard}>{content}</View>;
   const dock = (
     <Animated.View style={{ transform: [{ translateX: swipeX }] }} {...(onClose ? swipeResponder.panHandlers : {})}>
-      <Pressable style={compact ? styles.todoDockCompact : styles.todoDock} onPress={onToggle}>
+      <View style={compact ? styles.todoDockCompact : styles.todoDock}>
         {content}
-      </Pressable>
+      </View>
     </Animated.View>
   );
   if (!onClose) return dock;
@@ -598,6 +627,7 @@ export const MobileTurnCell = React.memo(
     const cellOpacity = useRef(new Animated.Value(0.94)).current;
 
     useEffect(() => {
+      if (streaming && isLastTurn) return;
       cellOpacity.setValue(0.94);
       const animation = Animated.timing(cellOpacity, {
         toValue: 1,
@@ -606,7 +636,7 @@ export const MobileTurnCell = React.memo(
       });
       animation.start();
       return () => animation.stop();
-    }, [cellOpacity, turn.id]);
+    }, [cellOpacity, isLastTurn, streaming, turn.id]);
 
     return (
       <Animated.View
