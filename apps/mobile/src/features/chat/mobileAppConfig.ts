@@ -7,7 +7,7 @@ export const OLDER_CELL_LIMIT = 24;
 export const HISTORY_PREFETCH_COOLDOWN_MS = 350;
 export const CHAT_BOTTOM_PROXIMITY = 96;
 /** 切换会话后延迟展示列表（与 swift-chat 手机端一致），避免看见布局/滚动过程 */
-export const SESSION_LIST_REVEAL_DELAY_MS = 200;
+export const SESSION_LIST_REVEAL_DELAY_MS = 80;
 export const CHAT_LIST_BOTTOM_AIR = 24;
 export const INITIAL_MESSAGE_FETCH_LIMIT = 8;
 export const OLDER_MESSAGE_FETCH_LIMIT = 8;

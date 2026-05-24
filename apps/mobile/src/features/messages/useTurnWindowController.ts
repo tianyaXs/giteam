@@ -1,4 +1,5 @@
 import { useCallback, type Dispatch, type SetStateAction } from 'react';
+import { InteractionManager } from 'react-native';
 import { markSessionSwitchPerfForSid } from '../chat/sessionSwitchPerf';
 import { markMessageSendPerfForSession } from '../messages/messageSendPerf';
 import { buildTurnWindow } from './turns';
@@ -103,6 +104,12 @@ export function useTurnWindowController(params: {
     const optimistic = reconcileOptimisticUserMessages(targetSessionId, baseRendered.chatMessages);
     const stableBaseRendered = stabilizeServerUserTurnIds(targetSessionId, baseRendered);
     const rendered = overlayOptimisticTurns(stableBaseRendered, optimistic);
+    markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.build_ready', {
+      ms: Math.round(performance.now() - applyStartedAt),
+      rows: merged.length,
+      turns: rendered.renderedTurns.length,
+      messages: rendered.chatMessages.length
+    });
     sessionVisibleTurnCountRef.current[targetSessionId] = rendered.visibleTurnCount;
     sessionTotalTurnCountRef.current[targetSessionId] = rendered.totalTurnCount;
     const cacheNow = Date.now();
@@ -183,25 +190,36 @@ export function useTurnWindowController(params: {
       ms: Math.round(performance.now() - applyStartedAt),
       messages: nextMessages.length,
       turns: nextTurns.length,
-      cells: nextTurns.reduce((sum, turn) => sum + (turn.userMessage ? 1 : 0) + turn.items.length, 0)
+      cells: nextTurns.reduce((sum: number, turn: MobileRenderedTurn) => sum + (turn.userMessage ? 1 : 0) + turn.items.length, 0)
     });
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
     if (repoPath.trim() && nextTurns.length > 0) {
-      try {
-        saveChatSnapshot({
-          repoPath,
-          sessionId: targetSessionId,
-          rawRows: merged,
-          nextCursor,
-          visibleTurnCount: rendered.visibleTurnCount,
-          totalTurnCount: rendered.totalTurnCount,
-          messages: nextMessages,
-          renderedTurns: nextTurns,
-          updatedAt: Date.now()
-        });
-      } catch {
-        // ignore snapshot write failures
-      }
+      const snapshotPayload = {
+        repoPath,
+        sessionId: targetSessionId,
+        rawRows: merged,
+        nextCursor,
+        visibleTurnCount: rendered.visibleTurnCount,
+        totalTurnCount: rendered.totalTurnCount,
+        messages: nextMessages,
+        renderedTurns: nextTurns,
+        updatedAt: Date.now()
+      };
+      markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.snapshot_scheduled', {
+        turns: nextTurns.length,
+        rows: merged.length
+      });
+      InteractionManager.runAfterInteractions(() => {
+        const snapshotStartedAt = performance.now();
+        try {
+          saveChatSnapshot(snapshotPayload);
+          markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.snapshot_saved', {
+            ms: Math.round(performance.now() - snapshotStartedAt)
+          });
+        } catch {
+          // ignore snapshot write failures
+        }
+      });
     }
     upsertSession(targetSessionId, nextMessages);
     const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;

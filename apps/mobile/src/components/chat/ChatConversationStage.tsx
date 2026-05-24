@@ -140,7 +140,6 @@ export function ChatConversationStage(props: {
       {showConversationList ? (
         <View style={styles.chatListStage}>
           <FlashList
-            key={sessionId || 'draft'}
             ref={messageScrollRef}
             style={{ flex: 1, opacity: listRevealReady ? 1 : 0 }}
             contentContainerStyle={chatContentContainerStyle}
