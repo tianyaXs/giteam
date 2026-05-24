@@ -11,7 +11,15 @@ import {
   type DisplayedTurnCell,
 } from "./src/features/chat/displayedCells";
 import { useBootstrapPersistence } from "./src/features/chat/useBootstrapPersistence";
+import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from "./src/features/chat/sessionSwitchPerf";
+import {
+  getActiveMessageSendTrace,
+  markMessageSendAssistantVisible,
+  markMessageSendListCellsVisible,
+  markMessageSendUserVisible,
+} from "./src/features/messages/messageSendPerf";
 import { useAuthedStartupEffects } from "./src/features/chat/useAuthedStartupEffects";
+import { conversationHasAssistantAfterUser } from "./src/features/chat/assistantTurnState";
 import {
   CHAT_BOTTOM_PROXIMITY,
   CHAT_LIST_BOTTOM_AIR,
@@ -60,6 +68,7 @@ import {
   isPlaceholderSessionTitle,
   losesRenderedAssistant,
   pickSessionDisplayTitle,
+  sharesSessionMessageContext,
   summarizePreview,
 } from "./src/features/chat/sessionDisplay";
 import { useAttachmentProcessor } from "./src/features/media/useAttachmentProcessor";
@@ -193,8 +202,6 @@ export default function App() {
     setInputDockHeight,
     streamTodoCard,
     setStreamTodoCard,
-    chatListResetKey,
-    setChatListResetKey,
     startupSessionHydrating,
     setStartupSessionHydrating,
   } = useMobileAppState();
@@ -284,6 +291,14 @@ export default function App() {
     handleListLayout,
     rememberCurrentSessionViewport,
     resetListInteractionState,
+    guardHistoryLoad,
+    anchorSessionToLatest,
+    getMaintainVisibleContentPosition,
+    markFollowLatest,
+    followLatest,
+    listRevealReady,
+    shouldSuppressLoadOlder,
+    suppressLoadOlderUntilRef,
   } = useChatListController<DisplayedTurnCell>({
     initialCellLimit: INITIAL_CELL_LIMIT,
     chatBottomProximity: CHAT_BOTTOM_PROXIMITY,
@@ -508,7 +523,7 @@ export default function App() {
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
     forceScrollToLatestUntilRef,
-    scrollToLatest,
+    markFollowLatest,
     sessionVisibleTurnCountRef,
     renderedTurnsRef,
     applyTurnWindowRef,
@@ -532,6 +547,7 @@ export default function App() {
     summarizePreview,
     stableSortSessionItems,
     losesRenderedAssistant,
+    sharesSessionMessageContext,
     assistantTextWeight,
     reconcileOptimisticUserMessages,
     stabilizeServerUserTurnIds,
@@ -569,6 +585,9 @@ export default function App() {
     repoPath,
     serverUrl,
     sessionId,
+    sessionIdRef,
+    sessionRawMapRef,
+    guardHistoryLoad,
     setStartupSessionHydrating,
     syncSessionMessages,
     token,
@@ -633,15 +652,25 @@ export default function App() {
     latestTurnMeta,
     liveQuestionTurnId,
     localPendingCount,
+    localSending,
     sessionWorking,
   } = useChatScreenDerivedState({
     sessionId,
     streaming,
     optimisticVersion,
+    messages,
     renderedTurns,
     sessionStatusMap,
     sessionOptimisticUserMapRef,
   });
+
+  useEffect(() => {
+    const sid = toText(sessionId).trim();
+    if (!sid || streaming || localSending) return;
+    if (!conversationHasAssistantAfterUser(renderedTurns, messages)) return;
+    if (sessionStatusMap[sid]?.type !== "busy") return;
+    setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: "idle" } }));
+  }, [localSending, messages, renderedTurns, sessionId, sessionStatusMap, streaming, setSessionStatusMap]);
 
   const {
     prompt,
@@ -816,7 +845,6 @@ export default function App() {
     chatListMountKey,
   } = useChatCellWindow<DisplayedTurnCell>({
     allDisplayedTurnCells,
-    resetKey: chatListResetKey,
     sessionId,
   });
   const { sessionSwitchingTo, setSessionSwitchingTo, setActiveSession } =
@@ -832,7 +860,9 @@ export default function App() {
       sessionNextCursor,
       rememberCurrentSessionViewport,
       resetListInteractionState,
+      guardHistoryLoad,
       resetSessionInteractionState,
+      sessionTotalTurnCountRef,
       applyTurnWindow,
       setSessionId,
       setQuestionRequests,
@@ -841,6 +871,47 @@ export default function App() {
       setRenderedTurns,
       setSessionStatusMap,
     });
+  useEffect(() => {
+    const trace = getActiveSessionSwitchTrace();
+    if (!trace || trace.finished || trace.targetSid !== sessionId) return;
+    if (sessionSwitchingTo) return;
+    if (renderedTurns.length === 0) return;
+    markSessionSwitchPerf(trace, "ui.content_visible", {
+      turns: renderedTurns.length,
+      cells: displayedTurnCells.length,
+    });
+  }, [sessionId, sessionSwitchingTo, renderedTurns.length, displayedTurnCells.length]);
+  useEffect(() => {
+    const trace = getActiveMessageSendTrace();
+    if (!trace || trace.finished || trace.targetSid !== sessionId) return;
+    const hasUserTurn = renderedTurns.some(
+      (turn) => turn.userMessage?.id === trace.optimisticId,
+    );
+    if (hasUserTurn) {
+      markMessageSendUserVisible(trace, { turns: renderedTurns.length });
+    }
+    const userCellVisible = displayedTurnCells.some(
+      (cell) => cell.userMessage?.id === trace.optimisticId,
+    );
+    if (userCellVisible) {
+      markMessageSendListCellsVisible(trace, {
+        cells: displayedTurnCells.length,
+      });
+    }
+    const lastTurn = renderedTurns[renderedTurns.length - 1];
+    const hasAssistantText = !!lastTurn?.items?.some(
+      (item) =>
+        item.kind === "chat" &&
+        item.message.role === "assistant" &&
+        toText(item.message.text).trim().length > 0,
+    );
+    if (hasAssistantText) {
+      markMessageSendAssistantVisible(trace, {
+        turnId: lastTurn?.id,
+        cells: displayedTurnCells.length,
+      });
+    }
+  }, [sessionId, renderedTurns, displayedTurnCells]);
   useBootstrapPersistence({
     loaded,
     serverUrl,
@@ -919,6 +990,8 @@ export default function App() {
     applyTurnWindow,
     syncSessionStatus,
     rememberCurrentSessionViewport,
+    guardHistoryLoad,
+    suppressLoadOlderUntilRef,
     streamDebug,
   });
   sessionMessageSyncRef.current = sessionMessageSync;
@@ -1037,6 +1110,7 @@ export default function App() {
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     messagesRef,
     renderedTurnsRef,
+    pushConnLog,
   });
   const { visibleQuickSkillRefs, visibleQuickMcpRefs, insertQuickReference } =
     useRightDrawerController({
@@ -1069,7 +1143,6 @@ export default function App() {
     setPrompt,
     setSlashOpen,
     setImageAttachments,
-    setChatListResetKey,
     setSessionStatusMap,
     setActiveSession,
     startStream,
@@ -1137,7 +1210,7 @@ export default function App() {
     displayedTurnCells,
     expandedThinkCards,
     expandedTimelineQuestions,
-    newestFirst: true,
+    newestFirst: false,
     timelineQuestionTabs,
   });
   const { renderTurnCell } = useTurnCellRenderer({
@@ -1161,6 +1234,10 @@ export default function App() {
     styles,
     thinkingPulse
   });
+  const maintainVisibleContentPosition = useMemo(
+    () => getMaintainVisibleContentPosition(loadingOlder),
+    [followLatest, getMaintainVisibleContentPosition, listRevealReady, loadingOlder]
+  );
   const {
     handleWorkspaceContentSizeChange,
     handleWorkspaceListLayout,
@@ -1292,8 +1369,6 @@ export default function App() {
       currentSessionTitle={currentSessionTitle}
       showStreamTopGlow={showStreamTopGlow}
       streamTopGlowAnim={streamTopGlowAnim}
-      sessionSwitchingTo={sessionSwitchingTo}
-      sessionSwitchingTitle={sessionSwitchingTitle}
       renderedTurnsLength={renderedTurns.length}
       currentWorkspaceName={currentWorkspaceName}
       chatListMountKey={chatListMountKey}
@@ -1303,6 +1378,7 @@ export default function App() {
       chatViewabilityConfig={chatViewabilityConfig}
       onChatViewableItemsChanged={onChatViewableItemsChanged}
       loadingOlder={loadingOlder}
+      shouldSuppressLoadOlder={shouldSuppressLoadOlder}
       onScrollBeginDrag={handleScrollBeginDrag}
       onScrollEndDrag={handleScrollEndDrag}
       onMomentumScrollBegin={handleMomentumScrollBegin}
@@ -1310,6 +1386,7 @@ export default function App() {
       onScroll={handleWorkspaceScroll}
       onContentSizeChange={handleWorkspaceContentSizeChange}
       onListLayout={handleWorkspaceListLayout}
+      anchorSessionToLatest={anchorSessionToLatest}
       onLoadOlderMessages={onLoadOlderMessages}
       renderTurnCell={renderTurnCell}
       sessionId={sessionId}
@@ -1317,8 +1394,9 @@ export default function App() {
         sessionHistoryRetryHint[sessionId],
       ).trim()}
       historyProgressWidth={historyProgressWidth}
+      listRevealReady={listRevealReady}
       showLatestJump={showLatestJump}
-      maintainVisibleAnchor={loadingOlder}
+      maintainVisibleContentPosition={maintainVisibleContentPosition}
       onJumpToLatest={jumpToLatest}
       suppressFloatingDocks={suppressFloatingDocks || loadingOlder}
       latestTodoCard={latestTodoCard}

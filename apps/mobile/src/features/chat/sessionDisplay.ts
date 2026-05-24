@@ -49,6 +49,12 @@ export function assistantTextWeight(messages: MobileChatMessage[]): number {
     .reduce((sum, m) => sum + toText(m.text).length, 0);
 }
 
+export function sharesSessionMessageContext(prev: MobileChatMessage[], next: MobileChatMessage[]): boolean {
+  if (prev.length === 0 || next.length === 0) return false;
+  const nextIds = new Set(next.map((message) => message.id));
+  return prev.some((message) => nextIds.has(message.id));
+}
+
 export function losesRenderedAssistant(prev: MobileChatMessage[], next: MobileChatMessage[]): boolean {
   const prevAssistant = assistantTextWeight(prev);
   if (prevAssistant <= 0) return false;

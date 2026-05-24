@@ -27,7 +27,7 @@ export function useTurnCellRenderer(params: {
   handleTimelineQuestionToggle: (id: string) => void;
   handleTimelineTabChange: (questionId: string, tabIndex: number) => void;
   prepareCellLayoutAdjustment: (cellId: string, previousHeight: number) => void;
-  settleCellLayoutAdjustment: (cellId: string, nextHeight: number) => void;
+  settleCellLayoutAdjustment: (cellId: string, nextHeight: number, previousHeight?: number) => void;
   liveQuestionTurnId: string;
   sessionWorking: boolean;
   styles: Record<string, any>;
@@ -59,7 +59,7 @@ export function useTurnCellRenderer(params: {
     const key = toText(id).trim();
     if (!key || !Number.isFinite(height) || height <= 0) return;
     const prev = chatCellHeightMapRef.current[key] || 0;
-    settleCellLayoutAdjustment(key, height);
+    settleCellLayoutAdjustment(key, height, prev);
     if (Math.abs(prev - height) <= 1) return;
     chatCellHeightMapRef.current[key] = height;
   }, [chatCellHeightMapRef, settleCellLayoutAdjustment]);

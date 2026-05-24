@@ -735,6 +735,13 @@ export function parseConversation(raw: unknown): ParsedConversation {
     });
   }
 
+  if (writing && hasAssistantRenderable && !hasError) {
+    const assistantTextLen = chatMessages
+      .filter((m) => m.role === 'assistant')
+      .reduce((sum, m) => sum + normalizeText(m.text).trim().length, 0);
+    if (assistantTextLen >= 64) writing = false;
+  }
+
   return { chatMessages, timeline: normalizedTimeline, writing, hasError };
 }
 

@@ -258,6 +258,14 @@ export const chatStyles = {
 
   chatBodyWrap: { flex: 1, paddingHorizontal: 14, position: "relative" },
   chatListStage: { flex: 1, position: "relative" },
+  sessionSwitchOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 24,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(248, 246, 241, 0.92)",
+  },
   blankWrap: {
     flex: 1,
     justifyContent: "center",
@@ -1364,8 +1372,16 @@ export const chatStyles = {
   exploringStatusWrap: {
     width: "100%",
     alignItems: "flex-start",
-    paddingTop: 4,
-    paddingBottom: 2,
+    paddingTop: 2,
+    paddingBottom: 0,
+  },
+  exploringThinkingText: {
+    color: "#b6aea2",
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: FONT_UI_MEDIUM,
+    letterSpacing: 0.1,
+    minHeight: 14,
   },
   exploringStatusCard: {
     width: "96%",
@@ -1388,18 +1404,6 @@ export const chatStyles = {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-  },
-  exploringStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: "#a8a29e",
-  },
-  exploringStatusDotRunning: {
-    backgroundColor: "#3a8f82",
-  },
-  exploringStatusDotCompleted: {
-    backgroundColor: "#8b7355",
   },
   exploringStatusTitle: {
     color: "#4f463a",

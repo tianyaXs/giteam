@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { toText } from '../../lib/text';
 import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from '../../types';
 import type { OpenCodeStreamStoreRefs } from '../messages/opencodeStore';
+import { conversationHasAssistantAfterUser } from './assistantTurnState';
 
 type StreamDebug = (label: string, payload?: Record<string, unknown>) => void;
 
@@ -102,18 +103,6 @@ function getExploringState(stores: OpenCodeStreamStoreRefs | undefined, sessionI
   };
 }
 
-function turnHasAssistantRenderableContent(turn: MobileRenderedTurn): boolean {
-  return turn.items.some((item) => {
-    if (item.kind === 'think') return !!toText(item.card?.text).trim();
-    if (item.kind === 'context') return true;
-    if (item.kind === 'event' || item.kind === 'todo' || item.kind === 'question') return true;
-    if (item.kind === 'chat' && item.message.role === 'assistant') {
-      return !!toText(item.message.text).trim();
-    }
-    return false;
-  });
-}
-
 function shouldShowThinkingPlaceholder(params: {
   currentSessionStatus: SessionStatusInfo;
   messages: MobileChatMessage[];
@@ -131,38 +120,26 @@ function shouldShowThinkingPlaceholder(params: {
 
   if (!sessionWorking) return false;
   if (currentSessionStatus.type === 'retry') return false;
-  for (let turnIdx = renderedTurns.length - 1; turnIdx >= 0; turnIdx -= 1) {
-    const turn = renderedTurns[turnIdx];
-    if (turn.items.some((item) => item.kind === 'error')) return false;
-    if (turn.userMessage) {
-      const show = !turnHasAssistantRenderableContent(turn);
-      streamDebug?.('pending.placeholder.check', {
-        turnId: turn.id,
-        show,
-        hasAssistantText: !show,
-        itemKinds: turn.items.map((item: any) => item.kind).join(','),
-        sessionWorking,
-        status: currentSessionStatus.type
-      });
-      return show;
-    }
+  const lastTurn = renderedTurns[renderedTurns.length - 1];
+  if (lastTurn?.items.some((item) => item.kind === 'error')) return false;
+  if (conversationHasAssistantAfterUser(renderedTurns, messages)) {
+    streamDebug?.('pending.placeholder.check', {
+      show: false,
+      reason: 'assistant_ready',
+      turns: renderedTurns.length,
+      messages: messages.length,
+      sessionWorking,
+      status: currentSessionStatus.type
+    });
+    return false;
   }
-  if (messages.length <= 0) return true;
-  let lastUserIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'user') {
-      lastUserIdx = i;
-      break;
-    }
-  }
-  if (lastUserIdx < 0) return true;
-  for (let i = lastUserIdx + 1; i < messages.length; i += 1) {
-    if (messages[i].role === 'assistant' && messages[i].text.trim()) return false;
-  }
-  streamDebug?.('pending.placeholder.fallback', {
+  streamDebug?.('pending.placeholder.check', {
     show: true,
-    reason: 'no assistant text after last user',
-    messages: messages.length
+    reason: 'awaiting_assistant',
+    turns: renderedTurns.length,
+    messages: messages.length,
+    sessionWorking,
+    status: currentSessionStatus.type
   });
   return true;
 }

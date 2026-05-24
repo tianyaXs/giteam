@@ -93,7 +93,12 @@ export function useStreamManager(deps: StreamManagerDeps) {
   const getDeps = useCallback(() => depsRef.current, []);
   const shouldFollowLatest = useCallback(() => {
     const d = getDeps();
-    const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
+    const scrollY = Math.max(0, Number(d.messageScrollYRef.current || 0));
+    const viewportH = Math.max(0, Number(d.messageViewportHRef.current || 0));
+    const contentH = Math.max(0, Number(d.messageContentHRef.current || 0));
+    const distanceFromBottom = contentH > 0 && viewportH > 0
+      ? Math.max(0, contentH - viewportH - scrollY)
+      : scrollY;
     return !d.messageUserScrollingRef.current && distanceFromBottom < 96;
   }, [getDeps]);
 
@@ -512,10 +517,6 @@ export function useStreamManager(deps: StreamManagerDeps) {
       renderStreamWindow(sid);
       if (shouldFollowLatest()) {
         d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
-        const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
-        if (distanceFromBottom > 48) {
-          requestAnimationFrame(() => d.scrollToLatest(false));
-        }
       }
       d.setStreaming(true);
     };
@@ -579,10 +580,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         const shouldFollowStream = shouldFollowLatest();
         renderStreamWindow(sid);
         if (shouldFollowStream) {
-          const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
-          if (distanceFromBottom > 48) {
-            requestAnimationFrame(() => d.scrollToLatest(false));
-          }
+          d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
         }
       }, 24);
     };

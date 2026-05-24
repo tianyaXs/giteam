@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { markSessionSwitchPerfForSid } from './sessionSwitchPerf';
 
 export function useAuthedStartupEffects(params: {
   authed: boolean;
@@ -12,6 +13,9 @@ export function useAuthedStartupEffects(params: {
   repoPath: string;
   serverUrl: string;
   sessionId: string;
+  sessionIdRef: React.MutableRefObject<string>;
+  sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
+  guardHistoryLoad: (durationMs?: number) => void;
   setStartupSessionHydrating: (value: boolean) => void;
   syncSessionMessages: (
     targetSessionId: string,
@@ -21,6 +25,7 @@ export function useAuthedStartupEffects(params: {
 }) {
   const {
     authed,
+    guardHistoryLoad,
     initialMessageFetchLimit,
     initialSessionLimit,
     loaded,
@@ -31,6 +36,8 @@ export function useAuthedStartupEffects(params: {
     repoPath,
     serverUrl,
     sessionId,
+    sessionIdRef,
+    sessionRawMapRef,
     setStartupSessionHydrating,
     syncSessionMessages,
     token
@@ -62,17 +69,45 @@ export function useAuthedStartupEffects(params: {
 
   useEffect(() => {
     if (!loaded || !authed || !sessionId || !repoPath) return;
+    const sid = sessionId;
+    const cachedRows = Array.isArray(sessionRawMapRef.current[sid])
+      ? sessionRawMapRef.current[sid].length
+      : 0;
+    guardHistoryLoad(cachedRows > 0 ? 1500 : 900);
     void (async () => {
       try {
-        await actionsRef.current.syncSessionMessages(sessionId, {
+        if (sessionIdRef.current !== sid) return;
+        markSessionSwitchPerfForSid(sid, 'sync.startup_effect.begin', {
+          cachedRows,
+          deferred: cachedRows > 0 ? 1 : 0
+        });
+        const startedAt = performance.now();
+        await actionsRef.current.syncSessionMessages(sid, {
           limit: initialSessionLimit,
           fetchLimit: initialMessageFetchLimit
         });
+        if (sessionIdRef.current !== sid) return;
+        markSessionSwitchPerfForSid(sid, 'sync.startup_effect.done', {
+          ms: Math.round(performance.now() - startedAt),
+          cachedRows
+        });
       } finally {
-        actionsRef.current.setStartupSessionHydrating(false);
+        if (sessionIdRef.current === sid) {
+          actionsRef.current.setStartupSessionHydrating(false);
+        }
       }
     })();
-  }, [authed, initialMessageFetchLimit, initialSessionLimit, loaded, repoPath, sessionId]);
+  }, [
+    authed,
+    guardHistoryLoad,
+    initialMessageFetchLimit,
+    initialSessionLimit,
+    loaded,
+    repoPath,
+    sessionId,
+    sessionIdRef,
+    sessionRawMapRef
+  ]);
 
   useEffect(() => {
     if (!loaded || !authed || !repoPath || sessionId) return;

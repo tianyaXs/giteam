@@ -1,4 +1,5 @@
 import { useCallback, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { markMessageSendPerfForSession } from './messageSendPerf';
 import { toText } from '../../lib/text';
 import type { MobileChatMessage, MobileRenderedTurn } from '../../types';
 import type { buildTurnWindow } from './turns';
@@ -28,7 +29,7 @@ export function useOptimisticUserMessages(params: {
   optimisticUserIdAliasRef: MutableRefObject<Record<string, Record<string, string>>>;
   sentAttachmentCacheRef: MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   forceScrollToLatestUntilRef: MutableRefObject<number>;
-  scrollToLatest: (animated?: boolean) => void;
+  markFollowLatest: (durationMs?: number) => void;
   sessionVisibleTurnCountRef: MutableRefObject<Record<string, number>>;
   renderedTurnsRef: MutableRefObject<MobileRenderedTurn[]>;
   applyTurnWindowRef: MutableRefObject<(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => unknown>;
@@ -37,7 +38,7 @@ export function useOptimisticUserMessages(params: {
     applyTurnWindowRef,
     forceScrollToLatestUntilRef,
     renderedTurnsRef,
-    scrollToLatest,
+    markFollowLatest,
     initialSessionLimit,
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
@@ -56,12 +57,19 @@ export function useOptimisticUserMessages(params: {
       const sid = toText(targetSessionId).trim();
       if (!sid) return;
       const prev = Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid] : [];
-      sessionOptimisticUserMapRef.current[sid] = [...prev.filter((item) => item.id !== message.id), message].sort(
-        (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)
-      );
+      const droppedLocalIds = new Set(prev.map((item) => item.id).filter((id) => id !== message.id));
+      sessionOptimisticUserMapRef.current[sid] = [message];
+      if (droppedLocalIds.size > 0) {
+        const alias = { ...(optimisticUserIdAliasRef.current[sid] || {}) };
+        for (const [serverId, localId] of Object.entries(alias)) {
+          if (droppedLocalIds.has(localId)) delete alias[serverId];
+        }
+        if (Object.keys(alias).length > 0) optimisticUserIdAliasRef.current[sid] = alias;
+        else delete optimisticUserIdAliasRef.current[sid];
+      }
       bumpOptimisticVersion();
     },
-    [bumpOptimisticVersion, sessionOptimisticUserMapRef]
+    [bumpOptimisticVersion, optimisticUserIdAliasRef, sessionOptimisticUserMapRef]
   );
 
   const dropOptimisticUserMessage = useCallback(
@@ -174,13 +182,19 @@ export function useOptimisticUserMessages(params: {
   const overlayOptimisticTurns = useCallback(
     (base: TurnWindowResult, optimistic: OptimisticUserMessage[]): TurnWindowResult => {
       if (optimistic.length === 0) return base;
+      const overlayStartedAt = performance.now();
+      markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.begin', {
+        optimisticCount: optimistic.length,
+        baseTurns: base.renderedTurns.length
+      });
       const keepBaseTurns = base.renderedTurns.length > 0;
       const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
       const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
       const existingTurnIds = new Set(nextTurns.map((turn) => turn.id));
       const existingMessageIds = new Set(nextMessages.map((message) => message.id));
+      const pending = optimistic.length > 1 ? [optimistic[optimistic.length - 1]!] : optimistic;
       let appended = 0;
-      for (const item of optimistic) {
+      for (const item of pending) {
         const turnId = `turn:optimistic:${item.id}`;
         if (existingTurnIds.has(turnId)) continue;
         if (!existingMessageIds.has(item.id)) {
@@ -203,7 +217,17 @@ export function useOptimisticUserMessages(params: {
         existingTurnIds.add(turnId);
         appended += 1;
       }
-      if (appended === 0) return base;
+      if (appended === 0) {
+        markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.skip', {
+          ms: Math.round(performance.now() - overlayStartedAt)
+        });
+        return base;
+      }
+      markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.done', {
+        ms: Math.round(performance.now() - overlayStartedAt),
+        appended,
+        turns: nextTurns.length
+      });
       return {
         ...base,
         chatMessages: nextMessages,
@@ -214,7 +238,7 @@ export function useOptimisticUserMessages(params: {
         hasUserTurn: true
       };
     },
-    []
+    [sessionIdRef]
   );
 
   const appendOptimisticTurnAndStick = useCallback(
@@ -228,10 +252,16 @@ export function useOptimisticUserMessages(params: {
         renderedTurnsRef.current.length + 1
       );
       sessionVisibleTurnCountRef.current[sid] = nextVisible;
+      const applyStartedAt = performance.now();
+      markMessageSendPerfForSession(sid, 'list.apply_turn_window.begin', { visible: nextVisible });
       applyTurnWindowRef.current(sid, nextVisible);
-      requestAnimationFrame(() => scrollToLatest(false));
+      markMessageSendPerfForSession(sid, 'list.apply_turn_window.done', {
+        ms: Math.round(performance.now() - applyStartedAt)
+      });
+      markFollowLatest(45000);
+      markMessageSendPerfForSession(sid, 'list.follow_latest_marked');
     },
-    [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, renderedTurnsRef, scrollToLatest, sessionIdRef, sessionVisibleTurnCountRef]
+    [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, markFollowLatest, renderedTurnsRef, sessionIdRef, sessionVisibleTurnCountRef]
   );
 
   const clearSessionOptimisticMessages = useCallback(

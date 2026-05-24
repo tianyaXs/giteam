@@ -19,6 +19,14 @@ function timelineItemKey(item: MobileTimelineItem, index: number): string {
   return `error:${toText(item.error.id) || index}`;
 }
 
+export function getDisplayedCellItemType(cell: DisplayedTurnCell): string {
+  if (cell.userMessage) return 'user';
+  const item = cell.items[0];
+  if (!item) return 'turn';
+  if (item.kind === 'chat') return item.message.role === 'user' ? 'user' : 'assistant';
+  return item.kind;
+}
+
 export function flattenTurnsForList(turns: MobileRenderedTurn[]): DisplayedTurnCell[] {
   const out: DisplayedTurnCell[] = [];
   turns.forEach((turn) => {

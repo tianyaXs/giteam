@@ -412,23 +412,14 @@ function ExploringStatusPill(props: {
   }, [isRunning, pulseAnim]);
 
   useEffect(() => {
+    if (isRunning) return;
     Animated.timing(rotateAnim, {
       toValue: isExpanded ? 1 : 0,
       duration: 200,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [isExpanded, rotateAnim]);
-
-  const dotScale = pulseAnim.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [1, 1.6, 1],
-  });
-
-  const dotOpacity = pulseAnim.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [0.6, 1, 0.6],
-  });
+  }, [isExpanded, isRunning, rotateAnim]);
 
   const chevronRotate = rotateAnim.interpolate({
     inputRange: [0, 1],
@@ -437,21 +428,39 @@ function ExploringStatusPill(props: {
 
   const allActions = [...currentActions, ...completedActions];
 
+  if (isRunning) {
+    const waveOpacity = pulseAnim.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [0.28, 0.82, 0.28],
+    });
+    const waveScale = pulseAnim.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [0.985, 1, 0.985],
+    });
+    const runningLabel = status.title === '探索中' ? '正在探索' : status.title;
+
+    return (
+      <View style={styles.exploringStatusWrap}>
+        <Animated.Text
+          style={[
+            styles.exploringThinkingText,
+            {
+              opacity: waveOpacity,
+              transform: [{ scale: waveScale }],
+            },
+          ]}
+        >
+          {runningLabel}
+        </Animated.Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.exploringStatusWrap}>
       <Pressable onPress={onToggleExpand} style={styles.exploringStatusCard}>
         <View style={styles.exploringStatusHead}>
           <View style={styles.exploringStatusTitleWrap}>
-            <Animated.View
-              style={[
-                styles.exploringStatusDot,
-                isRunning ? styles.exploringStatusDotRunning : styles.exploringStatusDotCompleted,
-                isRunning && {
-                  transform: [{ scale: dotScale }],
-                  opacity: dotOpacity,
-                },
-              ]}
-            />
             <Text style={styles.exploringStatusTitle}>{status.title}</Text>
           </View>
           {allActions.length > 0 ? (
@@ -1078,7 +1087,6 @@ export const MobileTurnCell = React.memo(
                       </View>
                       {writeSummary ? <Text style={styles.writeEventAdd}>{`+${writeSummary.additions}`}</Text> : null}
                       {writeSummary ? <Text style={styles.writeEventDel}>{`-${writeSummary.deletions}`}</Text> : null}
-                      {eventExpandable ? <Chevron expanded={isExpanded} styles={styles} /> : null}
                     </View>
                     {!writeSummary && eventDetail ? (
                       <Text numberOfLines={isExpanded ? 0 : 1} style={detailStyle}>
@@ -1135,7 +1143,6 @@ export const MobileTurnCell = React.memo(
                     {isShellEvent ? <View style={dotStyle} /> : null}
                     <Text style={titleStyle}>{toolLabel(title)}</Text>
                     {mode ? <Text style={[styles.eventMode, isShellEvent && styles.bashEventMode]}>{mode}</Text> : null}
-                    {eventExpandable ? <Chevron expanded={isExpanded} styles={styles} /> : null}
                   </View>
                   <Text numberOfLines={isExpanded ? 0 : 2} style={detailStyle}>{detail}</Text>
                   {isExpanded && eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}

@@ -1,4 +1,6 @@
 import { useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { markSessionSwitchPerfForSid } from '../chat/sessionSwitchPerf';
+import { markMessageSendPerfForSession } from './messageSendPerf';
 import { getMessages } from '../../api/controlApi';
 import { toText } from '../../lib/text';
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
@@ -37,7 +39,6 @@ const FULL_SESSION_FETCH_LIMIT = 24;
 const FULL_SESSION_MAX_PAGES = 200;
 const FULL_SESSION_MAX_ROWS = 5000;
 const LATEST_REFRESH_MAX_PAGES = 20;
-
 function waitForHistoryListCommit(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => {
@@ -78,6 +79,8 @@ export function useSessionMessageSync<Cell>(params: {
   applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
   syncSessionStatus: (targetSessionId?: string) => Promise<SessionStatusInfo | undefined>;
   rememberCurrentSessionViewport: (sessionId: string, snapshot: { displayedTurnCells: Cell[]; visibleCellCount: number }) => void;
+  suppressLoadOlderUntilRef: MutableRefObject<number>;
+  guardHistoryLoad: (durationMs?: number) => void;
   streamTypewriterQueueRef?: MutableRefObject<Record<string, unknown>>;
   streamDebug?: (label: string, payload?: Record<string, unknown>) => void;
 }) {
@@ -95,6 +98,8 @@ export function useSessionMessageSync<Cell>(params: {
     pushConnLog,
     recordStreamMessageRoles,
     rememberCurrentSessionViewport,
+    suppressLoadOlderUntilRef,
+    guardHistoryLoad,
     repoPath,
     serverUrl,
     sessionId,
@@ -307,17 +312,33 @@ export function useSessionMessageSync<Cell>(params: {
       if (existing) return await existing;
 
       const run = (async () => {
+        const tailOnly = !!opts?.tailOnly;
+        if (!before && !opts?.loadingOlder) {
+          guardHistoryLoad(tailOnly ? 900 : 1500);
+        }
+        markSessionSwitchPerfForSid(targetSessionId, 'sync.begin', {
+          mode,
+          cachedRowCount: (sessionRawMapRef.current[targetSessionId] || []).length
+        });
+        if (tailOnly) {
+          markMessageSendPerfForSession(targetSessionId, 'sync.tail_only.begin');
+        }
         const requestedVisibleTurnCount = Math.max(1, Number(opts?.limit || initialSessionLimit));
         const prevVisibleTurnCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0));
         const cachedRowCount = (sessionRawMapRef.current[targetSessionId] || []).length;
-        const tailOnly = !!opts?.tailOnly;
         const localSnapshot = !before && !opts?.loadingOlder && !tailOnly ? restoreLocalSnapshot(targetSessionId) : null;
         if (localSnapshot) {
           const visible = Math.max(requestedVisibleTurnCount, prevVisibleTurnCount, localSnapshot.totalTurnCount);
           pushConnLog(`chat.history.local restore sid=${targetSessionId} rows=${localSnapshot.rows.length} turns=${localSnapshot.totalTurnCount}`);
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.local_snapshot_restore', {
+            rows: localSnapshot.rows.length,
+            turns: localSnapshot.totalTurnCount
+          });
           const rendered = applyTurnWindow(targetSessionId, visible, localSnapshot.nextCursor);
           setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.loading_cleared', { source: 'local_snapshot' });
           void (async () => {
+            if (targetSessionId !== sessionIdRef.current) return;
             const cachedIds = new Set(localSnapshot.rows.map(rowId).filter(Boolean));
             let latest = await refreshMessages(targetSessionId, {
               limit: requestedVisibleTurnCount,
@@ -351,17 +372,26 @@ export function useSessionMessageSync<Cell>(params: {
               Number(latest.totalTurnCount || 0)
             );
             pushConnLog(`chat.history.local refreshed sid=${targetSessionId} pages=${pages} rows=${latest.mergedCount} turns=${latest.totalTurnCount} next=${latest.nextCursor ? 1 : 0}`);
+            if (targetSessionId !== sessionIdRef.current) return;
             applyTurnWindow(targetSessionId, nextVisible, latest.nextCursor || localSnapshot.nextCursor);
           })();
           return rendered;
         }
         const statusPromise = tailOnly ? Promise.resolve(undefined) : syncSessionStatus(targetSessionId);
         try {
+          const networkStartedAt = performance.now();
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.network_first.begin');
           let res = await refreshMessages(targetSessionId, {
             limit: requestedVisibleTurnCount,
             fetchLimit: tailOnly ? FULL_SESSION_FETCH_LIMIT : opts?.fetchLimit,
             before,
             reason: tailOnly ? 'tailOnly' : mode
+          });
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.network_first.done', {
+            ms: Math.round(performance.now() - networkStartedAt),
+            rows: res?.mergedCount,
+            turns: res?.totalTurnCount,
+            hasNext: res?.nextCursor ? 1 : 0
           });
           if (!res || targetSessionId !== sessionIdRef.current) return undefined;
           let fullSessionVisibleTurnCount = opts?.forceVisibleCount;
@@ -375,6 +405,11 @@ export function useSessionMessageSync<Cell>(params: {
           if (shouldHydrate) {
             let cursor = res.nextCursor;
             let pages = 0;
+            const hydrateStartedAt = performance.now();
+            markSessionSwitchPerfForSid(targetSessionId, 'sync.hydrate.begin', {
+              rows: res.mergedCount,
+              turns: res.totalTurnCount
+            });
             pushConnLog(`chat.history.hydrate start sid=${targetSessionId} rows=${res.mergedCount} turns=${res.totalTurnCount} next=1`);
             while (
               cursor
@@ -394,6 +429,12 @@ export function useSessionMessageSync<Cell>(params: {
               cursor = res.nextCursor;
             }
             fullSessionVisibleTurnCount = res.totalTurnCount;
+            markSessionSwitchPerfForSid(targetSessionId, 'sync.hydrate.done', {
+              ms: Math.round(performance.now() - hydrateStartedAt),
+              pages,
+              rows: res.mergedCount,
+              turns: res.totalTurnCount
+            });
             pushConnLog(`chat.history.hydrate done sid=${targetSessionId} pages=${pages} rows=${res.mergedCount} turns=${res.totalTurnCount} next=${res.nextCursor ? 1 : 0}`);
           }
           if (opts?.loadingOlder) {
@@ -451,9 +492,21 @@ export function useSessionMessageSync<Cell>(params: {
               hasNewHistoryFromCursor: !!before && res.mergedCount > res.prevMergedCount
             })
           );
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.apply_turn_window.begin', {
+            visibleTurns: nextVisibleTurnCount
+          });
           const rendered = applyTurnWindow(targetSessionId, nextVisibleTurnCount, res.nextCursor);
+          markSessionSwitchPerfForSid(targetSessionId, 'sync.apply_turn_window.done', {
+            turns: rendered.renderedTurns.length
+          });
           if (targetSessionId === sessionIdRef.current) {
             setSessionSwitchingTo((prev) => (prev === targetSessionId ? '' : prev));
+            markSessionSwitchPerfForSid(targetSessionId, 'sync.loading_cleared', { source: 'network_sync' });
+          }
+          if (tailOnly) {
+            markMessageSendPerfForSession(targetSessionId, 'sync.tail_only.done', {
+              turns: rendered.renderedTurns.length
+            });
           }
           const statusInfo = await statusPromise;
           const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
@@ -471,7 +524,19 @@ export function useSessionMessageSync<Cell>(params: {
             return lastTurn.items.some((item: any) => item.kind === 'error');
           })();
           const statusIdle = !statusInfo || statusInfo.type === 'idle';
-          if ((!rendered.writing && statusIdle) || latestTurnHasError) {
+          const latestTurnHasAssistant = (() => {
+            const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
+            if (!lastTurn) return false;
+            return lastTurn.items.some((item: any) => {
+              if (item.kind === 'think') return !!toText(item.card?.text).trim();
+              if (item.kind === 'context' || item.kind === 'event') return true;
+              if (item.kind === 'chat' && item.message?.role === 'assistant') {
+                return !!toText(item.message.text).trim();
+              }
+              return false;
+            });
+          })();
+          if ((!rendered.writing && statusIdle) || latestTurnHasError || latestTurnHasAssistant) {
             setStreaming(false);
             setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
           }
@@ -496,6 +561,10 @@ export function useSessionMessageSync<Cell>(params: {
         pushConnLog(`chat.history.load skipped sid=${sid || '-'} loading=${loadingOlder ? 1 : 0} inflight=${olderLoadInFlightRef.current ? 1 : 0}`);
         return;
       }
+      if (Date.now() < suppressLoadOlderUntilRef.current) {
+        pushConnLog(`chat.history.load suppressed viewport_settle sid=${sid}`);
+        return;
+      }
       olderLoadInFlightRef.current = true;
       const finishLocalHistoryMutation = () => {
         setTimeout(() => {
@@ -515,7 +584,14 @@ export function useSessionMessageSync<Cell>(params: {
       }
       const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
       const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
-      pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} cursor=${toText(sessionNextCursor[sid]).trim() ? 1 : 0}`);
+      const cursor = toText(sessionNextCursor[sid]).trim();
+      if (cached <= visible && !cursor) {
+        pushConnLog(`chat.history.load skipped sid=${sid} cached=${cached} visible=${visible} no_more=1`);
+        olderLoadInFlightRef.current = false;
+        setLoadingOlder(false);
+        return;
+      }
+      pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} cursor=${cursor ? 1 : 0}`);
       if (cached > visible) {
         const nextVisible = Math.min(cached, visible + olderSessionLimit);
         applyTurnWindow(sid, nextVisible);
@@ -527,7 +603,6 @@ export function useSessionMessageSync<Cell>(params: {
         finishLocalHistoryMutation();
         return;
       }
-      const cursor = toText(sessionNextCursor[sid]).trim();
       const backoff = cursor ? getOlderCursorBackoff(sid, cursor) : null;
       if (backoff) {
         pushConnLog(`chat.history.load backoff sid=${sid} retryMs=${Math.max(0, backoff.retryAt - Date.now())}`);
@@ -587,6 +662,8 @@ export function useSessionMessageSync<Cell>(params: {
     pushConnLog,
     recordStreamMessageRoles,
     rememberCurrentSessionViewport,
+    suppressLoadOlderUntilRef,
+    guardHistoryLoad,
     repoPath,
     serverUrl,
     sessionId,

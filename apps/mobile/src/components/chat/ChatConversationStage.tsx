@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlashList } from '@shopify/flash-list';
 import { Animated, Pressable, Text, View } from 'react-native';
+import { getDisplayedCellItemType } from '../../features/chat/displayedCells';
+import type { ChatMaintainVisibleContentPosition } from '../../features/chat/useChatListController';
+import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from '../../features/chat/sessionSwitchPerf';
+import { getActiveMessageSendTrace, markMessageSendPerf } from '../../features/messages/messageSendPerf';
 
 type NotebookColors = {
   text: string;
@@ -17,17 +21,16 @@ export function ChatConversationStage(props: {
   notebookColors: NotebookColors;
   showStreamTopGlow: boolean;
   streamTopGlowAnim: Animated.Value;
-  sessionSwitchingTo: string;
-  sessionSwitchingTitle: string;
   renderedTurnsLength: number;
   currentWorkspaceName: string;
-  chatListMountKey: string;
   messageScrollRef: React.RefObject<any>;
   messageBottomInset: number;
   displayedTurnCells: any[];
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   loadingOlder: boolean;
+  shouldSuppressLoadOlder: () => boolean;
+  maintainVisibleContentPosition: ChatMaintainVisibleContentPosition;
   onScrollBeginDrag: () => void;
   onScrollEndDrag: () => void;
   onMomentumScrollBegin: () => void;
@@ -36,23 +39,24 @@ export function ChatConversationStage(props: {
   onContentSizeChange: (w: number, h: number) => void;
   onListLayout: (evt: any) => void;
   onLoadOlderMessages: () => Promise<void>;
+  anchorSessionToLatest: (sessionId: string, cellCount: number) => void;
   renderTurnCell: (info: { item: any; index: number }) => React.ReactElement;
   sessionId: string;
   sessionHistoryRetryHintText: string;
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
-  maintainVisibleAnchor: boolean;
+  listRevealReady: boolean;
   onJumpToLatest: () => void;
 }) {
   const {
-    chatListMountKey,
     chatViewabilityConfig,
     currentWorkspaceName,
     displayedTurnCells,
     historyProgressWidth,
     inputDockHeight,
+    listRevealReady,
     loadingOlder,
-    maintainVisibleAnchor,
+    maintainVisibleContentPosition,
     messageBottomInset,
     messageScrollRef,
     notebookColors,
@@ -60,6 +64,7 @@ export function ChatConversationStage(props: {
     onContentSizeChange,
     onJumpToLatest,
     onListLayout,
+    anchorSessionToLatest,
     onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
@@ -70,59 +75,56 @@ export function ChatConversationStage(props: {
     renderedTurnsLength,
     sessionHistoryRetryHintText,
     sessionId,
-    sessionSwitchingTitle,
-    sessionSwitchingTo,
+    shouldSuppressLoadOlder,
     showLatestJump,
-    showStreamTopGlow,
-    streamTopGlowAnim,
     styles,
     windowWidth
   } = props;
   const chatContentContainerStyle = useMemo(
     () => ({
-      flexGrow: 1,
-      justifyContent: 'flex-end' as const,
-      // inverted 列表：paddingTop 贴近输入框一侧，需留出 composer 高度
       paddingTop: messageBottomInset,
       paddingBottom: 12,
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
   );
-  const maintainVisibleContentPosition = useMemo(
-    () => (maintainVisibleAnchor ? { autoscrollToBottomThreshold: 0 } : undefined),
-    [maintainVisibleAnchor]
+  const keyExtractor = useCallback((item: any) => `${sessionId || 'draft'}:${item.id}`, [sessionId]);
+  const listExtraData = useMemo(
+    () => `${sessionId}:${displayedTurnCells.length}`,
+    [displayedTurnCells.length, sessionId]
   );
-  const keyExtractor = useCallback((item: any) => item.id, []);
-  const latestSettledKeyRef = useRef('');
+  const getItemType = useCallback((item: any) => getDisplayedCellItemType(item), []);
+  const initialScrollIndex = displayedTurnCells.length > 0 ? displayedTurnCells.length - 1 : undefined;
+  const hasActiveSession = Boolean(sessionId);
+  const showEmptyDraft = !hasActiveSession && renderedTurnsLength === 0;
+  const showConversationList = hasActiveSession || renderedTurnsLength > 0;
+  const latestSettledSessionRef = useRef('');
   useEffect(() => {
-    if (latestSettledKeyRef.current === chatListMountKey) return;
-    latestSettledKeyRef.current = chatListMountKey;
-    requestAnimationFrame(() => {
-      try {
-        messageScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
-      } catch {}
-    });
-  }, [chatListMountKey, messageScrollRef]);
+    if (latestSettledSessionRef.current === sessionId) return;
+    latestSettledSessionRef.current = sessionId;
+    const switchPerf = getActiveSessionSwitchTrace();
+    const sendPerf = getActiveMessageSendTrace();
+    if (switchPerf && switchPerf.targetSid === sessionId) {
+      markSessionSwitchPerf(switchPerf, 'ui.session_effect', { turns: renderedTurnsLength });
+    }
+    if (sendPerf && sendPerf.targetSid === sessionId) {
+      markMessageSendPerf(sendPerf, 'ui.session_effect', { turns: renderedTurnsLength });
+    }
+  }, [renderedTurnsLength, sessionId]);
+
+  const handleStartReached = useCallback(() => {
+    if (loadingOlder || !sessionId || shouldSuppressLoadOlder()) return;
+    void onLoadOlderMessages();
+  }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
+
+  useEffect(() => {
+    if (!sessionId || displayedTurnCells.length <= 0) return;
+    return anchorSessionToLatest(sessionId, displayedTurnCells.length);
+  }, [anchorSessionToLatest, displayedTurnCells.length, sessionId]);
 
   return (
     <View style={styles.chatBodyWrap}>
-      {sessionSwitchingTo ? (
-        <View style={[styles.blankWrap, styles.sessionSwitchWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
-          <View style={[styles.blankHero, styles.sessionSwitchHero, { width: Math.min(windowWidth - 56, 320) }]}>
-            <Text numberOfLines={1} style={[styles.blankEyebrow, { color: notebookColors.faint }]}>
-              Loading session
-            </Text>
-            <Text numberOfLines={2} style={[styles.sessionSwitchTitle, { color: notebookColors.text }]}>
-              {sessionSwitchingTitle}
-            </Text>
-            <Text style={[styles.blankSub, { color: notebookColors.muted }]}>正在载入历史消息与上下文，请稍候。</Text>
-            <View style={[styles.sessionSwitchRail, { borderColor: notebookColors.line, backgroundColor: notebookColors.paper }]}>
-              <Animated.View style={[styles.sessionSwitchRailFill, { backgroundColor: notebookColors.text }]} />
-            </View>
-          </View>
-        </View>
-      ) : renderedTurnsLength === 0 ? (
+      {showEmptyDraft ? (
         <View style={[styles.blankWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
           <View style={[styles.blankHero, { width: Math.min(windowWidth - 56, 320) }]}>
             <Text numberOfLines={1} style={[styles.blankEyebrow, { color: notebookColors.faint }]}>
@@ -134,15 +136,17 @@ export function ChatConversationStage(props: {
             <Text style={[styles.blankSub, { color: notebookColors.muted }]}>输入你的需求，或使用 `/` 调用命令与工作流。</Text>
           </View>
         </View>
-      ) : (
+      ) : null}
+      {showConversationList ? (
         <View style={styles.chatListStage}>
           <FlashList
-            key={chatListMountKey}
+            key={sessionId || 'draft'}
             ref={messageScrollRef}
+            style={{ flex: 1, opacity: listRevealReady ? 1 : 0 }}
             contentContainerStyle={chatContentContainerStyle}
             onLayout={onListLayout}
             data={displayedTurnCells}
-            inverted
+            initialScrollIndex={initialScrollIndex}
             maintainVisibleContentPosition={maintainVisibleContentPosition}
             alwaysBounceVertical
             bounces
@@ -159,13 +163,11 @@ export function ChatConversationStage(props: {
             onScroll={onScroll}
             onContentSizeChange={onContentSizeChange}
             keyExtractor={keyExtractor}
+            getItemType={getItemType}
+            extraData={listExtraData}
             renderItem={renderTurnCell}
-            onEndReached={() => {
-              if (!loadingOlder && sessionId) {
-                void onLoadOlderMessages();
-              }
-            }}
-            onEndReachedThreshold={0.3}
+            onStartReached={handleStartReached}
+            onStartReachedThreshold={0.15}
             ListHeaderComponent={null}
             ListFooterComponent={null}
           />
@@ -183,7 +185,7 @@ export function ChatConversationStage(props: {
             </Pressable>
           ) : null}
         </View>
-      )}
+      ) : null}
     </View>
   );
 }

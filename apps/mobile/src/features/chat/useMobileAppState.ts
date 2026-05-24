@@ -68,7 +68,6 @@ export function useMobileAppState() {
   const [streamTodoCard, setStreamTodoCard] = useState<MobileTodoCard | null>(
     null,
   );
-  const [chatListResetKey, setChatListResetKey] = useState(0);
   const [startupSessionHydrating, setStartupSessionHydrating] = useState(false);
 
   return {
@@ -144,8 +143,6 @@ export function useMobileAppState() {
     setInputDockHeight,
     streamTodoCard,
     setStreamTodoCard,
-    chatListResetKey,
-    setChatListResetKey,
     startupSessionHydrating,
     setStartupSessionHydrating,
   };

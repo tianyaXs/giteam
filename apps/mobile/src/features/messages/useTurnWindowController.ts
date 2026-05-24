@@ -1,4 +1,6 @@
 import { useCallback, type Dispatch, type SetStateAction } from 'react';
+import { markSessionSwitchPerfForSid } from '../chat/sessionSwitchPerf';
+import { markMessageSendPerfForSession } from '../messages/messageSendPerf';
 import { buildTurnWindow } from './turns';
 import { saveChatSnapshot } from '../../storage/chatSnapshot';
 import { toText } from '../../lib/text';
@@ -33,6 +35,7 @@ export function useTurnWindowController(params: {
   summarizePreview: (messages: MobileChatMessage[]) => string;
   stableSortSessionItems: (items: SessionItemLike[]) => SessionItemLike[];
   losesRenderedAssistant: (prev: MobileChatMessage[], next: MobileChatMessage[]) => boolean;
+  sharesSessionMessageContext: (prev: MobileChatMessage[], next: MobileChatMessage[]) => boolean;
   assistantTextWeight: (messages: MobileChatMessage[]) => number;
   reconcileOptimisticUserMessages: (targetSessionId: string, messages: MobileChatMessage[]) => any[];
   stabilizeServerUserTurnIds: (targetSessionId: string, rendered: any) => any;
@@ -47,6 +50,7 @@ export function useTurnWindowController(params: {
     initialMessageFetchLimit,
     initialSessionLimit,
     losesRenderedAssistant,
+    sharesSessionMessageContext,
     messagesRef,
     overlayOptimisticTurns,
     publishStreamRows,
@@ -90,6 +94,9 @@ export function useTurnWindowController(params: {
   }, [setSessions, stableSortSessionItems, summarizePreview]);
 
   const applyTurnWindow = useCallback((targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => {
+    const applyStartedAt = performance.now();
+    markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.begin', { visibleTurnCount });
+    markMessageSendPerfForSession(targetSessionId, 'window.build.begin', { visibleTurnCount });
     const storeRows = publishStreamRows(targetSessionId);
     const merged = storeRows.length > 0 ? storeRows : (Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : []);
     const baseRendered = buildTurnWindow(merged, visibleTurnCount);
@@ -121,9 +128,15 @@ export function useTurnWindowController(params: {
     };
     let nextMessages = rendered.chatMessages.map(withPersistedAttachments);
     let nextTurns = rendered.renderedTurns.map((turn: MobileRenderedTurn) => turn.userMessage ? ({ ...turn, userMessage: withPersistedAttachments(turn.userMessage) }) : turn);
-    if (targetSessionId === sessionIdRef.current && losesRenderedAssistant(messagesRef.current, nextMessages)) {
-      pushConnLog(`render guard sid=${targetSessionId} reason=assistant regression prev=${assistantTextWeight(messagesRef.current)} next=${assistantTextWeight(nextMessages)}`);
-      nextMessages = messagesRef.current;
+    const prevMessages = messagesRef.current;
+    const sameSessionContext = sharesSessionMessageContext(prevMessages, nextMessages);
+    if (
+      targetSessionId === sessionIdRef.current &&
+      sameSessionContext &&
+      losesRenderedAssistant(prevMessages, nextMessages)
+    ) {
+      pushConnLog(`render guard sid=${targetSessionId} reason=assistant regression prev=${assistantTextWeight(prevMessages)} next=${assistantTextWeight(nextMessages)}`);
+      nextMessages = prevMessages;
       nextTurns = renderedTurnsRef.current;
       const lastRetryAt = renderRegressionRetryRef.current[targetSessionId] || 0;
       if (Date.now() - lastRetryAt > 5000) {
@@ -148,10 +161,32 @@ export function useTurnWindowController(params: {
       if (!prevLast || !nextLast || prevLast.id !== nextLast.id) return nextTurns;
       return [...prev.slice(0, -1), nextLast];
     };
+    if (targetSessionId !== sessionIdRef.current) {
+      upsertSession(targetSessionId, nextMessages);
+      const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
+      const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
+      setSessionHasMore((prev) => ({ ...prev, [targetSessionId]: !!nextCursor || hiddenInCache }));
+      markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.stale_session_skip_ui', {
+        ms: Math.round(performance.now() - applyStartedAt),
+        turns: nextTurns.length
+      });
+      return rendered;
+    }
     setMessages(nextMessages);
     setRenderedTurns(commitRenderedTurns);
+    markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.commit_ui', {
+      ms: Math.round(performance.now() - applyStartedAt),
+      messages: nextMessages.length,
+      turns: nextTurns.length
+    });
+    markMessageSendPerfForSession(targetSessionId, 'window.commit_ui', {
+      ms: Math.round(performance.now() - applyStartedAt),
+      messages: nextMessages.length,
+      turns: nextTurns.length,
+      cells: nextTurns.reduce((sum, turn) => sum + (turn.userMessage ? 1 : 0) + turn.items.length, 0)
+    });
     const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
-    if (targetSessionId === sessionIdRef.current && repoPath.trim() && nextTurns.length > 0) {
+    if (repoPath.trim() && nextTurns.length > 0) {
       try {
         saveChatSnapshot({
           repoPath,
@@ -177,6 +212,7 @@ export function useTurnWindowController(params: {
     initialMessageFetchLimit,
     initialSessionLimit,
     losesRenderedAssistant,
+    sharesSessionMessageContext,
     messagesRef,
     overlayOptimisticTurns,
     publishStreamRows,

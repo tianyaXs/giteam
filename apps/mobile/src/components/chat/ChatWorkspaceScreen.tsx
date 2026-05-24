@@ -5,6 +5,7 @@ import { AlbumPickerOverlay, ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoCardView } from './MobileTurnCell';
 import { QuestionDock } from '../QuestionDock';
 import { ChatConversationStage } from './ChatConversationStage';
+import type { ChatMaintainVisibleContentPosition } from '../../features/chat/useChatListController';
 
 type NotebookColors = {
   shell: string;
@@ -34,8 +35,6 @@ export function ChatWorkspaceScreen(props: {
   currentSessionTitle: string;
   showStreamTopGlow: boolean;
   streamTopGlowAnim: Animated.Value;
-  sessionSwitchingTo: string;
-  sessionSwitchingTitle: string;
   renderedTurnsLength: number;
   currentWorkspaceName: string;
   chatListMountKey: string;
@@ -45,6 +44,7 @@ export function ChatWorkspaceScreen(props: {
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
   loadingOlder: boolean;
+  shouldSuppressLoadOlder: () => boolean;
   onScrollBeginDrag: () => void;
   onScrollEndDrag: () => void;
   onMomentumScrollBegin: () => void;
@@ -53,12 +53,14 @@ export function ChatWorkspaceScreen(props: {
   onContentSizeChange: (w: number, h: number) => void;
   onListLayout: (evt: any) => void;
   onLoadOlderMessages: () => Promise<void>;
+  anchorSessionToLatest: (sessionId: string, cellCount: number) => void;
   renderTurnCell: (info: { item: any; index: number }) => React.ReactElement;
   sessionId: string;
   sessionHistoryRetryHintText: string;
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
-  maintainVisibleAnchor: boolean;
+  listRevealReady: boolean;
+  maintainVisibleContentPosition: ChatMaintainVisibleContentPosition;
   onJumpToLatest: () => void;
   suppressFloatingDocks: boolean;
   latestTodoCard: any | null;
@@ -81,11 +83,11 @@ export function ChatWorkspaceScreen(props: {
   const {
     activeQuestionRequest,
     albumPickerProps,
-    chatListMountKey,
     chatViewabilityConfig,
     composerPickerProps,
     composerProps,
     currentSessionTitle,
+    chatListMountKey,
     currentWorkspaceName,
     dismissedTodoCardId,
     displayedTurnCells,
@@ -94,7 +96,8 @@ export function ChatWorkspaceScreen(props: {
     latestTodoCard,
     leftDrawer,
     loadingOlder,
-    maintainVisibleAnchor,
+    shouldSuppressLoadOlder,
+    maintainVisibleContentPosition,
     messageBottomInset,
     messageScrollRef,
     notebookColors,
@@ -107,6 +110,7 @@ export function ChatWorkspaceScreen(props: {
     onDismissTodoDock,
     onJumpToLatest,
     onListLayout,
+    anchorSessionToLatest,
     onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
@@ -123,14 +127,13 @@ export function ChatWorkspaceScreen(props: {
     rightDrawer,
     sessionHistoryRetryHintText,
     sessionId,
-    sessionSwitchingTitle,
-    sessionSwitchingTo,
+    listRevealReady,
     showLatestJump,
     showNotebookSessionTitle,
     showStreamTopGlow,
-    suppressFloatingDocks,
     streamTopGlowAnim,
     styles,
+    suppressFloatingDocks,
     thinkingPulse,
     todoDockCollapsed,
     windowWidth
@@ -227,12 +230,10 @@ export function ChatWorkspaceScreen(props: {
               notebookColors={notebookColors}
               showStreamTopGlow={showStreamTopGlow}
               streamTopGlowAnim={streamTopGlowAnim}
-              sessionSwitchingTo={sessionSwitchingTo}
-              sessionSwitchingTitle={sessionSwitchingTitle}
               renderedTurnsLength={renderedTurnsLength}
               currentWorkspaceName={currentWorkspaceName}
-              chatListMountKey={chatListMountKey}
               messageScrollRef={messageScrollRef}
+              shouldSuppressLoadOlder={shouldSuppressLoadOlder}
               messageBottomInset={messageBottomInset}
               displayedTurnCells={displayedTurnCells}
               chatViewabilityConfig={chatViewabilityConfig}
@@ -245,13 +246,15 @@ export function ChatWorkspaceScreen(props: {
               onScroll={onScroll}
               onContentSizeChange={onContentSizeChange}
               onListLayout={onListLayout}
+              anchorSessionToLatest={anchorSessionToLatest}
               onLoadOlderMessages={onLoadOlderMessages}
               renderTurnCell={renderTurnCell}
               sessionId={sessionId}
               sessionHistoryRetryHintText={sessionHistoryRetryHintText}
               historyProgressWidth={historyProgressWidth}
+              listRevealReady={listRevealReady}
               showLatestJump={showLatestJump}
-              maintainVisibleAnchor={maintainVisibleAnchor}
+              maintainVisibleContentPosition={maintainVisibleContentPosition}
               onJumpToLatest={onJumpToLatest}
             />
             {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (

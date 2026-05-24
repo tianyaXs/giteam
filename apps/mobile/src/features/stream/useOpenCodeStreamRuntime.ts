@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { markMessageSendPerfForSession } from '../messages/messageSendPerf';
 import { toText } from '../../lib/text';
 import {
   isStreamTextPart,
@@ -66,7 +67,12 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
   const rawMessageId = useCallback((row: any) => storeRawMessageId(row), []);
   const shouldFollowLatest = useCallback(() => {
     const d = getParams();
-    const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
+    const scrollY = Math.max(0, Number(d.messageScrollYRef.current || 0));
+    const viewportH = Math.max(0, Number(d.messageViewportHRef.current || 0));
+    const contentH = Math.max(0, Number(d.messageContentHRef.current || 0));
+    const distanceFromBottom = contentH > 0 && viewportH > 0
+      ? Math.max(0, contentH - viewportH - scrollY)
+      : scrollY;
     return !d.messageUserScrollingRef.current && distanceFromBottom < 96;
   }, [getParams]);
 
@@ -295,10 +301,6 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     renderStreamWindowRef.current(targetSessionId);
     if (shouldFollowLatest()) {
       d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
-      const distanceFromBottom = Math.max(0, Number(d.messageScrollYRef.current || 0));
-      if (distanceFromBottom > 48) {
-        requestAnimationFrame(() => d.scrollToLatest(false));
-      }
     }
     d.setStreaming(true);
   }, [flushPendingStreamPartEvents, getParams, shouldFollowLatest, upsertStreamPart]);
@@ -364,20 +366,25 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       const shouldFollowStream = shouldFollowLatest();
       renderStreamWindowRef.current(targetSessionId);
       if (shouldFollowStream) {
-        const distanceFromBottom = Math.max(0, Number(latest.messageScrollYRef.current || 0));
-        if (distanceFromBottom > 48) {
-          requestAnimationFrame(() => latest.scrollToLatest(false));
-        }
+        latest.forceScrollToLatestUntilRef.current = Date.now() + 45000;
       }
     }, 24);
   }, [getParams, shouldFollowLatest]);
 
   const renderStreamWindow = useCallback((targetSessionId: string) => {
     const d = getParams();
+    const renderStartedAt = performance.now();
+    markMessageSendPerfForSession(targetSessionId, 'stream.render_window.begin');
     const totalTurns = Math.max(1, Number(d.sessionTotalTurnCountRef.current[targetSessionId] || d.initialSessionLimit));
     const visibleTurns = Math.max(d.initialSessionLimit, Number(d.sessionVisibleTurnCountRef.current[targetSessionId] || d.initialSessionLimit));
     const rendered = d.applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns));
     const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
+    markMessageSendPerfForSession(targetSessionId, 'stream.render_window.done', {
+      ms: Math.round(performance.now() - renderStartedAt),
+      turns: rendered.renderedTurns.length,
+      writing: rendered.writing ? 1 : 0,
+      lastItems: last?.items?.map((item: any) => item.kind).join(',') || ''
+    });
     d.streamDebug('render.window', {
       sid: targetSessionId,
       turns: rendered.renderedTurns.length,

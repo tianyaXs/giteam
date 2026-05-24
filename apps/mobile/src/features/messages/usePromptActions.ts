@@ -9,6 +9,13 @@ import {
 } from '../../api/controlApi';
 import { toText } from '../../lib/text';
 import type { ComposerAttachment } from '../media/types';
+import {
+  abortMessageSendPerf,
+  bindMessageSendSession,
+  finishMessageSendPerf,
+  markMessageSendPerf,
+  startMessageSendPerf
+} from './messageSendPerf';
 import type { OptimisticUserMessage } from './useOptimisticUserMessages';
 import type { SessionStatusInfo } from '../../types';
 
@@ -36,7 +43,7 @@ type UsePromptActionsParams = {
   setPrompt: (value: string | ((prev: string) => string)) => void;
   setSlashOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   setImageAttachments: (value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => void;
-  setChatListResetKey: (value: number | ((prev: number) => number)) => void;
+
   setSessionStatusMap: React.Dispatch<React.SetStateAction<Record<string, SessionStatusInfo>>>;
   setActiveSession: (sessionId: string) => void;
   startStream: (targetSessionId: string) => void;
@@ -76,7 +83,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
     sessionVisibleTurnCountRef,
     setActiveSession,
     setBusy,
-    setChatListResetKey,
     setImageAttachments,
     setPrompt,
     setSessionStatusMap,
@@ -131,11 +137,20 @@ export function usePromptActions(params: UsePromptActionsParams) {
         filename: img.filename
       }))
     };
+    const perf = startMessageSendPerf({
+      optimisticId: optimisticMessage.id,
+      targetSid: sessionIdRef.current,
+      textLength: payloadPrompt.length,
+      imageCount: images.length,
+      log: pushConnLog
+    });
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
       const normalizedModel = model.trim();
       const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
       if (!targetSessionId) {
+        markMessageSendPerf(perf, 'send.create_session.begin');
+        const createStartedAt = performance.now();
         pushConnLog(`POST session.create model=${requestModel || '(default)'}`);
         const created = await createSession({
           baseUrl: serverUrl,
@@ -146,7 +161,14 @@ export function usePromptActions(params: UsePromptActionsParams) {
           autoAcceptPermissions
         });
         targetSessionId = created.id;
+        markMessageSendPerf(perf, 'send.create_session.done', {
+          ms: Math.round(performance.now() - createStartedAt),
+          sid: targetSessionId
+        });
         setActiveSession(targetSessionId);
+        bindMessageSendSession(perf, targetSessionId);
+      } else {
+        bindMessageSendSession(perf, targetSessionId);
       }
       if (optimisticMessage.attachments?.length) {
         sentAttachmentCacheRef.current[targetSessionId] = {
@@ -161,8 +183,14 @@ export function usePromptActions(params: UsePromptActionsParams) {
           }
         };
       }
+      markMessageSendPerf(perf, 'send.optimistic.upsert.begin');
       upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
+      markMessageSendPerf(perf, 'send.optimistic.upsert.done');
+      const listStartedAt = performance.now();
       appendOptimisticTurnAndStick(optimisticMessage);
+      markMessageSendPerf(perf, 'send.list_window.append_done', {
+        ms: Math.round(performance.now() - listStartedAt)
+      });
       setPrompt('');
       setSlashOpen(false);
       setImageAttachments([]);
@@ -170,6 +198,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
         id: optimisticMessage.id,
         startedAt: Date.now()
       };
+      markMessageSendPerf(perf, 'send.stream.start');
       startStream(targetSessionId);
       pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'} images=${images.length}`);
       images.forEach((img, idx) => {
@@ -186,6 +215,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
         }))
       ];
       pushConnLog(`sendPrompt start, parts count=${parts.length}, timeout=${images.length > 0 ? imageSendTimeoutMs : 12000}ms`);
+      const networkStartedAt = performance.now();
+      markMessageSendPerf(perf, 'send.network.begin', { parts: parts.length });
       const res = await sendPrompt({
         baseUrl: serverUrl,
         token,
@@ -198,17 +229,34 @@ export function usePromptActions(params: UsePromptActionsParams) {
         parts: parts.length > 0 ? parts : undefined,
         timeoutMs: images.length > 0 ? imageSendTimeoutMs : undefined
       });
+      markMessageSendPerf(perf, 'send.network.done', {
+        ms: Math.round(performance.now() - networkStartedAt),
+        sid: res.sessionId
+      });
       pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
-      // 只有在 sessionId 发生变化时才切换会话，避免流式输出过程中强制切换
-      if (res.sessionId !== targetSessionId) {
-        setActiveSession(res.sessionId);
-      }
+      // 如果服务端创建了新会话（如 task 事件），不自动切换当前视图，
+      // 保持用户在当前会话页面，避免界面跳转到新会话
+      markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: res.sessionId });
+      const syncStartedAt = performance.now();
       void syncSessionMessages(res.sessionId, {
         limit: Math.max(initialSessionLimit, Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0)),
         tailOnly: true
-      }).finally(() => {
-        delete pendingPromptSessionRef.current[targetSessionId];
-      });
+      })
+        .then(() => {
+          markMessageSendPerf(perf, 'send.sync_tail.done', {
+            ms: Math.round(performance.now() - syncStartedAt)
+          });
+        })
+        .catch((syncError) => {
+          markMessageSendPerf(perf, 'send.sync_tail.error', { reason: String(syncError) });
+        })
+        .finally(() => {
+          delete pendingPromptSessionRef.current[targetSessionId];
+          finishMessageSendPerf(perf, 'success', {
+            userVisible: perf.userVisibleMarked ? 1 : 0,
+            assistantVisible: perf.assistantVisibleMarked ? 1 : 0
+          });
+        });
       void refreshSessionsFromServer();
       pushConnLog(`POST prompt ok sid=${res.sessionId}`);
       setStatus('已发送');
@@ -240,6 +288,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       } else {
         setStatus(`发送失败: ${msg}`);
       }
+      abortMessageSendPerf(perf, msg);
     } finally {
       setBusy(false);
     }
@@ -265,7 +314,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
     sessionIdRef,
     setActiveSession,
     setBusy,
-    setChatListResetKey,
     setImageAttachments,
     setPrompt,
     setSlashOpen,
@@ -286,7 +334,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setBusy(true);
     stopStream();
     clearSessionOptimisticMessages(sid);
-    setChatListResetKey((prev) => prev + 1);
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     try {
       pushConnLog(`POST abort sid=${sid}`);

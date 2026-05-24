@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { SESSION_LIST_REVEAL_DELAY_MS } from './mobileAppConfig';
 
 export type ChatViewportSnapshot = {
   scrollY: number;
@@ -14,6 +15,13 @@ export type ChatViewportSnapshot = {
   updatedAt: number;
 };
 
+export type ChatMaintainVisibleContentPosition = {
+  startRenderingFromBottom: boolean;
+  autoscrollToBottomThreshold?: number;
+  autoscrollToTopThreshold?: number;
+  animateAutoScrollToBottom?: boolean;
+};
+
 export function useChatListController<Cell extends { id?: string }>(props: {
   initialCellLimit: number;
   chatBottomProximity: number;
@@ -22,6 +30,8 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   const { chatBottomProximity, debugLog, initialCellLimit } = props;
   const [showLatestJump, setShowLatestJump] = useState(false);
   const [suppressFloatingDocks, setSuppressFloatingDocks] = useState(false);
+  const [followLatest, setFollowLatest] = useState(true);
+  const [listRevealReady, setListRevealReady] = useState(false);
 
   const messageScrollRef = useRef<any>(null);
   const forceScrollToLatestUntilRef = useRef(0);
@@ -35,6 +45,12 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   const messageUserScrollingRef = useRef(false);
   const scrollReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const floatingDockReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressLoadOlderUntilRef = useRef(0);
+  const historyPaginationReadyRef = useRef(false);
+  const anchoredSessionRef = useRef('');
+  const anchoredSessionIdRef = useRef('');
+  const anchorInFlightRef = useRef('');
+  const listRevealReadyRef = useRef(false);
   const pendingCellLayoutAdjustRef = useRef<{ cellId: string; previousHeight: number } | null>(null);
   const chatViewabilityConfig = useMemo(() => ({ itemVisiblePercentThreshold: 1 }), []);
 
@@ -64,14 +80,42 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   }, [clearFloatingDockReleaseTimer]);
 
   const getDistanceFromBottom = useCallback((scrollY = messageScrollYRef.current) => {
+    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
+    const contentH = Math.max(0, Number(messageContentHRef.current || 0));
+    if (contentH > 0 && viewportH > 0) {
+      return Math.max(0, contentH - viewportH - Math.max(0, scrollY));
+    }
     return Math.max(0, scrollY);
   }, []);
+
+  const scrollListToEnd = useCallback((animated = false) => {
+    const list = messageScrollRef.current;
+    if (!list) return;
+    try {
+      list.scrollToEnd?.({ animated });
+    } catch {}
+    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
+    const contentH = Math.max(0, Number(messageContentHRef.current || 0));
+    const maxOffset = Math.max(0, contentH - viewportH);
+    if (maxOffset <= 0) return;
+    try {
+      list.scrollToOffset?.({ offset: maxOffset, animated });
+      messageScrollYRef.current = maxOffset;
+    } catch {}
+  }, []);
+
+  const shouldStickToLatest = useCallback(() => {
+    return (
+      (followLatest && !messageUserScrollingRef.current)
+      || Date.now() < forceScrollToLatestUntilRef.current
+    );
+  }, [followLatest]);
 
   const updateLatestJumpVisibility = useCallback((distanceFromBottom: number, immediate = false) => {
     const now = Date.now();
     const currentlyVisible = latestJumpVisibleRef.current;
     const shouldShow = distanceFromBottom > 112;
-    const shouldHide = distanceFromBottom < 42 || Date.now() < forceScrollToLatestUntilRef.current;
+    const shouldHide = distanceFromBottom < chatBottomProximity || shouldStickToLatest();
     let next = currentlyVisible;
     if (currentlyVisible) {
       if (shouldHide) next = false;
@@ -83,7 +127,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     latestJumpVisibleRef.current = next;
     latestJumpLastChangeRef.current = now;
     setShowLatestJump(next);
-  }, []);
+  }, [chatBottomProximity, shouldStickToLatest]);
 
   const onChatViewableItemsChanged = useCallback((info: { viewableItems: Array<{ index?: number | null }> }) => {
     const indices = info.viewableItems
@@ -96,24 +140,116 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     };
   }, []);
 
+  const guardHistoryLoad = useCallback((durationMs = 1200) => {
+    suppressLoadOlderUntilRef.current = Date.now() + Math.max(400, durationMs);
+  }, []);
+
+  const shouldSuppressLoadOlder = useCallback(() => {
+    if (!historyPaginationReadyRef.current) return true;
+    return Date.now() < suppressLoadOlderUntilRef.current;
+  }, []);
+
+  const anchorSessionToLatest = useCallback((sessionKey: string, cellCount: number) => {
+    const sid = String(sessionKey || '').trim();
+    if (!sid || cellCount <= 0) return;
+    const signature = `${sid}:${cellCount}`;
+    const sessionChanged = anchoredSessionIdRef.current !== sid;
+
+    if (sessionChanged) {
+      anchoredSessionIdRef.current = sid;
+      anchoredSessionRef.current = '';
+      anchorInFlightRef.current = '';
+      listRevealReadyRef.current = false;
+      setListRevealReady(false);
+      guardHistoryLoad(2400);
+      setFollowLatest(true);
+    } else if (listRevealReadyRef.current && anchoredSessionRef.current !== signature) {
+      anchoredSessionRef.current = signature;
+      if (getDistanceFromBottom() > chatBottomProximity) {
+        scrollListToEnd(false);
+      }
+      return;
+    } else if (anchoredSessionRef.current === signature && listRevealReadyRef.current) {
+      return;
+    }
+
+    if (anchorInFlightRef.current === sid) return;
+    anchorInFlightRef.current = sid;
+    historyPaginationReadyRef.current = false;
+
+    const finishReveal = (scrolled: boolean) => {
+      if (anchorInFlightRef.current !== sid) return;
+      anchorInFlightRef.current = '';
+      anchoredSessionRef.current = signature;
+      historyPaginationReadyRef.current = true;
+      listRevealReadyRef.current = true;
+      setListRevealReady(true);
+      const distance = getDistanceFromBottom();
+      debugLog?.(
+        `chat.viewport.reveal sid=${sid} cells=${cellCount} distance=${Math.round(distance)} scrolled=${scrolled ? 1 : 0} delayMs=${SESSION_LIST_REVEAL_DELAY_MS}`
+      );
+    };
+
+    const revealTimer = setTimeout(() => {
+      if (anchorInFlightRef.current !== sid) return;
+      let scrolled = false;
+      if (getDistanceFromBottom() > chatBottomProximity) {
+        scrollListToEnd(false);
+        scrolled = true;
+      }
+      requestAnimationFrame(() => {
+        if (anchorInFlightRef.current !== sid) return;
+        if (getDistanceFromBottom() > chatBottomProximity) {
+          scrollListToEnd(false);
+          scrolled = true;
+        }
+        finishReveal(scrolled);
+      });
+    }, SESSION_LIST_REVEAL_DELAY_MS);
+
+    return () => clearTimeout(revealTimer);
+  }, [
+    chatBottomProximity,
+    debugLog,
+    getDistanceFromBottom,
+    guardHistoryLoad,
+    scrollListToEnd
+  ]);
+
   const scrollToLatest = useCallback((animated?: boolean) => {
-    if (messageUserScrollingRef.current) return;
-    try {
-      messageScrollRef.current?.scrollToOffset({ offset: 0, animated });
-    } catch {}
+    if (messageUserScrollingRef.current && !shouldStickToLatest()) return;
+    scrollListToEnd(!!animated);
+    setFollowLatest(true);
+  }, [scrollListToEnd, shouldStickToLatest]);
+
+  const markFollowLatest = useCallback((durationMs = 0) => {
+    setFollowLatest(true);
+    if (durationMs > 0) {
+      forceScrollToLatestUntilRef.current = Date.now() + durationMs;
+    }
   }, []);
 
   const jumpToLatest = useCallback(() => {
     messageUserScrollingRef.current = false;
-    forceScrollToLatestUntilRef.current = Date.now() + 900;
+    markFollowLatest(900);
     latestJumpVisibleRef.current = false;
     latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
     scrollToLatest(true);
-    [120, 320].forEach((delay) => {
-      setTimeout(() => scrollToLatest(false), delay);
-    });
-  }, [scrollToLatest]);
+  }, [markFollowLatest, scrollToLatest]);
+
+  const getMaintainVisibleContentPosition = useCallback((loadingOlder: boolean): ChatMaintainVisibleContentPosition => {
+    const config: ChatMaintainVisibleContentPosition = {
+      startRenderingFromBottom: true,
+      animateAutoScrollToBottom: false
+    };
+    if (loadingOlder) {
+      config.autoscrollToTopThreshold = 0.12;
+    } else if (followLatest && listRevealReady) {
+      config.autoscrollToBottomThreshold = 0.12;
+    }
+    return config;
+  }, [followLatest, listRevealReady]);
 
   const prepareCellLayoutAdjustment = useCallback((cellId: string, previousHeight: number) => {
     const key = String(cellId || '').trim();
@@ -142,7 +278,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     try {
       messageScrollRef.current?.scrollToOffset({ offset: nextOffset, animated: false });
     } catch {}
-    updateLatestJumpVisibility(nextOffset, true);
+    updateLatestJumpVisibility(getDistanceFromBottom(nextOffset), true);
   }, [chatBottomProximity, getDistanceFromBottom, updateLatestJumpVisibility]);
 
   const onMessageListScroll = useCallback((y: number, viewportH?: number, contentH?: number) => {
@@ -153,14 +289,19 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     if (typeof contentH === 'number' && Number.isFinite(contentH)) {
       messageContentHRef.current = contentH;
     }
-    updateLatestJumpVisibility(getDistanceFromBottom(y));
-  }, [getDistanceFromBottom, updateLatestJumpVisibility]);
+    const distance = getDistanceFromBottom(y);
+    if (distance <= chatBottomProximity && !messageUserScrollingRef.current) {
+      setFollowLatest(true);
+    }
+    updateLatestJumpVisibility(distance);
+  }, [chatBottomProximity, getDistanceFromBottom, updateLatestJumpVisibility]);
 
   const handleScrollBeginDrag = useCallback(() => {
     clearScrollReleaseTimer();
     holdFloatingDocks();
     forceScrollToLatestUntilRef.current = 0;
     messageUserScrollingRef.current = true;
+    setFollowLatest(false);
   }, [clearScrollReleaseTimer, holdFloatingDocks]);
 
   const handleScrollEndDrag = useCallback(() => {
@@ -168,42 +309,60 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     scrollReleaseTimerRef.current = setTimeout(() => {
       scrollReleaseTimerRef.current = null;
       messageUserScrollingRef.current = false;
-      updateLatestJumpVisibility(getDistanceFromBottom(), true);
+      const distance = getDistanceFromBottom();
+      if (distance <= chatBottomProximity) setFollowLatest(true);
+      updateLatestJumpVisibility(distance, true);
     }, 140);
     releaseFloatingDocksSoon();
-  }, [clearScrollReleaseTimer, getDistanceFromBottom, releaseFloatingDocksSoon, updateLatestJumpVisibility]);
+  }, [chatBottomProximity, clearScrollReleaseTimer, getDistanceFromBottom, releaseFloatingDocksSoon, updateLatestJumpVisibility]);
 
   const handleMomentumScrollBegin = useCallback(() => {
     clearScrollReleaseTimer();
     holdFloatingDocks();
     messageUserScrollingRef.current = true;
+    setFollowLatest(false);
   }, [clearScrollReleaseTimer, holdFloatingDocks]);
 
   const handleMomentumScrollEnd = useCallback(() => {
     clearScrollReleaseTimer();
     messageUserScrollingRef.current = false;
-    updateLatestJumpVisibility(getDistanceFromBottom(), true);
+    const distance = getDistanceFromBottom();
+    if (distance <= chatBottomProximity) setFollowLatest(true);
+    updateLatestJumpVisibility(distance, true);
     releaseFloatingDocksSoon();
-  }, [clearScrollReleaseTimer, getDistanceFromBottom, releaseFloatingDocksSoon, updateLatestJumpVisibility]);
+  }, [chatBottomProximity, clearScrollReleaseTimer, getDistanceFromBottom, releaseFloatingDocksSoon, updateLatestJumpVisibility]);
 
-  const handleContentSizeChange = useCallback((height: number, opts: {
-    loadingOlder: boolean;
-  }) => {
+  const handleContentSizeChange = useCallback((height: number, opts: { loadingOlder: boolean }) => {
     const previousHeight = Math.max(0, Number(messageContentHRef.current || 0));
     messageContentHRef.current = Number(height || 0);
-    if (opts.loadingOlder && previousHeight > 0) {
+    if (opts.loadingOlder) {
+      if (previousHeight <= 0) return;
       const delta = Math.max(0, Number(height || 0) - previousHeight);
-      if (delta > 1) {
-        const nextOffset = Math.max(0, Number(messageScrollYRef.current || 0) + delta);
-        messageScrollYRef.current = nextOffset;
-        try {
-          messageScrollRef.current?.scrollToOffset({ offset: nextOffset, animated: false });
-        } catch {}
-      }
+      if (delta <= 1) return;
+      const nextOffset = Math.max(0, Number(messageScrollYRef.current || 0) + delta);
+      messageScrollYRef.current = nextOffset;
+      try {
+        messageScrollRef.current?.scrollToOffset({ offset: nextOffset, animated: false });
+      } catch {}
+      updateLatestJumpVisibility(getDistanceFromBottom(nextOffset), true);
+      return;
     }
-    if (opts.loadingOlder && previousHeight > 0) debugLog?.(`chat.history.content loading=1 prevH=${Math.round(previousHeight)} nextH=${Math.round(height)}`);
-    updateLatestJumpVisibility(getDistanceFromBottom(), opts.loadingOlder);
-  }, [debugLog, getDistanceFromBottom, updateLatestJumpVisibility]);
+    if (
+      listRevealReadyRef.current
+      && followLatest
+      && !messageUserScrollingRef.current
+      && getDistanceFromBottom() > chatBottomProximity
+    ) {
+      scrollListToEnd(false);
+      updateLatestJumpVisibility(getDistanceFromBottom(), true);
+    }
+  }, [
+    chatBottomProximity,
+    followLatest,
+    getDistanceFromBottom,
+    scrollListToEnd,
+    updateLatestJumpVisibility
+  ]);
 
   const handleListLayout = useCallback((height: number) => {
     messageViewportHRef.current = Number(height || 0);
@@ -219,61 +378,40 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     const visibleCellCount = Math.max(initialCellLimit, Number(params.visibleCellCount || cells.length || initialCellLimit));
     const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
     const contentH = Math.max(0, Number(messageContentHRef.current || 0));
-    const fallbackY = Math.max(0, Number(messageScrollYRef.current || 0));
-    let scrollY = fallbackY;
+    let scrollY = Math.max(0, Number(messageScrollYRef.current || 0));
     try {
       const currentOffset = Number(messageScrollRef.current?.getAbsoluteLastScrollOffset?.());
       if (Number.isFinite(currentOffset)) scrollY = Math.max(0, currentOffset);
     } catch {}
-    const distanceFromBottom = Math.max(0, scrollY);
+    const distanceFromBottom = getDistanceFromBottom(scrollY);
     const viewableRange = chatViewableRangeRef.current;
-    let firstVisibleIndex = Math.max(0, Math.floor(viewableRange.startIndex || 0));
-    let lastVisibleIndex = Math.max(firstVisibleIndex, Math.floor(viewableRange.endIndex || firstVisibleIndex));
-    try {
-      const indices = messageScrollRef.current?.computeVisibleIndices?.();
-      if (Array.isArray(indices) && indices.length > 0) {
-        const normalized = indices
-          .map((index) => Number(index))
-          .filter((index) => Number.isFinite(index) && index >= 0);
-        if (normalized.length > 0) {
-          firstVisibleIndex = Math.min(...normalized);
-          lastVisibleIndex = Math.max(...normalized);
-        }
-      } else if (indices && Number.isFinite(Number(indices.startIndex))) {
-        firstVisibleIndex = Math.max(0, Number(indices.startIndex));
-        lastVisibleIndex = Number.isFinite(Number(indices.endIndex))
-          ? Math.max(firstVisibleIndex, Number(indices.endIndex))
-          : firstVisibleIndex;
-      }
-    } catch {}
-    const firstCell = cells[firstVisibleIndex];
-    let firstVisibleOffset = 0;
-    try {
-      const layout = messageScrollRef.current?.getLayout?.(firstVisibleIndex);
-      if (layout && Number.isFinite(Number(layout.y))) {
-        firstVisibleOffset = Math.max(0, scrollY - Number(layout.y));
-      }
-    } catch {}
-    const latestCellVisible = cells.length > 0 && firstVisibleIndex <= 0;
+    const lastVisibleIndex = Math.max(0, Math.floor(viewableRange.endIndex || 0));
+    const lastCell = cells[lastVisibleIndex];
     chatViewportSnapshotRef.current[sid] = {
       scrollY,
       viewportH,
       contentH,
       distanceFromBottom,
       visibleCellCount,
-      firstVisibleCellId: firstCell?.id,
-      firstVisibleIndex,
-      firstVisibleIndexFromEnd: firstCell ? Math.max(0, cells.length - 1 - firstVisibleIndex) : undefined,
-      firstVisibleOffset,
-      nearBottom: latestCellVisible || distanceFromBottom <= chatBottomProximity,
+      firstVisibleCellId: lastCell?.id,
+      firstVisibleIndex: lastVisibleIndex,
+      firstVisibleIndexFromEnd: lastCell ? Math.max(0, cells.length - 1 - lastVisibleIndex) : undefined,
+      nearBottom: cells.length > 0 && lastVisibleIndex >= cells.length - 1 || distanceFromBottom <= chatBottomProximity,
       updatedAt: Date.now()
     };
-  }, [chatBottomProximity, initialCellLimit]);
+  }, [chatBottomProximity, getDistanceFromBottom, initialCellLimit]);
 
   const resetListInteractionState = useCallback(() => {
     clearScrollReleaseTimer();
     clearFloatingDockReleaseTimer();
     forceScrollToLatestUntilRef.current = 0;
+    suppressLoadOlderUntilRef.current = 0;
+    historyPaginationReadyRef.current = false;
+    anchoredSessionRef.current = '';
+    anchoredSessionIdRef.current = '';
+    anchorInFlightRef.current = '';
+    listRevealReadyRef.current = false;
+    setListRevealReady(false);
     messageUserScrollingRef.current = false;
     messageScrollYRef.current = 0;
     messageViewportHRef.current = 0;
@@ -283,11 +421,14 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
     setSuppressFloatingDocks(false);
+    setFollowLatest(true);
   }, [clearFloatingDockReleaseTimer, clearScrollReleaseTimer]);
 
   return {
     showLatestJump,
     suppressFloatingDocks,
+    listRevealReady,
+    followLatest,
     messageScrollRef,
     forceScrollToLatestUntilRef,
     chatViewportSnapshotRef,
@@ -298,6 +439,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     chatViewabilityConfig,
     onChatViewableItemsChanged,
     scrollToLatest,
+    markFollowLatest,
     jumpToLatest,
     prepareCellLayoutAdjustment,
     settleCellLayoutAdjustment,
@@ -310,5 +452,11 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     handleListLayout,
     rememberCurrentSessionViewport,
     resetListInteractionState,
+    guardHistoryLoad,
+    anchorSessionToLatest,
+    getMaintainVisibleContentPosition,
+    shouldSuppressLoadOlder,
+    suppressLoadOlderUntilRef,
+    historyPaginationReadyRef
   };
 }

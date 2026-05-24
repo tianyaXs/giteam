@@ -1,4 +1,10 @@
 import { useCallback, useMemo } from 'react';
+import {
+  abortSessionSwitchPerf,
+  finishSessionSwitchPerf,
+  markSessionSwitchPerf,
+  startSessionSwitchPerf
+} from './sessionSwitchPerf';
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import { toText } from '../../lib/text';
 
@@ -61,6 +67,7 @@ export function useLeftDrawerController(props: {
   initialMessageFetchLimit: number;
   messagesRef: React.MutableRefObject<any[]>;
   renderedTurnsRef: React.MutableRefObject<any[]>;
+  pushConnLog: (message: string, level?: 'info' | 'error') => void;
 }) {
   const {
     closeDrawer,
@@ -69,6 +76,7 @@ export function useLeftDrawerController(props: {
     initialSessionLimit,
     messages,
     messagesRef,
+    pushConnLog,
     onNewSession,
     onSwitchProject,
     pickSessionDisplayTitle,
@@ -168,11 +176,28 @@ export function useLeftDrawerController(props: {
       return;
     }
     void (async () => {
+      const perf = startSessionSwitchPerf({
+        targetSid: targetSessionId,
+        fromSid: sessionIdRef.current,
+        log: pushConnLog
+      });
+      try {
+      const stopStartedAt = performance.now();
       stopStream();
+      markSessionSwitchPerf(perf, 'drawer.stop_stream', {
+        ms: Math.round(performance.now() - stopStartedAt)
+      });
       const repo = toText(repoPath).trim();
+      const snapshotStartedAt = performance.now();
       const snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
       const snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
       const snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
+      markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
+        ms: Math.round(performance.now() - snapshotStartedAt),
+        rawRows: snapshotRawRows.length,
+        renderedTurns: snapshotRenderedTurns.length,
+        hasSnapshot: snapshot ? 1 : 0
+      });
       if ((sessionRawMapRef.current[targetSessionId] || []).length <= 0 && snapshotRawRows.length > 0) {
         const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
         const totalTurnCount = Math.max(visibleTurnCount, Number(snapshot?.totalTurnCount || visibleTurnCount));
@@ -184,32 +209,59 @@ export function useLeftDrawerController(props: {
           ...prev,
           [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
         }));
+        markSessionSwitchPerf(perf, 'drawer.snapshot_inject_memory', { rawRows: snapshotRawRows.length });
       }
       const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
+      markSessionSwitchPerf(perf, 'drawer.set_active_session.call', { hasCachedRows: hasCachedRows ? 1 : 0 });
+      const activateStartedAt = performance.now();
       setActiveSession(targetSessionId);
+      markSessionSwitchPerf(perf, 'drawer.set_active_session.returned', {
+        ms: Math.round(performance.now() - activateStartedAt)
+      });
       closeDrawer();
+      markSessionSwitchPerf(perf, 'drawer.closed');
       if (!hasCachedRows) {
         if (snapshot && sessionIdRef.current === targetSessionId) {
+          const snapshotUiStartedAt = performance.now();
           setMessages(snapshot.messages);
           setRenderedTurns(snapshot.renderedTurns);
           messagesRef.current = snapshot.messages;
           renderedTurnsRef.current = snapshot.renderedTurns;
           setSessionSwitchingTo('');
+          markSessionSwitchPerf(perf, 'drawer.snapshot_messages_fast', {
+            ms: Math.round(performance.now() - snapshotUiStartedAt),
+            messages: snapshot.messages.length,
+            turns: snapshot.renderedTurns.length
+          });
+          finishSessionSwitchPerf(perf, 'snapshot_messages_fast');
           void reconnectRunningSession(targetSessionId);
           return;
         }
+        markSessionSwitchPerf(perf, 'drawer.sync.await_begin');
+        const syncStartedAt = performance.now();
         await syncSessionMessages(targetSessionId, {
           limit: initialSessionLimit,
           fetchLimit: initialMessageFetchLimit
         }).catch(() => undefined);
+        markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
+          ms: Math.round(performance.now() - syncStartedAt)
+        });
+        finishSessionSwitchPerf(perf, 'sync_network');
+      } else {
+        finishSessionSwitchPerf(perf, 'memory_cache');
       }
       void reconnectRunningSession(targetSessionId);
+      } catch (error) {
+        abortSessionSwitchPerf(perf, String(error));
+        throw error;
+      }
     })();
   }, [
     closeDrawer,
     initialMessageFetchLimit,
     initialSessionLimit,
     messagesRef,
+    pushConnLog,
     reconnectRunningSession,
     renderedTurnsRef,
     repoPath,
