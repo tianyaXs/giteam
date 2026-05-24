@@ -52,6 +52,7 @@ export function ChatWorkspaceScreen(props: {
   onScroll: (evt: any) => void;
   onContentSizeChange: (w: number, h: number) => void;
   onListLayout: (evt: any) => void;
+  onLoadOlderMessages: () => Promise<void>;
   renderTurnCell: (info: { item: any; index: number }) => React.ReactElement;
   sessionId: string;
   sessionHistoryRetryHintText: string;
@@ -106,6 +107,7 @@ export function ChatWorkspaceScreen(props: {
     onDismissTodoDock,
     onJumpToLatest,
     onListLayout,
+    onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
     onReplyQuestion,
@@ -243,6 +245,7 @@ export function ChatWorkspaceScreen(props: {
               onScroll={onScroll}
               onContentSizeChange={onContentSizeChange}
               onListLayout={onListLayout}
+              onLoadOlderMessages={onLoadOlderMessages}
               renderTurnCell={renderTurnCell}
               sessionId={sessionId}
               sessionHistoryRetryHintText={sessionHistoryRetryHintText}

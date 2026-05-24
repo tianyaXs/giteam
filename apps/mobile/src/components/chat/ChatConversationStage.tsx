@@ -35,6 +35,7 @@ export function ChatConversationStage(props: {
   onScroll: (evt: any) => void;
   onContentSizeChange: (w: number, h: number) => void;
   onListLayout: (evt: any) => void;
+  onLoadOlderMessages: () => Promise<void>;
   renderTurnCell: (info: { item: any; index: number }) => React.ReactElement;
   sessionId: string;
   sessionHistoryRetryHintText: string;
@@ -59,6 +60,7 @@ export function ChatConversationStage(props: {
     onContentSizeChange,
     onJumpToLatest,
     onListLayout,
+    onLoadOlderMessages,
     onMomentumScrollBegin,
     onMomentumScrollEnd,
     onScroll,
@@ -105,26 +107,6 @@ export function ChatConversationStage(props: {
 
   return (
     <View style={styles.chatBodyWrap}>
-      {showStreamTopGlow ? (
-        <View pointerEvents="none" style={styles.streamTopGlowTrack}>
-          <Animated.View
-            style={[
-              styles.streamTopGlowSweep,
-              {
-                opacity: streamTopGlowAnim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.18, 0.46, 0.18] }),
-                transform: [
-                  {
-                    translateX: streamTopGlowAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [-180, 360]
-                    })
-                  }
-                ]
-              }
-            ]}
-          />
-        </View>
-      ) : null}
       {sessionSwitchingTo ? (
         <View style={[styles.blankWrap, styles.sessionSwitchWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
           <View style={[styles.blankHero, styles.sessionSwitchHero, { width: Math.min(windowWidth - 56, 320) }]}>
@@ -178,6 +160,12 @@ export function ChatConversationStage(props: {
             onContentSizeChange={onContentSizeChange}
             keyExtractor={keyExtractor}
             renderItem={renderTurnCell}
+            onEndReached={() => {
+              if (!loadingOlder && sessionId) {
+                void onLoadOlderMessages();
+              }
+            }}
+            onEndReachedThreshold={0.3}
             ListHeaderComponent={null}
             ListFooterComponent={null}
           />

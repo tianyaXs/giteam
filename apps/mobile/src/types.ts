@@ -58,6 +58,25 @@ export type MobileEventCard = {
   mode: string;
   status: string;
   output?: string;
+  meta?: string;
+  fileDiff?: {
+    file: string;
+    patch?: string;
+    before?: string;
+    after?: string;
+    additions: number;
+    deletions: number;
+    status?: 'added' | 'deleted' | 'modified';
+  };
+  patchFiles?: Array<{
+    filePath: string;
+    relativePath: string;
+    type: 'add' | 'update' | 'delete' | 'move';
+    patch?: string;
+    additions: number;
+    deletions: number;
+    movePath?: string;
+  }>;
   taskSessionId?: string;
   taskSubagent?: string;
   createdAt?: number;
@@ -67,6 +86,8 @@ export type MobileContextCard = {
   id: string;
   title: string;
   summary: string;
+  detail?: string;
+  status?: 'running' | 'completed';
   createdAt?: number;
   tools: MobileEventCard[];
 };

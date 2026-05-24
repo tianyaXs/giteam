@@ -3,19 +3,21 @@ import {
   Animated,
   Easing,
   Image,
+  Linking,
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   Text,
-  View,
-  type TextStyle
+  View
 } from 'react-native';
-import type { MarkedStyles } from 'react-native-marked';
-import { formatClock } from '../../lib/time';
+import type { MarkdownStyle } from 'react-native-enriched-markdown';
 import { toText } from '../../lib/text';
-import type { MobileQuestionCard, MobileRenderedTurn, MobileTodoCard } from '../../types';
+import type { MobileEventCard, MobileQuestionCard, MobileRenderedTurn, MobileTodoCard } from '../../types';
 import type { TurnCellInteractionState } from '../../features/chat/useInteractiveTurnCells';
+import { FONT_MIXED_BODY_MEDIUM } from '../../styles/mobileFonts';
 import { MobileMarkedMarkdown } from './MobileMarkedMarkdown';
+import { buildMobileDiffRows } from './mobileDiff';
 
 const CODE_SEGMENT_RE = /(```[\s\S]*?```|`[^`\n]+`)/g;
 
@@ -75,106 +77,91 @@ function MarkdownMessage(props: {
   const isUser = tone === 'user';
   const isThink = tone === 'think';
   const textColor = isUser ? '#fffaf2' : isThink ? '#746b5e' : '#24211d';
-  const mutedColor = isUser ? '#eadfce' : isThink ? '#8d826f' : '#7c766c';
+  const mutedColor = isUser ? '#eadfce' : isThink ? '#8d826f' : '#6f6a61';
   const headingColor = isUser ? '#ffffff' : isThink ? '#5f5749' : '#211e19';
-  const codeBg = isUser ? 'rgba(38, 35, 29, 0.34)' : isThink ? '#eee8dc' : '#ece8df';
-  const codeColor = isUser ? '#fffaf2' : '#3a352e';
-  const markdownStyles = useMemo<MarkedStyles>(
+  const codeBg = isUser ? 'rgba(38, 35, 29, 0.34)' : isThink ? '#eee8dc' : '#f1ede5';
+  const inlineCodeColor = isUser ? '#fffaf2' : isThink ? '#6b6459' : '#667168';
+  const codeColor = isUser ? '#fffaf2' : '#355c4e';
+  const markdownStyles = useMemo<MarkdownStyle>(
     () => ({
-      text: {
+      paragraph: {
         color: textColor,
         fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 22 : 24,
-        fontFamily: bodyFontFamily
-      },
-      paragraph: {
-        paddingVertical: 2,
+        lineHeight: isThink ? 21 : 23,
+        fontFamily: bodyFontFamily,
         marginTop: 0,
-        marginBottom: 0
+        marginBottom: isThink ? 10 : 12
       },
       strong: { color: headingColor, fontWeight: 'bold', fontFamily: bodyFontFamily },
       em: { color: mutedColor, fontStyle: 'italic', fontFamily: bodyFontFamily },
-      link: { color: isUser ? '#bfdbfe' : '#1768c2', textDecorationLine: 'underline', fontFamily: bodyFontFamily },
-      h1: { color: headingColor, fontSize: 20, lineHeight: 27, fontWeight: '800', marginTop: 8, marginBottom: 6, fontFamily: bodyFontFamily },
-      h2: { color: headingColor, fontSize: 18, lineHeight: 25, fontWeight: '800', marginTop: 6, marginBottom: 5, fontFamily: bodyFontFamily },
-      h3: { color: headingColor, fontSize: 16, lineHeight: 23, fontWeight: '800', marginTop: 5, marginBottom: 4, fontFamily: bodyFontFamily },
-      h4: { color: headingColor, fontSize: 15, lineHeight: 22, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: bodyFontFamily },
-      h5: { color: headingColor, fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: bodyFontFamily },
-      h6: { color: mutedColor, fontSize: 13, lineHeight: 20, fontWeight: '800', marginTop: 4, marginBottom: 3, fontFamily: bodyFontFamily },
+      link: { color: isUser ? '#bfdbfe' : '#2d7f95', underline: true, fontFamily: bodyFontFamily },
+      h1: { color: headingColor, fontSize: 28, lineHeight: 34, fontWeight: '700', marginTop: 20, marginBottom: 10, fontFamily: bodyFontFamily },
+      h2: { color: headingColor, fontSize: 24, lineHeight: 30, fontWeight: '700', marginTop: 18, marginBottom: 10, fontFamily: bodyFontFamily },
+      h3: { color: headingColor, fontSize: 20, lineHeight: 26, fontWeight: '700', marginTop: 16, marginBottom: 8, fontFamily: bodyFontFamily },
+      h4: { color: headingColor, fontSize: 18, lineHeight: 24, fontWeight: '700', marginTop: 14, marginBottom: 8, fontFamily: bodyFontFamily },
+      h5: { color: headingColor, fontSize: 17, lineHeight: 23, fontWeight: '700', marginTop: 12, marginBottom: 7, fontFamily: bodyFontFamily },
+      h6: { color: mutedColor, fontSize: 16, lineHeight: 22, fontWeight: '700', marginTop: 12, marginBottom: 7, fontFamily: bodyFontFamily },
       list: {
-        marginTop: 4,
-        marginBottom: 4,
-        marginLeft: 14
-      },
-      li: {
         color: textColor,
         fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 22 : 24,
-        fontFamily: bodyFontFamily
-      },
-      codespan: {
-        color: codeColor,
-        backgroundColor: codeBg,
-        fontStyle: 'normal',
-        fontWeight: '400',
-        borderWidth: 0,
-        borderRadius: 4,
-        fontSize: 13,
-        lineHeight: 20,
-        fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
-        paddingHorizontal: 5,
-        paddingVertical: 1
+        lineHeight: isThink ? 21 : 23,
+        fontFamily: bodyFontFamily,
+        marginTop: 0,
+        marginBottom: 12,
+        marginLeft: 6,
+        gapWidth: 8,
+        bulletColor: mutedColor,
+        markerColor: mutedColor
       },
       code: {
+        color: inlineCodeColor,
+        backgroundColor: 'transparent',
+        borderColor: 'transparent',
+        fontSize: 12.5,
+        fontFamily: FONT_MIXED_BODY_MEDIUM
+      },
+      codeBlock: {
+        color: codeColor,
         backgroundColor: codeBg,
-        borderWidth: 0,
-        borderRadius: 10,
+        borderColor: codeBg,
+        borderRadius: 8,
         padding: 10,
-        marginTop: 6,
-        marginBottom: 6,
-        fontSize: 13,
+        marginTop: 2,
+        marginBottom: 10,
+        fontSize: 12.5,
+        lineHeight: 20,
         fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
       },
       blockquote: {
         color: textColor,
-        backgroundColor: isUser ? 'rgba(38, 35, 29, 0.18)' : '#f3eee5',
+        backgroundColor: isUser ? 'rgba(38, 35, 29, 0.18)' : '#f7f3eb',
         borderColor: isUser ? '#eadfce' : '#c9b99f',
-        borderWidth: 3,
-        borderLeftWidth: 3,
+        borderWidth: 2,
         marginTop: 8,
-        marginBottom: 8,
-        paddingLeft: 9
+        marginBottom: 12,
+        gapWidth: 10
       },
-      hr: {
-        backgroundColor: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca',
+      thematicBreak: {
+        color: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca',
         height: 1,
-        marginTop: 10,
-        marginBottom: 10
+        marginTop: 14,
+        marginBottom: 14
       },
       table: {
+        color: textColor,
+        fontSize: isThink ? 14 : 15,
+        lineHeight: isThink ? 21 : 23,
+        headerTextColor: headingColor,
         borderColor: isUser ? 'rgba(234,223,206,0.35)' : '#ddd4c5',
         borderWidth: 1,
-        borderRadius: 10
-      },
-      tableRow: {
-        borderColor: isUser ? 'rgba(234,223,206,0.24)' : '#ddd4c5',
-        borderBottomWidth: 1
-      },
-      tableCell: {
-        paddingHorizontal: 8,
-        paddingVertical: 8
+        borderRadius: 8,
+        cellPaddingHorizontal: 8,
+        cellPaddingVertical: 8,
+        rowEvenBackgroundColor: isUser ? 'rgba(255,255,255,0.04)' : '#fbf8f2',
+        rowOddBackgroundColor: isUser ? 'rgba(255,255,255,0.02)' : '#f6f0e6'
       }
     }),
-    [bodyFontFamily, codeBg, codeColor, headingColor, isThink, isUser, mutedColor, textColor]
-  );
-  const codeTextStyle = useMemo<TextStyle>(
-    () => ({
-      color: codeColor,
-      fontSize: 13,
-      lineHeight: 20,
-      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
-    }),
-    [codeColor]
+    [bodyFontFamily, codeBg, codeColor, headingColor, inlineCodeColor, isThink, isUser, mutedColor, textColor]
   );
 
   useEffect(() => {
@@ -183,6 +170,7 @@ function MarkdownMessage(props: {
       flowAnim.setValue(1);
       return;
     }
+    // 只在流式开始时触发一次淡入动画，避免文本更新时重复动画导致波动
     flowAnim.stopAnimation();
     flowAnim.setValue(0);
     const animation = Animated.timing(flowAnim, {
@@ -193,7 +181,9 @@ function MarkdownMessage(props: {
     });
     animation.start();
     return () => animation.stop();
-  }, [flowAnim, src, streaming]);
+    // 依赖项中移除 src，避免每次文本更新都触发动画
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowAnim, streaming]);
 
   return (
     <View style={styles.markdownBlock}>
@@ -208,11 +198,19 @@ function MarkdownMessage(props: {
         }}
       >
         <MobileMarkedMarkdown
-          codeTextStyle={codeTextStyle}
           containerStyle={styles.streamdownTextContainer}
           streaming={streaming}
           styles={markdownStyles}
           value={src}
+          onLinkPress={async (event) => {
+            const url = toText(event?.url).trim();
+            if (!url) return;
+            try {
+              await Linking.openURL(url);
+            } catch {
+              // 忽略打开失败，避免点击链接打断聊天页
+            }
+          }}
         />
       </Animated.View>
     </View>
@@ -227,6 +225,272 @@ function renderMarkdown(
   streaming: boolean
 ) {
   return <MarkdownMessage bodyFontFamily={bodyFontFamily} streaming={streaming} styles={styles} text={toText(text)} tone={tone} />;
+}
+
+function splitDisplayPath(input: string) {
+  const normalized = toText(input).replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 0) return { filename: '', directory: '' };
+  const filename = parts[parts.length - 1] || '';
+  const directoryParts = parts.slice(0, -1);
+  if (directoryParts.length <= 0) return { filename, directory: '' };
+  return {
+    filename,
+    directory: `/${directoryParts.slice(-2).join('/')}/`,
+  };
+}
+
+function summarizeWriteEvent(event: MobileEventCard) {
+  const fileDiff = event?.fileDiff;
+  const patchFiles = Array.isArray(event?.patchFiles) ? event.patchFiles : [];
+  if (fileDiff) {
+    return {
+      file: fileDiff.file || '',
+      additions: Number(fileDiff.additions || 0),
+      deletions: Number(fileDiff.deletions || 0),
+    };
+  }
+  if (patchFiles.length === 1) {
+    const file = patchFiles[0];
+    return {
+      file: file.relativePath || file.filePath || '',
+      additions: Number(file.additions || 0),
+      deletions: Number(file.deletions || 0),
+    };
+  }
+  if (patchFiles.length > 1) {
+    return {
+      file: `${patchFiles.length} 个文件`,
+      additions: patchFiles.reduce((sum: number, file: any) => sum + Number(file.additions || 0), 0),
+      deletions: patchFiles.reduce((sum: number, file: any) => sum + Number(file.deletions || 0), 0),
+    };
+  }
+  return null;
+}
+
+function writeEventActionLabel(event: MobileEventCard) {
+  const title = toText(event.title).toLowerCase();
+  if (title === 'write') return '写入';
+  return '编辑';
+}
+
+function toolLabel(tool: string) {
+  const normalized = toText(tool).toLowerCase();
+  if (normalized === 'read') return '读取';
+  if (normalized === 'grep' || normalized === 'glob' || normalized === 'search') return '搜索';
+  if (normalized === 'list') return '列出';
+  if (normalized === 'write') return '写入';
+  if (normalized === 'edit') return '编辑';
+  if (normalized === 'apply_patch' || normalized === 'patch') return 'Patch';
+  if (normalized === 'bash') return 'bash';
+  return normalized || '工具';
+}
+
+function Chevron(props: { expanded: boolean; styles: Record<string, any> }) {
+  return (
+    <View style={[props.styles.disclosureChevron, props.expanded && props.styles.disclosureChevronExpanded]}>
+      <View style={props.styles.disclosureChevronLineLeft} />
+      <View style={props.styles.disclosureChevronLineRight} />
+    </View>
+  );
+}
+
+function ToolActivityRow(props: {
+  styles: Record<string, any>;
+  tool: string;
+  detail: string;
+  status: string;
+  subtle?: boolean;
+}) {
+  const { detail, styles, subtle = false, tool } = props;
+  return (
+    <View style={[styles.contextToolRow, subtle && styles.contextToolRowSubtle]}>
+      <Text style={styles.contextToolTitle}>{toolLabel(tool)}</Text>
+      <Text numberOfLines={subtle ? 1 : 2} style={styles.contextToolDetail}>
+        {detail}
+      </Text>
+    </View>
+  );
+}
+
+function EventDiffBlock(props: {
+  styles: Record<string, any>;
+  path: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+  before?: string;
+  after?: string;
+  showHeader?: boolean;
+}) {
+  const { additions, deletions, patch, path, styles, before, after, showHeader = true } = props;
+  const rows = useMemo(
+    () => buildMobileDiffRows({ path, patch, before, after }),
+    [after, before, patch, path]
+  );
+  return (
+    <View style={styles.eventDiffBlock}>
+      {showHeader ? (
+        <View style={styles.eventDiffHead}>
+          <Text numberOfLines={1} style={styles.eventDiffPath}>{path}</Text>
+          <Text style={styles.writeEventAdd}>{`+${additions}`}</Text>
+          <Text style={styles.writeEventDel}>{`-${deletions}`}</Text>
+        </View>
+      ) : null}
+      {rows.length > 0 ? (
+        <View style={styles.eventDiffCodeWindow}>
+          <ScrollView nestedScrollEnabled showsVerticalScrollIndicator style={styles.eventDiffCodeWrap}>
+            <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+              <View style={styles.eventDiffCodeCanvas}>
+                {rows.map((row) => (
+                  <View
+                    key={row.id}
+                    style={[
+                      styles.eventDiffRow,
+                      row.kind === 'hunk'
+                        ? styles.eventDiffRowHunk
+                        : row.kind === 'add'
+                          ? styles.eventDiffRowAdd
+                          : row.kind === 'delete'
+                            ? styles.eventDiffRowDelete
+                            : row.kind === 'note'
+                              ? styles.eventDiffRowNote
+                              : styles.eventDiffRowContext
+                    ]}
+                  >
+                    <Text style={[styles.eventDiffLineNumber, row.leftNumber == null && styles.eventDiffLineNumberMuted]}>
+                      {row.leftNumber == null ? ' ' : row.leftNumber}
+                    </Text>
+                    <Text style={[styles.eventDiffLineNumber, row.rightNumber == null && styles.eventDiffLineNumberMuted]}>
+                      {row.rightNumber == null ? ' ' : row.rightNumber}
+                    </Text>
+                    <Text style={styles.eventDiffMarker}>{row.marker}</Text>
+                    <Text selectable style={styles.eventDiffCodeText}>{row.text}</Text>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          </ScrollView>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function ExploringStatusPill(props: {
+  styles: Record<string, any>;
+  status: {
+    title: string;
+    summary: string;
+    detail?: string;
+  };
+  currentActions?: Array<{ tool: string; detail: string; status: string }>;
+  completedActions?: Array<{ tool: string; detail: string; status: string }>;
+  onToggleExpand?: () => void;
+  isExpanded?: boolean;
+}) {
+  const { status, styles, currentActions = [], completedActions = [], onToggleExpand, isExpanded = false } = props;
+  const isRunning = status.title === '探索中';
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const rotateAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
+
+  useEffect(() => {
+    if (!isRunning) {
+      pulseAnim.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 1200,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isRunning, pulseAnim]);
+
+  useEffect(() => {
+    Animated.timing(rotateAnim, {
+      toValue: isExpanded ? 1 : 0,
+      duration: 200,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [isExpanded, rotateAnim]);
+
+  const dotScale = pulseAnim.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 1.6, 1],
+  });
+
+  const dotOpacity = pulseAnim.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0.6, 1, 0.6],
+  });
+
+  const chevronRotate = rotateAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '90deg'],
+  });
+
+  const allActions = [...currentActions, ...completedActions];
+
+  return (
+    <View style={styles.exploringStatusWrap}>
+      <Pressable onPress={onToggleExpand} style={styles.exploringStatusCard}>
+        <View style={styles.exploringStatusHead}>
+          <View style={styles.exploringStatusTitleWrap}>
+            <Animated.View
+              style={[
+                styles.exploringStatusDot,
+                isRunning ? styles.exploringStatusDotRunning : styles.exploringStatusDotCompleted,
+                isRunning && {
+                  transform: [{ scale: dotScale }],
+                  opacity: dotOpacity,
+                },
+              ]}
+            />
+            <Text style={styles.exploringStatusTitle}>{status.title}</Text>
+          </View>
+          {allActions.length > 0 ? (
+            <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
+              <Chevron expanded={false} styles={styles} />
+            </Animated.View>
+          ) : null}
+        </View>
+        <Text style={styles.exploringStatusText} numberOfLines={1} ellipsizeMode="tail">
+          {status.summary}
+        </Text>
+        {status.detail ? (
+          <Text style={styles.exploringStatusMeta} numberOfLines={1} ellipsizeMode="tail">
+            {status.detail}
+          </Text>
+        ) : null}
+        {!status.detail && allActions.length > 0 && !isExpanded ? (
+          <Text style={styles.exploringStatusMeta} numberOfLines={1} ellipsizeMode="tail">
+            {toolLabel(allActions[0]?.tool || '')} · {toText(allActions[0]?.detail || '')}
+          </Text>
+        ) : null}
+      </Pressable>
+
+      {isExpanded && allActions.length > 0 && (
+        <View style={styles.exploringStatusListCard}>
+          {allActions.map((action, index) => (
+            <ToolActivityRow
+              key={`${action.tool}-${index}`}
+              detail={action.detail}
+              status={action.status}
+              styles={styles}
+              subtle
+              tool={action.tool}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
 }
 
 function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; pulse: boolean; styles: Record<string, any> }) {
@@ -625,6 +889,15 @@ export const MobileTurnCell = React.memo(
     hasLiveQuestion: boolean;
     liveQuestions: MobileQuestionCard[];
     interaction: TurnCellInteractionState;
+    exploringStatus?: {
+      title: string;
+      summary: string;
+      detail?: string;
+    };
+    exploringActions?: {
+      current: Array<{ tool: string; detail: string; status: string }>;
+      completed: Array<{ tool: string; detail: string; status: string }>;
+    };
     onQuestionReply: (requestId: string, answers: string[][]) => void;
     onCopyMessage: (text: string) => void;
     onOpenImage: (item: { id: string; uri: string; filename?: string }) => void;
@@ -636,6 +909,8 @@ export const MobileTurnCell = React.memo(
   }) {
     const {
       bodyFontFamily,
+      exploringStatus,
+      exploringActions,
       hasLiveQuestion,
       interaction,
       isLastTurn,
@@ -653,6 +928,9 @@ export const MobileTurnCell = React.memo(
       thinkingPulse,
       turn
     } = props;
+    const [isExploringExpanded, setIsExploringExpanded] = useState(false);
+    const [expandedContextIds, setExpandedContextIds] = useState<Record<string, boolean>>({});
+    const [expandedEventIds, setExpandedEventIds] = useState<Record<string, boolean>>({});
     const measuredHeightRef = useRef(0);
 
     return (
@@ -688,26 +966,39 @@ export const MobileTurnCell = React.memo(
           }
           if (item.kind === 'context') {
             const tools = Array.isArray(item.context.tools) ? item.context.tools : [];
+            const expanded = !!expandedContextIds[item.context.id];
             return (
               <View key={item.context.id} style={styles.contextWrap}>
                 <View style={styles.contextCard}>
-                  <View style={styles.contextHeadRow}>
-                    <Text style={styles.contextTitle}>{toText(item.context.title || 'Context')}</Text>
-                  </View>
-                  {tools.length > 0 ? (
-                    <View style={styles.contextTools}>
-                      {tools.slice(0, 3).map((tool) => (
-                        <View key={tool.id} style={styles.contextToolRow}>
-                          <Text style={styles.contextToolTitle}>{toText(tool.title || 'tool')}</Text>
-                          <Text numberOfLines={1} style={styles.contextToolDetail}>
-                            {toText(tool.detail || tool.mode || tool.status || '执行完成')}
-                          </Text>
-                          {toText(tool.detail) ? (
-                            <Pressable hitSlop={8} style={styles.contextCopyBtn} onPress={() => onCopyMessage(toText(tool.detail))}>
-                              <Text style={styles.contextCopyText}>⧉</Text>
-                            </Pressable>
-                          ) : null}
+                  <Pressable
+                    style={styles.contextPressable}
+                    onPress={() => setExpandedContextIds((prev) => ({ ...prev, [item.context.id]: !prev[item.context.id] }))}
+                  >
+                    <View style={styles.contextHeadRow}>
+                      <View style={styles.contextHeadMain}>
+                        <View style={styles.contextInlineSummaryRow}>
+                          <Text style={styles.contextInlineTitle}>{toText(item.context.title || '已探索')}</Text>
+                          <Text style={styles.contextSummary}>{toText(item.context.summary || '已收集上下文')}</Text>
+                          {tools.length > 0 ? <Chevron expanded={expanded} styles={styles} /> : null}
                         </View>
+                        {toText(item.context.detail) ? (
+                          <Text numberOfLines={1} style={styles.contextDetail}>
+                            {toText(item.context.detail)}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  </Pressable>
+                  {expanded && tools.length > 0 ? (
+                    <View style={styles.contextTools}>
+                      {tools.map((tool) => (
+                        <ToolActivityRow
+                          key={tool.id}
+                          detail={toText(tool.detail || tool.meta || tool.mode || tool.status || '执行完成')}
+                          status={toText(tool.status)}
+                          styles={styles}
+                          tool={toText(tool.title || 'tool')}
+                        />
                       ))}
                     </View>
                   ) : null}
@@ -717,62 +1008,139 @@ export const MobileTurnCell = React.memo(
           }
           if (item.kind === 'event') {
             const status = toText(item.event.status).toLowerCase();
-            const dotStyle = status === 'running' || status === 'pending' ? styles.eventDotRun : styles.eventDot;
+            const isRunning = status === 'running' || status === 'pending';
             const title = toText(item.event.title || 'Event');
             const mode = toText(item.event.mode);
             const eventDetail = toText(item.event.detail);
             const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
             const isWriteEvent = mode === '写入' || mode.toLowerCase() === 'write' || title === 'apply_patch';
+            const isShellEvent = title.toLowerCase() === 'bash' || mode.toLowerCase() === 'bash' || mode === '命令';
+            const isExpanded = !!expandedEventIds[item.event.id];
+            const eventMeta = toText(item.event.meta);
+            const eventOutput = toText(item.event.output);
+            const eventFileDiff = item.event.fileDiff;
+            const eventPatchFiles = Array.isArray(item.event.patchFiles) ? item.event.patchFiles : [];
+            const eventExpandable = isShellEvent || isWriteEvent || !!eventOutput || detail.length > 56 || eventMeta.length > 0 || !!eventFileDiff || eventPatchFiles.length > 0;
+            
+            const cardStyle = isWriteEvent 
+              ? styles.writeEventCard 
+              : isShellEvent 
+                ? [styles.eventCard, styles.bashEventCard] 
+                : styles.eventCard;
+            
+            const dotStyle = isWriteEvent
+              ? (isRunning ? styles.writeEventDotRun : styles.writeEventDot)
+              : isShellEvent
+                ? (isRunning ? styles.bashEventDotRun : styles.bashEventDot)
+                : (isRunning ? styles.eventDotRun : styles.eventDot);
+            
+            const titleStyle = isWriteEvent
+              ? styles.writeEventTitle
+              : [styles.eventTitle, isShellEvent && styles.bashEventTitle];
+            
+            const detailStyle = isWriteEvent
+              ? styles.writeEventDetail
+              : [styles.eventDetail, isShellEvent && styles.bashEventDetail];
+            
+            const outputStyle = isWriteEvent
+              ? styles.writeEventOutput
+              : [styles.eventOutput, isShellEvent && styles.bashEventOutput];
+            
             if (isWriteEvent) {
-              const writeTitle = title === 'apply_patch' ? 'Patch' : 'Write';
-              const summary = eventDetail.match(/^(Added|Modified|Deleted|新增|修改|删除)\s+(.+?)(?:\s+(\+\d+)\s+(-\d+))?$/);
-              const actionLabel = summary ? ({ 新增: 'Added', 修改: 'Modified', 删除: 'Deleted' } as Record<string, string>)[summary[1]] || summary[1] : '';
+              const writeTitle = writeEventActionLabel(item.event);
+              const writeSummary = summarizeWriteEvent(item.event);
+              const pathText = writeSummary?.file || eventMeta || eventDetail;
+              const pathParts = splitDisplayPath(pathText);
+              const hasStructuredDiff = !!eventFileDiff || eventPatchFiles.length > 0;
+              const writeMeta = !hasStructuredDiff && eventMeta && eventMeta !== pathText ? eventMeta : '';
+              const writeDetail = !hasStructuredDiff && !writeSummary && eventDetail && eventDetail !== pathText ? eventDetail : '';
+              
               return (
                 <View key={item.event.id} style={styles.eventWrap}>
-                  <View style={styles.writeEventCard}>
+                  <Pressable
+                    disabled={!eventExpandable}
+                    onPress={() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] }))}
+                    style={cardStyle}
+                  >
                     <View style={styles.writeEventHead}>
-                      <View style={status === 'running' || status === 'pending' ? styles.writeEventDotRun : styles.writeEventDot} />
-                      <Text numberOfLines={1} style={styles.writeEventTitle}>
-                        {writeTitle}
-                      </Text>
-                      <Text style={styles.writeEventTime}>{formatClock(item.event.createdAt)}</Text>
-                    </View>
-                    {summary ? (
-                      <View style={styles.writeEventSummaryRow}>
-                        <Text style={styles.writeEventAction}>{actionLabel}</Text>
-                        <Text numberOfLines={1} style={styles.writeEventFile}>
-                          {summary[2]}
-                        </Text>
-                        {summary[3] ? <Text style={styles.writeEventAdd}>{summary[3]}</Text> : null}
-                        {summary[4] ? <Text style={styles.writeEventDel}>{summary[4]}</Text> : null}
+                      <View style={styles.writeEventHeadMain}>
+                        <Text style={titleStyle}>{writeTitle}</Text>
+                        {pathParts.filename ? (
+                          <Text numberOfLines={1} style={styles.writeEventFile}>
+                            {pathParts.filename}
+                          </Text>
+                        ) : null}
+                        {pathParts.directory ? (
+                          <Text ellipsizeMode="head" numberOfLines={1} style={styles.writeEventDirectory}>
+                            {pathParts.directory}
+                          </Text>
+                        ) : null}
                       </View>
-                    ) : eventDetail ? (
-                      <Text numberOfLines={1} style={styles.writeEventDetail}>
+                      {writeSummary ? <Text style={styles.writeEventAdd}>{`+${writeSummary.additions}`}</Text> : null}
+                      {writeSummary ? <Text style={styles.writeEventDel}>{`-${writeSummary.deletions}`}</Text> : null}
+                      {eventExpandable ? <Chevron expanded={isExpanded} styles={styles} /> : null}
+                    </View>
+                    {!writeSummary && eventDetail ? (
+                      <Text numberOfLines={isExpanded ? 0 : 1} style={detailStyle}>
                         {eventDetail}
                       </Text>
                     ) : null}
-                    {toText(item.event.output) ? (
-                      <Text numberOfLines={3} style={styles.writeEventOutput}>
-                        {toText(item.event.output)}
+                    {isExpanded && writeMeta ? <Text style={styles.eventMeta}>{writeMeta}</Text> : null}
+                    {isExpanded && writeDetail ? <Text style={detailStyle}>{writeDetail}</Text> : null}
+                    {isExpanded && eventFileDiff ? (
+                      <EventDiffBlock
+                        additions={eventFileDiff.additions}
+                        deletions={eventFileDiff.deletions}
+                        before={eventFileDiff.before}
+                        after={eventFileDiff.after}
+                        patch={eventFileDiff.patch}
+                        path={eventFileDiff.file}
+                        showHeader={false}
+                        styles={styles}
+                      />
+                    ) : null}
+                    {isExpanded && !eventFileDiff && eventPatchFiles.length > 0 ? (
+                      <View style={styles.eventDiffList}>
+                        {eventPatchFiles.map((file) => (
+                          <EventDiffBlock
+                            key={`${item.event.id}:${file.relativePath}`}
+                            additions={file.additions}
+                            deletions={file.deletions}
+                            patch={file.patch}
+                            path={file.relativePath}
+                            showHeader={eventPatchFiles.length > 1}
+                            styles={styles}
+                          />
+                        ))}
+                      </View>
+                    ) : null}
+                    {eventOutput ? (
+                      <Text numberOfLines={isExpanded ? 0 : 3} style={outputStyle}>
+                        {eventOutput}
                       </Text>
                     ) : null}
-                  </View>
+                  </Pressable>
                 </View>
               );
             }
-            const isShellEvent = title.toLowerCase() === 'bash' || mode.toLowerCase() === 'bash' || mode === '命令';
+            
             return (
               <View key={item.event.id} style={styles.eventWrap}>
-                <View style={[styles.eventCard, isShellEvent && styles.bashEventCard]}>
+                <Pressable
+                  disabled={!eventExpandable}
+                  onPress={() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] }))}
+                  style={cardStyle}
+                >
                   <View style={styles.eventHead}>
-                    <View style={isShellEvent ? (status === 'running' || status === 'pending' ? styles.bashEventDotRun : styles.bashEventDot) : dotStyle} />
-                    <Text style={[styles.eventTitle, isShellEvent && styles.bashEventTitle]}>{title}</Text>
+                    {isShellEvent ? <View style={dotStyle} /> : null}
+                    <Text style={titleStyle}>{toolLabel(title)}</Text>
                     {mode ? <Text style={[styles.eventMode, isShellEvent && styles.bashEventMode]}>{mode}</Text> : null}
-                    <Text style={[styles.eventTime, isShellEvent && styles.bashEventTime]}>{formatClock(item.event.createdAt)}</Text>
+                    {eventExpandable ? <Chevron expanded={isExpanded} styles={styles} /> : null}
                   </View>
-                  <Text style={[styles.eventDetail, isShellEvent && styles.bashEventDetail]}>{detail}</Text>
-                  {toText(item.event.output) ? <Text style={[styles.eventOutput, isShellEvent && styles.bashEventOutput]}>{toText(item.event.output)}</Text> : null}
-                </View>
+                  <Text numberOfLines={isExpanded ? 0 : 2} style={detailStyle}>{detail}</Text>
+                  {isExpanded && eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}
+                  {eventOutput ? <Text numberOfLines={isExpanded ? 0 : 3} style={outputStyle}>{eventOutput}</Text> : null}
+                </Pressable>
               </View>
             );
           }
@@ -847,6 +1215,17 @@ export const MobileTurnCell = React.memo(
           }
           return null;
         })}
+        {/* 探索中状态 - 只在最后一个 turn 且正在流式输出时显示 */}
+        {isLastTurn && exploringStatus ? (
+          <ExploringStatusPill
+            styles={styles}
+            status={exploringStatus}
+            currentActions={exploringActions?.current || []}
+            completedActions={exploringActions?.completed || []}
+            isExpanded={isExploringExpanded}
+            onToggleExpand={() => setIsExploringExpanded(v => !v)}
+          />
+        ) : null}
       </View>
     );
   },
@@ -859,6 +1238,8 @@ export const MobileTurnCell = React.memo(
     prev.thinkingPulse === next.thinkingPulse &&
     prev.hasLiveQuestion === next.hasLiveQuestion &&
     prev.liveQuestions === next.liveQuestions &&
+    prev.exploringStatus === next.exploringStatus &&
+    prev.exploringActions === next.exploringActions &&
     prev.onCopyMessage === next.onCopyMessage &&
     prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion &&
     prev.onToggleThinkCard === next.onToggleThinkCard &&

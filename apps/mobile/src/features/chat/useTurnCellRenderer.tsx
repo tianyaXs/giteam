@@ -10,6 +10,15 @@ export function useTurnCellRenderer(params: {
   bodyFontFamily: string;
   chatCellHeightMapRef: React.MutableRefObject<Record<string, number>>;
   interactionByCellId: Record<string, TurnCellInteractionState>;
+  exploringStatus?: {
+    title: string;
+    summary: string;
+    detail?: string;
+  };
+  exploringActions?: {
+    current: Array<{ tool: string; detail: string; status: string }>;
+    completed: Array<{ tool: string; detail: string; status: string }>;
+  };
   handleCopyImage: (uri: string) => void;
   handleCopyMessage: (text: string) => void;
   handleOpenPreviewImage: (image: { uri: string; filename?: string }) => void;
@@ -28,6 +37,8 @@ export function useTurnCellRenderer(params: {
     activeQuestionsForTurn,
     bodyFontFamily,
     chatCellHeightMapRef,
+    exploringStatus,
+    exploringActions,
     interactionByCellId,
     handleCopyImage,
     handleCopyMessage,
@@ -76,6 +87,8 @@ export function useTurnCellRenderer(params: {
         hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}
         liveQuestions={liveQuestionTurnId === (item.parentTurnId || item.id) ? activeQuestionsForTurn : []}
         interaction={interaction}
+        exploringStatus={interaction.isLastVisible ? exploringStatus : undefined}
+        exploringActions={interaction.isLastVisible ? exploringActions : undefined}
         onQuestionReply={handleQuestionReply}
         onCopyMessage={handleCopyMessage}
         onOpenImage={handleOpenPreviewImage}
@@ -96,6 +109,8 @@ export function useTurnCellRenderer(params: {
     activeQuestionsForTurn,
     bodyFontFamily,
     chatCellHeightMapRef,
+    exploringStatus,
+    exploringActions,
     interactionByCellId,
     handleCopyImage,
     handleCopyMessage,

@@ -82,6 +82,8 @@ function hasCompactionPart(parts: any[]): boolean {
 function toolMode(tool: string): string {
   if (tool === 'read' || tool === 'list' || tool === 'glob' || tool === 'grep') return '读取';
   if (tool === 'write' || tool === 'edit' || tool === 'apply_patch') return '写入';
+  if (tool === 'bash') return '命令';
+  if (tool === 'search') return '搜索';
   return '';
 }
 
@@ -107,6 +109,92 @@ function compactPath(input: string): string {
   const parts = path.split('/').filter(Boolean);
   if (parts.length <= 2) return path;
   return parts.slice(-2).join('/');
+}
+
+function diffCountFromText(text: string) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    if (line.startsWith('-')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function toNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeEditFileDiff(tool: string, state: any, metadata: any) {
+  if (tool !== 'edit') return undefined;
+  const fromMeta = metadata?.filediff;
+  const file = normalizeText(fromMeta?.file) || normalizeText(state?.input?.filePath);
+  const patch = normalizeText(fromMeta?.patch) || '';
+  const before = typeof fromMeta?.before === 'string'
+    ? fromMeta.before
+    : typeof state?.input?.oldString === 'string'
+      ? state.input.oldString
+      : typeof state?.input?.old_string === 'string'
+        ? state.input.old_string
+        : '';
+  const after = typeof fromMeta?.after === 'string'
+    ? fromMeta.after
+    : typeof state?.input?.newString === 'string'
+      ? state.input.newString
+      : typeof state?.input?.new_string === 'string'
+        ? state.input.new_string
+        : '';
+  const counts = patch ? diffCountFromText(patch) : { additions: 0, deletions: 0 };
+  const additions = toNumber(fromMeta?.additions) || counts.additions;
+  const deletions = toNumber(fromMeta?.deletions) || counts.deletions;
+  if (!file && !patch && !before && !after) return undefined;
+  return {
+    file,
+    patch: patch || undefined,
+    before: before || undefined,
+    after: after || undefined,
+    additions,
+    deletions,
+    status: typeof fromMeta?.status === 'string' ? fromMeta.status : 'modified' as const
+  };
+}
+
+function normalizePatchFiles(metadata: any) {
+  if (!Array.isArray(metadata?.files)) return undefined;
+  const files = metadata.files
+    .map((file: any) => {
+      const patch = normalizeText(file?.patch) || normalizeText(file?.diff) || undefined;
+      const counts = patch ? diffCountFromText(patch) : { additions: 0, deletions: 0 };
+      const type = normalizeText(file?.type) as 'add' | 'update' | 'delete' | 'move';
+      const relativePath = normalizeText(file?.relativePath) || normalizeText(file?.filePath);
+      const filePath = normalizeText(file?.filePath) || relativePath;
+      if (!relativePath && !filePath) return null;
+      return {
+        filePath,
+        relativePath,
+        type: type || 'update',
+        patch,
+        additions: toNumber(file?.additions) || counts.additions,
+        deletions: toNumber(file?.deletions) || counts.deletions,
+        movePath: normalizeText(file?.movePath) || undefined
+      };
+    })
+    .filter(Boolean);
+  return files.length > 0 ? files : undefined;
+}
+
+function formatCountLabel(count: number, noun: string): string {
+  return count > 0 ? `${count} 次${noun}` : '';
+}
+
+function summarizeContextCounts(counts: { read: number; search: number; list: number }): string {
+  return [
+    formatCountLabel(counts.read, '读取'),
+    formatCountLabel(counts.search, '搜索'),
+    formatCountLabel(counts.list, '列出')
+  ].filter(Boolean).join('，');
 }
 
 function summarizePatchText(patchText: string): string {
@@ -157,8 +245,8 @@ function summarizeWriteTool(tool: string, input: any): string {
     return [filePath, lineCount ? `${lineCount} 行` : ''].filter(Boolean).join(' · ');
   }
   if (tool === 'edit') {
-    const oldText = typeof input?.old_string === 'string' ? input.old_string : '';
-    const newText = typeof input?.new_string === 'string' ? input.new_string : '';
+    const oldText = typeof input?.oldString === 'string' ? input.oldString : typeof input?.old_string === 'string' ? input.old_string : '';
+    const newText = typeof input?.newString === 'string' ? input.newString : typeof input?.new_string === 'string' ? input.new_string : '';
     const oldLines = oldText ? oldText.split(/\r?\n/).length : 0;
     const newLines = newText ? newText.split(/\r?\n/).length : 0;
     const delta = oldLines || newLines ? `+${newLines} -${oldLines}` : '';
@@ -280,7 +368,7 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
   const status = normalizeText(state?.status).toLowerCase();
   const outputText = toolOutputText(state);
   const showOutput = !isContextTool(tool) && !!outputText && (status === 'error' || tool === 'bash');
-  const output = showOutput ? (outputText.length > 320 ? `${outputText.slice(0, 320)}...` : outputText) : '';
+  const output = showOutput ? outputText : '';
   const metadata = state?.metadata || part?.metadata || {};
   const writeSummary = normalizeText(metadata?.writeSummary);
   const rawTaskSessionId = normalizeText(metadata?.sessionId) || normalizeText(metadata?.sessionID);
@@ -290,17 +378,60 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
     return normalizeText(m?.[1] || '');
   })();
   const taskSubagent = normalizeText(state?.input?.subagent_type);
+  const fileDiff = normalizeEditFileDiff(tool, state, metadata);
+  const patchFiles = tool === 'apply_patch' ? normalizePatchFiles(metadata) : undefined;
   return {
     id,
     title: tool,
-    detail: writeSummary || summarizeWriteTool(tool, state?.input) || (tool === 'apply_patch' ? summarizePatchOutput(outputText) : '') || toolDetail(state?.input),
+    detail:
+      writeSummary ||
+      (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : '') ||
+      (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || '')} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : '') ||
+      summarizeWriteTool(tool, state?.input) ||
+      (tool === 'apply_patch' ? summarizePatchOutput(outputText) : '') ||
+      toolDetail(state?.input),
     mode: toolMode(tool),
     status,
+    meta: tool === 'bash'
+      ? normalizeText(state?.input?.command)
+      : normalizeText(state?.input?.path || state?.input?.filePath || metadata?.path || metadata?.filePath),
+    fileDiff,
+    patchFiles,
     output,
     taskSessionId,
     taskSubagent,
     createdAt
   };
+}
+
+function mergeAdjacentContextItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const merged: MobileTimelineItem[] = [];
+  for (const item of items) {
+    const prev = merged[merged.length - 1];
+    if (item.kind === 'context' && prev?.kind === 'context') {
+      const tools = [...(prev.context.tools || []), ...(item.context.tools || [])];
+      const counts = {
+        read: tools.filter((tool) => normalizeText(tool.title) === 'read').length,
+        search: tools.filter((tool) => ['grep', 'glob', 'search'].includes(normalizeText(tool.title))).length,
+        list: tools.filter((tool) => normalizeText(tool.title) === 'list').length
+      };
+      merged[merged.length - 1] = {
+        ...prev,
+        context: {
+          ...prev.context,
+          id: `${prev.context.id}:${item.context.id}`,
+          title: prev.context.status === 'running' || item.context.status === 'running' ? '探索中' : '已探索',
+          status: prev.context.status === 'running' || item.context.status === 'running' ? 'running' : 'completed',
+          summary: summarizeContextCounts(counts) || '已收集上下文',
+          detail: normalizeText(item.context.detail) || normalizeText(prev.context.detail) || undefined,
+          tools
+        }
+      };
+      continue;
+    }
+    merged.push(item);
+  }
+  return merged;
 }
 
 export function parseConversation(raw: unknown): ParsedConversation {
@@ -415,9 +546,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
         const firstId = normalizeText((batch[0] as any)?.id) || `${id}:ctx`;
         const counts = summarizeOpencodeContextToolCounts(batch);
         const progress = summarizeOpencodeContextProgress(batch);
-        const summary = progress.detail
-          ? `${progress.mode} · ${progress.detail} · ${counts.read} read · ${counts.search} search · ${counts.list} list`
-          : `${counts.read} read · ${counts.search} search · ${counts.list} list`;
+        const summary = summarizeContextCounts(counts) || '已收集上下文';
         const tools: MobileEventCard[] = batch.map((bp: any, bidx: number) => {
           const bid = normalizeText(bp?.id) || `${firstId}:ctx:${bidx}`;
           return buildToolEvent(bp, `event:${bid}`, partCreatedAt + bidx);
@@ -429,8 +558,10 @@ export function parseConversation(raw: unknown): ParsedConversation {
             createdAt: partCreatedAt,
             context: {
               id: `context:${group.key}`,
-              title: progress.active ? 'Gathering Context' : 'Context',
+              title: progress.active ? '探索中' : '已探索',
               summary,
+              detail: progress.detail || undefined,
+              status: progress.active ? 'running' : 'completed',
               createdAt: partCreatedAt,
               tools
             }
@@ -542,8 +673,10 @@ export function parseConversation(raw: unknown): ParsedConversation {
     timeline.push(item);
   }
 
+  const normalizedTimeline = mergeAdjacentContextItems(timeline);
+
   if (!hasAssistantRenderable && sizeLimitSyntheticCount > 0) {
-    const userOnly = timeline.filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat' && t.message.role === 'user');
+    const userOnly = normalizedTimeline.filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat' && t.message.role === 'user');
     const stable: MobileTimelineItem[] = userOnly.map((t) => t);
     stable.push({
       kind: 'think',
@@ -562,7 +695,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     return { chatMessages, timeline: stable, writing: false, hasError: true };
   }
 
-  const rawChat = timeline
+  const rawChat = normalizedTimeline
     .filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat')
     .map((t) => t.message);
   const chatMessages: MobileChatMessage[] = [];
@@ -575,7 +708,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     chatMessages.push(m);
   }
 
-  if (timeline.length === 0 && raw.length > 0) {
+  if (normalizedTimeline.length === 0 && raw.length > 0) {
     let fallbackText = '';
     for (let i = raw.length - 1; i >= 0; i -= 1) {
       const item: any = (raw as any[])[i];
@@ -589,7 +722,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
       }
     }
     const text = fallbackText || '本轮会话只有系统事件（如 compaction），暂无可展示正文。';
-    timeline.push({
+    normalizedTimeline.push({
       kind: 'think',
       createdAt: Date.now(),
       card: {
@@ -602,7 +735,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     });
   }
 
-  return { chatMessages, timeline, writing, hasError };
+  return { chatMessages, timeline: normalizedTimeline, writing, hasError };
 }
 
 function isAbortLikeMessageError(text: string, code: string) {

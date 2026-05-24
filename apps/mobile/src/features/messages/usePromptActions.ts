@@ -199,7 +199,10 @@ export function usePromptActions(params: UsePromptActionsParams) {
         timeoutMs: images.length > 0 ? imageSendTimeoutMs : undefined
       });
       pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
-      setActiveSession(res.sessionId);
+      // 只有在 sessionId 发生变化时才切换会话，避免流式输出过程中强制切换
+      if (res.sessionId !== targetSessionId) {
+        setActiveSession(res.sessionId);
+      }
       void syncSessionMessages(res.sessionId, {
         limit: Math.max(initialSessionLimit, Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0)),
         tailOnly: true

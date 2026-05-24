@@ -72,6 +72,7 @@ import { toText } from "./src/lib/text";
 import { formatClock } from "./src/lib/time";
 import {
   FONT_DISPLAY_SERIF,
+  FONT_MIXED_BODY_REGULAR,
   FONT_TEXT_SERIF,
   FONT_TEXT_SERIF_SEMIBOLD,
   FONT_UI_MEDIUM,
@@ -251,6 +252,7 @@ export default function App() {
     refreshSessionsFromServer,
     refreshMessages,
     syncSessionMessages,
+    onLoadOlderMessages,
     refreshModelCatalog,
     refreshProjectsCatalog,
   } = useMobileAppServices({
@@ -742,13 +744,65 @@ export default function App() {
     void refreshInstalledExtensions();
   }, [notebookPage, repoPath, serverUrl, token, authed]);
 
-  const { displayedTurns } = useDisplayedTurnsWithThinking({
+  const { displayedTurns, showThinkingPlaceholder, exploringState } = useDisplayedTurnsWithThinking({
     currentSessionStatus,
     messages,
     renderedTurns,
     sessionWorking,
+    sessionId,
+    getOpenCodeStreamStores,
     streamDebug,
   });
+
+  // 构建探索中状态文本和actions
+  const exploringStatus = useMemo(() => {
+    if (!showThinkingPlaceholder) return undefined;
+    
+    const { currentActions, completedCounts } = exploringState;
+    
+    if (currentActions.length > 0) {
+      const activeAction = currentActions[0];
+      return {
+        title: '探索中',
+        summary: completedCounts.total > 0
+          ? [
+              completedCounts.read > 0 ? `${completedCounts.read} 次读取` : '',
+              completedCounts.search > 0 ? `${completedCounts.search} 次搜索` : '',
+              completedCounts.list > 0 ? `${completedCounts.list} 次列出` : '',
+            ].filter(Boolean).join('，')
+          : '正在收集上下文',
+        detail: activeAction?.detail && activeAction.detail !== activeAction.tool ? activeAction.detail : undefined
+      };
+    }
+    
+    const completedTexts: string[] = [];
+    if (completedCounts.read > 0) completedTexts.push(`${completedCounts.read} 次读取`);
+    if (completedCounts.search > 0) completedTexts.push(`${completedCounts.search} 次搜索`);
+    if (completedCounts.list > 0) completedTexts.push(`${completedCounts.list} 次列出`);
+    
+    if (completedTexts.length > 0) {
+      return {
+        title: '已探索',
+        summary: completedTexts.join('，'),
+        detail: undefined
+      };
+    }
+    
+    return {
+      title: '探索中',
+      summary: '正在收集上下文',
+      detail: undefined
+    };
+  }, [showThinkingPlaceholder, exploringState]);
+
+  // 构建探索actions用于展开显示
+  const exploringActions = useMemo(() => {
+    if (!showThinkingPlaceholder) return undefined;
+    return {
+      current: exploringState.currentActions,
+      completed: exploringState.recentActions.filter(a => a.status === 'completed')
+    };
+  }, [showThinkingPlaceholder, exploringState]);
   const allDisplayedTurnCells = useMemo(
     () => flattenTurnsForList(displayedTurns),
     [displayedTurns],
@@ -1088,8 +1142,10 @@ export default function App() {
   });
   const { renderTurnCell } = useTurnCellRenderer({
     activeQuestionsForTurn,
-    bodyFontFamily: FONT_UI_REGULAR,
+    bodyFontFamily: FONT_MIXED_BODY_REGULAR,
     chatCellHeightMapRef,
+    exploringStatus,
+    exploringActions,
     interactionByCellId,
     handleCopyImage,
     handleCopyMessage,
@@ -1103,7 +1159,7 @@ export default function App() {
     liveQuestionTurnId,
     sessionWorking,
     styles,
-    thinkingPulse,
+    thinkingPulse
   });
   const {
     handleWorkspaceContentSizeChange,
@@ -1254,6 +1310,7 @@ export default function App() {
       onScroll={handleWorkspaceScroll}
       onContentSizeChange={handleWorkspaceContentSizeChange}
       onListLayout={handleWorkspaceListLayout}
+      onLoadOlderMessages={onLoadOlderMessages}
       renderTurnCell={renderTurnCell}
       sessionId={sessionId}
       sessionHistoryRetryHintText={toText(
