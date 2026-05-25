@@ -8,6 +8,13 @@ import {
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import { toText } from '../../lib/text';
 
+const waitForDrawerReturnFrame = () =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      setTimeout(resolve, 260);
+    });
+  });
+
 type SessionItemLike = {
   id: string;
   title: string;
@@ -243,13 +250,15 @@ export function useLeftDrawerController(props: {
         }).catch(() => undefined);
       }
 
+      closeDrawer();
+      markSessionSwitchPerf(perf, 'drawer.close_requested');
+      await waitForDrawerReturnFrame();
+
       const activateStartedAt = performance.now();
       setActiveSession(targetSessionId);
       markSessionSwitchPerf(perf, 'drawer.set_active_session.returned', {
         ms: Math.round(performance.now() - activateStartedAt)
       });
-      closeDrawer();
-      markSessionSwitchPerf(perf, 'drawer.closed');
 
       if (!hasCachedRows) {
         if (snapshot && sessionIdRef.current === targetSessionId) {

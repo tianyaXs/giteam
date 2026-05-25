@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { CameraView } from "expo-camera";
 import { useFonts } from "expo-font";
@@ -49,7 +49,6 @@ import { useMobileAppServices } from "./src/features/chat/useMobileAppServices";
 import { useMobileAppState } from "./src/features/chat/useMobileAppState";
 import { useMobileShellLifecycle } from "./src/features/chat/useMobileShellLifecycle";
 import { useNotebookColors } from "./src/features/chat/useNotebookColors";
-import { useNotebookNavigationController } from "./src/features/chat/useNotebookNavigationController";
 import { useNotebookDrawerRenderers } from "./src/features/chat/useNotebookDrawerRenderers";
 import { useProjectSwitchAction } from "./src/features/chat/useProjectSwitchAction";
 import { useSessionRecovery } from "./src/features/chat/useSessionRecovery";
@@ -74,7 +73,7 @@ import {
 import { useAttachmentProcessor } from "./src/features/media/useAttachmentProcessor";
 import { useComposerUiController } from "./src/features/media/useComposerUiController";
 import { useSlashCommandCatalog } from "./src/features/media/useSlashCommandCatalog";
-import { ChatWorkspaceScreen } from "./src/components/chat/ChatWorkspaceScreen";
+import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
 import { MobileLaunchOverlay } from "./src/components/chat/MobileLaunchOverlay";
 import { MobileAppRouter } from "./src/screens/MobileAppRouter";
 import { toText } from "./src/lib/text";
@@ -128,7 +127,7 @@ export default function App() {
     [FONT_UI_REGULAR]: require("./assets/fonts/StyreneA-Regular-Trial-BF63f6cbd970ee9.otf"),
     [FONT_UI_MEDIUM]: require("./assets/fonts/StyreneA-Medium-Trial-BF63f6cbdb24b6d.otf"),
   });
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const {
     loaded,
     setLoaded,
@@ -266,6 +265,7 @@ export default function App() {
     sessionMessageSyncRef,
     sessionRecoveryRef,
   });
+  const messageBottomInset = Math.max(CHAT_LIST_BOTTOM_AIR, Math.round(inputDockHeight + 16));
 
   const {
     showLatestJump,
@@ -305,6 +305,7 @@ export default function App() {
   } = useChatListController<DisplayedTurnCell>({
     initialCellLimit: INITIAL_CELL_LIMIT,
     chatBottomProximity: CHAT_BOTTOM_PROXIMITY,
+    bottomContentInset: messageBottomInset,
   });
   const {
     leftDrawerPulse,
@@ -448,6 +449,31 @@ export default function App() {
       setStartupSessionHydrating,
       startupSessionHydrating,
     });
+  const previousKeyboardInsetRef = React.useRef(0);
+  useEffect(() => {
+    const previousInset = previousKeyboardInsetRef.current;
+    previousKeyboardInsetRef.current = keyboardInset;
+    if (previousInset === keyboardInset) return;
+    if (!listRevealReady) return;
+    if (!sessionId && keyboardInset <= 0) return;
+    if (messageUserScrollingRef.current) return;
+    if (!followLatest && !isViewportNearLatest()) return;
+    markFollowLatest(320);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToLatest(false);
+      });
+    });
+  }, [
+    followLatest,
+    isViewportNearLatest,
+    keyboardInset,
+    listRevealReady,
+    markFollowLatest,
+    messageUserScrollingRef,
+    scrollToLatest,
+    sessionId,
+  ]);
   useGlobalErrorLogger({ pushConnLog });
 
   useEffect(() => {
@@ -745,38 +771,31 @@ export default function App() {
     setAttachmentMenuOpen,
   });
 
-  const {
-    notebookPage,
-    workspaceSwitcherOpen,
-    setWorkspaceSwitcherOpen,
-    notebookTrackX,
-    notebookPanResponder,
-    openDrawer,
-    closeDrawer,
-    switchNotebookPage,
-    toggleWorkspaceSwitcher,
-  } = useNotebookNavigationController({
-    windowWidth,
-    windowHeight,
-    composerBandHeight: Math.max(220, inputDockHeight + 160),
-    onBeforeOpenDrawer: closeComposerPicker,
-    onOpenLeftDrawer: () => {
-      void InteractionManager.runAfterInteractions(() => {
-        void refreshProjectsCatalog();
-        void refreshSessionsFromServer();
-      });
-    },
-    onOpenRightDrawer: () => {
-      void InteractionManager.runAfterInteractions(() => {
-        void refreshInstalledExtensions();
-      });
-    },
-  });
-
-  useEffect(() => {
-    if (notebookPage !== "right") return;
-    void refreshInstalledExtensions();
-  }, [notebookPage, repoPath, serverUrl, token, authed]);
+  const chatWorkspaceRef = useRef<ChatWorkspaceScreenHandle>(null);
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
+  const closeDrawer = useCallback(() => {
+    chatWorkspaceRef.current?.closeDrawer();
+  }, []);
+  const toggleWorkspaceSwitcher = useCallback(() => {
+    setWorkspaceSwitcherOpen((value) => !value);
+  }, []);
+  const handleBeforeOpenNotebookDrawer = useCallback(() => {
+    closeComposerPicker();
+  }, [closeComposerPicker]);
+  const handleLeftNotebookDrawerOpen = useCallback(() => {
+    void InteractionManager.runAfterInteractions(() => {
+      void refreshProjectsCatalog();
+      void refreshSessionsFromServer();
+    });
+  }, [refreshProjectsCatalog, refreshSessionsFromServer]);
+  const handleRightNotebookDrawerOpen = useCallback(() => {
+    void InteractionManager.runAfterInteractions(() => {
+      void refreshInstalledExtensions();
+    });
+  }, [refreshInstalledExtensions]);
+  const handleNotebookDrawerCloseSettled = useCallback(() => {
+    setWorkspaceSwitcherOpen(false);
+  }, []);
 
   const { displayedTurns, showThinkingPlaceholder, exploringState } = useDisplayedTurnsWithThinking({
     currentSessionStatus,
@@ -841,7 +860,6 @@ export default function App() {
     () => flattenTurnsForList(displayedTurns),
     [displayedTurns],
   );
-  const messageBottomInset = Math.max(CHAT_LIST_BOTTOM_AIR, Math.round(inputDockHeight + 16));
   const {
     displayedTurnCells,
     displayedTurnCellsRef,
@@ -1367,12 +1385,16 @@ export default function App() {
   );
   const chatScreen = (
     <ChatWorkspaceScreen
+      ref={chatWorkspaceRef}
       styles={styles}
       windowWidth={windowWidth}
       inputDockHeight={inputDockHeight}
+      keyboardInset={keyboardInset}
       notebookColors={notebookColors}
-      notebookPanHandlers={notebookPanResponder.panHandlers}
-      notebookTrackX={notebookTrackX}
+      onBeforeOpenDrawer={handleBeforeOpenNotebookDrawer}
+      onOpenLeftDrawer={handleLeftNotebookDrawerOpen}
+      onOpenRightDrawer={handleRightNotebookDrawerOpen}
+      onDrawerCloseSettled={handleNotebookDrawerCloseSettled}
       leftDrawer={leftDrawer}
       rightDrawer={rightDrawer}
       showNotebookSessionTitle={showNotebookSessionTitle}

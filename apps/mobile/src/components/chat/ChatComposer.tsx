@@ -38,7 +38,7 @@ type ComposerModeOption = {
   label: string;
 };
 
-export function ChatComposer(props: {
+function ChatComposerImpl(props: {
   styles: Record<string, any>;
   prompt: string;
   imageAttachments: ComposerAttachment[];
@@ -116,8 +116,11 @@ export function ChatComposer(props: {
   return (
     <>
       {attachmentPanelVisible ? <Pressable style={styles.attachmentBackdrop} onPress={onDismissAttachmentPanel} /> : null}
-      <View
-        style={[styles.inputDock, keyboardInset > 0 ? { marginBottom: keyboardInset + 10 } : null]}
+      <Animated.View
+        style={[
+          styles.inputDock,
+          keyboardInset > 0 ? { marginBottom: keyboardInset + 10 } : null
+        ]}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h > 0) onLayoutHeight(h);
@@ -298,10 +301,12 @@ export function ChatComposer(props: {
             </ScrollView>
           </Animated.View>
         ) : null}
-      </View>
+      </Animated.View>
     </>
   );
 }
+
+export const ChatComposer = React.memo(ChatComposerImpl);
 
 export function ComposerPickerSheet(props: {
   styles: Record<string, any>;

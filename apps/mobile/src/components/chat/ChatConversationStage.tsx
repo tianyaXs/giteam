@@ -14,7 +14,7 @@ type NotebookColors = {
   paper: string;
 };
 
-export function ChatConversationStage(props: {
+function ChatConversationStageImpl(props: {
   styles: Record<string, any>;
   windowWidth: number;
   inputDockHeight: number;
@@ -189,3 +189,5 @@ export function ChatConversationStage(props: {
     </View>
   );
 }
+
+export const ChatConversationStage = React.memo(ChatConversationStageImpl);

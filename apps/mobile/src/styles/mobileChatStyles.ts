@@ -13,13 +13,16 @@ import type { MobileNamedStyles } from "./mobileStyleTypes";
 
 export const chatStyles = {
   topBar: {
-    height: 46,
-    paddingHorizontal: 12,
+    height: 48,
+    paddingHorizontal: 16,
+    paddingTop: 0,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     position: "relative",
-    overflow: "hidden",
+    overflow: "visible",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(65,54,38,0.08)",
   },
   notebookShell: {
     flex: 1,
@@ -37,6 +40,26 @@ export const chatStyles = {
     flex: 1,
     flexDirection: "column",
     backgroundColor: "#f8f5ee",
+  },
+  slideDrawerSurface: {
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: "rgba(65,54,38,0.12)",
+  },
+  slideDrawerSurfaceRight: {
+    borderRightWidth: 0,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: "rgba(65,54,38,0.12)",
+  },
+  slideDrawerContent: {
+    flex: 1,
+    backgroundColor: "#f5f1e8",
+  },
+  slideDrawerOverlay: {
+    backgroundColor: "rgba(36,33,29,0.22)",
+  },
+  chatStageViewport: {
+    flex: 1,
+    minHeight: 0,
   },
   streamTopGlowTrack: {
     position: "absolute",
@@ -59,16 +82,33 @@ export const chatStyles = {
     borderRadius: 999,
     backgroundColor: "rgba(58, 143, 130, 0.62)",
   },
-  topSideSlot: { width: 48, alignItems: "flex-start", zIndex: 1 },
-  topSideSlotRight: { width: 48, alignItems: "flex-end", zIndex: 1 },
+  topSideSlot: { width: 58, height: 40, alignItems: "flex-start", justifyContent: "center", zIndex: 25 },
+  topSideSlotRight: { width: 58, height: 40, alignItems: "flex-end", justifyContent: "center", zIndex: 25 },
+  topNavButton: {
+    width: 44,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+    position: "relative",
+    transform: [{ translateY: -5 }],
+  },
+  topNavGlyph: {
+    opacity: 0.92,
+    transform: [{ translateY: -2 }, { rotate: "-1.5deg" }],
+  },
+  topNavGlyphActive: {
+    opacity: 1,
+    transform: [{ translateY: -2 }, { rotate: "0deg" }],
+  },
   topBrand: {
     position: "absolute",
-    left: 56,
-    right: 56,
+    left: 78,
+    right: 78,
     flexDirection: "column",
     alignItems: "center",
     gap: 0,
-    top: 4,
+    top: Platform.OS === "android" ? 6 : 5,
   },
   topTitle: {
     fontSize: 20,
@@ -77,8 +117,8 @@ export const chatStyles = {
     fontFamily: FONT_TEXT_SERIF_SEMIBOLD,
   },
   topTitleCompact: {
-    fontSize: 16,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 19,
     color: "#24211d",
     fontWeight: "600",
     fontFamily: FONT_UI_MEDIUM,

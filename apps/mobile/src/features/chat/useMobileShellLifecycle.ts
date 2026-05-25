@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Keyboard } from 'react-native';
+import { Animated, Easing, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 
 export function useMobileShellLifecycle(params: {
   appReady: boolean;
@@ -17,14 +17,28 @@ export function useMobileShellLifecycle(params: {
   const [launchOverlayVisible, setLaunchOverlayVisible] = useState(true);
 
   useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (event) => {
+    const syncKeyboardInset = (event: KeyboardEvent | undefined, nextInset: number) => {
+      if (event && typeof Keyboard.scheduleLayoutAnimation === 'function') {
+        Keyboard.scheduleLayoutAnimation(event);
+      }
+      setKeyboardInset(nextInset > 0 ? nextInset : 0);
+    };
+    const handleKeyboardShow = (event: KeyboardEvent) => {
       const height = Number(event.endCoordinates?.height || 0);
-      setKeyboardInset(height > 0 ? height : 0);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardInset(0));
+      syncKeyboardInset(event, height);
+    };
+    const handleKeyboardHide = (event?: KeyboardEvent) => {
+      syncKeyboardInset(event, 0);
+    };
+    const subscriptions = [
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', handleKeyboardShow),
+      Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', handleKeyboardHide),
+    ];
+    if (Platform.OS === 'ios') {
+      subscriptions.push(Keyboard.addListener('keyboardWillChangeFrame', handleKeyboardShow));
+    }
     return () => {
-      showSub.remove();
-      hideSub.remove();
+      subscriptions.forEach((subscription) => subscription.remove());
     };
   }, []);
 

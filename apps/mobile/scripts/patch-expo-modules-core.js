@@ -152,17 +152,17 @@ function patchExpoCliMetroTerminal() {
 }
 
 function patchMetroWorkletsBundleModeSha() {
-  const dependencyGraphFile = path.join(
-    rootDir,
-    'apps',
-    'mobile',
-    'node_modules',
-    'metro',
-    'src',
-    'node-haste',
-    'DependencyGraph.js'
-  );
-  if (!fs.existsSync(dependencyGraphFile)) return;
+  const dependencyGraphFiles = [
+    path.join(rootDir, 'apps', 'mobile', 'node_modules', 'metro', 'src', 'node-haste', 'DependencyGraph.js'),
+    path.join(rootDir, 'node_modules', '@expo', 'metro', 'node_modules', 'metro', 'src', 'node-haste', 'DependencyGraph.js'),
+    path.join(rootDir, 'node_modules', 'metro', 'src', 'node-haste', 'DependencyGraph.js'),
+  ].filter((file, index, list) => fs.existsSync(file) && list.indexOf(file) === index);
+  for (const dependencyGraphFile of dependencyGraphFiles) {
+    patchMetroDependencyGraphSha(dependencyGraphFile);
+  }
+}
+
+function patchMetroDependencyGraphSha(dependencyGraphFile) {
   const source = fs.readFileSync(dependencyGraphFile, 'utf8');
   const guard = 'mixedPath.includes("react-native-worklets/.worklets/")';
   if (source.includes(guard)) return;
@@ -171,17 +171,18 @@ function patchMetroWorkletsBundleModeSha() {
   const after = `  async getOrComputeSha1(mixedPath) {
     if (${guard}) {
       const createHash = require("crypto").createHash;
+      const fs = require("fs");
       return {
-        sha1: createHash("sha1").update(performance.now().toString()).digest("hex"),
+        sha1: createHash("sha1").update(fs.existsSync(mixedPath) ? fs.readFileSync(mixedPath) : mixedPath).digest("hex"),
       };
     }
     const result = await this._fileSystem.getOrComputeSha1(mixedPath);`;
   if (!source.includes(before)) {
-    console.warn('[patch-metro-worklets] DependencyGraph SHA block not found, skipping');
+    console.warn(`[patch-metro-worklets] DependencyGraph SHA block not found in ${dependencyGraphFile}, skipping`);
     return;
   }
   fs.writeFileSync(dependencyGraphFile, source.replace(before, after));
-  console.log('[patch-metro-worklets] patched Bundle Mode SHA fallback');
+  console.log(`[patch-metro-worklets] patched Bundle Mode SHA fallback in ${dependencyGraphFile}`);
 }
 
 function patchDrawerLayoutSpring() {
