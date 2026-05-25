@@ -3895,6 +3895,72 @@ pub fn remove_opencode_skill(
 }
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn remove_installed_opencode_skills_by_path(
+    repo_path: &str,
+    paths: Vec<String>,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let repo_root =
+        fs::canonicalize(repo_path).map_err(|e| format!("resolve repo path failed: {e}"))?;
+    let mut allowed_roots = vec![
+        repo_root.join(".agents").join("skills"),
+        repo_root.join(".opencode").join("skills"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        let home_root = PathBuf::from(home);
+        allowed_roots.push(home_root.join(".agents").join("skills"));
+        allowed_roots.push(home_root.join(".opencode").join("skills"));
+    }
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for raw_path in paths {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let skill_path = PathBuf::from(trimmed);
+        if !skill_path.exists() {
+            missing.push(trimmed.to_string());
+            continue;
+        }
+        let canonical = fs::canonicalize(&skill_path)
+            .map_err(|e| format!("resolve skill path failed for {}: {e}", trimmed))?;
+        let allowed = allowed_roots.iter().any(|root| canonical.starts_with(root));
+        if !allowed {
+            return Err(format!(
+                "refusing to remove path outside skills directories: {}",
+                trimmed
+            ));
+        }
+        if !canonical.is_dir() {
+            return Err(format!("skill path is not a directory: {}", trimmed));
+        }
+        fs::remove_dir_all(&canonical)
+            .map_err(|e| format!("remove installed skill failed for {}: {e}", trimmed))?;
+        removed.push(canonical.to_string_lossy().to_string());
+    }
+
+    prune_opencode_skill_source_groups(repo_path, &removed)?;
+
+    serde_json::to_value(serde_json::json!({
+        "removed": removed,
+        "missing": missing,
+    }))
+    .map_err(|e| format!("serialize removal result failed: {e}"))
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn save_opencode_skill_source_groups(
+    repo_path: &str,
+    entries: Vec<OpencodeSkillSourceGroupEntry>,
+) -> Result<Value, String> {
+    let changed = upsert_opencode_skill_source_groups_internal(repo_path, &entries)?;
+    serde_json::to_value(serde_json::json!({ "saved": changed }))
+        .map_err(|e| format!("serialize source group save result failed: {e}"))
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn set_opencode_server_current_model(repo_path: &str, model: &str) -> Result<Value, String> {
     command_runner::validate_repo_path(repo_path)?;
     let m = model.trim();

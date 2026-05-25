@@ -1,12 +1,15 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Platform, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
+import { FONT_DISPLAY_SERIF } from '../styles/mobileFonts';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 type GiteamStartupAnimationProps = {
   animate?: boolean;
+  /** 仅在自定义字体已加载时传入，避免未加载时回退系统字体导致字标裁切 */
+  fontsReady?: boolean;
   fontFamily?: string;
 };
 
@@ -44,6 +47,10 @@ function strokeAnim(progress: Animated.Value, length: number) {
 
 export function GiteamStartupAnimation(props: GiteamStartupAnimationProps) {
   const animate = props.animate !== false;
+  const wordmarkFontFamily =
+    props.fontsReady === false
+      ? undefined
+      : props.fontFamily || FONT_DISPLAY_SERIF;
   const leftHead = useRef(new Animated.Value(animate ? 0 : 1)).current;
   const leftBody = useRef(new Animated.Value(animate ? 0 : 1)).current;
   const centerHead = useRef(new Animated.Value(animate ? 0 : 1)).current;
@@ -308,7 +315,14 @@ export function GiteamStartupAnimation(props: GiteamStartupAnimationProps) {
           }
         ]}
       >
-        <Text style={[styles.wordmark, props.fontFamily ? { fontFamily: props.fontFamily } : null]}>Giteam</Text>
+        <Text
+          style={[
+            styles.wordmark,
+            wordmarkFontFamily ? { fontFamily: wordmarkFontFamily } : null
+          ]}
+        >
+          Giteam
+        </Text>
       </Animated.View>
     </View>
   );
@@ -329,12 +343,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   wordmarkWrap: {
-    marginTop: 2
+    marginTop: 2,
+    paddingHorizontal: 10,
+    alignSelf: 'center'
   },
   wordmark: {
     color: WORDMARK,
     fontSize: 34,
-    lineHeight: 40,
-    letterSpacing: -1.2
+    lineHeight: 42,
+    letterSpacing: -0.35,
+    ...(Platform.OS === 'android'
+      ? { includeFontPadding: false, paddingRight: 4 }
+      : { paddingRight: 2 })
   }
 });

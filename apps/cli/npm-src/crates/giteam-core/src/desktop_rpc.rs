@@ -2695,6 +2695,24 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let result = super::opencode::set_opencode_server_current_model(repo_path, model)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+        "post_opencode_session_prompt_async" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let session_id = get_str(&args, "sessionId")?;
+            let prompt = get_str(&args, "prompt")?;
+            let parts = args.get("parts").cloned();
+            let model = get_str_opt(&args, "model");
+            let result = super::opencode::post_opencode_session_prompt_async(
+                repo_path, session_id, prompt, parts, model, None, None,
+            )?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "abort_opencode_session" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let session_id = get_str(&args, "sessionId")?;
+            let directory = get_str_opt(&args, "directory");
+            let result = super::opencode::abort_opencode_session(repo_path, session_id, directory)?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
         "list_opencode_agents" => {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::list_opencode_agents(repo_path)
@@ -2765,6 +2783,17 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let message = get_str_opt(&args, "message");
             let result = super::opencode::post_opencode_permission_reply(
                 repo_path, request_id, reply, message,
+            )?;
+            serde_json::to_value(result).map_err(|e| e.to_string())
+        }
+        "get_opencode_session_messages_detailed_page" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let session_id = get_str(&args, "sessionId")?;
+            let directory = get_str_opt(&args, "directory");
+            let before = get_str_opt(&args, "before");
+            let limit = get_u32_opt(&args, "limit");
+            let result = super::opencode::get_opencode_session_messages_detailed_page(
+                repo_path, session_id, directory, before, limit,
             )?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }

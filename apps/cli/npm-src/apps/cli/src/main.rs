@@ -2613,7 +2613,7 @@ fn mobile_banner() -> &'static str {
 
 fn print_banner() {
     println!("{}", mobile_banner());
-    println!("giteam mobile control service");
+    println!("Giteam control service v{}", env!("CARGO_PKG_VERSION"));
     println!();
 }
 

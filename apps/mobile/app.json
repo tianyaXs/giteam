@@ -2,7 +2,7 @@
   "expo": {
     "name": "giteam",
     "slug": "giteam-mobile",
-    "version": "0.1.32",
+    "version": "0.1.33",
     "icon": "../../apps/desktop/src-tauri/icons/icon.png",
     "splash": {
       "backgroundColor": "#f6f1e8"

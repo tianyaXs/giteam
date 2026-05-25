@@ -7,9 +7,11 @@ export function MobileLaunchOverlay(props: {
   visible: boolean;
   opacity: Animated.Value;
   fontFamily: string;
+  fontsReady: boolean;
 }) {
   const {
     fontFamily,
+    fontsReady,
     opacity,
     styles,
     visible
@@ -18,7 +20,7 @@ export function MobileLaunchOverlay(props: {
   if (!visible) return null;
   return (
     <Animated.View pointerEvents="none" style={[styles.launchOverlay, { opacity }]}>
-      <GiteamStartupAnimation animate fontFamily={fontFamily} />
+      <GiteamStartupAnimation animate fontsReady={fontsReady} fontFamily={fontFamily} />
     </Animated.View>
   );
 }

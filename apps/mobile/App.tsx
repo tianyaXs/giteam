@@ -1361,6 +1361,7 @@ export default function App() {
       styles={styles}
       visible={launchOverlayVisible}
       opacity={launchOverlayOpacity}
+      fontsReady={fontsLoaded}
       fontFamily={FONT_DISPLAY_SERIF}
     />
   );
@@ -1448,6 +1449,7 @@ export default function App() {
       discoverDeviceRows={discoverDeviceRows}
       discoverOpen={discoverOpen}
       discoveringUi={discoveringUi}
+      fontsReady={fontsLoaded}
       fontFamily={FONT_DISPLAY_SERIF}
       gestureRootStyle={styles.gestureRoot}
       launchOverlay={launchOverlay}

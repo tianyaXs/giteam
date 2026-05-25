@@ -49,9 +49,10 @@ export const authStyles = {
   },
   authTitle: {
     fontSize: 34,
-    lineHeight: 38,
+    lineHeight: 40,
     color: "#24211d",
-    letterSpacing: -1.2,
+    letterSpacing: -0.35,
+    paddingRight: 4,
     fontFamily: FONT_DISPLAY_SERIF,
   },
   authSub: {

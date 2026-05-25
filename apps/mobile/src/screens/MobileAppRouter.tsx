@@ -18,6 +18,7 @@ export function MobileAppRouter(props: {
   discoverOpen: boolean;
   discoveringUi: boolean;
   fontFamily: string;
+  fontsReady: boolean;
   gestureRootStyle: any;
   launchOverlay: React.ReactNode;
   lastScanAtLabel: string;
@@ -66,6 +67,7 @@ export function MobileAppRouter(props: {
     discoverOpen,
     discoveringUi,
     fontFamily,
+    fontsReady,
     gestureRootStyle,
     launchOverlay,
     lastScanAtLabel,
@@ -105,7 +107,7 @@ export function MobileAppRouter(props: {
   if (!appReady) {
     return (
       <View style={startupStyles.launchScreen}>
-        <GiteamStartupAnimation animate={false} fontFamily={fontFamily} />
+        <GiteamStartupAnimation animate={false} fontsReady={fontsReady} fontFamily={fontFamily} />
       </View>
     );
   }
