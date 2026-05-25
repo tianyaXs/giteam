@@ -187,32 +187,62 @@ export function useLeftDrawerController(props: {
       markSessionSwitchPerf(perf, 'drawer.stop_stream', {
         ms: Math.round(performance.now() - stopStartedAt)
       });
-      const repo = toText(repoPath).trim();
-      const snapshotStartedAt = performance.now();
-      const snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
-      const snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
-      const snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
-      markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
-        ms: Math.round(performance.now() - snapshotStartedAt),
-        rawRows: snapshotRawRows.length,
-        renderedTurns: snapshotRenderedTurns.length,
-        hasSnapshot: snapshot ? 1 : 0
-      });
-      if ((sessionRawMapRef.current[targetSessionId] || []).length <= 0 && snapshotRawRows.length > 0) {
-        const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
-        const totalTurnCount = Math.max(visibleTurnCount, Number(snapshot?.totalTurnCount || visibleTurnCount));
-        sessionRawMapRef.current[targetSessionId] = snapshotRawRows;
-        sessionVisibleTurnCountRef.current[targetSessionId] = visibleTurnCount;
-        sessionTotalTurnCountRef.current[targetSessionId] = totalTurnCount;
-        setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: toText(snapshot?.nextCursor).trim() }));
-        setSessionHasMore((prev) => ({
-          ...prev,
-          [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
-        }));
-        markSessionSwitchPerf(perf, 'drawer.snapshot_inject_memory', { rawRows: snapshotRawRows.length });
+
+      // 优化4: 如果内存已有缓存，跳过 snapshot_disk
+      const hasMemoryCache = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
+      let snapshot: ReturnType<typeof loadChatSnapshot> = null;
+      let snapshotRawRows: any[] = [];
+      let snapshotRenderedTurns: any[] = [];
+
+      if (!hasMemoryCache) {
+        const repo = toText(repoPath).trim();
+        const snapshotStartedAt = performance.now();
+        snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
+        snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
+        snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
+        markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
+          ms: Math.round(performance.now() - snapshotStartedAt),
+          rawRows: snapshotRawRows.length,
+          renderedTurns: snapshotRenderedTurns.length,
+          hasSnapshot: snapshot ? 1 : 0
+        });
+        if (snapshotRawRows.length > 0) {
+          const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
+          // 修复：totalTurnCount 应该使用快照中的值，而不是和 visibleTurnCount 取 max
+          // 如果快照中没有 totalTurnCount，则使用 visibleTurnCount 作为回退
+          const totalTurnCount = Math.max(0, Number(snapshot?.totalTurnCount || visibleTurnCount));
+          sessionRawMapRef.current[targetSessionId] = snapshotRawRows;
+          sessionVisibleTurnCountRef.current[targetSessionId] = visibleTurnCount;
+          sessionTotalTurnCountRef.current[targetSessionId] = totalTurnCount;
+          setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: toText(snapshot?.nextCursor).trim() }));
+          setSessionHasMore((prev) => ({
+            ...prev,
+            [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
+          }));
+          markSessionSwitchPerf(perf, 'drawer.snapshot_inject_memory', { rawRows: snapshotRawRows.length });
+        }
+      } else {
+        markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
+          ms: 0,
+          rawRows: 0,
+          renderedTurns: 0,
+          hasSnapshot: 0,
+          skipped: 'memory_cache'
+        });
       }
+
       const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
       markSessionSwitchPerf(perf, 'drawer.set_active_session.call', { hasCachedRows: hasCachedRows ? 1 : 0 });
+
+      // 优化2: 预加载消息 - 在 setActiveSession 前就开始 fetch
+      let prefetchPromise: Promise<any> | null = null;
+      if (!hasCachedRows && !snapshot) {
+        prefetchPromise = syncSessionMessages(targetSessionId, {
+          limit: initialSessionLimit,
+          fetchLimit: initialMessageFetchLimit
+        }).catch(() => undefined);
+      }
+
       const activateStartedAt = performance.now();
       setActiveSession(targetSessionId);
       markSessionSwitchPerf(perf, 'drawer.set_active_session.returned', {
@@ -220,6 +250,7 @@ export function useLeftDrawerController(props: {
       });
       closeDrawer();
       markSessionSwitchPerf(perf, 'drawer.closed');
+
       if (!hasCachedRows) {
         if (snapshot && sessionIdRef.current === targetSessionId) {
           const snapshotUiStartedAt = performance.now();
@@ -237,16 +268,26 @@ export function useLeftDrawerController(props: {
           void reconnectRunningSession(targetSessionId);
           return;
         }
-        markSessionSwitchPerf(perf, 'drawer.sync.await_begin');
-        const syncStartedAt = performance.now();
-        await syncSessionMessages(targetSessionId, {
-          limit: initialSessionLimit,
-          fetchLimit: initialMessageFetchLimit
-        }).catch(() => undefined);
-        markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
-          ms: Math.round(performance.now() - syncStartedAt)
-        });
-        finishSessionSwitchPerf(perf, 'sync_network');
+        if (prefetchPromise) {
+          markSessionSwitchPerf(perf, 'drawer.sync.await_begin', { source: 'prefetch' });
+          const syncStartedAt = performance.now();
+          await prefetchPromise;
+          markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
+            ms: Math.round(performance.now() - syncStartedAt)
+          });
+          finishSessionSwitchPerf(perf, 'sync_network_prefetch');
+        } else {
+          markSessionSwitchPerf(perf, 'drawer.sync.await_begin');
+          const syncStartedAt = performance.now();
+          await syncSessionMessages(targetSessionId, {
+            limit: initialSessionLimit,
+            fetchLimit: initialMessageFetchLimit
+          }).catch(() => undefined);
+          markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
+            ms: Math.round(performance.now() - syncStartedAt)
+          });
+          finishSessionSwitchPerf(perf, 'sync_network');
+        }
       } else {
         finishSessionSwitchPerf(perf, 'memory_cache');
       }

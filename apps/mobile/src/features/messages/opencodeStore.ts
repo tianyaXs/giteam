@@ -311,6 +311,23 @@ export function getKnownStreamMessageRole(stores: OpenCodeStreamStoreRefs, targe
   return rawMessageRole(raw.find((row) => rawMessageId(row) === mid));
 }
 
+/** Stream deltas/parts must never mutate user messages (avoids typewriter on sent prompts). */
+export function canApplyStreamPartUpdate(
+  stores: OpenCodeStreamStoreRefs,
+  targetSessionId: string,
+  messageId: string,
+) {
+  return getKnownStreamMessageRole(stores, targetSessionId, messageId) === 'assistant';
+}
+
+export function resolveStreamRewriteRole(
+  stores: OpenCodeStreamStoreRefs,
+  targetSessionId: string,
+  messageId: string,
+): 'user' | 'assistant' {
+  return getKnownStreamMessageRole(stores, targetSessionId, messageId) === 'user' ? 'user' : 'assistant';
+}
+
 export function getStoredStreamPart(stores: OpenCodeStreamStoreRefs, targetSessionId: string, messageId: string, partId: string) {
   const sid = toText(targetSessionId).trim();
   const mid = toText(messageId).trim();

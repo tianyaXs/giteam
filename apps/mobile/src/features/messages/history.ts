@@ -1,3 +1,5 @@
+import { toText } from '../../lib/text';
+
 export type RefreshViewMode = 'jumpToLatest' | 'loadingOlder' | 'default';
 
 export function buildMessagesRetryPlan(fetchLimit: number, hasBeforeCursor: boolean): number[] {
@@ -35,6 +37,11 @@ export async function fetchWithRetry<T>(args: {
     }
   }
   throw lastErr;
+}
+
+/** 保留服务端返回的 cursor；merge 未增长由 backfill 循环处理，不在此处清空 */
+export function resolveHistoryCursor(nextCursor: string): string {
+  return toText(nextCursor).trim();
 }
 
 export function computeVisibleTurnCount(args: {

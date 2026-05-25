@@ -295,6 +295,9 @@ export default function App() {
     anchorSessionToLatest,
     getMaintainVisibleContentPosition,
     markFollowLatest,
+    pauseFollowLatest,
+    isViewportNearLatest,
+    restoreSessionViewport,
     followLatest,
     listRevealReady,
     shouldSuppressLoadOlder,
@@ -302,7 +305,6 @@ export default function App() {
   } = useChatListController<DisplayedTurnCell>({
     initialCellLimit: INITIAL_CELL_LIMIT,
     chatBottomProximity: CHAT_BOTTOM_PROXIMITY,
-    debugLog: pushConnLog,
   });
   const {
     leftDrawerPulse,
@@ -525,8 +527,11 @@ export default function App() {
     forceScrollToLatestUntilRef,
     markFollowLatest,
     sessionVisibleTurnCountRef,
+    messagesRef,
     renderedTurnsRef,
     applyTurnWindowRef,
+    setMessages,
+    setRenderedTurns,
   });
   const turnWindowController = useTurnWindowController({
     initialSessionLimit: INITIAL_SESSION_LIMIT,
@@ -991,6 +996,9 @@ export default function App() {
     syncSessionStatus,
     rememberCurrentSessionViewport,
     guardHistoryLoad,
+    pauseFollowLatest,
+    isViewportNearLatest,
+    restoreSessionViewport,
     suppressLoadOlderUntilRef,
     streamDebug,
   });
@@ -1135,6 +1143,7 @@ export default function App() {
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     sessionIdRef,
     sessionVisibleTurnCountRef,
+    sessionTotalTurnCountRef,
     pendingPromptSessionRef,
     sentAttachmentCacheRef,
     setStatus,

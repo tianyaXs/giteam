@@ -82,8 +82,8 @@ export function ChatConversationStage(props: {
   } = props;
   const chatContentContainerStyle = useMemo(
     () => ({
-      paddingTop: messageBottomInset,
-      paddingBottom: 12,
+      paddingTop: 12,
+      paddingBottom: messageBottomInset,
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
@@ -113,14 +113,15 @@ export function ChatConversationStage(props: {
   }, [renderedTurnsLength, sessionId]);
 
   const handleStartReached = useCallback(() => {
-    if (loadingOlder || !sessionId || shouldSuppressLoadOlder()) return;
+    if (loadingOlder || !sessionId) return;
+    if (shouldSuppressLoadOlder()) return;
     void onLoadOlderMessages();
   }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
 
   useEffect(() => {
-    if (!sessionId || displayedTurnCells.length <= 0) return;
+    if (loadingOlder || !sessionId || displayedTurnCells.length <= 0) return;
     return anchorSessionToLatest(sessionId, displayedTurnCells.length);
-  }, [anchorSessionToLatest, displayedTurnCells.length, sessionId]);
+  }, [anchorSessionToLatest, displayedTurnCells.length, loadingOlder, sessionId]);
 
   return (
     <View style={styles.chatBodyWrap}>

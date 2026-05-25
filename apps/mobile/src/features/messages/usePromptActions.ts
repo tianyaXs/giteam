@@ -35,6 +35,7 @@ type UsePromptActionsParams = {
   initialMessageFetchLimit: number;
   sessionIdRef: React.MutableRefObject<string>;
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
+  sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   pendingPromptSessionRef: React.MutableRefObject<Record<string, { id: string; startedAt: number }>>;
   sentAttachmentCacheRef: React.MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   setStatus: (value: string | ((prev: string) => string)) => void;
@@ -81,6 +82,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     serverUrl,
     sessionIdRef,
     sessionVisibleTurnCountRef,
+    sessionTotalTurnCountRef,
     setActiveSession,
     setBusy,
     setImageAttachments,
@@ -236,10 +238,15 @@ export function usePromptActions(params: UsePromptActionsParams) {
       pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
       // 如果服务端创建了新会话（如 task 事件），不自动切换当前视图，
       // 保持用户在当前会话页面，避免界面跳转到新会话
+      delete pendingPromptSessionRef.current[targetSessionId];
       markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: res.sessionId });
       const syncStartedAt = performance.now();
       void syncSessionMessages(res.sessionId, {
-        limit: Math.max(initialSessionLimit, Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0)),
+        limit: Math.max(
+          initialSessionLimit,
+          Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0),
+          Number(sessionTotalTurnCountRef.current[res.sessionId] || 0)
+        ),
         tailOnly: true
       })
         .then(() => {
@@ -312,6 +319,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
     sentAttachmentCacheRef,
     serverUrl,
     sessionIdRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setActiveSession,
     setBusy,
     setImageAttachments,
@@ -333,7 +342,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     }
     setBusy(true);
     stopStream();
-    clearSessionOptimisticMessages(sid);
+    delete pendingPromptSessionRef.current[sid];
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     try {
       pushConnLog(`POST abort sid=${sid}`);
@@ -344,7 +353,13 @@ export function usePromptActions(params: UsePromptActionsParams) {
         sessionId: sid
       });
       setStatus('已请求中断');
-      await syncSessionMessages(sid, { limit: initialSessionLimit });
+      const tailLimit = Math.max(
+        initialSessionLimit,
+        Number(sessionVisibleTurnCountRef.current[sid] || 0),
+        Number(sessionTotalTurnCountRef.current[sid] || 0)
+      );
+      await syncSessionMessages(sid, { limit: tailLimit, tailOnly: true });
+      clearSessionOptimisticMessages(sid);
       void syncSessionStatus(sid);
       pushConnLog('POST abort ok');
     } catch (e) {
@@ -357,10 +372,13 @@ export function usePromptActions(params: UsePromptActionsParams) {
     authed,
     clearSessionOptimisticMessages,
     initialSessionLimit,
+    pendingPromptSessionRef,
     pushConnLog,
     repoPath,
     serverUrl,
     sessionIdRef,
+    sessionTotalTurnCountRef,
+    sessionVisibleTurnCountRef,
     setBusy,
     setSessionStatusMap,
     setStatus,

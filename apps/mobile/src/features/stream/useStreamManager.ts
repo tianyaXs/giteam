@@ -4,7 +4,9 @@ import { toText } from '../../lib/text';
 import type { OpenCodeStreamStoreRefs, StreamPartEvent } from '../messages/opencodeStore';
 import {
   ensureStreamSessionStores as storeEnsureStreamSessionStores,
+  canApplyStreamPartUpdate as storeCanApplyStreamPartUpdate,
   getKnownStreamMessageRole as storeGetKnownStreamMessageRole,
+  resolveStreamRewriteRole as storeResolveStreamRewriteRole,
   getStoredStreamPart as storeGetStoredStreamPart,
   ingestStreamRows as storeIngestStreamRows,
   mergeStreamPart as storeMergeStreamPart,
@@ -398,13 +400,17 @@ export function useStreamManager(deps: StreamManagerDeps) {
     const upsertStreamPart = (sid: string, messageId: string, part: any, createdAt: number = Date.now()) => {
       if (!storeShouldStoreStreamPart(part)) return;
       if (!sid || !messageId) return;
-      storeUpsertStreamPartRecord(getStores(), sid, messageId, part);
+      const stores = getStores();
+      if (!storeCanApplyStreamPartUpdate(stores, sid, messageId)) return;
+      storeUpsertStreamPartRecord(stores, sid, messageId, part);
       rewriteStreamMessageRow(sid, messageId, createdAt);
     };
 
     const rewriteStreamMessageRow = (sid: string, messageId: string, createdAt: number = Date.now()) => {
       const stores = getStores();
       ensureStreamSessionStores(sid);
+      const role = storeResolveStreamRewriteRole(stores, sid, messageId);
+      if (role === 'user') return;
       const bucket = stores.part.current[sid]?.[messageId];
       const parts = bucket ? bucket.order.map((id) => bucket.byId[id]).filter(Boolean) : [];
       d.streamDebug('stream.row.rewrite', {
@@ -427,13 +433,14 @@ export function useStreamManager(deps: StreamManagerDeps) {
       if (sid !== d.sessionIdRef.current) return;
       const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
       const messageId = toText(source?.messageId || source?.messageID).trim();
+      if (!messageId || !storeCanApplyStreamPartUpdate(getStores(), sid, messageId)) return;
       const partId = toText(source?.partId || source?.partID).trim() || 'text';
       const field = toText(source?.field).trim();
       const delta = typeof source?.delta === 'string' ? source.delta : '';
       const kind = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
       d.streamDebug('delta.received', { sid, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
-      if (!messageId || !delta) {
-        d.streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
+      if (!delta) {
+        d.streamDebug('delta.ignored', { reason: 'missing delta', messageId, deltaLen: delta.length });
         return;
       }
       const writeField = streamPartWriteField(field, kind);
@@ -452,6 +459,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         queueStreamPartEvent(sid, messageId, { kind: 'delta', payload });
         return;
       }
+      if (role !== 'assistant') return;
       const partId = toText(source?.partId || source?.partID).trim() || toText(source?.field).trim() || 'text';
       if (!getStoredStreamPart(sid, messageId, partId)) {
         const field = toText(source?.field).trim();
@@ -472,6 +480,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const part = source?.part;
       const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
       if (!messageId || !part || typeof part !== 'object') return;
+      if (!storeCanApplyStreamPartUpdate(getStores(), sid, messageId)) return;
       const partId = toText(part?.id || part?.partID).trim() || 'text';
       const incomingText = typeof part?.text === 'string' ? part.text : '';
       if (isStreamTextPart(part) && incomingText) {
@@ -531,6 +540,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         queueStreamPartEvent(sid, messageId, { kind: 'part', payload });
         return;
       }
+      if (role !== 'assistant') return;
       applyAssistantPartNow(sid, payload);
     };
 
@@ -611,6 +621,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       const pid = toText(partId).trim();
       const key = `${sid}:${mid}:${pid}:${field}`;
       if (!sid || !mid || !pid || !field || !delta) return;
+      if (!storeCanApplyStreamPartUpdate(getStores(), sid, mid)) return;
       const current = d.streamTypewriterQueueRef.current[key];
       d.streamTypewriterQueueRef.current[key] = {
         sid,

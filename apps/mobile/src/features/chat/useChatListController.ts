@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SESSION_LIST_REVEAL_DELAY_MS } from './mobileAppConfig';
 
 export type ChatViewportSnapshot = {
@@ -50,9 +50,15 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   const anchoredSessionRef = useRef('');
   const anchoredSessionIdRef = useRef('');
   const anchorInFlightRef = useRef('');
+  const forceRevealScrollRef = useRef(false);
   const listRevealReadyRef = useRef(false);
   const pendingCellLayoutAdjustRef = useRef<{ cellId: string; previousHeight: number } | null>(null);
+  const followLatestRef = useRef(true);
   const chatViewabilityConfig = useMemo(() => ({ itemVisiblePercentThreshold: 1 }), []);
+
+  useEffect(() => {
+    followLatestRef.current = followLatest;
+  }, [followLatest]);
 
   const clearScrollReleaseTimer = useCallback(() => {
     if (!scrollReleaseTimerRef.current) return;
@@ -159,15 +165,14 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       anchoredSessionIdRef.current = sid;
       anchoredSessionRef.current = '';
       anchorInFlightRef.current = '';
+      forceRevealScrollRef.current = true;
       listRevealReadyRef.current = false;
       setListRevealReady(false);
       guardHistoryLoad(2400);
+      followLatestRef.current = true;
       setFollowLatest(true);
     } else if (listRevealReadyRef.current && anchoredSessionRef.current !== signature) {
       anchoredSessionRef.current = signature;
-      if (getDistanceFromBottom() > chatBottomProximity) {
-        scrollListToEnd(false);
-      }
       return;
     } else if (anchoredSessionRef.current === signature && listRevealReadyRef.current) {
       return;
@@ -190,24 +195,44 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       );
     };
 
-    const revealTimer = setTimeout(() => {
+    let revealTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const tryReveal = () => {
       if (anchorInFlightRef.current !== sid) return;
       let scrolled = false;
-      if (getDistanceFromBottom() > chatBottomProximity) {
+      const forceScroll = forceRevealScrollRef.current;
+      const shouldScroll =
+        forceScroll
+        || (followLatestRef.current && getDistanceFromBottom() <= chatBottomProximity);
+      if (shouldScroll) {
         scrollListToEnd(false);
         scrolled = true;
       }
       requestAnimationFrame(() => {
         if (anchorInFlightRef.current !== sid) return;
-        if (getDistanceFromBottom() > chatBottomProximity) {
+        const forceScrollAgain = forceRevealScrollRef.current;
+        const shouldScrollAgain =
+          forceScrollAgain
+          || (followLatestRef.current && getDistanceFromBottom() <= chatBottomProximity);
+        if (shouldScrollAgain) {
           scrollListToEnd(false);
           scrolled = true;
         }
+        forceRevealScrollRef.current = false;
         finishReveal(scrolled);
       });
-    }, SESSION_LIST_REVEAL_DELAY_MS);
+    };
 
-    return () => clearTimeout(revealTimer);
+    const revealDelayMs = Math.max(0, SESSION_LIST_REVEAL_DELAY_MS);
+    if (revealDelayMs <= 0) {
+      tryReveal();
+    } else {
+      revealTimeoutId = setTimeout(tryReveal, revealDelayMs);
+    }
+
+    return () => {
+      if (revealTimeoutId !== null) clearTimeout(revealTimeoutId);
+    };
   }, [
     chatBottomProximity,
     debugLog,
@@ -229,6 +254,30 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     }
   }, []);
 
+  const pauseFollowLatest = useCallback(() => {
+    forceScrollToLatestUntilRef.current = 0;
+    followLatestRef.current = false;
+    setFollowLatest(false);
+  }, []);
+
+  const isViewportNearLatest = useCallback(() => {
+    return getDistanceFromBottom() <= chatBottomProximity;
+  }, [chatBottomProximity, getDistanceFromBottom]);
+
+  const restoreSessionViewport = useCallback((sessionKey: string) => {
+    const sid = String(sessionKey || '').trim();
+    if (!sid) return;
+    const snap = chatViewportSnapshotRef.current[sid];
+    if (!snap || snap.scrollY < 0) return;
+    messageScrollYRef.current = snap.scrollY;
+    messageContentHRef.current = Math.max(messageContentHRef.current, snap.contentH);
+    messageViewportHRef.current = Math.max(messageViewportHRef.current, snap.viewportH);
+    try {
+      messageScrollRef.current?.scrollToOffset?.({ offset: snap.scrollY, animated: false });
+    } catch {}
+    updateLatestJumpVisibility(getDistanceFromBottom(snap.scrollY), true);
+  }, [getDistanceFromBottom, updateLatestJumpVisibility]);
+
   const jumpToLatest = useCallback(() => {
     messageUserScrollingRef.current = false;
     markFollowLatest(900);
@@ -245,11 +294,16 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     };
     if (loadingOlder) {
       config.autoscrollToTopThreshold = 0.12;
-    } else if (followLatest && listRevealReady) {
+    } else if (
+      followLatest
+      && listRevealReady
+      && !messageUserScrollingRef.current
+      && getDistanceFromBottom() <= chatBottomProximity
+    ) {
       config.autoscrollToBottomThreshold = 0.12;
     }
     return config;
-  }, [followLatest, listRevealReady]);
+  }, [chatBottomProximity, followLatest, getDistanceFromBottom, listRevealReady]);
 
   const prepareCellLayoutAdjustment = useCallback((cellId: string, previousHeight: number) => {
     const key = String(cellId || '').trim();
@@ -290,8 +344,14 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       messageContentHRef.current = contentH;
     }
     const distance = getDistanceFromBottom(y);
-    if (distance <= chatBottomProximity && !messageUserScrollingRef.current) {
-      setFollowLatest(true);
+    if (listRevealReadyRef.current) {
+      if (distance <= chatBottomProximity && !messageUserScrollingRef.current) {
+        followLatestRef.current = true;
+        setFollowLatest(true);
+      } else if (distance > chatBottomProximity * 2) {
+        followLatestRef.current = false;
+        setFollowLatest(false);
+      }
     }
     updateLatestJumpVisibility(distance);
   }, [chatBottomProximity, getDistanceFromBottom, updateLatestJumpVisibility]);
@@ -334,12 +394,19 @@ export function useChatListController<Cell extends { id?: string }>(props: {
 
   const handleContentSizeChange = useCallback((height: number, opts: { loadingOlder: boolean }) => {
     const previousHeight = Math.max(0, Number(messageContentHRef.current || 0));
+    const scrollY = Math.max(0, Number(messageScrollYRef.current || 0));
+    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
+    const distanceBefore =
+      previousHeight > 0 && viewportH > 0
+        ? Math.max(0, previousHeight - viewportH - scrollY)
+        : 0;
+    const wasNearBottom = previousHeight <= 0 || distanceBefore <= chatBottomProximity;
     messageContentHRef.current = Number(height || 0);
     if (opts.loadingOlder) {
       if (previousHeight <= 0) return;
       const delta = Math.max(0, Number(height || 0) - previousHeight);
       if (delta <= 1) return;
-      const nextOffset = Math.max(0, Number(messageScrollYRef.current || 0) + delta);
+      const nextOffset = Math.max(0, scrollY + delta);
       messageScrollYRef.current = nextOffset;
       try {
         messageScrollRef.current?.scrollToOffset({ offset: nextOffset, animated: false });
@@ -349,16 +416,16 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     }
     if (
       listRevealReadyRef.current
-      && followLatest
+      && followLatestRef.current
       && !messageUserScrollingRef.current
-      && getDistanceFromBottom() > chatBottomProximity
+      && wasNearBottom
+      && getDistanceFromBottom() <= chatBottomProximity
     ) {
       scrollListToEnd(false);
       updateLatestJumpVisibility(getDistanceFromBottom(), true);
     }
   }, [
     chatBottomProximity,
-    followLatest,
     getDistanceFromBottom,
     scrollListToEnd,
     updateLatestJumpVisibility
@@ -401,7 +468,13 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     };
   }, [chatBottomProximity, getDistanceFromBottom, initialCellLimit]);
 
-  const resetListInteractionState = useCallback(() => {
+  const clearSessionViewportSnapshot = useCallback((sessionKey: string) => {
+    const sid = String(sessionKey || '').trim();
+    if (!sid) return;
+    delete chatViewportSnapshotRef.current[sid];
+  }, []);
+
+  const resetListInteractionState = useCallback((nextSessionKey?: string) => {
     clearScrollReleaseTimer();
     clearFloatingDockReleaseTimer();
     forceScrollToLatestUntilRef.current = 0;
@@ -410,6 +483,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     anchoredSessionRef.current = '';
     anchoredSessionIdRef.current = '';
     anchorInFlightRef.current = '';
+    forceRevealScrollRef.current = false;
     listRevealReadyRef.current = false;
     setListRevealReady(false);
     messageUserScrollingRef.current = false;
@@ -421,8 +495,11 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
     setSuppressFloatingDocks(false);
+    followLatestRef.current = true;
     setFollowLatest(true);
-  }, [clearFloatingDockReleaseTimer, clearScrollReleaseTimer]);
+    const sid = String(nextSessionKey || '').trim();
+    if (sid) clearSessionViewportSnapshot(sid);
+  }, [clearFloatingDockReleaseTimer, clearScrollReleaseTimer, clearSessionViewportSnapshot]);
 
   return {
     showLatestJump,
@@ -440,6 +517,9 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     onChatViewableItemsChanged,
     scrollToLatest,
     markFollowLatest,
+    pauseFollowLatest,
+    isViewportNearLatest,
+    restoreSessionViewport,
     jumpToLatest,
     prepareCellLayoutAdjustment,
     settleCellLayoutAdjustment,
@@ -451,6 +531,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     handleContentSizeChange,
     handleListLayout,
     rememberCurrentSessionViewport,
+    clearSessionViewportSnapshot,
     resetListInteractionState,
     guardHistoryLoad,
     anchorSessionToLatest,

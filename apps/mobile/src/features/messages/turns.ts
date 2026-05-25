@@ -29,6 +29,35 @@ export function rowId(row: RawMessageRow): string {
   return toText(row?.info?.id);
 }
 
+/** 与 opencode 分页 cursor 一致：base64url({ id, time }) */
+export function encodeHistoryPageCursor(row: RawMessageRow): string {
+  const id = rowId(row);
+  const time = rowCreatedAt(row);
+  if (!id || time <= 0) return '';
+  try {
+    const json = JSON.stringify({ id, time });
+    if (typeof globalThis.btoa !== 'function') return '';
+    const base64 = globalThis.btoa(unescape(encodeURIComponent(json)));
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  } catch {
+    return '';
+  }
+}
+
+export function oldestHistoryPageCursor(rows: RawMessageRow[]): string {
+  if (!Array.isArray(rows) || rows.length <= 0) return '';
+  let oldest = rows[0];
+  let minTs = rowCreatedAt(oldest);
+  for (const row of rows) {
+    const ts = rowCreatedAt(row);
+    if (ts < minTs) {
+      minTs = ts;
+      oldest = row;
+    }
+  }
+  return encodeHistoryPageCursor(oldest);
+}
+
 function partKey(part: any, index: number): string {
   const id = toText(part?.id) || toText(part?.partID) || toText(part?.callID);
   if (id) return id;
@@ -202,10 +231,35 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
   return out;
 }
 
-export function buildTurnWindow(raw: RawMessageRow[], visibleTurnCount: number): TurnWindowResult {
+// 缓存结构，用于避免重复解析
+let _cachedRaw: RawMessageRow[] | null = null;
+let _cachedParsed: { timeline: MobileTimelineItem[]; writing: boolean; hasError: boolean } | null = null;
+let _cachedRenderedTurns: MobileRenderedTurn[] | null = null;
+
+function getCachedParsed(raw: RawMessageRow[]) {
+  if (_cachedRaw === raw && _cachedParsed) {
+    return _cachedParsed;
+  }
   const parsed = parseConversation(raw);
+  _cachedRaw = raw;
+  _cachedParsed = parsed;
+  _cachedRenderedTurns = null; // 清除 rendered turns 缓存
+  return parsed;
+}
+
+function getCachedRenderedTurns(timeline: MobileTimelineItem[]) {
+  if (_cachedRenderedTurns) {
+    return _cachedRenderedTurns;
+  }
+  const turns = buildRenderedTurns(timeline);
+  _cachedRenderedTurns = turns;
+  return turns;
+}
+
+export function buildTurnWindow(raw: RawMessageRow[], visibleTurnCount: number): TurnWindowResult {
+  const parsed = getCachedParsed(raw);
   const fullTimeline = Array.isArray(parsed.timeline) ? parsed.timeline : [];
-  const fullRenderedTurns = buildRenderedTurns(fullTimeline);
+  const fullRenderedTurns = getCachedRenderedTurns(fullTimeline);
   const totalTurnCount = fullRenderedTurns.length;
   const safeVisibleTurns = totalTurnCount > 0 ? Math.max(1, Math.min(Math.floor(visibleTurnCount || 0), totalTurnCount)) : 0;
   const visibleRenderedTurns =

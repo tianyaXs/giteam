@@ -15,7 +15,9 @@ import {
   publishStreamRows as storePublishStreamRows,
   replaceStreamRows as storeReplaceStreamRows,
   rawMessageId as storeRawMessageId,
+  canApplyStreamPartUpdate as storeCanApplyStreamPartUpdate,
   rawMessageRole as storeRawMessageRole,
+  resolveStreamRewriteRole as storeResolveStreamRewriteRole,
   removeStreamPartRecord as storeRemoveStreamPartRecord,
   resetOpenCodeStreamStores as storeResetOpenCodeStreamStores,
   shouldStoreStreamPart as storeShouldStoreStreamPart,
@@ -149,6 +151,8 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       messageId,
       parts: parts.map((p: any) => `${p?.type || '?'}:${toText(p?.text).length}`).join(',')
     });
+    const stores = d.getOpenCodeStreamStores();
+    if (storeResolveStreamRewriteRole(stores, sid, messageId) === 'user') return;
     const currentInfo = d.streamMessageStoreRef.current[sid]?.[messageId] || {};
     d.streamMessageStoreRef.current[sid][messageId] = {
       ...currentInfo,
@@ -163,7 +167,9 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
   const upsertStreamPart = useCallback((targetSessionId: string, messageId: string, part: any, createdAt: number = Date.now()) => {
     if (!storeShouldStoreStreamPart(part)) return;
     if (!targetSessionId || !messageId) return;
-    storeUpsertStreamPartRecord(getParams().getOpenCodeStreamStores(), targetSessionId, messageId, part);
+    const stores = getParams().getOpenCodeStreamStores();
+    if (!storeCanApplyStreamPartUpdate(stores, targetSessionId, messageId)) return;
+    storeUpsertStreamPartRecord(stores, targetSessionId, messageId, part);
     rewriteStreamMessageRow(targetSessionId, messageId, createdAt);
   }, [getParams, rewriteStreamMessageRow]);
 
@@ -242,8 +248,9 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     const field = toText(source?.field).trim();
     const delta = typeof source?.delta === 'string' ? source.delta : '';
     const kind = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
+    if (!messageId || !storeCanApplyStreamPartUpdate(d.getOpenCodeStreamStores(), targetSessionId, messageId)) return;
     d.streamDebug('delta.received', { sid: targetSessionId, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
-    if (!messageId || !delta) {
+    if (!delta) {
       d.streamDebug('delta.ignored', { reason: 'missing messageId or delta', messageId, deltaLen: delta.length });
       return;
     }
@@ -261,6 +268,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
     const part = source?.part;
     const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
     if (!messageId || !part || typeof part !== 'object') return;
+    if (!storeCanApplyStreamPartUpdate(d.getOpenCodeStreamStores(), targetSessionId, messageId)) return;
     const partId = toText(part?.id || part?.partID).trim() || 'text';
     const incomingText = typeof part?.text === 'string' ? part.text : '';
     if (isStreamTextPart(part) && incomingText) {
@@ -368,7 +376,7 @@ export function useOpenCodeStreamRuntime(params: UseOpenCodeStreamRuntimeParams)
       if (shouldFollowStream) {
         latest.forceScrollToLatestUntilRef.current = Date.now() + 45000;
       }
-    }, 24);
+    }, 64);
   }, [getParams, shouldFollowLatest]);
 
   const renderStreamWindow = useCallback((targetSessionId: string) => {

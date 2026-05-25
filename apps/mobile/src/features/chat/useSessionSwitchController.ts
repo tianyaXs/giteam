@@ -17,7 +17,7 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
     displayedTurnCells: Cell[];
     visibleCellCount: number;
   }) => void;
-  resetListInteractionState: () => void;
+  resetListInteractionState: (nextSessionId?: string) => void;
   guardHistoryLoad: (durationMs?: number) => void;
   resetSessionInteractionState: () => void;
   applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => void;
@@ -65,7 +65,7 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
       displayedTurnCells: displayedTurnCellsRef.current,
       visibleCellCount: visibleCellCountRef.current
     });
-    resetListInteractionState();
+    resetListInteractionState(sid);
     resetSessionInteractionState();
     markSessionSwitchPerf(perf, 'setActiveSession.reset_interaction');
     setQuestionRequests([]);
@@ -91,9 +91,12 @@ export function useSessionSwitchController<Cell extends { id: string }>(props: {
     });
     if (cachedRowsForNextSession.length > 0) {
       const totalTurnCount = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
+      // 修复：visibleCount 应该至少显示 initialSessionLimit 个 turn，而不是被快照的 visibleTurnCount 限制
+      // 如果 totalTurnCount > visibleTurnCount，说明有更多历史消息，应该显示更多
+      const cachedVisibleCount = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
       const visibleCount = Math.max(
         initialSessionLimit,
-        Number(sessionVisibleTurnCountRef.current[sid] || initialSessionLimit),
+        cachedVisibleCount,
         totalTurnCount
       );
       const applyStartedAt = performance.now();

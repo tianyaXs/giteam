@@ -76,19 +76,21 @@ export function useTurnCellRenderer(params: {
       prepareCellLayoutAdjustment(item.id, chatCellHeightMapRef.current[item.id] || 0);
     };
 
+    const isUserOnlyCell = !!item.userMessage && item.items.length === 0;
+
     return (
       <MobileTurnCell
         bodyFontFamily={bodyFontFamily}
         styles={styles}
         turn={item}
-        streaming={sessionWorking && interaction.isLastVisible}
+        streaming={sessionWorking && interaction.isLastVisible && !isUserOnlyCell}
         isLastTurn={interaction.isLastVisible}
         thinkingPulse={thinkingPulse}
         hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}
         liveQuestions={liveQuestionTurnId === (item.parentTurnId || item.id) ? activeQuestionsForTurn : []}
         interaction={interaction}
-        exploringStatus={interaction.isLastVisible ? exploringStatus : undefined}
-        exploringActions={interaction.isLastVisible ? exploringActions : undefined}
+        exploringStatus={interaction.isLastVisible && !isUserOnlyCell ? exploringStatus : undefined}
+        exploringActions={interaction.isLastVisible && !isUserOnlyCell ? exploringActions : undefined}
         onQuestionReply={handleQuestionReply}
         onCopyMessage={handleCopyMessage}
         onOpenImage={handleOpenPreviewImage}

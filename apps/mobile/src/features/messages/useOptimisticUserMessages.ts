@@ -31,12 +31,16 @@ export function useOptimisticUserMessages(params: {
   forceScrollToLatestUntilRef: MutableRefObject<number>;
   markFollowLatest: (durationMs?: number) => void;
   sessionVisibleTurnCountRef: MutableRefObject<Record<string, number>>;
+  messagesRef: MutableRefObject<MobileChatMessage[]>;
   renderedTurnsRef: MutableRefObject<MobileRenderedTurn[]>;
   applyTurnWindowRef: MutableRefObject<(targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => unknown>;
+  setMessages: (value: MobileChatMessage[]) => void;
+  setRenderedTurns: Dispatch<SetStateAction<MobileRenderedTurn[]>>;
 }) {
   const {
     applyTurnWindowRef,
     forceScrollToLatestUntilRef,
+    messagesRef,
     renderedTurnsRef,
     markFollowLatest,
     initialSessionLimit,
@@ -44,7 +48,9 @@ export function useOptimisticUserMessages(params: {
     sentAttachmentCacheRef,
     sessionIdRef,
     sessionOptimisticUserMapRef,
-    sessionVisibleTurnCountRef
+    sessionVisibleTurnCountRef,
+    setMessages,
+    setRenderedTurns
   } = params;
   const [optimisticVersion, setOptimisticVersion] = useState(0);
 
@@ -101,10 +107,18 @@ export function useOptimisticUserMessages(params: {
       const remaining: OptimisticUserMessage[] = [];
       for (const local of optimistic) {
         const text = toText(local.text);
+        const localTextTrimmed = text.trim();
+        const matchesOptimisticText = (serverText: string) => {
+          if (serverText === text) return true;
+          const serverTextTrimmed = serverText.trim();
+          if (!serverTextTrimmed || !localTextTrimmed) return false;
+          return serverTextTrimmed.startsWith(localTextTrimmed) || localTextTrimmed.startsWith(serverTextTrimmed);
+        };
         const matched =
           serverUsers.find((item) => {
             if (usedIds.has(item.id)) return false;
-            if (toText(item.text) !== text) return false;
+            const serverText = toText(item.text);
+            if (!matchesOptimisticText(serverText)) return false;
             if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
             const serverCreatedAt = Number(item.createdAt || 0) || 0;
             if (serverCreatedAt < local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS) return false;
@@ -114,7 +128,8 @@ export function useOptimisticUserMessages(params: {
           serverUsers
             .filter((item) => {
               if (usedIds.has(item.id)) return false;
-              if (toText(item.text) !== text) return false;
+              const serverText = toText(item.text);
+              if (!matchesOptimisticText(serverText)) return false;
               if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
               const serverCreatedAt = Number(item.createdAt || 0) || 0;
               return serverCreatedAt >= local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS &&
@@ -252,16 +267,69 @@ export function useOptimisticUserMessages(params: {
         renderedTurnsRef.current.length + 1
       );
       sessionVisibleTurnCountRef.current[sid] = nextVisible;
-      const applyStartedAt = performance.now();
-      markMessageSendPerfForSession(sid, 'list.apply_turn_window.begin', { visible: nextVisible });
-      applyTurnWindowRef.current(sid, nextVisible);
-      markMessageSendPerfForSession(sid, 'list.apply_turn_window.done', {
-        ms: Math.round(performance.now() - applyStartedAt)
-      });
+
+      // 优化9: 增量渲染乐观消息，避免全量重建
+      const currentTurns = renderedTurnsRef.current;
+      const currentMessages = messagesRef.current;
+      const optimisticTurnId = `turn:optimistic:${message.id}`;
+
+      // 检查是否已存在该乐观 turn
+      const alreadyExists = currentTurns.some((turn) => turn.id === optimisticTurnId);
+      if (!alreadyExists) {
+        const appendStartedAt = performance.now();
+        markMessageSendPerfForSession(sid, 'list.optimistic_append.begin', {
+          visible: nextVisible,
+          currentTurns: currentTurns.length
+        });
+
+        const optimisticTurn: MobileRenderedTurn = {
+          id: optimisticTurnId,
+          createdAt: message.createdAt,
+          userMessage: {
+            id: message.id,
+            role: 'user',
+            text: message.text,
+            createdAt: message.createdAt,
+            attachments: message.attachments
+          },
+          items: [],
+          signature: `optimistic:${message.id}:${message.text.length}:${message.attachments?.length || 0}`
+        };
+
+        const nextMessages = [...currentMessages, {
+          id: message.id,
+          role: 'user' as const,
+          text: message.text,
+          createdAt: message.createdAt,
+          attachments: message.attachments
+        }];
+
+        const nextTurns = [...currentTurns, optimisticTurn];
+
+        // 直接更新 ref 和 state，跳过 applyTurnWindow
+        messagesRef.current = nextMessages;
+        renderedTurnsRef.current = nextTurns;
+        setMessages(nextMessages);
+        setRenderedTurns(nextTurns);
+
+        markMessageSendPerfForSession(sid, 'list.optimistic_append.done', {
+          ms: Math.round(performance.now() - appendStartedAt),
+          turns: nextTurns.length
+        });
+      } else {
+        // 如果已存在，回退到全量重建
+        const applyStartedAt = performance.now();
+        markMessageSendPerfForSession(sid, 'list.apply_turn_window.begin', { visible: nextVisible });
+        applyTurnWindowRef.current(sid, nextVisible);
+        markMessageSendPerfForSession(sid, 'list.apply_turn_window.done', {
+          ms: Math.round(performance.now() - applyStartedAt)
+        });
+      }
+
       markFollowLatest(45000);
       markMessageSendPerfForSession(sid, 'list.follow_latest_marked');
     },
-    [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, markFollowLatest, renderedTurnsRef, sessionIdRef, sessionVisibleTurnCountRef]
+    [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, markFollowLatest, messagesRef, renderedTurnsRef, sessionIdRef, sessionVisibleTurnCountRef, setMessages, setRenderedTurns]
   );
 
   const clearSessionOptimisticMessages = useCallback(
