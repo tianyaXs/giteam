@@ -2,7 +2,7 @@ import React, { useCallback, useImperativeHandle, useMemo, useRef, useState } fr
 import { Animated, Keyboard, Pressable, StatusBar, Text, View } from 'react-native';
 import { Drawer } from 'react-native-drawer-layout';
 import { ChatComposer, ComposerPickerSheet } from './ChatComposer';
-import { AlbumPickerOverlay, ImagePreviewOverlay } from './MediaOverlays';
+import { ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoCardView } from './MobileTurnCell';
 import { QuestionDock } from '../QuestionDock';
 import { ChatConversationStage } from './ChatConversationStage';
@@ -87,7 +87,6 @@ type ChatWorkspaceScreenProps = {
   onReplyQuestion: (requestId: string, answers: string[][]) => void;
   onDismissQuestion: (requestId: string) => void;
   composerProps: React.ComponentProps<typeof ChatComposer>;
-  albumPickerProps: React.ComponentProps<typeof AlbumPickerOverlay>;
   previewImage: { uri: string; filename?: string } | null;
   onClosePreviewImage: () => void;
   composerPickerProps: React.ComponentProps<typeof ComposerPickerSheet>;
@@ -96,7 +95,6 @@ type ChatWorkspaceScreenProps = {
 export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, ChatWorkspaceScreenProps>(function ChatWorkspaceScreen(props, ref) {
   const {
     activeQuestionRequest,
-    albumPickerProps,
     chatViewabilityConfig,
     composerPickerProps,
     composerProps,
@@ -384,7 +382,6 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           </Drawer>
         </Drawer>
       </View>
-      <AlbumPickerOverlay {...albumPickerProps} />
       <ImagePreviewOverlay styles={styles} image={previewImage} onClose={onClosePreviewImage} />
       <ComposerPickerSheet {...composerPickerProps} />
     </>

@@ -1,3 +1,4 @@
+import { Feather } from '@expo/vector-icons';
 import React from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
@@ -16,6 +17,7 @@ type MediaAlbum = {
 export function AlbumPickerOverlay(props: {
   styles: Record<string, any>;
   open: boolean;
+  purpose?: 'attachment' | 'qr-scan';
   mediaAlbums: MediaAlbum[];
   selectedMediaAlbumId: string;
   albumSelectedIds: string[];
@@ -42,48 +44,72 @@ export function AlbumPickerOverlay(props: {
     onSelectAlbum,
     onToggleImage,
     open,
+    purpose = 'attachment',
     selectedMediaAlbumId,
     styles
   } = props;
 
   if (!open) return null;
 
+  const isQrScan = purpose === 'qr-scan';
+  const confirmLabel =
+    albumSelectedIds.length > 0
+      ? isQrScan
+        ? '打开'
+        : `添加 ${albumSelectedIds.length}`
+      : isQrScan
+        ? '打开'
+        : '添加';
+
   return (
-    <View style={styles.albumOverlay}>
-      <Pressable style={styles.albumBackdrop} onPress={onClose} />
-      <View style={styles.albumSheet}>
+    <View style={isQrScan ? styles.qrAlbumOverlay : styles.albumOverlay}>
+      {isQrScan ? null : <Pressable style={styles.albumBackdrop} onPress={onClose} />}
+      <View style={isQrScan ? styles.qrAlbumSheet : styles.albumSheet}>
         <View style={styles.albumHeaderRow}>
-          <Pressable style={styles.albumHeaderBtn} onPress={onClose}>
-            <Text style={styles.albumHeaderBtnText}>取消</Text>
+          <Pressable style={isQrScan ? styles.qrAlbumCloseBtn : styles.albumHeaderBtn} onPress={onClose}>
+            {isQrScan ? <Feather name="x" size={26} color="#ffffff" /> : <Text style={styles.albumHeaderBtnText}>取消</Text>}
           </Pressable>
-          <Text style={styles.albumTitle}>相册</Text>
+          <View style={isQrScan ? styles.qrAlbumTitleWrap : null}>
+            <Text style={isQrScan ? styles.qrAlbumTitle : styles.albumTitle}>{isQrScan ? '图片和视频' : '相册'}</Text>
+            {isQrScan ? <Feather name="chevron-down" size={18} color="#ffffff" /> : null}
+          </View>
           <Pressable
-            style={[styles.albumHeaderBtn, albumSelectedIds.length === 0 ? styles.albumHeaderBtnDisabled : null]}
+            style={[
+              isQrScan ? styles.qrAlbumConfirmBtn : styles.albumHeaderBtn,
+              albumSelectedIds.length === 0 ? styles.albumHeaderBtnDisabled : null
+            ]}
             onPress={onConfirm}
             disabled={albumSelectedIds.length === 0}
           >
-            <Text style={[styles.albumHeaderBtnText, albumSelectedIds.length === 0 ? styles.albumHeaderBtnTextDisabled : null]}>
-              {albumSelectedIds.length > 0 ? `添加 ${albumSelectedIds.length}` : '添加'}
+            <Text
+              style={[
+                isQrScan ? styles.qrAlbumConfirmText : styles.albumHeaderBtnText,
+                albumSelectedIds.length === 0 ? styles.albumHeaderBtnTextDisabled : null
+              ]}
+            >
+              {confirmLabel}
             </Text>
           </Pressable>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.albumPickerBar} contentContainerStyle={styles.albumPickerBarContent}>
-          {mediaAlbums.map((album) => (
-            <Pressable
-              key={album.id}
-              style={album.id === selectedMediaAlbumId ? [styles.albumPickerChip, styles.albumPickerChipActive] : styles.albumPickerChip}
-              onPress={() => onSelectAlbum(album.id)}
-            >
-              <Text
-                style={album.id === selectedMediaAlbumId ? [styles.albumPickerChipText, styles.albumPickerChipTextActive] : styles.albumPickerChipText}
-                numberOfLines={1}
+        {isQrScan ? null : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.albumPickerBar} contentContainerStyle={styles.albumPickerBarContent}>
+            {mediaAlbums.map((album) => (
+              <Pressable
+                key={album.id}
+                style={album.id === selectedMediaAlbumId ? [styles.albumPickerChip, styles.albumPickerChipActive] : styles.albumPickerChip}
+                onPress={() => onSelectAlbum(album.id)}
               >
-                {album.title}
-                {album.assetCount ? ` ${album.assetCount}` : ''}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+                <Text
+                  style={album.id === selectedMediaAlbumId ? [styles.albumPickerChipText, styles.albumPickerChipTextActive] : styles.albumPickerChipText}
+                  numberOfLines={1}
+                >
+                  {album.title}
+                  {album.assetCount ? ` ${album.assetCount}` : ''}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
         {albumImagesLoading ? (
           <View style={styles.albumLoadingWrap}>
             <ActivityIndicator />
@@ -94,10 +120,10 @@ export function AlbumPickerOverlay(props: {
         ) : (
           <FlashList
             data={albumImages}
-            numColumns={3}
+            numColumns={isQrScan ? 4 : 3}
             keyExtractor={(item) => item.id}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.albumGrid}
+            contentContainerStyle={isQrScan ? styles.qrAlbumGrid : styles.albumGrid}
             extraData={albumSelectedIds}
             onEndReached={onLoadMore}
             onEndReachedThreshold={0.7}
@@ -106,10 +132,15 @@ export function AlbumPickerOverlay(props: {
               const selectedIndex = albumSelectedIds.indexOf(item.id);
               const selected = albumSelectedSet.has(item.id);
               return (
-                <Pressable style={styles.albumThumbCell} onPress={() => onToggleImage(item.id)}>
-                  <View style={styles.albumThumbCard}>
+                <Pressable style={isQrScan ? styles.qrAlbumThumbCell : styles.albumThumbCell} onPress={() => onToggleImage(item.id)}>
+                  <View style={isQrScan ? styles.qrAlbumThumbCard : styles.albumThumbCard}>
                     <Image source={{ uri: item.uri }} style={styles.albumThumbImage} resizeMode="cover" />
-                    <View style={[styles.albumSelectBadge, selected ? styles.albumSelectBadgeOn : null]}>
+                    <View
+                      style={[
+                        isQrScan ? styles.qrAlbumSelectBadge : styles.albumSelectBadge,
+                        selected ? (isQrScan ? styles.qrAlbumSelectBadgeOn : styles.albumSelectBadgeOn) : null
+                      ]}
+                    >
                       <Text style={[styles.albumSelectText, selected ? styles.albumSelectTextOn : null]}>{selected ? selectedIndex + 1 : ''}</Text>
                     </View>
                   </View>

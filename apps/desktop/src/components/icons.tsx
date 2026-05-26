@@ -32,6 +32,27 @@ export function ChevronRightIcon(props: React.SVGProps<SVGSVGElement>): React.Re
   );
 }
 
+export function CopyIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M7.25 3.5H12.25C13.6307 3.5 14.75 4.61929 14.75 6V11C14.75 12.3807 13.6307 13.5 12.25 13.5H7.25C5.86929 13.5 4.75 12.3807 4.75 11V6C4.75 4.61929 5.86929 3.5 7.25 3.5Z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M6.5 16.5H11.75C13.1307 16.5 14.25 15.3807 14.25 14"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
   return (
     <svg aria-hidden="true" fill="none" height="21" viewBox="0 0 21 21" width="21" xmlns="http://www.w3.org/2000/svg" {...props}>
@@ -110,11 +131,26 @@ export function PinIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElemen
   return (
     <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
       <path
-        d="M12.5 2.5L7.5 7.5L4.5 7.5C3.94772 7.5 3.5 7.94772 3.5 8.5C3.5 9.05228 3.94772 9.5 4.5 9.5L9.5 9.5L9.5 14.5C9.5 15.0523 9.94772 15.5 10.5 15.5C11.0523 15.5 11.5 15.0523 11.5 14.5L11.5 11.5L16.5 6.5"
+        d="M12.7143 3.25C12.9934 3.25 13.2559 3.38163 13.4223 3.60547L15.8647 6.88867C16.1022 7.20811 16.0691 7.65221 15.7866 7.93262L13.8335 9.87012V12.4375C13.8335 12.7423 13.6869 13.0285 13.439 13.2061C13.191 13.3837 12.8726 13.4305 12.5835 13.332L10.8579 12.7461L8.45654 16.75L7.64209 16.2617L10.0415 12.2617L9.12939 10.6855C8.97518 10.4193 8.96653 10.0926 9.10693 9.81836C9.24732 9.5441 9.51696 9.36088 9.82471 9.33496L12.8579 9.08105L14.0591 7.89062L12.2378 5.44238L8.27686 5.96094L6.3208 7.90137L8.6792 11.0703L7.92725 11.6299L5.20654 7.97363C4.96893 7.65429 5.00198 7.21014 5.28467 6.92969L7.44678 4.78613C7.59288 4.64126 7.78375 4.55052 7.98779 4.52832L12.5981 3.25293L12.7143 3.25Z"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="1.6"
+        strokeWidth="1.35"
+      />
+      <path d="M11.1768 9.23242L13.832 11.8877" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" />
+    </svg>
+  );
+}
+
+export function StarIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M10.0004 3.08398L12.1166 7.37109L16.848 8.05957L13.4241 11.3965L14.2327 16.1094L10.0004 13.8848L5.76899 16.1094L6.57661 11.3965L3.15376 8.05957L7.88521 7.37109L10.0004 3.08398Z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
       />
     </svg>
   );

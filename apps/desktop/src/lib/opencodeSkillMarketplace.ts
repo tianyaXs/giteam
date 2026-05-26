@@ -11,6 +11,7 @@ export type OpencodeSkillSearchResult = {
   sourceType?: string;
   installSpec?: string | null;
   installUrl?: string | null;
+  githubUrl?: string | null;
   isDuplicate?: boolean;
   change?: number;
   installsYesterday?: number;
@@ -174,6 +175,7 @@ export function opencodeSkillApiToResult(item: any): OpencodeSkillSearchResult |
     source,
     sourceType: String(item?.sourceType || ""),
     installUrl: item?.installUrl ? String(item.installUrl) : null,
+    githubUrl: item?.githubUrl ? String(item.githubUrl) : null,
     isDuplicate: Boolean(item?.isDuplicate),
     change: typeof item?.change === "number" ? item.change : undefined,
     installsYesterday: typeof item?.installsYesterday === "number" ? item.installsYesterday : undefined
@@ -205,8 +207,54 @@ export function skillsmpSkillToResult(item: any): OpencodeSkillSearchResult | nu
     source: source || author,
     sourceType: "skillsmp",
     installSpec: source || null,
-    installUrl: githubUrl || null
+    installUrl: githubUrl || null,
+    githubUrl: githubUrl || null
   };
+}
+
+function skillsmpResultDedupeKey(item: Pick<OpencodeSkillSearchResult, "sourceType" | "installSpec" | "spec" | "id">): string {
+  if (item.sourceType === "skillsmp") return (item.installSpec || item.spec || item.id || "").trim().toLowerCase();
+  return (item.spec || item.id || "").trim().toLowerCase();
+}
+
+function skillsmpResultPathScore(item: Pick<OpencodeSkillSearchResult, "githubUrl" | "installSpec" | "sourceType">): number {
+  if (item.sourceType !== "skillsmp") return 0;
+  const url = String(item.githubUrl || "").toLowerCase();
+  let score = 0;
+  if (url.includes("/tree/main/skills/") || url.includes("/tree/master/skills/")) score += 10;
+  if (url.includes("/tree/main/.agents/skills/") || url.includes("/tree/master/.agents/skills/")) score += 8;
+  if (url.includes("/tree/main/.opencode/skills/") || url.includes("/tree/master/.opencode/skills/")) score += 7;
+  if (url.includes("/tree/main/.kiro/skills/") || url.includes("/tree/master/.kiro/skills/")) score -= 4;
+  if (url.includes("/docs/")) score -= 8;
+  if (url.includes("/zh-cn/") || url.includes("/zh-tw/")) score -= 2;
+  if (item.installSpec) score += 1;
+  return score;
+}
+
+function pickPreferredMarketplaceResult(
+  current: OpencodeSkillSearchResult,
+  candidate: OpencodeSkillSearchResult
+): OpencodeSkillSearchResult {
+  const candidateScore = skillsmpResultPathScore(candidate);
+  const currentScore = skillsmpResultPathScore(current);
+  if (candidateScore !== currentScore) return candidateScore > currentScore ? candidate : current;
+  return parseSkillInstallCount(candidate.installs) > parseSkillInstallCount(current.installs) ? candidate : current;
+}
+
+export function dedupeMarketplaceResults(rows: OpencodeSkillSearchResult[]): OpencodeSkillSearchResult[] {
+  const grouped = new Map<string, OpencodeSkillSearchResult>();
+  for (const item of rows) {
+    if (item.isDuplicate) continue;
+    const key = skillsmpResultDedupeKey(item);
+    if (!key) continue;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, item);
+      continue;
+    }
+    grouped.set(key, pickPreferredMarketplaceResult(existing, item));
+  }
+  return Array.from(grouped.values());
 }
 
 export function quoteShellArg(value: string): string {

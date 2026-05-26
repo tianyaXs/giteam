@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import { ChevronRightIcon, EditIcon, FolderIcon, MoreHorizontalIcon, PinIcon, PlusIcon } from "../icons";
+import { ChevronRightIcon, EditIcon, FolderIcon, MoreHorizontalIcon, PlusIcon } from "../icons";
 import { firstLetter, formatRelativeTime } from "../../lib/textFormatting";
 import type { OpencodeChatSession } from "../../lib/opencodeSessions";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
+import pinnedIconUrl from "./sidebar-pin.png";
 
 type DesktopSidebarProps = {
   noRepos: boolean;
@@ -166,6 +167,19 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
   );
 }
 
+function SidebarPinnedIcon() {
+  return (
+    <span
+      className="gt-sidebar-pinned-icon"
+      aria-hidden="true"
+      style={{
+        WebkitMaskImage: `url(${pinnedIconUrl})`,
+        maskImage: `url(${pinnedIconUrl})`
+      }}
+    />
+  );
+}
+
 type ProjectSectionProps = {
   title: string;
   repos: RepositoryEntry[];
@@ -314,7 +328,7 @@ function ProjectRow(props: ProjectRowProps) {
           onOpenRepoContextMenu(event.clientX, event.clientY, repo);
         }}
       >
-        <span className="gt-sidebar-project-icon">{pinned ? <PinIcon /> : <FolderIcon />}</span>
+        <span className="gt-sidebar-project-icon">{pinned ? <SidebarPinnedIcon /> : <FolderIcon />}</span>
         <span className="gt-sidebar-project-name">{repo.name}</span>
         <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
         <button
@@ -325,7 +339,7 @@ function ProjectRow(props: ProjectRowProps) {
             onTogglePinnedRepo(repo.id);
           }}
         >
-          <PinIcon />
+          <SidebarPinnedIcon />
         </button>
       </div>
 

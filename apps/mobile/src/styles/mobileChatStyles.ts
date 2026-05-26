@@ -797,7 +797,6 @@ export const chatStyles = {
     backgroundColor: "#d4a843",
   },
   bashEventTitle: { color: "#6b5b3e" },
-  bashEventMode: { color: "#8a7a5a" },
   bashEventTime: { color: "#b0a08a" },
   bashEventDetail: { color: "#6b5b3e" },
   bashEventOutput: {

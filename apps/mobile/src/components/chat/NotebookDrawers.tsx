@@ -1,6 +1,6 @@
+import { Feather } from '@expo/vector-icons';
 import React from 'react';
 import { ActivityIndicator, Animated, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import { Feather } from '@expo/vector-icons';
 import { toText } from '../../lib/text';
 
 type ProjectOption = {
@@ -83,7 +83,7 @@ export function LeftDrawerPanel(props: {
   return (
     <View style={[styles.drawerPanelLeft, { backgroundColor: colors.left }]}>
       <View style={styles.drawerHead}>
-        <Text maxFontSizeMultiplier={1.05} style={[styles.drawerTitle, { color: colors.text }]}>
+        <Text maxFontSizeMultiplier={1.05} style={[styles.drawerTitle, styles.drawerLogoTitle, { color: colors.text }]}>
           Giteam
         </Text>
       </View>
@@ -102,9 +102,6 @@ export function LeftDrawerPanel(props: {
                   </Text>
                   <Feather name="chevron-down" size={15} color={colors.faint} />
                 </View>
-                <Text numberOfLines={1} style={[styles.workspaceSwitcherSub, { color: colors.muted }]}>
-                  当前工作区
-                </Text>
               </View>
             </Pressable>
             <Pressable style={[styles.leftProjectCompose, { borderColor: colors.line, backgroundColor: colors.paper }]} onPress={onNewSession}>

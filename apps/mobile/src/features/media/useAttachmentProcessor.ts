@@ -30,8 +30,9 @@ export function useAttachmentProcessor(props: {
   setStatus: (message: string) => void;
   setImageAttachments: React.Dispatch<React.SetStateAction<ComposerAttachment[]>>;
   setAttachmentMenuOpen: (open: boolean) => void;
+  onQrScanFromAlbum?: (uri: string) => Promise<void>;
 }) {
-  const { setAttachmentMenuOpen, setImageAttachments, setStatus } = props;
+  const { onQrScanFromAlbum, setAttachmentMenuOpen, setImageAttachments, setStatus } = props;
   const [photoCameraOpen, setPhotoCameraOpen] = useState(false);
   const [photoCameraReady, setPhotoCameraReady] = useState(false);
   const [photoCameraBusy, setPhotoCameraBusy] = useState(false);
@@ -144,7 +145,10 @@ export function useAttachmentProcessor(props: {
   const albumPicker = useAlbumPickerController({
     setStatus,
     inferMimeFromFilename,
-    onAppendAssets: appendAssetsAsAttachments
+    onAppendAssets: appendAssetsAsAttachments,
+    onPickForQrScan: onQrScanFromAlbum
+      ? async (item) => onQrScanFromAlbum(item.uri)
+      : undefined
   });
 
   const pickImageFromLibrary = useCallback(

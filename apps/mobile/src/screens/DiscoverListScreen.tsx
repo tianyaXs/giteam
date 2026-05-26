@@ -1,6 +1,7 @@
 import React from 'react';
-import { Animated, FlatList, Pressable, SafeAreaView, Text, TextInput, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
+import { Animated, FlatList, Pressable, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export type DiscoverListRow = {
   id: string;

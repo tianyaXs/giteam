@@ -1,6 +1,6 @@
-import React from 'react';
-import { ActivityIndicator, Animated, Pressable, SafeAreaView, ScrollView, StatusBar, Text, TextInput, View } from 'react-native';
-import { Feather } from '@expo/vector-icons';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Pressable, ScrollView, StatusBar, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DiscoverListScreen, type DiscoverListRow } from './DiscoverListScreen';
 import { ScannerScreen } from './ScannerScreen';
 
@@ -26,11 +26,6 @@ export function DiscoverConnectScreen(props: {
 
 export function ScannerConnectScreen(props: {
   styles: Record<string, any>;
-  statusText: string;
-  scannerReady: boolean;
-  scannerLocked: boolean;
-  scanHitCount: number;
-  lastScanAtLabel: string;
   CameraViewCompat: any;
   onCancel: () => void;
   onPickFromAlbum: () => void;
@@ -41,29 +36,19 @@ export function ScannerConnectScreen(props: {
 }) {
   const {
     CameraViewCompat,
-    lastScanAtLabel,
     onBarcodeScanned,
     onCameraReady,
     onCancel,
     onMountError,
     onPickFromAlbum,
     onRescan,
-    scanHitCount,
-    scannerLocked,
-    scannerReady,
-    statusText,
-    styles
+    styles,
   } = props;
 
   return (
     <ScannerScreen
       styles={styles}
-      title="扫码连接桌面端"
-      subtitle="扫描设置页中的二维码即可授权"
-      hint1={scannerReady ? (scannerLocked ? '已识别，处理中...' : '识别器已就绪，请将二维码放入框内') : '正在初始化相机...'}
-      hint2={`识别回调次数: ${scanHitCount} ${lastScanAtLabel ? `· 最近: ${lastScanAtLabel}` : ''}`}
-      hint3="如果实时扫描无反应，可点“相册识别”作为兜底。"
-      statusText={statusText}
+      title="扫一扫"
       onCancel={onCancel}
       onPickFromAlbum={onPickFromAlbum}
       onRescan={onRescan}
@@ -71,10 +56,132 @@ export function ScannerConnectScreen(props: {
       onCameraReady={onCameraReady}
       onMountError={onMountError}
       onBarcodeScanned={onBarcodeScanned}
-      scannerReady={scannerReady}
-      scannerLocked={scannerLocked}
-      scanHitCountText=""
     />
+  );
+}
+
+function analyzeServiceAddress(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return { hasHost: false, hasPort: false, hasCompleteHost: false };
+  const withoutScheme = trimmed.replace(/^https?:\/\//i, '');
+  const hostPart = withoutScheme.split(/[/?#]/)[0].split(':')[0] || '';
+  const ipv4Parts = hostPart.split('.');
+  const isCompleteIpv4 =
+    ipv4Parts.length === 4
+    && ipv4Parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+  const isLocalhost = hostPart === 'localhost';
+  const isLikelyDomain = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(hostPart);
+  try {
+    const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+    const url = new URL(normalized);
+    return {
+      hasHost: Boolean(url.hostname.trim()),
+      hasCompleteHost: isCompleteIpv4 || isLocalhost || isLikelyDomain,
+      hasPort: Boolean(url.port.trim()),
+    };
+  } catch {
+    return {
+      hasHost: /^[^:/?#\s]+$/.test(trimmed) || /^[^:/?#\s]+:\d{2,5}$/.test(trimmed),
+      hasCompleteHost: isCompleteIpv4 || isLocalhost || isLikelyDomain,
+      hasPort: /:\d{2,5}(?:[/?#]|$)/.test(trimmed),
+    };
+  }
+}
+
+function shouldUseStatusMessage(message: string) {
+  const normalized = message.trim();
+  if (!normalized || normalized === '准备就绪') return false;
+  return ![
+    '扫码器已打开，等待识别二维码...',
+    '二维码已识别，正在校验...',
+    '已捕获二维码，正在解析...',
+    '正在识别相册二维码...',
+    '已重置扫描器，请重新对准二维码',
+  ].includes(normalized);
+}
+
+function buildGuideText(props: {
+  busy: boolean;
+  focusedField: 'server' | 'code' | null;
+  pairCode: string;
+  serverUrlInput: string;
+  statusText: string;
+}) {
+  const { busy, focusedField, pairCode, serverUrlInput, statusText } = props;
+  const normalizedStatus = statusText.trim();
+  const trimmedUrl = serverUrlInput.trim();
+  const trimmedCode = pairCode.trim();
+  const address = analyzeServiceAddress(trimmedUrl);
+  const hasValidCode = !trimmedCode || trimmedCode.length >= 6;
+
+  if (busy) {
+    return normalizedStatus && normalizedStatus !== '准备就绪'
+      ? normalizedStatus
+      : '正在检查服务地址并尝试建立连接...';
+  }
+
+  if (focusedField === 'server') {
+    if (!trimmedUrl) return '请填写你的服务地址。';
+    if (!address.hasHost || !address.hasCompleteHost) return '继续填写服务地址。';
+    if (!address.hasPort) return '服务地址里还缺少端口，例如 :4100';
+    if (trimmedCode && !hasValidCode) return '验证码至少需要 6 位';
+    return trimmedCode
+      ? '可以连接了。'
+      : '服务地址看起来没问题，验证码取决于你的授权方式。';
+  }
+
+  if (focusedField === 'code') {
+    if (!trimmedUrl) return '先填写服务地址，这是必要的';
+    if (!address.hasHost || !address.hasCompleteHost) return '服务地址还不完整，先把它补全。';
+    if (!address.hasPort) return '服务地址还缺少端口，这是必要的';
+    if (trimmedCode && !hasValidCode) return '验证码至少需要 6 位';
+    return trimmedCode
+      ? '验证码已填写，可以连接了'
+      : '根据授权方式，决定是否填写验证码。';
+  }
+
+  if (shouldUseStatusMessage(normalizedStatus)) return normalizedStatus;
+  if (!trimmedUrl) return '连接远程 AI 助手，在手机上继续桌面端任务与会话。';
+  if (!address.hasHost || !address.hasCompleteHost) return '服务地址还不完整。';
+  if (!address.hasPort) return '当前地址还缺少端口号，例如 :4100';
+  if (trimmedCode && !hasValidCode) return '验证码至少需要 6 位';
+  if (!trimmedCode) return '服务地址已经就绪，验证码取决于你的授权方式';
+  return '可以连接了。';
+}
+
+function FlowingGuide(props: {
+  styles: Record<string, any>;
+  text: string;
+}) {
+  const { styles, text } = props;
+  const [displayed, setDisplayed] = useState(text);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (!text) {
+      setDisplayed('');
+      return;
+    }
+    setDisplayed('');
+    let index = 0;
+    const step = () => {
+      index += 1;
+      setDisplayed(text.slice(0, index));
+      if (index < text.length) {
+        timerRef.current = setTimeout(step, text[index] === ' ' ? 20 : 34);
+      }
+    };
+    timerRef.current = setTimeout(step, 60);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [text]);
+
+  return (
+    <View style={styles.authGuideWrap}>
+      <Text style={styles.authSub}>{displayed}</Text>
+    </View>
   );
 }
 
@@ -85,13 +192,11 @@ export function AuthConnectScreen(props: {
   statusText: string;
   serverUrlInput: string;
   pairCode: string;
-  preferHttps: boolean;
   launchOverlay?: React.ReactNode;
   onChangeServerUrl: (value: string) => void;
   onChangePairCode: (value: string) => void;
-  onTogglePreferHttps: () => void;
-  onOpenDiscover: () => void;
   onOpenScanner: () => void;
+  onResetStatus: () => void;
   onSubmit: () => void;
 }) {
   const {
@@ -100,17 +205,22 @@ export function AuthConnectScreen(props: {
     launchOverlay,
     onChangePairCode,
     onChangeServerUrl,
-    onOpenDiscover,
     onOpenScanner,
+    onResetStatus,
     onSubmit,
-    onTogglePreferHttps,
     pairCode,
-    preferHttps,
     serverUrlInput,
     statusText,
-    styles
+    styles,
   } = props;
-  const showAuthNotice = busy || (statusText && statusText.trim() && statusText.trim() !== '准备就绪');
+  const [focusedField, setFocusedField] = useState<'server' | 'code' | null>(null);
+  const guideText = buildGuideText({
+    busy,
+    focusedField,
+    pairCode,
+    serverUrlInput,
+    statusText,
+  });
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor }]}>
@@ -123,7 +233,7 @@ export function AuthConnectScreen(props: {
               <View style={styles.authHeroCopy}>
                 <Text style={styles.authKicker}>Remote AI Assistant</Text>
                 <Text style={styles.authTitle}>Giteam</Text>
-                <Text style={styles.authSub}>连接远程 AI 助手，在手机上继续桌面端任务与会话</Text>
+                <FlowingGuide styles={styles} text={guideText} />
               </View>
 
               <View style={styles.authCard}>
@@ -133,9 +243,14 @@ export function AuthConnectScreen(props: {
                     <TextInput
                       style={styles.authInputUrl}
                       value={serverUrlInput}
-                      onChangeText={onChangeServerUrl}
+                      onChangeText={(value) => {
+                        onResetStatus();
+                        onChangeServerUrl(value);
+                      }}
+                      onFocus={() => setFocusedField('server')}
+                      onBlur={() => setFocusedField((prev) => (prev === 'server' ? null : prev))}
                       autoCapitalize="none"
-                      placeholder="输入地址或 IP:端口，如 43.161.223.16:41000"
+                      placeholder="输入服务地址"
                       placeholderTextColor="#9aa6b6"
                     />
                     <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
@@ -150,11 +265,16 @@ export function AuthConnectScreen(props: {
                 </View>
 
                 <View style={styles.authFieldGroup}>
-                  <Text style={styles.authFieldLabel}>验证码（选填）</Text>
+                  <Text style={styles.authFieldLabel}>验证码</Text>
                   <TextInput
                     style={styles.authInput}
                     value={pairCode}
-                    onChangeText={onChangePairCode}
+                    onChangeText={(value) => {
+                      onResetStatus();
+                      onChangePairCode(value);
+                    }}
+                    onFocus={() => setFocusedField('code')}
+                    onBlur={() => setFocusedField((prev) => (prev === 'code' ? null : prev))}
                     autoCapitalize="none"
                     keyboardType="number-pad"
                     placeholder="输入验证码，免授权模式可留空"
@@ -162,42 +282,11 @@ export function AuthConnectScreen(props: {
                   />
                 </View>
 
-                <View style={styles.authAssistRow}>
-                  <Pressable style={styles.authTinyCheckWrap} onPress={onTogglePreferHttps}>
-                    <View style={preferHttps ? styles.authTinyCheckOn : styles.authTinyCheckOff} />
-                    <Text style={styles.authTinyText}>优先使用 HTTPS</Text>
-                  </Pressable>
-                  <View style={styles.authPillRow}>
-                    <Pressable style={styles.authSecondaryPill} onPress={onOpenDiscover} disabled={busy}>
-                      <Feather name="wifi" size={14} color="#5d5345" />
-                      <Text style={styles.authSecondaryPillText}>发现设备</Text>
-                    </Pressable>
-                    <Pressable style={styles.authSecondaryPill} onPress={onOpenScanner} disabled={busy}>
-                      <Feather name="maximize" size={14} color="#5d5345" />
-                      <Text style={styles.authSecondaryPillText}>扫码</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
                 <View style={styles.authActionRow}>
                   <Pressable style={styles.authConnectBtn} onPress={onSubmit} disabled={busy}>
                     <Text style={styles.authConnectBtnText}>{busy ? '连接中…' : '连接远程助手'}</Text>
                   </Pressable>
                 </View>
-
-                {showAuthNotice ? (
-                  <View style={styles.authNoticeRow}>
-                    {busy ? <ActivityIndicator color="#60748d" size="small" /> : null}
-                    <Text numberOfLines={2} style={styles.authNoticeText}>
-                      {statusText}
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.authFootHint}>
-                    <Feather name="link-2" size={14} color="#8d826f" />
-                    <Text style={styles.authFootHintText}>支持手输服务地址、发现局域网设备，或直接扫描连接二维码。</Text>
-                  </View>
-                )}
               </View>
             </View>
           </View>

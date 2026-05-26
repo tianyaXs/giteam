@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -914,6 +914,7 @@ export const MobileTurnCell = React.memo(
     onToggleTimelineQuestion: (id: string) => void;
     onToggleThinkCard: (id: string) => void;
     onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
+    onBeforeLocalLayoutChange: () => void;
     onMeasuredHeight: (id: string, height: number) => void;
   }) {
     const {
@@ -927,6 +928,7 @@ export const MobileTurnCell = React.memo(
       onChangeTimelineTab,
       onCopyImage,
       onCopyMessage,
+      onBeforeLocalLayoutChange,
       onMeasuredHeight,
       onOpenImage,
       onQuestionReply,
@@ -941,6 +943,10 @@ export const MobileTurnCell = React.memo(
     const [expandedContextIds, setExpandedContextIds] = useState<Record<string, boolean>>({});
     const [expandedEventIds, setExpandedEventIds] = useState<Record<string, boolean>>({});
     const measuredHeightRef = useRef(0);
+    const toggleLocalExpansion = useCallback((apply: () => void) => {
+      onBeforeLocalLayoutChange();
+      apply();
+    }, [onBeforeLocalLayoutChange]);
 
     return (
       <View
@@ -981,7 +987,7 @@ export const MobileTurnCell = React.memo(
                 <View style={styles.contextCard}>
                   <Pressable
                     style={styles.contextPressable}
-                    onPress={() => setExpandedContextIds((prev) => ({ ...prev, [item.context.id]: !prev[item.context.id] }))}
+                    onPress={() => toggleLocalExpansion(() => setExpandedContextIds((prev) => ({ ...prev, [item.context.id]: !prev[item.context.id] })))}
                   >
                     <View style={styles.contextHeadRow}>
                       <View style={styles.contextHeadMain}>
@@ -1068,7 +1074,7 @@ export const MobileTurnCell = React.memo(
                 <View key={item.event.id} style={styles.eventWrap}>
                   <Pressable
                     disabled={!eventExpandable}
-                    onPress={() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] }))}
+                    onPress={() => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] })))}
                     style={cardStyle}
                   >
                     <View style={styles.writeEventHead}>
@@ -1136,13 +1142,13 @@ export const MobileTurnCell = React.memo(
               <View key={item.event.id} style={styles.eventWrap}>
                 <Pressable
                   disabled={!eventExpandable}
-                  onPress={() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] }))}
+                  onPress={() => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] })))}
                   style={cardStyle}
                 >
                   <View style={styles.eventHead}>
                     {isShellEvent ? <View style={dotStyle} /> : null}
                     <Text style={titleStyle}>{toolLabel(title)}</Text>
-                    {mode ? <Text style={[styles.eventMode, isShellEvent && styles.bashEventMode]}>{mode}</Text> : null}
+                    {!isShellEvent && mode ? <Text style={styles.eventMode}>{mode}</Text> : null}
                   </View>
                   <Text numberOfLines={isExpanded ? 0 : 2} style={detailStyle}>{detail}</Text>
                   {isExpanded && eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}
@@ -1230,7 +1236,7 @@ export const MobileTurnCell = React.memo(
             currentActions={exploringActions?.current || []}
             completedActions={exploringActions?.completed || []}
             isExpanded={isExploringExpanded}
-            onToggleExpand={() => setIsExploringExpanded(v => !v)}
+            onToggleExpand={() => toggleLocalExpansion(() => setIsExploringExpanded(v => !v))}
           />
         ) : null}
       </View>
@@ -1251,5 +1257,6 @@ export const MobileTurnCell = React.memo(
     prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion &&
     prev.onToggleThinkCard === next.onToggleThinkCard &&
     prev.onChangeTimelineTab === next.onChangeTimelineTab &&
+    prev.onBeforeLocalLayoutChange === next.onBeforeLocalLayoutChange &&
     prev.onMeasuredHeight === next.onMeasuredHeight
 );

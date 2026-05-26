@@ -1,4 +1,4 @@
-import { Platform, StatusBar, StyleSheet } from "react-native";
+import { StyleSheet } from "react-native";
 import { FONT_DISPLAY_SERIF, HANDWRITTEN_TEXT_FONT } from "./mobileFonts";
 import { authStyles } from "./mobileAuthStyles";
 import { chatStyles } from "./mobileChatStyles";
@@ -16,7 +16,6 @@ export const styles = StyleSheet.create({
   chatSafe: {
     flex: 1,
     backgroundColor: "#f7f8fa",
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 0 : 0,
   },
 
   launchScreen: {

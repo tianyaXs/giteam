@@ -1,11 +1,13 @@
 import React from 'react';
+import { View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaView, View } from 'react-native';
-import { AuthConnectScreen, DiscoverConnectScreen, ScannerConnectScreen } from './MobileEntryScreens';
-import { GiteamStartupAnimation } from '../components/GiteamStartupAnimation';
 import { AppRenderBoundary } from '../components/AppRenderBoundary';
+import { GiteamStartupAnimation } from '../components/GiteamStartupAnimation';
+import { AuthConnectScreen, DiscoverConnectScreen, ScannerConnectScreen } from './MobileEntryScreens';
 
 export function MobileAppRouter(props: {
+  albumPickerOverlay: React.ReactNode;
   appReady: boolean;
   authed: boolean;
   backgroundColor: string;
@@ -30,7 +32,6 @@ export function MobileAppRouter(props: {
   onCloseDiscover: () => void;
   onConnectDiscoverPress: (item: any) => void;
   onMountScannerError: (event: any) => void;
-  onOpenDiscover: () => void;
   onOpenScanner: () => void;
   onPairPromptCancel: () => void;
   onPairPromptChange: (value: string) => void;
@@ -38,13 +39,12 @@ export function MobileAppRouter(props: {
   onPickQrFromAlbum: () => void;
   onRescanDiscover: () => void;
   onRescanScanner: () => void;
+  onResetAuthStatus: () => void;
   onScannerReady: () => void;
-  onTogglePreferHttps: () => void;
   pairCode: string;
   pairPromptHostPort: string;
   pairPromptOpen: boolean;
   pairPromptValue: string;
-  preferHttps: boolean;
   safeStyle: any;
   scanHitCount: number;
   scannerLocked: boolean;
@@ -55,6 +55,7 @@ export function MobileAppRouter(props: {
   statusText: string;
 }) {
   const {
+    albumPickerOverlay,
     appReady,
     authed,
     backgroundColor,
@@ -70,7 +71,6 @@ export function MobileAppRouter(props: {
     fontsReady,
     gestureRootStyle,
     launchOverlay,
-    lastScanAtLabel,
     onAuthSubmit,
     onBarcodeScanned,
     onCancelScanner,
@@ -79,7 +79,6 @@ export function MobileAppRouter(props: {
     onCloseDiscover,
     onConnectDiscoverPress,
     onMountScannerError,
-    onOpenDiscover,
     onOpenScanner,
     onPairPromptCancel,
     onPairPromptChange,
@@ -87,18 +86,14 @@ export function MobileAppRouter(props: {
     onPickQrFromAlbum,
     onRescanDiscover,
     onRescanScanner,
+    onResetAuthStatus,
     onScannerReady,
-    onTogglePreferHttps,
     pairCode,
     pairPromptHostPort,
     pairPromptOpen,
     pairPromptValue,
-    preferHttps,
     safeStyle,
-    scanHitCount,
-    scannerLocked,
     scannerOpen,
-    scannerReady,
     serverUrlInput,
     startupStyles,
     statusText
@@ -138,26 +133,25 @@ export function MobileAppRouter(props: {
 
   if (scannerOpen) {
     return (
-      <ScannerConnectScreen
-        styles={startupStyles}
-        statusText={statusText}
-        scannerReady={scannerReady}
-        scannerLocked={scannerLocked}
-        scanHitCount={scanHitCount}
-        lastScanAtLabel={lastScanAtLabel}
-        CameraViewCompat={CameraViewCompat}
-        onCancel={onCancelScanner}
-        onPickFromAlbum={onPickQrFromAlbum}
-        onRescan={onRescanScanner}
-        onCameraReady={onScannerReady}
-        onMountError={onMountScannerError}
-        onBarcodeScanned={onBarcodeScanned}
-      />
+      <>
+        <ScannerConnectScreen
+          styles={startupStyles}
+          CameraViewCompat={CameraViewCompat}
+          onCancel={onCancelScanner}
+          onPickFromAlbum={onPickQrFromAlbum}
+          onRescan={onRescanScanner}
+          onCameraReady={onScannerReady}
+          onMountError={onMountScannerError}
+          onBarcodeScanned={onBarcodeScanned}
+        />
+        {albumPickerOverlay}
+      </>
     );
   }
 
   if (!authed) {
     return (
+      <>
       <AppRenderBoundary name="auth-screen" styles={startupStyles}>
         <AuthConnectScreen
           styles={startupStyles}
@@ -166,16 +160,16 @@ export function MobileAppRouter(props: {
           statusText={statusText}
           serverUrlInput={serverUrlInput}
           pairCode={pairCode}
-          preferHttps={preferHttps}
           launchOverlay={launchOverlay}
           onChangeServerUrl={onChangeServerUrl}
           onChangePairCode={onChangePairCode}
-          onTogglePreferHttps={onTogglePreferHttps}
-          onOpenDiscover={onOpenDiscover}
           onOpenScanner={onOpenScanner}
+          onResetStatus={onResetAuthStatus}
           onSubmit={onAuthSubmit}
         />
       </AppRenderBoundary>
+      {albumPickerOverlay}
+      </>
     );
   }
 
@@ -186,6 +180,7 @@ export function MobileAppRouter(props: {
           {chatScreen}
         </AppRenderBoundary>
         {launchOverlay}
+        {albumPickerOverlay}
       </SafeAreaView>
     </GestureHandlerRootView>
   );

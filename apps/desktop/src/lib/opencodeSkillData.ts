@@ -1,4 +1,4 @@
-import { isInstalledOpencodeSkill, type OpencodeSkillSearchResult } from "./opencodeSkillMarketplace";
+import { dedupeMarketplaceResults, isInstalledOpencodeSkill, type OpencodeSkillSearchResult } from "./opencodeSkillMarketplace";
 
 export const INSTALLED_VIA_SKILLS_DESCRIPTION = "Installed via skills.sh";
 export const OPENCODE_SKILL_DISPLAY_BATCH_SIZE = 50;
@@ -134,7 +134,7 @@ export function mergeMarketplaceCatalogRows(
   incomingRows: OpencodeSkillSearchResult[],
   reset: boolean
 ): OpencodeSkillSearchResult[] {
-  const nextRows = incomingRows.filter((item) => !item.isDuplicate);
+  const nextRows = dedupeMarketplaceResults(incomingRows);
   if (reset) return nextRows;
-  return Array.from(new Map([...previousRows, ...nextRows].map((item) => [item.id || item.spec, item])).values());
+  return dedupeMarketplaceResults([...previousRows, ...nextRows]);
 }

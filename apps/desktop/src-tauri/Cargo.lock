@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-core"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",
@@ -1441,9 +1441,10 @@ dependencies = [
 
 [[package]]
 name = "giteam-desktop"
-version = "0.1.32"
+version = "0.1.33"
 dependencies = [
  "base64 0.22.1",
+ "fastrand",
  "giteam-core",
  "notify",
  "objc2",

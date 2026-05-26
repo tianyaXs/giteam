@@ -1,5 +1,5 @@
 import type { Ref } from "react";
-import { PinIcon, RefreshIcon } from "../icons";
+import { RefreshIcon, StarIcon } from "../icons";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
   OPENCODE_SKILL_DISPLAY_BATCH_SIZE,
@@ -166,7 +166,7 @@ export function OpencodeMarketplaceCards(props: MarketplaceCardsProps) {
           </div>
         </div>
         <div className="gt-skill-card-stats">
-          <b><PinIcon width={14} height={14} /> {result.installs}</b>
+          <b className="gt-skill-stars"><StarIcon width={14} height={14} /> {result.installs}</b>
           <small>{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
         </div>
         <button
@@ -467,7 +467,7 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
                 <button className="chip" onClick={() => void onLoadSelectedSkillDetails()} disabled={selectedSkillLoading}>查看详情</button>
               </div>
               <div className="gt-skill-inspector-stats">
-                <span><strong>{selectedMarketplaceSkill.installs}</strong>Installs</span>
+                <span className="gt-skill-stars"><StarIcon width={14} height={14} /><strong>{selectedMarketplaceSkill.installs}</strong>Stars</span>
                 <span><strong>{selectedSkillDetail?.files?.length || 0}</strong>Files</span>
                 <span><strong>{selectedSkillAudits.length}</strong>Audits</span>
               </div>

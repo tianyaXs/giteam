@@ -307,6 +307,14 @@ export const drawerStyles = {
     fontFamily: FONT_DISPLAY_SERIF,
   },
 
+  drawerLogoTitle: {
+    fontFamily: FONT_DISPLAY_SERIF,
+    fontSize: 34,
+    lineHeight: 40,
+    letterSpacing: -1.2,
+    fontWeight: "400",
+  },
+
   drawerNewBtn: {
     borderRadius: 999,
     backgroundColor: "#26231d",
@@ -521,14 +529,12 @@ export const drawerStyles = {
     lineHeight: 23,
     fontWeight: "700",
     letterSpacing: -0.05,
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   workspaceSwitcherSub: {
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "500",
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   workspaceSwitcherChevron: { fontSize: 18, lineHeight: 18, fontWeight: "600" },
@@ -552,7 +558,6 @@ export const drawerStyles = {
     fontSize: 14,
     lineHeight: 19,
     fontWeight: "600",
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   workspaceSwitcherSheetInline: {
@@ -628,7 +633,6 @@ export const drawerStyles = {
     lineHeight: 19,
     fontWeight: "600",
     letterSpacing: -0.03,
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   drawerSessionSearchMinimal: {
@@ -636,7 +640,6 @@ export const drawerStyles = {
     height: 38,
     paddingHorizontal: 0,
     fontSize: 14,
-    fontFamily: HANDWRITTEN_TEXT_FONT,
     color: "#24211d",
     borderBottomWidth: 0,
     ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as any) : {}),
@@ -712,7 +715,6 @@ export const drawerStyles = {
     lineHeight: 21,
     fontWeight: "600",
     letterSpacing: -0.05,
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   directorySessionPlainTitleActive: {
@@ -721,21 +723,18 @@ export const drawerStyles = {
     lineHeight: 21,
     fontWeight: "800",
     letterSpacing: -0.06,
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   directorySessionPlainTime: {
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "600",
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   directorySessionPlainMeta: {
     fontSize: 12,
     lineHeight: 17,
     fontWeight: "500",
-    fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
   workspaceSectionCard: {

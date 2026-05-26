@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
+import { RefreshIcon } from "../icons";
 
 type RightModuleKey = "changes" | "worktree" | "terminal" | "skills" | "mcp";
 
@@ -9,6 +10,8 @@ type ControlServerSettingsDraft = {
   publicBaseUrl: string;
   pairCodeTtlMode: "none" | "24h" | "7d" | "forever";
 };
+
+type ControlAuthModeDraft = "none" | "pair_code";
 
 export type GeneralSettingsDraft = {
   language: "system" | "zh-CN" | "zh-TW" | "en-US";
@@ -45,12 +48,12 @@ const SETTINGS_TEXT = {
     reasoning: "推理摘要", reasoningDesc: "在对话中显示模型推理摘要。", shellParts: "Shell 工具详情", shellPartsDesc: "默认展开 Shell 工具调用详情。", editParts: "编辑工具详情", editPartsDesc: "默认展开编辑工具调用详情。", progressBar: "会话进度条", progressBarDesc: "在会话工作中显示进度条。",
     theme: "主题", themeDesc: "在浅色和深色主题之间切换。", light: "浅色", dark: "深色", uiFont: "界面字号", uiFontDesc: "调整界面文字大小。", codeFont: "代码字号", codeFontDesc: "调整代码、终端和等宽文本大小。",
     changes: "变更", changesDesc: "显示当前仓库变更列表。", worktree: "工作树", worktreeDesc: "显示分支与 worktree 拓扑。", terminal: "终端", terminalDesc: "显示内置终端入口。", skillsModuleDesc: "显示技能市场。", mcpDesc: "显示 MCP 服务管理模块。",
-    mobileControl: "移动端控制", mobileControlReady: "配置移动端连接服务、端口与配对方式。", mobileControlMissing: "需要先安装 giteam 依赖，才可以启用移动控制服务。", service: "服务开关", serviceDesc: "是否启用移动端控制服务。", port: "服务端口", portDesc: "移动端访问服务端口。", publicUrl: "公开地址", publicUrlDesc: "可选，公网或局域网可访问地址。", pairCode: "配对码", pairCodeDesc: "设置配对码有效期。", noAuth: "无需认证", hours24: "24 小时", days7: "7 天", opencodeApi: "OpenCode 接口", opencodeApiBusy: "正在保存并重启 OpenCode 服务。", opencodeApiDesc: "配置 OpenCode 服务端口。",
+    mobileControl: "移动端控制", mobileControlReady: "配置移动端连接服务、端口、授权方式和扫码连接。", mobileControlMissing: "需要先安装 giteam 依赖，才可以启用移动端控制服务。", service: "服务开关", serviceDesc: "控制移动端控制服务是否启用。", port: "服务端口", portDesc: "移动端访问服务时使用的端口。", publicUrl: "公开地址", publicUrlDesc: "可选，公网或局域网可访问地址；留空时自动取本机可用地址。", authMode: "授权模式", authModeDesc: "选择免认证访问，或要求输入配对码进行授权。", pairCodeAuth: "配对码授权", validPeriod: "有效期", validPeriodDesc: "仅在“配对码授权”下生效，用来控制当前配对码的过期时间。", currentPairCode: "当前配对码", currentPairCodeDesc: "二维码与手机端手动输入都会使用这里展示的配对码。", connectionAddress: "连接地址", authCode: "授权码", qrConnect: "二维码连接", qrConnectDesc: "手机端可直接扫码带入服务地址和当前授权方式。", noAuth: "无需认证", hours24: "24 小时", days7: "7 天", forever: "长期有效", refreshCode: "刷新配对码", copyUrl: "复制地址", qrDisabled: "开启服务后即可生成二维码", qrWaiting: "等待生成可访问地址…", opencodeApi: "OpenCode 接口", opencodeApiBusy: "正在保存并重启 OpenCode 服务。", opencodeApiDesc: "配置 OpenCode 服务端口。",
     apiKey: "API 密钥", apiKeyConfigured: "已配置；清空输入框并保存即可移除。", apiKeyDesc: "可选项；未配置时 AI 搜索会自动回退关键词搜索。",
     agentNotifications: "Agent 通知", agentNotificationsDesc: "Agent 完成或需要关注时发送通知。", permissionNotifications: "授权通知", permissionNotificationsDesc: "出现授权请求时发送通知。", errorNotifications: "错误通知", errorNotificationsDesc: "发生错误时发送通知。",
     agentSound: "Agent 提示音", agentSoundDesc: "Agent 完成或状态变化时播放提示音。", permissionSound: "授权提示音", permissionSoundDesc: "出现授权请求时播放提示音。", errorSound: "错误提示音", errorSoundDesc: "发生错误时播放提示音。",
     startupCheck: "启动时检查", startupCheckDesc: "应用启动后自动检查依赖状态。", releaseNotes: "发布说明", releaseNotesDesc: "新版本首次启动时展示更新内容。", checkNow: "立即检查", checkNowDesc: "立即执行一次运行时依赖检查。",
-    save: "保存", saving: "保存中...", installFirst: "先安装", install: "安装", uninstall: "卸载", installing: "安装中", uninstalling: "卸载中", checking: "检查中...", check: "检查", refresh: "刷新", installed: "已安装", missing: "缺失", saveMobileTitle: "保存移动端控制配置", installDependencyTitle: "先安装 giteam 依赖"
+    save: "保存", saving: "保存中...", installFirst: "先安装", install: "安装", uninstall: "卸载", installing: "安装中", uninstalling: "卸载中", checking: "检查中...", check: "检查", refresh: "刷新", installed: "已安装", missing: "缺失", saveMobileTitle: "保存移动端控制配置", installDependencyTitle: "先安装 giteam 依赖", saveToApply: "保存后生效"
   },
   "zh-TW": {}, "en-US": {}
 } as const;
@@ -73,15 +76,15 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     reasoning: "推理摘要", reasoningDesc: "在對話中顯示模型推理摘要。", shellParts: "Shell 工具詳情", shellPartsDesc: "預設展開 Shell 工具呼叫詳情。", editParts: "編輯工具詳情", editPartsDesc: "預設展開編輯工具呼叫詳情。", progressBar: "會話進度列", progressBarDesc: "在會話工作中顯示進度列。",
     theme: "主題", themeDesc: "在淺色和深色主題之間切換。", light: "淺色", dark: "深色", uiFont: "介面字號", uiFontDesc: "調整介面文字大小。", codeFont: "程式碼字號", codeFontDesc: "調整程式碼、終端機和等寬文字大小。",
     changes: "變更", changesDesc: "顯示目前倉庫變更列表。", worktree: "工作樹", worktreeDesc: "顯示分支與 worktree 拓撲。", terminal: "終端機", terminalDesc: "顯示內建終端機入口。", skillsModuleDesc: "顯示技能市場。", mcpDesc: "顯示 MCP 服務管理模組。",
-    mobileControl: "行動端控制", mobileControlReady: "設定行動端連線服務、連接埠與配對方式。", mobileControlMissing: "需要先安裝 giteam 依賴，才可以啟用行動端控制服務。", service: "服務開關", serviceDesc: "是否啟用行動端控制服務。", port: "服務連接埠", portDesc: "行動端存取服務連接埠。", publicUrl: "公開地址", publicUrlDesc: "可選，公網或區域網路可存取地址。", pairCode: "配對碼", pairCodeDesc: "設定配對碼有效期。", noAuth: "無需認證", hours24: "24 小時", days7: "7 天", opencodeApi: "OpenCode 介面", opencodeApiBusy: "正在儲存並重新啟動 OpenCode 服務。", opencodeApiDesc: "設定 OpenCode 服務連接埠。",
+    mobileControl: "行動端控制", mobileControlReady: "設定行動端連線服務、連接埠、授權方式與掃碼連線。", mobileControlMissing: "需要先安裝 giteam 依賴，才可以啟用行動端控制服務。", service: "服務開關", serviceDesc: "控制行動端控制服務是否啟用。", port: "服務連接埠", portDesc: "行動端存取服務時使用的連接埠。", publicUrl: "公開地址", publicUrlDesc: "可選，公網或區域網路可存取地址；留空時自動取本機可用地址。", authMode: "授權模式", authModeDesc: "選擇免認證存取，或要求輸入配對碼進行授權。", pairCodeAuth: "配對碼授權", validPeriod: "有效期", validPeriodDesc: "僅在「配對碼授權」下生效，用來控制目前配對碼的過期時間。", currentPairCode: "目前配對碼", currentPairCodeDesc: "QR Code 與手機端手動輸入都會使用這裡顯示的配對碼。", connectionAddress: "連線地址", authCode: "授權碼", qrConnect: "QR Code 連線", qrConnectDesc: "手機端可直接掃碼帶入服務地址和目前授權方式。", noAuth: "無需認證", hours24: "24 小時", days7: "7 天", forever: "長期有效", refreshCode: "重新整理配對碼", copyUrl: "複製地址", qrDisabled: "啟用服務後即可產生 QR Code", qrWaiting: "等待產生可存取地址…", opencodeApi: "OpenCode 介面", opencodeApiBusy: "正在儲存並重新啟動 OpenCode 服務。", opencodeApiDesc: "設定 OpenCode 服務連接埠。",
     apiKey: "API 金鑰", apiKeyConfigured: "已設定；清空輸入框並儲存即可移除。", apiKeyDesc: "可選項；未設定時 AI 搜尋會自動回退關鍵字搜尋。",
     agentNotifications: "Agent 通知", agentNotificationsDesc: "Agent 完成或需要關注時傳送通知。", permissionNotifications: "授權通知", permissionNotificationsDesc: "出現授權請求時傳送通知。", errorNotifications: "錯誤通知", errorNotificationsDesc: "發生錯誤時傳送通知。",
     agentSound: "Agent 提示音", agentSoundDesc: "Agent 完成或狀態變化時播放提示音。", permissionSound: "授權提示音", permissionSoundDesc: "出現授權請求時播放提示音。", errorSound: "錯誤提示音", errorSoundDesc: "發生錯誤時播放提示音。",
     startupCheck: "啟動時檢查", startupCheckDesc: "應用啟動後自動檢查依賴狀態。", releaseNotes: "發布說明", releaseNotesDesc: "新版本首次啟動時顯示更新內容。", checkNow: "立即檢查", checkNowDesc: "立即執行一次執行時依賴檢查。",
-    save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", uninstall: "解除安裝", installing: "安裝中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴"
+    save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", uninstall: "解除安裝", installing: "安裝中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
   },
   "en-US": {
-    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Dependencies", dependenciesKicker: "Runtime", dependenciesDesc: "Check and manage runtime dependencies such as Git, Entire, OpenCode, and giteam.", api: "API", apiKicker: "Connection", apiDesc: "Manage mobile control service and OpenCode connection settings.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "Updates", updatesKicker: "Maintenance", updatesDesc: "Manage startup checks, release notes, and runtime dependency checks.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current OpenCode session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "UI Font Size", uiFontDesc: "Adjust interface text size.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mcpDesc: "Show MCP server management.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, and pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Service port for mobile access.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL.", pairCode: "Pair Code", pairCodeDesc: "Set pair code expiration.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", opencodeApi: "OpenCode API", opencodeApiBusy: "Saving and restarting the OpenCode service.", opencodeApiDesc: "Configure the OpenCode service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check on Startup", startupCheckDesc: "Automatically check dependency status after launch.", releaseNotes: "Release Notes", releaseNotesDesc: "Show release notes the first time a new version starts.", checkNow: "Check Now", checkNowDesc: "Run a runtime dependency check now.", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first"
+    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Dependencies", dependenciesKicker: "Runtime", dependenciesDesc: "Check and manage runtime dependencies such as Git, Entire, OpenCode, and giteam.", api: "API", apiKicker: "Connection", apiDesc: "Manage mobile control service and OpenCode connection settings.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "Updates", updatesKicker: "Maintenance", updatesDesc: "Manage startup checks, release notes, and runtime dependency checks.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current OpenCode session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "UI Font Size", uiFontDesc: "Adjust interface text size.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mcpDesc: "Show MCP server management.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, auth, and QR pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Port used by the mobile control service.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", opencodeApi: "OpenCode API", opencodeApiBusy: "Saving and restarting the OpenCode service.", opencodeApiDesc: "Configure the OpenCode service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check on Startup", startupCheckDesc: "Automatically check dependency status after launch.", releaseNotes: "Release Notes", releaseNotesDesc: "Show release notes the first time a new version starts.", checkNow: "Check Now", checkNowDesc: "Run a runtime dependency check now.", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -137,6 +140,13 @@ type SettingsDialogProps = {
   controlInstalled: boolean;
   onControlSettingsChange: (settings: ControlServerSettingsDraft) => void;
   onSaveControlSettings: () => void;
+  controlConnectionUrl: string;
+  controlPairCode: string;
+  controlPairQrUrl: string;
+  controlSettingsDirty: boolean;
+  onRefreshControlPairCode: () => void;
+  onCopyControlUrl: () => void;
+  onMobileVisibilityChange?: (visible: boolean) => void;
   runtimeChecking: boolean;
   checkingDeps: Record<RuntimeDepName, boolean>;
   installingDep: string;
@@ -146,7 +156,6 @@ type SettingsDialogProps = {
   onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
   modelsContent?: ReactNode;
   initialSection?: InitialSettingsSectionId;
-  mobileStatusContent?: ReactNode;
   skillsContent?: ReactNode;
   skillsLoading?: boolean;
   onRefreshSkills?: () => void;
@@ -273,6 +282,7 @@ function SettingsGroup(props: { title: string; entries: Array<SettingsEntry>; wi
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const text = useMemo(() => getSettingsText(props.generalSettings.language), [props.generalSettings.language]);
+  const lastPairCodeTtlModeRef = useRef<Exclude<ControlServerSettingsDraft["pairCodeTtlMode"], "none">>("24h");
   const normalizeSection = (section?: InitialSettingsSectionId | "opencode"): SettingsSectionId => {
     if (section === "modules") return "workspace";
     if (section === "opencode") return "mobile";
@@ -286,8 +296,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
   }, [props.initialSection]);
 
   useEffect(() => {
+    if (props.controlSettings.pairCodeTtlMode !== "none") {
+      lastPairCodeTtlModeRef.current = props.controlSettings.pairCodeTtlMode;
+    }
+  }, [props.controlSettings.pairCodeTtlMode]);
+
+  useEffect(() => {
     if (activeSection === "skillsmp") props.onSkillsVisible?.();
     if (activeSection === "mcp") props.onMcpVisible?.();
+    props.onMobileVisibilityChange?.(activeSection === "mobile");
   }, [activeSection]);
 
   const sections = useMemo(() => {
@@ -371,53 +388,64 @@ export function SettingsDialog(props: SettingsDialogProps) {
       updates: [],
       mobile: [
         {
-          title: text.mobileControl,
-          description: props.runtimeStatus.giteam.installed
-            ? text.mobileControlReady
-            : text.mobileControlMissing,
-          action: (
-            <button
-              className="chip"
-              disabled={!props.runtimeStatus.giteam.installed}
-              title={props.runtimeStatus.giteam.installed ? text.saveMobileTitle : text.installDependencyTitle}
-              onClick={props.controlInstalled ? props.onSaveControlSettings : () => props.onRunDependencyAction("giteam", "install")}
-            >
-              {props.controlBusy ? text.saving : props.controlInstalled ? text.save : text.installFirst}
-            </button>
-          )
-        },
-        {
           title: text.service,
           description: text.serviceDesc,
           action: (
-            <button
-              type="button"
-              className={props.controlSettings.enabled ? "gt-switch on" : "gt-switch"}
+            <SwitchControl
+              checked={props.controlSettings.enabled}
               disabled={!props.controlInstalled || props.controlBusy}
-              onClick={() => props.onToggleControlService(!props.controlSettings.enabled)}
-            >
-              <span className="gt-switch-thumb" aria-hidden="true" />
-            </button>
+              onChange={props.onToggleControlService}
+            />
           )
         },
         {
           title: text.port,
           description: text.portDesc,
-          action: <input className="path-input settings-inline-input" type="number" min={1} max={65535} value={String(props.controlSettings.port)} disabled={!props.controlInstalled || props.controlBusy} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, port: Number(e.target.value || "0") })} />
+          action: <input className="path-input settings-inline-input" type="number" min={1} max={65535} value={String(props.controlSettings.port)} disabled={!props.controlInstalled} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, port: Number(e.target.value || "0") })} />
         },
         {
           title: text.publicUrl,
           description: text.publicUrlDesc,
-          action: <input className="path-input settings-inline-input settings-inline-input-wide" placeholder="http://192.168.1.23:4100" value={props.controlSettings.publicBaseUrl} disabled={!props.controlInstalled || props.controlBusy} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, publicBaseUrl: e.target.value })} />
+          action: <input className="path-input settings-inline-input settings-inline-input-wide" placeholder="http://192.168.1.23:4100" value={props.controlSettings.publicBaseUrl} disabled={!props.controlInstalled} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, publicBaseUrl: e.target.value })} />
         },
         {
-          title: text.pairCode,
-          description: text.pairCodeDesc,
+          title: text.authMode,
+          description: text.authModeDesc,
           action: (
-            <select className="path-input settings-inline-input settings-inline-input-wide" value={props.controlSettings.pairCodeTtlMode} disabled={!props.controlInstalled || props.controlBusy} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: e.target.value as ControlServerSettingsDraft["pairCodeTtlMode"] })}>
+            <select
+              className="path-input settings-inline-input settings-inline-input-wide"
+              value={props.controlSettings.pairCodeTtlMode === "none" ? "none" : "pair_code"}
+              disabled={!props.controlInstalled}
+              onChange={(e) => {
+                const authMode = e.target.value as ControlAuthModeDraft;
+                props.onControlSettingsChange({
+                  ...props.controlSettings,
+                  pairCodeTtlMode: authMode === "none"
+                    ? "none"
+                    : props.controlSettings.pairCodeTtlMode === "none"
+                      ? lastPairCodeTtlModeRef.current
+                      : props.controlSettings.pairCodeTtlMode
+                });
+              }}
+            >
               <option value="none">{text.noAuth}</option>
+              <option value="pair_code">{text.pairCodeAuth}</option>
+            </select>
+          )
+        },
+        {
+          title: text.validPeriod,
+          description: text.validPeriodDesc,
+          action: (
+            <select
+              className="path-input settings-inline-input settings-inline-input-wide"
+              value={props.controlSettings.pairCodeTtlMode === "none" ? "24h" : props.controlSettings.pairCodeTtlMode}
+              disabled={!props.controlInstalled || props.controlSettings.pairCodeTtlMode === "none"}
+              onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: e.target.value as ControlServerSettingsDraft["pairCodeTtlMode"] })}
+            >
               <option value="24h">{text.hours24}</option>
               <option value="7d">{text.days7}</option>
+              <option value="forever">{text.forever}</option>
             </select>
           )
         },
@@ -520,7 +548,88 @@ export function SettingsDialog(props: SettingsDialogProps) {
         kicker: text.apiKicker,
         title: text.api,
         description: text.apiDesc,
-        content: <><div className="settings-panel-list">{entriesBySection.mobile.map((entry) => <article key={entry.title} className="settings-panel-card"><div className="settings-panel-copy"><strong>{entry.title}</strong><p>{entry.description}</p></div><div className="settings-panel-action">{entry.action}</div></article>)}</div>{props.mobileStatusContent}</>
+        content: (
+          <div className="settings-general-stack settings-mobile-layout">
+            <section className="settings-general-group is-wide">
+              <div className="settings-subsection-title">{text.apiKicker}</div>
+              <div className="settings-panel-list">
+                <article className="settings-panel-card settings-mobile-summary-card">
+                  <div className="settings-mobile-summary-box">
+                    <div className="settings-mobile-summary-meta">
+                      <div className="settings-mobile-meta-block settings-mobile-summary-item">
+                        <strong className="settings-mobile-summary-label">{text.connectionAddress}</strong>
+                        <button
+                          className="settings-mobile-url-button"
+                          type="button"
+                          title={text.copyUrl}
+                          disabled={!props.controlSettings.enabled || !props.controlConnectionUrl}
+                          onClick={props.onCopyControlUrl}
+                        >
+                          <span className="settings-mobile-url-text settings-mobile-url-text-plain">
+                            {props.controlSettings.enabled
+                              ? (props.controlConnectionUrl || text.qrWaiting).replace(/^https?:\/\//i, "")
+                              : text.qrDisabled}
+                          </span>
+                        </button>
+                      </div>
+                      <div className="settings-mobile-meta-block settings-mobile-summary-item">
+                        <strong className="settings-mobile-summary-label">{text.authCode}</strong>
+                        <div className="settings-mobile-inline-row settings-mobile-inline-row-compact">
+                          <div className="mobile-qr-code">
+                            {!props.controlSettings.enabled
+                              ? "------"
+                              : props.controlSettings.pairCodeTtlMode === "none"
+                                ? text.noAuth
+                                : props.controlPairCode || "------"}
+                          </div>
+                          <button
+                            className="gt-icon-chip settings-mobile-inline-icon"
+                            type="button"
+                            title={text.refreshCode}
+                            disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.pairCodeTtlMode === "none"}
+                            onClick={props.onRefreshControlPairCode}
+                          >
+                            <RefreshIcon />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mobile-qr-visual settings-mobile-summary-qr">
+                      {props.controlSettings.enabled && props.controlPairQrUrl ? (
+                        <img src={props.controlPairQrUrl} alt="Mobile pair QR code" />
+                      ) : (
+                        <div className="small muted">
+                          {props.controlSettings.enabled ? text.qrWaiting : text.qrDisabled}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+            {!props.controlInstalled ? (
+              <SettingsGroup
+                title={text.mobileControl}
+                entries={[{
+                  title: text.mobileControl,
+                  description: text.mobileControlMissing,
+                  action: (
+                    <button
+                      className="chip"
+                      title={text.installDependencyTitle}
+                      onClick={() => props.onRunDependencyAction("giteam", "install")}
+                    >
+                      {text.installFirst}
+                    </button>
+                  )
+                }]}
+                wide
+              />
+            ) : (
+              <SettingsGroup title={text.mobileControl} entries={entriesBySection.mobile} wide />
+            )}
+          </div>
+        )
       },
       {
         id: "skillsmp" as const,
@@ -591,7 +700,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               <div>
                 <span className="gt-module-kicker">{active.kicker}</span>
                 <h4>{active.title}</h4>
-                {active.description ? <p>{active.description}</p> : null}
+                {active.description && active.id !== "mobile" ? <p>{active.description}</p> : null}
               </div>
               {active.id === "plugins" ? (
                 <button className="gt-icon-chip" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>↻</button>

@@ -2,6 +2,13 @@ import { StyleSheet } from "react-native";
 import type { MobileNamedStyles } from "./mobileStyleTypes";
 
 export const mediaStyles = {
+  qrAlbumOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    backgroundColor: "#1f1f1f",
+  },
+
   albumOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
@@ -29,8 +36,16 @@ export const mediaStyles = {
     overflow: "hidden",
   },
 
+  qrAlbumSheet: {
+    flex: 1,
+    backgroundColor: "#1f1f1f",
+    paddingTop: 22,
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+  },
+
   albumHeaderRow: {
-    height: 44,
+    height: 64,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -52,9 +67,60 @@ export const mediaStyles = {
 
   albumTitle: { color: "#111827", fontSize: 17, fontWeight: "800" },
 
+  qrAlbumCloseBtn: {
+    width: 60,
+    height: 56,
+    marginLeft: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  qrAlbumTitleWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 18,
+    height: 48,
+    borderRadius: 999,
+    backgroundColor: "#3b3b3b",
+  },
+
+  qrAlbumTitle: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+
+  qrAlbumConfirmBtn: {
+    minWidth: 92,
+    height: 56,
+    marginRight: 14,
+    paddingHorizontal: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    backgroundColor: "#3b3b3b",
+  },
+
+  qrAlbumConfirmText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+
   albumPickerBar: { maxHeight: 42, marginHorizontal: -2, marginBottom: 4 },
 
   albumPickerBarContent: { gap: 8, paddingHorizontal: 2, paddingVertical: 4 },
+
+  qrAlbumPickerBar: {
+    maxHeight: 0,
+    marginBottom: 0,
+  },
+
+  qrAlbumPickerBarContent: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
 
   albumPickerChip: {
     height: 30,
@@ -78,6 +144,22 @@ export const mediaStyles = {
 
   albumPickerChipTextActive: { color: "#ffffff" },
 
+  qrAlbumPickerChip: {
+    display: "none",
+  },
+
+  qrAlbumPickerChipActive: {
+    display: "none",
+  },
+
+  qrAlbumPickerChipText: {
+    display: "none",
+  },
+
+  qrAlbumPickerChipTextActive: {
+    display: "none",
+  },
+
   albumLoadingWrap: {
     flex: 1,
     alignItems: "center",
@@ -89,6 +171,11 @@ export const mediaStyles = {
 
   albumGrid: { paddingTop: 8, paddingBottom: 18 },
 
+  qrAlbumGrid: {
+    paddingTop: 18,
+    paddingBottom: 24,
+  },
+
   albumLoadingMore: {
     height: 36,
     alignItems: "center",
@@ -97,12 +184,21 @@ export const mediaStyles = {
 
   albumThumbCell: { flex: 1, padding: 3 },
 
+  qrAlbumThumbCell: { flex: 1, padding: 1 },
+
   albumThumbCard: {
     width: "100%",
     aspectRatio: 1,
     borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "#eef2f7",
+  },
+
+  qrAlbumThumbCard: {
+    width: "100%",
+    aspectRatio: 1,
+    overflow: "hidden",
+    backgroundColor: "#2c2c2c",
   },
 
   albumThumbImage: { width: "100%", height: "100%" },
@@ -122,6 +218,24 @@ export const mediaStyles = {
   },
 
   albumSelectBadgeOn: { backgroundColor: "#1f2937" },
+
+  qrAlbumSelectBadge: {
+    position: "absolute",
+    right: 10,
+    top: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+
+  qrAlbumSelectBadgeOn: {
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
 
   albumSelectText: { color: "#ffffff", fontSize: 12, fontWeight: "800" },
 

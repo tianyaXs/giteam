@@ -344,6 +344,9 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       pendingCellLayoutAdjustRef.current = null;
       return;
     }
+    forceScrollToLatestUntilRef.current = 0;
+    followLatestRef.current = false;
+    setFollowLatest(false);
     pendingCellLayoutAdjustRef.current = { cellId: key, previousHeight };
   }, [chatBottomProximity, getVisibleDistanceFromBottom]);
 

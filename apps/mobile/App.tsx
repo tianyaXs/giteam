@@ -1,25 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { InteractionManager, useWindowDimensions } from "react-native";
 import { CameraView } from "expo-camera";
 import { useFonts } from "expo-font";
-import { useStreamManager } from "./src/features/stream/useStreamManager";
-import { useOpenCodeStreamRuntime } from "./src/features/stream/useOpenCodeStreamRuntime";
-import { useChatListController } from "./src/features/chat/useChatListController";
-import { useChatCellWindow } from "./src/features/chat/useChatCellWindow";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { InteractionManager, useWindowDimensions } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import {
+  NO_AUTH_TOKEN
+} from "./src/api/controlApi";
+import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
+import { AlbumPickerOverlay } from "./src/components/chat/MediaOverlays";
+import { MobileLaunchOverlay } from "./src/components/chat/MobileLaunchOverlay";
+import { conversationHasAssistantAfterUser } from "./src/features/chat/assistantTurnState";
 import {
   flattenTurnsForList,
   type DisplayedTurnCell,
 } from "./src/features/chat/displayedCells";
-import { useBootstrapPersistence } from "./src/features/chat/useBootstrapPersistence";
-import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from "./src/features/chat/sessionSwitchPerf";
-import {
-  getActiveMessageSendTrace,
-  markMessageSendAssistantVisible,
-  markMessageSendListCellsVisible,
-  markMessageSendUserVisible,
-} from "./src/features/messages/messageSendPerf";
-import { useAuthedStartupEffects } from "./src/features/chat/useAuthedStartupEffects";
-import { conversationHasAssistantAfterUser } from "./src/features/chat/assistantTurnState";
 import {
   CHAT_BOTTOM_PROXIMITY,
   CHAT_LIST_BOTTOM_AIR,
@@ -33,6 +27,20 @@ import {
   stableSortSessionItems,
   streamDebug,
 } from "./src/features/chat/mobileAppConfig";
+import {
+  assistantTextWeight,
+  formatSessionTimestamp,
+  isPlaceholderSessionTitle,
+  losesRenderedAssistant,
+  pickSessionDisplayTitle,
+  sharesSessionMessageContext,
+  summarizePreview,
+} from "./src/features/chat/sessionDisplay";
+import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from "./src/features/chat/sessionSwitchPerf";
+import { useAuthedStartupEffects } from "./src/features/chat/useAuthedStartupEffects";
+import { useBootstrapPersistence } from "./src/features/chat/useBootstrapPersistence";
+import { useChatCellWindow } from "./src/features/chat/useChatCellWindow";
+import { useChatListController } from "./src/features/chat/useChatListController";
 import { useChatMotionState } from "./src/features/chat/useChatMotionState";
 import { useChatScreenDerivedState } from "./src/features/chat/useChatScreenDerivedState";
 import { useChatUiActions } from "./src/features/chat/useChatUiActions";
@@ -43,65 +51,41 @@ import { useConnectionLogger } from "./src/features/chat/useConnectionLogger";
 import { useDisplayedTurnsWithThinking } from "./src/features/chat/useDisplayedTurnsWithThinking";
 import { useDrawerPulseState } from "./src/features/chat/useDrawerPulseState";
 import { useGlobalErrorLogger } from "./src/features/chat/useGlobalErrorLogger";
-import { useMobileConnectionFlow } from "./src/features/chat/useMobileConnectionFlow";
+import { useInteractiveTurnCells } from "./src/features/chat/useInteractiveTurnCells";
+import { useLeftDrawerController } from "./src/features/chat/useLeftDrawerController";
 import { useMobileAppRefs } from "./src/features/chat/useMobileAppRefs";
 import { useMobileAppServices } from "./src/features/chat/useMobileAppServices";
 import { useMobileAppState } from "./src/features/chat/useMobileAppState";
+import { useMobileConnectionFlow } from "./src/features/chat/useMobileConnectionFlow";
 import { useMobileShellLifecycle } from "./src/features/chat/useMobileShellLifecycle";
 import { useNotebookColors } from "./src/features/chat/useNotebookColors";
 import { useNotebookDrawerRenderers } from "./src/features/chat/useNotebookDrawerRenderers";
 import { useProjectSwitchAction } from "./src/features/chat/useProjectSwitchAction";
-import { useSessionRecovery } from "./src/features/chat/useSessionRecovery";
-import { useLeftDrawerController } from "./src/features/chat/useLeftDrawerController";
 import { useRightDrawerController } from "./src/features/chat/useRightDrawerController";
 import { useSessionHeaderState } from "./src/features/chat/useSessionHeaderState";
 import { useSessionLifecycleActions } from "./src/features/chat/useSessionLifecycleActions";
+import { useSessionRecovery } from "./src/features/chat/useSessionRecovery";
 import { useSessionSwitchController } from "./src/features/chat/useSessionSwitchController";
 import { useSyncedLatestRefs } from "./src/features/chat/useSyncedLatestRefs";
 import { useTodoDockController } from "./src/features/chat/useTodoDockController";
-import { useInteractiveTurnCells } from "./src/features/chat/useInteractiveTurnCells";
 import { useTurnCellRenderer } from "./src/features/chat/useTurnCellRenderer";
-import {
-  assistantTextWeight,
-  formatSessionTimestamp,
-  isPlaceholderSessionTitle,
-  losesRenderedAssistant,
-  pickSessionDisplayTitle,
-  sharesSessionMessageContext,
-  summarizePreview,
-} from "./src/features/chat/sessionDisplay";
 import { useAttachmentProcessor } from "./src/features/media/useAttachmentProcessor";
 import { useComposerUiController } from "./src/features/media/useComposerUiController";
 import { useSlashCommandCatalog } from "./src/features/media/useSlashCommandCatalog";
-import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
-import { MobileLaunchOverlay } from "./src/components/chat/MobileLaunchOverlay";
-import { MobileAppRouter } from "./src/screens/MobileAppRouter";
-import { toText } from "./src/lib/text";
-import { formatClock } from "./src/lib/time";
 import {
-  FONT_DISPLAY_SERIF,
-  FONT_MIXED_BODY_REGULAR,
-  FONT_TEXT_SERIF,
-  FONT_TEXT_SERIF_SEMIBOLD,
-  FONT_UI_MEDIUM,
-  FONT_UI_REGULAR,
-} from "./src/styles/mobileFonts";
-import { styles } from "./src/styles/mobileAppStyles";
-import {
-  buildStreamUrl,
-  getInstalledOpencodeSkills,
-  getOpencodeConfig,
-  getOpencodeMcpStatus,
-  NO_AUTH_TOKEN,
-} from "./src/api/controlApi";
-import { inspectTurnWindow } from "./src/features/messages/turns";
+  getActiveMessageSendTrace,
+  markMessageSendAssistantVisible,
+  markMessageSendListCellsVisible,
+  markMessageSendUserVisible,
+} from "./src/features/messages/messageSendPerf";
 import { buildLiveTodoCard } from "./src/features/messages/todoCards";
 import { useOptimisticUserMessages } from "./src/features/messages/useOptimisticUserMessages";
 import { usePromptActions } from "./src/features/messages/usePromptActions";
 import { useSessionMessageSync } from "./src/features/messages/useSessionMessageSync";
 import { useTurnWindowController } from "./src/features/messages/useTurnWindowController";
 import { useQuestionController } from "./src/features/questions/useQuestionController";
-import { useWorkspaceCatalogController } from "./src/features/workspace/useWorkspaceCatalogController";
+import { useOpenCodeStreamRuntime } from "./src/features/stream/useOpenCodeStreamRuntime";
+import { useStreamManager } from "./src/features/stream/useStreamManager";
 import {
   extractModelOptionsFromConfig,
   normalizeMcpStatusMap,
@@ -110,6 +94,19 @@ import {
   stripUrlScheme,
   toProjectOptionsFromPaths,
 } from "./src/features/workspace/catalogUtils";
+import { useWorkspaceCatalogController } from "./src/features/workspace/useWorkspaceCatalogController";
+import { toText } from "./src/lib/text";
+import { formatClock } from "./src/lib/time";
+import { MobileAppRouter } from "./src/screens/MobileAppRouter";
+import { styles } from "./src/styles/mobileAppStyles";
+import {
+  FONT_DISPLAY_SERIF,
+  FONT_MIXED_BODY_REGULAR,
+  FONT_TEXT_SERIF,
+  FONT_TEXT_SERIF_SEMIBOLD,
+  FONT_UI_MEDIUM,
+  FONT_UI_REGULAR,
+} from "./src/styles/mobileFonts";
 
 // keys + storage moved to src/storage/*
 
@@ -247,6 +244,8 @@ export default function App() {
     getOpenCodeStreamStores,
     applyTurnWindow,
   } = useMobileAppRefs();
+  const openAlbumPickerForQrScanRef = React.useRef<(() => Promise<void>) | undefined>(undefined);
+  const scanQrFromImageUriRef = React.useRef<((uri: string) => Promise<void>) | undefined>(undefined);
   const pushConnLog = useConnectionLogger();
   const {
     streamManagerHandleRef,
@@ -491,6 +490,7 @@ export default function App() {
     onAuthSubmit,
     onOpenScanner,
     onPickQrFromAlbum,
+    scanQrFromImageUri,
     onBarcodeScanned,
     onCloseScanner,
     onScannerReady,
@@ -519,6 +519,7 @@ export default function App() {
     pairCodeMapRef,
     closeDiscoverRef,
     discoveredPairRequiredRef,
+    openAlbumPickerForQrScanRef,
     setBusy,
     setStatus,
     setServerUrl,
@@ -533,6 +534,10 @@ export default function App() {
     refreshProjectsCatalog,
     toProjectOptionsFromPaths,
   });
+
+  React.useEffect(() => {
+    scanQrFromImageUriRef.current = scanQrFromImageUri;
+  }, [scanQrFromImageUri]);
 
   const {
     optimisticVersion,
@@ -742,6 +747,7 @@ export default function App() {
 
   const {
     albumPickerOpen,
+    albumPickerPurpose,
     albumImages,
     albumImagesLoading,
     albumImagesLoadingMore,
@@ -751,6 +757,7 @@ export default function App() {
     albumSelectedSet,
     closeAlbumPicker,
     openAlbumPicker,
+    openAlbumPickerForQrScan,
     selectMediaAlbum,
     toggleAlbumImage,
     confirmAlbumSelection,
@@ -769,7 +776,14 @@ export default function App() {
     setStatus,
     setImageAttachments,
     setAttachmentMenuOpen,
+    onQrScanFromAlbum: async (uri) => {
+      await scanQrFromImageUriRef.current?.(uri);
+    },
   });
+
+  React.useEffect(() => {
+    openAlbumPickerForQrScanRef.current = openAlbumPickerForQrScan;
+  }, [openAlbumPickerForQrScan]);
 
   const chatWorkspaceRef = useRef<ChatWorkspaceScreenHandle>(null);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
@@ -810,29 +824,29 @@ export default function App() {
   // 构建探索中状态文本和actions
   const exploringStatus = useMemo(() => {
     if (!showThinkingPlaceholder) return undefined;
-    
+
     const { currentActions, completedCounts } = exploringState;
-    
+
     if (currentActions.length > 0) {
       const activeAction = currentActions[0];
       return {
         title: '探索中',
         summary: completedCounts.total > 0
           ? [
-              completedCounts.read > 0 ? `${completedCounts.read} 次读取` : '',
-              completedCounts.search > 0 ? `${completedCounts.search} 次搜索` : '',
-              completedCounts.list > 0 ? `${completedCounts.list} 次列出` : '',
-            ].filter(Boolean).join('，')
+            completedCounts.read > 0 ? `${completedCounts.read} 次读取` : '',
+            completedCounts.search > 0 ? `${completedCounts.search} 次搜索` : '',
+            completedCounts.list > 0 ? `${completedCounts.list} 次列出` : '',
+          ].filter(Boolean).join('，')
           : '正在收集上下文',
         detail: activeAction?.detail && activeAction.detail !== activeAction.tool ? activeAction.detail : undefined
       };
     }
-    
+
     const completedTexts: string[] = [];
     if (completedCounts.read > 0) completedTexts.push(`${completedCounts.read} 次读取`);
     if (completedCounts.search > 0) completedTexts.push(`${completedCounts.search} 次搜索`);
     if (completedCounts.list > 0) completedTexts.push(`${completedCounts.list} 次列出`);
-    
+
     if (completedTexts.length > 0) {
       return {
         title: '已探索',
@@ -840,7 +854,7 @@ export default function App() {
         detail: undefined
       };
     }
-    
+
     return {
       title: '探索中',
       summary: '正在收集上下文',
@@ -1286,6 +1300,7 @@ export default function App() {
     albumImagesLoading,
     albumImagesLoadingMore,
     albumPickerOpen,
+    albumPickerPurpose,
     albumSelectedIds,
     albumSelectedSet,
     attachRecentImage,
@@ -1451,62 +1466,66 @@ export default function App() {
       onReplyQuestion={handleQuestionReply}
       onDismissQuestion={handleQuestionDismiss}
       composerProps={composerProps}
-      albumPickerProps={albumPickerProps}
       previewImage={previewImage}
       onClosePreviewImage={handleClosePreviewImage}
       composerPickerProps={composerPickerProps}
     />
   );
 
+  const albumPickerOverlay = albumPickerOpen ? (
+    <AlbumPickerOverlay {...albumPickerProps} />
+  ) : null;
+
   return (
-    <MobileAppRouter
-      appReady={appReady}
-      authed={authed}
-      backgroundColor={notebookColors.shell}
-      busy={busy}
-      CameraViewCompat={CameraViewCompat}
-      chatScreen={chatScreen}
-      connectProgressScaleX={connectProgressScaleX}
-      connectingDiscoverId={connectingDiscoverId}
-      discoverDeviceRows={discoverDeviceRows}
-      discoverOpen={discoverOpen}
-      discoveringUi={discoveringUi}
-      fontsReady={fontsLoaded}
-      fontFamily={FONT_DISPLAY_SERIF}
-      gestureRootStyle={styles.gestureRoot}
-      launchOverlay={launchOverlay}
-      lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
-      onAuthSubmit={() => void onAuthSubmit()}
-      onBarcodeScanned={onBarcodeScanned}
-      onCancelScanner={onCloseScanner}
-      onChangePairCode={setPairCode}
-      onChangeServerUrl={onChangeServerUrl}
-      onCloseDiscover={onCloseDiscover}
-      onConnectDiscoverPress={onConnectDiscoverPress}
-      onMountScannerError={onScannerMountError}
-      onOpenDiscover={onOpenDiscover}
-      onOpenScanner={onOpenScanner}
-      onPairPromptCancel={cancelPairPrompt}
-      onPairPromptChange={setPairPromptValue}
-      onPairPromptConfirm={confirmPairPrompt}
-      onPickQrFromAlbum={() => void onPickQrFromAlbum()}
-      onRescanDiscover={() => void startDiscover()}
-      onRescanScanner={onScannerRescan}
-      onScannerReady={onScannerReady}
-      onTogglePreferHttps={() => setPreferHttps((value) => !value)}
-      pairCode={pairCode}
-      pairPromptHostPort={pairPromptHostPort}
-      pairPromptOpen={pairPromptOpen}
-      pairPromptValue={pairPromptValue}
-      preferHttps={preferHttps}
-      safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
-      scanHitCount={scanHitCount}
-      scannerLocked={scannerLocked}
-      scannerOpen={scannerOpen}
-      scannerReady={scannerReady}
-      serverUrlInput={serverUrlInput}
-      startupStyles={styles}
-      statusText={statusText}
-    />
+    <SafeAreaProvider>
+      <MobileAppRouter
+        albumPickerOverlay={albumPickerOverlay}
+        appReady={appReady}
+        authed={authed}
+        backgroundColor={notebookColors.shell}
+        busy={busy}
+        CameraViewCompat={CameraViewCompat}
+        chatScreen={chatScreen}
+        connectProgressScaleX={connectProgressScaleX}
+        connectingDiscoverId={connectingDiscoverId}
+        discoverDeviceRows={discoverDeviceRows}
+        discoverOpen={discoverOpen}
+        discoveringUi={discoveringUi}
+        fontsReady={fontsLoaded}
+        fontFamily={FONT_DISPLAY_SERIF}
+        gestureRootStyle={styles.gestureRoot}
+        launchOverlay={launchOverlay}
+        lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
+        onAuthSubmit={() => void onAuthSubmit()}
+        onBarcodeScanned={onBarcodeScanned}
+        onCancelScanner={onCloseScanner}
+        onChangePairCode={setPairCode}
+        onChangeServerUrl={onChangeServerUrl}
+        onCloseDiscover={onCloseDiscover}
+        onConnectDiscoverPress={onConnectDiscoverPress}
+        onMountScannerError={onScannerMountError}
+        onOpenScanner={onOpenScanner}
+        onPairPromptCancel={cancelPairPrompt}
+        onPairPromptChange={setPairPromptValue}
+        onPairPromptConfirm={confirmPairPrompt}
+        onPickQrFromAlbum={() => void onPickQrFromAlbum()}
+        onRescanDiscover={() => void startDiscover()}
+        onRescanScanner={onScannerRescan}
+        onResetAuthStatus={() => setStatus("准备就绪")}
+        onScannerReady={onScannerReady}
+        pairCode={pairCode}
+        pairPromptHostPort={pairPromptHostPort}
+        pairPromptOpen={pairPromptOpen}
+        pairPromptValue={pairPromptValue}
+        safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
+        scanHitCount={scanHitCount}
+        scannerLocked={scannerLocked}
+        scannerOpen={scannerOpen}
+        scannerReady={scannerReady}
+        serverUrlInput={serverUrlInput}
+        startupStyles={styles}
+        statusText={statusText}
+      />
+    </SafeAreaProvider>
   );
 }

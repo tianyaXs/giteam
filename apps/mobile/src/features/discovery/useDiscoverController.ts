@@ -469,7 +469,7 @@ export function useDiscoverController(params: UseDiscoverControllerParams) {
   const confirmPairPrompt = useCallback(() => {
     const code = pairPromptValue.trim();
     if (!code) {
-      setStatus('请输入验证码');
+      setStatus('请输入授权码');
       return;
     }
     const dev = pairPromptDevice;

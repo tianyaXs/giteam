@@ -9,6 +9,7 @@ import {
 } from "./opencodeSkillData";
 import {
   buildSkillsmpSearchEndpoint,
+  dedupeMarketplaceResults,
   fetchSkillsmpAiViaBackend,
   fetchSkillsmpJson,
   fetchSkillsmpSearchViaBackend,
@@ -228,9 +229,9 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
         }
         const raw = await fetchSkillsmpAiWithFallback(query);
         if (repoPathRef.current.trim() !== requestRepoPath) return;
-        const rows = normalizeArrayRows(raw?.data?.skills || raw?.data)
+        const rows = dedupeMarketplaceResults(normalizeArrayRows(raw?.data?.skills || raw?.data)
           .map(skillsmpSkillToResult)
-          .filter(Boolean) as OpencodeSkillSearchResult[];
+          .filter(Boolean) as OpencodeSkillSearchResult[]);
         setOpencodeSkillSearchResults(rows);
         setOpencodeSkillDisplayLimit(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
         setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: rows }));
@@ -245,12 +246,10 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
         sortBy: "stars"
       });
       if (repoPathRef.current.trim() !== requestRepoPath) return;
-      const rows = normalizeArrayRows(raw?.data?.skills)
+      const rows = dedupeMarketplaceResults(normalizeArrayRows(raw?.data?.skills)
         .map(skillsmpSkillToResult)
-        .filter(Boolean) as OpencodeSkillSearchResult[];
-      const sorted = Array.from(
-        new Map(rows.filter((item) => !item.isDuplicate).map((item) => [item.id || item.spec, item])).values()
-      ).sort((a, b) => {
+        .filter(Boolean) as OpencodeSkillSearchResult[]);
+      const sorted = rows.sort((a, b) => {
         const trustedDelta = Number(isTrustedSkillSource(b.source || b.package)) - Number(isTrustedSkillSource(a.source || a.package));
         if (trustedDelta !== 0) return trustedDelta;
         return parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs);

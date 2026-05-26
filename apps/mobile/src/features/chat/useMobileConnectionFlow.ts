@@ -26,6 +26,7 @@ export function useMobileConnectionFlow(params: {
   discoveredPairRequiredRef: MutableRefObject<
     ((item: DiscoveredDevice, statusText: string) => void) | null
   >;
+  openAlbumPickerForQrScanRef: MutableRefObject<(() => Promise<void>) | undefined>;
   setBusy: Dispatch<SetStateAction<boolean>>;
   setStatus: Dispatch<SetStateAction<string>>;
   setServerUrl: Dispatch<SetStateAction<string>>;
@@ -50,6 +51,7 @@ export function useMobileConnectionFlow(params: {
     pairCodeMapRef,
     closeDiscoverRef,
     discoveredPairRequiredRef,
+    openAlbumPickerForQrScanRef,
     setBusy,
     setStatus,
     setServerUrl,
@@ -75,6 +77,7 @@ export function useMobileConnectionFlow(params: {
     onAuthSubmit,
     onOpenScanner,
     onPickQrFromAlbum,
+    scanQrFromImageUri,
     onBarcodeScanned,
     onCloseScanner,
     onScannerReady,
@@ -97,6 +100,7 @@ export function useMobileConnectionFlow(params: {
     toProjectOptionsFromPaths,
     onCloseDiscoverRef: closeDiscoverRef,
     onDiscoveredPairRequiredRef: discoveredPairRequiredRef,
+    openAlbumPickerForQrScanRef,
   });
 
   const connectDiscoveredDevice = useDiscoveredDeviceConnector({
@@ -152,6 +156,7 @@ export function useMobileConnectionFlow(params: {
     onAuthSubmit,
     onOpenScanner,
     onPickQrFromAlbum,
+    scanQrFromImageUri,
     onBarcodeScanned,
     onCloseScanner,
     onScannerReady,

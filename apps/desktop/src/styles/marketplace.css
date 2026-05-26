@@ -477,6 +477,13 @@
   padding: var(--gt-space-2-5);
 }
 
+.gt-skill-inspector-stats .gt-skill-stars {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
 .gt-skill-inspector-stats strong {
   color: #fff;
 }
@@ -4058,6 +4065,9 @@
 }
 
 .gt-skill-card-stats b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text);
   font-size: var(--gt-text-md);
   white-space: nowrap;
@@ -4067,6 +4077,11 @@
   color: var(--muted);
   font-size: var(--gt-text-xs);
   white-space: nowrap;
+}
+
+.gt-skill-stars svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, #f6c453 84%, var(--text));
 }
 
 .gt-skill-get-btn {

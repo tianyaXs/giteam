@@ -16,6 +16,7 @@ export function useChatWorkspacePanelProps(params: {
   albumImagesLoading: boolean;
   albumImagesLoadingMore: boolean;
   albumPickerOpen: boolean;
+  albumPickerPurpose: 'attachment' | 'qr-scan';
   albumSelectedIds: string[];
   albumSelectedSet: Set<string>;
   attachRecentImage: (item: RecentImageItem) => Promise<void>;
@@ -78,6 +79,7 @@ export function useChatWorkspacePanelProps(params: {
     albumImagesLoading,
     albumImagesLoadingMore,
     albumPickerOpen,
+    albumPickerPurpose,
     albumSelectedIds,
     albumSelectedSet,
     attachRecentImage,
@@ -228,6 +230,7 @@ export function useChatWorkspacePanelProps(params: {
   const albumPickerProps = useMemo<AlbumPickerProps>(() => ({
     styles,
     open: albumPickerOpen,
+    purpose: albumPickerPurpose,
     mediaAlbums,
     selectedMediaAlbumId,
     albumSelectedIds,
@@ -245,6 +248,7 @@ export function useChatWorkspacePanelProps(params: {
     albumImagesLoading,
     albumImagesLoadingMore,
     albumPickerOpen,
+    albumPickerPurpose,
     albumSelectedIds,
     albumSelectedSet,
     closeAlbumPicker,

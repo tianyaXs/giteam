@@ -1,14 +1,11 @@
+import { Feather } from '@expo/vector-icons';
 import React from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StatusBar, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export function ScannerScreen(props: {
   styles: Record<string, any>;
   title: string;
-  subtitle: string;
-  hint1: string;
-  hint2: string;
-  hint3: string;
-  statusText: string;
 
   onCancel: () => void;
   onPickFromAlbum: () => void;
@@ -18,21 +15,13 @@ export function ScannerScreen(props: {
   onCameraReady: () => void;
   onMountError: (e: any) => void;
   onBarcodeScanned: (e: any) => void;
-  scannerReady: boolean;
-  scannerLocked: boolean;
-  scanHitCountText: string;
 }) {
+  const insets = useSafeAreaInsets();
   const {
     styles,
     title,
-    subtitle,
-    hint1,
-    hint2,
-    hint3,
-    statusText,
     onCancel,
     onPickFromAlbum,
-    onRescan,
     CameraViewCompat,
     onCameraReady,
     onMountError,
@@ -40,37 +29,45 @@ export function ScannerScreen(props: {
   } = props;
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <View style={styles.scannerSafe}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <View style={styles.scannerWrap}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
-        <Text style={styles.scannerHintText}>{hint1}</Text>
-        <Text style={styles.scannerHintText}>{hint2}</Text>
-        <Text style={styles.scannerHintText}>{hint3}</Text>
-        <View style={styles.scannerFrame}>
+        <View style={styles.scannerCamera}>
           <CameraViewCompat
-            style={StyleSheet.absoluteFill}
+            style={styles.scannerCameraPreview}
             facing="back"
             barcodeScannerSettings={{ barcodeTypes: ['qr'] as any }}
             onCameraReady={onCameraReady}
             onMountError={onMountError}
             onBarcodeScanned={onBarcodeScanned}
           />
+          <View pointerEvents="box-none" style={styles.scannerOverlay}>
+            <View pointerEvents="none" style={styles.scannerShade} />
+            <View style={[styles.scannerTopBar, { paddingTop: Math.max(insets.top, 8) + 2 }]}>
+              <Pressable hitSlop={12} style={styles.scannerTopBtn} onPress={onCancel}>
+                <Feather name="x" size={20} color="#7d7467" />
+              </Pressable>
+            </View>
+            <View pointerEvents="none" style={[styles.scannerModeBar, { paddingBottom: Math.max(insets.bottom, 12) + 6 }]}>
+              <Text style={styles.scannerModeText}>{title}</Text>
+              <View style={styles.scannerModeDot} />
+            </View>
+            <Pressable
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.scannerAlbumBtn,
+                { bottom: Math.max(insets.bottom, 12) + 92 },
+                pressed ? styles.scannerAlbumBtnPressed : null
+              ]}
+              onPress={onPickFromAlbum}
+            >
+              <View style={styles.scannerAlbumBtnGlass}>
+                <Feather name="image" size={20} color="#ffffff" />
+              </View>
+            </Pressable>
+          </View>
         </View>
-        <View style={styles.row}>
-          <Pressable style={styles.btnSoft} onPress={onCancel}>
-            <Text style={styles.btnSoftText}>取消</Text>
-          </Pressable>
-          <Pressable style={styles.btnSoft} onPress={onPickFromAlbum}>
-            <Text style={styles.btnSoftText}>相册识别</Text>
-          </Pressable>
-          <Pressable style={styles.btnSoft} onPress={onRescan}>
-            <Text style={styles.btnSoftText}>重新扫描</Text>
-          </Pressable>
-        </View>
-        {statusText ? <Text style={styles.scannerStatusText}>{statusText}</Text> : <ActivityIndicator color="#60748d" size="small" />}
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
-

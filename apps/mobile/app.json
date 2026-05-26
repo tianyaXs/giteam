@@ -13,6 +13,14 @@
       "**/*"
     ],
     "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "用于从系统相册选择包含二维码的图片。"
+        }
+      ]
+    ],
     "android": {
       "package": "io.giteam.mobile",
       "usesCleartextTraffic": true,
@@ -26,6 +34,7 @@
     },
     "ios": {
       "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "用于从系统相册选择包含二维码的图片。",
         "NSLocalNetworkUsageDescription": "用于连接同一局域网内的 Giteam Desktop 控制服务。",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,

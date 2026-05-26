@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -106,6 +106,7 @@ struct AbortRequest {
 static CONTROL_RUNTIME: OnceLock<Mutex<Option<ControlRuntime>>> = OnceLock::new();
 static CONTROL_PAIR_STATE: OnceLock<Mutex<PairState>> = OnceLock::new();
 static CONTROL_BEARER_TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
+static CONTROL_PAIR_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
     CONTROL_RUNTIME.get_or_init(|| Mutex::new(None))
@@ -310,8 +311,44 @@ fn generate_pair_code() -> String {
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{:06}", (n % 1_000_000) as u32)
+        .unwrap_or(0) as u64;
+    let pid = std::process::id() as u64;
+    let seq = CONTROL_PAIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut mixed = n
+        ^ pid.rotate_left(11)
+        ^ seq.rotate_left(23)
+        ^ fastrand::u64(..);
+    for _ in 0..4 {
+        mixed = splitmix64(mixed);
+        let code = ((mixed % 900_000) + 100_000) as u32;
+        if !is_weak_pair_code(code) {
+            return format!("{:06}", code);
+        }
+        mixed ^= 0x9e37_79b9_7f4a_7c15;
+    }
+    format!("{:06}", (((mixed % 900_000) + 100_000) as u32))
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+fn is_weak_pair_code(code: u32) -> bool {
+    let tail = code % 1000;
+    let digits = [
+        (code / 100_000) % 10,
+        (code / 10_000) % 10,
+        (code / 1_000) % 10,
+        (code / 100) % 10,
+        (code / 10) % 10,
+        code % 10,
+    ];
+    let all_same = digits.iter().all(|d| *d == digits[0]);
+    let tail_triplet = tail % 111 == 0;
+    all_same || tail == 0 || tail_triplet
 }
 
 fn generate_token() -> String {

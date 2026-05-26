@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
+import QRCode from "qrcode";
 import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
 import {
   DEFAULT_CONTROL_SERVER_SETTINGS,
@@ -363,6 +364,7 @@ export function App() {
   const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp" | "mcp">("general");
+  const [settingsMobileVisible, setSettingsMobileVisible] = useState(false);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => (
     loadGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY)
   ));
@@ -530,7 +532,9 @@ export function App() {
   const [controlServerSettingsBusy, setControlServerSettingsBusy] = useState(false);
   const [controlPairCodeInfo, setControlPairCodeInfo] = useState<ControlPairCodeInfo | null>(null);
   const [controlAccessInfo, setControlAccessInfo] = useState<ControlAccessInfo | null>(null);
+  const [controlPairQrUrl, setControlPairQrUrl] = useState("");
   const [controlSettingsLoaded, setControlSettingsLoaded] = useState(false);
+  const controlSettingsDirty = controlServerSettingsChanged(controlServerSettings, controlServerSettingsSaved);
   const mobileServiceStatusRef = useRef<GiteamMobileServiceStatus | null>(null);
   const [mobileStatusChangeToast, setMobileStatusChangeToast] = useState<{ visible: boolean; message: string }>({ visible: false, message: "" });
   const [mobileServiceStatus, setMobileServiceStatus] = useState<GiteamMobileServiceStatus | null>(null);
@@ -3105,8 +3109,10 @@ export function App() {
         }
       });
       const normalized = normalizeControlServerSettings(saved, draft);
-      setControlServerSettings(normalized);
       setControlServerSettingsSaved(normalized);
+      setControlServerSettings((current) => (
+        controlServerSettingsChanged(current, draft) ? current : normalized
+      ));
       if (normalized.enabled) {
         await Promise.all([loadControlPairCode(), loadControlAccessInfo()]);
       } else {
@@ -3114,7 +3120,11 @@ export function App() {
         setControlAccessInfo(null);
       }
     } catch (e) {
-      setControlServerSettings((prev) => ({ ...prev, enabled: controlServerSettingsSaved.enabled }));
+      setControlServerSettings((current) => (
+        current.enabled === draft.enabled
+          ? { ...current, enabled: controlServerSettingsSaved.enabled }
+          : current
+      ));
       setError(String(e));
     } finally {
       setControlServerSettingsBusy(false);
@@ -3153,35 +3163,49 @@ export function App() {
   }
 
   async function saveControlServerSettingsIfNeeded() {
-    if (!controlServerSettingsChanged(controlServerSettings, controlServerSettingsSaved)) return true;
-    const port = Number(controlServerSettings.port);
+    const draftBase = controlServerSettings;
+    if (!controlServerSettingsChanged(draftBase, controlServerSettingsSaved)) return true;
+    const port = Number(draftBase.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       setError("Control server port must be between 1 and 65535");
       return false;
     }
     let publicBaseUrl = "";
     try {
-      publicBaseUrl = normalizeControlPublicBaseUrl(controlServerSettings.publicBaseUrl);
+      publicBaseUrl = normalizeControlPublicBaseUrl(draftBase.publicBaseUrl);
     } catch {
       setError("Public URL 格式无效（示例: http://192.168.1.23:4100）");
       return false;
     }
+    const draft = normalizeControlServerSettings({
+      ...draftBase,
+      port,
+      publicBaseUrl,
+      pairCodeTtlMode: normalizeControlPairMode(draftBase.pairCodeTtlMode)
+    }, draftBase);
     setControlServerSettingsBusy(true);
     try {
       const saved = await invoke<ControlServerSettings>("giteam_cli_set_settings", {
         settings: {
-          enabled: controlServerSettings.enabled,
-          host: controlServerSettings.host,
+          enabled: draft.enabled,
+          host: draft.host,
           port,
           publicBaseUrl,
-          pairCodeTtlMode: normalizeControlPairMode(controlServerSettings.pairCodeTtlMode)
+          pairCodeTtlMode: draft.pairCodeTtlMode
         }
       });
-      const normalized = normalizeControlServerSettings(saved, { ...controlServerSettings, port, publicBaseUrl });
-      setControlServerSettings(normalized);
+      const normalized = normalizeControlServerSettings(saved, draft);
       setControlServerSettingsSaved(normalized);
-      void loadControlPairCode();
-      void loadControlAccessInfo();
+      setControlServerSettings((current) => (
+        controlServerSettingsChanged(current, draft) ? current : normalized
+      ));
+      if (normalized.enabled) {
+        void loadControlPairCode();
+        void loadControlAccessInfo();
+      } else {
+        setControlPairCodeInfo(null);
+        setControlAccessInfo(null);
+      }
       return true;
     } catch (e) {
       setError(String(e));
@@ -3192,8 +3216,12 @@ export function App() {
   }
 
   async function closeSettingsModal() {
+    if (settingsMobileVisible && runtimeStatus.giteam.installed && controlSettingsDirty && !controlServerSettingsBusy) {
+      void saveControlServerSettingsIfNeeded();
+    }
     setShowMobileControlDialog(false);
     setShowOpencodeApiDialog(false);
+    setSettingsMobileVisible(false);
     setShowSettings(false);
   }
 
@@ -4830,15 +4858,15 @@ export function App() {
   }, [showSettings, runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || (showSettings && settingsInitialSection === "mobile")) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
     // Load settings after the dialog paints to avoid blocking navigation.
     window.setTimeout(() => {
       void loadControlServerSettings();
     }, 0);
-  }, [showMobileControlDialog, showSettings, settingsInitialSection, runtimeStatus.giteam.installed]);
+  }, [showMobileControlDialog, settingsMobileVisible, runtimeStatus.giteam.installed]);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || (showSettings && settingsInitialSection === "mobile")) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
     if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
 
     const token = ++controlMobilePollTokenRef.current;
@@ -4869,11 +4897,29 @@ export function App() {
     };
   }, [
     showMobileControlDialog,
-    showSettings,
-    settingsInitialSection,
+    settingsMobileVisible,
     runtimeStatus.giteam.installed,
     controlSettingsLoaded,
     controlServerSettings.enabled
+  ]);
+
+  useEffect(() => {
+    if (!settingsMobileVisible || !runtimeStatus.giteam.installed) return;
+    if (controlServerSettingsBusy || !controlSettingsLoaded || !controlSettingsDirty) return;
+    const timer = window.setTimeout(() => {
+      void saveControlServerSettingsIfNeeded();
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [
+    settingsMobileVisible,
+    runtimeStatus.giteam.installed,
+    controlServerSettingsBusy,
+    controlSettingsLoaded,
+    controlSettingsDirty,
+    controlServerSettings.enabled,
+    controlServerSettings.port,
+    controlServerSettings.publicBaseUrl,
+    controlServerSettings.pairCodeTtlMode
   ]);
 
   useEffect(() => {
@@ -6353,11 +6399,29 @@ export function App() {
       ...(controlAuthNoAuth ? {} : { pairCode: controlPairCode })
     })
     : "";
-  const controlPairQrUrl = controlPairPayload
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=0&data=${encodeURIComponent(controlPairPayload)}`
-    : "";
   const controlServiceEnabled = controlServerSettings.enabled;
   const mobileStatus = mobileServiceStatus;
+  useEffect(() => {
+    let cancelled = false;
+    if (!controlPairPayload) {
+      setControlPairQrUrl("");
+      return () => {
+        cancelled = true;
+      };
+    }
+    void QRCode.toDataURL(controlPairPayload, {
+      margin: 0,
+      width: 240,
+      errorCorrectionLevel: "M"
+    }).then((dataUrl) => {
+      if (!cancelled) setControlPairQrUrl(dataUrl);
+    }).catch(() => {
+      if (!cancelled) setControlPairQrUrl("");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [controlPairPayload]);
   const mobileDot = (() => {
     if (!runtimeStatus.giteam.installed) return { color: "var(--muted)", label: "Mobile service: plugin not installed" };
     if (!mobileStatus) return { color: "var(--muted)", label: "Mobile service: unknown" };
@@ -6813,6 +6877,19 @@ export function App() {
             controlInstalled={runtimeStatus.giteam.installed}
             onControlSettingsChange={(next) => setControlServerSettings((prev) => ({ ...prev, ...next }))}
             onSaveControlSettings={() => void saveControlServerSettingsIfNeeded()}
+            controlConnectionUrl={controlBaseUrl}
+            controlPairCode={controlPairCode}
+            controlPairQrUrl={controlPairQrUrl}
+            controlSettingsDirty={controlSettingsDirty}
+            onRefreshControlPairCode={() => {
+              void forceRefreshControlPairCode();
+              void loadControlAccessInfo();
+            }}
+            onCopyControlUrl={() => {
+              void navigator.clipboard.writeText(controlBaseUrl);
+              setMessage("Control server URL copied");
+            }}
+            onMobileVisibilityChange={setSettingsMobileVisible}
             onToggleControlService={(enabled) => void toggleControlServiceEnabled(enabled)}
             runtimeChecking={runtimeChecking}
             checkingDeps={checkingDeps}
@@ -6839,18 +6916,6 @@ export function App() {
               }
               if (!opencodeSkillsLoading && !opencodeSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
             }}
-            mobileStatusContent={runtimeStatus.giteam.installed ? (
-              <div className="settings-panel-card settings-mobile-inline-status">
-                <div className="settings-panel-copy">
-                  <strong>Connection</strong>
-                  <p>{controlPairCodeInfo?.code ? `Pair code: ${controlPairCodeInfo.code}` : "开启服务后可刷新配对码。"}</p>
-                  {controlAccessInfo?.publicBaseUrl ? <p className="settings-plugin-path">{controlAccessInfo.publicBaseUrl}</p> : null}
-                </div>
-                <div className="settings-panel-action">
-                  <button className="chip" disabled={!controlServerSettings.enabled || controlServerSettingsBusy} onClick={() => void forceRefreshControlPairCode()}>Refresh code</button>
-                </div>
-              </div>
-            ) : null}
             modelsContent={(
               <OpenCodeProviderSettingsPanel
                 providerSearch={opencodeProviderPickerSearch}

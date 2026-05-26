@@ -104,6 +104,7 @@ export function useTurnCellRenderer(params: {
           handleThinkCardToggle(id);
         }}
         onChangeTimelineTab={handleTimelineTabChange}
+        onBeforeLocalLayoutChange={prepareInteraction}
         onMeasuredHeight={rememberCellHeight}
       />
     );

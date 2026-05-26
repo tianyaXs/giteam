@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState, type MutableRefObject } from 'react';
-import { Platform, Vibration } from 'react-native';
 import { scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import { useCallback, useRef, useState, type MutableRefObject } from 'react';
+import { Platform, Vibration } from 'react-native';
 import { health, NO_AUTH_TOKEN, pairAuth } from '../../api/controlApi';
 import type { DiscoveredDevice } from '../../discovery';
 import { toText } from '../../lib/text';
-import { normalizeBaseUrlForClient } from '../../lib/url';
+import { buildConnectionBaseUrlCandidates, normalizeBaseUrlForClient } from '../../lib/url';
 
 type PairPayload = {
   baseUrl?: string;
@@ -46,6 +46,7 @@ type UsePairingControllerParams = {
   toProjectOptionsFromPaths: (paths: string[]) => ProjectOption[];
   onCloseDiscoverRef: MutableRefObject<(() => void) | null>;
   onDiscoveredPairRequiredRef: MutableRefObject<((item: DiscoveredDevice, statusText: string) => void) | null>;
+  openAlbumPickerForQrScanRef: MutableRefObject<(() => Promise<void>) | undefined>;
 };
 
 function parsePairPayload(input: string): PairPayload | null {
@@ -80,12 +81,24 @@ function stripUrlScheme(value: string): string {
   return toText(value).trim().replace(/^https?:\/\//i, '');
 }
 
+function isLikelyDevToolUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+    if (host !== 'localhost' && host !== '127.0.0.1') return false;
+    return ['8081', '8082', '19000', '19001', '19006'].includes(port);
+  } catch {
+    return false;
+  }
+}
+
 export function usePairingController(params: UsePairingControllerParams) {
   const {
     onCloseDiscoverRef,
     onDiscoveredPairRequiredRef,
+    openAlbumPickerForQrScanRef,
     pairCode,
-    preferHttps,
     pushConnLog,
     refreshProjectsCatalog,
     serverUrlInput,
@@ -114,33 +127,51 @@ export function usePairingController(params: UsePairingControllerParams) {
 
   const connectWithAddressAndCode = useCallback(
     async (inputBaseUrl: string, inputCode: string, opts?: ConnectOptions) => {
-      const nextUrl = normalizeBaseUrlForClient(toText(inputBaseUrl).trim(), {
-        defaultScheme: opts?.payloadRepoPaths ? undefined : preferHttps ? 'https' : 'http'
-      });
+      const urlCandidates = buildConnectionBaseUrlCandidates(toText(inputBaseUrl).trim());
+      const nextUrl = urlCandidates[0] || '';
       const nextCode = toText(inputCode).trim();
       const mode = opts?.payloadRepoPaths ? 'payload' : 'manual';
       if (!nextUrl) {
-        setStatus('请输入服务地址');
+        setStatus('请填写你的服务地址');
         return;
       }
       setBusy(true);
       try {
-        pushConnLog(`auth connect mode=${mode} url=${nextUrl} code=${nextCode ? 'yes' : 'no'}`);
-        const ping = await health(nextUrl);
+        let resolvedUrl = nextUrl;
+        let ping: Awaited<ReturnType<typeof health>> | null = null;
+        let lastProbeError = '';
+        for (let index = 0; index < urlCandidates.length; index += 1) {
+          const candidate = urlCandidates[index];
+          try {
+            if (index > 0) {
+              setStatus('HTTP 连接失败，正在尝试 HTTPS...');
+            }
+            pushConnLog(`auth connect mode=${mode} url=${candidate} code=${nextCode ? 'yes' : 'no'}`);
+            ping = await health(candidate);
+            resolvedUrl = candidate;
+            break;
+          } catch (error) {
+            lastProbeError = toText(error);
+            pushConnLog(`auth probe error url=${candidate} ${lastProbeError}`, 'error');
+          }
+        }
+        if (!ping) {
+          throw new Error(lastProbeError || '无法连接到服务地址');
+        }
         pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
         const serverNoAuth = Boolean((ping as any)?.auth?.noAuth);
         if (!serverNoAuth && !nextCode) {
-          setStatus('该设备需要验证码，请输入验证码后重试');
+          setStatus('该设备需要验证码，请填写验证码后再连接');
           pushConnLog('pair code required by server (need user input)', 'info');
           return;
         }
         let nextToken = NO_AUTH_TOKEN;
         if (!serverNoAuth && nextCode) {
-          const res = await pairAuth(nextUrl, nextCode);
+          const res = await pairAuth(resolvedUrl, nextCode);
           nextToken = toText(res.token).trim();
         }
-        setServerUrl(nextUrl);
-        setServerUrlInput(stripUrlScheme(nextUrl));
+        setServerUrl(resolvedUrl);
+        setServerUrlInput(stripUrlScheme(resolvedUrl));
         setPairCode(nextCode);
         setToken(nextToken);
         setRepoPath('');
@@ -151,7 +182,7 @@ export function usePairingController(params: UsePairingControllerParams) {
           if (preferred) setRepoPath(preferred);
           pushConnLog(`project list from payload count=${fromPayload.length}`);
         } else {
-          await refreshProjectsCatalog({ baseUrl: nextUrl, token: nextToken, preferredRepoPath: opts?.preferredRepoPath });
+          await refreshProjectsCatalog({ baseUrl: resolvedUrl, token: nextToken, preferredRepoPath: opts?.preferredRepoPath });
         }
         Vibration.vibrate([0, 60, 40, 80]);
         setStatus('认证成功，开始新会话');
@@ -169,13 +200,13 @@ export function usePairingController(params: UsePairingControllerParams) {
             pairCodeRejected ? '历史验证码已失效，请重新输入验证码' : '该设备需要验证码，请输入验证码后连接'
           );
         } else if (!nextCode && /missing bearer token|invalid bearer token|401/i.test(errText)) {
-          setStatus('服务端当前需要验证码，请输入验证码后重试');
+          setStatus('服务端当前需要验证码，请填写验证码后重试');
         } else if (pairCodeRequired) {
-          setStatus('该设备需要验证码，请在首页输入验证码后重试');
+          setStatus('该设备需要验证码，请在首页填写验证码后重试');
         } else if (pairCodeRejected) {
           setStatus('验证码无效或已过期，请检查后重试');
         } else {
-          setStatus(errText);
+          setStatus(errText || '连接失败，请检查服务地址后重试');
         }
         setScannerLockedBoth(false);
       } finally {
@@ -185,7 +216,6 @@ export function usePairingController(params: UsePairingControllerParams) {
     [
       onCloseDiscoverRef,
       onDiscoveredPairRequiredRef,
-      preferHttps,
       pushConnLog,
       refreshProjectsCatalog,
       setBusy,
@@ -213,9 +243,15 @@ export function usePairingController(params: UsePairingControllerParams) {
         setScannerLockedBoth(false);
         return;
       }
-      const nextUrl = normalizeBaseUrlForClient(String(payload.baseUrl || '').trim(), {
-        defaultScheme: preferHttps ? 'https' : 'http'
-      });
+      const nextUrlRaw = String(payload.baseUrl || '').trim();
+      const nextUrl = normalizeBaseUrlForClient(nextUrlRaw);
+      if (isLikelyDevToolUrl(nextUrl)) {
+        pushConnLog(`pair payload looks like dev server url=${nextUrl}`, 'error');
+        Vibration.vibrate(180);
+        setStatus('扫到的是开发工具地址（如 Expo），请扫桌面端 Giteam 的配对二维码');
+        setScannerLockedBoth(false);
+        return;
+      }
       const mode = String(payload.authMode || '').trim().toLowerCase();
       const nextCode = mode === 'none' ? '' : String(payload.pairCode || payload.code || '').trim();
       const nextRepo = String(payload.repoPath || '').trim();
@@ -225,12 +261,12 @@ export function usePairingController(params: UsePairingControllerParams) {
         setScannerLockedBoth(false);
         return;
       }
-      await connectWithAddressAndCode(nextUrl, nextCode, {
+      await connectWithAddressAndCode(nextUrlRaw || nextUrl, nextCode, {
         preferredRepoPath: nextRepo,
         payloadRepoPaths: nextRepoPaths
       });
     },
-    [connectWithAddressAndCode, preferHttps, pushConnLog, setScannerLockedBoth, setStatus]
+    [connectWithAddressAndCode, pushConnLog, setScannerLockedBoth, setStatus]
   );
 
   const onOpenScanner = useCallback(async () => {
@@ -243,7 +279,7 @@ export function usePairingController(params: UsePairingControllerParams) {
       const req = await requestCameraPermission();
       if (!req.granted) {
         pushConnLog('camera permission denied', 'error');
-        setStatus('相机权限被拒绝');
+        setStatus('相机权限被拒绝，请在系统设置中允许访问相机');
         return;
       }
     }
@@ -254,57 +290,60 @@ export function usePairingController(params: UsePairingControllerParams) {
     setScannerOpen(true);
   }, [cameraPermission?.granted, pushConnLog, requestCameraPermission, setScannerLockedBoth, setStatus]);
 
+  const scanQrFromImageUri = useCallback(
+    async (uri: string) => {
+      try {
+        setScannerLockedBoth(true);
+        setStatus('正在识别相册二维码...');
+        pushConnLog(`scanFromURL start uri=${uri.slice(0, 120)}`);
+        const rows: any[] = await scanFromURLAsync(uri, ['qr'] as any);
+        pushConnLog(`scanFromURL result count=${rows.length}`);
+        if (!rows.length) {
+          Vibration.vibrate(180);
+          setScannerLockedBoth(false);
+          setStatus('图片中未识别到二维码，请换一张清晰图片重试');
+          return;
+        }
+        const data = String(rows[0]?.data || '').trim();
+        if (!data) {
+          Vibration.vibrate(180);
+          setScannerLockedBoth(false);
+          setStatus('二维码内容为空，请重新选择图片');
+          return;
+        }
+        setScanHitCount((v) => v + 1);
+        setLastScanAt(Date.now());
+        Vibration.vibrate(30);
+        await applyPayloadAndPair(data);
+      } catch (e) {
+        const msg = `相册识别失败: ${String(e)}`;
+        pushConnLog(msg, 'error');
+        setStatus(msg);
+        setScannerLockedBoth(false);
+      }
+    },
+    [applyPayloadAndPair, pushConnLog, setScannerLockedBoth, setStatus]
+  );
+
   const onPickQrFromAlbum = useCallback(async () => {
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        const msg = '相册权限被拒绝';
-        setStatus(msg);
-        pushConnLog(msg, 'error');
-        return;
-      }
-      const pick = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 1
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: false,
+        quality: 1,
+        base64: false,
+        defaultTab: 'photos',
+        legacy: false
       });
-      if (pick.canceled || !pick.assets?.[0]?.uri) {
-        setStatus('已取消选择图片');
+      if (result.canceled || !result.assets?.[0]?.uri) {
         return;
       }
-      const uri = String(pick.assets[0].uri || '').trim();
-      if (!uri) {
-        setStatus('未拿到图片 URI');
-        return;
-      }
-      setScannerLockedBoth(true);
-      setStatus('正在识别相册二维码...');
-      pushConnLog(`scanFromURL start uri=${uri.slice(0, 120)}`);
-      const rows: any[] = await scanFromURLAsync(uri, ['qr'] as any);
-      pushConnLog(`scanFromURL result count=${rows.length}`);
-      if (!rows.length) {
-        Vibration.vibrate(180);
-        setScannerLockedBoth(false);
-        setStatus('图片中未识别到二维码');
-        return;
-      }
-      const data = String(rows[0]?.data || '').trim();
-      if (!data) {
-        Vibration.vibrate(180);
-        setScannerLockedBoth(false);
-        setStatus('二维码内容为空');
-        return;
-      }
-      setScanHitCount((v) => v + 1);
-      setLastScanAt(Date.now());
-      Vibration.vibrate(30);
-      await applyPayloadAndPair(data);
+      await scanQrFromImageUri(result.assets[0].uri);
     } catch (e) {
-      const msg = `相册识别失败: ${String(e)}`;
-      setStatus(msg);
-      pushConnLog(msg, 'error');
-      setScannerLockedBoth(false);
+      setStatus(`打开系统相册失败: ${String(e)}`);
+      pushConnLog(`open system album error ${String(e)}`, 'error');
     }
-  }, [applyPayloadAndPair, pushConnLog, setScannerLockedBoth, setStatus]);
+  }, [pushConnLog, scanQrFromImageUri, setStatus]);
 
   const onBarcodeScanned = useCallback(
     (result: any) => {
@@ -318,7 +357,7 @@ export function usePairingController(params: UsePairingControllerParams) {
       pushConnLog(`qr scanned len=${data.length}`);
       if (!data) {
         pushConnLog('qr scan empty payload', 'error');
-        setStatus('未识别到有效二维码内容');
+        setStatus('未识别到有效二维码内容，请重新对准二维码');
         setScannerLockedBoth(false);
         return;
       }
@@ -364,6 +403,7 @@ export function usePairingController(params: UsePairingControllerParams) {
     onAuthSubmit,
     onOpenScanner,
     onPickQrFromAlbum,
+    scanQrFromImageUri,
     onBarcodeScanned,
     onCloseScanner,
     onScannerReady,
