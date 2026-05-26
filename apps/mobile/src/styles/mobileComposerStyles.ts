@@ -161,14 +161,15 @@ export const composerStyles = {
   inputMain: {
     minHeight: 30,
     maxHeight: 96,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: Platform.OS === "android" ? 3 : 1,
+    paddingBottom: Platform.OS === "android" ? 3 : 1,
     paddingHorizontal: 8,
     color: "#24211d",
     fontSize: 16,
     lineHeight: 22,
     textAlignVertical: "top",
     fontFamily: FONT_UI_REGULAR,
+    includeFontPadding: false,
     ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as any) : {}),
   },
 

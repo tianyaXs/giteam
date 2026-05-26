@@ -1,6 +1,7 @@
 import React, { useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Animated, Keyboard, Pressable, StatusBar, Text, View } from 'react-native';
+import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from 'react-native';
 import { Drawer } from 'react-native-drawer-layout';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { ChatComposer, ComposerPickerSheet } from './ChatComposer';
 import { ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoCardView } from './MobileTurnCell';
@@ -267,79 +268,85 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           </Pressable>
         </View>
       </View>
-      <Animated.View style={styles.chatStageViewport}>
-        <ChatConversationStage
-          styles={styles}
-          windowWidth={windowWidth}
-          inputDockHeight={inputDockHeight}
-          notebookColors={notebookColors}
-          showStreamTopGlow={showStreamTopGlow}
-          streamTopGlowAnim={streamTopGlowAnim}
-          renderedTurnsLength={renderedTurnsLength}
-          currentWorkspaceName={currentWorkspaceName}
-          messageScrollRef={messageScrollRef}
-          shouldSuppressLoadOlder={shouldSuppressLoadOlder}
-          messageBottomInset={messageBottomInset}
-          displayedTurnCells={displayedTurnCells}
-          chatViewabilityConfig={chatViewabilityConfig}
-          onChatViewableItemsChanged={onChatViewableItemsChanged}
-          loadingOlder={loadingOlder}
-          onScrollBeginDrag={onScrollBeginDrag}
-          onScrollEndDrag={onScrollEndDrag}
-          onMomentumScrollBegin={onMomentumScrollBegin}
-          onMomentumScrollEnd={onMomentumScrollEnd}
-          onScroll={onScroll}
-          onContentSizeChange={onContentSizeChange}
-          onListLayout={onListLayout}
-          anchorSessionToLatest={anchorSessionToLatest}
-          onLoadOlderMessages={onLoadOlderMessages}
-          renderTurnCell={renderTurnCell}
-          sessionId={sessionId}
-          sessionHistoryRetryHintText={sessionHistoryRetryHintText}
-          historyProgressWidth={historyProgressWidth}
-          listRevealReady={listRevealReady}
-          showLatestJump={showLatestJump}
-          maintainVisibleContentPosition={maintainVisibleContentPosition}
-          onJumpToLatest={onJumpToLatest}
-        />
-        {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
-          <View
-            pointerEvents="box-none"
-            style={[
-              styles.todoDockWrap,
-              {
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: Math.max(104, inputDockHeight + keyboardInset + 14),
-                zIndex: 30
-              }
-            ]}
-          >
-            <MobileTodoCardView
-              card={latestTodoCard}
-              compact
-              collapsed={todoDockCollapsed}
-              pulse={thinkingPulse}
-              styles={styles}
-              onToggle={onToggleTodoDock}
-              onClose={onDismissTodoDock}
-            />
-          </View>
-        ) : null}
-        {activeQuestionRequest ? (
-          <View key={activeQuestionRequest.id} style={styles.questionDockWrap}>
-            <QuestionDock
-              request={activeQuestionRequest as any}
-              submitState={questionSubmitState as any}
-              submitError={questionSubmitError}
-              onReply={onReplyQuestion}
-              onDismiss={onDismissQuestion}
-            />
-          </View>
-        ) : null}
-      </Animated.View>
-      <ChatComposer {...composerProps} />
+      <KeyboardAvoidingView
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 48}
+        style={styles.keyboardAwareContent}
+      >
+        <Animated.View style={styles.chatStageViewport}>
+          <ChatConversationStage
+            styles={styles}
+            windowWidth={windowWidth}
+            inputDockHeight={inputDockHeight}
+            notebookColors={notebookColors}
+            showStreamTopGlow={showStreamTopGlow}
+            streamTopGlowAnim={streamTopGlowAnim}
+            renderedTurnsLength={renderedTurnsLength}
+            currentWorkspaceName={currentWorkspaceName}
+            messageScrollRef={messageScrollRef}
+            shouldSuppressLoadOlder={shouldSuppressLoadOlder}
+            messageBottomInset={messageBottomInset}
+            displayedTurnCells={displayedTurnCells}
+            chatViewabilityConfig={chatViewabilityConfig}
+            onChatViewableItemsChanged={onChatViewableItemsChanged}
+            loadingOlder={loadingOlder}
+            onScrollBeginDrag={onScrollBeginDrag}
+            onScrollEndDrag={onScrollEndDrag}
+            onMomentumScrollBegin={onMomentumScrollBegin}
+            onMomentumScrollEnd={onMomentumScrollEnd}
+            onScroll={onScroll}
+            onContentSizeChange={onContentSizeChange}
+            onListLayout={onListLayout}
+            anchorSessionToLatest={anchorSessionToLatest}
+            onLoadOlderMessages={onLoadOlderMessages}
+            renderTurnCell={renderTurnCell}
+            sessionId={sessionId}
+            sessionHistoryRetryHintText={sessionHistoryRetryHintText}
+            historyProgressWidth={historyProgressWidth}
+            listRevealReady={listRevealReady}
+            showLatestJump={showLatestJump}
+            maintainVisibleContentPosition={maintainVisibleContentPosition}
+            onJumpToLatest={onJumpToLatest}
+          />
+          {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
+            <View
+              pointerEvents="box-none"
+              style={[
+                styles.todoDockWrap,
+                {
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: Math.max(104, inputDockHeight + keyboardInset + 14),
+                  zIndex: 30
+                }
+              ]}
+            >
+              <MobileTodoCardView
+                card={latestTodoCard}
+                compact
+                collapsed={todoDockCollapsed}
+                pulse={thinkingPulse}
+                styles={styles}
+                onToggle={onToggleTodoDock}
+                onClose={onDismissTodoDock}
+              />
+            </View>
+          ) : null}
+          {activeQuestionRequest ? (
+            <View key={activeQuestionRequest.id} style={styles.questionDockWrap}>
+              <QuestionDock
+                request={activeQuestionRequest as any}
+                submitState={questionSubmitState as any}
+                submitError={questionSubmitError}
+                onReply={onReplyQuestion}
+                onDismiss={onDismissQuestion}
+              />
+            </View>
+          ) : null}
+        </Animated.View>
+        <ChatComposer {...composerProps} />
+      </KeyboardAvoidingView>
     </View>
   );
 

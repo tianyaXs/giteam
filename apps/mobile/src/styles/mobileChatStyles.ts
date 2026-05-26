@@ -61,6 +61,10 @@ export const chatStyles = {
     flex: 1,
     minHeight: 0,
   },
+  keyboardAwareContent: {
+    flex: 1,
+    minHeight: 0,
+  },
   streamTopGlowTrack: {
     position: "absolute",
     top: 0,
@@ -315,29 +319,29 @@ export const chatStyles = {
   },
   blankHero: {
     alignSelf: "center",
-    gap: 12,
-  },
-  blankEyebrow: {
-    fontSize: 11,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    textTransform: "uppercase",
-    fontFamily: FONT_UI_MEDIUM,
+    alignItems: "center",
+    gap: 10,
   },
   blankTitle: {
-    fontSize: 27,
-    lineHeight: 31,
+    fontSize: 25,
+    lineHeight: 30,
     color: "#24211d",
     fontFamily: FONT_DISPLAY_SERIF,
-    letterSpacing: -0.6,
+    letterSpacing: -0.45,
     maxWidth: "100%",
+    textAlign: "center",
+  },
+  blankTitleWorkspace: {
+    color: "#1f4e86",
+    letterSpacing: -0.2,
   },
   blankSub: {
     color: "#8d826f",
     fontSize: 13.5,
     lineHeight: 21,
     fontFamily: FONT_TEXT_SERIF,
-    maxWidth: "88%",
+    maxWidth: "92%",
+    textAlign: "center",
   },
   sessionSwitchWrap: {
     justifyContent: "center",

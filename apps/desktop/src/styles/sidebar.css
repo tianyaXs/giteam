@@ -3358,15 +3358,15 @@ button {
 }
 
 .settings-mobile-layout .settings-panel-action {
-  min-width: 200px;
+  min-width: 168px;
 }
 
 .settings-mobile-layout .settings-panel-action .path-input,
 .settings-mobile-layout .settings-panel-action select {
-  height: 38px;
+  margin: 0;
   padding-top: 0;
   padding-bottom: 0;
-  font-size: 14px;
+  font-size: var(--gt-text-sm);
 }
 
 .settings-mobile-layout .settings-panel-action .gt-switch {

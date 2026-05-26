@@ -1,4 +1,4 @@
-import type { ControlPairCodeMode, ControlServerSettings } from "../../lib/controlServer";
+import type { ControlAuthMode, ControlPairCodeMode, ControlServerSettings } from "../../lib/controlServer";
 
 type MobileControlDialogProps = {
   settings: ControlServerSettings;
@@ -11,6 +11,7 @@ type MobileControlDialogProps = {
   onClose: () => void;
   onToggleService: (enabled: boolean) => void;
   onSettingsChange: (patch: Partial<ControlServerSettings>) => void;
+  onAuthModeChange: (mode: ControlAuthMode) => void;
   onPairModeChange: (mode: ControlPairCodeMode) => void;
   onRefreshCode: () => void;
   onCopiedUrl: () => void;
@@ -27,6 +28,7 @@ export function MobileControlDialog({
   onClose,
   onToggleService,
   onSettingsChange,
+  onAuthModeChange,
   onPairModeChange,
   onRefreshCode,
   onCopiedUrl
@@ -79,14 +81,25 @@ export function MobileControlDialog({
           <div className="mobile-control-section-title">Authentication</div>
           <div className="mobile-control-auth-row">
             <div className="mobile-control-field">
-              <div className="small muted">Pair Code Validity</div>
+              <div className="small muted">Auth Mode</div>
               <select
                 className="path-input"
                 disabled={!serviceEnabled}
-                value={settings.pairCodeTtlMode}
+                value={settings.authMode}
+                onChange={(event) => onAuthModeChange(event.target.value as ControlAuthMode)}
+              >
+                <option value="none">No Auth</option>
+                <option value="pair_code">Pair Code</option>
+              </select>
+            </div>
+            <div className="mobile-control-field">
+              <div className="small muted">Pair Code Validity</div>
+              <select
+                className="path-input"
+                disabled={!serviceEnabled || settings.authMode === "none"}
+                value={settings.pairCodeTtlMode === "none" ? "24h" : settings.pairCodeTtlMode}
                 onChange={(event) => onPairModeChange(event.target.value as ControlPairCodeMode)}
               >
-                <option value="none">No Auth (no pair code)</option>
                 <option value="24h">Pair code valid for 24 hours</option>
                 <option value="7d">Pair code valid for 7 days</option>
                 <option value="forever">Pair code valid indefinitely</option>

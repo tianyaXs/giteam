@@ -8,10 +8,9 @@ type ControlServerSettingsDraft = {
   enabled: boolean;
   port: number;
   publicBaseUrl: string;
+  authMode: "none" | "pair_code";
   pairCodeTtlMode: "none" | "24h" | "7d" | "forever";
 };
-
-type ControlAuthModeDraft = "none" | "pair_code";
 
 export type GeneralSettingsDraft = {
   language: "system" | "zh-CN" | "zh-TW" | "en-US";
@@ -414,17 +413,18 @@ export function SettingsDialog(props: SettingsDialogProps) {
           action: (
             <select
               className="path-input settings-inline-input settings-inline-input-wide"
-              value={props.controlSettings.pairCodeTtlMode === "none" ? "none" : "pair_code"}
+              value={props.controlSettings.authMode}
               disabled={!props.controlInstalled}
               onChange={(e) => {
-                const authMode = e.target.value as ControlAuthModeDraft;
+                const authMode = e.target.value as ControlServerSettingsDraft["authMode"];
                 props.onControlSettingsChange({
                   ...props.controlSettings,
+                  authMode,
                   pairCodeTtlMode: authMode === "none"
                     ? "none"
-                    : props.controlSettings.pairCodeTtlMode === "none"
+                    : (props.controlSettings.pairCodeTtlMode === "none"
                       ? lastPairCodeTtlModeRef.current
-                      : props.controlSettings.pairCodeTtlMode
+                      : props.controlSettings.pairCodeTtlMode)
                 });
               }}
             >
@@ -439,8 +439,8 @@ export function SettingsDialog(props: SettingsDialogProps) {
           action: (
             <select
               className="path-input settings-inline-input settings-inline-input-wide"
-              value={props.controlSettings.pairCodeTtlMode === "none" ? "24h" : props.controlSettings.pairCodeTtlMode}
-              disabled={!props.controlInstalled || props.controlSettings.pairCodeTtlMode === "none"}
+              value={props.controlSettings.pairCodeTtlMode === "none" ? lastPairCodeTtlModeRef.current : props.controlSettings.pairCodeTtlMode}
+              disabled={!props.controlInstalled || props.controlSettings.authMode === "none"}
               onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: e.target.value as ControlServerSettingsDraft["pairCodeTtlMode"] })}
             >
               <option value="24h">{text.hours24}</option>
@@ -578,7 +578,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                           <div className="mobile-qr-code">
                             {!props.controlSettings.enabled
                               ? "------"
-                              : props.controlSettings.pairCodeTtlMode === "none"
+                              : props.controlSettings.authMode === "none"
                                 ? text.noAuth
                                 : props.controlPairCode || "------"}
                           </div>
@@ -586,7 +586,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                             className="gt-icon-chip settings-mobile-inline-icon"
                             type="button"
                             title={text.refreshCode}
-                            disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.pairCodeTtlMode === "none"}
+                            disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.authMode === "none"}
                             onClick={props.onRefreshControlPairCode}
                           >
                             <RefreshIcon />

@@ -98,6 +98,10 @@ function ChatConversationStageImpl(props: {
   const hasActiveSession = Boolean(sessionId);
   const showEmptyDraft = !hasActiveSession && renderedTurnsLength === 0;
   const showConversationList = hasActiveSession || renderedTurnsLength > 0;
+  const workspaceTitle = useMemo(() => {
+    const name = currentWorkspaceName.trim();
+    return name || "this workspace";
+  }, [currentWorkspaceName]);
   const latestSettledSessionRef = useRef('');
   useEffect(() => {
     if (latestSettledSessionRef.current === sessionId) return;
@@ -127,12 +131,11 @@ function ChatConversationStageImpl(props: {
     <View style={styles.chatBodyWrap}>
       {showEmptyDraft ? (
         <View style={[styles.blankWrap, { paddingBottom: Math.max(84, inputDockHeight * 0.72) }]}>
-          <View style={[styles.blankHero, { width: Math.min(windowWidth - 56, 320) }]}>
-            <Text numberOfLines={1} style={[styles.blankEyebrow, { color: notebookColors.faint }]}>
-              {currentWorkspaceName}
-            </Text>
-            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.86} style={styles.blankTitle}>
-              What shall we build?
+          <View style={[styles.blankHero, { width: Math.min(windowWidth - 32, 420) }]}>
+            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.68} style={styles.blankTitle}>
+              <Text>What should we build in </Text>
+              <Text style={styles.blankTitleWorkspace}>{workspaceTitle}</Text>
+              <Text>?</Text>
             </Text>
             <Text style={[styles.blankSub, { color: notebookColors.muted }]}>输入你的需求，或使用 `/` 调用命令与工作流。</Text>
           </View>

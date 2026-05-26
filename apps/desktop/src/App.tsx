@@ -6,12 +6,15 @@ import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
 import {
+  normalizeControlAuthMode,
   DEFAULT_CONTROL_SERVER_SETTINGS,
   controlServerSettingsChanged,
   normalizeControlPairMode,
   normalizeControlPublicBaseUrl,
   normalizeControlServerSettings,
+  resolveControlPairCodeMode,
   type ControlAccessInfo,
+  type ControlAuthMode,
   type ControlPairCodeInfo,
   type ControlServerSettings,
   type GiteamMobileServiceStatus
@@ -221,7 +224,6 @@ import type {
   ReviewRecord
 } from "./lib/types";
 import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
-import { BranchGraphLanes } from "./components/git/BranchGraphLanes";
 import { GitChangesPanel } from "./components/git/GitChangesPanel";
 import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
@@ -244,8 +246,6 @@ import {
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
-import { WorktreeTopologyCanvas } from "./components/WorktreeTopologyCanvas";
-import type { TopologyCanvasNode } from "./components/WorktreeTopologyCanvas";
 import rawMcpServers from "../servers.json";
 import { normalizeMcpMarketData } from "./lib/mcpMarket";
 import {
@@ -371,13 +371,12 @@ export function App() {
   const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
-  const [showGraphPopover, setShowGraphPopover] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
-  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 840, 640, 1120));
-  const [changesSidebarWidth, setChangesSidebarWidth] = useState(260);
+  const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
+  const [changesSidebarWidth, setChangesSidebarWidth] = useState(220);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
-  const [rightDrawerOpen, setRightDrawerOpen] = useState(true);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right" | "changes";
@@ -3105,7 +3104,7 @@ export function App() {
           host: draft.host,
           port: draft.port,
           publicBaseUrl: draft.publicBaseUrl,
-          pairCodeTtlMode: normalizeControlPairMode(draft.pairCodeTtlMode)
+          pairCodeTtlMode: resolveControlPairCodeMode(draft)
         }
       });
       const normalized = normalizeControlServerSettings(saved, draft);
@@ -3181,6 +3180,7 @@ export function App() {
       ...draftBase,
       port,
       publicBaseUrl,
+      authMode: normalizeControlAuthMode(draftBase.authMode),
       pairCodeTtlMode: normalizeControlPairMode(draftBase.pairCodeTtlMode)
     }, draftBase);
     setControlServerSettingsBusy(true);
@@ -3191,7 +3191,7 @@ export function App() {
           host: draft.host,
           port,
           publicBaseUrl,
-          pairCodeTtlMode: draft.pairCodeTtlMode
+          pairCodeTtlMode: resolveControlPairCodeMode(draft)
         }
       });
       const normalized = normalizeControlServerSettings(saved, draft);
@@ -4917,6 +4917,7 @@ export function App() {
     controlSettingsLoaded,
     controlSettingsDirty,
     controlServerSettings.enabled,
+    controlServerSettings.authMode,
     controlServerSettings.port,
     controlServerSettings.publicBaseUrl,
     controlServerSettings.pairCodeTtlMode
@@ -6391,6 +6392,7 @@ export function App() {
   const controlPairCode = (controlAccessInfo?.pairCode || controlPairCodeInfo?.code || "").trim();
   const controlAuthNoAuth =
     Boolean(controlAccessInfo?.noAuth) ||
+    normalizeControlAuthMode(controlServerSettings.authMode) === "none" ||
     normalizeControlPairMode(controlAccessInfo?.pairCodeTtlMode || controlServerSettings.pairCodeTtlMode) === "none";
   const controlPairPayload = controlBaseUrl
     ? JSON.stringify({
@@ -6422,14 +6424,6 @@ export function App() {
       cancelled = true;
     };
   }, [controlPairPayload]);
-  const mobileDot = (() => {
-    if (!runtimeStatus.giteam.installed) return { color: "var(--muted)", label: "Mobile service: plugin not installed" };
-    if (!mobileStatus) return { color: "var(--muted)", label: "Mobile service: unknown" };
-    if (!mobileStatus.enabled) return { color: "var(--muted)", label: "Mobile service: off" };
-    if (mobileStatus.running) return { color: "var(--success)", label: "Mobile service: running" };
-    if (mobileServiceStatusError) return { color: "var(--danger)", label: `Mobile service: error (${mobileServiceStatusError})` };
-    return { color: "color-mix(in srgb, var(--accent) 30%, orange)", label: "Mobile service: starting" };
-  })();
   const opencodeProviderPickerModelCounts = useMemo(() => {
     const out: Record<string, number> = {};
     for (const provider of opencodeProviderPickerCandidates) {
@@ -6556,45 +6550,6 @@ export function App() {
           sidebarCollapsed={!leftDrawerOpen}
           sidebarResizing={draggingSplit?.kind === "sidebar"}
           onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
-          statusBar={
-            <div className="wb-status-inner">
-              <div className="wb-status-group">
-                <button className="wb-status-btn" title="当前仓库/分支">
-                  {(() => {
-                    const mainRepo = repos.find(r => r.id === gitPaneRepo?.id);
-                    const isWorktree = mainRepo && gitPaneRepo && mainRepo.path !== gitPaneRepo.path;
-                    return (gitPaneRepo?.name ?? selectedRepo?.name ?? "No Project") + " · " + (worktreeOverview.branch || selectedBranch || "—") + (isWorktree ? " [worktree]" : "");
-                  })()}
-                </button>
-                <button
-                  className={showGraphPopover ? "wb-status-btn active" : "wb-status-btn"}
-                  title="Graph"
-                  onClick={() => setShowGraphPopover((v) => !v)}
-                >
-                  ⎇
-                </button>
-              </div>
-              <div className="wb-status-group">
-                <button
-                  className="wb-status-btn"
-                  title={mobileDot.label}
-                  onClick={() => {
-                    setSettingsInitialSection("mobile");
-                    setShowSettings(true);
-                    if (runtimeStatus.giteam.installed) {
-                      setControlPairCodeInfo(null);
-                      setControlAccessInfo(null);
-                      setControlSettingsLoaded(false);
-                      void loadControlServerSettings();
-                    }
-                  }}
-                >
-                  <span className="gt-status-dot" style={{ background: mobileDot.color }} aria-hidden="true" />
-                  <span className="gt-status-text">Mobile</span>
-                </button>
-              </div>
-            </div>
-          }
           panelPlacement={panelPlacement}
         />
 
@@ -6628,53 +6583,6 @@ export function App() {
               {mobileStatusChangeToast.message === "Disconnected" ? <CloseIcon width={16} height={16} /> : <CheckIcon width={16} height={16} />}
             </span>
             <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
-          </div>
-        ) : null}
-
-        {showGraphPopover ? (
-          <div className="wb-graph-popover" role="dialog" aria-label="Graph" onClick={(e) => e.stopPropagation()}>
-            <div className="wb-graph-popover-head">
-              <strong>Graph</strong>
-              <button className="chip" onClick={() => setShowGraphPopover(false)}>
-                {appText.close}
-              </button>
-            </div>
-            <div className="wb-graph-popover-body">
-              <div className="branch-tree branch-tree-lanes" style={{ maxHeight: 360 }}>
-                <BranchGraphLanes rows={commitGraph} rowHeight={30} laneGap={14} selectedSha={selectedCommit} />
-                {commitGraph
-                  .filter((g) => !g.isConnector && !!g.sha)
-                  .map((g, idx) => (
-                    <button
-                      key={`${g.sha}-${idx}`}
-                      className={selectedCommit === g.sha ? "graph-row selected" : "graph-row"}
-                      onClick={() => setSelectedCommit(g.sha)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setCommitContextMenu({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject });
-                      }}
-                      onMouseEnter={(e) => setCommitHoverCard({ x: e.clientX, y: e.clientY, sha: g.sha, subject: g.subject, author: g.author, date: g.date })}
-                      onMouseMove={(e) => setCommitHoverCard((prev) => prev?.sha === g.sha ? { ...prev, x: e.clientX, y: e.clientY } : prev)}
-                      onMouseLeave={() => setCommitHoverCard(null)}
-                    >
-                      <span className="graph-ascii graph-ascii-placeholder" aria-hidden="true" />
-                      <span className="graph-main">
-                        <span className="graph-subject">{g.subject || "(no subject)"}</span>
-                        <span className="graph-meta">
-                          {g.sha.slice(0, 8)} · {g.author} · {g.date}
-                        </span>
-                      </span>
-                      <span className="graph-refs">
-                        {parseRefs(g.refs).map((r) => (
-                          <span key={`${g.sha}-${r}`} className="graph-ref-btn" aria-hidden="true">
-                            {r}
-                          </span>
-                        ))}
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            </div>
           </div>
         ) : null}
 
@@ -6979,7 +6887,14 @@ export function App() {
             onClose={() => void closeMobileControlDialog()}
             onToggleService={(enabled) => void toggleControlServiceEnabled(enabled)}
             onSettingsChange={(patch) => setControlServerSettings((prev) => ({ ...prev, ...patch }))}
-            onPairModeChange={(mode) => setControlServerSettings((prev) => ({ ...prev, pairCodeTtlMode: normalizeControlPairMode(mode) }))}
+            onAuthModeChange={(mode) => setControlServerSettings((prev) => ({
+              ...prev,
+              authMode: mode,
+              pairCodeTtlMode: mode === "none"
+                ? "none"
+                : (normalizeControlPairMode(prev.pairCodeTtlMode) === "none" ? "24h" : normalizeControlPairMode(prev.pairCodeTtlMode))
+            }))}
+            onPairModeChange={(mode) => setControlServerSettings((prev) => ({ ...prev, pairCodeTtlMode: normalizeControlPairMode(mode) === "none" ? prev.pairCodeTtlMode : normalizeControlPairMode(mode) }))}
             onRefreshCode={() => {
               void forceRefreshControlPairCode();
               void loadControlAccessInfo();

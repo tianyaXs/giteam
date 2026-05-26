@@ -2,6 +2,7 @@ import { CameraView } from "expo-camera";
 import { useFonts } from "expo-font";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, useWindowDimensions } from "react-native";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import {
   NO_AUTH_TOKEN
@@ -460,7 +461,7 @@ export default function App() {
     markFollowLatest(320);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        scrollToLatest(false);
+        scrollToLatest(true);
       });
     });
   }, [
@@ -1478,54 +1479,56 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <MobileAppRouter
-        albumPickerOverlay={albumPickerOverlay}
-        appReady={appReady}
-        authed={authed}
-        backgroundColor={notebookColors.shell}
-        busy={busy}
-        CameraViewCompat={CameraViewCompat}
-        chatScreen={chatScreen}
-        connectProgressScaleX={connectProgressScaleX}
-        connectingDiscoverId={connectingDiscoverId}
-        discoverDeviceRows={discoverDeviceRows}
-        discoverOpen={discoverOpen}
-        discoveringUi={discoveringUi}
-        fontsReady={fontsLoaded}
-        fontFamily={FONT_DISPLAY_SERIF}
-        gestureRootStyle={styles.gestureRoot}
-        launchOverlay={launchOverlay}
-        lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
-        onAuthSubmit={() => void onAuthSubmit()}
-        onBarcodeScanned={onBarcodeScanned}
-        onCancelScanner={onCloseScanner}
-        onChangePairCode={setPairCode}
-        onChangeServerUrl={onChangeServerUrl}
-        onCloseDiscover={onCloseDiscover}
-        onConnectDiscoverPress={onConnectDiscoverPress}
-        onMountScannerError={onScannerMountError}
-        onOpenScanner={onOpenScanner}
-        onPairPromptCancel={cancelPairPrompt}
-        onPairPromptChange={setPairPromptValue}
-        onPairPromptConfirm={confirmPairPrompt}
-        onPickQrFromAlbum={() => void onPickQrFromAlbum()}
-        onRescanDiscover={() => void startDiscover()}
-        onRescanScanner={onScannerRescan}
-        onResetAuthStatus={() => setStatus("准备就绪")}
-        onScannerReady={onScannerReady}
-        pairCode={pairCode}
-        pairPromptHostPort={pairPromptHostPort}
-        pairPromptOpen={pairPromptOpen}
-        pairPromptValue={pairPromptValue}
-        safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
-        scanHitCount={scanHitCount}
-        scannerLocked={scannerLocked}
-        scannerOpen={scannerOpen}
-        scannerReady={scannerReady}
-        serverUrlInput={serverUrlInput}
-        startupStyles={styles}
-        statusText={statusText}
-      />
+      <KeyboardProvider>
+        <MobileAppRouter
+          albumPickerOverlay={albumPickerOverlay}
+          appReady={appReady}
+          authed={authed}
+          backgroundColor={notebookColors.shell}
+          busy={busy}
+          CameraViewCompat={CameraViewCompat}
+          chatScreen={chatScreen}
+          connectProgressScaleX={connectProgressScaleX}
+          connectingDiscoverId={connectingDiscoverId}
+          discoverDeviceRows={discoverDeviceRows}
+          discoverOpen={discoverOpen}
+          discoveringUi={discoveringUi}
+          fontsReady={fontsLoaded}
+          fontFamily={FONT_DISPLAY_SERIF}
+          gestureRootStyle={styles.gestureRoot}
+          launchOverlay={launchOverlay}
+          lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
+          onAuthSubmit={() => void onAuthSubmit()}
+          onBarcodeScanned={onBarcodeScanned}
+          onCancelScanner={onCloseScanner}
+          onChangePairCode={setPairCode}
+          onChangeServerUrl={onChangeServerUrl}
+          onCloseDiscover={onCloseDiscover}
+          onConnectDiscoverPress={onConnectDiscoverPress}
+          onMountScannerError={onScannerMountError}
+          onOpenScanner={onOpenScanner}
+          onPairPromptCancel={cancelPairPrompt}
+          onPairPromptChange={setPairPromptValue}
+          onPairPromptConfirm={confirmPairPrompt}
+          onPickQrFromAlbum={() => void onPickQrFromAlbum()}
+          onRescanDiscover={() => void startDiscover()}
+          onRescanScanner={onScannerRescan}
+          onResetAuthStatus={() => setStatus("准备就绪")}
+          onScannerReady={onScannerReady}
+          pairCode={pairCode}
+          pairPromptHostPort={pairPromptHostPort}
+          pairPromptOpen={pairPromptOpen}
+          pairPromptValue={pairPromptValue}
+          safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
+          scanHitCount={scanHitCount}
+          scannerLocked={scannerLocked}
+          scannerOpen={scannerOpen}
+          scannerReady={scannerReady}
+          serverUrlInput={serverUrlInput}
+          startupStyles={styles}
+          statusText={statusText}
+        />
+      </KeyboardProvider>
     </SafeAreaProvider>
   );
 }

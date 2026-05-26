@@ -7,7 +7,6 @@ export function Workbench(props: {
   sideBar: ReactNode;
   editor: ReactNode;
   panel: ReactNode;
-  statusBar: ReactNode;
   panelPlacement: PanelPlacement;
   sidebarWidth: number;
   sidebarCollapsed?: boolean;
@@ -38,7 +37,6 @@ export function Workbench(props: {
       />
       <section className="wb-editor">{props.editor}</section>
       <section className="wb-panel">{props.panel}</section>
-      <footer className="wb-status">{props.statusBar}</footer>
     </div>
   );
 }

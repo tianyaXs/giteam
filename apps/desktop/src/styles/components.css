@@ -97,6 +97,7 @@
 .gt-changes-commit-box {
   display: grid;
   gap: var(--gt-space-1-5);
+  min-width: 0;
   padding: var(--gt-space-0-5) var(--gt-space-0-5) var(--gt-space-2);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
 }
@@ -112,29 +113,50 @@
 
 .gt-changes-commit-actions {
   position: relative;
+  min-width: 0;
 }
 
 .gt-changes-commit-actions .chip {
   height: 30px;
+  min-width: 0;
   padding: 0 var(--gt-space-2);
   font-size: var(--gt-text-sm);
 }
 
 .gt-commit-split-wrap {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  display: flex;
+  align-items: stretch;
   width: 100%;
+  min-width: 0;
 }
 
 .gt-commit-main-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 1 1 auto;
   gap: var(--gt-space-1-5);
-  width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
+}
+
+.gt-commit-main-btn.is-compact {
+  gap: var(--gt-space-1);
+  padding-inline: var(--gt-space-1-5);
+}
+
+.gt-commit-main-btn svg {
+  flex: 0 0 auto;
+}
+
+.gt-commit-main-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gt-commit-main-btn.is-loading {
@@ -142,8 +164,8 @@
 }
 
 .chip.is-primary.gt-commit-main-btn.is-loading,
-.chip.is-primary.gt-commit-menu-btn.is-loading,
-.chip.is-primary.gt-commit-menu-btn.is-loading:disabled {
+.gt-commit-menu-btn.is-loading,
+.gt-commit-menu-btn.is-loading:disabled {
   opacity: 1;
   background: color-mix(in srgb, var(--accent) 88%, transparent);
   color: #fff;
@@ -161,17 +183,33 @@
 
 .gt-commit-menu-btn {
   display: inline-flex;
+  flex: 0 0 32px;
   align-items: center;
   justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 88%, transparent);
   border-left: 1px solid color-mix(in srgb, var(--bg) 32%, transparent);
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
+  background: color-mix(in srgb, var(--accent) 78%, var(--bg));
+  color: #fff;
   line-height: 1;
+  cursor: pointer;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.14);
 }
 
-.chip.is-primary.gt-commit-menu-btn:disabled:not(.is-loading) {
-  opacity: 0.5;
+.gt-commit-menu-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 96%, transparent);
+}
+
+.gt-commit-menu-btn:disabled:not(.is-loading) {
+  opacity: 0.58;
   background: color-mix(in srgb, var(--muted) 40%, transparent);
+  border-color: color-mix(in srgb, var(--muted) 40%, transparent);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: not-allowed;
 }
 
 .gt-commit-chevron {

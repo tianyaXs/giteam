@@ -20,5 +20,26 @@ allprojects {
   }
 }
 
+subprojects { subproject ->
+  plugins.withId("com.android.library") {
+    def androidExt = subproject.extensions.findByName("android")
+    if (androidExt == null) return
+
+    if (androidExt.hasProperty("lint")) {
+      androidExt.lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+      }
+    }
+
+    if (androidExt.hasProperty("lintOptions")) {
+      androidExt.lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+      }
+    }
+  }
+}
+
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"

@@ -13,11 +13,12 @@
     "windows": [
       {
         "title": "",
-        "width": 1720,
-        "height": 980,
+        "width": 1480,
+        "height": 940,
         "minWidth": 1280,
         "minHeight": 820,
-        "maximized": true,
+        "center": true,
+        "maximized": false,
         "theme": "Dark",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,

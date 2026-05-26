@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Animated, Image, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { toText } from '../../lib/text';
 
@@ -112,15 +112,13 @@ function ChatComposerImpl(props: {
     slashSuggestions,
     styles
   } = props;
+  const composerLift = Platform.OS === 'android' && keyboardInset > 0 ? 8 : 0;
 
   return (
     <>
       {attachmentPanelVisible ? <Pressable style={styles.attachmentBackdrop} onPress={onDismissAttachmentPanel} /> : null}
       <Animated.View
-        style={[
-          styles.inputDock,
-          keyboardInset > 0 ? { marginBottom: keyboardInset + 10 } : null
-        ]}
+        style={[styles.inputDock, composerLift > 0 ? { marginBottom: composerLift } : null]}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h > 0) onLayoutHeight(h);

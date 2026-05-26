@@ -4,33 +4,25 @@
   display: grid;
   grid-template-columns: 56px var(--wb-sidebar-width, 320px) 1px 1fr;
   /* Give editor more height; panel is a smaller dock like VSCode. */
-  grid-template-rows: 1fr 0px 26px;
+  grid-template-rows: 1fr 0px;
   grid-template-areas:
     "activity sidebar split editor"
-    "activity sidebar split panel"
-    "status status status status";
+    "activity sidebar split panel";
   background: var(--bg);
-}
-
-.wb-status {
-  background: var(--bg-elev);
-  border-top: 1px solid var(--line);
 }
 
 .wb-panel-right {
   grid-template-columns: 56px var(--wb-sidebar-width, 320px) 1px minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
-  grid-template-rows: 1fr 26px;
+  grid-template-rows: 1fr;
   grid-template-areas:
-    "activity sidebar split editor panel"
-    "status status status status status";
+    "activity sidebar split editor panel";
 }
 
 .wb-panel-hidden {
   /* When panel is hidden, give all vertical space to editor. */
-  grid-template-rows: 1fr 26px;
+  grid-template-rows: 1fr;
   grid-template-areas:
-    "activity sidebar split editor"
-    "status status status status";
+    "activity sidebar split editor";
 }
 
 .wb-activity {
@@ -103,69 +95,6 @@
 
 .wb-panel-hidden .wb-panel {
   display: none;
-}
-
-.wb-status {
-  grid-area: status;
-  display: flex;
-  align-items: center;
-}
-
-.wb-status-inner {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--gt-space-2);
-  padding: 0 var(--gt-space-2-5);
-  font-size: var(--gt-text-sm);
-  color: var(--muted);
-}
-
-.wb-status-group {
-  display: flex;
-  align-items: center;
-  gap: var(--gt-space-2);
-  min-width: 0;
-}
-
-.wb-status-btn {
-  height: 20px;
-  padding: 0 var(--gt-space-2);
-  border-radius: var(--gt-radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.wb-status-btn:hover {
-  background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
-  color: var(--text);
-}
-
-.wb-status-btn.active {
-  border-color: color-mix(in srgb, var(--line) 70%, transparent);
-}
-
-.gt-status-dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: var(--gt-radius-pill);
-  margin-right: var(--gt-space-1-5);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
-  vertical-align: -1px;
-}
-
-.gt-status-text {
-  display: inline-block;
-  min-width: 44px;
-  text-align: left;
 }
 
 .mobile-control-head-right {

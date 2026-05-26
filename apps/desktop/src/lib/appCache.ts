@@ -33,7 +33,7 @@ export type RuntimeActionJobStatus = {
 };
 
 export const SIDEBAR_WIDTH_CACHE_KEY = "giteam.layout.sidebar.width.v1";
-export const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v1";
+export const RIGHT_PANE_WIDTH_CACHE_KEY = "giteam.layout.right.width.v2";
 
 const RUNTIME_STATUS_CACHE_KEY = "giteam.runtime.status.v1";
 

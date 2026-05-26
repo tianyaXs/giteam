@@ -123,6 +123,26 @@ export function GitChangesPanel({
   onBeginResize
 }: GitChangesPanelProps) {
   const isGitBusy = committing || pushing;
+  const useCompactCommitLabel = changesSidebarWidth < 272;
+  const useCompactSyncLabel = changesSidebarWidth < 308;
+
+  const commitPrimaryContent = gitOperationLabel ? (
+    <span className="gt-commit-main-label">{gitOperationLabel}</span>
+  ) : commitPrimaryIsSync ? (
+    <>
+      <SyncIcon width={16} height={16} />
+      <span className="gt-commit-main-label">
+        {useCompactSyncLabel ? "Sync" : `Sync (${ahead}/${behind})`}
+      </span>
+    </>
+  ) : (
+    <>
+      <CheckIcon width={16} height={16} />
+      <span className="gt-commit-main-label">
+        {useCompactCommitLabel ? "Commit" : `Commit (${commitButtonCount})`}
+      </span>
+    </>
+  );
 
   return (
     <div
@@ -175,20 +195,20 @@ export function GitChangesPanel({
           <div className="gt-changes-commit-actions" onClick={(event) => event.stopPropagation()}>
             <div className="gt-commit-split-wrap">
               <button
-                className={isGitBusy ? "chip is-primary gt-commit-main-btn is-loading" : "chip is-primary gt-commit-main-btn"}
+                className={isGitBusy
+                  ? `chip is-primary gt-commit-main-btn${useCompactCommitLabel || useCompactSyncLabel ? " is-compact" : ""} is-loading`
+                  : `chip is-primary gt-commit-main-btn${useCompactCommitLabel || useCompactSyncLabel ? " is-compact" : ""}`}
                 onClick={commitPrimaryIsSync ? onSync : onCommit}
                 disabled={commitPrimaryIsSync ? false : !hasCommittableChanges}
                 aria-busy={isGitBusy}
                 title={commitPrimaryIsSync ? "Sync branch" : (!hasCommittableChanges ? "No changes to commit" : "")}
               >
                 {isGitBusy ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
-                {gitOperationLabel || (commitPrimaryIsSync
-                  ? (pushing ? "Syncing..." : <><SyncIcon width={16} height={16} /> Sync ({ahead}/{behind})</>)
-                  : <><CheckIcon width={16} height={16} /> Commit ({commitButtonCount})</>)}
+                {commitPrimaryContent}
               </button>
               <button
                 type="button"
-                className={isGitBusy ? "chip is-primary gt-commit-menu-btn is-loading" : "chip is-primary gt-commit-menu-btn"}
+                className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
                 onClick={onToggleCommitActionMenu}
                 disabled={isGitBusy || !commitMenuAvailable}
                 title="More commit actions"
