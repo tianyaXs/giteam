@@ -199,19 +199,37 @@ function patchDrawerLayoutSpring() {
   );
   if (!fs.existsSync(drawerFile)) return;
   const source = fs.readFileSync(drawerFile, 'utf8');
-  const before = `      stiffness: 1000,
+  const springBefore = `      stiffness: 1000,
       damping: 500,
       mass: 3,`;
-  const after = `      stiffness: 280,
+  const springAfter = `      stiffness: 280,
       damping: 42,
       mass: 1.0,`;
-  if (source.includes(after)) return;
-  if (!source.includes(before)) {
-    console.warn('[patch-drawer-layout] spring config not found, skipping');
-    return;
+  const velocityBefore = `      toggleDrawer(nextOpen, event.velocityX);`;
+  const velocityAfter = `      const releaseVelocity = Math.abs(event.velocityX) > swipeMinVelocity ? Math.sign(event.velocityX) * Math.min(Math.abs(event.velocityX) * 0.14, 220) : undefined;
+      toggleDrawer(nextOpen, releaseVelocity);`;
+
+  let nextSource = source;
+
+  if (!nextSource.includes(springAfter)) {
+    if (!nextSource.includes(springBefore)) {
+      console.warn('[patch-drawer-layout] spring config not found, skipping');
+    } else {
+      nextSource = nextSource.replace(springBefore, springAfter);
+    }
   }
-  fs.writeFileSync(drawerFile, source.replace(before, after));
-  console.log('[patch-drawer-layout] softened drawer spring animation');
+
+  if (!nextSource.includes(velocityAfter)) {
+    if (!nextSource.includes(velocityBefore)) {
+      console.warn('[patch-drawer-layout] gesture velocity handoff not found, skipping');
+    } else {
+      nextSource = nextSource.replace(velocityBefore, velocityAfter);
+    }
+  }
+
+  if (nextSource === source) return;
+  fs.writeFileSync(drawerFile, nextSource);
+  console.log('[patch-drawer-layout] softened drawer spring animation and gesture settle velocity');
 }
 
 function patchMetroRuntimeWorkletsHmr() {
@@ -263,8 +281,13 @@ function ensureMobileNodeModuleLink(packageName) {
       }
       fs.rmSync(targetDir, { recursive: true, force: true });
     }
-    fs.symlinkSync(sourceDir, targetDir, 'dir');
-    console.log(`[patch-mobile-node-modules] linked ${packageName} into apps/mobile/node_modules`);
+    if (process.platform === 'win32') {
+      fs.cpSync(sourceDir, targetDir, { recursive: true, force: true });
+      console.log(`[patch-mobile-node-modules] copied ${packageName} into apps/mobile/node_modules`);
+    } else {
+      fs.symlinkSync(sourceDir, targetDir, 'dir');
+      console.log(`[patch-mobile-node-modules] linked ${packageName} into apps/mobile/node_modules`);
+    }
   } catch (error) {
     console.warn(`[patch-mobile-node-modules] failed to link ${packageName}`, error);
   }

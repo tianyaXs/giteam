@@ -83,7 +83,7 @@ function ChatConversationStageImpl(props: {
   const chatContentContainerStyle = useMemo(
     () => ({
       paddingTop: 12,
-      paddingBottom: messageBottomInset,
+      paddingBottom: messageBottomInset + 20,
       backgroundColor: 'transparent'
     }),
     [messageBottomInset]
@@ -123,7 +123,9 @@ function ChatConversationStageImpl(props: {
   }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
 
   useEffect(() => {
+    console.log(`[DEBUG] ChatConversationStage effect: sessionId=${sessionId} cells=${displayedTurnCells.length} loadingOlder=${loadingOlder}`);
     if (loadingOlder || !sessionId || displayedTurnCells.length <= 0) return;
+    console.log(`[DEBUG] Calling anchorSessionToLatest for ${sessionId} with ${displayedTurnCells.length} cells`);
     return anchorSessionToLatest(sessionId, displayedTurnCells.length);
   }, [anchorSessionToLatest, displayedTurnCells.length, loadingOlder, sessionId]);
 
@@ -173,6 +175,7 @@ function ChatConversationStageImpl(props: {
             onStartReachedThreshold={0.15}
             ListHeaderComponent={null}
             ListFooterComponent={null}
+            estimatedItemSize={200}
           />
           {sessionId && (loadingOlder || sessionHistoryRetryHintText) ? (
             <View pointerEvents="none" style={styles.historyOverlay}>

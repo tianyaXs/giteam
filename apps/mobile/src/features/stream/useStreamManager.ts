@@ -299,40 +299,55 @@ export function useStreamManager(deps: StreamManagerDeps) {
     };
 
     const applyStreamMessageInfo = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
       const info = source?.info;
-      const targetSid = toText(source?.sessionId || source?.sessionID || info?.sessionID || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current || !info || typeof info !== 'object') return;
+      // 检查是否是 task 事件：如果是，使用当前会话 ID（父会话），避免存入子会话
+      const parts = info?.parts || [];
+      const isTaskEvent = Array.isArray(parts) && parts.some((p: any) => p?.type === 'tool' && p?.tool === 'task');
+      // 对于 task 事件，强制使用当前会话 ID；其他事件使用 payload 中的 sessionId
+      const targetSid = isTaskEvent ? sid : toText(source?.sessionId || source?.sessionID || info?.sessionID || sid).trim();
+      if (!targetSid || !info || typeof info !== 'object') return;
       const mid = toText(info?.id).trim();
       if (!mid) return;
       const rows = ingestStreamRows(targetSid, [{ info, parts: [] }]);
       recordStreamMessageRoles(targetSid, rows);
-      renderStreamWindow(targetSid);
+      // 只渲染当前会话的消息
+      if (targetSid === d.sessionIdRef.current) {
+        renderStreamWindow(targetSid);
+      }
     };
 
     const applyStreamMessageRemoved = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionId || source?.sessionID || sid).trim();
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const mid = toText(source?.messageId || source?.messageID).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current || !mid) return;
+      if (!targetSid || !mid) return;
       const stores = getStores();
       delete stores.message.current[targetSid]?.[mid];
       delete stores.part.current[targetSid]?.[mid];
       delete stores.messageRole.current[targetSid]?.[mid];
       dropPendingStreamPartEvents(targetSid, mid);
       publishStreamRows(targetSid);
-      renderStreamWindow(targetSid);
+      // 只渲染当前会话的消息
+      if (targetSid === d.sessionIdRef.current) {
+        renderStreamWindow(targetSid);
+      }
     };
 
     const applyPartRemovedNow = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionId || source?.sessionID || sid).trim();
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const messageId = toText(source?.messageId || source?.messageID).trim();
       const partId = toText(source?.partId || source?.partID).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current || !messageId || !partId) return;
+      if (!targetSid || !messageId || !partId) return;
       storeRemoveStreamPartRecord(getStores(), targetSid, messageId, partId);
       publishStreamRows(targetSid);
-      renderStreamWindow(targetSid);
+      // 只渲染当前会话的消息
+      if (targetSid === d.sessionIdRef.current) {
+        renderStreamWindow(targetSid);
+      }
     };
 
     const applyPartRemoved = (sid: string, payload: unknown) => {
@@ -359,42 +374,56 @@ export function useStreamManager(deps: StreamManagerDeps) {
     };
 
     const applyStreamTodo = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionID || source?.sessionId || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current) return;
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
+      if (!targetSid) return;
       const todos = Array.isArray(source?.todos) ? source.todos : [];
       setStreamTodos(getStores(), targetSid, todos);
-      d.setStreamTodoCard(d.buildLiveTodoCard(targetSid, todos));
+      // 只更新当前会话的todo卡片
+      if (targetSid === d.sessionIdRef.current) {
+        d.setStreamTodoCard(d.buildLiveTodoCard(targetSid, todos));
+      }
     };
 
     const applyStreamPermission = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionID || source?.sessionId || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current) return;
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
+      if (!targetSid) return;
       upsertStreamPermission(getStores(), { ...source, sessionID: targetSid });
     };
 
     const applyStreamPermissionReplied = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionID || source?.sessionId || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current) return;
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
+      if (!targetSid) return;
       removeStreamPermission(getStores(), targetSid, toText(source?.requestID || source?.requestId || source?.id));
     };
 
     const applyStreamQuestion = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionID || source?.sessionId || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current) return;
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
+      if (!targetSid) return;
       upsertStreamQuestion(getStores(), { ...source, sessionID: targetSid });
-      refreshQuestionRequestsFromStore(targetSid);
+      // 只刷新当前会话的问题列表
+      if (targetSid === d.sessionIdRef.current) {
+        refreshQuestionRequestsFromStore(targetSid);
+      }
     };
 
     const applyStreamQuestionRemoved = (sid: string, payload: unknown) => {
-      const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
-      const targetSid = toText(source?.sessionID || source?.sessionId || sid).trim();
-      if (!targetSid || targetSid !== d.sessionIdRef.current) return;
+      const source = ((payload as any)?.properties && typeof (payload as any)?.properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
+      if (!targetSid) return;
       removeStreamQuestion(getStores(), targetSid, toText(source?.requestID || source?.requestId || source?.id));
-      refreshQuestionRequestsFromStore(targetSid);
+      // 只刷新当前会话的问题列表
+      if (targetSid === d.sessionIdRef.current) {
+        refreshQuestionRequestsFromStore(targetSid);
+      }
     };
 
     const upsertStreamPart = (sid: string, messageId: string, part: any, createdAt: number = Date.now()) => {
@@ -430,118 +459,131 @@ export function useStreamManager(deps: StreamManagerDeps) {
     };
 
     const applyAssistantDeltaNow = (sid: string, payload: unknown) => {
-      if (sid !== d.sessionIdRef.current) return;
+      // 允许所有会话的delta事件，但只处理当前会话的渲染
       const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const messageId = toText(source?.messageId || source?.messageID).trim();
-      if (!messageId || !storeCanApplyStreamPartUpdate(getStores(), sid, messageId)) return;
+      if (!targetSid || !messageId || !storeCanApplyStreamPartUpdate(getStores(), targetSid, messageId)) return;
       const partId = toText(source?.partId || source?.partID).trim() || 'text';
       const field = toText(source?.field).trim();
       const delta = typeof source?.delta === 'string' ? source.delta : '';
       const kind = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
-      d.streamDebug('delta.received', { sid, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
+      d.streamDebug('delta.received', { sid: targetSid, messageId, partId, field, kind, deltaLen: delta.length, deltaPreview: delta.slice(0, 40) });
       if (!delta) {
         d.streamDebug('delta.ignored', { reason: 'missing delta', messageId, deltaLen: delta.length });
         return;
       }
       const writeField = streamPartWriteField(field, kind);
-      enqueueStreamTypewriterDelta(sid, messageId, partId, writeField, delta, kind);
-      const nextLen = toText(getStoredStreamPart(sid, messageId, partId)?.text).length + delta.length;
-      d.streamDebug('delta.enqueued', { sid, messageId, partId, kind, totalLen: nextLen });
-      d.setStreaming(true);
+      enqueueStreamTypewriterDelta(targetSid, messageId, partId, writeField, delta, kind);
+      const nextLen = toText(getStoredStreamPart(targetSid, messageId, partId)?.text).length + delta.length;
+      d.streamDebug('delta.enqueued', { sid: targetSid, messageId, partId, kind, totalLen: nextLen });
+      // 只设置当前会话的streaming状态
+      if (targetSid === d.sessionIdRef.current) {
+        d.setStreaming(true);
+      }
     };
 
     const applyAssistantDelta = (sid: string, payload: unknown) => {
-      if (sid !== d.sessionIdRef.current) return;
       const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const messageId = toText(source?.messageId || source?.messageID).trim();
-      const role = getKnownStreamMessageRole(sid, messageId);
+      const role = getKnownStreamMessageRole(targetSid, messageId);
       if (!role) {
-        queueStreamPartEvent(sid, messageId, { kind: 'delta', payload });
+        queueStreamPartEvent(targetSid, messageId, { kind: 'delta', payload });
         return;
       }
       if (role !== 'assistant') return;
       const partId = toText(source?.partId || source?.partID).trim() || toText(source?.field).trim() || 'text';
-      if (!getStoredStreamPart(sid, messageId, partId)) {
+      if (!getStoredStreamPart(targetSid, messageId, partId)) {
         const field = toText(source?.field).trim();
         const type = toText(source?.type).trim() || (field === 'reasoning' ? 'reasoning' : 'text');
-        upsertStreamPart(sid, messageId, {
+        upsertStreamPart(targetSid, messageId, {
           id: partId,
           messageID: messageId,
           type,
           text: ''
         });
       }
-      applyAssistantDeltaNow(sid, payload);
+      applyAssistantDeltaNow(targetSid, payload);
     };
 
     const applyAssistantPartNow = (sid: string, payload: unknown) => {
-      if (sid !== d.sessionIdRef.current) return;
       const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
       const part = source?.part;
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
-      if (!messageId || !part || typeof part !== 'object') return;
-      if (!storeCanApplyStreamPartUpdate(getStores(), sid, messageId)) return;
+      if (!targetSid || !messageId || !part || typeof part !== 'object') return;
+      if (!storeCanApplyStreamPartUpdate(getStores(), targetSid, messageId)) return;
       const partId = toText(part?.id || part?.partID).trim() || 'text';
       const incomingText = typeof part?.text === 'string' ? part.text : '';
+      const isCurrentSession = targetSid === d.sessionIdRef.current;
       if (isStreamTextPart(part) && incomingText) {
-        const stored = getStoredStreamPart(sid, messageId, partId);
+        const stored = getStoredStreamPart(targetSid, messageId, partId);
         const prevText = toText(stored?.text);
         // Logical text = stored.text + pending typewriter queue chunks for this part/field=text.
         // Snapshots (`message.part.updated`) include the full text up to that moment, so we
         // must NOT recompute delta against stored alone — that double-counts queued chunks.
-        const queueKey = `${sid}:${messageId}:${partId}:text`;
+        const queueKey = `${targetSid}:${messageId}:${partId}:text`;
         const queuedItem = d.streamTypewriterQueueRef.current[queueKey];
         const queuedText = toText(queuedItem?.text);
         const logicalText = `${prevText}${queuedText}`;
         if (incomingText === logicalText) {
-          d.setStreaming(true);
+          if (isCurrentSession) d.setStreaming(true);
           return;
         }
         if (incomingText.startsWith(logicalText)) {
           if (!stored) {
-            upsertStreamPart(sid, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
+            upsertStreamPart(targetSid, messageId, { ...part, id: partId, messageID: messageId, text: prevText });
           }
           const delta = incomingText.slice(logicalText.length);
           if (delta.length > 0) {
-            enqueueStreamTypewriterDelta(sid, messageId, partId, 'text', delta);
+            enqueueStreamTypewriterDelta(targetSid, messageId, partId, 'text', delta);
           }
-          d.setStreaming(true);
+          if (isCurrentSession) d.setStreaming(true);
           return;
         }
         if (logicalText.startsWith(incomingText) && incomingText.length < logicalText.length) {
           // Stale snapshot; we already have a longer prefix.
-          d.setStreaming(true);
+          if (isCurrentSession) d.setStreaming(true);
           return;
         }
         // Diverged — snapshot is authoritative. Drop queue and write directly.
         delete d.streamTypewriterQueueRef.current[queueKey];
-        upsertStreamPart(sid, messageId, { ...part, id: partId, messageID: messageId, text: incomingText });
-        flushPendingStreamPartEvents(sid, messageId);
-        renderStreamWindow(sid);
-        d.setStreaming(true);
+        upsertStreamPart(targetSid, messageId, { ...part, id: partId, messageID: messageId, text: incomingText });
+        flushPendingStreamPartEvents(targetSid, messageId);
+        if (isCurrentSession) {
+          renderStreamWindow(targetSid);
+          d.setStreaming(true);
+        }
         return;
       }
-      upsertStreamPart(sid, messageId, part);
-      flushPendingStreamPartEvents(sid, messageId);
-      renderStreamWindow(sid);
-      if (shouldFollowLatest()) {
-        d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
+      upsertStreamPart(targetSid, messageId, part);
+      flushPendingStreamPartEvents(targetSid, messageId);
+      if (isCurrentSession) {
+        renderStreamWindow(targetSid);
+        if (shouldFollowLatest()) {
+          d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
+        }
+        d.setStreaming(true);
       }
-      d.setStreaming(true);
     };
 
     const applyAssistantPart = (sid: string, payload: unknown) => {
-      if (sid !== d.sessionIdRef.current) return;
       const source = ((payload as any)?.properties && typeof (payload as any).properties === 'object') ? (payload as any).properties : (payload as any);
       const part = source?.part;
+      // 始终使用当前会话的 ID，避免子会话 ID 导致消息无法渲染
+      const targetSid = sid;
       const messageId = toText(source?.messageId || source?.messageID || part?.messageID || part?.messageId).trim();
-      const role = getKnownStreamMessageRole(sid, messageId);
+      const role = getKnownStreamMessageRole(targetSid, messageId);
       if (!role) {
-        queueStreamPartEvent(sid, messageId, { kind: 'part', payload });
+        queueStreamPartEvent(targetSid, messageId, { kind: 'part', payload });
         return;
       }
       if (role !== 'assistant') return;
-      applyAssistantPartNow(sid, payload);
+      applyAssistantPartNow(targetSid, payload);
     };
 
     // --- Render Scheduling ---
@@ -553,10 +595,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
         if (entries.length === 0) return;
         const touchedSessions = new Set<string>();
         for (const [key, item] of entries) {
-          if (item.sid !== d.sessionIdRef.current) {
-            delete d.streamTypewriterQueueRef.current[key];
-            continue;
-          }
+          // 允许所有会话的typewriter事件，但只渲染当前会话
           const { chunk, rest } = takeStreamTypewriterChunk(item.text);
           if (chunk) {
             const ok = patchStoredStreamPartDelta(
@@ -586,6 +625,7 @@ export function useStreamManager(deps: StreamManagerDeps) {
       if (d.streamRenderTimerRef.current) return;
       d.streamRenderTimerRef.current = setTimeout(() => {
         d.streamRenderTimerRef.current = null;
+        // 只渲染当前会话
         if (sid !== d.sessionIdRef.current) return;
         const shouldFollowStream = shouldFollowLatest();
         renderStreamWindow(sid);

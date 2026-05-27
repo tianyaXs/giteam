@@ -79,6 +79,7 @@ export function useTurnWindowController(params: {
   const upsertSession = useCallback((nextSessionId: string, nextMessages: MobileChatMessage[]) => {
     if (!nextSessionId) return;
     const preview = summarizePreview(nextMessages);
+    const nextUpdatedAt = Date.now();
     setSessions((prev) => {
       const prevEntry = prev.find((s) => s.id === nextSessionId);
       const fallbackTitle = nextMessages.find((m) => m.role === 'user' && m.text.trim())?.text.slice(0, 24) || '新会话';
@@ -86,8 +87,8 @@ export function useTurnWindowController(params: {
         id: nextSessionId,
         title: toText(prevEntry?.title).trim() || fallbackTitle,
         preview,
-        updatedAt: prevEntry?.updatedAt ?? Date.now(),
-        createdAt: prevEntry?.createdAt
+        updatedAt: nextUpdatedAt,
+        createdAt: prevEntry?.createdAt ?? nextUpdatedAt,
       };
       const base = prevEntry ? prev.map((s) => (s.id === nextSessionId ? nextRow : s)) : [nextRow, ...prev];
       return stableSortSessionItems(base).slice(0, 50);
@@ -169,6 +170,7 @@ export function useTurnWindowController(params: {
       return [...prev.slice(0, -1), nextLast];
     };
     if (targetSessionId !== sessionIdRef.current) {
+      console.log(`[DEBUG] applyTurnWindow stale session skip: target=${targetSessionId} current=${sessionIdRef.current}`);
       upsertSession(targetSessionId, nextMessages);
       const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
       const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
@@ -179,6 +181,7 @@ export function useTurnWindowController(params: {
       });
       return rendered;
     }
+    console.log(`[DEBUG] applyTurnWindow commit UI: target=${targetSessionId} turns=${nextTurns.length} messages=${nextMessages.length}`);
     setMessages(nextMessages);
     setRenderedTurns(commitRenderedTurns);
     markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.commit_ui', {

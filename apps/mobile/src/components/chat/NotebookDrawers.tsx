@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
-import React from 'react';
-import { ActivityIndicator, Animated, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { ActivityIndicator, Animated, LayoutAnimation, Platform, Pressable, ScrollView, Text, TextInput, UIManager, View } from 'react-native';
 import { toText } from '../../lib/text';
 
 type ProjectOption = {
@@ -41,6 +41,85 @@ type NotebookColors = {
   ink: string;
 };
 
+const SESSION_LIST_LAYOUT_ANIMATION = {
+  duration: 280,
+  create: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+  update: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+  },
+  delete: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+};
+
+function AnimatedSessionRow(props: {
+  styles: Record<string, any>;
+  colors: NotebookColors;
+  session: SessionRow;
+  animateOnMount: boolean;
+  onSelectSession: (sessionId: string, active: boolean) => void;
+}) {
+  const { animateOnMount, colors, onSelectSession, session, styles } = props;
+  const opacity = useRef(new Animated.Value(animateOnMount ? 0 : 1)).current;
+  const translateY = useRef(new Animated.Value(animateOnMount ? -14 : 0)).current;
+
+  const runReveal = React.useCallback((offset: number) => {
+    translateY.stopAnimation();
+    opacity.stopAnimation();
+    translateY.setValue(offset);
+    opacity.setValue(0);
+    Animated.parallel([
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 240,
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [opacity, translateY]);
+
+  useEffect(() => {
+    if (!animateOnMount) return;
+    runReveal(-14);
+  }, [animateOnMount, runReveal]);
+
+  return (
+    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+      <Pressable
+        style={session.active ? [styles.directorySessionPlainRow, styles.directorySessionPlainRowActive] : styles.directorySessionPlainRow}
+        onPress={() => onSelectSession(session.id, session.active)}
+      >
+        <View style={session.active ? styles.leftSessionRailActive : styles.leftSessionRail} />
+        <View style={styles.directorySessionPlainBody}>
+          <View style={styles.directorySessionPlainHead}>
+            <Text
+              maxFontSizeMultiplier={1.08}
+              numberOfLines={1}
+              style={[session.active ? styles.directorySessionPlainTitleActive : styles.directorySessionPlainTitle, { color: colors.text }]}
+            >
+              {session.title}
+            </Text>
+            {session.timeLabel ? <Text style={[styles.directorySessionPlainTime, { color: colors.faint }]}>{session.timeLabel}</Text> : null}
+          </View>
+          {session.preview ? (
+            <Text numberOfLines={1} style={[styles.directorySessionPlainMeta, { color: session.active ? colors.muted : colors.faint }]}>
+              {session.preview}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 export function LeftDrawerPanel(props: {
   styles: Record<string, any>;
   colors: NotebookColors;
@@ -79,6 +158,39 @@ export function LeftDrawerPanel(props: {
     styles,
     workspaceSwitcherOpen
   } = props;
+  const hasMountedSessionListRef = useRef(false);
+  const seenSessionIdsRef = useRef<Set<string>>(new Set(sessionRows.map((session) => session.id)));
+  const sessionOrderSignature = useMemo(
+    () => sessionRows.map((session) => session.id).join('\u0001'),
+    [sessionRows]
+  );
+  const enteringSessionIds = useMemo(() => {
+    const seen = seenSessionIdsRef.current;
+    return new Set(sessionRows.filter((session) => !seen.has(session.id)).map((session) => session.id));
+  }, [sessionOrderSignature, sessionRows]);
+  const previousOrderSignatureRef = useRef(sessionOrderSignature);
+
+  useEffect(() => {
+    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!hasMountedSessionListRef.current) {
+      hasMountedSessionListRef.current = true;
+      sessionRows.forEach((session) => seenSessionIdsRef.current.add(session.id));
+      previousOrderSignatureRef.current = sessionOrderSignature;
+      return;
+    }
+    const hasEnteringItem = enteringSessionIds.size > 0;
+    const orderChanged = previousOrderSignatureRef.current !== sessionOrderSignature;
+    if (hasEnteringItem || orderChanged) {
+      LayoutAnimation.configureNext(SESSION_LIST_LAYOUT_ANIMATION);
+    }
+    sessionRows.forEach((session) => seenSessionIdsRef.current.add(session.id));
+    previousOrderSignatureRef.current = sessionOrderSignature;
+  }, [enteringSessionIds, sessionOrderSignature, sessionRows]);
 
   return (
     <View style={[styles.drawerPanelLeft, { backgroundColor: colors.left }]}>
@@ -137,30 +249,14 @@ export function LeftDrawerPanel(props: {
         <Animated.View style={{ opacity: pulse }}>
           <View style={styles.directoryGroupPlain}>
             {sessionRows.map((session) => (
-              <Pressable
+              <AnimatedSessionRow
                 key={session.id}
-                style={session.active ? [styles.directorySessionPlainRow, styles.directorySessionPlainRowActive] : styles.directorySessionPlainRow}
-                onPress={() => onSelectSession(session.id, session.active)}
-              >
-                <View style={session.active ? styles.leftSessionRailActive : styles.leftSessionRail} />
-                <View style={styles.directorySessionPlainBody}>
-                  <View style={styles.directorySessionPlainHead}>
-                    <Text
-                      maxFontSizeMultiplier={1.08}
-                      numberOfLines={1}
-                      style={[session.active ? styles.directorySessionPlainTitleActive : styles.directorySessionPlainTitle, { color: colors.text }]}
-                    >
-                      {session.title}
-                    </Text>
-                    {session.timeLabel ? <Text style={[styles.directorySessionPlainTime, { color: colors.faint }]}>{session.timeLabel}</Text> : null}
-                  </View>
-                  {session.preview ? (
-                    <Text numberOfLines={1} style={[styles.directorySessionPlainMeta, { color: session.active ? colors.muted : colors.faint }]}>
-                      {session.preview}
-                    </Text>
-                  ) : null}
-                </View>
-              </Pressable>
+                styles={styles}
+                colors={colors}
+                session={session}
+                animateOnMount={enteringSessionIds.has(session.id)}
+                onSelectSession={onSelectSession}
+              />
             ))}
           </View>
           {showMoreButton ? (

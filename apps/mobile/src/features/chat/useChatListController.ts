@@ -190,7 +190,11 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       return;
     }
 
-    if (anchorInFlightRef.current === sid) return;
+    console.log(`[DEBUG] anchorSessionToLatest start: sid=${sid} signature=${signature} sessionChanged=${sessionChanged} inFlight=${anchorInFlightRef.current}`);
+    if (anchorInFlightRef.current === sid) {
+      console.log(`[DEBUG] anchorSessionToLatest skipped: already in flight for ${sid}`);
+      return;
+    }
     anchorInFlightRef.current = sid;
     historyPaginationReadyRef.current = false;
 
@@ -200,6 +204,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       anchoredSessionRef.current = signature;
       historyPaginationReadyRef.current = true;
       listRevealReadyRef.current = true;
+      console.log(`[DEBUG] finishReveal called for ${sid}, setting listRevealReady=true`);
       setListRevealReady(true);
       const distance = getVisibleDistanceFromBottom();
       debugLog?.(
@@ -216,8 +221,10 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       let scrolled = false;
       const forceScroll = forceRevealScrollRef.current;
       const layoutReady =
-        messageViewportHRef.current > 0
-        && (messageContentHRef.current > 0 || revealAttempts >= 8);
+        revealAttempts >= 12
+        || (messageViewportHRef.current > 0
+            && (messageContentHRef.current > 0 || revealAttempts >= 8));
+      console.log(`[DEBUG] tryReveal attempt=${revealAttempts} layoutReady=${layoutReady} viewportH=${messageViewportHRef.current} contentH=${messageContentHRef.current} forceScroll=${forceScroll}`);
       if (forceScroll && !layoutReady && revealAttempts < 8) {
         requestAnimationFrame(tryReveal);
         return;
@@ -233,8 +240,9 @@ export function useChatListController<Cell extends { id?: string }>(props: {
         if (anchorInFlightRef.current !== sid) return;
         const forceScrollAgain = forceRevealScrollRef.current;
         const layoutReadyAgain =
-          messageViewportHRef.current > 0
-          && (messageContentHRef.current > 0 || revealAttempts >= 8);
+          revealAttempts >= 12
+          || (messageViewportHRef.current > 0
+              && (messageContentHRef.current > 0 || revealAttempts >= 8));
         if (forceScrollAgain && !layoutReadyAgain && revealAttempts < 8) {
           requestAnimationFrame(tryReveal);
           return;
@@ -260,6 +268,9 @@ export function useChatListController<Cell extends { id?: string }>(props: {
 
     return () => {
       if (revealTimeoutId !== null) clearTimeout(revealTimeoutId);
+      if (anchorInFlightRef.current === sid) {
+        anchorInFlightRef.current = '';
+      }
     };
   }, [
     chatBottomProximity,

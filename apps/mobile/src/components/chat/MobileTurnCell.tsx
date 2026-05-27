@@ -229,7 +229,7 @@ function renderMarkdown(
 
 function splitDisplayPath(input: string) {
   const normalized = toText(input).replace(/\\/g, '/');
-  const parts = normalized.split('/').filter(Boolean);
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
   if (parts.length <= 0) return { filename: '', directory: '' };
   const filename = parts[parts.length - 1] || '';
   const directoryParts = parts.slice(0, -1);
@@ -527,7 +527,7 @@ function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed
 function ThinkPreviewLines(props: { styles: Record<string, any>; text: string; active: boolean }) {
   const { active, styles } = props;
   const lines = toText(props.text)
-    .split(/\n+/)
+    .split(/\r?\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
   const visible = lines.length ? lines.slice(-6) : ['正在整理上下文...', '分析可执行步骤...', '准备生成回复...'];

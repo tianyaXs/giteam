@@ -233,7 +233,10 @@ export function useSessionMessageSync<Cell>(params: {
       const before = toText(opts?.before).trim();
       const isHistoryPageReason =
         opts?.reason === 'hydrate' || opts?.reason === 'refreshLatest' || opts?.reason === 'loadingOlder';
-      const reqKey = `${targetSessionId}|${fetchLimit}|${before || '-'}`;
+      const requestReason = toText(opts?.reason).trim() || 'default';
+      // Keep authoritative tail refreshes independent from generic syncs so
+      // send/reconnect recovery does not get stuck waiting on a slower hydrate.
+      const reqKey = `${targetSessionId}|${fetchLimit}|${before || '-'}|${requestReason}`;
       const existing = inflightMessageReqRef.current[reqKey];
       if (existing) return await existing;
 
@@ -439,7 +442,8 @@ export function useSessionMessageSync<Cell>(params: {
     const syncSessionMessages = async (targetSessionId: string, opts?: SyncOptions) => {
       const before = toText(opts?.before).trim();
       const mode = opts?.loadingOlder ? 'loadingOlder' : 'default';
-      const syncKey = `${targetSessionId}|${mode}|${before || '-'}`;
+      const syncReason = opts?.tailOnly ? 'tailOnly' : mode;
+      const syncKey = `${targetSessionId}|${syncReason}|${before || '-'}`;
       const existing = inflightSessionSyncRef.current[syncKey];
       if (existing) return await existing;
 
@@ -472,25 +476,21 @@ export function useSessionMessageSync<Cell>(params: {
           void (async () => {
             if (targetSessionId !== sessionIdRef.current) return;
             const cachedRows = (sessionRawMapRef.current[targetSessionId] || []).length;
-            let latest: RefreshMessagesResult | undefined;
-            if (cachedRows > FULL_SESSION_FETCH_LIMIT) {
-              latest = await paginateHistoryBackfill(targetSessionId, {
-                reason: 'refreshLatest',
-                startCursor: pickHistoryBackfillStartCursor(targetSessionId, sessionNextCursor[targetSessionId], FULL_SESSION_FETCH_LIMIT),
-                maxPages: FULL_SESSION_MAX_PAGES,
-                fetchLimit: FULL_SESSION_FETCH_LIMIT,
-                limit: requestedVisibleTurnCount
-              });
-            } else {
-              latest = await refreshMessages(targetSessionId, {
-                limit: requestedVisibleTurnCount,
-                fetchLimit: FULL_SESSION_FETCH_LIMIT,
-                reason: 'refreshLatest'
-              });
-              if (!latest || targetSessionId !== sessionIdRef.current) return;
+            let latest: RefreshMessagesResult | undefined = await refreshMessages(targetSessionId, {
+              limit: requestedVisibleTurnCount,
+              fetchLimit: FULL_SESSION_FETCH_LIMIT,
+              reason: 'refreshLatest'
+            });
+            if (!latest || targetSessionId !== sessionIdRef.current) return;
+            const shouldBackfillHistory = cachedRows > FULL_SESSION_FETCH_LIMIT || !!latest.nextCursor;
+            if (shouldBackfillHistory) {
               const backfilled = await paginateHistoryBackfill(targetSessionId, {
                 reason: 'refreshLatest',
-                startCursor: pickHistoryBackfillStartCursor(targetSessionId, latest.nextCursor, FULL_SESSION_FETCH_LIMIT),
+                startCursor: pickHistoryBackfillStartCursor(
+                  targetSessionId,
+                  latest.nextCursor || sessionNextCursor[targetSessionId],
+                  FULL_SESSION_FETCH_LIMIT
+                ),
                 maxPages: FULL_SESSION_MAX_PAGES,
                 fetchLimit: FULL_SESSION_FETCH_LIMIT,
                 limit: requestedVisibleTurnCount

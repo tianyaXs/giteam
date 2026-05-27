@@ -143,15 +143,14 @@ export function useBootstrapPersistence(params: {
           const rawRows = Array.isArray(cachedChat.rawRows) ? cachedChat.rawRows : [];
           const visibleTurnCount = Math.max(0, Number(cachedChat.visibleTurnCount || cachedChat.renderedTurns.length || 0));
           const totalTurnCount = Math.max(visibleTurnCount, Number(cachedChat.totalTurnCount || visibleTurnCount));
-          if (sid && rawRows.length > 0) {
+          if (sid) {
             sessionRawMapRef.current[sid] = rawRows;
             sessionVisibleTurnCountRef.current[sid] = visibleTurnCount;
             sessionTotalTurnCountRef.current[sid] = totalTurnCount;
           }
-          setMessages(cachedChat.messages);
-          setRenderedTurns(cachedChat.renderedTurns);
-          messagesRef.current = cachedChat.messages;
-          renderedTurnsRef.current = cachedChat.renderedTurns;
+          // 不再直接设置 messages/renderedTurns，避免和 useAuthedStartupEffects 中的
+          // syncSessionMessages -> applyTurnWindow 竞争，导致 listRevealReady 无法正确触发。
+          // 启动时让 syncSessionMessages 统一走 applyTurnWindow 来设置 UI state。
         }
         setStartupSessionHydrating(Boolean(prefs.token && prefs.repoPath && prefs.sessionId && !cachedChat));
         setModel(prefs.model || '');
