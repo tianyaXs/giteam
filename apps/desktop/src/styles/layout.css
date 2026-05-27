@@ -864,6 +864,47 @@
   word-break: break-word;
 }
 
+.opencode-msg .markdown-lite code {
+  background: color-mix(in srgb, var(--bg-soft) 24%, transparent);
+  border-color: color-mix(in srgb, var(--line) 28%, transparent);
+  box-shadow: none;
+}
+
+.markdown-file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #3078d8;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.markdown-file-link:hover {
+  color: #1f64c7;
+}
+
+.markdown-file-link-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, #3078d8 84%, white);
+  flex: 0 0 auto;
+}
+
+.markdown-file-link-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
 .opencode-msg-body {
   display: block;
   padding: 0;
@@ -1430,6 +1471,7 @@
 }
 
 .opencode-exec-item {
+  position: relative;
   min-width: 0;
   max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--line) 28%, transparent);
@@ -1444,42 +1486,116 @@
   min-width: 0;
   margin: 0 0 var(--gt-space-1-5);
   padding: 0;
+  border: 0;
   background: transparent;
+  overflow: visible;
+  text-align: left;
 }
 
 .opencode-exec-context-head {
+  appearance: none;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--gt-space-2);
   flex-wrap: wrap;
-  margin: 0 0 var(--gt-space-1-5);
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  list-style: none;
+  cursor: pointer;
+  padding: var(--gt-space-2) var(--gt-space-2-5);
+  border-radius: var(--gt-radius-md);
+  transition: background 140ms ease;
+}
+
+.opencode-exec-context-head::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-exec-context-head::marker {
+  content: "";
+}
+
+.opencode-exec-context:hover .opencode-exec-context-head,
+.opencode-exec-context[open] .opencode-exec-context-head {
+  background: color-mix(in srgb, var(--bg-soft) 46%, transparent);
+}
+
+.opencode-context-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+  flex: 0 0 auto;
+}
+
+.opencode-context-caret svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.opencode-context-caret {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transition: opacity 140ms ease, transform 160ms ease;
+}
+
+.opencode-exec-context:hover .opencode-context-caret,
+.opencode-exec-context[open] .opencode-context-caret {
+  opacity: 1;
+}
+
+.opencode-exec-context[open] .opencode-context-caret {
+  transform: rotate(90deg);
+}
+
+.opencode-exec-context .opencode-exec-list {
+  margin-left: 0;
+  padding: 0;
+  border-left: 0;
+}
+
+.opencode-exec-context .opencode-exec-item {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: var(--gt-space-2) var(--gt-space-2-5);
+  text-align: left;
+}
+
+.opencode-exec-context .opencode-exec-item + .opencode-exec-item {
+  border-top: 1px solid color-mix(in srgb, var(--line) 24%, transparent);
 }
 
 .opencode-exec-tool-head {
   display: flex;
   align-items: baseline;
+  justify-content: flex-start;
   gap: var(--gt-space-1-5);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
 }
 
-.opencode-exec-status {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--gt-radius-pill);
-  background: color-mix(in srgb, var(--muted) 72%, transparent);
-  flex: 0 0 auto;
-  transform: translateY(-1px);
+.opencode-exec-context .opencode-exec-tool-head > strong {
+  flex: 0 0 2.6em;
+  min-width: 2.6em;
 }
 
-.opencode-exec-status-running {
-  background: color-mix(in srgb, var(--accent) 74%, var(--text));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
-  animation: opencode-io-pulse 1s ease-in-out infinite;
-}
-
-.opencode-exec-status-error {
-  background: color-mix(in srgb, var(--danger) 82%, var(--text));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 26%, transparent);
+.opencode-tool-detail-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .opencode-task-link {
@@ -1498,6 +1614,85 @@
 
 .opencode-task-link:hover {
   color: color-mix(in srgb, var(--accent) 86%, var(--text));
+}
+
+.opencode-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--gt-space-1-5);
+  border-radius: var(--gt-radius-pill);
+  border: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+  font-size: 11px;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
+.opencode-tool-command {
+  margin-top: var(--gt-space-2);
+  padding: var(--gt-space-1-5) var(--gt-space-2);
+  border-radius: var(--gt-radius-md);
+  background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 32%, transparent);
+  overflow: auto;
+}
+
+.opencode-tool-command code {
+  font-size: var(--gt-text-xs);
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.opencode-exec-tool-openable {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  transition: background 140ms ease;
+}
+
+.opencode-exec-tool-openable:hover {
+  background: color-mix(in srgb, var(--accent-soft) 16%, transparent);
+}
+
+.opencode-exec-tool-open-trigger {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--gt-space-2) var(--gt-space-2-5);
+  border: 0;
+  border-radius: var(--gt-radius-lg);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: block;
+}
+
+.opencode-exec-tool-open-trigger:hover {
+  background: color-mix(in srgb, var(--bg-soft) 55%, transparent);
+}
+
+.opencode-open-file-hint {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text));
+}
+
+.opencode-open-file-hint svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .opencode-tool-output {
@@ -1528,6 +1723,67 @@
   font-size: var(--gt-text-xs);
   opacity: 0.9;
   animation: opencode-io-pulse 1.05s ease-in-out infinite;
+}
+
+.opencode-tool-details {
+  margin-top: var(--gt-space-2);
+  border-top: 1px solid color-mix(in srgb, var(--line) 22%, transparent);
+  padding-top: var(--gt-space-2);
+}
+
+.opencode-tool-details summary {
+  list-style: none;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--text) 72%, var(--accent));
+  font-size: var(--gt-text-sm);
+}
+
+.opencode-tool-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-tool-details-body {
+  display: grid;
+  gap: var(--gt-space-2);
+  margin-top: var(--gt-space-2);
+}
+
+.opencode-tool-section,
+.opencode-tool-file-card {
+  min-width: 0;
+}
+
+.opencode-tool-section-head,
+.opencode-tool-file-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gt-space-2);
+  flex-wrap: wrap;
+}
+
+.opencode-tool-subsection {
+  margin-top: var(--gt-space-2);
+}
+
+.opencode-tool-subtitle {
+  margin-bottom: var(--gt-space-1);
+  color: color-mix(in srgb, var(--muted) 82%, var(--text));
+  font-size: var(--gt-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.opencode-tool-file-list {
+  display: grid;
+  gap: var(--gt-space-2);
+}
+
+.opencode-tool-file-card {
+  padding: var(--gt-space-2) var(--gt-space-2-5);
+  border-radius: var(--gt-radius-md);
+  border: 1px solid color-mix(in srgb, var(--line) 28%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 16%, transparent);
 }
 
 

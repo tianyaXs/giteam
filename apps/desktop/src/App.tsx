@@ -110,6 +110,8 @@ import {
   listRepoTerminalCompletions,
   getCommitChangedFiles,
   getCommitFilePatch,
+  getGitWorktreeFileContent,
+  getGitWorktreeFilePatch,
   readRepoTerminalOutput,
   sendRepoTerminalInput,
   startGitWorktreeWatcher,
@@ -414,6 +416,8 @@ export function App() {
   const [selectedWorktreeFile, setSelectedWorktreeFile] = useState("");
   const [selectedWorktreePatch, setSelectedWorktreePatch] = useState("");
   const [selectedWorktreeContent, setSelectedWorktreeContent] = useState<GitWorktreeFileContent>(EMPTY_WORKTREE_FILE_CONTENT);
+  const [selectedWorktreeLine, setSelectedWorktreeLine] = useState<number | undefined>(undefined);
+  const [selectedWorktreeViewMode, setSelectedWorktreeViewMode] = useState<"auto" | "editor" | "diff">("auto");
   const [expandedWorktreeDirs, setExpandedWorktreeDirs] = useState<string[]>([]);
   const [topologySelectionId, setTopologySelectionId] = useState("");
   const [topologyZoom, setTopologyZoom] = useState(1);
@@ -926,6 +930,13 @@ export function App() {
   const worktreePatchRows = useMemo(() => buildSplitDiffRows(selectedWorktreePatch), [selectedWorktreePatch]);
   const worktreePatchStats = useMemo(() => getWorktreePatchStats(worktreePatchRows), [worktreePatchRows]);
   const worktreeChangeStats = useMemo(() => getWorktreeChangeStats(worktreeOverview.entries), [worktreeOverview.entries]);
+  const standaloneRightFileTab = useMemo(() => {
+    if (rightPaneTab !== "changes" || selectedWorktreeViewMode === "auto" || !selectedWorktreeFile) return null;
+    const parts = selectedWorktreeFile.split("/").filter(Boolean);
+    const label = parts[parts.length - 1] || selectedWorktreeFile;
+    const ext = label.includes(".") ? (label.split(".").pop() || "").toUpperCase() : "FILE";
+    return { label, ext };
+  }, [rightPaneTab, selectedWorktreeFile, selectedWorktreeViewMode]);
   const discardAllCount = useMemo(
     () => getDiscardableWorktreeEntryCount(worktreeOverview.entries),
     [worktreeOverview.entries]
@@ -2637,14 +2648,17 @@ export function App() {
     setSelectedWorktreeFile("");
     setSelectedWorktreePatch("");
     setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
+    setSelectedWorktreeLine(undefined);
+    setSelectedWorktreeViewMode("auto");
     setGitUserIdentity(EMPTY_GIT_IDENTITY);
   }
 
   async function refreshRepositories() {
     const all = await listRepositories();
+    const preferredRepo = all.find((repo) => pinnedRepoIds.includes(repo.id)) || all[0] || null;
     setRepos(all);
-    if (all.length > 0 && !selectedRepo) setSelectedRepo(all[0]);
-    if (all.length > 0 && !gitPaneRepo) setGitPaneRepo(all[0]);
+    if (preferredRepo && !selectedRepo) setSelectedRepo(preferredRepo);
+    if (preferredRepo && !gitPaneRepo) setGitPaneRepo(preferredRepo);
   }
 
   const {
@@ -2824,16 +2838,17 @@ export function App() {
     try {
       await removeRepository(entry.id);
       const all = await listRepositories();
+      const preferredRepo = all.find((repo) => pinnedRepoIds.includes(repo.id)) || all[0] || null;
       setRepos(all);
       if (selectedRepo?.id === entry.id) {
-        setSelectedRepo(all[0] ?? null);
+        setSelectedRepo(preferredRepo);
       } else if (selectedRepo && !all.some((r) => r.id === selectedRepo.id)) {
-        setSelectedRepo(all[0] ?? null);
+        setSelectedRepo(preferredRepo);
       }
       if (gitPaneRepo?.id === entry.id) {
-        setGitPaneRepo(all[0] ?? null);
+        setGitPaneRepo(preferredRepo);
       } else if (gitPaneRepo && !all.some((r) => r.id === gitPaneRepo.id)) {
-        setGitPaneRepo(all[0] ?? null);
+        setGitPaneRepo(preferredRepo);
       }
       setMessage(`Closed: ${entry.name}`);
     } catch (e) {
@@ -4019,7 +4034,9 @@ export function App() {
     const el = opencodeInputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.min(140, Math.max(38, el.scrollHeight));
+    const minHeight = opencodeShowEmptyState ? 24 : 28;
+    const maxHeight = opencodeShowEmptyState ? 64 : 96;
+    const next = Math.min(maxHeight, Math.max(minHeight, el.scrollHeight));
     el.style.height = `${next}px`;
     el.scrollTop = 0;
   }
@@ -4479,6 +4496,148 @@ export function App() {
     } finally {
       setBusy(false);
       setOverlayBusy(false);
+    }
+  }
+
+  function normalizeFsPath(input: string): string {
+    return input.replace(/\\/g, "/").replace(/\/+$/, "");
+  }
+
+  function normalizeRelativeFsPath(input: string): string {
+    return normalizeFsPath(input.trim()).replace(/^\.\/+/, "").replace(/^\/+/, "");
+  }
+
+  function resolveWorkspacePathTarget(absolutePath: string): { repoRoot: string; relativePath: string } | null {
+    const normalizedAbs = normalizeFsPath(absolutePath.trim());
+    const repoCandidates = [gitPanePath, repoPath].filter(Boolean)
+      .map((path) => normalizeFsPath(path))
+      .sort((a, b) => b.length - a.length);
+    for (const root of repoCandidates) {
+      if (normalizedAbs === root) return null;
+      if (normalizedAbs.startsWith(`${root}/`)) {
+        return {
+          repoRoot: root,
+          relativePath: normalizedAbs.slice(root.length + 1)
+        };
+      }
+    }
+    return null;
+  }
+
+  function resolveToolFileTarget(filePath: string): { repoRoot: string; relativePath: string } | null {
+    const normalized = normalizeFsPath(filePath.trim());
+    if (!normalized) return null;
+    if (normalized.startsWith("/")) {
+      return resolveWorkspacePathTarget(normalized);
+    }
+    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
+    if (!repoRoot) return null;
+    return {
+      repoRoot,
+      relativePath: normalizeRelativeFsPath(normalized)
+    };
+  }
+
+  function resolveFocusedWorktreeLine(source: string, focusText?: string, fallbackLine?: number): number | undefined {
+    const fallback = Number.isFinite(Number(fallbackLine)) && Number(fallbackLine) > 0
+      ? Math.floor(Number(fallbackLine))
+      : undefined;
+    const needle = String(focusText || "").trim();
+    if (!source || !needle) return fallback;
+    const indexToLine = (index: number) => source.slice(0, index).split(/\r?\n/).length;
+    const collectLineMatches = (value: string): number[] => {
+      const lines: number[] = [];
+      if (!value) return lines;
+      let index = source.indexOf(value);
+      while (index >= 0) {
+        lines.push(indexToLine(index));
+        index = source.indexOf(value, index + Math.max(1, value.length));
+      }
+      return lines;
+    };
+    const firstNeedleLine = needle.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() || "";
+    const candidates = [
+      ...collectLineMatches(needle),
+      ...collectLineMatches(firstNeedleLine)
+    ].filter((line, index, rows) => line > 0 && rows.indexOf(line) === index);
+    if (candidates.length === 0) return fallback;
+    const needleLineCount = needle.split(/\r?\n/).length;
+    const looksLikeWholeFileMatch =
+      fallback &&
+      fallback > 1 &&
+      candidates.every((line) => line === 1) &&
+      (needleLineCount > 12 || needle.length > source.length * 0.45);
+    if (looksLikeWholeFileMatch) return fallback;
+    if (!fallback) return candidates[0];
+    return candidates.reduce((best, line) => (
+      Math.abs(line - fallback) < Math.abs(best - fallback) ? line : best
+    ), candidates[0]);
+  }
+
+  async function openWorkspacePathInRightPane(absolutePath: string, line?: number) {
+    const target = resolveWorkspacePathTarget(absolutePath);
+    if (!target) {
+      setMessage("该路径不在当前仓库中，暂时无法在右侧打开。");
+      return;
+    }
+    setRightDrawerOpen(true);
+    setRightPaneTab("changes");
+    setSelectedWorktreeFile(target.relativePath);
+    setSelectedWorktreeLine(line);
+    setSelectedWorktreeViewMode("editor");
+    try {
+      const [content, patch] = await Promise.all([
+        getGitWorktreeFileContent(target.repoRoot, target.relativePath),
+        getGitWorktreeFilePatch(target.repoRoot, target.relativePath).catch(() => "")
+      ]);
+      setSelectedWorktreeContent(content);
+      setSelectedWorktreePatch(patch || "No staged or unstaged patch available for this file.");
+      setMessage(line ? `已打开 ${target.relativePath} 第 ${line} 行` : `已打开 ${target.relativePath}`);
+    } catch (error) {
+      setError(String(error));
+      setMessage("打开文件失败");
+    }
+  }
+
+  async function openToolFileInRightPane(input: {
+    filePath: string;
+    line?: number;
+    focusText?: string;
+    original?: string;
+    modified?: string;
+    patch?: string;
+    preferDiff?: boolean;
+  }) {
+    const target = resolveToolFileTarget(input.filePath);
+    if (!target) {
+      setMessage("该文件暂时无法在右侧打开。");
+      return;
+    }
+    setRightDrawerOpen(true);
+    setRightPaneTab("changes");
+    setSelectedWorktreeFile(target.relativePath);
+    setSelectedWorktreeViewMode(input.preferDiff ? "diff" : "editor");
+    try {
+      const contentPromise = input.original !== undefined || input.modified !== undefined
+        ? Promise.resolve<GitWorktreeFileContent>({
+          original: input.original ?? "",
+          modified: input.modified ?? input.original ?? ""
+        })
+        : getGitWorktreeFileContent(target.repoRoot, target.relativePath);
+      const patchPromise = input.patch !== undefined
+        ? Promise.resolve(input.patch)
+        : input.original !== undefined || input.modified !== undefined
+          ? Promise.resolve("")
+          : getGitWorktreeFilePatch(target.repoRoot, target.relativePath).catch(() => "");
+      const [content, patch] = await Promise.all([contentPromise, patchPromise]);
+      setSelectedWorktreeContent(content);
+      setSelectedWorktreePatch(patch || "No staged or unstaged patch available for this file.");
+      const focusLine = input.line || resolveFocusedWorktreeLine(content.modified || content.original, input.focusText, input.line);
+      setSelectedWorktreeLine(focusLine);
+      setMessage(`已打开 ${target.relativePath}`);
+    } catch (error) {
+      setError(String(error));
+      setMessage("打开文件失败");
     }
   }
 
@@ -5866,6 +6025,12 @@ export function App() {
               onOpenTaskSession={(sessionId, titleHint) => {
                 void openOpencodeChildSession(sessionId, titleHint);
               }}
+              onOpenWorkspacePath={(absolutePath, line) => {
+                void openWorkspacePathInRightPane(absolutePath, line);
+              }}
+              onOpenToolFile={(target) => {
+                void openToolFileInRightPane(target);
+              }}
               onPreviewImageGroup={(images, index) => {
                 setOpencodePreviewImage({ images, index });
               }}
@@ -6040,13 +6205,6 @@ export function App() {
               void runOpencodePrompt();
             }
           }}
-          repos={repos}
-          selectedRepoId={selectedRepo?.id || ""}
-          onSelectRepo={(repo) => {
-            setSelectedRepo(repo);
-            setGitPaneRepo(repo);
-            setNewSessionTargetRepoId(repo.id);
-          }}
         />
       </div>
       {showOpencodeDebugLog ? (
@@ -6132,6 +6290,8 @@ export function App() {
             selectedFile={selectedWorktreeFile}
             selectedEntry={selectedWorktreeEntry}
             selectedContent={selectedWorktreeContent}
+            selectedLine={selectedWorktreeLine}
+            viewMode={selectedWorktreeViewMode}
             patchStats={worktreePatchStats}
             commitMessage={commitMessage}
             commitMessageInputRef={commitMessageInputRef}
@@ -6159,7 +6319,11 @@ export function App() {
             onCommitAndPush={() => void handleGitCommitAndPush()}
             onCommitAndSync={() => void handleGitCommitAndSync()}
             onToggleDir={toggleWorktreeDir}
-            onOpenFile={(path) => void refreshSelectedWorktreePatch(path)}
+            onOpenFile={(path) => {
+              setSelectedWorktreeLine(undefined);
+              setSelectedWorktreeViewMode("auto");
+              void refreshSelectedWorktreePatch(path);
+            }}
             onStageFile={(path) => void handleStageFile(path)}
             onUnstageFile={(path) => void handleUnstageFile(path)}
             onStagePaths={(paths, label) => void handleStagePaths(paths, label)}
@@ -6369,6 +6533,29 @@ export function App() {
                 </button>
               ) : null}
             </div>
+            {standaloneRightFileTab ? (
+              <div className="gt-titlebar-file-tabs">
+                <div className="gt-titlebar-file-tab">
+                  <span className="gt-titlebar-file-badge">{standaloneRightFileTab.ext}</span>
+                  <span className="gt-titlebar-file-label">{standaloneRightFileTab.label}</span>
+                  <button
+                    type="button"
+                    className="gt-titlebar-file-close"
+                    title="关闭文件视图"
+                    aria-label="关闭文件视图"
+                    onClick={() => {
+                      setSelectedWorktreeViewMode("auto");
+                      setSelectedWorktreeLine(undefined);
+                    }}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4.5 4.5 11.5 11.5" />
+                      <path d="M11.5 4.5 4.5 11.5" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="wb-editor-rail__body-center wb-editor-content gt-editor-rail-center">
@@ -7332,7 +7519,7 @@ export function App() {
                 {isWorktree ? (
                   <>
                     <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
-                      {worktreePath.split("/").pop() || worktreePath}
+                      {worktreePath.split(/[\\/]/).pop() || worktreePath}
                     </div>
                     <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
                       {appText.createBranchFromWorktree}

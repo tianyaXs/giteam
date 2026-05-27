@@ -27,7 +27,11 @@ const run = (command, commandArgs, label = command) => {
 
   child.on('exit', (code, signal) => {
     if (signal) {
-      process.kill(process.pid, signal);
+      if (process.platform === 'win32') {
+        process.exit(code ?? 1);
+      } else {
+        process.kill(process.pid, signal);
+      }
       return;
     }
     process.exit(code ?? 0);
@@ -81,13 +85,21 @@ function resolveCommandSource() {
   }
 
   const releaseBin = join(root, 'target', 'release', 'giteam');
+  const releaseBinExe = join(root, 'target', 'release', 'giteam.exe');
   if (existsSync(releaseBin)) {
     return { command: releaseBin, args, label: 'local release binary' };
   }
+  if (existsSync(releaseBinExe)) {
+    return { command: releaseBinExe, args, label: 'local release binary' };
+  }
 
   const debugBin = join(root, 'target', 'debug', 'giteam');
+  const debugBinExe = join(root, 'target', 'debug', 'giteam.exe');
   if (existsSync(debugBin)) {
     return { command: debugBin, args, label: 'local debug binary' };
+  }
+  if (existsSync(debugBinExe)) {
+    return { command: debugBinExe, args, label: 'local debug binary' };
   }
 
   const packagedManifest = join(root, 'npm-src', 'apps', 'cli', 'Cargo.toml');

@@ -7,7 +7,8 @@ import { getCurrentPlatformKey, getCurrentPlatformPackage, listPlatforms } from 
 const require = createRequire(import.meta.url);
 const platformKey = getCurrentPlatformKey();
 const platformPackage = getCurrentPlatformPackage();
-const cargoAvailable = spawnSync('cargo', ['--version'], {
+const cargoCommand = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
+const cargoAvailable = spawnSync(cargoCommand, ['--version'], {
   stdio: 'ignore',
   env: process.env
 }).status === 0;

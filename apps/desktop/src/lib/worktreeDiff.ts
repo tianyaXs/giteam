@@ -49,7 +49,7 @@ export function buildWorktreeTree(entries: GitWorktreeEntry[]): WorktreeTreeNode
   const dirMap = new Map<string, WorktreeTreeNode>();
 
   for (const entry of entries) {
-    const parts = entry.path.split("/").filter(Boolean);
+    const parts = entry.path.split(/[\\/]/).filter(Boolean);
     let parentPath = "";
     let level = root;
 
@@ -152,7 +152,7 @@ export function buildSplitDiffRows(patch: string): SplitDiffRow[] {
   let oldLine = 0;
   let newLine = 0;
 
-  for (const line of patch.split("\n")) {
+  for (const line of patch.split(/\r?\n/)) {
     if (line.startsWith("@@")) {
       const match = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
       if (match) {
@@ -244,7 +244,7 @@ export function buildSplitDiffRows(patch: string): SplitDiffRow[] {
 export function toDiffRows(patch: string): DiffRow[] {
   if (!patch.trim()) return [];
   const rows: DiffRow[] = [];
-  for (const line of patch.split("\n")) {
+  for (const line of patch.split(/\r?\n/)) {
     if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("@@")) {
       rows.push({ kind: "meta", left: line, right: line });
       continue;

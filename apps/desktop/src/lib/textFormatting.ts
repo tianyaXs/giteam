@@ -9,7 +9,7 @@ export function parseReadToolOutput(raw: string): { path: string; type: string; 
 }
 
 export function withLineNumbers(text: string, maxLines = 400): string {
-  const lines = (text || "").split("\n");
+  const lines = (text || "").split(/\r?\n/);
   const slice = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
   const width = String(slice.length).length;
   const body = slice.map((line, index) => `${String(index + 1).padStart(width, " ")}│${line}`).join("\n");

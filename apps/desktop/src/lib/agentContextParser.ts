@@ -15,7 +15,7 @@ export type ParsedAgentContext = {
 };
 
 export function parseStatusText(raw: string): ParsedStatus {
-  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const out: ParsedStatus = { sessions: [] };
   out.headline = lines.find((l) => l.startsWith("●")) ?? undefined;
   out.project = lines.find((l) => l.startsWith("Project")) ?? undefined;
@@ -73,7 +73,7 @@ function parseTranscript(raw: string): TranscriptMessage[] {
 }
 
 export function parseAgentContextText(raw: string): ParsedAgentContext {
-  const lines = raw.split("\n");
+  const lines = raw.split(/\r?\n/);
   const header = lines.find((l) => /Checkpoint:|Session:|Created:|Author:/i.test(l)) ?? "";
   const field = (name: string) => {
     const labels = ["Checkpoint", "Session", "Created", "Author"];
@@ -96,7 +96,7 @@ export function parseAgentContextText(raw: string): ParsedAgentContext {
   const filesRaw = filesSeg.trim();
   const transcriptSeg = pickSegment(raw, "Transcript (checkpoint scope)", []) ?? "";
   const files = filesSeg
-    .split("\n")
+    .split(/\r?\n/)
     .map((l) => l.replace(/^\(\d+\)\s*/, "").replace(/^-\s*/, "").trim())
     .filter((l) => l && !/^\(\d+\)$/.test(l) && !/^\(\d+\)\s*$/.test(l) && !/^Files?$/i.test(l));
 

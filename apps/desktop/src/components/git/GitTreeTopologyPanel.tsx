@@ -289,7 +289,7 @@ export function GitTreeTopologyPanel({
                   }}
                 >
                   <span className="gt-gittree-worktree-state">{worktree.isCurrent ? "Current" : worktree.isDetached ? "Detached" : "Worktree"}</span>
-                  <strong>{worktree.path.split("/").filter(Boolean).pop() || worktree.branch || "worktree"}</strong>
+                  <strong>{worktree.path.split(/[\\/]/).filter(Boolean).pop() || worktree.branch || "worktree"}</strong>
                   <span>{worktree.path}</span>
                   <em>{worktree.clean ? "clean" : `${worktree.stagedCount + worktree.unstagedCount + worktree.untrackedCount} changes`}</em>
                   <button

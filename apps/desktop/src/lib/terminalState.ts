@@ -169,7 +169,7 @@ export function sanitizeTerminalOutput(text: string): string {
 
 export function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
   const source = text || "";
-  const lines = source.split("\n");
+  const lines = source.split(/\r?\n/);
   let idx = lines.length - 1;
   while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
   if (idx < 0) return { body: "", prompt: "" };
@@ -182,12 +182,16 @@ export function splitTerminalOutputForInput(text: string): { body: string; promp
 }
 
 export function escapeTerminalCompletionValue(value: string): string {
+  if (typeof window !== "undefined" && window.navigator.userAgent.toLowerCase().includes("win")) {
+    return value.replace(/([\s\\"'`$&|<>^()])/g, "^$1");
+  }
   return value.replace(/([\s\\"'`$])/g, "\\$1");
 }
 
 export function applyTerminalCompletionCandidate(input: string, token: string, candidate: string): string {
   if (!token) return input;
-  const replacement = candidate.endsWith("/")
+  const isDir = candidate.endsWith("/") || candidate.endsWith("\\");
+  const replacement = isDir
     ? escapeTerminalCompletionValue(candidate)
     : `${escapeTerminalCompletionValue(candidate)} `;
   const keep = input.length - token.length;
@@ -197,5 +201,5 @@ export function applyTerminalCompletionCandidate(input: string, token: string, c
 export function getTerminalCompletionGroup(input: string, item: string): TerminalCompletionGroup {
   const beforeToken = input.slice(0, Math.max(0, input.length - (input.split(/\s+/).pop() || "").length)).trim();
   if (!beforeToken) return "Commands";
-  return item.endsWith("/") ? "Directories" : "Files";
+  return (item.endsWith("/") || item.endsWith("\\")) ? "Directories" : "Files";
 }

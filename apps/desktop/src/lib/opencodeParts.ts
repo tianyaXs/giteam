@@ -136,7 +136,7 @@ export function readOpencodeTodosFromPart(part: OpencodeDetailedPart | undefined
 }
 
 export function isOpencodeContextTool(tool: string): boolean {
-  return tool === "read" || tool === "glob" || tool === "grep" || tool === "list";
+  return tool === "read" || tool === "glob" || tool === "grep" || tool === "search" || tool === "list";
 }
 
 export function summarizeOpencodeContextToolCounts(parts: OpencodeDetailedPart[] | undefined | null): {
@@ -152,7 +152,7 @@ export function summarizeOpencodeContextToolCounts(parts: OpencodeDetailedPart[]
     if (String((p as any)?.type || "") !== "tool") continue;
     const tool = String((p as any)?.tool || "");
     if (tool === "read") read += 1;
-    else if (tool === "glob" || tool === "grep") search += 1;
+    else if (tool === "glob" || tool === "grep" || tool === "search") search += 1;
     else if (tool === "list") list += 1;
   }
   return { read, search, list };
@@ -175,7 +175,7 @@ export function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] |
     const subtitle = String(input?.description || input?.filePath || input?.pattern || input?.path || "").trim();
     const detail = [tool, title || subtitle].filter(Boolean).join(" · ");
     const mode =
-      tool === "read" || tool === "list" || tool === "glob" || tool === "grep"
+      tool === "read" || tool === "list" || tool === "glob" || tool === "grep" || tool === "search"
         ? "读取"
         : tool === "write" || tool === "edit" || tool === "apply_patch"
           ? "写入"

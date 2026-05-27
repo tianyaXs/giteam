@@ -328,7 +328,7 @@ function ProjectRow(props: ProjectRowProps) {
           onOpenRepoContextMenu(event.clientX, event.clientY, repo);
         }}
       >
-        <span className="gt-sidebar-project-icon">{pinned ? <SidebarPinnedIcon /> : <FolderIcon />}</span>
+        <span className="gt-sidebar-project-icon"><FolderIcon /></span>
         <span className="gt-sidebar-project-name">{repo.name}</span>
         <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
         <button

@@ -80,7 +80,7 @@ function clampLabel(text: string, max = 14): string {
 }
 
 export function pathLeaf(path: string): string {
-  return path.split(/[\/]/).filter(Boolean).pop() || path.trim() || "workspace";
+  return path.split(/[\\/]/).filter(Boolean).pop() || path.trim() || "workspace";
 }
 
 export function shortSha(value: string, size = 8): string {

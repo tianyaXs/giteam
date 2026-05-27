@@ -48,13 +48,37 @@ const EMPTY_DEP = (name: RuntimeDepName, installHint: string): RuntimeDependency
   installHint
 });
 
+function getDefaultPlatform(): string {
+  const userAgent = navigator.userAgent.toLowerCase();
+  if (userAgent.includes("win")) return "windows";
+  if (userAgent.includes("mac") || userAgent.includes("darwin")) return "macos";
+  return "linux";
+}
+
+function getInstallHints(platform: string): Record<RuntimeDepName, string> {
+  if (platform === "windows") {
+    return {
+      git: "下载并安装 Git for Windows: https://git-scm.com/download/win",
+      entire: "npm install -g @entire/cli",
+      opencode: "npm install -g @anomalyco/opencode",
+      giteam: "npm install -g giteam"
+    };
+  }
+  return {
+    git: "brew install git",
+    entire: "brew tap entireio/tap && brew install entireio/tap/entire",
+    opencode: "brew install anomalyco/tap/opencode",
+    giteam: "npm install -g giteam"
+  };
+}
+
 export const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
-  platform: "macos",
+  platform: getDefaultPlatform(),
   homebrewInstalled: false,
-  git: EMPTY_DEP("git", "brew install git"),
-  entire: EMPTY_DEP("entire", "brew tap entireio/tap && brew install entireio/tap/entire"),
-  opencode: EMPTY_DEP("opencode", "brew install anomalyco/tap/opencode"),
-  giteam: EMPTY_DEP("giteam", "npm install -g giteam")
+  git: EMPTY_DEP("git", getInstallHints(getDefaultPlatform()).git),
+  entire: EMPTY_DEP("entire", getInstallHints(getDefaultPlatform()).entire),
+  opencode: EMPTY_DEP("opencode", getInstallHints(getDefaultPlatform()).opencode),
+  giteam: EMPTY_DEP("giteam", getInstallHints(getDefaultPlatform()).giteam)
 };
 
 export function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
@@ -85,7 +109,7 @@ export function saveCachedRuntimeStatus(status: RuntimeRequirementsStatus): void
 
 export function getRuntimeLogTail(log: string): string {
   const lines = (log || "")
-    .split("\n")
+    .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
   return lines[lines.length - 1] ?? "";

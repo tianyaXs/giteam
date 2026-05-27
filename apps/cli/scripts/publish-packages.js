@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { EOL } from 'node:os';
 import { cliRoot, listPlatforms } from './platform-manifest.js';
 
 const args = process.argv.slice(2);
@@ -201,7 +202,7 @@ function writeReleaseState(state) {
 }
 
 function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}${os.EOL}`);
 }
 
 function replaceFile(path, pattern, replacement) {
@@ -340,7 +341,7 @@ function hasRustTarget(targetTriple) {
   }
   const installed = new Set(
     res.stdout
-      .split('\n')
+      .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
   );

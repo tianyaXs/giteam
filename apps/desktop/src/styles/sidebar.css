@@ -966,20 +966,20 @@
 
 .gt-chat-main.is-empty .gt-chat-composer-wrap {
   width: 100%;
-  max-width: 760px;
+  max-width: 620px;
   margin: auto;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
-  gap: var(--gt-space-5);
+  gap: var(--gt-space-3);
   flex: 0 0 auto;
 }
 
 .gt-chat-main.is-empty .opencode-input-row {
   width: 100%;
-  max-width: 760px;
-  padding: 0 var(--gt-space-6);
+  max-width: 620px;
+  padding: 0 var(--gt-space-2);
   margin: auto;
   display: flex;
   justify-content: center;
@@ -1037,6 +1037,74 @@
   border-bottom: 0;
   background: transparent;
   margin-left: 0;
+}
+
+.gt-titlebar-file-tabs {
+  display: flex;
+  align-items: center;
+  margin-left: var(--gt-space-2);
+  min-width: 0;
+}
+
+.gt-titlebar-file-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+  min-width: 0;
+  max-width: 340px;
+  height: 34px;
+  padding: 0 var(--gt-space-2);
+  border: 1px solid color-mix(in srgb, var(--line) 64%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--interactive-active) 40%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--interactive-active) 72%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--bg-soft) 36%, transparent);
+}
+
+.gt-titlebar-file-badge {
+  flex: 0 0 auto;
+  color: #5eb6ff;
+  font-size: 11px;
+  font-weight: var(--gt-font-bold);
+}
+
+.gt-titlebar-file-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+}
+
+.gt-titlebar-file-close {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.gt-titlebar-file-close:hover {
+  background: color-mix(in srgb, var(--interactive-hover) 88%, transparent);
+  color: var(--text);
+}
+
+.gt-titlebar-file-close svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
 }
 
 .gt-right-tab {
@@ -1608,37 +1676,48 @@
 }
 
 .opencode-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
   border-radius: var(--gt-radius-lg);
   border-color: color-mix(in srgb, var(--line) 72%, transparent);
   background: color-mix(in srgb, var(--bg) 96%, transparent);
+  padding: 18px 20px 14px;
 }
 
 .opencode-composer-main {
   position: relative;
-  min-height: 38px;
-  padding: var(--gt-space-3) var(--gt-space-5) 0;
+  flex: 1 1 auto;
+  min-height: 44px;
+  padding: 0;
 }
 
 .opencode-composer-actions {
-  min-height: 44px;
-  padding: 0 var(--gt-space-3-5) var(--gt-space-2-5);
+  position: static;
+  min-height: 38px;
+  margin-top: auto;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--gt-space-2-5);
+  gap: 12px;
+  border-top: 0;
 }
 
 .opencode-composer-actions-left {
   display: flex;
   align-items: center;
-  gap: var(--gt-space-2);
+  gap: 10px;
   flex: 1;
+  min-width: 0;
 }
 
 .opencode-composer-actions-right {
   display: flex;
   align-items: center;
-  gap: var(--gt-space-2);
+  gap: 10px;
   flex: 0 0 auto;
 }
 
@@ -1655,7 +1734,7 @@
 }
 
 .opencode-composer-editor {
-  min-height: 34px;
+  min-height: 28px;
   width: 100%;
 }
 
@@ -1671,14 +1750,49 @@
 }
 
 .opencode-input {
-  min-height: 34px;
-  max-height: 132px;
-  font-size: var(--gt-text-lg);
-  line-height: 1.55;
+  min-height: 28px;
+  max-height: 208px;
+  font-size: var(--gt-text-base);
+  line-height: 1.4;
+  padding: 0;
 }
 
 .opencode-input::placeholder {
   color: #a4aab3;
+}
+
+.opencode-config-inline {
+  min-width: 0;
+}
+
+.opencode-config-trigger {
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+  border-radius: var(--gt-radius-pill);
+  background: color-mix(in srgb, var(--bg-soft) 54%, transparent);
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+  justify-content: center;
+  padding: 0 16px;
+  gap: 0;
+  box-shadow: none;
+  max-width: none;
+}
+
+.opencode-config-trigger:hover,
+.opencode-config-trigger[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
+  border-color: transparent;
+  transform: none;
+}
+
+.opencode-config-trigger-copy {
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.opencode-config-trigger-model.is-compact {
+  text-align: left;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text));
 }
 
 .opencode-model-inline {
@@ -1865,9 +1979,9 @@
 }
 
 .opencode-composer-send {
-  min-width: 48px;
-  width: 48px;
-  height: 48px;
+  min-width: 38px;
+  width: 38px;
+  height: 38px;
   border-radius: var(--gt-radius-pill);
   padding: 0;
   border: 0;
@@ -1879,8 +1993,8 @@
 }
 
 .opencode-composer-send svg {
-  width: 19px;
-  height: 19px;
+  width: 16px;
+  height: 16px;
 }
 
 .opencode-composer-send:hover {
@@ -1903,6 +2017,46 @@
 
 :root[data-theme="light"] .opencode-composer-send:hover {
   background: #111111;
+}
+
+.gt-chat-main.is-empty .gt-chat-composer-wrap {
+  gap: var(--gt-space-4);
+}
+
+.gt-chat-main.is-empty .opencode-composer {
+  min-height: 142px;
+  border-radius: 24px;
+  padding: 22px 24px 16px;
+  box-shadow:
+    0 16px 40px rgba(15, 23, 42, 0.08),
+    0 0 0 6px rgba(59, 130, 246, 0.05);
+}
+
+.gt-chat-main.is-empty .opencode-composer-main {
+  min-height: 56px;
+  padding: 0;
+}
+
+.gt-chat-main.is-empty .opencode-input {
+  min-height: 28px;
+  font-size: 20px;
+  line-height: 1.28;
+  padding: 0;
+}
+
+.gt-chat-main.is-empty .opencode-composer-actions {
+  min-height: 42px;
+  margin-top: auto;
+  padding: 0;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer {
+  border-radius: 24px;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-main {
+  min-height: 64px;
+  padding-bottom: 0;
 }
 
 
@@ -1967,8 +2121,8 @@
 }
 
 .opencode-image-btn {
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   border-radius: var(--gt-radius-pill);
   border: 0;
   background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
@@ -1993,11 +2147,11 @@
 
 .opencode-image-btn-icon {
   display: inline-block;
-  transform: translateY(-2px);
+  transform: none;
 }
 
 .opencode-image-btn.open .opencode-image-btn-icon {
-  transform: translateY(-2px) rotate(0deg);
+  transform: rotate(0deg);
 }
 
 .opencode-attachment-menu {
@@ -2541,8 +2695,8 @@ button {
 }
 
 .markdown-lite code {
-  background: var(--bg-soft);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-soft) 38%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
   border-radius: var(--gt-radius-md);
   padding: var(--gt-space-0-5) var(--gt-space-1-5);
   font-family: "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
@@ -3858,72 +4012,12 @@ button {
 /* Empty state composer styling */
 .gt-empty-composer-title {
   text-align: center;
-  font-size: var(--gt-text-xl);
-  font-weight: var(--gt-font-semibold);
+  font-size: clamp(18px, 1.45vw, 28px);
+  font-weight: 650;
   color: var(--text);
-  letter-spacing: -0.01em;
-  line-height: 1.25;
-}
-
-.gt-empty-composer-meta {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.gt-empty-composer-repo-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gt-space-2);
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.gt-empty-composer-repo-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gt-space-1-5);
-  padding: var(--gt-space-1-5) var(--gt-space-2-5);
-  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: transparent;
-  color: color-mix(in srgb, var(--text) 72%, var(--muted));
-  font-size: var(--gt-text-sm);
-  font-weight: var(--gt-font-medium);
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
-}
-
-.gt-empty-composer-repo-chip:hover {
-  background: var(--interactive-hover);
-  color: var(--text);
-}
-
-.gt-empty-composer-repo-chip.active {
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft));
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
-  color: var(--text);
-}
-
-.gt-empty-composer-repo-icon {
-  opacity: 0.65;
-  font-size: var(--gt-text-md);
-  line-height: 1;
-}
-
-/* Empty state composer: taller and larger radius */
-.gt-chat-main.is-empty .opencode-composer {
-  min-height: 120px;
-  border-radius: 18px;
-  padding-bottom: var(--gt-space-2);
-}
-
-.gt-chat-main.is-empty .opencode-composer-main {
-  min-height: 72px;
-}
-
-.gt-chat-main.is-empty .opencode-input {
-  min-height: 72px;
+  letter-spacing: -0.03em;
+  line-height: 1.16;
+  text-wrap: balance;
 }
 
 @media (max-width: 900px) {

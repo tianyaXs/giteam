@@ -262,7 +262,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     const prefix = baseBranch.trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
     const suffix = (identifier || "").trim().replace(/[^a-zA-Z0-9/_-]+/g, "-").replace(/\/+$/g, "");
     const combined = suffix ? `${prefix}-${suffix}` : prefix;
-    const segs = currentPath.split("/").filter(Boolean);
+    const segs = currentPath.split(/[\\/]/).filter(Boolean);
     if (segs.length === 0) return "";
     const repoLeaf = segs[segs.length - 1] || "repo";
     const parent = currentPath.slice(0, currentPath.length - repoLeaf.length).replace(/\/$/, "");

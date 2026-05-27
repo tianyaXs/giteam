@@ -2,6 +2,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { EOL } from 'node:os';
 import { bugsUrl, cliRoot, homepageUrl, listPlatforms, packageAuthor, packageKeywords, repositoryUrl } from './platform-manifest.js';
 
 const rootPackagePath = join(cliRoot, 'package.json');
@@ -11,7 +12,7 @@ rootPackage.optionalDependencies = Object.fromEntries(
   listPlatforms().map((platform) => [platform.packageName, version])
 );
 delete rootPackage.dependencies;
-writeFileSync(rootPackagePath, `${JSON.stringify(rootPackage, null, 2)}\n`);
+writeFileSync(rootPackagePath, `${JSON.stringify(rootPackage, null, 2)}${EOL}`);
 
 for (const platform of listPlatforms()) {
   mkdirSync(join(platform.packageDir, 'bin'), { recursive: true });
@@ -37,7 +38,7 @@ for (const platform of listPlatforms()) {
     cpu: [platform.cpu],
     files: [`bin/${platform.binaryFileName}`, 'README.md', 'package.json']
   };
-  writeFileSync(join(platform.packageDir, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
+  writeFileSync(join(platform.packageDir, 'package.json'), `${JSON.stringify(packageJson, null, 2)}${EOL}`);
   writeFileSync(
     join(platform.packageDir, 'README.md'),
     `# ${platform.packageName}\n\nPrebuilt binary package for \`giteam\` on \`${platform.os}/${platform.cpu}\`.\n`

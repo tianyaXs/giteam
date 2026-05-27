@@ -8,14 +8,14 @@ import { OPENCODE_COMPOSER_AGENT_OPTIONS } from "../../lib/opencodeComposerSetti
 import type { OpencodeImageAttachment } from "../../lib/imageAttachments";
 import type { OpencodePermissionReply, OpencodePermissionRequest } from "../../lib/opencodePermissions";
 import type { OpencodeTodoItem } from "../../lib/opencodeSessions";
-import type { QuestionAnswer, QuestionRequest, RepositoryEntry } from "../../lib/types";
+import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
 import { SendIcon } from "../common/AppChromeIcons";
 import {
   ArrowDownIcon,
   CheckIcon,
+  ChevronDownIcon,
   CloseIcon,
-  FolderIcon,
   ImageIcon,
   PlusIcon
 } from "../icons";
@@ -95,9 +95,6 @@ type OpencodeComposerPanelProps = {
   activeSessionBusy: boolean;
   canSubmit: boolean;
   onPrimaryAction: () => void;
-  repos: RepositoryEntry[];
-  selectedRepoId: string;
-  onSelectRepo: (repo: RepositoryEntry) => void;
 };
 
 export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
@@ -158,14 +155,13 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     onOpenModelSettings,
     activeSessionBusy,
     canSubmit,
-    onPrimaryAction,
-    repos,
-    selectedRepoId,
-    onSelectRepo
+    onPrimaryAction
   } = props;
 
-  const activeAgentLabel = OPENCODE_COMPOSER_AGENT_OPTIONS.find((item) => item.name === activeAgent)?.label || "Build";
   const activeModelDisplay = getModelDisplay(activeModel || "");
+  const isBlankComposer = !promptInput.trim() && imageAttachments.length === 0 && mcpPromptRefs.length === 0;
+  const composerPlaceholder = showEmptyState ? "要做什么？" : isBlankComposer ? "继续跟进" : "要做什么？";
+  const configSummaryLabel = activeModelDisplay.label || activeModel || "Auto";
 
   return (
     <div className="opencode-input-row">
@@ -260,7 +256,7 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
           <div className="gt-empty-composer-title">What should we build in {selectedRepoName || "Giteam"}?</div>
         ) : null}
 
-        <div className="opencode-composer">
+        <div className={showEmptyState ? "opencode-composer is-empty-state" : "opencode-composer"}>
           {showJumpLatest ? (
             <button
               type="button"
@@ -280,7 +276,6 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
                   {imageAttachments.map((image) => (
                     <div key={image.id} className="opencode-attachment-chip">
                       <img src={image.dataUrl} alt={image.filename} className="opencode-attachment-thumb" />
-                      <span className="opencode-attachment-name">{image.filename}</span>
                       <button
                         type="button"
                         className="opencode-attachment-remove"
@@ -332,7 +327,7 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
               <textarea
                 ref={promptInputRef as RefObject<HTMLTextAreaElement>}
                 className="opencode-input"
-                placeholder="要做什么？"
+                placeholder={composerPlaceholder}
                 value={promptInput}
                 onCompositionStart={onPromptCompositionStart}
                 onCompositionEnd={onPromptCompositionEnd}
@@ -387,9 +382,9 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
                   title="配置 Agent、Auto 和模型"
                 >
                   <span className="opencode-config-trigger-copy">
-                    <span className="opencode-config-trigger-mode">{activeAgentLabel}</span>
-                    <span className="opencode-config-trigger-model">{activeModelDisplay.label || "Auto"}</span>
+                    <span className="opencode-config-trigger-model is-compact">{configSummaryLabel}</span>
                   </span>
+                  <span className="opencode-config-caret" aria-hidden="true"><ChevronDownIcon width={14} height={14} /></span>
                 </button>
                 {showModelPicker ? (
                   <div className="opencode-model-picker opencode-config-panel">
@@ -474,23 +469,6 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
             </div>
           </div>
         </div>
-
-        {showEmptyState && repos.length > 0 ? (
-          <div className="gt-empty-composer-meta">
-            <div className="gt-empty-composer-repo-picker">
-              {repos.map((repo) => (
-                <button
-                  key={repo.id}
-                  className={selectedRepoId === repo.id ? "gt-empty-composer-repo-chip active" : "gt-empty-composer-repo-chip"}
-                  onClick={() => onSelectRepo(repo)}
-                >
-                  <span className="gt-empty-composer-repo-icon"><FolderIcon /></span>
-                  <span className="gt-empty-composer-repo-name">{repo.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
   );

@@ -34,6 +34,8 @@ type GitChangesPanelProps = {
   selectedFile: string;
   selectedEntry: GitWorktreeEntry | null;
   selectedContent: GitWorktreeFileContent;
+  selectedLine?: number;
+  viewMode?: "auto" | "editor" | "diff";
   patchStats: { added: number; deleted: number };
   commitMessage: string;
   commitMessageInputRef: Ref<HTMLInputElement>;
@@ -85,6 +87,8 @@ export function GitChangesPanel({
   selectedFile,
   selectedEntry,
   selectedContent,
+  selectedLine,
+  viewMode = "auto",
   patchStats,
   commitMessage,
   commitMessageInputRef,
@@ -125,6 +129,9 @@ export function GitChangesPanel({
   const isGitBusy = committing || pushing;
   const useCompactCommitLabel = changesSidebarWidth < 272;
   const useCompactSyncLabel = changesSidebarWidth < 308;
+  const standaloneFileView = viewMode !== "auto";
+  const singleFile = viewMode === "editor" || (viewMode !== "diff" && !selectedEntry);
+  const inlineDiff = false;
 
   const commitPrimaryContent = gitOperationLabel ? (
     <span className="gt-commit-main-label">{gitOperationLabel}</span>
@@ -143,6 +150,31 @@ export function GitChangesPanel({
       </span>
     </>
   );
+
+  if (standaloneFileView) {
+    return (
+      <div className="gt-standalone-file-pane">
+        {selectedFile ? (
+          <div className="gt-monaco-diff-shell gt-monaco-diff-shell-standalone">
+            <Suspense fallback={<div className="gt-worktree-patch-empty">Loading diff viewer...</div>}>
+              <MonacoDiffViewer
+                filePath={selectedFile}
+                original={selectedContent.original}
+                modified={selectedContent.modified}
+                language={getMonacoLanguage(selectedFile)}
+                theme={theme}
+                focusLine={selectedLine}
+                singleFile={singleFile}
+                inlineDiff={inlineDiff}
+              />
+            </Suspense>
+          </div>
+        ) : (
+          <div className="gt-worktree-patch-empty">没有可显示的文件。</div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -331,6 +363,9 @@ export function GitChangesPanel({
                 modified={selectedContent.modified}
                 language={getMonacoLanguage(selectedFile)}
                 theme={theme}
+                focusLine={selectedLine}
+                singleFile={singleFile}
+                inlineDiff={inlineDiff}
               />
             </Suspense>
           </div>
