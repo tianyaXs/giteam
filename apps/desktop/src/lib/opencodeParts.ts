@@ -46,6 +46,7 @@ export function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPa
     if (!p) continue;
     const t = String((p as any)?.type || "");
     if (t !== "text") continue;
+    if ((p as any)?.metadata?.giteamHiddenAttachmentPath) continue;
     const text = String((p as any)?.text ?? (p as any)?.part?.text ?? "").trim();
     if (text) chunks.push(text);
   }
@@ -54,23 +55,41 @@ export function buildOpencodeMainLineMarkdownFromParts(parts: OpencodeDetailedPa
 
 export function buildOpencodeImageAttachmentsFromParts(parts: OpencodeDetailedPart[] | undefined | null) {
   const rows = Array.isArray(parts) ? parts : [];
-  const out: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }> = [];
+  const out: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }> = [];
+  const pushUnique = (item: { id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }) => {
+    if (out.some((entry) => entry.uri === item.uri && entry.filename === item.filename && entry.kind === item.kind)) return;
+    out.push(item);
+  };
   rows.forEach((p, index) => {
     const part: any = p || {};
     const type = String(part.type || "");
-    if (type !== "file") return;
-    const mime = String(part.mime || "").trim();
-    const url = String(part.url || part.source || "").trim();
-    const filename = String(part.filename || "").trim();
-    const image = mime.startsWith("image/") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(filename);
-    if (!image || !url) return;
-    out.push({
-      id: String(part.id || `image:${index}`),
-      kind: "image",
-      uri: url,
-      mime: mime || undefined,
-      filename: filename || undefined,
-    });
+    if (type === "file") {
+      const mime = String(part.mime || "").trim();
+      const url = String(part.url || part.source || "").trim();
+      const filename = String(part.filename || "").trim();
+      if (!url || url.startsWith("file://")) return;
+      const image = mime.startsWith("image/") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(filename);
+      pushUnique({
+        id: String(part.id || `image:${index}`),
+        kind: image ? "image" : "file",
+        uri: url,
+        mime: mime || undefined,
+        filename: filename || undefined,
+      });
+      return;
+    }
+    if (type === "text" && part?.metadata?.giteamHiddenAttachmentPath) {
+      const filename = String(part.metadata?.filename || "").trim();
+      const sourcePath = String(part.metadata?.sourcePath || "").trim();
+      if (!filename) return;
+      pushUnique({
+        id: String(part.id || `file:${index}`),
+        kind: "file",
+        uri: sourcePath ? `file://${sourcePath.split("/").map(encodeURIComponent).join("/")}` : "",
+        mime: "text/plain",
+        filename,
+      });
+    }
   });
   return out;
 }
