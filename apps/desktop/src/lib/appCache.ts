@@ -23,7 +23,7 @@ export type RuntimeRequirementsStatus = {
 export type RuntimeActionJobStatus = {
   jobId: string;
   name: string;
-  action: "install" | "uninstall";
+  action: "install" | "uninstall" | "bootstrap";
   status: "running" | "succeeded" | "failed";
   log: string;
   startedAtMs: number;
@@ -67,7 +67,7 @@ function getInstallHints(platform: string): Record<RuntimeDepName, string> {
   return {
     git: "brew install git",
     entire: "brew tap entireio/tap && brew install entireio/tap/entire",
-    opencode: "brew install anomalyco/tap/opencode",
+    opencode: "npm i -g opencode-ai",
     giteam: "npm install -g giteam"
   };
 }

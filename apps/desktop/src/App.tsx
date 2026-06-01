@@ -1,8 +1,9 @@
 import { invoke, listen, IS_TAURI } from "./lib/platform";
 import type { CSSProperties, ReactNode } from "react";
-import { Component, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createPortal } from "react-dom";
+import { motion, useReducedMotion } from "motion/react";
 import QRCode from "qrcode";
 import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
 import {
@@ -19,7 +20,28 @@ import {
   type ControlServerSettings,
   type GiteamMobileServiceStatus
 } from "./lib/controlServer";
-import { readImageFileAsAttachment, type OpencodeImageAttachment } from "./lib/imageAttachments";
+import {
+  OPENCODE_ATTACHMENT_INPUT_ACCEPT,
+  attachmentsFromLocalPaths,
+  encodeFilePathForUrl,
+  extractClipboardFilePaths,
+  extractTransferFiles,
+  fileUrlToPath,
+  getAttachmentDataUrlMime,
+  hasPlainClipboardText,
+  hasTransferAttachments,
+  isOfficeAttachment,
+  isOpencodeSupportedAttachmentMedia,
+  mergeUniqueAttachments,
+  pickDesktopAttachments,
+  readBrowserClipboardAttachments,
+  readDesktopClipboardImageAttachment,
+  readDesktopAttachmentsFromPaths,
+  readDesktopClipboardFilePaths,
+  readLocalAttachmentPreview,
+  readFileAsAttachment,
+  type OpencodeAttachment
+} from "./lib/imageAttachments";
 import {
   OPENCODE_COMPOSER_AGENT_OPTIONS,
   OPENCODE_THINKING_LEVELS,
@@ -48,6 +70,15 @@ import {
 import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "./components/ui/dialog";
 import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
@@ -79,6 +110,7 @@ import {
 import {
   buildOpencodeTurnRanges,
   clipOpencodeSessionTitle,
+  compareOpencodeSessionActivity,
   getInitialOpencodeTurnStart,
   newOpencodeSession,
   opencodeSessionFromSummary,
@@ -329,6 +361,8 @@ const EMPTY_WORKTREE: GitWorktreeOverview = {
   stagedCount: 0,
   unstagedCount: 0,
   untrackedCount: 0,
+  addedLines: 0,
+  deletedLines: 0,
   entries: [],
   raw: ""
 };
@@ -340,15 +374,26 @@ const EMPTY_GIT_IDENTITY: GitUserIdentity = {
 
 const EMPTY_WORKTREE_FILE_CONTENT: GitWorktreeFileContent = {
   original: "",
-  modified: ""
+  modified: "",
+  previewSupported: true,
+  previewReason: undefined,
+  previewKind: "text",
+  mime: "text/plain",
+  dataBase64: undefined
 };
 
+const WORKTREE_DIFF_STREAM_BATCH_SIZE = 10;
+const WORKTREE_DIFF_STREAM_PRELOAD_SIZE = 10;
+const WORKTREE_DIFF_STREAM_INITIAL_LOAD = WORKTREE_DIFF_STREAM_BATCH_SIZE + WORKTREE_DIFF_STREAM_PRELOAD_SIZE;
+
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
+const MACOS_RUNTIME_BOOTSTRAP_NAME = "runtime";
 const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
 const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
 const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
+const OPENCODE_SIDEBAR_SESSION_POLL_MS = 45000;
 const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
@@ -359,6 +404,7 @@ const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permis
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
 export function App() {
+  const reduceMotion = useReducedMotion();
   const [theme, toggleTheme] = useDesktopTheme();
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
   const { uiFontSize, codeFontSize, setUiFontSize, setCodeFontSize } = useAppearanceFontSize();
@@ -376,7 +422,7 @@ export function App() {
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
-  const [changesSidebarWidth, setChangesSidebarWidth] = useState(220);
+  const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
@@ -415,9 +461,12 @@ export function App() {
   const [gitUserIdentity, setGitUserIdentity] = useState<GitUserIdentity>(EMPTY_GIT_IDENTITY);
   const [selectedWorktreeFile, setSelectedWorktreeFile] = useState("");
   const [selectedWorktreePatch, setSelectedWorktreePatch] = useState("");
+  const [worktreePatchByPath, setWorktreePatchByPath] = useState<Record<string, string>>({});
+  const [worktreePatchLoadLimit, setWorktreePatchLoadLimit] = useState(WORKTREE_DIFF_STREAM_INITIAL_LOAD);
   const [selectedWorktreeContent, setSelectedWorktreeContent] = useState<GitWorktreeFileContent>(EMPTY_WORKTREE_FILE_CONTENT);
   const [selectedWorktreeLine, setSelectedWorktreeLine] = useState<number | undefined>(undefined);
   const [selectedWorktreeViewMode, setSelectedWorktreeViewMode] = useState<"auto" | "editor" | "diff">("auto");
+  const [selectedAttachmentPreviewPath, setSelectedAttachmentPreviewPath] = useState("");
   const [expandedWorktreeDirs, setExpandedWorktreeDirs] = useState<string[]>([]);
   const [topologySelectionId, setTopologySelectionId] = useState("");
   const [topologyZoom, setTopologyZoom] = useState(1);
@@ -448,6 +497,7 @@ export function App() {
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
   const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
   const [commitMessage, setCommitMessage] = useState("");
+  const [commitDialogAction, setCommitDialogAction] = useState<"commit" | "commitPush" | "commitSync" | null>(null);
   const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
@@ -575,7 +625,7 @@ export function App() {
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
   const [opencodeMcpPromptRefs, setOpencodeMcpPromptRefs] = useState<string[]>([]);
-  const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeImageAttachment[]>([]);
+  const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeAttachment[]>([]);
   const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
   const [opencodeAgents, setOpencodeAgents] = useState<OpencodeAgentInfo[]>([]);
   const [opencodeAgentsLoading, setOpencodeAgentsLoading] = useState(false);
@@ -635,6 +685,7 @@ export function App() {
   const [sidebarOpencodeSessionsByRepo, setSidebarOpencodeSessionsByRepo] = useState<Record<string, OpencodeChatSession[]>>({});
   const [sidebarOpencodeSessionFetchLimitByRepo, setSidebarOpencodeSessionFetchLimitByRepo] = useState<Record<string, number>>({});
   const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
+  const [sidebarOpencodeSessionPagingByRepo, setSidebarOpencodeSessionPagingByRepo] = useState<Record<string, boolean>>({});
   const [sidebarOpencodeSessionHasMoreByRepo, setSidebarOpencodeSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
   const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
   const [opencodeHydratingSessionId, setOpencodeHydratingSessionId] = useState("");
@@ -658,7 +709,11 @@ export function App() {
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeInputComposingRef = useRef(false);
   const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
-  const commitMessageInputRef = useRef<HTMLInputElement | null>(null);
+  const commitMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const worktreePatchStreamSeqRef = useRef(0);
+  const worktreePatchStreamKeyRef = useRef("");
+  const worktreePatchByPathRef = useRef<Record<string, string>>({});
+  const sidebarOpencodeSessionsByRepoRef = useRef<Record<string, OpencodeChatSession[]>>({});
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
@@ -707,6 +762,38 @@ export function App() {
   const [message, setMessage] = useState("Ready");
   const previousSessionBusyRef = useRef(false);
   const previousPermissionCountRef = useRef(0);
+
+  function appendOpencodeAttachments(next: OpencodeAttachment[]) {
+    if (next.length === 0) return;
+    setOpencodeImageAttachments((prev) => mergeUniqueAttachments(prev, next));
+  }
+
+  async function readTransferAttachments(transfer: DataTransfer | null | undefined): Promise<OpencodeAttachment[]> {
+    const clipboardPaths = extractClipboardFilePaths(transfer);
+    if (clipboardPaths.length > 0) {
+      return attachmentsFromLocalPaths(clipboardPaths);
+    }
+    const desktopClipboardPaths = await readDesktopClipboardFilePaths();
+    if (desktopClipboardPaths.length > 0) {
+      return attachmentsFromLocalPaths(desktopClipboardPaths);
+    }
+    const files = extractTransferFiles(transfer);
+    if (files.length > 0) {
+      const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
+      return attachments.filter(Boolean) as OpencodeAttachment[];
+    }
+    return [];
+  }
+
+  async function openOpencodeAttachmentPicker() {
+    setOpencodeAttachmentMenuOpen(false);
+    if (IS_TAURI) {
+      const attachments = await pickDesktopAttachments();
+      appendOpencodeAttachments(attachments);
+      return;
+    }
+    opencodeImageInputRef.current?.click();
+  }
   const previousErrorRef = useRef("");
 
   const {
@@ -780,6 +867,7 @@ export function App() {
   const repoPathRef = useRef(repoPath);
   const gitPanePathRef = useRef(gitPanePath);
   const selectedWorktreeFileRef = useRef(selectedWorktreeFile);
+  const selectedAttachmentPreviewPathRef = useRef(selectedAttachmentPreviewPath);
   const rightPaneTabRef = useRef(rightPaneTab);
   const gitAutoRefreshBlockedRef = useRef(false);
   const gitAutoRefreshTimerRef = useRef<number | null>(null);
@@ -923,6 +1011,17 @@ export function App() {
   const worktreeTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries), [worktreeOverview.entries]);
   const stagedTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries.filter((e) => e.staged)), [worktreeOverview.entries]);
   const unstagedTree = useMemo(() => buildWorktreeTree(worktreeOverview.entries.filter((e) => e.unstaged || e.untracked)), [worktreeOverview.entries]);
+  const workspaceFileCandidates = useMemo(() => worktreeOverview.entries.map((entry) => entry.path), [worktreeOverview.entries]);
+  const workspaceDirectoryCandidates = useMemo(() => {
+    const dirs = new Set<string>();
+    worktreeOverview.entries.forEach((entry) => {
+      const parts = entry.path.split("/").filter(Boolean);
+      for (let index = 1; index < parts.length; index += 1) {
+        dirs.add(parts.slice(0, index).join("/"));
+      }
+    });
+    return Array.from(dirs);
+  }, [worktreeOverview.entries]);
   const selectedWorktreeEntry = useMemo(
     () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
     [worktreeOverview.entries, selectedWorktreeFile]
@@ -930,6 +1029,14 @@ export function App() {
   const worktreePatchRows = useMemo(() => buildSplitDiffRows(selectedWorktreePatch), [selectedWorktreePatch]);
   const worktreePatchStats = useMemo(() => getWorktreePatchStats(worktreePatchRows), [worktreePatchRows]);
   const worktreeChangeStats = useMemo(() => getWorktreeChangeStats(worktreeOverview.entries), [worktreeOverview.entries]);
+  const worktreePatchStreamEntries = useMemo(
+    () => worktreeOverview.entries.filter((entry) => entry.staged || entry.unstaged || entry.untracked),
+    [worktreeOverview.entries]
+  );
+  const worktreePatchStreamKey = useMemo(
+    () => worktreePatchStreamEntries.map((entry) => `${entry.path}:${entry.indexStatus}:${entry.worktreeStatus}`).join("|"),
+    [worktreePatchStreamEntries]
+  );
   const standaloneRightFileTab = useMemo(() => {
     if (rightPaneTab !== "changes" || selectedWorktreeViewMode === "auto" || !selectedWorktreeFile) return null;
     const parts = selectedWorktreeFile.split("/").filter(Boolean);
@@ -944,7 +1051,6 @@ export function App() {
   const hasCommittableChanges = worktreeChangeStats.staged > 0 || worktreeChangeStats.unstaged > 0;
   const commitButtonCount = worktreeChangeStats.staged > 0 ? worktreeChangeStats.staged : worktreeChangeStats.unstaged;
   const needsGitSync = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0;
-  const commitPrimaryIsSync = !hasCommittableChanges && needsGitSync;
   const commitMenuAvailable = hasCommittableChanges || needsGitSync;
   const gitOperationLabel = gitOperation === "push"
     ? "Pushing..."
@@ -963,12 +1069,81 @@ export function App() {
             : "";
 
   useEffect(() => {
+    worktreePatchByPathRef.current = worktreePatchByPath;
+  }, [worktreePatchByPath]);
+
+  useEffect(() => {
+    sidebarOpencodeSessionsByRepoRef.current = sidebarOpencodeSessionsByRepo;
+  }, [sidebarOpencodeSessionsByRepo]);
+
+  const handleWorktreePatchWindowChange = useCallback((count: number) => {
+    setWorktreePatchLoadLimit((limit) => Math.max(limit, count));
+  }, []);
+
+  useEffect(() => {
+    const isNewStream = worktreePatchStreamKeyRef.current !== worktreePatchStreamKey;
+    const effectiveLimit = isNewStream ? WORKTREE_DIFF_STREAM_INITIAL_LOAD : worktreePatchLoadLimit;
+    const paths = worktreePatchStreamEntries.slice(0, effectiveLimit).map((entry) => entry.path);
+    const requestRepoPath = gitPanePath || repoPath;
+    const seq = worktreePatchStreamSeqRef.current + 1;
+    worktreePatchStreamSeqRef.current = seq;
+    if (isNewStream) {
+      worktreePatchStreamKeyRef.current = worktreePatchStreamKey;
+      worktreePatchByPathRef.current = {};
+      setWorktreePatchByPath({});
+      setWorktreePatchLoadLimit(WORKTREE_DIFF_STREAM_INITIAL_LOAD);
+    }
+    if (!requestRepoPath || paths.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      const next: Record<string, string> = { ...worktreePatchByPathRef.current };
+      let changedSinceFlush = 0;
+      const flushPatchState = () => {
+        worktreePatchByPathRef.current = { ...next };
+        setWorktreePatchByPath(worktreePatchByPathRef.current);
+        changedSinceFlush = 0;
+      };
+      for (let index = 0; index < paths.length; index += 1) {
+        const path = paths[index];
+        if (Object.prototype.hasOwnProperty.call(next, path)) continue;
+        try {
+          const patch = await getGitWorktreeFilePatch(requestRepoPath, path);
+          if (cancelled || worktreePatchStreamSeqRef.current !== seq) return;
+          next[path] = patch;
+        } catch {
+          if (cancelled || worktreePatchStreamSeqRef.current !== seq) return;
+          next[path] = "";
+        }
+        changedSinceFlush += 1;
+        if (changedSinceFlush >= 5 || index === paths.length - 1) {
+          flushPatchState();
+        }
+      }
+      if (changedSinceFlush > 0) {
+        flushPatchState();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gitPanePath,
+    repoPath,
+    worktreePatchLoadLimit,
+    worktreePatchStreamEntries,
+    worktreePatchStreamKey
+  ]);
+
+  useEffect(() => {
     repoPathRef.current = repoPath;
     gitPanePathRef.current = gitPanePath;
     selectedWorktreeFileRef.current = selectedWorktreeFile;
+    selectedAttachmentPreviewPathRef.current = selectedAttachmentPreviewPath;
     rightPaneTabRef.current = rightPaneTab;
     gitAutoRefreshBlockedRef.current = busy || committing || pushing || discardingAll || !!discardingFile || !!stagingFile || !!unstagingFile;
-  }, [repoPath, gitPanePath, selectedWorktreeFile, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
+  }, [repoPath, gitPanePath, selectedWorktreeFile, selectedAttachmentPreviewPath, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
 
   useEffect(() => {
     if (!opencodeSkillsVisible) return;
@@ -1332,7 +1507,6 @@ export function App() {
   function getRepoSessionFetchLimit(repoId: string): number {
     const id = repoId.trim();
     if (!id) return OPENCODE_SESSION_PAGE_SIZE;
-    if (id === selectedRepo?.id) return sidebarOpencodeSessionFetchLimitByRepo[id] ?? opencodeSessionFetchLimit;
     return sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE;
   }
 
@@ -1349,7 +1523,7 @@ export function App() {
       const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE);
       const existing = prev[id] || [];
       const merged = [session, ...existing.filter((item) => item.id !== session.id)]
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .sort(compareOpencodeSessionActivity)
         .slice(0, limit);
       return { ...prev, [id]: merged };
     });
@@ -1368,7 +1542,7 @@ export function App() {
       if (!sessions.some((session) => session.id === sid)) return prev;
       const next = sessions
         .map((session) => (session.id === sid ? updater(session) : session))
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        .sort(compareOpencodeSessionActivity);
       return { ...prev, [id]: next };
     });
   }
@@ -1385,6 +1559,10 @@ export function App() {
 
   function isRepoSessionsLoading(repoId: string): boolean {
     return Boolean(sidebarOpencodeSessionLoadingByRepo[repoId.trim()]);
+  }
+
+  function isRepoSessionsPaging(repoId: string): boolean {
+    return Boolean(sidebarOpencodeSessionPagingByRepo[repoId.trim()]);
   }
 
   function toggleRepoSessions(repo: RepositoryEntry) {
@@ -2023,15 +2201,28 @@ export function App() {
     };
   }
 
-  async function refreshSidebarRepoSessions(repo: RepositoryEntry, limitArg?: number) {
+  async function refreshSidebarRepoSessions(
+    repo: RepositoryEntry,
+    options?: {
+      limit?: number;
+      silent?: boolean;
+      paging?: boolean;
+    }
+  ) {
     if (!runtimeStatus.opencode.installed) return;
     const repoId = repo.id.trim();
     const repoPathArg = repo.path.trim();
     if (!repoId || !repoPathArg) return;
-    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? getRepoSessionFetchLimit(repoId));
+    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, options?.limit ?? getRepoSessionFetchLimit(repoId));
+    const silent = options?.silent === true;
+    const paging = options?.paging === true;
     const requestSeq = (sidebarOpencodeSessionRequestSeqRef.current[repoId] || 0) + 1;
     sidebarOpencodeSessionRequestSeqRef.current[repoId] = requestSeq;
-    setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
+    if (paging) {
+      setSidebarOpencodeSessionPagingByRepo((prev) => ({ ...prev, [repoId]: true }));
+    } else if (!silent) {
+      setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
+    }
     try {
       const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit: limit + 1 });
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
@@ -2049,7 +2240,9 @@ export function App() {
       setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
       setSidebarOpencodeSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
     } finally {
-      if (sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
+      if (paging && sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
+        setSidebarOpencodeSessionPagingByRepo((prev) => ({ ...prev, [repoId]: false }));
+      } else if (!silent && sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
         setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: false }));
       }
     }
@@ -2059,7 +2252,7 @@ export function App() {
     const repoId = repo.id.trim();
     if (!repoId) return;
     const nextLimit = getRepoSessionFetchLimit(repoId) + OPENCODE_SESSION_PAGE_SIZE;
-    await refreshSidebarRepoSessions(repo, nextLimit);
+    await refreshSidebarRepoSessions(repo, { limit: nextLimit, paging: true });
     if (repoId === selectedRepo?.id) {
       setOpencodeSessionFetchLimit(nextLimit);
       await refreshOpencodeSessions(nextLimit);
@@ -2602,7 +2795,7 @@ export function App() {
       } else if (draggingSplit.kind === "right") {
         setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 520, 1120));
       } else {
-        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 220, 420));
+        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 232, 360));
       }
     };
     const onUp = () => setDraggingSplit(null);
@@ -2650,6 +2843,7 @@ export function App() {
     setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
     setSelectedWorktreeLine(undefined);
     setSelectedWorktreeViewMode("auto");
+    setSelectedAttachmentPreviewPath("");
     setGitUserIdentity(EMPTY_GIT_IDENTITY);
   }
 
@@ -2685,8 +2879,6 @@ export function App() {
     refreshSelectedWorktreePatch,
     chooseBranch,
     handleGitCommit,
-    handleGitPush,
-    handleGitSync,
     handleGitCommitAndPush,
     handleGitCommitAndSync,
     refreshScm,
@@ -2734,7 +2926,6 @@ export function App() {
     rememberWorktreeParent,
     unbindWorkspaceAgent,
     appendOpencodeDebugLog,
-    focusCommitMessageInput: () => commitMessageInputRef.current?.focus(),
     setSelectedRepo,
     setMessage,
     setError,
@@ -2912,6 +3103,17 @@ export function App() {
     }
   }
 
+  function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
+    if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
+      return job.status === "succeeded"
+        ? "Automatic runtime setup completed"
+        : "Automatic runtime setup failed";
+    }
+    return job.status === "succeeded"
+      ? `${job.action} ${job.name} completed`
+      : `${job.action} ${job.name} failed`;
+  }
+
   async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall", options?: { showRuntimePanel?: boolean }) {
     flushSync(() => {
       setShowEnvSetup(options?.showRuntimePanel ?? true);
@@ -2932,6 +3134,35 @@ export function App() {
       setRuntimeInstallLog(String(e));
       setError(String(e));
       setMessage(`${action} ${name} failed to start`);
+      setInstallingDep("");
+      setInstallingElapsed(0);
+      setRuntimeJobId("");
+    }
+  }
+
+  async function runRuntimeAutoInit(options?: { showRuntimePanel?: boolean }) {
+    flushSync(() => {
+      setShowEnvSetup(options?.showRuntimePanel ?? true);
+      setInstallingDep(MACOS_RUNTIME_BOOTSTRAP_NAME);
+      setInstallingElapsed(0);
+      setRuntimeInstallLog("");
+      setRuntimeJob(null);
+      setRuntimeJobId("");
+      setExpandedLogDep(null);
+      setError("");
+      setMessage("Starting automatic runtime setup...");
+      setRuntimeInstallLog("Starting automatic runtime setup...\nPlease wait.");
+    });
+    try {
+      const jobId = await invoke<string>("start_runtime_dependency_action", {
+        name: MACOS_RUNTIME_BOOTSTRAP_NAME,
+        action: "bootstrap"
+      });
+      setRuntimeJobId(jobId);
+    } catch (e) {
+      setRuntimeInstallLog(String(e));
+      setError(String(e));
+      setMessage("Automatic runtime setup failed to start");
       setInstallingDep("");
       setInstallingElapsed(0);
       setRuntimeJobId("");
@@ -3430,12 +3661,12 @@ export function App() {
     const typedPrompt = opencodePromptInput.trim();
     const mcpPromptHints = opencodeMcpPromptRefs.map((name) => `use the ${name} mcp server`);
     const prompt = [typedPrompt, ...mcpPromptHints].filter(Boolean).join("\n\n").trim();
-    const images = opencodeImageAttachments;
-    if (!prompt && images.length === 0) return;
+    const attachments = opencodeImageAttachments;
+    if (!prompt && attachments.length === 0) return;
     const repoIdAtRun = selectedRepo?.id || newSessionTargetRepoId;
     let sessionId = ensureActiveOpencodeSession();
     if (!sessionId || draftOpencodeSession) {
-      sessionId = await createPersistedOpencodeSession(prompt || "(image)");
+      sessionId = await createPersistedOpencodeSession(prompt || "(attachment)");
     }
     if (!sessionId) return;
     bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
@@ -3462,7 +3693,13 @@ export function App() {
           id: `user-${makeId()}`,
           role: "user",
           content: prompt,
-          attachments: images.map((img) => ({ id: img.id, kind: "image" as const, uri: img.dataUrl, mime: img.mime, filename: img.filename })),
+          attachments: attachments.map((attachment) => ({
+            id: attachment.id,
+            kind: attachment.kind,
+            uri: attachment.sourcePath ? `file://${encodeFilePathForUrl(attachment.sourcePath)}` : (attachment.dataUrl || ""),
+            mime: attachment.mime,
+            filename: attachment.filename
+          })),
         },
         { id: assistantId, role: "assistant", content: "" }
       ];
@@ -3957,8 +4194,50 @@ export function App() {
       }, 600_000);
 
       const promptParts: Record<string, unknown>[] = [{ id: `prt_${makeId()}`, type: "text", text: prompt }];
-      for (const img of images) {
-        promptParts.push({ id: `prt_${makeId()}`, type: "file", mime: img.mime, url: img.dataUrl, filename: img.filename });
+      for (const attachment of attachments) {
+        if (attachment.sourcePath) {
+          if (isOfficeAttachment(attachment)) {
+            promptParts.push({
+              id: `prt_${makeId()}`,
+              type: "text",
+              text: [
+                `The user attached a local Office document named "${attachment.filename}".`,
+                `Local path: ${attachment.sourcePath}`,
+                "Do not read this file with the plain text Read tool because Office documents are binary containers. If the document content is needed, inspect or convert it with an appropriate command such as macOS textutil, unzip-based extraction, or another available converter."
+              ].join("\n"),
+              synthetic: true,
+              metadata: { giteamHiddenAttachmentPath: true, filename: attachment.filename, sourcePath: attachment.sourcePath }
+            });
+            continue;
+          }
+          promptParts.push({
+            id: `prt_${makeId()}`,
+            type: "file",
+            mime: "text/plain",
+            url: `file://${encodeFilePathForUrl(attachment.sourcePath)}`,
+            filename: attachment.filename
+          });
+          continue;
+        }
+        const dataUrlMime = getAttachmentDataUrlMime(attachment.dataUrl);
+        const requestMime = dataUrlMime || attachment.mime;
+        if (!isOpencodeSupportedAttachmentMedia(requestMime)) {
+          promptParts.push({
+            id: `prt_${makeId()}`,
+            type: "text",
+            text: isOfficeAttachment(attachment)
+              ? `Attached file "${attachment.filename}" was added, but this Office document could not be converted to text from this upload source. OpenCode only accepts images, PDFs, and text attachments directly. Please upload the document from the desktop file picker, export it as PDF/text, or paste the document text.`
+              : `Attached file "${attachment.filename}" was added, but this file type is not supported by OpenCode preview/send. Please convert it to text or PDF and try again.`
+          });
+          continue;
+        }
+        promptParts.push({
+          id: `prt_${makeId()}`,
+          type: "file",
+          mime: requestMime,
+          url: attachment.dataUrl,
+          filename: attachment.filename
+        });
       }
       const promptBody: Record<string, unknown> = {
         parts: promptParts
@@ -4507,6 +4786,19 @@ export function App() {
     return normalizeFsPath(input.trim()).replace(/^\.\/+/, "").replace(/^\/+/, "");
   }
 
+  function resolveWorkspaceCandidatePath(input: string, candidates: string[]): string | null {
+    const normalized = normalizeRelativeFsPath(input);
+    if (!normalized) return null;
+    const normalizedCandidates = candidates
+      .map((candidate) => normalizeRelativeFsPath(candidate))
+      .filter(Boolean);
+    const exact = normalizedCandidates.find((candidate) => candidate === normalized);
+    if (exact) return exact;
+    if (!normalized.includes("/")) return null;
+    const matches = normalizedCandidates.filter((candidate) => candidate.endsWith(`/${normalized}`));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
   function resolveWorkspacePathTarget(absolutePath: string): { repoRoot: string; relativePath: string } | null {
     const normalizedAbs = normalizeFsPath(absolutePath.trim());
     const repoCandidates = [gitPanePath, repoPath].filter(Boolean)
@@ -4527,11 +4819,18 @@ export function App() {
   function resolveToolFileTarget(filePath: string): { repoRoot: string; relativePath: string } | null {
     const normalized = normalizeFsPath(filePath.trim());
     if (!normalized) return null;
+    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
+    if (!repoRoot) return null;
+    const workspaceRelative = resolveWorkspaceCandidatePath(normalized, workspaceFileCandidates);
+    if (workspaceRelative) {
+      return {
+        repoRoot,
+        relativePath: workspaceRelative
+      };
+    }
     if (normalized.startsWith("/")) {
       return resolveWorkspacePathTarget(normalized);
     }
-    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
-    if (!repoRoot) return null;
     return {
       repoRoot,
       relativePath: normalizeRelativeFsPath(normalized)
@@ -4574,12 +4873,13 @@ export function App() {
     ), candidates[0]);
   }
 
-  async function openWorkspacePathInRightPane(absolutePath: string, line?: number) {
-    const target = resolveWorkspacePathTarget(absolutePath);
+  async function openWorkspacePathInRightPane(path: string, line?: number) {
+    const target = resolveToolFileTarget(path);
     if (!target) {
       setMessage("该路径不在当前仓库中，暂时无法在右侧打开。");
       return;
     }
+    setSelectedAttachmentPreviewPath("");
     setRightDrawerOpen(true);
     setRightPaneTab("changes");
     setSelectedWorktreeFile(target.relativePath);
@@ -4599,6 +4899,79 @@ export function App() {
     }
   }
 
+  async function openWorkspaceDirectory(path: string) {
+    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
+    const relativePath = resolveWorkspaceCandidatePath(path, workspaceDirectoryCandidates) || normalizeRelativeFsPath(path);
+    if (!repoRoot || !relativePath) return;
+    try {
+      await invoke("open_local_path", { path: `${repoRoot}/${relativePath}` });
+    } catch (error) {
+      setError(String(error));
+      setMessage("打开文件夹失败");
+    }
+  }
+
+  async function openLocalDirectory(path: string) {
+    const absolutePath = normalizeFsPath(path);
+    if (!absolutePath) return;
+    try {
+      await invoke("open_local_path", { path: absolutePath });
+    } catch (error) {
+      setError(String(error));
+      setMessage("打开文件夹失败");
+    }
+  }
+
+  async function openAttachmentInRightPane(uri: string, filename?: string, _mime?: string) {
+    const absolutePath = fileUrlToPath(uri);
+    if (!absolutePath) {
+      if (!uri) return;
+      window.open(uri, "_blank", "noopener,noreferrer");
+      return;
+    }
+    flushSync(() => {
+      setSelectedAttachmentPreviewPath(absolutePath);
+      setRightDrawerOpen(true);
+      setRightPaneTab("changes");
+      setSelectedWorktreeFile(filename || absolutePath.split("/").filter(Boolean).pop() || absolutePath);
+      setSelectedWorktreeLine(undefined);
+      setSelectedWorktreeViewMode("editor");
+      setSelectedWorktreePatch("");
+      setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
+    });
+    try {
+      const preview = await readLocalAttachmentPreview(absolutePath);
+      setSelectedWorktreeContent({
+        original: preview.original || "",
+        modified: preview.modified || "",
+        previewSupported: preview.previewSupported !== false,
+        previewReason: preview.previewReason,
+        previewKind: preview.previewKind,
+        mime: preview.mime,
+        dataBase64: preview.dataBase64
+      });
+      setSelectedWorktreePatch("");
+      setMessage(`已预览 ${filename || absolutePath}`);
+    } catch (error) {
+      setError(String(error));
+      setMessage("打开附件预览失败");
+    }
+  }
+
+  function closeRightFileView() {
+    setSelectedAttachmentPreviewPath("");
+    setSelectedWorktreeFile("");
+    setSelectedWorktreeViewMode("auto");
+    setSelectedWorktreeLine(undefined);
+    setSelectedWorktreePatch("");
+    setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
+    setRightDrawerOpen(false);
+  }
+
+  function toggleRightDrawer() {
+    setRightDrawerOpen((open) => !open);
+  }
+
   async function openToolFileInRightPane(input: {
     filePath: string;
     line?: number;
@@ -4613,6 +4986,7 @@ export function App() {
       setMessage("该文件暂时无法在右侧打开。");
       return;
     }
+    setSelectedAttachmentPreviewPath("");
     setRightDrawerOpen(true);
     setRightPaneTab("changes");
     setSelectedWorktreeFile(target.relativePath);
@@ -4621,7 +4995,12 @@ export function App() {
       const contentPromise = input.original !== undefined || input.modified !== undefined
         ? Promise.resolve<GitWorktreeFileContent>({
           original: input.original ?? "",
-          modified: input.modified ?? input.original ?? ""
+          modified: input.modified ?? input.original ?? "",
+          previewSupported: true,
+          previewReason: undefined,
+          previewKind: "text",
+          mime: "text/plain",
+          dataBase64: undefined
         })
         : getGitWorktreeFileContent(target.repoRoot, target.relativePath);
       const patchPromise = input.patch !== undefined
@@ -4712,11 +5091,7 @@ export function App() {
           setInstallingDep("");
           setInstallingElapsed(0);
           setRuntimeJobId("");
-          setMessage(
-            job.status === "succeeded"
-              ? `${job.action} ${job.name} completed`
-              : `${job.action} ${job.name} failed`
-          );
+          setMessage(describeRuntimeJobResult(job));
           if (job.status === "failed" && job.error) {
             setError(job.error);
           }
@@ -4773,8 +5148,11 @@ export function App() {
     void refreshRuntimeRequirements()
       .then((res) => {
         markRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
-        const missing = [res.git, res.entire].some((d) => !d.installed);
-        if (!hasCheckedBefore && !dismissed && missing) setShowEnvSetup(true);
+        const missing = [res.git, res.entire, res.opencode, res.giteam].some((d) => !d.installed);
+        if (!hasCheckedBefore && !dismissed && missing) {
+          setShowEnvSetup(true);
+          if (res.platform === "macos") void runRuntimeAutoInit({ showRuntimePanel: true });
+        }
       })
       .catch((e) => setError(String(e)));
   }, [generalSettings.updatesStartup]);
@@ -4829,7 +5207,8 @@ export function App() {
         if (!gitPanePathRef.current) return;
         if (document.visibilityState === "hidden") return;
         if (gitAutoRefreshBlockedRef.current) return;
-        const tasks = [refreshWorktreeData(selectedWorktreeFileRef.current)];
+        const activePreviewPath = selectedAttachmentPreviewPathRef.current ? "" : selectedWorktreeFileRef.current;
+        const tasks = [refreshWorktreeData(activePreviewPath)];
         if (rightPaneTabRef.current === "worktree") tasks.push(refreshBranchesAndCommits());
         void Promise.all(tasks).catch((e) => setError(String(e)));
       }, delay);
@@ -4865,10 +5244,74 @@ export function App() {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
     const repoId = selectedRepo.id.trim();
     if (!repoId) return;
-    const alreadyLoaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepo, repoId);
+    const alreadyLoaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepoRef.current, repoId);
     if (alreadyLoaded) return;
     void refreshSidebarRepoSessions(selectedRepo).catch((e) => setError(String(e)));
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, sidebarOpencodeSessionsByRepo]);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+
+  useEffect(() => {
+    if (!runtimeStatus.opencode.installed || repos.length === 0) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const schedule = (delay = OPENCODE_SIDEBAR_SESSION_POLL_MS) => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void pollSidebarSessions();
+      }, delay);
+    };
+
+    const pollSidebarSessions = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      const expandedRepoIds = new Set(expandedProjectIds);
+      const reposToRefresh = repos.filter((repo) => {
+        const repoId = repo.id.trim();
+        if (!repoId) return false;
+        const loaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepoRef.current, repoId);
+        if (!loaded) return false;
+        return expandedRepoIds.has(repoId) || selectedRepo?.id === repoId;
+      });
+      if (reposToRefresh.length === 0) {
+        schedule();
+        return;
+      }
+      const results = await Promise.allSettled(
+        reposToRefresh.map((repo) => refreshSidebarRepoSessions(repo, { silent: true }))
+      );
+      if (cancelled) return;
+      const rejected = results.find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") {
+        setError(String(rejected.reason));
+      }
+      schedule();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") schedule(0);
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    schedule();
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }, [
+    runtimeStatus.opencode.installed,
+    repos,
+    expandedProjectIds,
+    selectedRepo?.id
+  ]);
 
   useEffect(() => {
     if (!selectedCommit) return;
@@ -5704,7 +6147,7 @@ export function App() {
     // 如果当前不在底部附近，不自动滚动（避免流式结束后闪动）
     if (!opencodeIsNearBottom(el, 120)) return;
     scheduleOpencodeScrollToBottom();
-  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length]);
 
   useLayoutEffect(() => {
     const sid = activeOpencodeSessionId.trim();
@@ -5717,8 +6160,10 @@ export function App() {
       scrollOpencodeThreadToBottomNow();
       return;
     }
-    preserveOpencodePausedViewport();
-  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeMessages.length, opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+    if (opencodeLoadingOlderRef.current) {
+      preserveOpencodePausedViewport();
+    }
+  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeMessages.length, opencodeRenderedMessages.length]);
 
   useEffect(() => {
     cancelPendingOpencodeAutoScroll();
@@ -5781,8 +6226,6 @@ export function App() {
       setOpencodeAutoFollow(false);
       setOpencodeShowJumpLatest(true);
       opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-    } else if (movedUp && opencodeScrollModeRef.current === "follow") {
-      scheduleOpencodeScrollToBottom({ force: true, source: "system" });
     } else if (opencodeScrollModeRef.current === "paused") {
       if (userScrollingDown && movedDown) {
         opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
@@ -5793,9 +6236,6 @@ export function App() {
         setOpencodeShowJumpLatest(false);
       } else {
         setOpencodeShowJumpLatest(true);
-        if (movedDown && !userScrollingDown) {
-          preserveOpencodePausedViewport();
-        }
       }
     } else if (nearBottom) {
       opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
@@ -5987,6 +6427,7 @@ export function App() {
       getVisibleRepoSessions={getVisibleRepoSessions}
       hasMoreRepoSessions={hasMoreRepoSessions}
       isRepoSessionsLoading={isRepoSessionsLoading}
+      isRepoSessionsPaging={isRepoSessionsPaging}
       onImportRepository={() => void pickAndImportRepository()}
       onCreateSession={() => void createAndSwitchOpencodeSessionForSidebar()}
       onSelectRepo={(repo) => {
@@ -6022,11 +6463,20 @@ export function App() {
               showReasoningSummaries={generalSettings.showReasoningSummaries}
               shellToolPartsExpanded={generalSettings.shellToolPartsExpanded}
               editToolPartsExpanded={generalSettings.editToolPartsExpanded}
+              workspaceRoot={gitPanePath || repoPath}
+              workspaceFileCandidates={workspaceFileCandidates}
+              workspaceDirectoryCandidates={workspaceDirectoryCandidates}
               onOpenTaskSession={(sessionId, titleHint) => {
                 void openOpencodeChildSession(sessionId, titleHint);
               }}
-              onOpenWorkspacePath={(absolutePath, line) => {
-                void openWorkspacePathInRightPane(absolutePath, line);
+              onOpenWorkspacePath={(path, line) => {
+                void openWorkspacePathInRightPane(path, line);
+              }}
+              onOpenWorkspaceDirectory={(path) => {
+                void openWorkspaceDirectory(path);
+              }}
+              onOpenLocalDirectory={(path) => {
+                void openLocalDirectory(path);
               }}
               onOpenToolFile={(target) => {
                 void openToolFileInRightPane(target);
@@ -6036,6 +6486,9 @@ export function App() {
               }}
               onCopyAttachmentUri={(uri) => {
                 void copyText(uri);
+              }}
+              onOpenAttachment={(uri, filename, mime) => {
+                void openAttachmentInRightPane(uri, filename, mime);
               }}
             />
           </div>
@@ -6080,9 +6533,9 @@ export function App() {
           selectedRepoName={selectedRepo?.name || "Giteam"}
           showJumpLatest={opencodeShowJumpLatest}
           onJumpLatest={jumpOpencodeToLatest}
-          imageAttachments={opencodeImageAttachments}
+          attachments={opencodeImageAttachments}
           mcpPromptRefs={opencodeMcpPromptRefs}
-          onRemoveImageAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+          onRemoveAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
           onRemoveMcpPromptRef={(name) => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
           slashOpen={opencodeSlashOpen}
           slashSuggestions={opencodeSlashSuggestions}
@@ -6147,24 +6600,50 @@ export function App() {
             }
           }}
           onPromptPaste={async (event) => {
-            const files = Array.from(event.clipboardData?.files || []);
-            if (files.length === 0) return;
+            const hasBrowserAttachments = hasTransferAttachments(event.clipboardData);
+            if (!hasBrowserAttachments && hasPlainClipboardText(event.clipboardData)) {
+              return;
+            }
             event.preventDefault();
-            const attachments = await Promise.all(files.map((file) => readImageFileAsAttachment(file)));
-            setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+            let attachments = hasBrowserAttachments ? await readTransferAttachments(event.clipboardData) : [];
+            if (attachments.length === 0) {
+              attachments = await readBrowserClipboardAttachments();
+            }
+            if (attachments.length === 0) {
+              attachments = await readDesktopClipboardImageAttachment();
+            }
+            if (attachments.length === 0) {
+              const desktopClipboardPaths = await readDesktopClipboardFilePaths();
+              attachments = attachmentsFromLocalPaths(desktopClipboardPaths);
+            }
+            if (attachments.length === 0) {
+              return;
+            }
+            appendOpencodeAttachments(attachments);
+          }}
+          onPromptDragOver={(event) => {
+            if ((event.dataTransfer?.files?.length || 0) <= 0) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onPromptDrop={async (event) => {
+            event.preventDefault();
+            const attachments = await readTransferAttachments(event.dataTransfer);
+            if (attachments.length === 0) return;
+            appendOpencodeAttachments(attachments);
           }}
           attachmentMenuOpen={opencodeAttachmentMenuOpen}
           onToggleAttachmentMenu={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
-          imageInputRef={opencodeImageInputRef}
-          onOpenImagePicker={() => {
-            setOpencodeAttachmentMenuOpen(false);
-            opencodeImageInputRef.current?.click();
+          attachmentInputRef={opencodeImageInputRef}
+          attachmentInputAccept={OPENCODE_ATTACHMENT_INPUT_ACCEPT}
+          onOpenAttachmentPicker={() => {
+            void openOpencodeAttachmentPicker();
           }}
-          onImageInputChange={async (event) => {
+          onAttachmentInputChange={async (event) => {
             const files = Array.from(event.target.files || []);
             if (files.length === 0) return;
-            const attachments = await Promise.all(files.map((file) => readImageFileAsAttachment(file)));
-            setOpencodeImageAttachments((prev) => [...prev, ...attachments.filter(Boolean) as OpencodeImageAttachment[]]);
+            const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
+            appendOpencodeAttachments(attachments.filter(Boolean) as OpencodeAttachment[]);
             event.currentTarget.value = "";
           }}
           modelPickerRef={opencodeModelPickerRef}
@@ -6279,11 +6758,12 @@ export function App() {
         {rightPaneTab === "changes" ? (
           <GitChangesPanel
             branchName={worktreeOverview.branch || selectedBranch || "no branch"}
-            ahead={worktreeOverview.ahead}
-            behind={worktreeOverview.behind}
             changesSidebarWidth={changesSidebarWidth}
             isResizing={draggingSplit?.kind === "changes"}
             changeStats={worktreeChangeStats}
+            lineStats={{ added: worktreeOverview.addedLines, deleted: worktreeOverview.deletedLines }}
+            entries={worktreePatchStreamEntries}
+            patchByPath={worktreePatchByPath}
             stagedTree={stagedTree}
             unstagedTree={unstagedTree}
             expandedDirs={expandedWorktreeDirs}
@@ -6293,13 +6773,9 @@ export function App() {
             selectedLine={selectedWorktreeLine}
             viewMode={selectedWorktreeViewMode}
             patchStats={worktreePatchStats}
-            commitMessage={commitMessage}
-            commitMessageInputRef={commitMessageInputRef}
             committing={committing}
             pushing={pushing}
             gitOperationLabel={gitOperationLabel}
-            commitPrimaryIsSync={commitPrimaryIsSync}
-            hasCommittableChanges={hasCommittableChanges}
             commitButtonCount={commitButtonCount}
             commitMenuAvailable={commitMenuAvailable}
             showCommitActionMenu={showCommitActionMenu}
@@ -6308,18 +6784,25 @@ export function App() {
             discardingFile={discardingFile}
             discardingAll={discardingAll}
             theme={theme}
-            appText={appText}
-            onCommitMessageChange={setCommitMessage}
             onToggleStageAll={() => void handleToggleStageAll()}
             onOpenDiscardAllConfirm={openDiscardAllConfirm}
             onToggleCommitActionMenu={() => setShowCommitActionMenu((prev) => !prev)}
-            onCommit={() => void handleGitCommit()}
-            onPush={() => void handleGitPush()}
-            onSync={() => void handleGitSync()}
-            onCommitAndPush={() => void handleGitCommitAndPush()}
-            onCommitAndSync={() => void handleGitCommitAndSync()}
+            onCommit={() => {
+              setShowCommitActionMenu(false);
+              setCommitDialogAction("commitPush");
+            }}
+            onCommitAndPush={() => {
+              setShowCommitActionMenu(false);
+              setCommitDialogAction("commitPush");
+            }}
+            onCommitAndSync={() => {
+              setShowCommitActionMenu(false);
+              setCommitDialogAction("commitSync");
+            }}
+            onPatchWindowChange={handleWorktreePatchWindowChange}
             onToggleDir={toggleWorktreeDir}
             onOpenFile={(path) => {
+              setSelectedAttachmentPreviewPath("");
               setSelectedWorktreeLine(undefined);
               setSelectedWorktreeViewMode("auto");
               void refreshSelectedWorktreePatch(path);
@@ -6476,6 +6959,10 @@ export function App() {
           ? "wb-col wb-col-center gt-center-pane gt-center-pane-left-closed"
           : "wb-col wb-col-center gt-center-pane";
 
+  const rightDrawerTransition = reduceMotion
+    ? { duration: 0 }
+    : { type: "spring" as const, stiffness: 360, damping: 34, mass: 0.94 };
+
   const editorRailClass = rightDrawerOpen ? "wb-editor-rail is-right-open" : "wb-editor-rail is-right-closed";
 
   const editor = (
@@ -6500,7 +6987,17 @@ export function App() {
           aria-hidden={!rightDrawerOpen}
           onMouseDown={rightDrawerOpen ? (e) => beginSplitDrag("right", e.clientX) : undefined}
         />
-        <div className="wb-editor-rail__head-right" data-tauri-drag-region aria-hidden={!rightDrawerOpen}>
+        <motion.div
+          className="wb-editor-rail__head-right"
+          data-tauri-drag-region
+          aria-hidden={!rightDrawerOpen}
+          initial={false}
+          animate={rightDrawerOpen
+            ? { opacity: 1, x: 0, scale: 1 }
+            : { opacity: 0, x: 24, scale: 0.985 }}
+          transition={rightDrawerTransition}
+          style={{ pointerEvents: rightDrawerOpen ? "auto" : "none" }}
+        >
           <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
             <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
               {rightModuleVisibility.changes ? (
@@ -6536,17 +7033,13 @@ export function App() {
             {standaloneRightFileTab ? (
               <div className="gt-titlebar-file-tabs">
                 <div className="gt-titlebar-file-tab">
-                  <span className="gt-titlebar-file-badge">{standaloneRightFileTab.ext}</span>
                   <span className="gt-titlebar-file-label">{standaloneRightFileTab.label}</span>
                   <button
                     type="button"
                     className="gt-titlebar-file-close"
                     title="关闭文件视图"
                     aria-label="关闭文件视图"
-                    onClick={() => {
-                      setSelectedWorktreeViewMode("auto");
-                      setSelectedWorktreeLine(undefined);
-                    }}
+                    onClick={closeRightFileView}
                   >
                     <svg viewBox="0 0 16 16" aria-hidden="true">
                       <path d="M4.5 4.5 11.5 11.5" />
@@ -6557,11 +7050,22 @@ export function App() {
               </div>
             ) : null}
           </div>
-        </div>
+        </motion.div>
         <div className="wb-editor-rail__body-center wb-editor-content gt-editor-rail-center">
           <div className={centerColClass}>{centerPane}</div>
         </div>
-        <div className="wb-editor-rail__body-right wb-col wb-col-right" aria-hidden={!rightDrawerOpen}>{rightPane}</div>
+        <motion.div
+          className="wb-editor-rail__body-right wb-col wb-col-right"
+          aria-hidden={!rightDrawerOpen}
+          initial={false}
+          animate={rightDrawerOpen
+            ? { opacity: 1, x: 0, scale: 1 }
+            : { opacity: 0, x: 28, scale: 0.985 }}
+          transition={rightDrawerTransition}
+          style={{ pointerEvents: rightDrawerOpen ? "auto" : "none" }}
+        >
+          {rightPane}
+        </motion.div>
       </div>
     </div>
   );
@@ -6718,7 +7222,7 @@ export function App() {
       <button className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
         <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
       </button>
-      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={() => setRightDrawerOpen((v) => !v)}>
+      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={toggleRightDrawer}>
         <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
       </button>
     </div>
@@ -6772,6 +7276,91 @@ export function App() {
             <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
           </div>
         ) : null}
+
+        <Dialog
+          open={Boolean(commitDialogAction)}
+          onOpenChange={(open) => {
+            if (!open && !committing && !pushing) setCommitDialogAction(null);
+          }}
+        >
+          <DialogContent
+            className="gt-commit-dialog-card"
+            onEscapeKeyDown={(event) => {
+              if (committing || pushing) event.preventDefault();
+            }}
+            onPointerDownOutside={(event) => {
+              if (committing || pushing) event.preventDefault();
+            }}
+          >
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="gt-commit-dialog-close"
+                disabled={committing || pushing}
+                aria-label="关闭提交弹窗"
+              >
+                <CloseIcon width={18} height={18} />
+              </button>
+            </DialogClose>
+            <DialogHeader className="gt-commit-dialog-head">
+              <div className="gt-commit-dialog-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 12h16" />
+                  <circle cx="12" cy="12" r="4" />
+                </svg>
+              </div>
+              <div className="gt-commit-dialog-copy">
+                <DialogTitle>提交更改</DialogTitle>
+                <DialogDescription>
+                  确认本次已暂存内容，提交消息留空时会自动生成。
+                </DialogDescription>
+              </div>
+            </DialogHeader>
+            <div className="gt-commit-dialog-summary">
+              <div className="gt-commit-dialog-row">
+                <span>分支</span>
+                <strong>{worktreeOverview.branch || selectedBranch || "main"}</strong>
+              </div>
+              <div className="gt-commit-dialog-row">
+                <span>更改</span>
+                <strong className="gt-commit-dialog-stats">
+                  <span>{worktreeChangeStats.total} 个文件</span>
+                  <span className="is-add">+{worktreeOverview.addedLines}</span>
+                  <span className="is-del">-{worktreeOverview.deletedLines}</span>
+                </strong>
+              </div>
+            </div>
+            <label className="gt-commit-dialog-field">
+              <span>提交消息</span>
+              <textarea
+                ref={commitMessageInputRef}
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                placeholder="留空以自动生成提交消息"
+                disabled={committing || pushing}
+                autoFocus
+              />
+            </label>
+            <DialogFooter className="gt-commit-dialog-actions">
+              <DialogClose asChild>
+                <button className="chip" disabled={committing || pushing}>取消</button>
+              </DialogClose>
+                <button
+                  className="chip active gt-commit-dialog-submit"
+                  disabled={committing || pushing}
+                  onClick={() => {
+                    const action = commitDialogAction;
+                    setCommitDialogAction(null);
+                    if (action === "commitPush") void handleGitCommitAndPush();
+                    else if (action === "commitSync") void handleGitCommitAndSync();
+                    else void handleGitCommit();
+                  }}
+                >
+                  {committing || pushing ? "提交中..." : "继续"}
+                </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {showTopologyCreateDialog ? (
           <div className="modal-mask" onClick={() => setShowTopologyCreateDialog(false)}>
@@ -7246,12 +7835,14 @@ export function App() {
             runtimeInstallLog={runtimeInstallLog}
             runtimeLogTail={runtimeLogTail}
             expandedLogDep={expandedLogDep}
+            autoInitAvailable={runtimeStatus.platform === "macos"}
             onClose={() => setShowEnvSetup(false)}
             onDismiss={() => {
               setRuntimeSetupDismissed(true);
               setShowEnvSetup(false);
             }}
             onRefresh={() => void refreshRuntimeRequirements()}
+            onRunAutoInit={() => void runRuntimeAutoInit()}
             onRunDependencyAction={(name, action) => void runDependencyAction(name, action)}
             onToggleLog={(name) => setExpandedLogDep((prev) => (prev === name ? null : name))}
           />

@@ -274,7 +274,7 @@ pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencySta
         "opencode" => Ok(check_dep(
             "opencode",
             &["--version"],
-            "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+            "npm i -g opencode-ai",
         )),
         "giteam" => Ok(check_giteam_npm_global()),
         _ => Err(format!("unsupported dependency: {}", dep_name)),
@@ -356,12 +356,11 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished.""##),
-        ("opencode", "install") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew install anomalyco/tap/opencode
-elif command -v npm >/dev/null 2>&1; then
+        ("opencode", "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
   npm install -g opencode-ai
 else
-  curl -fsSL https://opencode.ai/install | bash
+  echo "npm is required to install OpenCode (not found in PATH)."
+  exit 2
 fi"##),
         ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true
@@ -442,6 +441,107 @@ if [ -n "$NPM_CMD" ]; then
   "$NPM_CMD" uninstall -g giteam || true
 fi
 echo "giteam uninstall finished.""##),
+        // Mirrors the standalone macOS runtime bootstrap script so first-launch
+        // setup can run inside the packaged desktop app without relying on an
+        // external file path.
+        ("runtime", "bootstrap") => Ok(r##"set -e
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Runtime bootstrap only supports macOS."
+  exit 1
+fi
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+log() {
+  printf '==> %s\n' "$1"
+}
+
+ensure_brew_in_shell() {
+  if has_cmd brew; then
+    return
+  fi
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    return
+  fi
+  if [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+}
+
+install_homebrew() {
+  if has_cmd brew; then
+    log "Homebrew already installed"
+    return
+  fi
+  log "Installing Homebrew"
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  ensure_brew_in_shell
+  if ! has_cmd brew; then
+    echo "Homebrew installation failed."
+    exit 2
+  fi
+}
+
+ensure_git() {
+  if has_cmd git; then
+    log "git already installed"
+    return
+  fi
+  log "Installing git"
+  brew install -v git
+}
+
+ensure_node() {
+  if has_cmd node && has_cmd npm; then
+    log "node/npm already installed"
+    return
+  fi
+  log "Installing node"
+  brew install -v node
+}
+
+ensure_entire() {
+  if has_cmd entire; then
+    log "Entire already installed"
+    return
+  fi
+  log "Installing Entire"
+  brew tap entireio/tap
+  brew install entireio/tap/entire
+}
+
+ensure_opencode() {
+  if has_cmd opencode; then
+    log "OpenCode already installed"
+    return
+  fi
+  log "Installing OpenCode"
+  npm install -g --loglevel info --progress=true opencode-ai
+}
+
+ensure_giteam() {
+  if has_cmd giteam; then
+    log "giteam already installed"
+    return
+  fi
+  log "Installing giteam"
+  npm install -g --loglevel info --progress=true giteam@latest
+}
+
+install_homebrew
+ensure_brew_in_shell
+log "Updating Homebrew"
+brew update -v
+ensure_git
+ensure_node
+ensure_brew_in_shell
+ensure_entire
+ensure_opencode
+ensure_giteam
+echo "Runtime bootstrap complete.""##),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
 }
@@ -464,7 +564,7 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
     let opencode = check_dep(
         "opencode",
         &["--version"],
-        "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+        "npm i -g opencode-ai",
     );
     let giteam = check_giteam_npm_global();
     RuntimeRequirementsStatus {

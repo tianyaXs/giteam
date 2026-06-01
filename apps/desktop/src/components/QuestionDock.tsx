@@ -74,31 +74,6 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
     setAnswers(newAnswers);
   }, [answers, currentTab, disabledReason]);
 
-  const handleSelectOption = useCallback(() => {
-    if (disabledReason) return;
-    if (isOtherOption) {
-      if (!isMultiSelect) {
-        setIsEditing(true);
-        return;
-      }
-      if (currentCustomInput && isCustomPicked) {
-        handleToggle(currentCustomInput);
-        return;
-      }
-      setIsEditing(true);
-      return;
-    }
-    
-    const opt = options[selectedOption];
-    if (!opt) return;
-    
-    if (isMultiSelect) {
-      handleToggle(opt.label);
-    } else {
-      handlePick(opt.label);
-    }
-  }, [isOtherOption, isMultiSelect, currentCustomInput, isCustomPicked, options, selectedOption, handleToggle, handlePick, disabledReason]);
-
   const handleCustomSubmit = useCallback(() => {
     const text = currentCustomInput.trim();
     const prev = customInputs[currentTab];
@@ -260,6 +235,11 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                       onClick={() => {
                         if (disabledReason) return;
                         setSelectedOption(options.length);
+                        if (isMultiSelect && currentCustomInput && isCustomPicked) {
+                          handleToggle(currentCustomInput);
+                          return;
+                        }
+                        setIsEditing(true);
                       }}
                     >
                       <div className="gt-question-option-radio">

@@ -49,6 +49,8 @@ export type GitWorktreeOverview = {
   stagedCount: number;
   unstagedCount: number;
   untrackedCount: number;
+  addedLines: number;
+  deletedLines: number;
   entries: GitWorktreeEntry[];
   raw: string;
 };
@@ -86,6 +88,11 @@ export type GitUserIdentity = {
 export type GitWorktreeFileContent = {
   original: string;
   modified: string;
+  previewSupported?: boolean;
+  previewReason?: string;
+  previewKind?: "text" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
+  mime?: string;
+  dataBase64?: string;
 };
 
 export type RepositoryEntry = {

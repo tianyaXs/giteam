@@ -833,14 +833,25 @@
 
 .opencode-msg-user {
   align-self: flex-end;
-  max-width: min(76%, 620px);
+  max-width: min(72%, 560px);
   margin-left: 64px;
-  padding: var(--gt-space-2-5) var(--gt-space-3-5);
-  border-radius: var(--gt-radius-lg);
-  color: color-mix(in srgb, var(--text) 88%, var(--muted));
-  background: var(--message-user-surface);
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+  padding: 7px 12px;
+  border-radius: 16px;
+  color: color-mix(in srgb, var(--text) 92%, black);
+  background: color-mix(in srgb, var(--bg-soft) 62%, white);
+  border: 1px solid color-mix(in srgb, var(--line) 22%, transparent);
+  box-shadow: 0 1px 1px color-mix(in srgb, black 3%, transparent);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.42;
+}
+
+:root:not([data-theme="light"]) .opencode-msg-user,
+:root[data-theme="dark"] .opencode-msg-user {
+  color: color-mix(in srgb, var(--text) 94%, white);
+  background: color-mix(in srgb, var(--message-user-surface) 72%, var(--bg-soft));
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+  box-shadow: 0 1px 1px color-mix(in srgb, black 16%, transparent);
 }
 
 .opencode-msg-assistant {
@@ -848,7 +859,7 @@
   width: 100%;
   max-width: 100%;
   margin: 0;
-  padding: var(--gt-space-0-5) var(--gt-space-2-5) var(--gt-space-2-5) var(--gt-space-2-5);
+  padding: var(--gt-space-0-5) 0 var(--gt-space-2-5) 0;
   color: var(--text);
   background: transparent;
 }
@@ -864,45 +875,44 @@
   word-break: break-word;
 }
 
-.opencode-msg .markdown-lite code {
-  background: color-mix(in srgb, var(--bg-soft) 24%, transparent);
-  border-color: color-mix(in srgb, var(--line) 28%, transparent);
-  box-shadow: none;
-}
-
-.markdown-file-link {
+.markdown-app-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.42rem;
-  padding: 0;
+  max-width: min(100%, 420px);
+  padding: 0 0.06em;
+  border-radius: 0.18em;
   border: 0;
   background: transparent;
-  color: #3078d8;
+  color: #2f7de1;
   font: inherit;
+  font-weight: 500;
+  line-height: inherit;
   cursor: pointer;
+  text-decoration: none;
+  vertical-align: baseline;
+  letter-spacing: -0.01em;
+}
+
+.markdown-app-link.markdown-path-code {
+  display: inline;
+  max-width: none;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #2f7de1;
+  letter-spacing: 0;
+}
+
+.markdown-app-link:hover {
+  background: color-mix(in srgb, #2f80ed 6%, transparent);
+  color: #1f69ca;
   text-decoration: underline;
-  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
-.markdown-file-link:hover {
-  color: #1f64c7;
-}
-
-.markdown-file-link-icon {
-  width: 0.95rem;
-  height: 0.95rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: color-mix(in srgb, #3078d8 84%, white);
-  flex: 0 0 auto;
-}
-
-.markdown-file-link-icon svg {
-  width: 100%;
-  height: 100%;
-  fill: currentColor;
+.markdown-app-link.markdown-path-code:hover {
+  background: transparent;
 }
 
 .opencode-msg-body {
@@ -910,61 +920,169 @@
   padding: 0;
 }
 
+.opencode-msg-user .opencode-msg-body {
+  display: grid;
+  gap: 3px;
+}
+
+.opencode-msg-user .markdown-lite {
+  line-height: 1.42;
+}
+
+.opencode-msg-user .markdown-lite p,
+.opencode-msg-user .markdown-lite ul,
+.opencode-msg-user .markdown-lite ol {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.opencode-msg-collapsible {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 26%, transparent);
+  border-radius: var(--gt-radius-lg);
+  background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
+  overflow: hidden;
+}
+
+.opencode-msg-collapsible-summary {
+  list-style: none;
+  cursor: pointer;
+  display: grid;
+  gap: var(--gt-space-2);
+  padding: var(--gt-space-3) var(--gt-space-3-5);
+}
+
+.opencode-msg-collapsible-summary::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-msg-collapsible-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  line-height: 1.55;
+}
+
+.opencode-msg-collapsible-toggle {
+  color: color-mix(in srgb, var(--text) 72%, var(--accent));
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+}
+
+.opencode-msg-collapsible[open] .opencode-msg-collapsible-toggle {
+  display: none;
+}
+
+.opencode-msg-collapsible-body {
+  padding: 0 var(--gt-space-3-5) var(--gt-space-3-5);
+  border-top: 1px solid color-mix(in srgb, var(--line) 18%, transparent);
+}
+
 .opencode-assistant-timeline {
   display: flex;
   flex-direction: column;
-  gap: var(--gt-space-3-5);
+  gap: 14px;
 }
 
 .opencode-think-card {
-  margin: 0 0 var(--gt-space-2);
+  margin: 0;
   border: 0;
   background: transparent;
   padding: 0;
 }
 
 .opencode-think-card[open] {
-  border: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: var(--message-surface);
-  padding: var(--gt-space-2) var(--gt-space-3) var(--gt-space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .opencode-think-card-summary {
+  appearance: none;
   list-style: none;
   cursor: pointer;
   user-select: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: var(--gt-space-2);
-  width: fit-content;
-  max-width: min(360px, 100%);
-  font-size: var(--gt-text-sm);
-  color: var(--muted);
+  max-width: 100%;
+  min-height: 34px;
+  padding: 5px 0;
+  font-size: var(--gt-text-md);
+  color: var(--text);
   margin-bottom: 0;
-  border-radius: var(--gt-radius-pill);
+  border-radius: var(--gt-radius-md);
+  transition: background 140ms ease;
 }
 
 .opencode-think-card[open] .opencode-think-card-summary {
-  margin-bottom: var(--gt-space-1);
+  margin-bottom: 0;
+}
+
+.opencode-think-card:hover .opencode-think-card-summary {
+  background: color-mix(in srgb, var(--bg-soft) 46%, transparent);
 }
 
 .opencode-think-label {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: var(--gt-space-1-5);
+  gap: 0;
+  font-size: var(--gt-text-md);
   font-weight: var(--gt-font-semibold);
-  letter-spacing: 0.01em;
-  color: color-mix(in srgb, var(--text) 58%, var(--muted));
+  letter-spacing: 0;
+  color: var(--text);
 }
 
-.opencode-think-spark {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--gt-radius-pill);
-  background: color-mix(in srgb, var(--accent) 65%, var(--text));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+.opencode-think-card.is-active .opencode-think-label {
+  color: var(--text);
+}
+
+.opencode-thinking-placeholder {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 5px 0;
+}
+
+.opencode-thinking-placeholder-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+  min-width: 0;
+}
+
+.opencode-thinking-placeholder-head .opencode-think-label {
+  font-size: var(--gt-text-md);
+  line-height: 1.2;
+}
+
+.opencode-thinking-placeholder-wave {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+  color: color-mix(in srgb, var(--text) 44%, var(--muted));
+}
+
+.opencode-thinking-placeholder-bar {
+  display: block;
+  width: 3px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.44;
+  transform-origin: center bottom;
+  animation: opencode-thinking-bars 1.15s ease-in-out infinite;
+}
+
+.opencode-thinking-placeholder-bar:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.opencode-thinking-placeholder-bar:nth-child(3) {
+  animation-delay: 280ms;
 }
 
 .opencode-think-carousel {
@@ -973,7 +1091,7 @@
   flex: 0 1 230px;
   min-width: 0;
   width: min(230px, 42vw);
-  height: 24px;
+  height: 20px;
   overflow: hidden;
   color: color-mix(in srgb, var(--text) 48%, var(--muted));
   mask-image: linear-gradient(90deg, transparent 0, #000 18px, #000 calc(100% - 28px), transparent 100%);
@@ -984,15 +1102,15 @@
   --think-count: 3;
   position: relative;
   display: block;
-  height: 24px;
+  height: 20px;
   isolation: isolate;
 }
 
 .opencode-think-carousel-line {
   position: absolute;
   inset: 0;
-  height: 24px;
-  line-height: var(--gt-leading-lg);
+  height: 20px;
+  line-height: 20px;
   width: 100%;
   padding: 0 var(--gt-space-3) 0 var(--gt-space-1);
   color: currentColor;
@@ -1036,16 +1154,7 @@
 .opencode-live-text {
   position: relative;
   display: inline-block;
-  color: color-mix(in srgb, var(--text) 94%, var(--accent));
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--text) 82%, transparent) 0%,
-    color-mix(in srgb, var(--text) 98%, white) 42%,
-    color-mix(in srgb, var(--text) 82%, transparent) 100%
-  );
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
+  color: var(--text);
   animation: opencode-live-shimmer 1.35s linear infinite;
 }
 
@@ -1069,12 +1178,16 @@
   margin: var(--gt-space-1) 0 var(--gt-space-1) var(--gt-space-3-5);
 }
 
-.opencode-msg .md-code {
+.opencode-msg .markdown-lite ul,
+.opencode-msg .markdown-lite ol {
+  box-sizing: border-box;
+  width: 100%;
   margin: var(--gt-space-1) 0;
+  padding-left: 1.35em;
 }
 
-.opencode-msg .md-code code {
-  padding: var(--gt-space-2);
+.opencode-msg .markdown-lite li {
+  margin: 0.18em 0;
 }
 
 .opencode-session-loading {
@@ -1503,7 +1616,7 @@
   margin: 0;
   list-style: none;
   cursor: pointer;
-  padding: var(--gt-space-2) var(--gt-space-2-5);
+  padding: var(--gt-space-2) 0;
   border-radius: var(--gt-radius-md);
   transition: background 140ms ease;
 }
@@ -1573,6 +1686,108 @@
   border-top: 1px solid color-mix(in srgb, var(--line) 24%, transparent);
 }
 
+.opencode-tool-batch {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.opencode-tool-batch-edit {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.opencode-tool-batch-head {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+  max-width: 100%;
+  margin: 0;
+  list-style: none;
+  cursor: pointer;
+  min-height: 34px;
+  padding: 5px 0;
+  border-radius: var(--gt-radius-md);
+  color: var(--text);
+  transition: background 140ms ease;
+  background: transparent;
+}
+
+.opencode-tool-batch-head::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-tool-batch-head::marker {
+  content: "";
+}
+
+.opencode-tool-batch:hover .opencode-tool-batch-head {
+  background: color-mix(in srgb, var(--bg-soft) 46%, transparent);
+}
+
+.opencode-tool-batch-edit:hover .opencode-tool-batch-head,
+.opencode-tool-batch-edit[open] .opencode-tool-batch-head {
+  background: transparent;
+}
+
+.opencode-tool-batch-head > strong {
+  font-size: var(--gt-text-md);
+  font-weight: var(--gt-font-semibold);
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.opencode-tool-batch-head > strong.opencode-live-text {
+  color: var(--accent);
+}
+
+.opencode-tool-batch-count {
+  color: color-mix(in srgb, var(--muted) 82%, var(--text));
+  font-size: var(--gt-text-md);
+  font-weight: var(--gt-font-medium);
+  white-space: nowrap;
+}
+
+.opencode-tool-batch .opencode-context-caret {
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+}
+
+.opencode-tool-batch:hover .opencode-context-caret,
+.opencode-tool-batch[open] .opencode-context-caret {
+  opacity: 1;
+}
+
+.opencode-tool-batch[open] .opencode-context-caret {
+  transform: rotate(90deg);
+}
+
+.opencode-tool-batch-list {
+  margin-top: 4px;
+  padding-left: 0;
+  gap: 0;
+}
+
+.opencode-tool-batch-list .opencode-exec-item {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: var(--gt-space-2) var(--gt-space-2-5);
+}
+
+.opencode-tool-batch-list .opencode-exec-item + .opencode-exec-item {
+  border-top: 1px solid color-mix(in srgb, var(--line) 24%, transparent);
+}
+
 .opencode-exec-tool-head {
   display: flex;
   align-items: baseline;
@@ -1586,16 +1801,37 @@
 }
 
 .opencode-exec-context .opencode-exec-tool-head > strong {
-  flex: 0 0 2.6em;
-  min-width: 2.6em;
+  flex: 0 0 3em;
+  min-width: 3em;
+  text-align: left;
+}
+
+.opencode-exec-context .opencode-exec-item {
+  padding-left: var(--gt-space-3);
+  padding-right: var(--gt-space-3);
 }
 
 .opencode-tool-detail-label {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.opencode-tool-file-pill {
+  display: inline-block;
+  max-width: min(48vw, 360px);
+  padding: 0 0.18em;
+  border-radius: 0.32em;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: color-mix(in srgb, var(--text) 82%, var(--accent));
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .opencode-task-link {
@@ -1726,26 +1962,39 @@
 }
 
 .opencode-tool-details {
-  margin-top: var(--gt-space-2);
-  border-top: 1px solid color-mix(in srgb, var(--line) 22%, transparent);
-  padding-top: var(--gt-space-2);
+  cursor: default;
 }
 
-.opencode-tool-details summary {
+.opencode-tool-summary {
   list-style: none;
   cursor: pointer;
-  color: color-mix(in srgb, var(--text) 72%, var(--accent));
-  font-size: var(--gt-text-sm);
+  margin: 0;
 }
 
-.opencode-tool-details summary::-webkit-details-marker {
+.opencode-tool-summary::-webkit-details-marker {
   display: none;
+}
+
+.opencode-tool-summary::marker {
+  content: "";
+}
+
+.opencode-tool-details .opencode-tool-summary {
+  border-radius: var(--gt-radius-md);
+  transition: background 140ms ease;
+}
+
+.opencode-tool-details:hover .opencode-tool-summary,
+.opencode-tool-details[open] .opencode-tool-summary {
+  background: color-mix(in srgb, var(--bg-soft) 38%, transparent);
 }
 
 .opencode-tool-details-body {
   display: grid;
   gap: var(--gt-space-2);
   margin-top: var(--gt-space-2);
+  padding-top: var(--gt-space-2);
+  border-top: 1px solid color-mix(in srgb, var(--line) 22%, transparent);
 }
 
 .opencode-tool-section,

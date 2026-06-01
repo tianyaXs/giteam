@@ -4,6 +4,45 @@ import * as monaco from "monaco-editor";
 
 loader.config({ monaco });
 
+let giteamThemesReady = false;
+
+function ensureGiteamThemes() {
+  if (giteamThemesReady) return;
+  monaco.editor.defineTheme("giteam-light", {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": "#fbfbfc",
+      "editorLineNumber.foreground": "#9aa3b2",
+      "editor.lineHighlightBackground": "#f4f7fb",
+      "diffEditor.insertedLineBackground": "#fbfefc",
+      "diffEditor.removedLineBackground": "#fff8f8",
+      "diffEditor.insertedTextBackground": "#e7f6ed",
+      "diffEditor.removedTextBackground": "#fde8e8",
+      "diffEditor.diagonalFill": "#00000000"
+    }
+  });
+  monaco.editor.defineTheme("giteam-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": "#121519",
+      "editorLineNumber.foreground": "#6f7b8d",
+      "editor.lineHighlightBackground": "#1a1f26",
+      "diffEditor.insertedLineBackground": "#121b16",
+      "diffEditor.removedLineBackground": "#1d1517",
+      "diffEditor.insertedTextBackground": "#1b3f2d",
+      "diffEditor.removedTextBackground": "#48262a",
+      "diffEditor.diagonalFill": "#00000000"
+    }
+  });
+  giteamThemesReady = true;
+}
+
+ensureGiteamThemes();
+
 type MonacoDiffViewerProps = {
   filePath: string;
   original: string;
@@ -99,7 +138,7 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
         width="100%"
         value={props.modified || props.original}
         language={props.language}
-        theme={props.theme === "light" ? "light" : "vs-dark"}
+        theme={props.theme === "light" ? "giteam-light" : "giteam-dark"}
         onMount={(editor) => {
           codeEditorRef.current = editor;
           scheduleHighlight(editor, props.focusLine, "code");
@@ -116,6 +155,7 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
           wordWrap: "off",
           scrollbar: {
             alwaysConsumeMouseWheel: false,
+            horizontal: "hidden",
             horizontalScrollbarSize: 10,
             verticalScrollbarSize: 10
           }
@@ -134,7 +174,7 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
       original={props.original}
       modified={props.modified}
       language={props.language}
-      theme={props.theme === "light" ? "light" : "vs-dark"}
+      theme={props.theme === "light" ? "giteam-light" : "giteam-dark"}
       onMount={(editor) => {
         diffEditorRef.current = editor;
         diffUpdateDisposableRef.current?.dispose();
@@ -157,6 +197,7 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
         wordWrap: "off",
         scrollbar: {
           alwaysConsumeMouseWheel: false,
+          horizontal: "hidden",
           horizontalScrollbarSize: 10,
           verticalScrollbarSize: 10
         }

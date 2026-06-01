@@ -4,7 +4,6 @@ import {
   collectWorktreeNodeEntries,
   collectWorktreeNodeFilePaths,
   getWorktreeDisplayStatus,
-  getWorktreeFileKindLabel,
   type WorktreeTreeNode
 } from "../../lib/worktreeDiff";
 
@@ -45,19 +44,42 @@ export function WorktreeFileTree({
   onDiscardFile,
   onDiscardEntries
 }: WorktreeFileTreeProps) {
+  const collapseDirectoryNode = (node: WorktreeTreeNode) => {
+    let current = node;
+    const parts = [node.name];
+    while (current.kind === "dir" && current.children.length === 1 && current.children[0]?.kind === "dir") {
+      current = current.children[0];
+      parts.push(current.name);
+    }
+    return {
+      node: current,
+      label: parts.join("/")
+    };
+  };
+
   const renderNodes = (items: WorktreeTreeNode[], depth: number): ReactNode => items.map((node) => {
     if (node.kind === "dir") {
-      const expanded = expandedDirs.includes(node.path);
-      const filePaths = collectWorktreeNodeFilePaths(node);
-      const entries = collectWorktreeNodeEntries(node);
+      const collapsed = collapseDirectoryNode(node);
+      const expanded = expandedDirs.includes(collapsed.node.path);
+      const filePaths = collectWorktreeNodeFilePaths(collapsed.node);
+      const entries = collectWorktreeNodeEntries(collapsed.node);
       const busyPath = mode === "stage" ? stagingFile : unstagingFile;
       const canDiscardDir = entries.some((entry) => entry.staged || entry.unstaged || entry.untracked);
+      const containsSelected = selectedFile ? filePaths.includes(selectedFile) : false;
       return (
         <div key={node.path} className="gt-worktree-tree-group">
-          <div className="gt-worktree-tree-row gt-worktree-tree-dir" style={{ paddingLeft: `${depth * 14 + 6}px` }}>
-            <button type="button" className="gt-worktree-dir-main-btn" onClick={() => onToggleDir(node.path)}>
-              <span className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} aria-hidden="true" />
-              <span className="gt-worktree-tree-name">{node.name}</span>
+          <div
+            className={containsSelected
+              ? "gt-worktree-tree-row gt-worktree-tree-dir is-ancestor-active"
+              : "gt-worktree-tree-row gt-worktree-tree-dir"}
+            style={{ paddingLeft: `${depth * 11 + 4}px` }}
+            title={collapsed.node.path}
+          >
+            <button type="button" className="gt-worktree-dir-main-btn" onClick={() => onToggleDir(collapsed.node.path)}>
+              <svg className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M6 4.5 10 8 6 11.5" />
+              </svg>
+              <span className="gt-worktree-tree-name">{collapsed.label}</span>
             </button>
             <div className="gt-worktree-row-tail">
               <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
@@ -67,31 +89,33 @@ export function WorktreeFileTree({
                   className={mode === "unstage" ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
                   title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
                   aria-pressed={mode === "unstage"}
-                  disabled={busyPath === node.path || filePaths.length === 0}
+                  disabled={busyPath === collapsed.node.path || filePaths.length === 0}
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (mode === "unstage") onUnstagePaths(filePaths, node.path);
-                    else onStagePaths(filePaths, node.path);
+                    if (mode === "unstage") onUnstagePaths(filePaths, collapsed.node.path);
+                    else onStagePaths(filePaths, collapsed.node.path);
                   }}
                 >
-                  {mode === "unstage" ? (
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    {mode === "unstage" ? (
+                      <path d="M4 8h8" />
+                    ) : (
                       <path d="M4 8.2 6.7 11 12 5" />
-                    </svg>
-                  ) : null}
+                    )}
+                  </svg>
                 </button>
                 {canDiscardDir ? (
                   <button
                     type="button"
                     className="gt-worktree-action-btn is-discard"
                     title="丢弃此目录变更"
-                    disabled={discardingFile === node.path}
+                    disabled={discardingFile === collapsed.node.path}
                     onClick={(event) => {
                       event.stopPropagation();
-                      onDiscardEntries(entries, node.path);
+                      onDiscardEntries(entries, collapsed.node.path);
                     }}
                   >
-                    {discardingFile === node.path ? "..." : (
+                    {discardingFile === collapsed.node.path ? "..." : (
                       <svg viewBox="0 0 16 16" aria-hidden="true">
                         <path d="M6 4 3 7l3 3" />
                         <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
@@ -102,7 +126,7 @@ export function WorktreeFileTree({
               </div>
             </div>
           </div>
-          {expanded ? <div className="gt-worktree-tree-children">{renderNodes(node.children, depth + 1)}</div> : null}
+          {expanded ? <div className="gt-worktree-tree-children">{renderNodes(collapsed.node.children, depth + 1)}</div> : null}
         </div>
       );
     }
@@ -110,13 +134,12 @@ export function WorktreeFileTree({
     const entry = node.entry;
     if (!entry) return null;
     const status = getWorktreeDisplayStatus(entry);
-    const fileKind = getWorktreeFileKindLabel(entry.path);
     const canDiscard = entry.staged || entry.unstaged || entry.untracked;
     return (
       <div
         key={node.path}
         className={selectedFile === entry.path ? "gt-worktree-tree-row gt-worktree-tree-file active" : "gt-worktree-tree-row gt-worktree-tree-file"}
-        style={{ paddingLeft: `${depth * 14 + 6}px` }}
+        style={{ paddingLeft: `${depth * 11 + 4}px` }}
         title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
       >
         <button
@@ -124,7 +147,6 @@ export function WorktreeFileTree({
           className="gt-worktree-file-main-btn"
           onClick={() => onOpenFile(entry.path)}
         >
-          <span className={`gt-worktree-kind gt-worktree-kind-${fileKind}`}>{fileKind}</span>
           <span className="gt-worktree-tree-name">{node.name}</span>
         </button>
         <div className="gt-worktree-row-tail">
@@ -142,11 +164,13 @@ export function WorktreeFileTree({
                 else onStageFile(entry.path);
               }}
             >
-              {entry.staged ? (
-                <svg viewBox="0 0 16 16" aria-hidden="true">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                {entry.staged ? (
+                  <path d="M4 8h8" />
+                ) : (
                   <path d="M4 8.2 6.7 11 12 5" />
-                </svg>
-              ) : null}
+                )}
+              </svg>
             </button>
             {canDiscard ? (
               <button

@@ -2,7 +2,7 @@ export type OpencodeChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  attachments?: Array<{ id: string; kind: "image"; uri: string; mime?: string; filename?: string }>;
+  attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
 };
 
 export type OpencodeChatSession = {
@@ -113,6 +113,17 @@ export function opencodeSessionFromSummary(summary: OpencodeSessionSummary, inde
   };
 }
 
+export function compareOpencodeSessionActivity(
+  a: Pick<OpencodeSessionSummary, "id" | "createdAt" | "updatedAt">,
+  b: Pick<OpencodeSessionSummary, "id" | "createdAt" | "updatedAt">
+): number {
+  const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+  if (byUpdated !== 0) return byUpdated;
+  const byCreated = (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
+  if (byCreated !== 0) return byCreated;
+  return String(a.id || "").localeCompare(String(b.id || ""));
+}
+
 export function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
   const out: Array<{ start: number; end: number }> = [];
   let currentStart = 0;
@@ -149,11 +160,5 @@ export function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[]
 }
 
 export function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return [...rows].sort((a, b) => {
-    const byCreated = (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0);
-    if (byCreated !== 0) return byCreated;
-    const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
-    if (byUpdated !== 0) return byUpdated;
-    return String(a.id || "").localeCompare(String(b.id || ""));
-  });
+  return [...rows].sort(compareOpencodeSessionActivity);
 }

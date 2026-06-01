@@ -1,11 +1,12 @@
 import type {
   ChangeEventHandler,
   ClipboardEventHandler,
+  DragEventHandler,
   KeyboardEventHandler,
   RefObject
 } from "react";
 import { OPENCODE_COMPOSER_AGENT_OPTIONS } from "../../lib/opencodeComposerSettings";
-import type { OpencodeImageAttachment } from "../../lib/imageAttachments";
+import { getAttachmentBadgeLabel, isImageAttachment, type OpencodeAttachment } from "../../lib/imageAttachments";
 import type { OpencodePermissionReply, OpencodePermissionRequest } from "../../lib/opencodePermissions";
 import type { OpencodeTodoItem } from "../../lib/opencodeSessions";
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
@@ -57,9 +58,9 @@ type OpencodeComposerPanelProps = {
   selectedRepoName: string;
   showJumpLatest: boolean;
   onJumpLatest: () => void;
-  imageAttachments: OpencodeImageAttachment[];
+  attachments: OpencodeAttachment[];
   mcpPromptRefs: string[];
-  onRemoveImageAttachment: (id: string) => void;
+  onRemoveAttachment: (id: string) => void;
   onRemoveMcpPromptRef: (name: string) => void;
   slashOpen: boolean;
   slashSuggestions: SlashCommandOption[];
@@ -73,11 +74,14 @@ type OpencodeComposerPanelProps = {
   onPromptChange: ChangeEventHandler<HTMLTextAreaElement>;
   onPromptKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
   onPromptPaste: ClipboardEventHandler<HTMLTextAreaElement>;
+  onPromptDragOver: DragEventHandler<HTMLTextAreaElement>;
+  onPromptDrop: DragEventHandler<HTMLTextAreaElement>;
   attachmentMenuOpen: boolean;
   onToggleAttachmentMenu: () => void;
-  imageInputRef: RefObject<HTMLInputElement | null>;
-  onOpenImagePicker: () => void;
-  onImageInputChange: ChangeEventHandler<HTMLInputElement>;
+  attachmentInputRef: RefObject<HTMLInputElement | null>;
+  attachmentInputAccept: string;
+  onOpenAttachmentPicker: () => void;
+  onAttachmentInputChange: ChangeEventHandler<HTMLInputElement>;
   modelPickerRef: RefObject<HTMLDivElement | null>;
   showModelPicker: boolean;
   onToggleModelPicker: () => void;
@@ -96,6 +100,11 @@ type OpencodeComposerPanelProps = {
   canSubmit: boolean;
   onPrimaryAction: () => void;
 };
+
+function formatPermissionPatterns(patterns: string[]): string {
+  if (!patterns.length) return "*";
+  return patterns.join(" · ");
+}
 
 export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
   const {
@@ -118,9 +127,9 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     selectedRepoName,
     showJumpLatest,
     onJumpLatest,
-    imageAttachments,
+    attachments,
     mcpPromptRefs,
-    onRemoveImageAttachment,
+    onRemoveAttachment,
     onRemoveMcpPromptRef,
     slashOpen,
     slashSuggestions,
@@ -134,11 +143,14 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     onPromptChange,
     onPromptKeyDown,
     onPromptPaste,
+    onPromptDragOver,
+    onPromptDrop,
     attachmentMenuOpen,
     onToggleAttachmentMenu,
-    imageInputRef,
-    onOpenImagePicker,
-    onImageInputChange,
+    attachmentInputRef,
+    attachmentInputAccept,
+    onOpenAttachmentPicker,
+    onAttachmentInputChange,
     modelPickerRef,
     showModelPicker,
     onToggleModelPicker,
@@ -159,9 +171,11 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
   } = props;
 
   const activeModelDisplay = getModelDisplay(activeModel || "");
-  const isBlankComposer = !promptInput.trim() && imageAttachments.length === 0 && mcpPromptRefs.length === 0;
+  const isBlankComposer = !promptInput.trim() && attachments.length === 0 && mcpPromptRefs.length === 0;
   const composerPlaceholder = showEmptyState ? "要做什么？" : isBlankComposer ? "继续跟进" : "要做什么？";
   const configSummaryLabel = activeModelDisplay.label || activeModel || "Auto";
+  const visiblePermissions = permissions.slice(0, 2);
+  const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
 
   return (
     <div className="opencode-input-row">
@@ -211,25 +225,54 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
         ) : null}
 
         {permissions.length > 0 ? (
-          <div className="gt-permission-dock">
+          <div className="gt-permission-dock" role="status" aria-live="polite">
             <div className="gt-permission-dock-head">
-              <span>授权请求</span>
-              <button type="button" className="chip" onClick={onOpenPermissionsPanel}>详情</button>
+              <div className="gt-permission-dock-head-main">
+                <span className="gt-permission-dock-badge">请求授权</span>
+              </div>
             </div>
-            {permissions.slice(0, 2).map((request) => (
+            {visiblePermissions.map((request) => (
               <div key={request.id} className="gt-permission-card">
                 <div className="gt-permission-main">
-                  <strong>{request.permission || "permission"}</strong>
-                  <span>{(request.patterns || []).join(", ") || "*"}</span>
-                  {request.tool?.callID ? <small>{request.tool.callID}</small> : null}
+                  <div className="gt-permission-main-top">
+                    <strong>{request.permission || "permission"}</strong>
+                    {request.tool?.callID ? <small className="gt-permission-call-id">{request.tool.callID}</small> : null}
+                  </div>
+                  <div className="gt-permission-meta-row">
+                    <span className="gt-permission-meta-label">作用范围</span>
+                    <code className="gt-permission-meta-value">{formatPermissionPatterns(request.patterns || [])}</code>
+                  </div>
                 </div>
                 <div className="gt-permission-actions">
-                  <button type="button" className="chip" onClick={() => onReplyPermission(request.id, "once")}>本次允许</button>
-                  <button type="button" className="chip primary" onClick={() => onReplyPermission(request.id, "always")}>总是允许</button>
-                  <button type="button" className="chip danger" onClick={() => onReplyPermission(request.id, "reject")}>拒绝</button>
+                  <button
+                    type="button"
+                    className="gt-permission-action gt-permission-action-secondary"
+                    onClick={() => onReplyPermission(request.id, "once")}
+                  >
+                    本次允许
+                  </button>
+                  <button
+                    type="button"
+                    className="gt-permission-action gt-permission-action-primary"
+                    onClick={() => onReplyPermission(request.id, "always")}
+                  >
+                    总是允许
+                  </button>
+                  <button
+                    type="button"
+                    className="gt-permission-action gt-permission-action-danger"
+                    onClick={() => onReplyPermission(request.id, "reject")}
+                  >
+                    拒绝
+                  </button>
                 </div>
               </div>
             ))}
+            {hiddenPermissionCount > 0 ? (
+              <button type="button" className="gt-permission-dock-more" onClick={onOpenPermissionsPanel}>
+                还有 {hiddenPermissionCount} 条授权请求，前往详情面板处理
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -269,18 +312,23 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
             </button>
           ) : null}
 
-          {imageAttachments.length > 0 || mcpPromptRefs.length > 0 ? (
+          {attachments.length > 0 || mcpPromptRefs.length > 0 ? (
             <div className="opencode-composer-chips">
-              {imageAttachments.length > 0 ? (
+              {attachments.length > 0 ? (
                 <div className="opencode-attachments">
-                  {imageAttachments.map((image) => (
-                    <div key={image.id} className="opencode-attachment-chip">
-                      <img src={image.dataUrl} alt={image.filename} className="opencode-attachment-thumb" />
+                  {attachments.map((attachment) => (
+                    <div key={attachment.id} className={isImageAttachment(attachment) ? "opencode-attachment-chip is-image" : "opencode-attachment-chip is-file"}>
+                      {isImageAttachment(attachment) ? (
+                        <img src={attachment.dataUrl} alt={attachment.filename} className="opencode-attachment-thumb" />
+                      ) : (
+                        <span className="opencode-attachment-filetype">{getAttachmentBadgeLabel(attachment)}</span>
+                      )}
+                      <span className="opencode-attachment-name" title={attachment.filename}>{attachment.filename}</span>
                       <button
                         type="button"
                         className="opencode-attachment-remove"
-                        onClick={() => onRemoveImageAttachment(image.id)}
-                        aria-label="移除图片"
+                        onClick={() => onRemoveAttachment(attachment.id)}
+                        aria-label={`移除 ${attachment.filename}`}
                       >
                         <CloseIcon width={16} height={16} />
                       </button>
@@ -334,6 +382,8 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
                 onChange={onPromptChange}
                 onKeyDown={onPromptKeyDown}
                 onPaste={onPromptPaste}
+                onDragOver={onPromptDragOver}
+                onDrop={onPromptDrop}
                 rows={1}
               />
             </div>
@@ -354,20 +404,20 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
                 </button>
                 {attachmentMenuOpen ? (
                   <div className="opencode-attachment-menu">
-                    <button type="button" className="opencode-attachment-menu-item" onClick={onOpenImagePicker}>
+                    <button type="button" className="opencode-attachment-menu-item" onClick={onOpenAttachmentPicker}>
                       <span className="opencode-attachment-menu-icon" aria-hidden="true"><ImageIcon width={18} height={18} /></span>
-                      <span>上传图片</span>
+                      <span className="opencode-attachment-menu-label">上传图片或文档</span>
                     </button>
                   </div>
                 ) : null}
               </div>
               <input
-                ref={imageInputRef as RefObject<HTMLInputElement>}
+                ref={attachmentInputRef as RefObject<HTMLInputElement>}
                 type="file"
-                accept="image/*"
+                accept={attachmentInputAccept}
                 multiple
                 style={{ display: "none" }}
-                onChange={onImageInputChange}
+                onChange={onAttachmentInputChange}
               />
             </div>
 

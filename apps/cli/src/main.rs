@@ -1351,7 +1351,7 @@ fn plugin_status(name: PluginName) -> PluginStatus {
         PluginName::Opencode => check_dep(
             "opencode",
             &["--version"],
-            "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+            "npm i -g opencode-ai",
         ),
         PluginName::Giteam => check_giteam_npm_global(),
     }
@@ -2247,12 +2247,11 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished.""##),
-        (PluginName::Opencode, "install") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew install anomalyco/tap/opencode
-elif command -v npm >/dev/null 2>&1; then
+        (PluginName::Opencode, "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
   npm install -g opencode-ai
 else
-  curl -fsSL https://opencode.ai/install | bash
+  echo "npm is required to install OpenCode (not found in PATH)."
+  exit 2
 fi"##),
         (PluginName::Opencode, "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true

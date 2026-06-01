@@ -1,9 +1,18 @@
 import type { ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ChevronRightIcon, EditIcon, FolderIcon, MoreHorizontalIcon, PlusIcon } from "../icons";
 import { firstLetter, formatRelativeTime } from "../../lib/textFormatting";
 import type { OpencodeChatSession } from "../../lib/opencodeSessions";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
 import pinnedIconUrl from "./sidebar-pin.png";
+
+const SIDEBAR_LAYOUT_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+
+function sidebarLayoutTransition(reduceMotion: boolean) {
+  return reduceMotion
+    ? { duration: 0.12, ease: "linear" as const }
+    : { duration: 0.24, ease: SIDEBAR_LAYOUT_EASE };
+}
 
 type DesktopSidebarProps = {
   noRepos: boolean;
@@ -20,6 +29,7 @@ type DesktopSidebarProps = {
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
+  isRepoSessionsPaging: (repoId: string) => boolean;
   onImportRepository: () => void | Promise<void>;
   onCreateSession: () => void | Promise<void>;
   onSelectRepo: (repo: RepositoryEntry) => void;
@@ -49,6 +59,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
+    isRepoSessionsPaging,
     onImportRepository,
     onCreateSession,
     onSelectRepo,
@@ -100,6 +111,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             getVisibleRepoSessions={getVisibleRepoSessions}
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
+            isRepoSessionsPaging={isRepoSessionsPaging}
             onSelectRepo={onSelectRepo}
             onToggleRepoSessions={onToggleRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
@@ -124,6 +136,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             getVisibleRepoSessions={getVisibleRepoSessions}
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
+            isRepoSessionsPaging={isRepoSessionsPaging}
             onSelectRepo={onSelectRepo}
             onToggleRepoSessions={onToggleRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
@@ -194,6 +207,7 @@ type ProjectSectionProps = {
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
+  isRepoSessionsPaging: (repoId: string) => boolean;
   onSelectRepo: (repo: RepositoryEntry) => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
@@ -219,6 +233,7 @@ function ProjectSection(props: ProjectSectionProps) {
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
+    isRepoSessionsPaging,
     onSelectRepo,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
@@ -236,30 +251,33 @@ function ProjectSection(props: ProjectSectionProps) {
         {headerAction ? <div className="gt-sidebar-actions">{headerAction}</div> : null}
       </div>
       <div className="gt-sidebar-project-list">
-        {repos.map((repo) => (
-          <ProjectRow
-            key={repo.id}
-            repo={repo}
-            pinned={isPinnedSection}
-            busy={busy}
-            opencodeInstalled={opencodeInstalled}
-            expanded={expandedProjectIds.includes(repo.id)}
-            selectedRepoId={selectedRepoId}
-            activeSessionId={activeSessionId}
-            hasDraftForRepo={draftRepoId === repo.id}
-            sessions={getVisibleRepoSessions(repo.id)}
-            hasMoreSessions={hasMoreRepoSessions(repo.id)}
-            sessionsLoading={isRepoSessionsLoading(repo.id)}
-            onSelectRepo={onSelectRepo}
-            onToggleRepoSessions={onToggleRepoSessions}
-            onOpenRepoContextMenu={onOpenRepoContextMenu}
-            onTogglePinnedRepo={onTogglePinnedRepo}
-            onFocusDraftSession={onFocusDraftSession}
-            onOpenSession={onOpenSession}
-            onOpenSessionContextMenu={onOpenSessionContextMenu}
-            onLoadMoreSessions={onLoadMoreSessions}
-          />
-        ))}
+        <AnimatePresence initial={false}>
+          {repos.map((repo) => (
+            <ProjectRow
+              key={repo.id}
+              repo={repo}
+              pinned={isPinnedSection}
+              busy={busy}
+              opencodeInstalled={opencodeInstalled}
+              expanded={expandedProjectIds.includes(repo.id)}
+              selectedRepoId={selectedRepoId}
+              activeSessionId={activeSessionId}
+              hasDraftForRepo={draftRepoId === repo.id}
+              sessions={getVisibleRepoSessions(repo.id)}
+              hasMoreSessions={hasMoreRepoSessions(repo.id)}
+              sessionsLoading={isRepoSessionsLoading(repo.id)}
+              sessionsPaging={isRepoSessionsPaging(repo.id)}
+              onSelectRepo={onSelectRepo}
+              onToggleRepoSessions={onToggleRepoSessions}
+              onOpenRepoContextMenu={onOpenRepoContextMenu}
+              onTogglePinnedRepo={onTogglePinnedRepo}
+              onFocusDraftSession={onFocusDraftSession}
+              onOpenSession={onOpenSession}
+              onOpenSessionContextMenu={onOpenSessionContextMenu}
+              onLoadMoreSessions={onLoadMoreSessions}
+            />
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );
@@ -277,6 +295,7 @@ type ProjectRowProps = {
   sessions: OpencodeChatSession[];
   hasMoreSessions: boolean;
   sessionsLoading: boolean;
+  sessionsPaging: boolean;
   onSelectRepo: (repo: RepositoryEntry) => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
@@ -288,6 +307,7 @@ type ProjectRowProps = {
 };
 
 function ProjectRow(props: ProjectRowProps) {
+  const reduceMotion = useReducedMotion();
   const {
     repo,
     pinned,
@@ -300,6 +320,7 @@ function ProjectRow(props: ProjectRowProps) {
     sessions,
     hasMoreSessions,
     sessionsLoading,
+    sessionsPaging,
     onSelectRepo,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
@@ -311,12 +332,20 @@ function ProjectRow(props: ProjectRowProps) {
   } = props;
 
   const shouldRenderChildren = expanded && (sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !opencodeInstalled);
+  const layoutTransition = sidebarLayoutTransition(Boolean(reduceMotion));
 
   return (
-    <div className="gt-sidebar-project-wrap">
-      <div
+    <motion.div
+      className="gt-sidebar-project-wrap"
+      transition={layoutTransition}
+      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+    >
+      <motion.div
         className="gt-sidebar-project-row"
         title={repo.path}
+        transition={layoutTransition}
         onClick={() => {
           if (busy) return;
           onSelectRepo(repo);
@@ -341,48 +370,69 @@ function ProjectRow(props: ProjectRowProps) {
         >
           <SidebarPinnedIcon />
         </button>
-      </div>
+      </motion.div>
 
-      {shouldRenderChildren ? (
-        <div className="gt-sidebar-project-children">
-          {hasDraftForRepo ? (
-            <button className="gt-session-item active gt-session-item-draft" onClick={onFocusDraftSession}>
-              <span className="gt-session-title">New Session</span>
-            </button>
-          ) : null}
-          {!opencodeInstalled ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-          {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
-            <div className="gt-tree-loading" aria-hidden="true">
-              <span className="gt-tree-loading-row" />
-              <span className="gt-tree-loading-row" />
-              <span className="gt-tree-loading-row short" />
-            </div>
-          ) : null}
-          {opencodeInstalled ? sessions.map((session) => (
-            <button
-              key={`left-session-${session.id}`}
-              className={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId ? "gt-session-item active" : "gt-session-item"}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
-              }}
-              onClick={() => onOpenSession(repo, session)}
-            >
-              <span className="gt-session-title">{session.title}</span>
-              {session.updatedAt || session.createdAt ? (
-                <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
+      <AnimatePresence initial={false}>
+        {shouldRenderChildren ? (
+          <motion.div
+            key={`${repo.id}:children`}
+            className="gt-sidebar-project-children-shell"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -6 }}
+            animate={reduceMotion ? { opacity: 1 } : { opacity: 1, height: "auto", y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
+            transition={layoutTransition}
+          >
+            <div className="gt-sidebar-project-children">
+              {hasDraftForRepo ? (
+                <button
+                  className="gt-session-item active gt-session-item-draft"
+                  onClick={onFocusDraftSession}
+                >
+                  <span className="gt-session-title">New Session</span>
+                </button>
               ) : null}
-            </button>
-          )) : null}
-          {opencodeInstalled && hasMoreSessions ? (
-            <button className="gt-load-more-btn" onClick={() => void onLoadMoreSessions(repo)} disabled={sessionsLoading}>
-              <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-              <span>{sessionsLoading ? "Loading..." : "More"}</span>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+              {!opencodeInstalled ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
+              {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
+                <div className="gt-tree-loading" aria-hidden="true">
+                  <span className="gt-tree-loading-row" />
+                  <span className="gt-tree-loading-row" />
+                  <span className="gt-tree-loading-row short" />
+                </div>
+              ) : null}
+              {opencodeInstalled ? sessions.map((session) => (
+                <button
+                  key={`left-session-${session.id}`}
+                  className={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId ? "gt-session-item active" : "gt-session-item"}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
+                  }}
+                  onClick={() => onOpenSession(repo, session)}
+                >
+                  <span className="gt-session-title">{session.title}</span>
+                  {session.updatedAt || session.createdAt ? (
+                    <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
+                  ) : null}
+                </button>
+              )) : null}
+              {opencodeInstalled && hasMoreSessions ? (
+                <motion.button
+                  key={`${repo.id}:more`}
+                  layout="position"
+                  transition={layoutTransition}
+                  className="gt-load-more-btn"
+                  onClick={() => void onLoadMoreSessions(repo)}
+                  disabled={sessionsLoading || sessionsPaging}
+                >
+                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
+                  <span>More</span>
+                </motion.button>
+              ) : null}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </motion.div>
   );
 }

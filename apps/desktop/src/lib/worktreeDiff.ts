@@ -38,6 +38,13 @@ export type WorktreePatchStats = {
   hunks: number;
 };
 
+export type UnifiedDiffRow = {
+  kind: "hunk" | "meta" | "add" | "del" | "ctx" | "fold";
+  line: number | null;
+  marker: string;
+  text: string;
+};
+
 export type WorktreeChangeStats = {
   total: number;
   staged: number;
@@ -144,6 +151,63 @@ export function getWorktreeStatusText(entry?: GitWorktreeEntry | null): string {
   if (entry.staged) return "已暂存";
   if (entry.unstaged) return "未暂存";
   return "已修改";
+}
+
+export function buildUnifiedDiffRows(patch: string): UnifiedDiffRow[] {
+  if (!patch.trim()) return [];
+  const rows: UnifiedDiffRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let hasHunk = false;
+
+  for (const rawLine of patch.split(/\r?\n/)) {
+    if (rawLine.startsWith("# ")) {
+      continue;
+    }
+    if (rawLine.startsWith("diff ") || rawLine.startsWith("index ") || rawLine.startsWith("---") || rawLine.startsWith("+++")) {
+      continue;
+    }
+    if (rawLine.startsWith("@@")) {
+      const match = rawLine.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@(?:\s*(.*))?/);
+      if (match) {
+        const nextOldLine = Number(match[1]);
+        const nextNewLine = Number(match[2]);
+        const skipped = hasHunk ? Math.max(nextOldLine - oldLine, nextNewLine - newLine, 0) : 0;
+        if (skipped > 0) {
+          rows.push({ kind: "fold", line: null, marker: "", text: `${skipped} unmodified lines` });
+        }
+        oldLine = nextOldLine;
+        newLine = nextNewLine;
+        hasHunk = true;
+      }
+      continue;
+    }
+    if (rawLine.startsWith("+")) {
+      rows.push({ kind: "add", line: newLine, marker: "+", text: rawLine.slice(1) });
+      newLine += 1;
+      continue;
+    }
+    if (rawLine.startsWith("-")) {
+      rows.push({ kind: "del", line: oldLine, marker: "-", text: rawLine.slice(1) });
+      oldLine += 1;
+      continue;
+    }
+    if (rawLine.startsWith(" ")) {
+      rows.push({ kind: "ctx", line: newLine, marker: "", text: rawLine.slice(1) });
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+
+  return rows;
+}
+
+export function getUnifiedDiffStats(rows: UnifiedDiffRow[]): WorktreePatchStats {
+  return {
+    added: rows.filter((row) => row.kind === "add").length,
+    deleted: rows.filter((row) => row.kind === "del").length,
+    hunks: rows.filter((row) => row.kind === "hunk").length
+  };
 }
 
 export function buildSplitDiffRows(patch: string): SplitDiffRow[] {

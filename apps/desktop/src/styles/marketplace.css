@@ -1042,6 +1042,11 @@
   border-radius: var(--gt-radius-lg);
 }
 
+.gt-monaco-diff-shell-document {
+  border-color: color-mix(in srgb, var(--line) 42%, transparent);
+  background: color-mix(in srgb, white 96%, var(--bg-panel));
+}
+
 .gt-diff-editor-pane .gt-worktree-patch-view {
   min-height: 0;
   height: 100%;

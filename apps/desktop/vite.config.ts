@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 
 const isWeb = process.env.BUILD_TARGET === "web";
 
 export default defineConfig({
   clearScreen: false,
+  plugins: [tailwindcss()],
   build: {
     outDir: isWeb ? "dist-web" : "dist",
     emptyOutDir: true,

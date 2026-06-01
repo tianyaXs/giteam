@@ -68,6 +68,8 @@ pub struct GitWorktreeOverview {
     pub staged_count: u32,
     pub unstaged_count: u32,
     pub untracked_count: u32,
+    pub added_lines: u32,
+    pub deleted_lines: u32,
     pub entries: Vec<GitWorktreeEntry>,
     pub raw: String,
 }
@@ -604,9 +606,20 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
         staged_count,
         unstaged_count,
         untracked_count,
+        added_lines: 0,
+        deleted_lines: 0,
         entries,
         raw,
     }
+}
+
+fn parse_numstat_totals(raw: &str) -> (u32, u32) {
+    raw.lines().fold((0u32, 0u32), |(added_total, deleted_total), line| {
+        let mut parts = line.split_whitespace();
+        let added = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+        let deleted = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+        (added_total.saturating_add(added), deleted_total.saturating_add(deleted))
+    })
 }
 
 fn sanitize_branch_for_dir(branch: &str) -> String {
@@ -1114,12 +1127,11 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished."##),
-        ("opencode", "install") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew install anomalyco/tap/opencode
-elif command -v npm >/dev/null 2>&1; then
+        ("opencode", "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
   npm install -g opencode-ai
 else
-  curl -fsSL https://opencode.ai/install | bash
+  echo "npm is required to install OpenCode (not found in PATH)."
+  exit 2
 fi"##),
         ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true
@@ -1488,6 +1500,11 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
             let mut overview = parse_worktree_overview(raw);
+            if let Ok(numstat) = run_git(&["diff", "--numstat", "HEAD", "--"], repo_path) {
+                let (added_lines, deleted_lines) = parse_numstat_totals(&numstat);
+                overview.added_lines = added_lines;
+                overview.deleted_lines = deleted_lines;
+            }
             if overview.branch.is_empty() {
                 overview.branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
                     .unwrap_or_default()
@@ -2306,7 +2323,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let opencode = check_dep(
                 "opencode",
                 &["--version"],
-                "brew install anomalyco/tap/opencode",
+                "npm i -g opencode-ai",
             );
             let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
             let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
@@ -2331,7 +2348,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 "opencode" => check_dep(
                     "opencode",
                     &["--version"],
-                    "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+                    "npm i -g opencode-ai",
                 ),
                 "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
                 _ => return Err(format!("unsupported dependency: {name}")),

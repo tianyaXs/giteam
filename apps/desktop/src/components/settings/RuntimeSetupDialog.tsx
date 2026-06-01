@@ -10,9 +10,11 @@ type RuntimeSetupDialogProps = {
   runtimeInstallLog: string;
   runtimeLogTail: string;
   expandedLogDep: RuntimeDepName | null;
+  autoInitAvailable: boolean;
   onClose: () => void;
   onDismiss: () => void;
   onRefresh: () => void;
+  onRunAutoInit: () => void;
   onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
   onToggleLog: (name: RuntimeDepName) => void;
 };
@@ -94,6 +96,12 @@ function RuntimeDependencyRow(props: {
 export function RuntimeSetupDialog(props: RuntimeSetupDialogProps) {
   const deps = [props.runtimeStatus.git, props.runtimeStatus.entire, props.runtimeStatus.opencode, props.runtimeStatus.giteam]
     .filter((d): d is RuntimeDependencyStatus => Boolean(d));
+  const activeJobMatchesDep = deps.some((dep) => dep.name === props.runtimeJob?.name);
+  const showGlobalRuntimeJob = Boolean(props.runtimeJob && !activeJobMatchesDep);
+  const autoInitRunning = props.runtimeJob?.name === "runtime"
+    && props.runtimeJob?.action === "bootstrap"
+    && props.runtimeJob?.status === "running";
+  const autoInitBusy = Boolean(props.installingDep) || props.runtimeChecking;
 
   return (
     <div className="modal-mask" onClick={props.onClose}>
@@ -111,6 +119,43 @@ export function RuntimeSetupDialog(props: RuntimeSetupDialogProps) {
           </button>
         </div>
         <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
+
+        {props.autoInitAvailable ? (
+          <div className="toolbar" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+            <div className="small muted">macOS can automatically initialize the full runtime on first launch.</div>
+            <button
+              className={autoInitRunning ? "chip env-chip-loading" : "chip"}
+              disabled={autoInitBusy}
+              onClick={props.onRunAutoInit}
+            >
+              {autoInitRunning ? (
+                <>
+                  <span className="env-btn-spinner" aria-hidden="true" />
+                  Auto initializing... {props.installingElapsed}s
+                </>
+              ) : (
+                "Auto initialize"
+              )}
+            </button>
+          </div>
+        ) : null}
+
+        {showGlobalRuntimeJob ? (
+          <div className="env-inline-status" style={{ marginBottom: 12 }}>
+            <div className="env-progress-button" title={props.runtimeLogTail || "No logs yet"}>
+              <span className="env-progress-track-inline" aria-hidden="true">
+                <span className={props.runtimeJob?.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
+              </span>
+              <span className="env-progress-label">
+                {props.runtimeJob?.action} · {props.runtimeJob?.status} {props.installingDep ? `· ${props.installingElapsed}s` : ""}
+              </span>
+            </div>
+            <div className="env-log-tail" title={props.runtimeLogTail || "No logs yet"}>
+              {props.runtimeLogTail || "Waiting for logs..."}
+            </div>
+            <pre className="env-install-log">{props.runtimeInstallLog || "No logs yet."}</pre>
+          </div>
+        ) : null}
 
         <div className="env-check-list">
           {deps.map((dep) => {

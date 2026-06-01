@@ -85,7 +85,6 @@ type GitWorkspaceControllerOptions = {
   rememberWorktreeParent: (worktreePath: string, parentBranch: string) => void;
   unbindWorkspaceAgent: (workspacePathInput: string) => void;
   appendOpencodeDebugLog: (text: string) => void;
-  focusCommitMessageInput: () => void;
   setSelectedRepo: SetState<RepositoryEntry | null>;
   setMessage: SetState<string>;
   setError: SetState<string>;
@@ -169,7 +168,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     rememberWorktreeParent,
     unbindWorkspaceAgent,
     appendOpencodeDebugLog,
-    focusCommitMessageInput,
     setSelectedRepo,
     setMessage,
     setError,
@@ -775,12 +773,8 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
   }
 
   function getCommitInput(): { message: string; staged: boolean; unstagedFiles: string[] } | null {
-    const message = commitMessage.trim();
-    if (!message) {
-      setMessage("Please enter a commit message");
-      focusCommitMessageInput();
-      return null;
-    }
+    const changedCount = worktreeOverview.entries.filter((entry) => entry.staged || entry.unstaged || entry.untracked).length;
+    const message = commitMessage.trim() || `Update ${changedCount || 1} file${changedCount === 1 ? "" : "s"}`;
     const staged = worktreeOverview.entries.some((entry) => entry.staged);
     const unstagedFiles = worktreeOverview.entries
       .filter((entry) => entry.unstaged || entry.untracked)

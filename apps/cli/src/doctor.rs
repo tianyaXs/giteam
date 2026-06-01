@@ -124,7 +124,7 @@ pub fn build_report(repo_path: Option<String>, warmup: bool) -> Result<DoctorRep
         detect_binary_status(
             "opencode",
             &["--version"],
-            "install opencode with brew or npm i -g opencode-ai",
+            "install opencode with npm i -g opencode-ai",
         ),
     ];
 

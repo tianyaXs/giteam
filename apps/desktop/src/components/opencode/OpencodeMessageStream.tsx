@@ -1,6 +1,7 @@
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { OpencodeExecutionPartView, type OpencodeToolFileTarget } from "./OpencodeExecutionPartView";
+import { isImageAttachment } from "../../lib/imageAttachments";
 import {
   type OpencodeAssistantRenderGroup,
   buildOpencodeAssistantRenderGroups,
@@ -34,6 +35,13 @@ type OpencodeMessageRenderRow = {
   contextOnly: boolean;
 };
 
+const COLLAPSE_LINE_LIMIT = 8;
+const COLLAPSE_CHAR_LIMIT = 420;
+
+type OpencodeDisplayTimelineGroup =
+  | OpencodeAssistantRenderGroup
+  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit"; parts: OpencodeDetailedPart[] };
+
 function formatContextCount(count: number, noun: string): string {
   return count > 0 ? `${count}次${noun}` : "";
 }
@@ -53,7 +61,7 @@ function mergeAdjacentContextGroups(groups: OpencodeAssistantRenderGroup[]): Ope
     if (group.kind === "context" && last?.kind === "context") {
       merged[merged.length - 1] = {
         kind: "context",
-        key: `${last.key}:${group.key}`,
+        key: last.key,
         parts: [...last.parts, ...group.parts]
       };
       return;
@@ -70,7 +78,7 @@ function mergeContextGroup(
   if (previous?.kind !== "context" || next.kind !== "context") return next;
   return {
     kind: "context",
-    key: `${previous.key}:${next.key}`,
+    key: previous.key,
     parts: [...previous.parts, ...next.parts]
   };
 }
@@ -121,6 +129,91 @@ function buildDisplayTimelineGroups(
   return mergeAdjacentContextGroups(out);
 }
 
+function shouldCollapseMessage(text: string): boolean {
+  const normalized = String(text || "").trim();
+  if (!normalized) return false;
+  const lineCount = normalized.split(/\r?\n/).length;
+  return lineCount > COLLAPSE_LINE_LIMIT || normalized.length > COLLAPSE_CHAR_LIMIT;
+}
+
+function collapsePreview(text: string): string {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  const lines = normalized.split(/\r?\n/).slice(0, COLLAPSE_LINE_LIMIT);
+  let preview = lines.join("\n").trim();
+  if (preview.length > COLLAPSE_CHAR_LIMIT) {
+    preview = `${preview.slice(0, COLLAPSE_CHAR_LIMIT).trimEnd()}…`;
+  } else if (normalized.length > preview.length || normalized.split(/\r?\n/).length > lines.length) {
+    preview = `${preview}…`;
+  }
+  return preview;
+}
+
+function localPathToFileUrl(path: string): string {
+  return encodeURI(`file://${path}`);
+}
+
+function filenameFromPath(path: string): string {
+  return path.replace(/:\d+$/, "").split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function getToolName(part: OpencodeDetailedPart): string {
+  return String((part as any)?.tool || "").trim();
+}
+
+function isRunningToolPart(part: OpencodeDetailedPart): boolean {
+  const status = String((part as any)?.state?.status || "").trim().toLowerCase();
+  return status === "running" || status === "pending";
+}
+
+function getBatchKind(group: OpencodeAssistantRenderGroup): "shell" | "edit" | "" {
+  if (group.kind !== "part") return "";
+  const type = String((group.part as any)?.type || "");
+  if (type !== "tool") return "";
+  const tool = getToolName(group.part);
+  if (tool === "bash") return "shell";
+  if (tool === "write" || tool === "edit" || tool === "apply_patch") return "edit";
+  return "";
+}
+
+function buildBatchedTimelineGroups(groups: OpencodeAssistantRenderGroup[]): OpencodeDisplayTimelineGroup[] {
+  const out: OpencodeDisplayTimelineGroup[] = [];
+  let pendingKind: "shell" | "edit" | "" = "";
+  let pending: OpencodeAssistantRenderGroup[] = [];
+
+  const flush = () => {
+    if (!pending.length) return;
+    if (pendingKind && (pendingKind === "shell" || pending.length > 1)) {
+      out.push({
+        kind: "tool-batch",
+        key: pending[0]?.key || `${pendingKind}-batch`,
+        batchKind: pendingKind,
+        parts: pending
+          .filter((group): group is Extract<OpencodeAssistantRenderGroup, { kind: "part" }> => group.kind === "part")
+          .map((group) => group.part)
+      });
+    } else {
+      out.push(...pending);
+    }
+    pendingKind = "";
+    pending = [];
+  };
+
+  groups.forEach((group) => {
+    const nextKind = getBatchKind(group);
+    if (!nextKind) {
+      flush();
+      out.push(group);
+      return;
+    }
+    if (pendingKind && pendingKind !== nextKind) flush();
+    pendingKind = nextKind;
+    pending.push(group);
+  });
+  flush();
+  return out;
+}
+
 type OpencodeMessageStreamProps = {
   sessionLoading: boolean;
   messages: OpencodeChatMessage[];
@@ -135,11 +228,17 @@ type OpencodeMessageStreamProps = {
   showReasoningSummaries: boolean;
   shellToolPartsExpanded: boolean;
   editToolPartsExpanded: boolean;
+  workspaceRoot?: string;
+  workspaceFileCandidates?: string[];
+  workspaceDirectoryCandidates?: string[];
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
-  onOpenWorkspacePath: (absolutePath: string, line?: number) => void;
+  onOpenWorkspacePath: (path: string, line?: number) => void;
+  onOpenWorkspaceDirectory?: (path: string) => void;
+  onOpenLocalDirectory?: (absolutePath: string) => void;
   onOpenToolFile: (target: OpencodeToolFileTarget) => void;
   onPreviewImageGroup: (images: OpencodePreviewImage[], index: number) => void;
   onCopyAttachmentUri: (uri: string) => void;
+  onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
 };
 
 export function OpencodeMessageStream({
@@ -156,13 +255,36 @@ export function OpencodeMessageStream({
   showReasoningSummaries,
   shellToolPartsExpanded,
   editToolPartsExpanded,
+  workspaceRoot = "",
+  workspaceFileCandidates = [],
+  workspaceDirectoryCandidates = [],
   onOpenTaskSession,
   onOpenWorkspacePath,
+  onOpenWorkspaceDirectory,
+  onOpenLocalDirectory,
   onOpenToolFile,
   onPreviewImageGroup,
-  onCopyAttachmentUri
+  onCopyAttachmentUri,
+  onOpenAttachment
 }: OpencodeMessageStreamProps) {
+  const [timelineOpenState, setTimelineOpenState] = useState<Record<string, boolean>>({});
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
+  const openLocalFile = (absolutePath: string) => {
+    onOpenAttachment(localPathToFileUrl(absolutePath), filenameFromPath(absolutePath));
+  };
+  const renderMarkdown = (source: string, streaming = false) => (
+    <MarkdownLite
+      source={source}
+      streaming={streaming}
+      workspaceRoot={workspaceRoot}
+      workspaceFileCandidates={workspaceFileCandidates}
+      workspaceDirectoryCandidates={workspaceDirectoryCandidates}
+      onOpenWorkspacePath={onOpenWorkspacePath}
+      onOpenWorkspaceDirectory={onOpenWorkspaceDirectory}
+      onOpenLocalDirectory={onOpenLocalDirectory}
+      onOpenLocalFile={openLocalFile}
+    />
+  );
   const renderRows: OpencodeMessageRenderRow[] = renderedMessages.map((msg) => {
     const isAssistant = msg.role === "assistant";
     const isStreaming = isAssistant && msg.id === activeStreamingAssistantId && msg.id === latestAssistantId && activeSessionBusy;
@@ -194,6 +316,8 @@ export function OpencodeMessageStream({
   const mergedRenderRows = renderRows.reduce<OpencodeMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
     if (row.isAssistant && last?.isAssistant) {
+      const lastTimelineOnly = last.hasTimeline && !last.fallbackReply;
+      const rowTimelineOnly = row.hasTimeline && !row.fallbackReply;
       const mergedBoundary = mergeContextBoundary(last.timelineGroups, row.timelineGroups);
       if (mergedBoundary) {
         last.timelineGroups = mergeAdjacentContextGroups(last.timelineGroups);
@@ -205,6 +329,16 @@ export function OpencodeMessageStream({
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = [...last.liveParts, ...row.liveParts];
         last.renderParts = [...last.renderParts, ...row.renderParts];
+        last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
+        return out;
+      }
+      if (lastTimelineOnly && rowTimelineOnly && !last.detailsError && !row.detailsError) {
+        last.timelineGroups = mergeAdjacentContextGroups([...last.timelineGroups, ...row.timelineGroups]);
+        last.hasTimeline = last.timelineGroups.length > 0;
+        last.isStreaming = last.isStreaming || row.isStreaming;
+        last.liveParts = [...last.liveParts, ...row.liveParts];
+        last.renderParts = [...last.renderParts, ...row.renderParts];
+        last.detailsLoading = last.detailsLoading || row.detailsLoading;
         last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
         return out;
       }
@@ -223,6 +357,8 @@ export function OpencodeMessageStream({
     out.push(row);
     return out;
   }, []);
+
+
 
   return (
     <div className="gt-chat-stream">
@@ -245,11 +381,7 @@ export function OpencodeMessageStream({
 
           return (
             <div key={msg.id} className={isAssistant ? "opencode-msg opencode-msg-assistant" : "opencode-msg opencode-msg-user"}>
-              {isAssistant && detailsLoading && liveParts.length <= 0 ? (
-                <div className="opencode-msg-meta">
-                  {detailsLoading ? <span className="small muted">加载中…</span> : null}
-                </div>
-              ) : null}
+
               {isAssistant ? (
                 hasTimeline ? (
                   <div className="opencode-assistant-timeline">
@@ -260,20 +392,70 @@ export function OpencodeMessageStream({
                           .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
                         : "";
 
-                      return timelineGroups.map((group, index) => {
+                      const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
+                      return displayTimelineGroups.map((group, index) => {
+                        const timelineKey = `${msg.id}:${group.key}`;
+                        if (group.kind === "tool-batch") {
+                          const running = group.parts.some(isRunningToolPart);
+                          const shell = group.batchKind === "shell";
+                          const noun = shell ? "条命令" : "个文件";
+                          const label = shell
+                            ? (running ? "运行中" : "已运行")
+                            : (running ? "编辑中" : "已编辑");
+                          const isOpen = timelineOpenState[timelineKey] ?? false;
+                          return (
+                            <details
+                              key={timelineKey}
+                              className={`opencode-tool-batch opencode-tool-batch-${group.batchKind}`}
+                              open={isOpen}
+                              onToggle={(event) => {
+                                const target = event.currentTarget;
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              }}
+                            >
+                              <summary className="opencode-tool-batch-head">
+                                <strong>{label}</strong>
+                                <span className="opencode-tool-batch-count">{group.parts.length} {noun}</span>
+                                <span className="opencode-context-caret" aria-hidden="true">
+                                  <svg viewBox="0 0 12 12">
+                                    <path d="M4 2.5 8 6 4 9.5" />
+                                  </svg>
+                                </span>
+                              </summary>
+                              <div className="opencode-exec-list opencode-tool-batch-list">
+                                {group.parts.map((part, partIndex) => (
+                                  <OpencodeExecutionPartView
+                                    key={`${group.key}:${part.id || partIndex}`}
+                                    part={part}
+                                    shellToolPartsExpanded={shellToolPartsExpanded}
+                                    editToolPartsExpanded={editToolPartsExpanded}
+                                    onOpenTaskSession={onOpenTaskSession}
+                                    onOpenToolFile={onOpenToolFile}
+                                  />
+                                ))}
+                              </div>
+                            </details>
+                          );
+                        }
+
                         if (group.kind === "context") {
                           const counts = summarizeOpencodeContextToolCounts(group.parts);
                           const progress = summarizeOpencodeContextProgress(group.parts);
                           const summary = summarizeContextCounts(counts) || "已收集上下文";
+                          const isOpen = timelineOpenState[timelineKey] ?? false;
                           return (
                             <details
-                              key={`${msg.id}:${group.key}`}
+                              key={timelineKey}
                               className="opencode-exec-context"
-                              open={isStreaming || progress.active}
+                              open={isOpen}
+                              onToggle={(event) => {
+                                const target = event.currentTarget;
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              }}
                             >
                               <summary className="opencode-exec-context-head">
                                 <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
-                                  {isStreaming || progress.active ? "探索中" : "已探索"}
+                                  已探索
                                 </strong>
                                 <span className="small muted">
                                   {progress.detail ? `${summary} · ${progress.detail}` : summary}
@@ -321,12 +503,20 @@ export function OpencodeMessageStream({
                             ["--think-count" as any]: thinkPreview.length
                           } as CSSProperties;
 
+                          const thinkIsOpen = timelineOpenState[timelineKey] ?? false;
                           return (
-                            <details key={`${msg.id}:${group.key}`} className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}>
+                            <details
+                              key={timelineKey}
+                              className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}
+                              open={thinkIsOpen}
+                              onToggle={(event) => {
+                                const target = event.currentTarget;
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              }}
+                            >
                               <summary className="opencode-think-card-summary">
                                 <span className="opencode-think-label">
-                                  <span className="opencode-think-spark" aria-hidden="true" />
-                                  Think
+                                  {activeThink ? "思考中" : "已思考"}
                                 </span>
                                 {thinkPreview.length > 0 ? (
                                   <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
@@ -345,7 +535,7 @@ export function OpencodeMessageStream({
                                 ) : null}
                               </summary>
                               <div className="opencode-msg-body">
-                                <MarkdownLite source={text} onOpenWorkspacePath={onOpenWorkspacePath} />
+                                {renderMarkdown(text, activeThink)}
                               </div>
                             </details>
                           );
@@ -358,8 +548,8 @@ export function OpencodeMessageStream({
                           if (!text) return null;
                           return (
                             <div key={`${msg.id}:${group.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                              <MarkdownLite source={text} onOpenWorkspacePath={onOpenWorkspacePath} />
-                              {isStreaming && index === timelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
+                              {renderMarkdown(text, isStreaming && index === displayTimelineGroups.length - 1)}
+                              {isStreaming && index === displayTimelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
                             </div>
                           );
                         }
@@ -379,16 +569,18 @@ export function OpencodeMessageStream({
                   </div>
                 ) : fallbackReply ? (
                   <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                    <MarkdownLite source={fallbackReply} onOpenWorkspacePath={onOpenWorkspacePath} />
+                    {renderMarkdown(fallbackReply, isStreaming)}
                     {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
                   </div>
                 ) : (
-                  <div className="opencode-thinking-wrap">
-                    <div className="opencode-thinking">
-                      <span />
-                      <span />
-                      <span />
-                      <em>Thinking</em>
+                  <div className="opencode-thinking-placeholder" aria-live="polite" aria-label="思考中">
+                    <div className="opencode-thinking-placeholder-head">
+                      <span className="opencode-think-label opencode-live-text">思考中</span>
+                      <span className="opencode-thinking-placeholder-wave" aria-hidden="true">
+                        <span className="opencode-thinking-placeholder-bar" />
+                        <span className="opencode-thinking-placeholder-bar" />
+                        <span className="opencode-thinking-placeholder-bar" />
+                      </span>
                     </div>
                   </div>
                 )
@@ -396,27 +588,79 @@ export function OpencodeMessageStream({
                 <div className="opencode-msg-body">
                   {msg.attachments && msg.attachments.length > 0 ? (
                     <div className="opencode-msg-attachments">
-                      {msg.attachments.map((image, imageIndex) => (
-                        <button
-                          key={image.id}
-                          type="button"
-                          className="opencode-msg-image-btn"
-                          onClick={() => onPreviewImageGroup(
-                            msg.attachments?.map((item) => ({ uri: item.uri, filename: item.filename })) || [],
-                            imageIndex
-                          )}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            onCopyAttachmentUri(image.uri);
-                          }}
-                          title="点击查看，右键复制图片数据"
-                        >
-                          <img className="opencode-msg-image" src={image.uri} alt={image.filename || "attachment"} />
-                        </button>
-                      ))}
+                      {msg.attachments.map((attachment, imageIndex) => {
+                        if (isImageAttachment({
+                          kind: attachment.kind,
+                          mime: attachment.mime || "",
+                          dataUrl: attachment.uri,
+                          filename: attachment.filename || ""
+                        })) {
+                          return (
+                            <button
+                              key={attachment.id}
+                              type="button"
+                              className="opencode-msg-image-btn"
+                              onClick={() => onPreviewImageGroup(
+                                (msg.attachments || [])
+                                  .filter((item) => isImageAttachment({
+                                    kind: item.kind,
+                                    mime: item.mime || "",
+                                    dataUrl: item.uri,
+                                    filename: item.filename || ""
+                                  }))
+                                  .map((item) => ({ uri: item.uri, filename: item.filename })),
+                                Math.max(0, (msg.attachments || [])
+                                  .filter((item) => isImageAttachment({
+                                    kind: item.kind,
+                                    mime: item.mime || "",
+                                    dataUrl: item.uri,
+                                    filename: item.filename || ""
+                                  }))
+                                  .findIndex((item) => item.id === attachment.id))
+                              )}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                onCopyAttachmentUri(attachment.uri);
+                              }}
+                              title="点击查看，右键复制图片数据"
+                            >
+                              <img className="opencode-msg-image" src={attachment.uri} alt={attachment.filename || "attachment"} />
+                            </button>
+                          );
+                        }
+                        return (
+                          <button
+                            key={attachment.id}
+                            type="button"
+                            className="opencode-msg-file-btn"
+                            onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              onCopyAttachmentUri(attachment.uri);
+                            }}
+                            title={attachment.filename || attachment.mime || "附件"}
+                          >
+                            <span className="opencode-msg-file-name">{attachment.filename || "attachment"}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : null}
-                  {msg.content.trim() ? <MarkdownLite source={msg.content} onOpenWorkspacePath={onOpenWorkspacePath} /> : null}
+                  {msg.content.trim() ? (
+                    shouldCollapseMessage(msg.content) ? (
+                      <details className="opencode-msg-collapsible">
+                        <summary className="opencode-msg-collapsible-summary">
+                          <span className="opencode-msg-collapsible-preview">
+                            {renderMarkdown(collapsePreview(msg.content))}
+                          </span>
+                          <span className="opencode-msg-collapsible-toggle">展开全文</span>
+                        </summary>
+                        <div className="opencode-msg-collapsible-body">
+                          {renderMarkdown(msg.content)}
+                        </div>
+                      </details>
+                    ) : renderMarkdown(msg.content)
+                  ) : null}
                 </div>
               ) : null}
               {isAssistant && detailsError ? (

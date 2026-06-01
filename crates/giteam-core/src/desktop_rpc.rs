@@ -115,6 +115,8 @@ pub struct GitUserIdentity {
 pub struct GitWorktreeFileContent {
     pub original: String,
     pub modified: String,
+    pub preview_supported: bool,
+    pub preview_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -483,6 +485,53 @@ fn run_git_with_timeout(
     timeout_secs: u64,
 ) -> Result<String, String> {
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
+}
+
+const PREVIEW_SAMPLE_BYTES: usize = 4096;
+
+fn read_git_blob_bytes(repo_path: &str, spec: &str) -> Result<Vec<u8>, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let output = Command::new("git")
+        .args(["show", spec])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("failed to read git blob: {e}"))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        return Err("failed to read git blob".to_string());
+    }
+    Err(stderr)
+}
+
+fn detect_unsupported_preview_reason(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let sample = &bytes[..bytes.len().min(PREVIEW_SAMPLE_BYTES)];
+    if sample.contains(&0) {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    if std::str::from_utf8(sample).is_err() {
+        return Some("该文件包含不可解析内容，暂不支持文本预览。");
+    }
+    let control_bytes = sample
+        .iter()
+        .filter(|byte| matches!(**byte, 0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F))
+        .count();
+    if control_bytes * 100 / sample.len().max(1) >= 8 {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    None
+}
+
+fn decode_preview_text(bytes: Vec<u8>) -> Result<String, &'static str> {
+    if let Some(reason) = detect_unsupported_preview_reason(&bytes) {
+        return Err(reason);
+    }
+    String::from_utf8(bytes).map_err(|_| "该文件包含不可解析内容，暂不支持文本预览。")
 }
 
 fn decode_git_quoted_path(input: &str) -> String {
@@ -1114,12 +1163,11 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished."##),
-        ("opencode", "install") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew install anomalyco/tap/opencode
-elif command -v npm >/dev/null 2>&1; then
+        ("opencode", "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
   npm install -g opencode-ai
 else
-  curl -fsSL https://opencode.ai/install | bash
+  echo "npm is required to install OpenCode (not found in PATH)."
+  exit 2
 fi"##),
         ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true
@@ -1200,6 +1248,107 @@ if [ -n "$NPM_CMD" ]; then
   "$NPM_CMD" uninstall -g giteam || true
 fi
 echo "giteam uninstall finished."##),
+        // Mirrors the standalone macOS runtime bootstrap script so first-launch
+        // setup can run inside the packaged desktop app without relying on an
+        // external file path.
+        ("runtime", "bootstrap") => Ok(r##"set -e
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Runtime bootstrap only supports macOS."
+  exit 1
+fi
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+log() {
+  printf '==> %s\n' "$1"
+}
+
+ensure_brew_in_shell() {
+  if command -v brew >/dev/null 2>&1; then
+    return
+  fi
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    return
+  fi
+  if [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+}
+
+install_homebrew() {
+  if has_cmd brew; then
+    log "Homebrew already installed"
+    return
+  fi
+  log "Installing Homebrew"
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  ensure_brew_in_shell
+  if ! has_cmd brew; then
+    echo "Homebrew installation failed."
+    exit 2
+  fi
+}
+
+ensure_git() {
+  if has_cmd git; then
+    log "git already installed"
+    return
+  fi
+  log "Installing git"
+  brew install -v git
+}
+
+ensure_node() {
+  if has_cmd node && has_cmd npm; then
+    log "node/npm already installed"
+    return
+  fi
+  log "Installing node"
+  brew install -v node
+}
+
+ensure_entire() {
+  if has_cmd entire; then
+    log "Entire already installed"
+    return
+  fi
+  log "Installing Entire"
+  brew tap entireio/tap
+  brew install entireio/tap/entire
+}
+
+ensure_opencode() {
+  if has_cmd opencode; then
+    log "OpenCode already installed"
+    return
+  fi
+  log "Installing OpenCode"
+  npm install -g --loglevel info --progress=true opencode-ai
+}
+
+ensure_giteam() {
+  if has_cmd giteam; then
+    log "giteam already installed"
+    return
+  fi
+  log "Installing giteam"
+  npm install -g --loglevel info --progress=true giteam@latest
+}
+
+install_homebrew
+ensure_brew_in_shell
+log "Updating Homebrew"
+brew update -v
+ensure_git
+ensure_node
+ensure_brew_in_shell
+ensure_entire
+ensure_opencode
+ensure_giteam
+echo "Runtime bootstrap complete."##),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
 }
@@ -1904,15 +2053,45 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
                 return Err("file path must be repository-relative".to_string());
             }
-            let original =
-                run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
             let repo_root = normalize_repo_key(repo_path)?;
             let full_path = PathBuf::from(repo_root).join(rel_path);
-            let modified = fs::read(full_path)
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-                .unwrap_or_default();
-            serde_json::to_value(GitWorktreeFileContent { original, modified })
-                .map_err(|e| e.to_string())
+            let original = match read_git_blob_bytes(repo_path, &format!("HEAD:{path}")) {
+                Ok(bytes) => match decode_preview_text(bytes) {
+                    Ok(text) => text,
+                    Err(reason) => {
+                        return serde_json::to_value(GitWorktreeFileContent {
+                            original: String::new(),
+                            modified: String::new(),
+                            preview_supported: false,
+                            preview_reason: Some(reason.to_string()),
+                        })
+                        .map_err(|e| e.to_string());
+                    }
+                },
+                Err(_) => String::new(),
+            };
+            let modified = match fs::read(full_path) {
+                Ok(bytes) => match decode_preview_text(bytes) {
+                    Ok(text) => text,
+                    Err(reason) => {
+                        return serde_json::to_value(GitWorktreeFileContent {
+                            original: String::new(),
+                            modified: String::new(),
+                            preview_supported: false,
+                            preview_reason: Some(reason.to_string()),
+                        })
+                        .map_err(|e| e.to_string());
+                    }
+                },
+                Err(_) => String::new(),
+            };
+            serde_json::to_value(GitWorktreeFileContent {
+                original,
+                modified,
+                preview_supported: true,
+                preview_reason: None,
+            })
+            .map_err(|e| e.to_string())
         }
         "run_repo_terminal_command" => {
             let repo_path = get_str(&args, "repoPath")?;
@@ -2306,7 +2485,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let opencode = check_dep(
                 "opencode",
                 &["--version"],
-                "brew install anomalyco/tap/opencode",
+                "npm i -g opencode-ai",
             );
             let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
             let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
@@ -2331,7 +2510,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 "opencode" => check_dep(
                     "opencode",
                     &["--version"],
-                    "brew install anomalyco/tap/opencode (or npm i -g opencode-ai)",
+                    "npm i -g opencode-ai",
                 ),
                 "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
                 _ => return Err(format!("unsupported dependency: {name}")),

@@ -41,7 +41,7 @@
 .gt-worktree-file-main-btn {
   display: flex;
   align-items: center;
-  gap: var(--gt-space-1);
+  gap: var(--gt-space-1-5);
   min-width: 0;
   width: 100%;
   background: transparent;
@@ -53,15 +53,20 @@
   text-align: left;
 }
 
+.gt-right-card-files {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .gt-changes-pane-head {
   gap: var(--gt-space-2);
-  min-height: 30px;
-  padding: 0 var(--gt-space-0-5) var(--gt-space-1);
+  min-height: 38px;
+  padding: var(--gt-space-1) var(--gt-space-1) var(--gt-space-1-5);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
 }
 
 .gt-changes-pane-head .toolbar {
   flex-wrap: nowrap;
+  margin-left: auto;
 }
 
 .gt-icon-chip {
@@ -117,35 +122,58 @@
 }
 
 .gt-changes-commit-actions .chip {
-  height: 30px;
+  height: 34px;
   min-width: 0;
-  padding: 0 var(--gt-space-2);
+  max-width: 100%;
+  padding: 0 var(--gt-space-2-5);
   font-size: var(--gt-text-sm);
 }
 
 .gt-commit-split-wrap {
   position: relative;
   display: flex;
+  gap: 0;
   align-items: stretch;
   width: 100%;
   min-width: 0;
+  flex-wrap: nowrap;
+  overflow: visible;
 }
 
 .gt-commit-main-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 1 1 auto;
-  gap: var(--gt-space-1-5);
+  flex: 1 1 0;
+  min-height: 34px;
   min-width: 0;
+  width: 0;
+  max-width: 100%;
   overflow: hidden;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
+.gt-changes-toolbar-commit .gt-commit-split-wrap {
+  overflow: visible;
+}
+
 .gt-commit-main-btn.is-compact {
-  gap: var(--gt-space-1);
   padding-inline: var(--gt-space-1-5);
+}
+
+.gt-commit-main-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gt-space-1-5);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.gt-commit-main-btn.is-compact .gt-commit-main-content {
+  gap: var(--gt-space-1);
 }
 
 .gt-commit-main-btn svg {
@@ -183,11 +211,13 @@
 
 .gt-commit-menu-btn {
   display: inline-flex;
-  flex: 0 0 32px;
+  flex: 0 0 34px;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  min-width: 32px;
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  align-self: stretch;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--accent) 88%, transparent);
   border-left: 1px solid color-mix(in srgb, var(--bg) 32%, transparent);
@@ -223,15 +253,397 @@
   stroke-linejoin: round;
 }
 
+.gt-diff-toolbar-head {
+  align-items: center;
+  gap: var(--gt-space-2);
+  flex-wrap: nowrap;
+}
+
+.gt-diff-topbar {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+}
+
+.gt-changes-toolbar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-rows: 36px 34px;
+  min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 98%, transparent);
+}
+
+.gt-changes-toolbar-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: var(--changes-sidebar-width, 276px) 1px minmax(0, 1fr);
+  align-items: center;
+  gap: 0;
+  padding: 0;
+}
+
+.gt-changes-branch-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 48%, transparent);
+}
+
+.gt-changes-toolbar-row::before {
+  content: "";
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  background: color-mix(in srgb, var(--line) 54%, transparent);
+}
+
+.gt-changes-branch {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-1);
+  padding: 0 var(--gt-space-2);
+  color: var(--muted);
+}
+
+.gt-changes-branch-local {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--gt-space-1-5);
+  border-radius: var(--gt-radius-md);
+  background: color-mix(in srgb, var(--accent-soft) 28%, transparent);
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-size: 11px;
+  font-weight: var(--gt-font-semibold);
+}
+
+.gt-changes-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+}
+
+.gt-changes-toolbar-commit {
+  grid-column: 3;
+  position: relative;
+  min-width: 0;
+  width: min(166px, calc(100% - 24px));
+  justify-self: end;
+  margin: 0 12px 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-1);
+}
+
+.gt-changes-toolbar-commit .path-input {
+  width: 100%;
+  min-width: 120px;
+  height: 28px;
+  margin: 0;
+  border-radius: var(--gt-radius-md);
+  padding: var(--gt-space-1) var(--gt-space-2);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.gt-changes-toolbar-commit .gt-changes-commit-actions {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gt-changes-toolbar-commit .chip,
+.gt-changes-toolbar-commit .gt-commit-main-btn {
+  min-height: 28px;
+  height: 28px;
+  font-size: 11.5px;
+}
+
+.gt-changes-toolbar-commit .chip.is-primary {
+  border-color: color-mix(in srgb, #2f8fe8 82%, transparent);
+  background: #2f8fe8;
+  color: #fff;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 24%, transparent);
+}
+
+.gt-changes-toolbar-commit .chip.is-primary:hover:not(:disabled) {
+  background: #237fd3;
+}
+
+.gt-changes-toolbar-commit .gt-commit-menu-btn {
+  flex-basis: 28px;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  height: 28px;
+  border-color: color-mix(in srgb, #2f8fe8 82%, transparent);
+  background: #2f8fe8;
+  color: #fff;
+}
+
+.gt-changes-summary-row {
+  background: color-mix(in srgb, var(--bg-soft) 22%, transparent);
+}
+
+.gt-changes-summary {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-1);
+  padding: 0 var(--gt-space-2);
+  font-size: 12px;
+  color: color-mix(in srgb, var(--text) 86%, var(--muted));
+}
+
+.gt-changes-summary-count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gt-changes-summary-add {
+  color: #0f8b4c;
+  font-variant-numeric: tabular-nums;
+}
+
+.gt-changes-summary-del {
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+
+.gt-changes-bulk-actions {
+  grid-column: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--gt-space-1);
+  min-width: 0;
+  padding: 0 var(--gt-space-2);
+}
+
+.gt-changes-bulk-actions .gt-icon-chip {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: var(--gt-radius-md);
+}
+
+.gt-worktree-preview-empty {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+}
+
+.gt-worktree-preview-copy {
+  display: grid;
+  gap: var(--gt-space-1);
+  max-width: 360px;
+}
+
+.gt-worktree-preview-copy strong {
+  font-size: var(--gt-text-base);
+  color: var(--text);
+}
+
+.gt-worktree-preview-copy p,
+.gt-worktree-preview-copy span {
+  margin: 0;
+}
+
+.gt-worktree-preview-copy p {
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-word;
+}
+
+.gt-worktree-preview-copy span {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.gt-document-preview-shell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  background: color-mix(in srgb, white 96%, var(--bg-panel));
+}
+
+.gt-document-preview-shell.is-docx {
+  background: color-mix(in srgb, white 98%, var(--bg-panel));
+}
+
+.gt-document-preview-viewer,
+.gt-document-preview-scroll {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  background: inherit;
+}
+
+.gt-document-preview-scroll.is-docx {
+  padding: var(--gt-space-4) var(--gt-space-3) var(--gt-space-5);
+  background: inherit;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+}
+
+.gt-document-preview-viewer #react-doc-viewer {
+  min-height: 100%;
+  background: transparent;
+}
+
+.gt-document-preview-viewer #proxy-renderer {
+  min-height: 100%;
+}
+
+.gt-document-preview-empty {
+  height: 100%;
+  min-height: 180px;
+  display: grid;
+  place-content: center;
+  gap: var(--gt-space-1);
+  padding: var(--gt-space-4);
+  text-align: center;
+  color: var(--muted);
+}
+
+.gt-document-preview-empty strong {
+  color: var(--text);
+  font-size: var(--gt-text-base);
+}
+
+.gt-docx-preview {
+  min-height: 100%;
+  width: 100%;
+  padding: 0;
+  background: inherit;
+  overflow-x: hidden;
+}
+
+.gt-docx-preview .gt-docx-preview-doc-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100%;
+  padding: 0 !important;
+  background: inherit !important;
+  box-shadow: none !important;
+}
+
+.gt-docx-preview .gt-docx-preview-doc {
+  margin: 0 auto var(--gt-space-5) !important;
+  box-shadow: 0 6px 18px color-mix(in srgb, black 7%, transparent);
+}
+
+.gt-docx-preview .gt-docx-preview-doc-wrapper > section {
+  margin-top: 0 !important;
+}
+
+.gt-spreadsheet-preview-scroll {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: var(--gt-space-4);
+}
+
+.gt-spreadsheet-preview {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.gt-spreadsheet-tabs {
+  display: flex;
+  gap: var(--gt-space-1);
+  margin-bottom: var(--gt-space-2);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: var(--gt-space-1);
+}
+
+.gt-spreadsheet-tab {
+  padding: var(--gt-space-1) var(--gt-space-3);
+  border-radius: var(--gt-radius-md) var(--gt-radius-md) 0 0;
+  font-size: var(--gt-text-xs);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+}
+
+.gt-spreadsheet-tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
+}
+
+.gt-spreadsheet-tab.active {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.gt-spreadsheet-table {
+  border-collapse: collapse;
+  font-size: var(--gt-text-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+}
+
+.gt-spreadsheet-table td {
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding: var(--gt-space-1-5) var(--gt-space-2);
+  min-width: 80px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.gt-spreadsheet-row-header {
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  color: var(--muted);
+  font-weight: 600;
+  text-align: center;
+  width: 40px;
+  min-width: 40px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.gt-spreadsheet-header-cell {
+  background: color-mix(in srgb, var(--bg-soft) 80%, transparent);
+  color: var(--text);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.gt-spreadsheet-header-cell:first-child {
+  z-index: 3;
+}
+
+.gt-spreadsheet-cell {
+  color: var(--text);
+  background: var(--bg-panel);
+}
+
 .gt-commit-action-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 3px);
   right: 0;
   z-index: 50;
-  min-width: 158px;
-  padding: var(--gt-space-1-5);
+  min-width: 186px;
+  padding: 3px;
   border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
-  border-radius: var(--gt-radius-lg);
+  border-radius: 8px;
   background: color-mix(in srgb, var(--bg-panel) 96%, var(--bg));
   box-shadow: var(--gt-shadow-4);
 }
@@ -239,12 +651,14 @@
 .gt-commit-action-menu button {
   display: block;
   width: 100%;
-  padding: var(--gt-space-2) var(--gt-space-2);
-  border-radius: var(--gt-radius-md);
+  padding: 5px 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--text);
   text-align: left;
-  font-size: var(--gt-text-xs);
+  font-size: 11.5px;
+  line-height: 1.2;
+  font-weight: 420;
   cursor: pointer;
 }
 

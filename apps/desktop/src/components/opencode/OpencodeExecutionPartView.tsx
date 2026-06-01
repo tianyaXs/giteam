@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { isOpencodeContextTool, parseOpencodeTaskSessionId, toDisplayJson } from "../../lib/opencodeParts";
 import type { OpencodeDetailedPart } from "../../lib/opencodeSessions";
 import { parseReadToolOutput, withLineNumbers } from "../../lib/textFormatting";
@@ -55,8 +56,7 @@ function compactPath(input: string): string {
   const path = normalizeText(input).replace(/\\/g, "/");
   if (!path) return "";
   const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 2) return path;
-  return parts.slice(-2).join("/");
+  return parts[parts.length - 1] || path;
 }
 
 function diffCountFromText(text: string) {
@@ -99,11 +99,11 @@ function toolMode(tool: string): string {
 function toolDetail(input: any): string {
   return (
     normalizeText(input?.description) ||
-    normalizeText(input?.filePath) ||
+    compactPath(normalizeText(input?.filePath)) ||
     readableSearchPattern(input?.pattern) ||
     normalizeText(input?.query) ||
     normalizeText(input?.url) ||
-    normalizeText(input?.path)
+    compactPath(normalizeText(input?.path))
   );
 }
 
@@ -236,6 +236,18 @@ function summarizeWriteTool(tool: string, input: any): string {
   return "";
 }
 
+function cleanDetailLabel(tool: string, label: string): string {
+  const text = normalizeText(label);
+  if (!text) return "";
+  if ((tool === "write" || tool === "edit" || tool === "apply_patch") && text === "写入") return "";
+  if ((tool === "read" || tool === "list" || tool === "glob" || tool === "grep") && text === "读取") return "";
+  return text;
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function OpencodeExecutionPartView({
   part,
   shellToolPartsExpanded,
@@ -243,6 +255,7 @@ export function OpencodeExecutionPartView({
   onOpenTaskSession,
   onOpenToolFile
 }: OpencodeExecutionPartViewProps) {
+  const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
   const type = String(part?.type || "");
   if (type === "step-start" || type === "step-finish") {
     return null;
@@ -277,13 +290,37 @@ export function OpencodeExecutionPartView({
   const fileDiff = normalizeEditFileDiff(tool, state, metadata);
   const patchFiles = tool === "apply_patch" ? normalizePatchFiles(metadata) : undefined;
   const bashCommand = normalizeText(input?.command);
+  const detailFilePath =
+    (tool === "read"
+      ? normalizeText(parsedRead?.path) || normalizeText(input?.filePath) || normalizeText(input?.path)
+      : tool === "edit"
+        ? normalizeText(fileDiff?.file)
+        : tool === "write"
+          ? normalizeText(input?.filePath) || normalizeText(input?.path)
+          : tool === "apply_patch"
+            ? normalizeText(patchFiles?.[0]?.relativePath || "") || normalizeText(patchFiles?.[0]?.filePath || "")
+            : "") || "";
+  const detailFileLabel = compactPath(detailFilePath);
   const detailLabel =
-    writeSummary ||
-    (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : "") ||
-    (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || "")} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : "") ||
-    summarizeWriteTool(tool, input) ||
-    (tool === "apply_patch" ? summarizePatchOutput(outputText) : "") ||
-    subtitle;
+    cleanDetailLabel(
+      tool,
+      writeSummary ||
+        (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : "") ||
+        (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || "")} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : "") ||
+        summarizeWriteTool(tool, input) ||
+        (tool === "apply_patch" ? summarizePatchOutput(outputText) : "") ||
+        compactPath(subtitle) ||
+        subtitle
+    );
+  const detailMeta = (() => {
+    if (!detailLabel) return "";
+    if (!detailFileLabel) return detailLabel;
+    let next = detailLabel.replace(new RegExp(`^${escapeRegExp(detailFileLabel)}\\s*·\\s*`), "").trim();
+    if (next === detailLabel) {
+      next = detailLabel.replace(new RegExp(`^(新增|修改|删除)\\s+${escapeRegExp(detailFileLabel)}\\s*`), "").trim();
+    }
+    return next === detailFileLabel ? "" : next;
+  })();
   const toolFileTarget = (() => {
     if (tool === "read" && parsedRead?.content) {
       const filePath = normalizeText(parsedRead.path) || normalizeText(input?.filePath) || normalizeText(input?.path);
@@ -335,7 +372,8 @@ export function OpencodeExecutionPartView({
     running ||
     (shellTool && shellToolPartsExpanded) ||
     (editTool && editToolPartsExpanded);
-  const hasInlineDetails = !toolFileTarget && !shellTool && (
+  const hasInlineDetails = (
+    (shellTool && (!!bashCommand || !!outputText)) ||
     !!parsedRead?.content ||
     !!outputText ||
     !!fileDiff ||
@@ -350,6 +388,137 @@ export function OpencodeExecutionPartView({
     !!patchFiles?.length ||
     (tool === "write" && typeof input?.content === "string" && !!input.content.trim());
 
+  useEffect(() => {
+    if (!hasInlineDetails || !hasExpandedContent || contextTool) return;
+    if (detailsOpen !== null) return;
+    if (detailDefaultOpen) setDetailsOpen(true);
+  }, [contextTool, detailDefaultOpen, detailsOpen, hasExpandedContent, hasInlineDetails]);
+
+  const renderToolHead = () => (
+    <div className="opencode-exec-tool-head">
+      <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
+      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && toolDisplayName(tool) !== tool ? <span className="opencode-tool-chip">{tool}</span> : null}
+      {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
+      {detailFileLabel ? <span className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span> : null}
+      {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
+      {taskSessionId ? (
+        <button
+          type="button"
+          className="opencode-task-link"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenTaskSession(taskSessionId, taskTitleHint);
+          }}
+          title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
+        >
+          {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const renderDetailsBody = () => (
+    <div className="opencode-tool-details-body">
+      {shellTool ? (
+        <div className="opencode-tool-section">
+          {bashCommand ? <div className="opencode-tool-command"><code>{bashCommand}</code></div> : null}
+          {outputText ? <pre className="opencode-tool-output">{outputText}</pre> : null}
+        </div>
+      ) : null}
+
+      {parsedRead?.content ? (
+        <div className="opencode-tool-section">
+          <div className="opencode-tool-section-head">
+            <strong>{compactPath(parsedRead.path || subtitle) || "文件内容"}</strong>
+            {parsedRead.type ? <span className="small muted">{parsedRead.type}</span> : null}
+          </div>
+          <pre className="opencode-tool-output">{withLineNumbers(parsedRead.content, 120)}</pre>
+        </div>
+      ) : null}
+
+      {tool === "write" && typeof input?.content === "string" && input.content.trim() ? (
+        <div className="opencode-tool-section">
+          <div className="opencode-tool-section-head">
+            <strong>{compactPath(input?.filePath || input?.path) || "写入内容"}</strong>
+            <span className="small muted">{input.content.split(/\r?\n/).length} 行</span>
+          </div>
+          <pre className="opencode-tool-output">{withLineNumbers(input.content, 180)}</pre>
+        </div>
+      ) : null}
+
+      {fileDiff ? (
+        <div className="opencode-tool-section">
+          <div className="opencode-tool-section-head">
+            <strong>{compactPath(fileDiff.file) || "编辑内容"}</strong>
+            <span className="small muted">+{fileDiff.additions} -{fileDiff.deletions}</span>
+          </div>
+          {fileDiff.patch ? <pre className="opencode-tool-output">{withLineNumbers(fileDiff.patch, 220)}</pre> : null}
+          {fileDiff.before ? (
+            <div className="opencode-tool-subsection">
+              <div className="opencode-tool-subtitle">修改前</div>
+              <pre className="opencode-tool-output">{withLineNumbers(fileDiff.before, 160)}</pre>
+            </div>
+          ) : null}
+          {fileDiff.after ? (
+            <div className="opencode-tool-subsection">
+              <div className="opencode-tool-subtitle">修改后</div>
+              <pre className="opencode-tool-output">{withLineNumbers(fileDiff.after, 160)}</pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {patchFiles?.length ? (
+        <div className="opencode-tool-section">
+          <div className="opencode-tool-section-head">
+            <strong>补丁文件</strong>
+            <span className="small muted">{patchFiles.length} 个文件</span>
+          </div>
+          <div className="opencode-tool-file-list">
+            {patchFiles.map((file, index) => (
+              <div key={`${file.filePath}:${index}`} className="opencode-tool-file-card">
+                <div className="opencode-tool-file-head">
+                  <strong>{compactPath(file.relativePath || file.filePath) || file.filePath}</strong>
+                  <span className="small muted">
+                    {file.type} · +{file.additions} -{file.deletions}
+                  </span>
+                </div>
+                {file.movePath ? <div className="small muted">move to {file.movePath}</div> : null}
+                {file.patch ? <pre className="opencode-tool-output">{withLineNumbers(file.patch, 220)}</pre> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {!parsedRead && !shellTool && !fileDiff && !patchFiles?.length && outputText ? (
+        <div className="opencode-tool-section">
+          <div className="opencode-tool-section-head">
+            <strong>输出</strong>
+          </div>
+          <pre className="opencode-tool-output">{outputText}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  if (hasInlineDetails && hasExpandedContent && !contextTool) {
+    return (
+      <details
+        className={toolFileTarget ? "opencode-exec-item opencode-exec-tool opencode-tool-details opencode-exec-tool-openable" : "opencode-exec-item opencode-exec-tool opencode-tool-details"}
+        open={detailsOpen ?? detailDefaultOpen}
+        onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+      >
+        <summary className="opencode-tool-summary">
+          {renderToolHead()}
+        </summary>
+        {showPreview ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
+        {renderDetailsBody()}
+      </details>
+    );
+  }
+
   return (
     <div className={toolFileTarget ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-openable" : "opencode-exec-item opencode-exec-tool"}>
       {toolFileTarget ? (
@@ -362,120 +531,15 @@ export function OpencodeExecutionPartView({
           <div className="opencode-exec-tool-head">
             <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
             {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-            {detailLabel ? <span className="small muted opencode-tool-detail-label">{detailLabel}</span> : null}
-            <span className="opencode-open-file-hint" aria-hidden="true">
-              <svg viewBox="0 0 16 16">
-                <path d="M5 3.5h5.5L13 6v6.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Z" />
-                <path d="M10.5 3.5V6H13" />
-                <path d="M6.5 9H10.5" />
-              </svg>
-            </span>
+            {detailFileLabel ? <span className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span> : null}
+            {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
           </div>
         </button>
       ) : (
-        <div className="opencode-exec-tool-head">
-          <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
-          {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && toolDisplayName(tool) !== tool ? <span className="opencode-tool-chip">{tool}</span> : null}
-          {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-          {detailLabel ? <span className="small muted opencode-tool-detail-label">{detailLabel}</span> : null}
-          {taskSessionId ? (
-            <button
-              type="button"
-              className="opencode-task-link"
-              onClick={() => onOpenTaskSession(taskSessionId, taskTitleHint)}
-              title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
-            >
-              {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
-            </button>
-          ) : null}
-        </div>
+        renderToolHead()
       )}
 
-      {shellTool && bashCommand ? <div className="opencode-tool-command"><code>{bashCommand}</code></div> : null}
-      {shellTool && outputText ? <pre className="opencode-tool-output">{outputText}</pre> : null}
       {showPreview ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
-
-      {hasInlineDetails && hasExpandedContent && !contextTool ? (
-        <details className="opencode-tool-details" open={detailDefaultOpen}>
-          <summary>展开查看详情</summary>
-          <div className="opencode-tool-details-body">
-            {parsedRead?.content ? (
-              <div className="opencode-tool-section">
-                <div className="opencode-tool-section-head">
-                  <strong>{compactPath(parsedRead.path || subtitle) || "文件内容"}</strong>
-                  {parsedRead.type ? <span className="small muted">{parsedRead.type}</span> : null}
-                </div>
-                <pre className="opencode-tool-output">{withLineNumbers(parsedRead.content, 120)}</pre>
-              </div>
-            ) : null}
-
-            {tool === "write" && typeof input?.content === "string" && input.content.trim() ? (
-              <div className="opencode-tool-section">
-                <div className="opencode-tool-section-head">
-                  <strong>{compactPath(input?.filePath || input?.path) || "写入内容"}</strong>
-                  <span className="small muted">{input.content.split(/\r?\n/).length} 行</span>
-                </div>
-                <pre className="opencode-tool-output">{withLineNumbers(input.content, 180)}</pre>
-              </div>
-            ) : null}
-
-            {fileDiff ? (
-              <div className="opencode-tool-section">
-                <div className="opencode-tool-section-head">
-                  <strong>{compactPath(fileDiff.file) || "编辑内容"}</strong>
-                  <span className="small muted">+{fileDiff.additions} -{fileDiff.deletions}</span>
-                </div>
-                {fileDiff.patch ? <pre className="opencode-tool-output">{withLineNumbers(fileDiff.patch, 220)}</pre> : null}
-                {fileDiff.before ? (
-                  <div className="opencode-tool-subsection">
-                    <div className="opencode-tool-subtitle">修改前</div>
-                    <pre className="opencode-tool-output">{withLineNumbers(fileDiff.before, 160)}</pre>
-                  </div>
-                ) : null}
-                {fileDiff.after ? (
-                  <div className="opencode-tool-subsection">
-                    <div className="opencode-tool-subtitle">修改后</div>
-                    <pre className="opencode-tool-output">{withLineNumbers(fileDiff.after, 160)}</pre>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {patchFiles?.length ? (
-              <div className="opencode-tool-section">
-                <div className="opencode-tool-section-head">
-                  <strong>补丁文件</strong>
-                  <span className="small muted">{patchFiles.length} 个文件</span>
-                </div>
-                <div className="opencode-tool-file-list">
-                  {patchFiles.map((file, index) => (
-                    <div key={`${file.filePath}:${index}`} className="opencode-tool-file-card">
-                      <div className="opencode-tool-file-head">
-                        <strong>{compactPath(file.relativePath || file.filePath) || file.filePath}</strong>
-                        <span className="small muted">
-                          {file.type} · +{file.additions} -{file.deletions}
-                        </span>
-                      </div>
-                      {file.movePath ? <div className="small muted">move to {file.movePath}</div> : null}
-                      {file.patch ? <pre className="opencode-tool-output">{withLineNumbers(file.patch, 220)}</pre> : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {!parsedRead && !shellTool && !fileDiff && !patchFiles?.length && outputText ? (
-              <div className="opencode-tool-section">
-                <div className="opencode-tool-section-head">
-                  <strong>输出</strong>
-                </div>
-                <pre className="opencode-tool-output">{outputText}</pre>
-              </div>
-            ) : null}
-          </div>
-        </details>
-      ) : null}
-
     </div>
   );
 }

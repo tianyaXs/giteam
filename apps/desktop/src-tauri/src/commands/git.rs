@@ -545,6 +545,8 @@ pub struct GitWorktreeOverview {
     pub staged_count: u32,
     pub unstaged_count: u32,
     pub untracked_count: u32,
+    pub added_lines: u32,
+    pub deleted_lines: u32,
     pub entries: Vec<GitWorktreeEntry>,
     pub raw: String,
 }
@@ -592,6 +594,11 @@ pub struct GitUserIdentity {
 pub struct GitWorktreeFileContent {
     pub original: String,
     pub modified: String,
+    pub preview_supported: bool,
+    pub preview_reason: Option<String>,
+    pub preview_kind: Option<String>,
+    pub mime: Option<String>,
+    pub data_base64: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -634,6 +641,53 @@ fn run_git_with_timeout(
     timeout_secs: u64,
 ) -> Result<String, String> {
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
+}
+
+const PREVIEW_SAMPLE_BYTES: usize = 4096;
+
+fn read_git_blob_bytes(repo_path: &str, spec: &str) -> Result<Vec<u8>, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let output = Command::new("git")
+        .args(["show", spec])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("failed to read git blob: {e}"))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        return Err("failed to read git blob".to_string());
+    }
+    Err(stderr)
+}
+
+fn detect_unsupported_preview_reason(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let sample = &bytes[..bytes.len().min(PREVIEW_SAMPLE_BYTES)];
+    if sample.contains(&0) {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    if std::str::from_utf8(sample).is_err() {
+        return Some("该文件包含不可解析内容，暂不支持文本预览。");
+    }
+    let control_bytes = sample
+        .iter()
+        .filter(|byte| matches!(**byte, 0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F))
+        .count();
+    if control_bytes * 100 / sample.len().max(1) >= 8 {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    None
+}
+
+fn decode_preview_text(bytes: Vec<u8>) -> Result<String, &'static str> {
+    if let Some(reason) = detect_unsupported_preview_reason(&bytes) {
+        return Err(reason);
+    }
+    String::from_utf8(bytes).map_err(|_| "该文件包含不可解析内容，暂不支持文本预览。")
 }
 
 fn decode_git_quoted_path(input: &str) -> String {
@@ -756,9 +810,20 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
         staged_count,
         unstaged_count,
         untracked_count,
+        added_lines: 0,
+        deleted_lines: 0,
         entries,
         raw,
     }
+}
+
+fn parse_numstat_totals(raw: &str) -> (u32, u32) {
+    raw.lines().fold((0u32, 0u32), |(added_total, deleted_total), line| {
+        let mut parts = line.split_whitespace();
+        let added = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+        let deleted = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+        (added_total.saturating_add(added), deleted_total.saturating_add(deleted))
+    })
 }
 
 fn sanitize_branch_for_dir(branch: &str) -> String {
@@ -1135,6 +1200,11 @@ pub fn run_git_commit_file_patch(
 pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview, String> {
     let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
     let mut overview = parse_worktree_overview(raw);
+    if let Ok(numstat) = run_git(&["diff", "--numstat", "HEAD", "--"], repo_path) {
+        let (added_lines, deleted_lines) = parse_numstat_totals(&numstat);
+        overview.added_lines = added_lines;
+        overview.deleted_lines = deleted_lines;
+    }
     if overview.branch.is_empty() {
         overview.branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
             .unwrap_or_default()
@@ -1602,14 +1672,52 @@ pub fn run_git_worktree_file_content(
         return Err("file path must be repository-relative".to_string());
     }
 
-    let original = run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
     let repo_root = normalize_repo_key(repo_path)?;
     let full_path = PathBuf::from(repo_root).join(rel_path);
-    let modified = fs::read(full_path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-        .unwrap_or_default();
+    let original = match read_git_blob_bytes(repo_path, &format!("HEAD:{path}")) {
+        Ok(bytes) => match decode_preview_text(bytes) {
+            Ok(text) => text,
+            Err(reason) => {
+                return Ok(GitWorktreeFileContent {
+                    original: String::new(),
+                    modified: String::new(),
+                    preview_supported: false,
+                    preview_reason: Some(reason.to_string()),
+                    preview_kind: None,
+                    mime: None,
+                    data_base64: None,
+                });
+            }
+        },
+        Err(_) => String::new(),
+    };
+    let modified = match fs::read(full_path) {
+        Ok(bytes) => match decode_preview_text(bytes) {
+            Ok(text) => text,
+            Err(reason) => {
+                return Ok(GitWorktreeFileContent {
+                    original: String::new(),
+                    modified: String::new(),
+                    preview_supported: false,
+                    preview_reason: Some(reason.to_string()),
+                    preview_kind: None,
+                    mime: None,
+                    data_base64: None,
+                });
+            }
+        },
+        Err(_) => String::new(),
+    };
 
-    Ok(GitWorktreeFileContent { original, modified })
+    Ok(GitWorktreeFileContent {
+        original,
+        modified,
+        preview_supported: true,
+        preview_reason: None,
+        preview_kind: Some("text".to_string()),
+        mime: Some("text/plain".to_string()),
+        data_base64: None,
+    })
 }
 
 #[tauri::command]

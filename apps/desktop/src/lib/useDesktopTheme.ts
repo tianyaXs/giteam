@@ -7,6 +7,7 @@ export function useDesktopTheme(): [DesktopTheme, () => void] {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.style.colorScheme = theme;
     saveDesktopTheme(theme);
     void invoke("set_window_theme", { theme }).catch(() => {
