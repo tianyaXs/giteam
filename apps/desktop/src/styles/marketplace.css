@@ -1081,19 +1081,25 @@
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(300px, 0.86fr) minmax(420px, 1.34fr);
-  gap: var(--gt-space-0-5);
+  grid-template-columns: minmax(288px, 0.82fr) minmax(440px, 1.38fr);
+  gap: 1px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--border) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 18%, transparent), transparent 28%),
+    color-mix(in srgb, var(--border) 62%, transparent);
+  box-shadow:
+    0 14px 34px color-mix(in srgb, black 7%, transparent),
+    0 1px 0 color-mix(in srgb, white 28%, transparent) inset;
 }
 
 .gt-gittree-sidebar,
 .gt-gittree-detail {
   min-width: 0;
   min-height: 0;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, transparent), color-mix(in srgb, var(--bg) 92%, transparent));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 8%, var(--surface)), color-mix(in srgb, var(--surface) 94%, var(--bg)));
   display: flex;
   flex-direction: column;
 }
@@ -1101,21 +1107,22 @@
 .gt-gittree-head,
 .gt-gittree-detail-head {
   flex: 0 0 auto;
-  min-height: 62px;
-  padding: var(--gt-space-3) var(--gt-space-3-5);
+  min-height: 44px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--gt-space-2-5);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, white 12%, var(--surface));
+  backdrop-filter: saturate(0.92);
 }
 
 .gt-gittree-head > div,
 .gt-gittree-selected-title > div {
   min-width: 0;
   display: grid;
-  gap: var(--gt-space-0-5);
+  gap: 2px;
 }
 
 .gt-gittree-head strong,
@@ -1123,73 +1130,88 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--gt-text-md);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
   color: var(--text);
+  text-wrap: balance;
 }
 
 .gt-gittree-kicker {
-  font-size: var(--gt-text-2xs);
-  font-weight: var(--gt-font-bold);
-  letter-spacing: 0.08em;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--text) 44%, var(--muted));
 }
 
 .gt-gittree-summary,
 .gt-gittree-commit-toolbar {
   flex: 0 0 auto;
-  padding: var(--gt-space-2) var(--gt-space-3-5);
+  padding: 6px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--gt-space-2-5);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  color: var(--muted);
-  font-size: var(--gt-text-xs);
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  color: color-mix(in srgb, var(--text) 54%, var(--muted));
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .gt-gittree-branch-list,
 .gt-gittree-commit-list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: var(--gt-space-2-5);
 }
 
 .gt-gittree-branch-list {
   flex: 1.15;
 }
 
+.gt-gittree-branch-list-inner,
+.gt-gittree-commit-list-inner {
+  min-height: 100%;
+  padding: 6px 6px 8px;
+}
+
 .gt-gittree-section-divider {
-  margin: var(--gt-space-2) 0;
-  padding: var(--gt-space-1) var(--gt-space-2-5);
-  color: var(--muted);
-  font-size: var(--gt-text-xs);
-  letter-spacing: 0.5px;
+  margin: 8px 2px 5px;
+  padding: 0 8px;
+  color: color-mix(in srgb, var(--text) 40%, var(--muted));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .gt-gittree-commit-list {
   flex: 0.95;
-  border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.gt-gittree-list-separator {
+  background: color-mix(in srgb, var(--border) 68%, transparent);
 }
 
 .gt-gittree-branch {
-  min-height: 34px;
+  min-height: 28px;
   width: 100%;
   display: grid;
-  grid-template-columns: 18px 10px minmax(0, 1fr) auto auto;
+  grid-template-columns: 8px minmax(0, 1fr);
   align-items: center;
-  gap: var(--gt-space-2);
-  border-radius: var(--gt-radius-lg);
+  gap: 6px;
+  padding-right: 4px;
+  border-radius: 10px;
   color: var(--text);
   cursor: pointer;
   user-select: none;
-  transition: background 140ms ease, box-shadow 140ms ease;
+  transition-property: background-color, box-shadow, color;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
 }
 
 .gt-gittree-branch:hover {
-  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
 }
 
 .gt-gittree-worktree-node {
@@ -1218,41 +1240,77 @@
 }
 
 .gt-gittree-branch.active {
-  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 30%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, transparent), transparent 70%),
+    color-mix(in srgb, var(--primary) 10%, var(--surface));
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.gt-gittree-branch-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .gt-gittree-disclosure {
-  width: 18px;
-  height: 22px;
+  width: 14px;
+  height: 14px;
   border: 0;
   padding: 0;
-  border-radius: var(--gt-radius-md);
+  border-radius: 5px;
   background: transparent;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--text) 42%, var(--muted));
   cursor: pointer;
-  font-size: var(--gt-text-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition-property: background-color, color;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+.gt-gittree-branch:hover .gt-gittree-disclosure,
+.gt-gittree-branch:focus-within .gt-gittree-disclosure {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gt-gittree-disclosure svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 140ms ease-out;
+}
+
+.gt-gittree-disclosure.is-open svg {
+  transform: rotate(90deg);
 }
 
 .gt-gittree-disclosure:hover {
-  background: color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--border) 56%, transparent);
   color: var(--text);
 }
 
 .gt-gittree-disclosure.empty {
-  pointer-events: none;
+  width: 0;
+  opacity: 0;
+  margin-left: 0;
 }
 
 .gt-gittree-dot {
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: var(--gt-radius-pill);
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 10%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .gt-gittree-dot.large {
-  width: 13px;
-  height: 13px;
+  width: 11px;
+  height: 11px;
   flex: 0 0 auto;
 }
 
@@ -1261,86 +1319,100 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--gt-text-base);
-  font-weight: var(--gt-font-semibold);
-}
-
-.gt-gittree-badge,
-.gt-gittree-count {
-  padding: var(--gt-space-0-5) var(--gt-space-1-5);
-  border-radius: var(--gt-radius-pill);
-  font-size: var(--gt-text-2xs);
-  font-weight: var(--gt-font-bold);
-  color: var(--muted);
-  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
-}
-
-.gt-gittree-badge {
-  color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  font-size: 11.5px;
+  font-weight: 480;
+  letter-spacing: -0.01em;
 }
 
 .gt-gittree-selected-title {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--gt-space-2-5);
+  gap: 10px;
 }
 
 .gt-gittree-selected-title span {
-  color: var(--muted);
-  font-size: var(--gt-text-xs);
+  color: color-mix(in srgb, var(--text) 50%, var(--muted));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .gt-gittree-actions {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: var(--gt-space-1-5);
+  gap: 6px;
+}
+
+.gt-gittree-action-chip,
+.gt-gittree-inline-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  font-weight: 560;
+}
+
+.gt-gittree-inline-chip {
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.gt-gittree-action-chip svg,
+.gt-gittree-inline-chip svg {
+  width: 14px;
+  height: 14px;
 }
 
 .gt-gittree-commit {
   width: 100%;
-  min-height: 48px;
+  min-height: 46px;
   display: grid;
-  grid-template-columns: 44px 10px minmax(0, 1fr);
-  gap: var(--gt-space-2-5);
+  grid-template-columns: 6px minmax(0, 1fr);
+  gap: 9px;
   align-items: center;
   border: 0;
-  border-radius: var(--gt-radius-lg);
-  padding: var(--gt-space-2) var(--gt-space-2-5);
+  border-radius: 12px;
+  padding: 10px 10px 10px 6px;
   background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  transition-property: background-color, box-shadow;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
 }
 
 .gt-gittree-commit:hover {
-  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
 }
 
 .gt-gittree-commit.selected {
-  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 28%, transparent);
-}
-
-.gt-gittree-commit-index {
-  color: var(--muted);
-  font-size: var(--gt-text-2xs);
-  font-weight: var(--gt-font-bold);
-  text-align: right;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, transparent), transparent 70%),
+    color-mix(in srgb, var(--primary) 10%, var(--surface));
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .gt-gittree-commit-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: var(--gt-radius-pill);
+  margin-left: 0;
 }
 
 .gt-gittree-commit-main {
   min-width: 0;
   display: grid;
-  gap: var(--gt-space-1);
+  gap: 3px;
 }
 
 .gt-gittree-commit-main strong,
@@ -1352,13 +1424,16 @@
 }
 
 .gt-gittree-commit-main strong {
-  font-size: var(--gt-text-sm);
+  font-size: 12px;
+  font-weight: 540;
+  letter-spacing: -0.01em;
   color: var(--text);
 }
 
 .gt-gittree-commit-main span {
-  font-size: var(--gt-text-xs);
-  color: var(--muted);
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--text) 46%, var(--muted));
+  font-variant-numeric: tabular-nums;
 }
 
 .gt-gittree-empty {
@@ -1379,54 +1454,64 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--gt-space-3-5);
+  padding: 16px;
   display: grid;
   align-content: start;
-  gap: var(--gt-space-3);
+  gap: 12px;
 }
 
 .gt-gittree-detail-card {
   display: grid;
-  gap: var(--gt-space-1-5);
-  padding: var(--gt-space-3-5);
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  gap: 8px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 12%, transparent), transparent 68%),
+    color-mix(in srgb, var(--surface) 84%, transparent);
 }
 
 .gt-gittree-detail-card span,
 .gt-gittree-detail-grid span {
-  color: var(--muted);
-  font-size: var(--gt-text-2xs);
-  font-weight: var(--gt-font-bold);
-  letter-spacing: 0.08em;
+  color: color-mix(in srgb, var(--text) 44%, var(--muted));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .gt-gittree-detail-card strong {
-  font-size: var(--gt-text-lg);
+  font-size: 18px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
   overflow-wrap: anywhere;
 }
 
 .gt-gittree-detail-card p {
   margin: 0;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--text) 58%, var(--muted));
+  font-size: 12px;
   line-height: 1.5;
+  text-wrap: pretty;
 }
 
 .gt-gittree-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--gt-space-2-5);
+  gap: 10px;
+}
+
+.gt-gittree-detail-grid-compact strong {
+  font-variant-numeric: tabular-nums;
 }
 
 .gt-gittree-detail-grid > div {
   display: grid;
-  gap: var(--gt-space-1-5);
-  padding: var(--gt-space-3);
-  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
+  gap: 6px;
+  padding: 12px 13px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-soft) 52%, transparent);
 }
 
 .gt-gittree-detail-grid strong {
@@ -1434,6 +1519,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 560;
 }
 
 .gt-gittree-detail-preview {
@@ -1441,17 +1528,24 @@
   max-height: 320px;
   overflow: auto;
   margin: 0;
-  padding: var(--gt-space-3);
-  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  color: var(--muted);
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  color: color-mix(in srgb, var(--text) 56%, var(--muted));
+  font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.gt-gittree-branch-card p {
+  max-width: 34ch;
 }
 
 .gt-gittree-worktree-list {
   display: grid;
-  gap: var(--gt-space-2);
+  gap: 10px;
+  align-content: start;
 }
 
 .gt-gittree-worktree-toolbar {
@@ -1459,33 +1553,53 @@
   border-bottom: 0;
 }
 
+.gt-gittree-worktree-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .gt-gittree-worktree-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: var(--gt-space-1) var(--gt-space-2-5);
+  gap: 4px 10px;
   align-items: center;
-  padding: var(--gt-space-2-5) var(--gt-space-3);
-  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
-  border-radius: var(--gt-radius-lg);
+  padding: 12px 13px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 12px;
   background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  transition-property: background-color, box-shadow, border-color;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
 }
 
 .gt-gittree-worktree-row.selected {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 28%, transparent);
-  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, transparent), transparent 70%),
+    color-mix(in srgb, var(--primary) 10%, var(--surface));
 }
 
 .gt-gittree-worktree-row:hover {
-  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+.gt-gittree-worktree-row:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
 }
 
 .gt-gittree-worktree-row span {
   grid-column: 2 / -1;
-  color: var(--muted);
-  font-size: var(--gt-text-xs);
+  color: color-mix(in srgb, var(--text) 48%, var(--muted));
+  font-size: 10.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1496,21 +1610,44 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
 }
 
 .gt-gittree-worktree-row em {
-  color: var(--muted);
-  font-size: var(--gt-text-xs);
+  color: color-mix(in srgb, var(--text) 46%, var(--muted));
+  font-size: 10.5px;
   font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.gt-gittree-empty-inline {
+  place-content: start;
+  justify-items: start;
+  min-height: 148px;
+  padding: 16px 14px;
+  border: 1px dashed color-mix(in srgb, var(--border) 62%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-soft) 38%, transparent);
+  text-align: left;
+}
+
+.gt-gittree-empty-inline span {
+  max-width: 34ch;
+  line-height: 1.55;
+  text-wrap: pretty;
 }
 
 .gt-gittree-worktree-state {
   grid-column: auto !important;
-  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  padding: 3px 7px;
   border-radius: var(--gt-radius-pill);
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
-  color: var(--primary) !important;
-  font-weight: var(--gt-font-bold);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: color-mix(in srgb, var(--primary) 84%, var(--text)) !important;
+  font-size: 10px !important;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 @media (max-width: 980px) {

@@ -118,7 +118,6 @@ type GitWorkspaceControllerOptions = {
   setCommitMessage: SetState<string>;
   setCommitting: SetState<boolean>;
   setPushing: SetState<boolean>;
-  setShowCommitActionMenu: SetState<boolean>;
   setSelectedWorktreeFile: SetState<string>;
   setSelectedWorktreePatch: SetState<string>;
   setSelectedWorktreeContent: SetState<GitWorktreeFileContent>;
@@ -201,7 +200,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setCommitMessage,
     setCommitting,
     setPushing,
-    setShowCommitActionMenu,
     setSelectedWorktreeFile,
     setSelectedWorktreePatch,
     setSelectedWorktreeContent,
@@ -822,7 +820,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setPushing(true);
     setGitOperation("push");
     setError("");
-    setShowCommitActionMenu(false);
     try {
       const result = await gitPush(repoPath);
       setMessage("推送成功");
@@ -842,7 +839,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setPushing(true);
     setGitOperation("sync");
     setError("");
-    setShowCommitActionMenu(false);
     try {
       if (worktreeOverview.behind > 0) {
         await gitPull(repoPath);
@@ -869,7 +865,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setPushing(true);
     setGitOperation("commitPush");
     setError("");
-    setShowCommitActionMenu(false);
     try {
       if (!input.staged) {
         await stageUnstagedFiles(input.unstagedFiles);
@@ -899,7 +894,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setPushing(true);
     setGitOperation("commitSync");
     setError("");
-    setShowCommitActionMenu(false);
     try {
       if (!input.staged) {
         await stageUnstagedFiles(input.unstagedFiles);

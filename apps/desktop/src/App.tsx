@@ -79,6 +79,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "./components/ui/dialog";
+import { Field, FieldDescription, FieldLabel, Textarea } from "./components/ui/textarea";
 import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
@@ -223,12 +224,10 @@ import {
   writeWorktreeParentMap
 } from "./lib/workspaceBindings";
 import {
-  buildSplitDiffRows,
   buildWorktreeTree,
   collectWorktreeDirPaths,
   getDiscardableWorktreeEntryCount,
   getWorktreeChangeStats,
-  getWorktreePatchStats,
   getWorktreeStatusText,
   toDiffRows,
   type DiffRow
@@ -498,7 +497,6 @@ export function App() {
   const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitDialogAction, setCommitDialogAction] = useState<"commit" | "commitPush" | "commitSync" | null>(null);
-  const [showCommitActionMenu, setShowCommitActionMenu] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -1026,8 +1024,6 @@ export function App() {
     () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
     [worktreeOverview.entries, selectedWorktreeFile]
   );
-  const worktreePatchRows = useMemo(() => buildSplitDiffRows(selectedWorktreePatch), [selectedWorktreePatch]);
-  const worktreePatchStats = useMemo(() => getWorktreePatchStats(worktreePatchRows), [worktreePatchRows]);
   const worktreeChangeStats = useMemo(() => getWorktreeChangeStats(worktreeOverview.entries), [worktreeOverview.entries]);
   const worktreePatchStreamEntries = useMemo(
     () => worktreeOverview.entries.filter((entry) => entry.staged || entry.unstaged || entry.untracked),
@@ -1049,7 +1045,6 @@ export function App() {
     [worktreeOverview.entries]
   );
   const hasCommittableChanges = worktreeChangeStats.staged > 0 || worktreeChangeStats.unstaged > 0;
-  const commitButtonCount = worktreeChangeStats.staged > 0 ? worktreeChangeStats.staged : worktreeChangeStats.unstaged;
   const needsGitSync = worktreeOverview.ahead > 0 || worktreeOverview.behind > 0;
   const commitMenuAvailable = hasCommittableChanges || needsGitSync;
   const gitOperationLabel = gitOperation === "push"
@@ -2959,7 +2954,6 @@ export function App() {
     setCommitMessage,
     setCommitting,
     setPushing,
-    setShowCommitActionMenu,
     setSelectedWorktreeFile,
     setSelectedWorktreePatch,
     setSelectedWorktreeContent,
@@ -6347,13 +6341,6 @@ export function App() {
   }, [repoContextMenu, sessionContextMenu, commitContextMenu, topologyContextMenu]);
 
   useEffect(() => {
-    if (!showCommitActionMenu) return;
-    const dismiss = () => setShowCommitActionMenu(false);
-    window.addEventListener("click", dismiss);
-    return () => window.removeEventListener("click", dismiss);
-  }, [showCommitActionMenu]);
-
-  useEffect(() => {
     if (!opencodePreviewImage) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -6772,13 +6759,10 @@ export function App() {
             selectedContent={selectedWorktreeContent}
             selectedLine={selectedWorktreeLine}
             viewMode={selectedWorktreeViewMode}
-            patchStats={worktreePatchStats}
             committing={committing}
             pushing={pushing}
             gitOperationLabel={gitOperationLabel}
-            commitButtonCount={commitButtonCount}
             commitMenuAvailable={commitMenuAvailable}
-            showCommitActionMenu={showCommitActionMenu}
             stagingFile={stagingFile}
             unstagingFile={unstagingFile}
             discardingFile={discardingFile}
@@ -6786,17 +6770,13 @@ export function App() {
             theme={theme}
             onToggleStageAll={() => void handleToggleStageAll()}
             onOpenDiscardAllConfirm={openDiscardAllConfirm}
-            onToggleCommitActionMenu={() => setShowCommitActionMenu((prev) => !prev)}
             onCommit={() => {
-              setShowCommitActionMenu(false);
-              setCommitDialogAction("commitPush");
+              setCommitDialogAction("commit");
             }}
             onCommitAndPush={() => {
-              setShowCommitActionMenu(false);
               setCommitDialogAction("commitPush");
             }}
             onCommitAndSync={() => {
-              setShowCommitActionMenu(false);
               setCommitDialogAction("commitSync");
             }}
             onPatchWindowChange={handleWorktreePatchWindowChange}
@@ -7330,17 +7310,21 @@ export function App() {
                 </strong>
               </div>
             </div>
-            <label className="gt-commit-dialog-field">
-              <span>提交消息</span>
-              <textarea
+            <Field className="gt-commit-dialog-field">
+              <div className="gt-commit-dialog-field-head">
+                <FieldLabel>提交消息</FieldLabel>
+                <FieldDescription>留空时会自动生成一条简洁的提交信息。</FieldDescription>
+              </div>
+              <Textarea
                 ref={commitMessageInputRef}
+                className="gt-commit-dialog-textarea"
                 value={commitMessage}
                 onChange={(event) => setCommitMessage(event.target.value)}
                 placeholder="留空以自动生成提交消息"
                 disabled={committing || pushing}
                 autoFocus
               />
-            </label>
+            </Field>
             <DialogFooter className="gt-commit-dialog-actions">
               <DialogClose asChild>
                 <button className="chip" disabled={committing || pushing}>取消</button>

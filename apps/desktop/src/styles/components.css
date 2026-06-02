@@ -228,10 +228,20 @@
   line-height: 1;
   cursor: pointer;
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.14);
+  transition-property: background-color, border-color, box-shadow, transform;
+  transition-duration: 0.14s;
+  transition-timing-function: ease-out;
 }
 
 .gt-commit-menu-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 96%, transparent);
+}
+
+.gt-commit-menu-btn[data-open] {
+  background: color-mix(in srgb, var(--accent) 98%, black 6%);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1px color-mix(in srgb, white 12%, transparent);
 }
 
 .gt-commit-menu-btn:disabled:not(.is-loading) {
@@ -251,6 +261,11 @@
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
+  transition: transform 0.14s ease-out;
+}
+
+.gt-commit-menu-btn[data-open] .gt-commit-chevron {
+  transform: rotate(180deg);
 }
 
 .gt-diff-toolbar-head {
@@ -635,38 +650,312 @@
   background: var(--bg-panel);
 }
 
-.gt-commit-action-menu {
-  position: absolute;
-  top: calc(100% + 3px);
-  right: 0;
-  z-index: 50;
-  min-width: 186px;
-  padding: 3px;
-  border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-panel) 96%, var(--bg));
-  box-shadow: var(--gt-shadow-4);
+.gt-field {
+  min-width: 0;
 }
 
-.gt-commit-action-menu button {
+.gt-icon-button {
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+  transition-property: background-color, color, opacity, transform;
+  transition-duration: 0.14s;
+  transition-timing-function: ease-out;
+}
+
+.gt-icon-button.gt-worktree-action-btn {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.gt-icon-button svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.gt-icon-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sidebar-hover) 80%, transparent);
+  color: var(--text);
+}
+
+.gt-icon-button.is-danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.gt-icon-button.is-md {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--gt-radius-md);
+}
+
+.gt-icon-button.is-md svg {
+  width: 17px;
+  height: 17px;
+}
+
+.gt-icon-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.gt-icon-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.gt-field-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 640;
+  line-height: 1.3;
+}
+
+.gt-field-description {
+  margin: 0;
+  color: color-mix(in srgb, var(--text) 48%, var(--muted));
+  font-size: 12px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.gt-textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, white 62%, var(--bg-panel));
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  box-shadow: inset 0 1px 2px color-mix(in srgb, black 4%, transparent);
+  transition-property: border-color, box-shadow, background-color;
+  transition-duration: 0.16s;
+  transition-timing-function: ease-out;
+}
+
+.gt-textarea::placeholder {
+  color: color-mix(in srgb, var(--text) 40%, var(--muted));
+}
+
+.gt-textarea:focus,
+.gt-textarea:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+  box-shadow:
+    inset 0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.gt-textarea:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.gt-stage-toggle {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 44%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  color: color-mix(in srgb, var(--text) 62%, var(--muted));
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+  transition-property: background-color, border-color, opacity, transform, color, box-shadow;
+  transition-duration: 0.12s;
+  transition-timing-function: ease-out;
+}
+
+.gt-stage-toggle:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #3f8fc8 72%, transparent);
+  background: color-mix(in srgb, #3f8fc8 14%, var(--bg-panel));
+  color: #2f7fba;
+}
+
+.gt-stage-toggle.is-on {
+  border-color: color-mix(in srgb, #3f8fc8 84%, transparent);
+  background: #3f8fc8;
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 28%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #1d5f91 18%, transparent);
+}
+
+.gt-stage-toggle:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.gt-stage-toggle.is-compact {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--gt-radius-md);
+}
+
+.gt-stage-toggle-icon {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+
+.gt-stage-toggle-icon svg {
+  width: 10.5px;
+  height: 10.5px;
+}
+
+.gt-stage-toggle.is-compact .gt-stage-toggle-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.gt-stage-toggle:not(.is-on):hover:not(:disabled) .gt-stage-toggle-icon-check {
+  opacity: 1;
+}
+
+.gt-stage-toggle.is-on .gt-stage-toggle-icon-minus {
+  opacity: 1;
+}
+
+.gt-stage-toggle.is-on .gt-stage-toggle-icon-check {
+  opacity: 0;
+}
+
+.gt-stage-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gt-commit-menu-root {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.gt-commit-action-menu {
+  --anchor-gap: 6px;
+  z-index: 50;
+  min-width: 178px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, white 58%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-panel) 97%, white);
+  box-shadow:
+    0 16px 38px color-mix(in srgb, black 16%, transparent),
+    0 1px 0 color-mix(in srgb, white 82%, transparent) inset;
+  transform-origin: top right;
+  outline: none;
+  transition-property: opacity, transform, filter;
+  transition-duration: 0.14s;
+  transition-timing-function: ease-out;
+}
+
+.gt-commit-action-menu[data-closed] {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.985);
+  filter: blur(3px);
+}
+
+.gt-commit-action-item {
   display: block;
   width: 100%;
-  padding: 5px 8px;
-  border-radius: 6px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
   background: transparent;
   color: var(--text);
   text-align: left;
   font-size: 11.5px;
-  line-height: 1.2;
-  font-weight: 420;
+  line-height: 1.3;
+  font-weight: 500;
   cursor: pointer;
+  transition-property: background-color, color;
+  transition-duration: 0.14s;
+  transition-timing-function: ease-out;
 }
 
-.gt-commit-action-menu button:hover:not(:disabled) {
+.gt-commit-action-item.is-focus,
+.gt-commit-action-item:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.gt-commit-action-menu button:disabled {
+.gt-commit-action-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.gt-scroll-area {
+  position: relative;
+  overflow: hidden;
+}
+
+.gt-scroll-area-viewport {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.gt-scroll-area-scrollbar {
+  display: flex;
+  user-select: none;
+  touch-action: none;
+  padding: 2px;
+  transition: background-color 140ms ease-out;
+}
+
+.gt-scroll-area-scrollbar-vertical {
+  width: 10px;
+  height: 100%;
+}
+
+.gt-scroll-area-scrollbar-horizontal {
+  flex-direction: column;
+  width: 100%;
+  height: 10px;
+}
+
+.gt-scroll-area-thumb {
+  flex: 1;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.gt-scroll-area-thumb:hover {
+  background: color-mix(in srgb, var(--text) 26%, transparent);
+}
+
+.gt-scroll-area-corner {
+  background: transparent;
+}
+
+.gt-separator {
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.gt-separator-horizontal {
+  width: 100%;
+  height: 1px;
+}
+
+.gt-separator-vertical {
+  width: 1px;
+  height: 100%;
 }

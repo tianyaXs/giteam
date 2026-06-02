@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { GitWorktreeEntry } from "../../lib/types";
+import { IconButton } from "../ui/icon-button";
+import { GitStageToggle } from "./GitStageToggle";
 import {
   collectWorktreeNodeEntries,
   collectWorktreeNodeFilePaths,
@@ -84,30 +86,20 @@ export function WorktreeFileTree({
             <div className="gt-worktree-row-tail">
               <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
               <div className="gt-worktree-file-actions">
-                <button
-                  type="button"
-                  className={mode === "unstage" ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+                <GitStageToggle
+                  checked={mode === "unstage"}
                   title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
-                  aria-pressed={mode === "unstage"}
                   disabled={busyPath === collapsed.node.path || filePaths.length === 0}
-                  onClick={(event) => {
-                    event.stopPropagation();
+                  onChange={() => {
                     if (mode === "unstage") onUnstagePaths(filePaths, collapsed.node.path);
                     else onStagePaths(filePaths, collapsed.node.path);
                   }}
-                >
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    {mode === "unstage" ? (
-                      <path d="M4 8h8" />
-                    ) : (
-                      <path d="M4 8.2 6.7 11 12 5" />
-                    )}
-                  </svg>
-                </button>
+                />
                 {canDiscardDir ? (
-                  <button
+                  <IconButton
                     type="button"
-                    className="gt-worktree-action-btn is-discard"
+                    className="gt-worktree-action-btn"
+                    tone="danger"
                     title="丢弃此目录变更"
                     disabled={discardingFile === collapsed.node.path}
                     onClick={(event) => {
@@ -121,7 +113,7 @@ export function WorktreeFileTree({
                         <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
                       </svg>
                     )}
-                  </button>
+                  </IconButton>
                 ) : null}
               </div>
             </div>
@@ -152,30 +144,20 @@ export function WorktreeFileTree({
         <div className="gt-worktree-row-tail">
           <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
           <div className="gt-worktree-file-actions">
-            <button
-              type="button"
-              className={entry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+            <GitStageToggle
+              checked={entry.staged}
               title={entry.staged ? "取消暂存" : "暂存更改"}
-              aria-pressed={entry.staged}
               disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
-              onClick={(event) => {
-                event.stopPropagation();
+              onChange={() => {
                 if (entry.staged) onUnstageFile(entry.path);
                 else onStageFile(entry.path);
               }}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                {entry.staged ? (
-                  <path d="M4 8h8" />
-                ) : (
-                  <path d="M4 8.2 6.7 11 12 5" />
-                )}
-              </svg>
-            </button>
+            />
             {canDiscard ? (
-              <button
+              <IconButton
                 type="button"
-                className="gt-worktree-action-btn is-discard"
+                className="gt-worktree-action-btn"
+                tone="danger"
                 title={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
                 disabled={discardingFile === entry.path}
                 onClick={(event) => {
@@ -191,7 +173,7 @@ export function WorktreeFileTree({
                     <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
                   </svg>
                 )}
-              </button>
+              </IconButton>
             ) : null}
           </div>
         </div>

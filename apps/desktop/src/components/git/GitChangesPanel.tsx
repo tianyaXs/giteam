@@ -1,3 +1,4 @@
+import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import type { CSSProperties } from "react";
 import { Suspense, lazy, memo, useEffect, useMemo, useRef } from "react";
 import { Decoration, Diff, Hunk, getCollapsedLinesCountBetween, markEdits, parseDiff, tokenize, type FileData, type HunkData } from "react-diff-view";
@@ -10,7 +11,9 @@ import {
   getWorktreeDisplayStatus,
   type WorktreeTreeNode
 } from "../../lib/worktreeDiff";
-import { CheckIcon, MinusIcon, PlusIcon } from "../icons";
+import { CheckIcon, CopyIcon, MinusIcon, PlusIcon } from "../icons";
+import { IconButton } from "../ui/icon-button";
+import { GitStageToggle } from "./GitStageToggle";
 import { WorktreeChangesList } from "./WorktreeFileTree";
 
 const MonacoDiffViewer = lazy(() => import("./MonacoDiffViewer"));
@@ -44,13 +47,10 @@ type GitChangesPanelProps = {
   selectedContent: GitWorktreeFileContent;
   selectedLine?: number;
   viewMode?: "auto" | "editor" | "diff";
-  patchStats: { added: number; deleted: number };
   committing: boolean;
   pushing: boolean;
   gitOperationLabel: string;
-  commitButtonCount: number;
   commitMenuAvailable: boolean;
-  showCommitActionMenu: boolean;
   stagingFile: string;
   unstagingFile: string;
   discardingFile: string;
@@ -58,7 +58,6 @@ type GitChangesPanelProps = {
   theme: DesktopTheme;
   onToggleStageAll: () => void;
   onOpenDiscardAllConfirm: () => void;
-  onToggleCommitActionMenu: () => void;
   onCommit: () => void;
   onCommitAndPush: () => void;
   onCommitAndSync: () => void;
@@ -160,27 +159,25 @@ const DiffFileHeader = memo(function DiffFileHeader({
     >
       <div className="gt-diff-file-title">
         <strong>{entry.path}</strong>
-        <button
+        <IconButton
           type="button"
           className="gt-diff-icon-btn"
+          size="md"
           title="复制文件路径"
           onClick={() => onCopyText(entry.path)}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="5" y="3" width="8" height="8" rx="1.5" />
-            <path d="M3 5.5v6A1.5 1.5 0 0 0 4.5 13h6" />
-          </svg>
-        </button>
+          <CopyIcon />
+        </IconButton>
       </div>
       <div className="gt-diff-file-actions">
         {stats.added > 0 ? <span className="meta-chip is-add">+{stats.added}</span> : null}
         {stats.deleted > 0 ? <span className="meta-chip is-del">-{stats.deleted}</span> : null}
         <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-        <button
-          className={entry.staged ? "gt-stage-toggle is-on" : "gt-stage-toggle"}
+        <GitStageToggle
+          checked={entry.staged}
+          compact
           title={entry.staged ? "取消暂存" : "暂存"}
-          aria-pressed={entry.staged}
-          onClick={() => {
+          onChange={() => {
             if (entry.staged) {
               onUnstageFile(entry.path);
             } else {
@@ -188,18 +185,12 @@ const DiffFileHeader = memo(function DiffFileHeader({
             }
           }}
           disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            {entry.staged ? (
-              <path d="M4 8h8" />
-            ) : (
-              <path d="M4 8.2 6.7 11 12 5" />
-            )}
-          </svg>
-        </button>
+        />
         {(entry.staged || entry.unstaged || entry.untracked) ? (
-          <button
-            className="gt-diff-icon-btn is-danger"
+          <IconButton
+            className="gt-diff-icon-btn"
+            tone="danger"
+            size="md"
             title="撤销修改"
             onClick={() => onDiscardFile(entry.path, entry.untracked)}
             disabled={discardingFile === entry.path}
@@ -208,7 +199,7 @@ const DiffFileHeader = memo(function DiffFileHeader({
               <path d="M6 4 3 7l3 3" />
               <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
             </svg>
-          </button>
+          </IconButton>
         ) : null}
       </div>
     </div>
@@ -248,7 +239,7 @@ const DiffFileContent = memo(function DiffFileContent({ model }: { model: DiffFi
           if (collapsedLines > 0) {
             nodes.push(
               <Decoration key={`fold-${hunk.content}`} contentClassName="gt-react-diff-fold">
-                {collapsedLines} unmodified lines
+                <span className="gt-react-diff-fold-copy">{collapsedLines} unchanged lines</span>
               </Decoration>
             );
           }
@@ -279,9 +270,7 @@ export function GitChangesPanel({
   committing,
   pushing,
   gitOperationLabel,
-  commitButtonCount,
   commitMenuAvailable,
-  showCommitActionMenu,
   stagingFile,
   unstagingFile,
   discardingFile,
@@ -289,7 +278,6 @@ export function GitChangesPanel({
   theme,
   onToggleStageAll,
   onOpenDiscardAllConfirm,
-  onToggleCommitActionMenu,
   onCommit,
   onCommitAndPush,
   onCommitAndSync,
@@ -320,10 +308,22 @@ export function GitChangesPanel({
     [entries]
   );
   const virtuosoRef = useRef<GroupedVirtuosoHandle | null>(null);
+  const diffPaneRef = useRef<HTMLDivElement | null>(null);
+
+  const resetDiffShellScroll = () => {
+    diffPaneRef.current
+      ?.querySelectorAll<HTMLElement>(".gt-react-diff-shell")
+      .forEach((element) => {
+        element.scrollLeft = 0;
+      });
+  };
 
   useEffect(() => {
     onPatchWindowChange(Math.min(DIFF_STREAM_BATCH_SIZE + DIFF_STREAM_PRELOAD_SIZE, entries.length));
-    virtuosoRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    virtuosoRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    window.requestAnimationFrame(() => {
+      resetDiffShellScroll();
+    });
   }, [entries.length, onPatchWindowChange, patchStreamKey]);
 
   const diffFileModels = useMemo<DiffFileModel[]>(() => entries.map((entry) => {
@@ -376,6 +376,8 @@ export function GitChangesPanel({
     onPatchWindowChange(Math.min(selectedIndex + 1 + DIFF_STREAM_PRELOAD_SIZE, entries.length));
     window.requestAnimationFrame(() => {
       virtuosoRef.current?.scrollToIndex({ groupIndex: selectedIndex, align: "start", behavior: "auto" });
+      virtuosoRef.current?.scrollTo({ left: 0, behavior: "auto" });
+      resetDiffShellScroll();
     });
   }, [entries, entries.length, onPatchWindowChange, selectedFile]);
 
@@ -496,37 +498,68 @@ export function GitChangesPanel({
             <div className="gt-changes-toolbar-commit" onClick={(event) => event.stopPropagation()}>
               <div className="gt-changes-commit-actions">
                 <div className="gt-commit-split-wrap">
-                  <button
+                <button
                     className={isGitBusy
                       ? "chip is-primary gt-commit-main-btn is-loading"
                       : "chip is-primary gt-commit-main-btn"}
-                    onClick={onCommit}
+                    onClick={onCommitAndPush}
                     disabled={!hasSelectedCommitContent}
                     aria-busy={isGitBusy}
-                    title={!hasSelectedCommitContent ? "No staged changes to commit" : ""}
-                  >
+                    title={!hasSelectedCommitContent ? "没有可提交的已暂存更改" : ""}
+                >
                     {isGitBusy ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
                     {commitPrimaryContent}
-                  </button>
-                  <button
-                    type="button"
-                    className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
-                    onClick={onToggleCommitActionMenu}
-                    disabled={isGitBusy || !commitMenuAvailable}
-                    title="More commit actions"
-                  >
-                    <svg className="gt-commit-chevron" viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M4.5 6.5 8 10l3.5-3.5" />
-                    </svg>
-                  </button>
-                  {showCommitActionMenu ? (
-                    <div className="gt-commit-action-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={onCommit} disabled={isGitBusy || !hasSelectedCommitContent}>Create Branch & Commit</button>
-                      <button type="button" role="menuitem" onClick={onCommitAndPush} disabled={isGitBusy || !hasSelectedCommitContent}>Create Branch, Commit & Push</button>
-                      <button type="button" role="menuitem" onClick={onCommit} disabled={isGitBusy || !hasSelectedCommitContent}>Commit</button>
-                      <button type="button" role="menuitem" onClick={onCommitAndSync} disabled={isGitBusy || !hasSelectedCommitContent}>Commit & Create PR</button>
-                    </div>
-                  ) : null}
+                </button>
+                  <Menu as="div" className="gt-commit-menu-root">
+                    <MenuButton
+                      type="button"
+                      className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
+                      disabled={isGitBusy || !commitMenuAvailable}
+                      title="更多提交操作"
+                    >
+                      <svg className="gt-commit-chevron" viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4.5 6.5 8 10l3.5-3.5" />
+                      </svg>
+                    </MenuButton>
+                    <MenuItems transition anchor="bottom end" className="gt-commit-action-menu">
+                      <MenuItem>
+                        {({ focus }) => (
+                          <button
+                            type="button"
+                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
+                            onClick={onCommitAndPush}
+                            disabled={isGitBusy || !hasSelectedCommitContent}
+                          >
+                            Commit & Push
+                          </button>
+                        )}
+                      </MenuItem>
+                      <MenuItem>
+                        {({ focus }) => (
+                          <button
+                            type="button"
+                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
+                            onClick={onCommit}
+                            disabled={isGitBusy || !hasSelectedCommitContent}
+                          >
+                            Commit
+                          </button>
+                        )}
+                      </MenuItem>
+                      <MenuItem>
+                        {({ focus }) => (
+                          <button
+                            type="button"
+                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
+                            onClick={onCommitAndSync}
+                            disabled={isGitBusy || !hasSelectedCommitContent}
+                          >
+                            Commit & Create PR
+                          </button>
+                        )}
+                      </MenuItem>
+                    </MenuItems>
+                  </Menu>
                 </div>
               </div>
             </div>
@@ -599,7 +632,10 @@ export function GitChangesPanel({
           onBeginResize(event.clientX);
         }}
       />
-      <div className="gt-right-card gt-right-card-fill gt-diff-editor-pane gt-diff-stream-pane">
+      <div
+        ref={diffPaneRef}
+        className="gt-right-card gt-right-card-fill gt-diff-editor-pane gt-diff-stream-pane"
+      >
         {renderPatchStream()}
       </div>
     </div>
