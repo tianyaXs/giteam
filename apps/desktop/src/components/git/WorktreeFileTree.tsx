@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { GitWorktreeEntry } from "../../lib/types";
 import { IconButton } from "../ui/icon-button";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { GitStageToggle } from "./GitStageToggle";
 import {
   collectWorktreeNodeEntries,
@@ -78,12 +79,19 @@ export function WorktreeFileTree({
             style={{ paddingLeft: `${depth * 11 + 4}px` }}
             title={collapsed.node.path}
           >
-            <button type="button" className="gt-worktree-dir-main-btn" onClick={() => onToggleDir(collapsed.node.path)}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="gt-worktree-dir-main-btn"
+              onClick={() => onToggleDir(collapsed.node.path)}
+              aria-pressed={expanded}
+            >
               <svg className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M6 4.5 10 8 6 11.5" />
               </svg>
               <span className="gt-worktree-tree-name">{collapsed.label}</span>
-            </button>
+            </Button>
             <div className="gt-worktree-row-tail">
               <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
               <div className="gt-worktree-file-actions">
@@ -135,13 +143,16 @@ export function WorktreeFileTree({
         style={{ paddingLeft: `${depth * 11 + 4}px` }}
         title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
       >
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           className="gt-worktree-file-main-btn"
           onClick={() => onOpenFile(entry.path)}
+          aria-pressed={selectedFile === entry.path}
         >
           <span className="gt-worktree-tree-name">{node.name}</span>
-        </button>
+        </Button>
         <div className="gt-worktree-row-tail">
           <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
           <div className="gt-worktree-file-actions">

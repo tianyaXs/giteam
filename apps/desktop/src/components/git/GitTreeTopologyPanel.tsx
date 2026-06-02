@@ -12,7 +12,7 @@ import type {
 import { ChevronRightIcon, RefreshIcon } from "../icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent } from "../ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
@@ -157,7 +157,10 @@ export function GitTreeTopologyPanel({
     const displayName = isRemote && branchName.includes("/") ? branchName.split("/").slice(1).join("/") : branchName;
 
     return (
-      <Collapsible key={branchName} open={!collapsed}>
+      <Collapsible key={branchName} open={!collapsed} onOpenChange={() => {
+        if (!hasChildren) return;
+        onToggleBranchCollapse(treeKey);
+      }}>
         <div
           className={isActive ? "gt-gittree-branch active" : isRemote ? "gt-gittree-branch is-remote" : "gt-gittree-branch"}
           style={{ paddingLeft: 8 + depth * 14 }}
@@ -171,24 +174,26 @@ export function GitTreeTopologyPanel({
           <span className="gt-gittree-dot" style={{ background: tone.accent }} />
           <span className="gt-gittree-branch-main">
             <span className="gt-gittree-name" title={branchName}>{displayName}</span>
-            <button
-              type="button"
-              className={collapsed
-                ? hasChildren
-                  ? "gt-gittree-disclosure"
-                  : "gt-gittree-disclosure empty"
-                : hasChildren
-                  ? "gt-gittree-disclosure is-open"
-                  : "gt-gittree-disclosure empty"}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (!hasChildren) return;
-                onToggleBranchCollapse(treeKey);
-              }}
-              aria-label={collapsed ? "展开分支" : "收起分支"}
-            >
-              {hasChildren ? <ChevronRightIcon /> : null}
-            </button>
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={collapsed
+                  ? hasChildren
+                    ? "gt-gittree-disclosure"
+                    : "gt-gittree-disclosure empty"
+                  : hasChildren
+                    ? "gt-gittree-disclosure is-open"
+                    : "gt-gittree-disclosure empty"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
+                aria-label={collapsed ? "展开分支" : "收起分支"}
+                disabled={!hasChildren}
+              >
+                {hasChildren ? <ChevronRightIcon /> : null}
+              </Button>
+            </CollapsibleTrigger>
           </span>
         </div>
         <CollapsibleContent>
@@ -258,8 +263,10 @@ export function GitTreeTopologyPanel({
             <ScrollArea className="gt-gittree-commit-list">
               <div className="gt-gittree-commit-list-inner">
                 {activeBranchCommits.length > 0 ? activeBranchCommits.map((commit) => (
-                  <button
+                  <Button
                     key={`${activeTreeBranch}:${commit.sha}`}
+                    variant="ghost"
+                    size="default"
                     className={selectedCommit === commit.sha ? "gt-gittree-commit selected" : "gt-gittree-commit"}
                     onClick={() => {
                       onSelectCommit(commit.sha);
@@ -276,13 +283,14 @@ export function GitTreeTopologyPanel({
                     onMouseEnter={(event) => onHoverCommit(event.clientX, event.clientY, commit, activeTreeBranch)}
                     onMouseMove={(event) => onMoveCommitHover(event.clientX, event.clientY, commit.sha)}
                     onMouseLeave={onClearCommitHover}
+                    aria-pressed={selectedCommit === commit.sha}
                   >
                     <span className="gt-gittree-commit-dot" style={{ background: activeTone.accent }} />
                     <span className="gt-gittree-commit-main">
                       <strong>{commit.subject || "(no subject)"}</strong>
                       <span>{shortSha(commit.sha, 7)} · {commit.author || "unknown"} · {commit.date || "unknown date"}</span>
                     </span>
-                  </button>
+                  </Button>
                 )) : (
                   <div className="gt-gittree-empty">
                     <strong>没有可展示的提交</strong>

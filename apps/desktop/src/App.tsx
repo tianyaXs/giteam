@@ -7005,41 +7005,42 @@ export function App() {
           <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
             <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
               {rightModuleVisibility.changes ? (
-                <button className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
+                <Button variant="ghost" size="icon" className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
                   <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
-                </button>
+                </Button>
               ) : null}
               {rightModuleVisibility.worktree ? (
-                <button className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
+                <Button variant="ghost" size="icon" className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
                   <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
-                </button>
+                </Button>
               ) : null}
               {rightModuleVisibility.terminal ? (
-                <button className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
+                <Button variant="ghost" size="icon" className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
                   <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
-                </button>
+                </Button>
               ) : null}
               {rightModuleVisibility.skills ? (
-                <button className={rightPaneTab === "skills" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
+                <Button variant="ghost" size="icon" className={rightPaneTab === "skills" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
                   setRightPaneTab("skills");
                 }} onMouseEnter={() => void warmSkillsMarketplace()} onFocus={() => void warmSkillsMarketplace()} title="Skills" aria-label="Skills">
                   <RightPaneTabIcon tab="skills" active={rightPaneTab === "skills"} />
-                </button>
+                </Button>
               ) : null}
               {rightModuleVisibility.mcp ? (
-                <button className={rightPaneTab === "mcp" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
+                <Button variant="ghost" size="icon" className={rightPaneTab === "mcp" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
                   setRightPaneTab("mcp");
                 }} title="MCP" aria-label="MCP">
                   <RightPaneTabIcon tab="mcp" active={rightPaneTab === "mcp"} />
-                </button>
+                </Button>
               ) : null}
             </div>
             {standaloneRightFileTab ? (
               <div className="gt-titlebar-file-tabs">
                 <div className="gt-titlebar-file-tab">
                   <span className="gt-titlebar-file-label">{standaloneRightFileTab.label}</span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     className="gt-titlebar-file-close"
                     title="关闭文件视图"
                     aria-label="关闭文件视图"
@@ -7049,7 +7050,7 @@ export function App() {
                       <path d="M4.5 4.5 11.5 11.5" />
                       <path d="M11.5 4.5 4.5 11.5" />
                     </svg>
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : null}

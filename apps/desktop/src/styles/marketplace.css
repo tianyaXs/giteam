@@ -1291,12 +1291,12 @@
 .gt-gittree-disclosure {
   width: 14px;
   height: 14px;
-  border: 0;
+  min-width: 14px;
+  min-height: 14px;
   padding: 0;
   border-radius: 5px;
   background: transparent;
   color: color-mix(in srgb, var(--text) 42%, var(--muted));
-  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1305,6 +1305,7 @@
   transition-property: background-color, color;
   transition-duration: 140ms;
   transition-timing-function: ease-out;
+  box-shadow: none;
 }
 
 .gt-gittree-branch:hover .gt-gittree-disclosure,
@@ -1328,8 +1329,15 @@
   color: var(--text);
 }
 
+.gt-gittree-disclosure:focus-visible {
+  background: color-mix(in srgb, var(--border) 42%, transparent);
+  color: var(--text);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
 .gt-gittree-disclosure.empty {
   width: 0;
+  min-width: 0;
   opacity: 0;
   margin-left: 0;
 }
@@ -1441,10 +1449,11 @@
   background: transparent;
   color: var(--text);
   text-align: left;
-  cursor: pointer;
   transition-property: background-color, box-shadow;
   transition-duration: 140ms;
   transition-timing-function: ease-out;
+  justify-content: stretch;
+  box-shadow: none;
 }
 
 .gt-gittree-commit:hover {
@@ -1458,6 +1467,12 @@
   box-shadow:
     inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
     inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.gt-gittree-commit:focus-visible {
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, var(--primary) 62%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .gt-gittree-commit-dot {
