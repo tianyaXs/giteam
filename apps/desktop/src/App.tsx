@@ -7289,6 +7289,16 @@ export function App() {
         >
           <DialogContent
             className="gt-commit-dialog-card"
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              requestAnimationFrame(() => {
+                const textarea = commitMessageInputRef.current;
+                if (!textarea) return;
+                textarea.focus({ preventScroll: true });
+                const end = textarea.value.length;
+                textarea.setSelectionRange(end, end);
+              });
+            }}
             onEscapeKeyDown={(event) => {
               if (committing || pushing) event.preventDefault();
             }}

@@ -1350,13 +1350,22 @@ pre {
   right: 14px;
   width: 34px;
   height: 34px;
+  border: 0;
   border-radius: 12px;
   padding: 0;
+  background: transparent !important;
+  box-shadow: none;
   color: color-mix(in srgb, var(--text) 62%, var(--muted));
 }
 
 .gt-commit-dialog-close:hover {
   background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
+}
+
+.gt-commit-dialog-close:focus-visible {
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 68%, var(--muted));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 72%, transparent);
 }
 
 .gt-commit-dialog-close:disabled {
