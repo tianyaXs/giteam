@@ -56,6 +56,7 @@ import {
 import { parseOpencodeAgents, type OpencodeAgentInfo } from "./lib/opencodeAgents";
 import {
   loadCachedRuntimeStatus,
+  GITTREE_SIDEBAR_WIDTH_CACHE_KEY,
   loadCachedWidth,
   getRuntimeLogTail,
   RIGHT_PANE_WIDTH_CACHE_KEY,
@@ -79,7 +80,20 @@ import {
   DialogHeader,
   DialogTitle
 } from "./components/ui/dialog";
-import { Field, FieldDescription, FieldLabel, Textarea } from "./components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "./components/ui/alert-dialog";
+import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
+import { Input } from "./components/ui/input";
+import { Field, FieldLabel, Textarea } from "./components/ui/textarea";
 import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
 import {
@@ -422,6 +436,7 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
+  const [gitTreeSidebarSize, setGitTreeSidebarSize] = useState(() => loadCachedWidth(GITTREE_SIDEBAR_WIDTH_CACHE_KEY, 34, 24, 48));
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
@@ -5121,6 +5136,10 @@ export function App() {
   }, [rightPaneWidth]);
 
   useEffect(() => {
+    saveCachedWidth(GITTREE_SIDEBAR_WIDTH_CACHE_KEY, gitTreeSidebarSize);
+  }, [gitTreeSidebarSize]);
+
+  useEffect(() => {
     const collapseIfNarrow = () => {
       const paneWidth = opencodeRightPaneRef.current?.clientWidth || 0;
       if (window.innerWidth <= 900 || paneWidth <= 620) setShowOpencodeSessionRail(false);
@@ -6693,12 +6712,16 @@ export function App() {
   );
 
   const rightPane = (
-    <div className="gt-right-pane" ref={opencodeRightPaneRef}>
-      <div className="gt-right-panel">
+    <div
+      className={rightPaneTab === "changes" || rightPaneTab === "worktree" ? "gt-right-pane is-workspace" : "gt-right-pane"}
+      ref={opencodeRightPaneRef}
+    >
+      <div className={rightPaneTab === "changes" || rightPaneTab === "worktree" ? "gt-right-panel is-bleed" : "gt-right-panel"}>
         {rightPaneTab === "worktree" ? (
           <div className="gt-worktree-topology-shell">
-            <div className="gt-gittree-panel">
+            <div className="gt-gittree-panel-host">
               <GitTreeTopologyPanel
+                defaultSidebarSize={gitTreeSidebarSize}
                 selectedRepo={selectedRepo}
                 linkedWorktrees={linkedWorktrees}
                 branchParentMap={branchParentMap}
@@ -6737,6 +6760,7 @@ export function App() {
                 onSelectWorktree={setSelectedWorktreePath}
                 onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
                 onActivateWorktree={(path) => void activateLinkedWorktree(path)}
+                onSidebarSizeChange={setGitTreeSidebarSize}
               />
             </div>
           </div>
@@ -7273,14 +7297,15 @@ export function App() {
             }}
           >
             <DialogClose asChild>
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="icon"
                 className="gt-commit-dialog-close"
                 disabled={committing || pushing}
                 aria-label="关闭提交弹窗"
               >
                 <CloseIcon width={18} height={18} />
-              </button>
+              </Button>
             </DialogClose>
             <DialogHeader className="gt-commit-dialog-head">
               <div className="gt-commit-dialog-mark" aria-hidden="true">
@@ -7290,120 +7315,153 @@ export function App() {
                 </svg>
               </div>
               <div className="gt-commit-dialog-copy">
+                <Badge variant="outline" className="gt-commit-dialog-kicker">
+                  {commitDialogAction === "commitPush"
+                    ? "Push"
+                    : commitDialogAction === "commitSync"
+                      ? "Create PR"
+                      : "Commit"}
+                </Badge>
                 <DialogTitle>提交更改</DialogTitle>
-                <DialogDescription>
-                  确认本次已暂存内容，提交消息留空时会自动生成。
-                </DialogDescription>
               </div>
             </DialogHeader>
             <div className="gt-commit-dialog-summary">
               <div className="gt-commit-dialog-row">
                 <span>分支</span>
-                <strong>{worktreeOverview.branch || selectedBranch || "main"}</strong>
+                <strong>
+                  <Badge variant="outline" className="gt-commit-dialog-branch-badge">
+                    {worktreeOverview.branch || selectedBranch || "main"}
+                  </Badge>
+                </strong>
               </div>
               <div className="gt-commit-dialog-row">
                 <span>更改</span>
                 <strong className="gt-commit-dialog-stats">
-                  <span>{worktreeChangeStats.total} 个文件</span>
-                  <span className="is-add">+{worktreeOverview.addedLines}</span>
-                  <span className="is-del">-{worktreeOverview.deletedLines}</span>
+                  <Badge variant="secondary" className="gt-commit-dialog-stat-badge">
+                    {worktreeChangeStats.total} 个文件
+                  </Badge>
+                  <Badge variant="success" className="gt-commit-dialog-stat-badge is-add">
+                    +{worktreeOverview.addedLines}
+                  </Badge>
+                  <Badge variant="destructive" className="gt-commit-dialog-stat-badge is-del">
+                    -{worktreeOverview.deletedLines}
+                  </Badge>
                 </strong>
               </div>
             </div>
             <Field className="gt-commit-dialog-field">
               <div className="gt-commit-dialog-field-head">
                 <FieldLabel>提交消息</FieldLabel>
-                <FieldDescription>留空时会自动生成一条简洁的提交信息。</FieldDescription>
               </div>
               <Textarea
                 ref={commitMessageInputRef}
                 className="gt-commit-dialog-textarea"
                 value={commitMessage}
                 onChange={(event) => setCommitMessage(event.target.value)}
-                placeholder="留空以自动生成提交消息"
+                placeholder="输入提交消息"
                 disabled={committing || pushing}
                 autoFocus
               />
             </Field>
             <DialogFooter className="gt-commit-dialog-actions">
               <DialogClose asChild>
-                <button className="chip" disabled={committing || pushing}>取消</button>
+                <Button variant="secondary" size="lg" className="gt-commit-dialog-cancel" disabled={committing || pushing}>取消</Button>
               </DialogClose>
-                <button
-                  className="chip active gt-commit-dialog-submit"
-                  disabled={committing || pushing}
-                  onClick={() => {
-                    const action = commitDialogAction;
-                    setCommitDialogAction(null);
-                    if (action === "commitPush") void handleGitCommitAndPush();
-                    else if (action === "commitSync") void handleGitCommitAndSync();
-                    else void handleGitCommit();
-                  }}
-                >
-                  {committing || pushing ? "提交中..." : "继续"}
-                </button>
+              <Button
+                variant="contrast"
+                size="lg"
+                className="gt-commit-dialog-submit"
+                disabled={committing || pushing}
+                onClick={() => {
+                  const action = commitDialogAction;
+                  setCommitDialogAction(null);
+                  if (action === "commitPush") void handleGitCommitAndPush();
+                  else if (action === "commitSync") void handleGitCommitAndSync();
+                  else void handleGitCommit();
+                }}
+              >
+                {committing || pushing
+                  ? "提交中..."
+                  : commitDialogAction === "commitPush"
+                    ? "Commit & Push"
+                    : commitDialogAction === "commitSync"
+                      ? "Commit & Create PR"
+                      : "Commit"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        {showTopologyCreateDialog ? (
-          <div className="modal-mask" onClick={() => setShowTopologyCreateDialog(false)}>
-            <div className="modal-card gt-topology-create-card" onClick={(e) => e.stopPropagation()}>
-              <h3>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</h3>
-              <p className="small muted">
+        <Dialog
+          open={showTopologyCreateDialog}
+          onOpenChange={(open) => {
+            if (!creatingTopologyNode && !open) setShowTopologyCreateDialog(false);
+          }}
+        >
+          <DialogContent className="gt-topology-dialog-card">
+            <DialogHeader className="gt-topology-dialog-head">
+              <DialogTitle>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</DialogTitle>
+              <DialogDescription>
                 {topologyCreateMode === "worktree"
                   ? "会在来源分支或 commit 下创建一个独立 worktree 目录，不会额外创建子分支。"
                   : "从来源分支创建新分支，创建后会选中新分支。"}
-              </p>
-              <div className="gt-topology-create-grid">
-                <label className="gt-topology-form-field">
-                  <span>{topologyCreateSourceNodeId.startsWith("commit:") ? "来源 Commit" : "来源分支"}</span>
-                  <strong>{topologyCreateSourceNodeId.startsWith("commit:") ? shortSha(topologyCreateSource(topologyCreateSourceNodeId).startPoint, 10) : topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
-                </label>
-                <label className="gt-topology-form-field">
-                  <span>{topologyCreateMode === "worktree" ? "工作空间目录名" : "新分支名"}</span>
-                  <input
-                    value={topologyCreateBranchName}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setTopologyCreateBranchName(next);
-                      if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
-                        const base = topologyCreateSource(topologyCreateSourceNodeId).baseBranch || topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
-                        setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
-                      }
-                    }}
-                    placeholder={topologyCreateMode === "worktree" ? "ui-v2" : "feature/my-node"}
-                    autoFocus
+              </DialogDescription>
+            </DialogHeader>
+            <div className="gt-topology-create-grid">
+              <div className="gt-topology-form-field is-static">
+                <span>{topologyCreateSourceNodeId.startsWith("commit:") ? "来源 Commit" : "来源分支"}</span>
+                <strong>{topologyCreateSourceNodeId.startsWith("commit:") ? shortSha(topologyCreateSource(topologyCreateSourceNodeId).startPoint, 10) : topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
+              </div>
+              <Field className="gt-topology-form-field">
+                <FieldLabel>{topologyCreateMode === "worktree" ? "工作空间目录名" : "新分支名"}</FieldLabel>
+                <Input
+                  value={topologyCreateBranchName}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setTopologyCreateBranchName(next);
+                    if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
+                      const base = topologyCreateSource(topologyCreateSourceNodeId).baseBranch || topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
+                      setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
+                    }
+                  }}
+                  placeholder={topologyCreateMode === "worktree" ? "ui-v2" : "feature/my-node"}
+                  autoFocus
+                />
+              </Field>
+              {topologyCreateMode === "worktree" ? (
+                <Field className="gt-topology-form-field gt-topology-form-field-wide">
+                  <FieldLabel>目标目录</FieldLabel>
+                  <Input
+                    value={topologyCreateTargetPath}
+                    onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
+                    placeholder="留空则自动生成"
                   />
-                </label>
-                {topologyCreateMode === "worktree" ? (
-                  <label className="gt-topology-form-field gt-topology-form-field-wide">
-                    <span>目标目录</span>
-                    <input
-                      value={topologyCreateTargetPath}
-                      onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
-                      placeholder="留空则自动生成"
-                    />
-                  </label>
-                ) : null}
-              </div>
-              <div className="toolbar" style={{ justifyContent: "space-between", marginTop: "var(--gt-space-3)" }}>
-                <button className="chip" onClick={() => setShowTopologyCreateDialog(false)}>取消</button>
-                <button className="chip active" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
-                  {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
-                </button>
-              </div>
+                </Field>
+              ) : null}
             </div>
-          </div>
-        ) : null}
+            <DialogFooter className="gt-topology-dialog-actions">
+              <DialogClose asChild>
+                <Button variant="outline" disabled={creatingTopologyNode}>取消</Button>
+              </DialogClose>
+              <Button variant="default" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
+                {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
-        {showTopologyInspectDialog && topologyInspectNode ? (
-          <div className="modal-mask" onClick={() => setShowTopologyInspectDialog(false)}>
-            <div className="modal-card gt-topology-inspect-card" onClick={(e) => e.stopPropagation()}>
-              <div className="gt-worktree-topology-info-head">
-                <strong>{topologyInspectNode.label}</strong>
-                <span className="small muted">{topologyInspectNode.kind}</span>
-              </div>
+        <Dialog
+          open={showTopologyInspectDialog && Boolean(topologyInspectNode)}
+          onOpenChange={(open) => {
+            if (!open) setShowTopologyInspectDialog(false);
+          }}
+        >
+          {topologyInspectNode ? (
+            <DialogContent className="gt-topology-inspect-card">
+              <DialogHeader className="gt-worktree-topology-info-head">
+                <DialogTitle>{topologyInspectNode.label}</DialogTitle>
+                <DialogDescription>{topologyInspectNode.kind}</DialogDescription>
+              </DialogHeader>
               <div className="gt-worktree-topology-info-grid">
                 <div className="gt-worktree-topology-metric"><span>Branch</span><strong>{topologyInspectNode.branch || worktreeOverview.branch || "-"}</strong></div>
                 <div className="gt-worktree-topology-metric"><span>Commit</span><strong>{topologyInspectNode.sha ? shortSha(topologyInspectNode.sha) : shortSha(selectedCommit || commits[0]?.sha || "")}</strong></div>
@@ -7419,26 +7477,35 @@ export function App() {
                 {topologyInspectNode.kind === "commit" && selectedParsed?.sessionId ? <div className="gt-worktree-topology-detail-item"><span>Session</span><strong>{selectedParsed.sessionId}</strong></div> : null}
               </div>
               <pre className="gt-worktree-topology-context-preview">{topologyInspectNode.kind === "commit" ? (selectedExplain || "当前 commit 未解析到 Entire agent 上下文。") : (worktreeOverview.raw || "git status -sb")}</pre>
-            </div>
-          </div>
-        ) : null}
+            </DialogContent>
+          ) : null}
+        </Dialog>
 
-        {showDiscardAllConfirm ? (
-          <div className="modal-mask" onClick={() => !discardingAll && setShowDiscardAllConfirm(false)}>
-            <div className="modal-card gt-discard-confirm-card" onClick={(e) => e.stopPropagation()}>
-              <h3>撤销全部修改？</h3>
-              <p className="small muted">
+        <AlertDialog
+          open={showDiscardAllConfirm}
+          onOpenChange={(open) => {
+            if (!discardingAll && !open) setShowDiscardAllConfirm(false);
+          }}
+        >
+          <AlertDialogContent className="gt-confirm-dialog-card">
+            <AlertDialogHeader>
+              <AlertDialogTitle>撤销全部修改？</AlertDialogTitle>
+              <AlertDialogDescription>
                 将撤销 {discardAllCount} 个文件的修改。未跟踪文件会被删除，已跟踪文件会恢复到 HEAD。
-              </p>
-              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: "var(--gt-space-3-5)" }}>
-                <button className="chip" onClick={() => setShowDiscardAllConfirm(false)} disabled={discardingAll}>取消</button>
-                <button className="chip is-danger" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
-                  {discardingAll ? "撤销中..." : "确认撤销"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="gt-confirm-dialog-actions">
+              <AlertDialogCancel asChild>
+                <Button variant="outline" disabled={discardingAll}>取消</Button>
+              </AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <Button variant="destructive" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
+                {discardingAll ? "撤销中..." : "确认撤销"}
+                </Button>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {worktreeContextMenu ? (
           <div className="repo-context-layer" onClick={() => setWorktreeContextMenu(null)}>
@@ -7461,22 +7528,32 @@ export function App() {
           </div>
         ) : null}
 
-        {showRemoveWorktreeConfirm ? (
-          <div className="modal-mask" onClick={() => { if (!removingWorktreePath) { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); } }}>
-            <div className="modal-card gt-discard-confirm-card" onClick={(e) => e.stopPropagation()}>
-              <h3>{appText.removeWorktreeTitle}</h3>
-              <p className="small muted">
-                {appText.removeWorktreeDesc}
-              </p>
-              <div className="toolbar" style={{ justifyContent: "flex-end", marginTop: "var(--gt-space-3-5)" }}>
-                <button className="chip" onClick={() => { setShowRemoveWorktreeConfirm(false); setWorktreeToRemove(""); }} disabled={!!removingWorktreePath}>{appText.cancel}</button>
-                <button className="chip is-danger" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
-                  {removingWorktreePath ? appText.removing : appText.confirmRemove}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        <AlertDialog
+          open={showRemoveWorktreeConfirm}
+          onOpenChange={(open) => {
+            if (!removingWorktreePath && !open) {
+              setShowRemoveWorktreeConfirm(false);
+              setWorktreeToRemove("");
+            }
+          }}
+        >
+          <AlertDialogContent className="gt-confirm-dialog-card">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{appText.removeWorktreeTitle}</AlertDialogTitle>
+              <AlertDialogDescription>{appText.removeWorktreeDesc}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="gt-confirm-dialog-actions">
+              <AlertDialogCancel asChild>
+                <Button variant="outline" disabled={!!removingWorktreePath}>{appText.cancel}</Button>
+              </AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <Button variant="destructive" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
+                {removingWorktreePath ? appText.removing : appText.confirmRemove}
+                </Button>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {showSettings ? (
           <SettingsDialog

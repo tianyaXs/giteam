@@ -542,12 +542,12 @@ pre {
 /* File list action buttons (Stage/Unstage/Discard) */
 .gt-worktree-file-actions {
   position: absolute;
-  right: 4px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   padding: 0;
   border-radius: var(--gt-radius-md);
   background: transparent;
@@ -720,7 +720,7 @@ pre {
 
 /* Changes group sections (VS Code style) */
 .gt-changes-group {
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 
 .gt-changes-group-header {
@@ -728,21 +728,21 @@ pre {
   align-items: center;
   justify-content: space-between;
   min-height: 22px;
-  padding: 0 6px;
+  padding: 0 8px 0 6px;
   font-size: 10.5px;
   font-weight: var(--gt-font-semibold);
   letter-spacing: 0.055em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--text) 58%, var(--muted));
-  background: color-mix(in srgb, var(--bg-soft) 56%, transparent);
-  border: 1px solid color-mix(in srgb, var(--line) 20%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 24%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
   cursor: pointer;
   user-select: none;
-  border-radius: 5px;
+  border-radius: 0;
 }
 
 .gt-changes-group-header:hover {
-  background: color-mix(in srgb, var(--bg-soft) 52%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 30%, transparent);
 }
 
 .gt-changes-group-title {
@@ -752,14 +752,12 @@ pre {
 }
 
 .gt-changes-group-count {
-  font-size: 10px;
-  font-weight: var(--gt-font-bold);
-  color: color-mix(in srgb, var(--text) 62%, var(--muted));
-  background: color-mix(in srgb, var(--bg-panel) 86%, transparent);
-  padding: 0 6px;
-  border-radius: var(--gt-radius-pill);
   min-width: 22px;
-  text-align: center;
+  justify-content: center;
+  padding-inline: 6px;
+  font-size: 9.5px;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
 }
 
 .gt-changes-group-list {
@@ -768,16 +766,16 @@ pre {
 
 .gt-worktree-tree-list {
   gap: 0;
-  padding: 5px 6px 8px;
+  padding: 4px 6px 8px;
 }
 
 .gt-changes-workspace.gt-panel-stack-split {
   grid-template-columns: var(--changes-sidebar-width, 276px) 1px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
-  border-radius: var(--gt-radius-md);
-  background: var(--bg-panel);
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--line) 56%, transparent);
 }
 
 .gt-changes-splitter {
@@ -806,7 +804,7 @@ pre {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  background: transparent;
+  background: color-mix(in srgb, var(--surface) 98%, var(--bg));
   padding: 0;
   gap: 0;
 }
@@ -814,11 +812,7 @@ pre {
 .gt-right-card-files {
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-soft) 42%, var(--bg-panel)),
-    color-mix(in srgb, var(--bg-soft) 78%, transparent)
-  );
+  background: color-mix(in srgb, var(--surface) 98%, var(--bg));
 }
 
 .gt-worktree-tree-group,
@@ -828,11 +822,11 @@ pre {
 
 .gt-worktree-tree-row {
   position: relative;
-  min-height: 24px;
+  min-height: 25px;
   padding-top: 0;
   padding-bottom: 0;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   transition-property: background-color, border-color, box-shadow, color;
   transition-duration: 140ms;
@@ -873,7 +867,7 @@ pre {
 
 .gt-worktree-dir-main-btn,
 .gt-worktree-file-main-btn {
-  min-height: 22px;
+  min-height: 24px;
   line-height: 1.34;
 }
 
@@ -902,8 +896,8 @@ pre {
 }
 
 .gt-worktree-tree-name {
-  font-size: 11.5px;
-  font-weight: 380;
+  font-size: 11.35px;
+  font-weight: 390;
   letter-spacing: -0.01em;
 }
 
@@ -937,11 +931,7 @@ pre {
 }
 
 .gt-diff-editor-pane {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface) 94%, white 6%),
-    color-mix(in srgb, var(--surface) 98%, var(--bg))
-  );
+  background: color-mix(in srgb, var(--surface) 98%, var(--bg));
   grid-template-rows: auto minmax(0, 1fr);
   box-shadow:
     inset 1px 0 0 color-mix(in srgb, var(--line) 42%, transparent),
@@ -949,11 +939,7 @@ pre {
 }
 
 :root[data-theme="light"] .gt-diff-editor-pane {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, white 98%, #f8fbff),
-    color-mix(in srgb, white 100%, #f5f7fa)
-  );
+  background: #ffffff;
   box-shadow:
     inset 1px 0 0 color-mix(in srgb, #d7dee7 92%, transparent),
     inset 0 1px 0 color-mix(in srgb, white 92%, transparent);
@@ -1002,12 +988,12 @@ pre {
   position: sticky;
   top: 0;
   z-index: 2;
-  min-height: 34px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--gt-space-2);
-  padding: 0 10px;
+  padding: 0 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 56%, transparent);
   background: linear-gradient(
     180deg,
@@ -1042,8 +1028,8 @@ pre {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 11.5px;
-  font-weight: var(--gt-font-medium);
+  font-size: 11.25px;
+  font-weight: 540;
   letter-spacing: -0.01em;
 }
 
@@ -1179,25 +1165,28 @@ pre {
   --diff-code-delete-background-color: color-mix(in srgb, #fff1f1 72%, transparent);
   --diff-code-insert-edit-background-color: color-mix(in srgb, #9fe4b6 52%, transparent);
   --diff-code-delete-edit-background-color: color-mix(in srgb, #ffb3b3 58%, transparent);
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  table-layout: auto;
+  table-layout: fixed;
   color: var(--diff-text-color);
-  font-size: 11.6px;
-  line-height: 1.42;
+  font-size: 11.35px;
+  line-height: 1.38;
 }
 
-.gt-react-diff .diff-gutter-col {
+.gt-react-diff col.diff-gutter-col:first-child {
+  display: none;
+}
+
+.gt-react-diff .diff-gutter-col:first-child {
   width: 0 !important;
 }
 
 .gt-react-diff .diff-line {
   position: relative;
-  height: 20px;
+  height: 19px;
   font-family: var(--diff-font-family);
-  line-height: 20px;
+  line-height: 19px;
 }
 
 .gt-react-diff .diff-line:hover .diff-gutter-normal,
@@ -1205,8 +1194,19 @@ pre {
   background-color: color-mix(in srgb, var(--accent-soft) 18%, transparent);
 }
 
-.gt-react-diff .diff-gutter {
+.gt-react-diff .diff-line > .diff-gutter:first-child {
   display: none;
+}
+
+.gt-react-diff .diff-gutter {
+  width: 38px;
+  min-width: 38px;
+  padding: 0 6px 0 0;
+  border: 0;
+  color: color-mix(in srgb, var(--text) 42%, var(--muted));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
 }
 
 .gt-react-diff .diff-gutter a {
@@ -1216,11 +1216,11 @@ pre {
 
 .gt-react-diff .diff-code {
   min-width: max-content;
-  padding: 0 22px 0 14px;
+  padding: 0 18px 0 6px;
   border: 0;
   color: color-mix(in srgb, var(--text) 82%, var(--muted));
   font-weight: 360;
-  line-height: 20px;
+  line-height: 19px;
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
@@ -1271,7 +1271,8 @@ pre {
 }
 
 .gt-react-diff .diff-decoration-gutter {
-  display: none;
+  width: 0;
+  padding: 0;
 }
 
 .gt-react-diff .diff-decoration-content {
@@ -1333,34 +1334,25 @@ pre {
 }
 
 .gt-commit-dialog-card {
-  width: min(420px, calc(100vw - 40px));
+  width: min(500px, calc(100vw - 36px));
   display: grid;
-  gap: 17px;
-  padding: 24px 26px 22px;
-  border: 1px solid color-mix(in srgb, white 60%, var(--line));
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at 18% 8%, color-mix(in srgb, white 86%, transparent), transparent 42%),
-    linear-gradient(180deg, color-mix(in srgb, white 88%, var(--bg-panel)), color-mix(in srgb, var(--bg-panel) 96%, white));
-  box-shadow:
-    0 28px 80px color-mix(in srgb, black 20%, transparent),
-    0 1px 0 color-mix(in srgb, white 82%, transparent) inset;
+  gap: 16px;
+  padding: 22px 22px 20px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--bg-panel) 98%, white);
+  box-shadow: 0 24px 68px color-mix(in srgb, black 16%, transparent);
 }
 
 .gt-commit-dialog-close {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
+  top: 14px;
+  right: 14px;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  padding: 0;
   color: color-mix(in srgb, var(--text) 62%, var(--muted));
-  cursor: pointer;
 }
 
 .gt-commit-dialog-close:hover {
@@ -1373,28 +1365,29 @@ pre {
 }
 
 .gt-commit-dialog-head {
-  display: grid;
-  gap: 16px;
-  padding-right: 34px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 42px;
 }
 
 .gt-commit-dialog-mark {
-  width: 38px;
-  height: 38px;
-  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 13px;
-  background: color-mix(in srgb, white 74%, var(--bg-soft));
-  color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--line) 30%, transparent),
-    0 8px 22px color-mix(in srgb, black 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-soft) 72%, var(--bg));
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 60%, transparent);
 }
 
 .gt-commit-dialog-mark svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -1404,94 +1397,97 @@ pre {
 
 .gt-commit-dialog-copy {
   display: grid;
-  gap: 5px;
+  gap: 6px;
+}
+
+.gt-commit-dialog-kicker {
+  justify-self: start;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
 }
 
 .gt-commit-dialog-card .gt-dialog-title {
   margin: 0;
   color: var(--text);
-  font-size: 24px;
-  font-weight: 760;
-  line-height: 1.04;
-  letter-spacing: -0.045em;
-}
-
-.gt-commit-dialog-card .gt-dialog-description {
-  margin: 0;
-  color: color-mix(in srgb, var(--text) 48%, var(--muted));
-  font-size: 12px;
-  line-height: 1.42;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
 }
 
 .gt-commit-dialog-summary {
   display: grid;
-  gap: 11px;
-  padding: 0;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-soft) 40%, transparent);
 }
 
 .gt-commit-dialog-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 16px;
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.25;
 }
 
 .gt-commit-dialog-row > span {
-  color: var(--text);
-  font-weight: 680;
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+  font-weight: 620;
 }
 
 .gt-commit-dialog-row > strong {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
-  font-weight: 640;
+  font-weight: 600;
   text-align: right;
 }
 
-.gt-commit-dialog-stats span:first-child {
-  color: color-mix(in srgb, var(--text) 52%, var(--muted));
-  font-weight: 480;
+.gt-commit-dialog-branch-badge,
+.gt-commit-dialog-stat-badge {
+  font-size: 10.5px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
-.gt-commit-dialog-stats .is-add {
-  color: #00994d;
-}
-
-.gt-commit-dialog-stats .is-del {
-  color: var(--danger);
+.gt-commit-dialog-branch-badge {
+  padding-inline: 9px;
 }
 
 .gt-commit-dialog-field {
   display: grid;
-  gap: 9px;
+  gap: 8px;
   margin: 0;
 }
 
 .gt-commit-dialog-field-head {
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 
 .gt-commit-dialog-card .gt-field-label {
-  font-size: 13.5px;
-  font-weight: 680;
-}
-
-.gt-commit-dialog-card .gt-field-description {
-  max-width: 32ch;
+  font-size: 12.5px;
+  font-weight: 640;
 }
 
 .gt-commit-dialog-textarea {
-  min-height: 72px;
-  padding: 12px 14px;
-  font-size: 13.5px;
-  line-height: 1.45;
+  min-height: 92px;
+  padding: 11px 13px;
+  border-radius: 14px;
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, white 68%, var(--bg));
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .gt-commit-dialog-actions {
@@ -1500,17 +1496,24 @@ pre {
   align-items: center;
   gap: 8px;
   margin: 0;
+  padding-top: 2px;
+}
+
+.gt-commit-dialog-cancel {
+  min-width: 84px;
+  min-height: 38px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .gt-commit-dialog-submit {
-  min-width: 132px;
+  min-width: 172px;
   min-height: 38px;
   justify-content: center;
-  border-radius: 13px;
-  background: #1f2428;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 680;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 @keyframes gt-dialog-fade-in {

@@ -918,7 +918,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
   async function refreshScm() {
     if (!ensureRepoSelected()) return;
     setBusy(true);
-    setOverlayBusy(true);
     setError("");
     setMessage("刷新提交与状态...");
     try {
@@ -952,7 +951,6 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       setMessage("刷新失败");
     } finally {
       setBusy(false);
-      setOverlayBusy(false);
     }
   }
 

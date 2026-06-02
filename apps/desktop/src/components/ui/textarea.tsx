@@ -5,10 +5,7 @@ import {
   Textarea as HeadlessTextarea
 } from "@headlessui/react";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
+import { cn } from "@/lib/utils";
 
 const Field = ({ className, ...props }: ComponentPropsWithoutRef<typeof HeadlessField>) => (
   <HeadlessField className={cn("gt-field", className)} {...props} />

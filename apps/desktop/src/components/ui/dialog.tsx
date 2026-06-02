@@ -1,9 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from "react";
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
+import { cn } from "@/lib/utils";
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;

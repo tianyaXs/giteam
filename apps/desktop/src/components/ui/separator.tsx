@@ -1,9 +1,6 @@
 import * as SeparatorPrimitive from "@radix-ui/react-separator";
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from "react";
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
+import { cn } from "@/lib/utils";
 
 const Separator = forwardRef<
   ElementRef<typeof SeparatorPrimitive.Root>,

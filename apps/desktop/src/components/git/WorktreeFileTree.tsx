@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { GitWorktreeEntry } from "../../lib/types";
 import { IconButton } from "../ui/icon-button";
+import { Badge } from "../ui/badge";
 import { GitStageToggle } from "./GitStageToggle";
 import {
   collectWorktreeNodeEntries,
@@ -208,7 +209,7 @@ export function WorktreeChangesList({
         <div className="gt-changes-group">
           <div className="gt-changes-group-header">
             <span className="gt-changes-group-title">Staged Changes</span>
-            <span className="gt-changes-group-count">{stagedCount}</span>
+            <Badge variant="secondary" className="gt-changes-group-count">{stagedCount}</Badge>
           </div>
           <div className="gt-changes-group-list">
             <WorktreeFileTree {...treeProps} nodes={stagedTree} mode="unstage" />
@@ -220,7 +221,7 @@ export function WorktreeChangesList({
         <div className="gt-changes-group">
           <div className="gt-changes-group-header">
             <span className="gt-changes-group-title">Changes</span>
-            <span className="gt-changes-group-count">{unstagedCount}</span>
+            <Badge variant="secondary" className="gt-changes-group-count">{unstagedCount}</Badge>
           </div>
           <div className="gt-changes-group-list">
             <WorktreeFileTree {...treeProps} nodes={unstagedTree} mode="stage" />

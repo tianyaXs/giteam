@@ -2609,11 +2609,17 @@
 .gt-right-pane {
   height: 100%;
   border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  border-radius: var(--gt-radius-lg);
+  border-radius: 14px;
   overflow: hidden;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 96%, transparent), color-mix(in srgb, var(--bg-soft) 48%, transparent));
+  background: color-mix(in srgb, var(--surface) 98%, var(--bg));
   display: flex;
   flex-direction: column;
+}
+
+.gt-right-pane.is-workspace {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .gt-right-tabs {
@@ -2670,6 +2676,10 @@
   flex: 1;
   overflow: auto;
   padding: var(--gt-space-2-5);
+}
+
+.gt-right-panel.is-bleed {
+  padding: 0;
 }
 
 .gt-panel-stack {

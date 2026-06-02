@@ -1,9 +1,6 @@
 import { Button as HeadlessButton } from "@headlessui/react";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
-
-function cn(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
+import { cn } from "@/lib/utils";
 
 type IconButtonProps = ComponentPropsWithoutRef<"button"> & {
   tone?: "default" | "danger";

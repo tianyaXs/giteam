@@ -1,4 +1,3 @@
-import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import type { CSSProperties } from "react";
 import { Suspense, lazy, memo, useEffect, useMemo, useRef } from "react";
 import { Decoration, Diff, Hunk, getCollapsedLinesCountBetween, markEdits, parseDiff, tokenize, type FileData, type HunkData } from "react-diff-view";
@@ -11,8 +10,19 @@ import {
   getWorktreeDisplayStatus,
   type WorktreeTreeNode
 } from "../../lib/worktreeDiff";
-import { CheckIcon, CopyIcon, MinusIcon, PlusIcon } from "../icons";
+import { CheckIcon, ChevronDownIcon, CopyIcon, MinusIcon, PlusIcon } from "../icons";
 import { IconButton } from "../ui/icon-button";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu";
 import { GitStageToggle } from "./GitStageToggle";
 import { WorktreeChangesList } from "./WorktreeFileTree";
 
@@ -138,6 +148,13 @@ function getDiffFileStats(file: FileData | null) {
   return { added, deleted };
 }
 
+function renderUnifiedLineNumber(change: HunkData["changes"][number]) {
+  if (change.type === "normal") {
+    return change.newLineNumber ?? change.oldLineNumber ?? "";
+  }
+  return change.lineNumber ?? "";
+}
+
 const DiffFileHeader = memo(function DiffFileHeader({
   entry,
   stats,
@@ -231,6 +248,9 @@ const DiffFileContent = memo(function DiffFileContent({ model }: { model: DiffFi
         diffType={file.type}
         hunks={file.hunks}
         tokens={tokens}
+        renderGutter={({ change, side }) => (
+          side === "new" ? <span>{renderUnifiedLineNumber(change)}</span> : null
+        )}
       >
         {(hunks) => hunks.flatMap((hunk: HunkData, index: number) => {
           const previousHunk = hunks[index - 1];
@@ -491,75 +511,74 @@ export function GitChangesPanel({
       <div className="gt-changes-toolbar">
         <div className="gt-changes-toolbar-row gt-changes-branch-row">
           <div className="gt-changes-branch">
-            <span className="gt-changes-branch-local">Local</span>
+            <Badge variant="outline" className="gt-changes-branch-badge">Local</Badge>
             <span className="gt-changes-branch-name">{branchName || "no branch"}</span>
           </div>
           {showPrimaryCommitAction ? (
             <div className="gt-changes-toolbar-commit" onClick={(event) => event.stopPropagation()}>
               <div className="gt-changes-commit-actions">
                 <div className="gt-commit-split-wrap">
-                <button
+                  <Button
+                    variant="contrast"
+                    size="sm"
                     className={isGitBusy
-                      ? "chip is-primary gt-commit-main-btn is-loading"
-                      : "chip is-primary gt-commit-main-btn"}
+                      ? "gt-commit-main-btn is-loading"
+                      : "gt-commit-main-btn"}
                     onClick={onCommitAndPush}
                     disabled={!hasSelectedCommitContent}
                     aria-busy={isGitBusy}
                     title={!hasSelectedCommitContent ? "没有可提交的已暂存更改" : ""}
-                >
+                  >
                     {isGitBusy ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
                     {commitPrimaryContent}
-                </button>
-                  <Menu as="div" className="gt-commit-menu-root">
-                    <MenuButton
-                      type="button"
-                      className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
-                      disabled={isGitBusy || !commitMenuAvailable}
-                      title="更多提交操作"
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="contrast"
+                        size="icon"
+                        className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
+                        disabled={isGitBusy}
+                        title="更多提交操作"
+                      >
+                        <ChevronDownIcon className="gt-commit-chevron" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="end"
+                      className="gt-commit-action-menu"
                     >
-                      <svg className="gt-commit-chevron" viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M4.5 6.5 8 10l3.5-3.5" />
-                      </svg>
-                    </MenuButton>
-                    <MenuItems transition anchor="bottom end" className="gt-commit-action-menu">
-                      <MenuItem>
-                        {({ focus }) => (
-                          <button
-                            type="button"
-                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
-                            onClick={onCommitAndPush}
-                            disabled={isGitBusy || !hasSelectedCommitContent}
-                          >
-                            Commit & Push
-                          </button>
-                        )}
-                      </MenuItem>
-                      <MenuItem>
-                        {({ focus }) => (
-                          <button
-                            type="button"
-                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
-                            onClick={onCommit}
-                            disabled={isGitBusy || !hasSelectedCommitContent}
-                          >
-                            Commit
-                          </button>
-                        )}
-                      </MenuItem>
-                      <MenuItem>
-                        {({ focus }) => (
-                          <button
-                            type="button"
-                            className={focus ? "gt-commit-action-item is-focus" : "gt-commit-action-item"}
-                            onClick={onCommitAndSync}
-                            disabled={isGitBusy || !hasSelectedCommitContent}
-                          >
-                            Commit & Create PR
-                          </button>
-                        )}
-                      </MenuItem>
-                    </MenuItems>
-                  </Menu>
+                      <DropdownMenuLabel className="gt-commit-action-label">
+                        提交操作
+                      </DropdownMenuLabel>
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem
+                          className="gt-commit-action-item"
+                          onClick={onCommitAndPush}
+                          disabled={isGitBusy || !hasSelectedCommitContent}
+                        >
+                          Commit & Push
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gt-commit-action-item"
+                          onClick={onCommit}
+                          disabled={isGitBusy || !hasSelectedCommitContent}
+                        >
+                          Commit
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem
+                          className="gt-commit-action-item"
+                          onClick={onCommitAndSync}
+                          disabled={isGitBusy || !hasSelectedCommitContent}
+                        >
+                          Commit & Create PR
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
             </div>
@@ -568,14 +587,15 @@ export function GitChangesPanel({
         <div className="gt-changes-toolbar-row gt-changes-summary-row">
           <div className="gt-changes-summary">
             <span className="gt-changes-summary-count">{changeStats.total} Uncommitted Changes</span>
-            <span className="gt-changes-summary-add">+{lineStats.added}</span>
-            <span className="gt-changes-summary-del">-{lineStats.deleted}</span>
+            <Badge variant="success" className="gt-changes-summary-badge">+{lineStats.added}</Badge>
+            <Badge variant="destructive" className="gt-changes-summary-badge">-{lineStats.deleted}</Badge>
           </div>
           <div className="gt-changes-bulk-actions">
             {changeStats.total > 0 ? (
-              <button
-                type="button"
-                className="chip gt-icon-chip is-danger"
+              <Button
+                variant="outline"
+                size="icon"
+                className="gt-icon-chip is-danger"
                 title="撤销全部修改"
                 disabled={discardingAll}
                 onClick={onOpenDiscardAllConfirm}
@@ -584,17 +604,18 @@ export function GitChangesPanel({
                   <path d="M6 4 3 7l3 3" />
                   <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
                 </svg>
-              </button>
+              </Button>
             ) : null}
             {changeStats.total > 0 ? (
-              <button
-                type="button"
-                className="chip gt-icon-chip"
+              <Button
+                variant="outline"
+                size="icon"
+                className="gt-icon-chip"
                 title={changeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
                 onClick={onToggleStageAll}
               >
                 {changeStats.unstaged > 0 ? <PlusIcon /> : <MinusIcon />}
-              </button>
+              </Button>
             ) : null}
           </div>
         </div>
