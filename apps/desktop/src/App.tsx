@@ -28,6 +28,7 @@ import {
   extractTransferFiles,
   fileUrlToPath,
   getAttachmentDataUrlMime,
+  hasClipboardFileReference,
   hasPlainClipboardText,
   hasTransferAttachments,
   isOfficeAttachment,
@@ -152,9 +153,7 @@ import {
 } from "./lib/opencodeParts";
 import {
   closeRepoTerminalSession,
-  completeRepoTerminalInput,
   clearRepoTerminalSession,
-  listRepoTerminalCompletions,
   getCommitChangedFiles,
   getCommitFilePatch,
   getGitWorktreeFileContent,
@@ -215,13 +214,8 @@ import {
 } from "./lib/storage";
 import {
   appendTerminalError,
-  applyTerminalCompletionCandidate,
-  browseTerminalHistoryState,
-  clearTerminalCompletion,
   createTerminalTabState,
   recordTerminalCommand,
-  sanitizeTerminalOutput,
-  splitTerminalOutputForInput,
   type TerminalTabState,
   writeTerminalTabSnapshot
 } from "./lib/terminalState";
@@ -817,16 +811,9 @@ export function App() {
     terminalSidebarVisible,
     setTerminalSidebarVisible,
     terminalTabCounterRef,
-    terminalSeqRef,
-    terminalBufferedOutputRef
+    terminalSeqRef
   } = useTerminalTabs();
   const terminalRepoResetReadyRef = useRef(false);
-  const terminalLogRef = useRef<HTMLDivElement | null>(null);
-  const terminalBodyRef = useRef<HTMLDivElement | null>(null);
-  const terminalInputShellRef = useRef<HTMLDivElement | null>(null);
-  const terminalInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const terminalTextSelectingRef = useRef(false);
-  const [terminalInputNearTop, setTerminalInputNearTop] = useState(false);
   const opencodeModelConfigLoadedRef = useRef(false);
   const opencodeConfiguredModelsLoadedRef = useRef(false);
   const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
@@ -1168,31 +1155,6 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [opencodeSkillsVisible, repoPath]);
 
-  useEffect(() => {
-    if (rightPaneTab !== "terminal" || !activeTerminalTab || !repoPath.trim()) return;
-    const input = activeTerminalTab.input;
-    if (!input.trim()) {
-      updateTerminalTabById(activeTerminalTab.id, (prev) => (
-        prev.completionItems.length === 0 && !prev.completionToken ? prev : { ...prev, completionItems: [], completionIndex: 0, completionToken: "" }
-      ));
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void refreshTerminalCompletions(activeTerminalTab, input);
-    }, 90);
-    return () => window.clearTimeout(timer);
-  }, [activeTerminalTab?.id, activeTerminalTab?.input, activeTerminalTab?.cwd, repoPath, rightPaneTab]);
-  const activeTerminalView = useMemo(
-    () => splitTerminalOutputForInput(activeTerminalTab?.output || ""),
-    [activeTerminalTab?.output]
-  );
-  const activeTerminalGhostText = useMemo(() => {
-    const tab = activeTerminalTab;
-    if (!tab?.completionItems?.length || !tab.completionToken) return "";
-    const candidate = tab.completionItems[tab.completionIndex] || tab.completionItems[0] || "";
-    if (!candidate || !candidate.startsWith(tab.completionToken)) return "";
-    return candidate.slice(tab.completionToken.length);
-  }, [activeTerminalTab]);
   const topologyModel = useMemo(
     () => buildTopologyModel({
       repoName: selectedRepo?.name || "Current Repo",
@@ -4419,53 +4381,6 @@ export function App() {
     });
   }
 
-  function browseTerminalHistory(tabId: string, direction: "older" | "newer") {
-    updateTerminalTabById(tabId, (prev) => browseTerminalHistoryState(prev, direction));
-  }
-
-  async function refreshTerminalCompletions(tab: TerminalTabState, nextInput: string) {
-    if (!repoPath.trim()) return;
-    const currentInput = nextInput;
-    try {
-      const result = await listRepoTerminalCompletions(repoPath, currentInput, tab.cwd || repoPath);
-      updateTerminalTabById(tab.id, (prev) => {
-        if (prev.input !== currentInput) return prev;
-        return {
-          ...prev,
-          completionItems: result.candidates.slice(0, 24),
-          completionIndex: 0,
-          completionToken: result.token || ""
-        };
-      });
-    } catch {
-      updateTerminalTabById(tab.id, (prev) => prev.input === currentInput ? { ...prev, completionItems: [], completionIndex: 0, completionToken: "" } : prev);
-    }
-  }
-
-  function selectTerminalCompletion(tab: TerminalTabState, index = tab.completionIndex) {
-    const candidate = tab.completionItems[index];
-    if (!candidate || !tab.completionToken) return;
-    const nextInput = applyTerminalCompletionCandidate(tab.input, tab.completionToken, candidate);
-    updateTerminalTabById(tab.id, (prev) => clearTerminalCompletion(prev, nextInput));
-    void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
-  }
-
-  async function applyTerminalTabCompletion(tab: TerminalTabState) {
-    if (tab.completionItems.length > 0 && tab.completionToken) {
-      selectTerminalCompletion(tab);
-      return;
-    }
-    if (!repoPath) return;
-    try {
-      const nextInput = await completeRepoTerminalInput(repoPath, tab.input, tab.cwd || repoPath);
-      if (nextInput === tab.input) return;
-      updateTerminalTabById(tab.id, (prev) => clearTerminalCompletion(prev, nextInput));
-      void refreshTerminalCompletions({ ...tab, input: nextInput, completionItems: [], completionIndex: 0, completionToken: "" }, nextInput);
-    } catch {
-      // ignore completion failures to keep typing smooth
-    }
-  }
-
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
@@ -4607,25 +4522,6 @@ export function App() {
     );
   }
 
-  function terminalHasTextSelection() {
-    const el = terminalLogRef.current;
-    const selection = window.getSelection();
-    if (!el || !selection || selection.isCollapsed || !selection.toString()) return false;
-    const anchorInside = selection.anchorNode ? el.contains(selection.anchorNode) : false;
-    const focusInside = selection.focusNode ? el.contains(selection.focusNode) : false;
-    return anchorInside || focusInside;
-  }
-
-  function flushBufferedTerminalOutput(tabId = activeTerminalTabId) {
-    const buffered = terminalBufferedOutputRef.current[tabId];
-    if (!buffered) return;
-    delete terminalBufferedOutputRef.current[tabId];
-    updateTerminalTabById(tabId, (prev) => ({
-      ...prev,
-      output: sanitizeTerminalOutput(`${prev.output}${buffered}`)
-    }));
-  }
-
   function createTerminalTab() {
     const n = terminalTabCounterRef.current++;
     const id = `terminal-${n}`;
@@ -4667,6 +4563,19 @@ export function App() {
     } catch (e) {
       const msg = String(e);
       updateTerminalTabById(activeTerminalTab.id, (prev) => appendTerminalError(prev, msg));
+      setError(msg);
+    }
+  }
+
+  async function sendTerminalData(tabId: string, data: string) {
+    if (!ensureRepoSelected()) return;
+    if (!data) return;
+    try {
+      await sendRepoTerminalInput(repoPath, data, tabId);
+      updateTerminalTabById(tabId, { input: "" });
+    } catch (e) {
+      const msg = String(e);
+      updateTerminalTabById(tabId, (prev) => appendTerminalError(prev, msg));
       setError(msg);
     }
   }
@@ -5619,7 +5528,7 @@ export function App() {
           seq: snapshot.seq,
           alive: snapshot.alive,
           cwd: snapshot.cwd || repo,
-          output: sanitizeTerminalOutput(snapshot.output || "")
+          output: snapshot.output || ""
         });
       } catch (e) {
         if (stopped) return;
@@ -5634,22 +5543,13 @@ export function App() {
         if (stopped) return;
         terminalSeqRef.current[tabId] = snapshot.seq;
         if (snapshot.output) {
-          if (snapshot.output) {
-            if (terminalTextSelectingRef.current && terminalHasTextSelection()) {
-              terminalBufferedOutputRef.current[tabId] = `${terminalBufferedOutputRef.current[tabId] || ""}${snapshot.output}`;
-              updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
-              return;
-            }
-            updateTerminalTabById(tabId, (prev) => ({
-              ...prev,
-              seq: snapshot.seq,
-              alive: snapshot.alive,
-              cwd: snapshot.cwd || prev.cwd,
-              output: sanitizeTerminalOutput(`${prev.output}${snapshot.output}`)
-            }));
-          } else {
-            updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
-          }
+          updateTerminalTabById(tabId, (prev) => ({
+            ...prev,
+            seq: snapshot.seq,
+            alive: snapshot.alive,
+            cwd: snapshot.cwd || prev.cwd,
+            output: `${prev.output}${snapshot.output}`
+          }));
         } else {
           updateTerminalTabById(tabId, { seq: snapshot.seq, alive: snapshot.alive, cwd: snapshot.cwd || repo });
         }
@@ -5669,50 +5569,6 @@ export function App() {
   useEffect(() => {
     writeTerminalTabSnapshot(activeTerminalTabId, terminalTabCounterRef.current, terminalTabs);
   }, [terminalTabs, activeTerminalTabId]);
-
-  useEffect(() => {
-    const el = terminalLogRef.current;
-    if (!el) return;
-    if (terminalTextSelectingRef.current && terminalHasTextSelection()) return;
-    el.scrollTop = el.scrollHeight;
-  }, [activeTerminalTab?.output]);
-
-  useEffect(() => {
-    const onSelectionChange = () => {
-      if (!terminalTextSelectingRef.current) return;
-      if (terminalHasTextSelection()) return;
-      terminalTextSelectingRef.current = false;
-      flushBufferedTerminalOutput(activeTerminalTabId);
-    };
-    document.addEventListener("selectionchange", onSelectionChange);
-    return () => document.removeEventListener("selectionchange", onSelectionChange);
-  }, [activeTerminalTabId]);
-
-  useEffect(() => {
-    if (rightPaneTab !== "terminal") return;
-    const t = window.setTimeout(() => {
-      terminalInputRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(t);
-  }, [rightPaneTab, rightDrawerOpen, activeTerminalTabId]);
-
-  useEffect(() => {
-    const terminalBody = terminalBodyRef.current;
-    const consoleEl = terminalLogRef.current;
-    if (!terminalBody || !consoleEl) return;
-    const updateNearTop = () => {
-      const noScroll = consoleEl.scrollHeight <= consoleEl.clientHeight + 2;
-      setTerminalInputNearTop(noScroll);
-    };
-    updateNearTop();
-    const ro = new ResizeObserver(updateNearTop);
-    ro.observe(terminalBody);
-    consoleEl.addEventListener("scroll", updateNearTop);
-    return () => {
-      ro.disconnect();
-      consoleEl.removeEventListener("scroll", updateNearTop);
-    };
-  }, [rightPaneTab, terminalLogRef.current, terminalBodyRef.current]);
 
   useEffect(() => {
     terminalRepoResetReadyRef.current = true;
@@ -6606,7 +6462,7 @@ export function App() {
             }
           }}
           onPromptPaste={async (event) => {
-            const hasBrowserAttachments = hasTransferAttachments(event.clipboardData);
+            const hasBrowserAttachments = hasClipboardFileReference(event.clipboardData);
             if (!hasBrowserAttachments && hasPlainClipboardText(event.clipboardData)) {
               return;
             }
@@ -6696,7 +6552,7 @@ export function App() {
         <div className="opencode-debug-panel">
           <div className="opencode-debug-head">
             <strong>OpenCode Debug Log</strong>
-            <button className="chip" onClick={() => setOpencodeDebugLogs([])}>Clear</button>
+            <Button variant="ghost" size="sm" onClick={() => setOpencodeDebugLogs([])}>Clear</Button>
           </div>
           <pre className="opencode-debug-log">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
         </div>
@@ -6713,10 +6569,19 @@ export function App() {
 
   const rightPane = (
     <div
-      className={rightPaneTab === "changes" || rightPaneTab === "worktree" ? "gt-right-pane is-workspace" : "gt-right-pane"}
+      className={rightPaneTab === "changes" || rightPaneTab === "worktree"
+        ? "gt-right-pane is-workspace"
+        : rightPaneTab === "terminal"
+          ? "gt-right-pane is-terminal"
+          : "gt-right-pane"}
       ref={opencodeRightPaneRef}
     >
-      <div className={rightPaneTab === "changes" || rightPaneTab === "worktree" ? "gt-right-panel is-bleed" : "gt-right-panel"}>
+      <div className={rightPaneTab === "changes" || rightPaneTab === "worktree"
+        ? "gt-right-panel is-bleed"
+        : rightPaneTab === "terminal"
+          ? "gt-right-panel is-terminal-bleed"
+          : "gt-right-panel"}
+      >
         {rightPaneTab === "worktree" ? (
           <div className="gt-worktree-topology-shell">
             <div className="gt-gittree-panel-host">
@@ -6919,17 +6784,8 @@ export function App() {
             tabs={terminalTabs}
             activeTabId={activeTerminalTabId}
             activeTab={activeTerminalTab}
-            activeView={activeTerminalView}
-            ghostText={activeTerminalGhostText}
             sidebarVisible={terminalSidebarVisible}
-            inputNearTop={terminalInputNearTop}
-            bodyRef={terminalBodyRef}
-            logRef={terminalLogRef}
-            inputShellRef={terminalInputShellRef}
-            inputRef={terminalInputRef}
-            hasTextSelection={terminalHasTextSelection}
-            markTextSelecting={(selecting) => { terminalTextSelectingRef.current = selecting; }}
-            flushBufferedOutput={flushBufferedTerminalOutput}
+            theme={theme}
             onToggleSidebar={() => setTerminalSidebarVisible((visible) => !visible)}
             onCreateTab={createTerminalTab}
             onCloseTab={closeTerminalTab}
@@ -6940,14 +6796,7 @@ export function App() {
               terminalSeqRef.current[activeTerminalTab.id] = 0;
               updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
             }}
-            onUpdateTab={updateTerminalTabById}
-            onRunCommand={runTerminalCommand}
-            onBrowseHistory={browseTerminalHistory}
-            onApplyCompletion={applyTerminalTabCompletion}
-            onSelectCompletion={selectTerminalCompletion}
-            onInterrupt={(tab) => sendRepoTerminalInput(repoPath, "\u0003", tab.id).catch(() => {
-              // ignore
-            })}
+            onInput={sendTerminalData}
           />
         ) : null}
       </div>
@@ -7224,12 +7073,12 @@ export function App() {
 
   const shellToggles = (
     <div className="gt-shell-toggle-layer" aria-label="布局显隐控制">
-      <button className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
+      <Button variant="ghost" size="icon" className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
         <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
-      </button>
-      <button className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={toggleRightDrawer}>
+      </Button>
+      <Button variant="ghost" size="icon" className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={toggleRightDrawer}>
         <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
-      </button>
+      </Button>
     </div>
   );
 
@@ -7258,8 +7107,9 @@ export function App() {
                 <span className="ui-busy-bar" />
               </div>
               <div className="toolbar" style={{ justifyContent: "center" }}>
-                <button
-                  className="chip"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => {
                     setOverlayBusy(false);
                     setBusy(false);
@@ -7267,7 +7117,7 @@ export function App() {
                   }}
                 >
                   Dismiss
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -7525,7 +7375,9 @@ export function App() {
               style={{ left: worktreeContextMenu.x, top: worktreeContextMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => {
                   setWorktreeToRemove(worktreeContextMenu.path);
@@ -7534,7 +7386,7 @@ export function App() {
                 }}
               >
                 {appText.removeWorktree}
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -7752,38 +7604,57 @@ export function App() {
         ) : null}
 
         {showSkillsmpSettings ? (
-          <div className="modal-mask" onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setShowSkillsmpSettings(false);
+          <Dialog open onOpenChange={(open) => {
+            if (!open) setShowSkillsmpSettings(false);
           }}>
-            <div className="modal-card skillsmp-key-modal" role="dialog" aria-modal="true" aria-label="配置 SkillsMP API Key" onMouseDown={(e) => e.stopPropagation()}>
-              <div className="skillsmp-key-modal-head">
-                <div>
-                  <span className="gt-module-kicker">SkillsMP</span>
-                  <h3>配置 API Key</h3>
-                  <p>关键词搜索可匿名使用；AI 语义搜索和更高额度需要 API Key。</p>
-                </div>
-                <button className="gt-diff-icon-btn" type="button" aria-label="关闭" onClick={() => setShowSkillsmpSettings(false)}><CloseIcon /></button>
+            <DialogContent className="gt-settings-dialog-content">
+              <div className="modal-card skillsmp-key-modal">
+                <DialogHeader className="skillsmp-key-modal-head">
+                  <div>
+                    <span className="gt-module-kicker">SkillsMP</span>
+                    <DialogTitle>配置 API Key</DialogTitle>
+                    <DialogDescription>关键词搜索可匿名使用；AI 语义搜索和更高额度需要 API Key。</DialogDescription>
+                  </div>
+                  <DialogClose asChild>
+                    <Button variant="ghost" size="icon" className="gt-diff-icon-btn" aria-label="关闭">
+                      <CloseIcon />
+                    </Button>
+                  </DialogClose>
+                </DialogHeader>
+                <label className="skillsmp-key-field">
+                  <span>API Key</span>
+                  <Input
+                    className="path-input"
+                    type="password"
+                    placeholder="sk_live_skillsmp_..."
+                    value={skillsmpApiKeyDraft}
+                    onChange={(e) => setSkillsmpApiKeyDraft(e.target.value)}
+                    autoFocus
+                  />
+                </label>
+                <DialogFooter className="skillsmp-key-actions">
+                  <Button variant="contrast" size="sm" onClick={() => {
+                    const next = skillsmpApiKeyDraft.trim();
+                    setSkillsmpApiKey(next);
+                    saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
+                    setShowSkillsmpSettings(false);
+                  }}>
+                    保存
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => {
+                    setSkillsmpApiKey("");
+                    setSkillsmpApiKeyDraft("");
+                    saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
+                  }}>
+                    清除
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" })}>
+                    浏览器获取 API Key
+                  </Button>
+                </DialogFooter>
               </div>
-              <label className="skillsmp-key-field">
-                <span>API Key</span>
-                <input className="path-input" type="password" placeholder="sk_live_skillsmp_..." value={skillsmpApiKeyDraft} onChange={(e) => setSkillsmpApiKeyDraft(e.target.value)} autoFocus />
-              </label>
-              <div className="skillsmp-key-actions">
-                <button className="chip primary" onClick={() => {
-                  const next = skillsmpApiKeyDraft.trim();
-                  setSkillsmpApiKey(next);
-                  saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
-                  setShowSkillsmpSettings(false);
-                }}>保存</button>
-                <button className="chip" onClick={() => {
-                  setSkillsmpApiKey("");
-                  setSkillsmpApiKeyDraft("");
-                  saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
-                }}>清除</button>
-                <button className="chip" onClick={() => void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" })}>浏览器获取 API Key</button>
-              </div>
-            </div>
-          </div>
+            </DialogContent>
+          </Dialog>
         ) : null}
 
         {showOpencodeApiDialog ? (
@@ -8014,13 +7885,15 @@ export function App() {
               style={{ left: repoContextMenu.x, top: repoContextMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => void closeRepository(repoContextMenu.repo)}
                 disabled={busy}
               >
                 Close
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -8032,7 +7905,9 @@ export function App() {
               style={{ left: sessionContextMenu.x, top: sessionContextMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => {
                   const menu = sessionContextMenu;
@@ -8042,7 +7917,7 @@ export function App() {
                 disabled={busy || !runtimeStatus.opencode.installed}
               >
                 {appText.archiveSession}
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -8054,7 +7929,9 @@ export function App() {
               style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => openCommitWorktreeDialog({
                   sha: commitContextMenu.sha,
@@ -8064,8 +7941,10 @@ export function App() {
                 }, commitContextMenu.branch)}
               >
                 {appText.createWorktreeFromCommit}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => {
                   setCommitContextMenu(null);
@@ -8073,8 +7952,10 @@ export function App() {
                 }}
               >
                 {appText.createBranchFromCommit}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 className="repo-context-item"
                 onClick={() => {
                   setCommitContextMenu(null);
@@ -8082,16 +7963,16 @@ export function App() {
                 }}
               >
                 {appText.explainInspectCommit}
-              </button>
-              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
+              </Button>
+              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
                 {appText.cherryPickCurrentBranch}
-              </button>
-              <button className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
+              </Button>
+              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
                 {appText.revertCurrentBranch}
-              </button>
-              <button className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
+              </Button>
+              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
                 {appText.copyCommitId}
-              </button>
+              </Button>
             </div>
           </div>
         ) : null}
@@ -8157,25 +8038,25 @@ export function App() {
                     <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
                       {branchName}
                     </div>
-                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
                       {appText.createBranch}
-                    </button>
-                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
+                    </Button>
+                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
                       {appText.createWorktree}
-                    </button>
+                    </Button>
                     {isRemoteBranch ? (
-                      <button className="repo-context-item" onClick={() => void checkoutRemoteBranchFromTopology(branchName)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void checkoutRemoteBranchFromTopology(branchName)}>
                         {appText.checkoutNewLocalBranch}
-                      </button>
+                      </Button>
                     ) : (
-                      <button className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
                         {appText.checkout}
-                      </button>
+                      </Button>
                     )}
                     {!isRemoteBranch && branchName !== "main" && branchName !== "master" && !hasWorktree ? (
-                      <button className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
                         {appText.deleteBranch}
-                      </button>
+                      </Button>
                     ) : null}
                   </>
                 ) : null}
@@ -8184,25 +8065,25 @@ export function App() {
                     <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
                       {worktreePath.split(/[\\/]/).pop() || worktreePath}
                     </div>
-                    <button className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
                       {appText.createBranchFromWorktree}
-                    </button>
-                    <button className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
+                    </Button>
+                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
                       {appText.openWorktree}
-                    </button>
+                    </Button>
                     {nodeAgentBinding ? (
-                      <button className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
                         {appText.unbindAgent}
-                      </button>
+                      </Button>
                     ) : (
-                      <button className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
                         {appText.bindAgent}
-                      </button>
+                      </Button>
                     )}
                     {!isCurrentBranch ? (
-                      <button className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
+                      <Button variant="ghost" size="sm" className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
                         {appText.removeWorktree}
-                      </button>
+                      </Button>
                     ) : null}
                   </>
                 ) : null}

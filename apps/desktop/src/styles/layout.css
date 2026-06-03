@@ -199,22 +199,29 @@
 
 .repo-context-item {
   width: 100%;
-  border: 1px solid transparent;
-  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 34px;
   color: var(--text);
   border-radius: var(--gt-radius-md);
   padding: var(--gt-space-2) var(--gt-space-2);
   text-align: left;
-  cursor: pointer;
+  box-shadow: none;
 }
 
-.repo-context-item:hover {
+.repo-context-item:hover:not(:disabled),
+.repo-context-item[data-highlighted] {
   background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
   border-color: color-mix(in srgb, var(--line) 70%, transparent);
 }
 
 .repo-context-item.danger {
   color: var(--danger);
+}
+
+.repo-context-item:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 72%, transparent);
 }
 
 .wb-activity-inner {
@@ -835,23 +842,24 @@
   align-self: flex-end;
   max-width: min(72%, 560px);
   margin-left: 64px;
-  padding: 7px 12px;
-  border-radius: 16px;
-  color: color-mix(in srgb, var(--text) 92%, black);
-  background: color-mix(in srgb, var(--bg-soft) 62%, white);
-  border: 1px solid color-mix(in srgb, var(--line) 22%, transparent);
-  box-shadow: 0 1px 1px color-mix(in srgb, black 3%, transparent);
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 20px;
+  color: color-mix(in srgb, var(--text) 92%, #111827);
+  background: #f2f2f2;
+  box-shadow: none;
   font-size: 14px;
   font-weight: 500;
-  line-height: 1.42;
+  line-height: 1.5;
+  text-align: left;
 }
 
 :root:not([data-theme="light"]) .opencode-msg-user,
 :root[data-theme="dark"] .opencode-msg-user {
-  color: color-mix(in srgb, var(--text) 94%, white);
-  background: color-mix(in srgb, var(--message-user-surface) 72%, var(--bg-soft));
-  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
-  box-shadow: 0 1px 1px color-mix(in srgb, black 16%, transparent);
+  color: #202124;
+  background: #f2f2f2;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .opencode-msg-assistant {
@@ -922,7 +930,52 @@
 
 .opencode-msg-user .opencode-msg-body {
   display: grid;
-  gap: 3px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.opencode-msg-user .opencode-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+
+.opencode-msg-user .opencode-msg-image-btn {
+  width: 92px;
+  height: 92px;
+  min-width: 92px;
+  min-height: 92px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 38%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, #fff 72%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
+  overflow: hidden;
+}
+
+.opencode-msg-user .opencode-msg-image-btn:hover {
+  background: #fff;
+}
+
+.opencode-msg-user .opencode-msg-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.opencode-msg-user .opencode-msg-file-btn {
+  max-width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 9px;
+  background: color-mix(in srgb, #fff 58%, transparent);
 }
 
 .opencode-msg-user .markdown-lite {
@@ -938,44 +991,39 @@
 
 .opencode-msg-collapsible {
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--line) 26%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--bg-soft) 34%, transparent);
-  overflow: hidden;
-}
-
-.opencode-msg-collapsible-summary {
-  list-style: none;
-  cursor: pointer;
   display: grid;
-  gap: var(--gt-space-2);
-  padding: var(--gt-space-3) var(--gt-space-3-5);
-}
-
-.opencode-msg-collapsible-summary::-webkit-details-marker {
-  display: none;
+  gap: var(--gt-space-1-5);
+  min-width: 0;
 }
 
 .opencode-msg-collapsible-preview {
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: color-mix(in srgb, var(--text) 88%, var(--muted));
-  line-height: 1.55;
+  min-width: 0;
 }
 
 .opencode-msg-collapsible-toggle {
-  color: color-mix(in srgb, var(--text) 72%, var(--accent));
+  width: fit-content;
+  height: 26px;
+  min-height: 26px;
+  justify-content: flex-start;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 86%, var(--text));
   font-size: var(--gt-text-sm);
   font-weight: var(--gt-font-semibold);
+  box-shadow: none;
 }
 
-.opencode-msg-collapsible[open] .opencode-msg-collapsible-toggle {
-  display: none;
+.opencode-msg-collapsible-toggle:hover,
+.opencode-msg-collapsible-toggle:focus-visible {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .opencode-msg-collapsible-body {
-  padding: 0 var(--gt-space-3-5) var(--gt-space-3-5);
-  border-top: 1px solid color-mix(in srgb, var(--line) 18%, transparent);
+  min-width: 0;
 }
 
 .opencode-assistant-timeline {
@@ -991,7 +1039,7 @@
   padding: 0;
 }
 
-.opencode-think-card[open] {
+.opencode-think-card[data-state="open"] {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1005,18 +1053,22 @@
   user-select: none;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--gt-space-2);
   max-width: 100%;
+  width: auto;
+  height: auto;
   min-height: 34px;
   padding: 5px 0;
   font-size: var(--gt-text-md);
   color: var(--text);
+  text-align: left;
   margin-bottom: 0;
   border-radius: var(--gt-radius-md);
   transition: background 140ms ease;
 }
 
-.opencode-think-card[open] .opencode-think-card-summary {
+.opencode-think-card[data-state="open"] .opencode-think-card-summary {
   margin-bottom: 0;
 }
 
@@ -1609,15 +1661,19 @@
   appearance: none;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--gt-space-2);
   flex-wrap: wrap;
   box-sizing: border-box;
   width: 100%;
+  height: auto;
   margin: 0;
   list-style: none;
   cursor: pointer;
   padding: var(--gt-space-2) 0;
   border-radius: var(--gt-radius-md);
+  background: transparent;
+  text-align: left;
   transition: background 140ms ease;
 }
 
@@ -1630,7 +1686,7 @@
 }
 
 .opencode-exec-context:hover .opencode-exec-context-head,
-.opencode-exec-context[open] .opencode-exec-context-head {
+.opencode-exec-context[data-state="open"] .opencode-exec-context-head {
   background: color-mix(in srgb, var(--bg-soft) 46%, transparent);
 }
 
@@ -1660,11 +1716,11 @@
 }
 
 .opencode-exec-context:hover .opencode-context-caret,
-.opencode-exec-context[open] .opencode-context-caret {
+.opencode-exec-context[data-state="open"] .opencode-context-caret {
   opacity: 1;
 }
 
-.opencode-exec-context[open] .opencode-context-caret {
+.opencode-exec-context[data-state="open"] .opencode-context-caret {
   transform: rotate(90deg);
 }
 
@@ -1672,13 +1728,14 @@
   margin-left: 0;
   padding: 0;
   border-left: 0;
+  align-items: stretch;
 }
 
 .opencode-exec-context .opencode-exec-item {
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: var(--gt-space-2) var(--gt-space-2-5);
+  padding: var(--gt-space-2) 0;
   text-align: left;
 }
 
@@ -1708,8 +1765,11 @@
   appearance: none;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--gt-space-2);
   max-width: 100%;
+  width: auto;
+  height: auto;
   margin: 0;
   list-style: none;
   cursor: pointer;
@@ -1717,6 +1777,7 @@
   padding: 5px 0;
   border-radius: var(--gt-radius-md);
   color: var(--text);
+  text-align: left;
   transition: background 140ms ease;
   background: transparent;
 }
@@ -1734,7 +1795,7 @@
 }
 
 .opencode-tool-batch-edit:hover .opencode-tool-batch-head,
-.opencode-tool-batch-edit[open] .opencode-tool-batch-head {
+.opencode-tool-batch-edit[data-state="open"] .opencode-tool-batch-head {
   background: transparent;
 }
 
@@ -1763,11 +1824,11 @@
 }
 
 .opencode-tool-batch:hover .opencode-context-caret,
-.opencode-tool-batch[open] .opencode-context-caret {
+.opencode-tool-batch[data-state="open"] .opencode-context-caret {
   opacity: 1;
 }
 
-.opencode-tool-batch[open] .opencode-context-caret {
+.opencode-tool-batch[data-state="open"] .opencode-context-caret {
   transform: rotate(90deg);
 }
 
@@ -1790,7 +1851,7 @@
 
 .opencode-exec-tool-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: flex-start;
   gap: var(--gt-space-1-5);
   flex-wrap: nowrap;
@@ -1807,8 +1868,8 @@
 }
 
 .opencode-exec-context .opencode-exec-item {
-  padding-left: var(--gt-space-3);
-  padding-right: var(--gt-space-3);
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .opencode-tool-detail-label {
@@ -1820,15 +1881,20 @@
 }
 
 .opencode-tool-file-pill {
-  display: inline-block;
+  display: inline-flex;
+  flex: 0 1 auto;
   max-width: min(48vw, 360px);
-  padding: 0 0.18em;
-  border-radius: 0.32em;
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-soft));
   color: color-mix(in srgb, var(--text) 82%, var(--accent));
   font-size: var(--gt-text-sm);
   font-weight: var(--gt-font-semibold);
   line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1853,13 +1919,10 @@
 }
 
 .opencode-tool-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  padding: 0 var(--gt-space-1-5);
-  border-radius: var(--gt-radius-pill);
-  border: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
-  background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
+  min-height: 20px;
+  padding: 0 6px;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--bg-soft) 64%, transparent);
   color: color-mix(in srgb, var(--muted) 88%, var(--text));
   font-size: 11px;
   line-height: 1;
@@ -1887,6 +1950,13 @@
   background: transparent;
   padding: 0;
   transition: background 140ms ease;
+}
+
+.opencode-exec-tool-inline {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: var(--gt-space-1) 0;
 }
 
 .opencode-exec-tool-openable:hover {
@@ -1969,6 +2039,7 @@
   list-style: none;
   cursor: pointer;
   margin: 0;
+  text-align: left;
 }
 
 .opencode-tool-summary::-webkit-details-marker {
@@ -1985,7 +2056,7 @@
 }
 
 .opencode-tool-details:hover .opencode-tool-summary,
-.opencode-tool-details[open] .opencode-tool-summary {
+.opencode-tool-details[data-state="open"] .opencode-tool-summary {
   background: color-mix(in srgb, var(--bg-soft) 38%, transparent);
 }
 
@@ -2622,6 +2693,12 @@
   background: transparent;
 }
 
+.gt-right-pane.is-terminal {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .gt-right-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2682,6 +2759,11 @@
   padding: 0;
 }
 
+.gt-right-panel.is-terminal-bleed {
+  padding: 0;
+  overflow: hidden;
+}
+
 .gt-panel-stack {
   display: grid;
   gap: var(--gt-space-3);
@@ -2700,6 +2782,8 @@
 .gt-panel-stack-terminal {
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
+  min-height: 0;
+  gap: 0;
 }
 
 .gt-panel-stack-module {

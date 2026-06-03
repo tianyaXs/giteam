@@ -1,4 +1,7 @@
 import { Fragment } from "react";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { cn } from "@/lib/utils";
 
 type OpenCodeProviderListProps = {
   providers: string[];
@@ -32,9 +35,10 @@ export function OpenCodeProviderList(props: OpenCodeProviderListProps) {
                 未连接
               </div>
             ) : null}
-            <button
+            <Button
               key={`provider-pick-${provider}`}
-              className={props.selectedProvider === provider ? "file-item selected opencode-provider-row" : "file-item opencode-provider-row"}
+              variant="ghost"
+              className={cn("file-item opencode-provider-row", props.selectedProvider === provider && "selected")}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -48,11 +52,11 @@ export function OpenCodeProviderList(props: OpenCodeProviderListProps) {
               </span>
               <span className="opencode-provider-row-side">
                 <small className="small muted">{modelCount} models</small>
-                <span className={connected ? "opencode-provider-state connected" : "opencode-provider-state"}>
+                <Badge variant={connected ? "success" : "secondary"} className="opencode-provider-state">
                   {connected ? "已连接" : "未连接"}
-                </span>
+                </Badge>
               </span>
-            </button>
+            </Button>
           </Fragment>
         );
       })}

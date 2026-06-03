@@ -1,7 +1,25 @@
-import { createPortal } from "react-dom";
 import type { McpServerMarketData } from "../../lib/mcpMarket";
-import { CloseIcon, PlusIcon, RefreshIcon } from "../icons";
+import { CloseIcon } from "../icons";
 import { McpMarketplace } from "../mcp/McpMarketplace";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 
 export type OpencodeMcpPanelRow = {
   name: string;
@@ -33,9 +51,9 @@ export function OpencodeInstalledMcpGrid(props: InstalledMcpGridProps) {
       {loading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
       {!loading && rows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。从下方市场安装后会显示在这里。</div> : null}
       {rows.map((row) => (
-        <button
+        <Button
           key={row.name}
-          type="button"
+          variant="ghost"
           className="gt-mcp-installed-chip gt-mcp-installed-chip-use"
           onClick={() => onReferenceMcp(row.name)}
           title={`添加 MCP 引用：use the ${row.name} mcp server`}
@@ -44,7 +62,7 @@ export function OpencodeInstalledMcpGrid(props: InstalledMcpGridProps) {
             <strong>{row.name}</strong>
             <small>{row.sourceLabel} · {row.typeLabel} · {row.toolsCount} tools</small>
           </div>
-        </button>
+        </Button>
       ))}
     </div>
   );
@@ -67,22 +85,30 @@ export function OpencodeSettingsMcpGrid(props: SettingsMcpGridProps) {
       <div className="settings-skills-grid">
         {rows.length === 0 ? <div className="gt-module-empty">暂无已安装 MCP Server。</div> : rows.map((row) => (
           <article key={row.name} className="settings-skill-card">
-            <button type="button" className="settings-skill-card-main gt-settings-mcp-card-main" onClick={() => onEditMcp(row.name)}>
+            <Button variant="ghost" className="settings-skill-card-main gt-settings-mcp-card-main" onClick={() => onEditMcp(row.name)}>
               <div className="settings-skill-card-title">
                 <strong>{row.name}</strong>
                 <span>{row.typeLabel}</span>
               </div>
               <p>{row.sourceLabel} · {row.toolsCount} tools · use {row.name}</p>
-            </button>
-            <details className="settings-skill-menu">
-              <summary aria-label={`${row.name} actions`} title="Actions"><span aria-hidden="true">...</span></summary>
-              <div className="settings-skill-menu-panel">
-                <button className="settings-mcp-action" type="button" onClick={() => onEditMcp(row.name)}>配置参数</button>
-                <button className="settings-skill-remove" type="button" disabled={!!busyName} onClick={() => void onRemoveMcp(row.name)}>
-                  {busyName.endsWith(":remove") ? "删除中" : "删除"}
-                </button>
-              </div>
-            </details>
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="gt-icon-chip settings-skill-menu-trigger" aria-label={`${row.name} actions`} title="Actions">
+                  <span aria-hidden="true">...</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="settings-skill-menu-panel">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem className="settings-mcp-action" onClick={() => onEditMcp(row.name)}>
+                    配置参数
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="settings-skill-remove" disabled={!!busyName} onClick={() => void onRemoveMcp(row.name)}>
+                    {busyName.endsWith(":remove") ? "删除中" : "删除"}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </article>
         ))}
       </div>
@@ -137,62 +163,72 @@ export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
   })();
 
   return (
-    <div className="gt-mcp-custom-add-popover" role="dialog" aria-modal="true" onClick={onClose}>
-      <section className="gt-mcp-custom-add-card" onClick={(event) => event.stopPropagation()}>
-        <header className="gt-mcp-custom-add-head">
-          <div>
-            <span className="gt-module-kicker">custom mcp</span>
-            <strong>自定义添加 MCP Server</strong>
-            <small>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</small>
-          </div>
-          <button type="button" className="gt-icon-chip" onClick={onClose} aria-label="关闭自定义添加"><CloseIcon /></button>
-        </header>
-        <div className="gt-mcp-custom-add-body">
-          <div className="gt-mcp-custom-add-editor">
-            <div className="gt-mcp-custom-add-strip">
-              <span>JSON 会自动识别 name、command/url、env/headers 和必填参数</span>
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="gt-settings-dialog-content">
+        <section className="gt-mcp-custom-add-card">
+          <DialogHeader className="gt-mcp-custom-add-head">
+            <div>
+              <span className="gt-module-kicker">custom mcp</span>
+              <DialogTitle>自定义添加 MCP Server</DialogTitle>
+              <DialogDescription>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</DialogDescription>
             </div>
-            <label>
-              <span>名称</span>
-              <input className="path-input" placeholder="名称，例如 context7" value={name} onChange={(event) => onNameChange(event.target.value)} />
-            </label>
-            <label className="gt-mcp-custom-json-label">
-              <span>JSON 配置</span>
-              <textarea className="path-input gt-module-textarea gt-mcp-json-input" value={json} placeholder={customMcpJsonPlaceholder} onChange={(event) => onJsonChange(event.target.value)} />
-            </label>
-          </div>
-          <aside className="gt-mcp-custom-add-side">
-            <div className="gt-mcp-json-preview">
-              <strong>预览</strong>
-              <code>{previewText}</code>
-            </div>
-            {paramSpecs.length > 0 ? (
-              <div className="gt-mcp-custom-param-fields">
-                <strong>连接参数</strong>
-                {paramSpecs.map((spec) => (
-                  <label key={spec.key}>
-                    <span>{spec.key}{spec.required ? " *" : ""}</span>
-                    {spec.description ? <small>{spec.description}</small> : null}
-                    <input
-                      className="path-input"
-                      value={paramValues[spec.key] || ""}
-                      placeholder={spec.example || spec.key}
-                      onChange={(event) => onParamChange(spec.key, event.target.value)}
-                    />
-                  </label>
-                ))}
+            <DialogClose asChild>
+              <Button variant="ghost" size="icon" className="gt-icon-chip" aria-label="关闭自定义添加">
+                <CloseIcon />
+              </Button>
+            </DialogClose>
+          </DialogHeader>
+          <div className="gt-mcp-custom-add-body">
+            <div className="gt-mcp-custom-add-editor">
+              <div className="gt-mcp-custom-add-strip">
+                <span>JSON 会自动识别 name、command/url、env/headers 和必填参数</span>
               </div>
-            ) : (
-              <div className="gt-mcp-custom-add-hint">没有检测到必填参数。添加后会写入当前项目的 OpenCode 配置。</div>
-            )}
-          </aside>
-        </div>
-        <footer className="gt-mcp-custom-add-actions">
-          <button type="button" className="chip" onClick={onClose}>取消</button>
-          <button type="button" className="chip primary" onClick={() => void onAdd()} disabled={!!busyName || !json.trim()}>{busyName ? "添加中..." : "添加 MCP"}</button>
-        </footer>
-      </section>
-    </div>
+              <label>
+                <span>名称</span>
+                <Input className="path-input" placeholder="名称，例如 context7" value={name} onChange={(event) => onNameChange(event.target.value)} />
+              </label>
+              <label className="gt-mcp-custom-json-label">
+                <span>JSON 配置</span>
+                <Textarea className="path-input gt-module-textarea gt-mcp-json-input" value={json} placeholder={customMcpJsonPlaceholder} onChange={(event) => onJsonChange(event.target.value)} />
+              </label>
+            </div>
+            <aside className="gt-mcp-custom-add-side">
+              <div className="gt-mcp-json-preview">
+                <strong>预览</strong>
+                <code>{previewText}</code>
+              </div>
+              {paramSpecs.length > 0 ? (
+                <div className="gt-mcp-custom-param-fields">
+                  <strong>连接参数</strong>
+                  {paramSpecs.map((spec) => (
+                    <label key={spec.key}>
+                      <span>{spec.key}{spec.required ? " *" : ""}</span>
+                      {spec.description ? <small>{spec.description}</small> : null}
+                      <Input
+                        className="path-input"
+                        value={paramValues[spec.key] || ""}
+                        placeholder={spec.example || spec.key}
+                        onChange={(event) => onParamChange(spec.key, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div className="gt-mcp-custom-add-hint">没有检测到必填参数。添加后会写入当前项目的 OpenCode 配置。</div>
+              )}
+            </aside>
+          </div>
+          <DialogFooter className="gt-mcp-custom-add-actions">
+            <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
+            <Button variant="contrast" size="sm" onClick={() => void onAdd()} disabled={!!busyName || !json.trim()}>
+              {busyName ? "添加中..." : "添加 MCP"}
+            </Button>
+          </DialogFooter>
+        </section>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -215,42 +251,57 @@ export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
   const paramKind = state.type === "remote" ? "Headers" : "Environment";
 
   return (
-    <div className="gt-mcp-config-popover" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="gt-mcp-config-card" onClick={(event) => event.stopPropagation()}>
-        <div className="gt-mcp-config-head"><div><span className="gt-module-kicker">update mcp params</span><strong>{name}</strong></div></div>
-        <p>更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
-        {specs.length === 0 ? <div className="gt-module-empty">这个 MCP 当前没有可编辑参数。</div> : (
-          <div className="gt-mcp-config-fields">
-            {specs.map((spec) => (
-              <label key={spec.key}>
-                <span>{spec.key}{spec.required ? " *" : ""}</span>
-                {spec.description ? <small>{spec.description}</small> : null}
-                <input
-                  className="path-input"
-                  value={paramValues[spec.key] || ""}
-                  placeholder={spec.example || spec.key}
-                  onChange={(event) => onParamChange(spec.key, event.target.value)}
-                />
-              </label>
-            ))}
-          </div>
-        )}
-        <div className="gt-mcp-config-tools">
-          <div className="gt-mcp-config-tools-head"><strong>工具列表</strong><span>{tools.length} tools</span></div>
-          {tools.length === 0 ? (
-            <div className="gt-module-empty">暂无工具清单。</div>
-          ) : (
-            <div className="gt-mcp-config-tool-grid">
-              {tools.map((tool) => <div key={tool.name} className="gt-mcp-config-tool-cell"><code>{tool.name}</code><p>{tool.description || "No description"}</p></div>)}
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="gt-settings-dialog-content">
+        <div className="gt-mcp-config-card">
+          <DialogHeader className="gt-mcp-config-head">
+            <div>
+              <span className="gt-module-kicker">update mcp params</span>
+              <DialogTitle>{name}</DialogTitle>
+              <DialogDescription className="sr-only">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</DialogDescription>
+            </div>
+          </DialogHeader>
+          <p>更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
+          {specs.length === 0 ? <div className="gt-module-empty">这个 MCP 当前没有可编辑参数。</div> : (
+            <div className="gt-mcp-config-fields">
+              {specs.map((spec) => (
+                <label key={spec.key}>
+                  <span>{spec.key}{spec.required ? " *" : ""}</span>
+                  {spec.description ? <small>{spec.description}</small> : null}
+                  <Input
+                    className="path-input"
+                    value={paramValues[spec.key] || ""}
+                    placeholder={spec.example || spec.key}
+                    onChange={(event) => onParamChange(spec.key, event.target.value)}
+                  />
+                </label>
+              ))}
             </div>
           )}
+          <div className="gt-mcp-config-tools">
+            <div className="gt-mcp-config-tools-head"><strong>工具列表</strong><span>{tools.length} tools</span></div>
+            {tools.length === 0 ? (
+              <div className="gt-module-empty">暂无工具清单。</div>
+            ) : (
+              <div className="gt-mcp-config-tool-grid">
+                {tools.map((tool) => <div key={tool.name} className="gt-mcp-config-tool-cell"><code>{tool.name}</code><p>{tool.description || "No description"}</p></div>)}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="gt-mcp-config-actions">
+            <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
+            <Button variant="destructive" size="sm" onClick={() => void onRemove()} disabled={!!busyName}>
+              {busyName.endsWith(":remove") ? "删除中..." : "删除"}
+            </Button>
+            <Button variant="contrast" size="sm" onClick={() => void onSave()} disabled={!!busyName || specs.length === 0}>
+              {busyName.endsWith(":update") ? "保存中..." : "保存参数"}
+            </Button>
+          </DialogFooter>
         </div>
-        <div className="gt-mcp-config-actions">
-          <button type="button" className="chip danger" onClick={() => void onRemove()} disabled={!!busyName}>{busyName.endsWith(":remove") ? "删除中..." : "删除"}</button>
-          <button type="button" className="chip primary" onClick={() => void onSave()} disabled={!!busyName || specs.length === 0}>{busyName.endsWith(":update") ? "保存中..." : "保存参数"}</button>
-        </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -273,10 +324,8 @@ export function OpencodeMcpMarketPanel(props: McpMarketPanelProps) {
     rows,
     loading,
     error,
-    installedOpen,
     servers,
     configuredMcpNames,
-    onInstalledOpenChange,
     onShowCustomAdd,
     onRefresh,
     onReferenceMcp,
@@ -284,24 +333,16 @@ export function OpencodeMcpMarketPanel(props: McpMarketPanelProps) {
   } = props;
 
   return (
-    <div className="gt-skill-market-shell gt-mcp-market-shell">
-      <details className="gt-installed-skills-collapsible gt-installed-mcp-collapsible" open={installedOpen} onToggle={(event) => onInstalledOpenChange(event.currentTarget.open)}>
-        <summary>
-          <span>已安装 MCP Servers</span>
-          <small>{rows.length}</small>
-          <button type="button" className="gt-icon-chip" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onShowCustomAdd(); }} title="自定义添加 MCP Server"><PlusIcon /></button>
-          <button type="button" className="gt-icon-chip" onClick={(event) => { event.preventDefault(); void onRefresh(); }} title="刷新" disabled={loading}><RefreshIcon /></button>
-        </summary>
-        <OpencodeInstalledMcpGrid
-          rows={rows}
-          loading={loading}
-          error={error}
-          onReferenceMcp={onReferenceMcp}
-        />
-      </details>
+    <div className="gt-mcp-market-shell">
       <McpMarketplace
         servers={servers}
         configuredMcps={configuredMcpNames}
+        installedRows={rows}
+        installedLoading={loading}
+        installedError={error}
+        onReferenceMcp={onReferenceMcp}
+        onShowCustomAdd={onShowCustomAdd}
+        onRefreshInstalled={onRefresh}
         onAddMcp={onAddMcpFromMarket}
       />
     </div>
@@ -357,11 +398,9 @@ export function OpencodeMcpDialogs(props: McpDialogsProps) {
     onSaveEditingMcp
   } = props;
 
-  if (typeof document === "undefined") return null;
-
   return (
     <>
-      {showCustomAdd ? createPortal(
+      {showCustomAdd ? (
         <OpencodeCustomMcpDialog
           name={customName}
           json={customJson}
@@ -374,11 +413,10 @@ export function OpencodeMcpDialogs(props: McpDialogsProps) {
           onJsonChange={onCustomJsonChange}
           onParamChange={onCustomParamChange}
           onAdd={onAddCustomMcp}
-        />,
-        document.body
+        />
       ) : null}
 
-      {editingName ? createPortal(
+      {editingName ? (
         <OpencodeEditMcpDialog
           name={editingName}
           status={editingStatus}
@@ -390,8 +428,7 @@ export function OpencodeMcpDialogs(props: McpDialogsProps) {
           onParamChange={onEditingParamChange}
           onRemove={onRemoveEditingMcp}
           onSave={onSaveEditingMcp}
-        />,
-        document.body
+        />
       ) : null}
     </>
   );

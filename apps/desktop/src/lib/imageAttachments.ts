@@ -336,11 +336,16 @@ export function extractClipboardFilePaths(transfer: DataTransfer | null | undefi
   return Array.from(out);
 }
 
+export function hasClipboardFileReference(transfer: DataTransfer | null | undefined): boolean {
+  if (!transfer) return false;
+  if (extractTransferFiles(transfer).length > 0) return true;
+  return parseLocalPathsFromText(transfer.getData("text/uri-list")).length > 0;
+}
+
 export function hasPlainClipboardText(transfer: DataTransfer | null | undefined): boolean {
   if (!transfer) return false;
   const text = transfer.getData("text/plain").trim();
-  if (!text) return false;
-  return parseLocalPathsFromText(text).length === 0;
+  return text.length > 0;
 }
 
 export function hasTransferAttachments(transfer: DataTransfer | null | undefined): boolean {

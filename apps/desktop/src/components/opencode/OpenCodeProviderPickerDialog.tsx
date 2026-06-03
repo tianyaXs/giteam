@@ -2,6 +2,23 @@ import { resolveProviderAliasWithNames } from "../../lib/opencodeModels";
 import { OpenCodeProviderList } from "./OpenCodeProviderList";
 import { OpenCodeProviderModelList } from "./OpenCodeProviderModelList";
 import { PlusIcon } from "../icons";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from "../ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu";
+import { Input } from "../ui/input";
 
 type OpenCodeProviderPickerDialogProps = {
   loading: boolean;
@@ -96,11 +113,12 @@ export function OpenCodeProviderPickerDialog({
   const menuOpen = providerActionMenuFor === providerId;
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal-card settings-card opencode-provider-picker-card" onClick={(event) => event.stopPropagation()}>
-        <div className="env-setup-head">
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="opencode-provider-picker-dialog">
+        <DialogHeader className="opencode-provider-picker-head">
           <div className="opencode-provider-picker-title">
-            <h3>Provider & Model Manager</h3>
+            <DialogTitle>Provider & Model Manager</DialogTitle>
+            <DialogDescription>集中管理提供商连接、API Key 与可用模型。</DialogDescription>
           </div>
           <div className="toolbar">
             {loading ? (
@@ -109,30 +127,34 @@ export function OpenCodeProviderPickerDialog({
                 读取中
               </span>
             ) : null}
-            <button className="chip" onClick={onClose}>Close</button>
+            <DialogClose asChild>
+              <Button variant="outline" size="sm">关闭</Button>
+            </DialogClose>
           </div>
-        </div>
+        </DialogHeader>
         <div className="settings-model-head opencode-provider-picker-toolbar">
-          <input
-            className="path-input"
+          <Input
+            className="opencode-provider-picker-input"
             placeholder="搜索提供商..."
             value={providerSearch}
             onChange={(event) => onProviderSearchChange(event.target.value)}
           />
-          <input
-            className="path-input"
+          <Input
+            className="opencode-provider-picker-input"
             placeholder="搜索模型..."
             value={modelSearch}
             onChange={(event) => onModelSearchChange(event.target.value)}
           />
-          <button
-            className="chip opencode-provider-add-btn"
+          <Button
+            variant="outline"
+            size="icon"
+            className="opencode-provider-add-btn"
             title="新增自定义提供商"
             aria-label="新增自定义提供商"
             onClick={onOpenCustomProvider}
           >
             <PlusIcon />
-          </button>
+          </Button>
         </div>
         <div className="settings-model-lists opencode-provider-picker-grid">
           <div className="settings-model-col" style={{ maxHeight: 420 }}>
@@ -157,37 +179,40 @@ export function OpenCodeProviderPickerDialog({
                     <strong>{displayName}</strong>
                     <small className="small muted">{`${providerId} · ${providerTag}`}</small>
                   </div>
-                  <div className="opencode-provider-panel-actions">
-                    <button
-                      type="button"
-                      className="chip opencode-provider-menu-trigger"
-                      title="更多操作"
-                      onClick={() => onToggleProviderMenu(providerId)}
-                    >
-                      ...
-                    </button>
-                    {menuOpen ? (
-                      <div className="opencode-provider-menu">
-                        <button
-                          type="button"
-                          className="opencode-provider-menu-item"
-                          onClick={() => onOpenAuthDialog(providerId, displayName)}
-                        >
+                  <DropdownMenu
+                    open={menuOpen}
+                    onOpenChange={(open) => {
+                      if (open !== menuOpen) onToggleProviderMenu(providerId);
+                    }}
+                  >
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="opencode-provider-menu-trigger"
+                        title="更多操作"
+                      >
+                        <span aria-hidden="true">...</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="opencode-provider-menu-panel">
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem onClick={() => onOpenAuthDialog(providerId, displayName)}>
                           更新 API Key
-                        </button>
+                        </DropdownMenuItem>
                         {getProviderSource(providerId) !== "env" ? (
-                          <button
-                            type="button"
-                            className="opencode-provider-menu-item danger"
+                          <DropdownMenuItem
+                            className="opencode-provider-menu-danger"
                             disabled={disconnectingProvider === providerId}
                             onClick={() => onDisconnectProvider(providerId)}
                           >
                             {disconnectingProvider === providerId ? "处理中..." : "断开连接"}
-                          </button>
+                          </DropdownMenuItem>
                         ) : null}
-                      </div>
-                    ) : null}
-                  </div>
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
 
                 <div className="opencode-provider-connect">
@@ -196,20 +221,21 @@ export function OpenCodeProviderPickerDialog({
                       ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
                       : `${displayName} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`}
                   </div>
-                  <input
-                    className="path-input"
+                  <Input
+                    className="opencode-provider-picker-input"
                     placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
                     value={keyValue}
                     onChange={(event) => onConnectApiKeyChange(providerId, displayName, event.target.value)}
                   />
                   <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)" }}>
-                    <button
-                      className="chip"
+                    <Button
+                      variant="contrast"
+                      size="sm"
                       disabled={connectBusy || connectProviderId !== providerId || !connectApiKey.trim()}
                       onClick={() => onConnectProvider(providerId, connected)}
                     >
                       {connectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -233,7 +259,7 @@ export function OpenCodeProviderPickerDialog({
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

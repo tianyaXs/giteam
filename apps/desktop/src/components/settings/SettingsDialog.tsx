@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
 import { RefreshIcon } from "../icons";
+import { Button } from "../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
+import { Input } from "../ui/input";
+import { ScrollArea } from "../ui/scroll-area";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 
 type RightModuleKey = "changes" | "worktree" | "terminal" | "skills" | "mcp";
 
@@ -187,69 +194,70 @@ type SettingsSection = {
 function FontSizeStepper(props: { value: number; min: number; max: number; onChange: (value: number) => void }) {
   return (
     <div className="settings-stepper">
-      <button className="chip" type="button" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}>−</button>
+      <Button variant="ghost" size="sm" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}>
+        −
+      </Button>
       <span>{props.value}</span>
-      <button className="chip" type="button" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}>＋</button>
+      <Button variant="ghost" size="sm" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}>
+        ＋
+      </Button>
     </div>
   );
 }
 
-function SegmentedControl(props: { options: string[]; value: string; onChange?: (value: string) => void }) {
+function SegmentedControl(props: { options: Array<{ value: string; label: string }>; value: string; onChange?: (value: string) => void }) {
   return (
-    <div className="settings-segmented" role="group">
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
+      className="settings-segmented"
+      value={props.value}
+      onValueChange={(value) => {
+        if (!value) return;
+        props.onChange?.(value);
+      }}
+    >
       {props.options.map((option) => (
-        <button key={option} type="button" className={props.value === option ? "active" : ""} onClick={() => props.onChange?.(option)}>
-          {option}
-        </button>
+        <ToggleGroupItem key={option.value} value={option.value} className="settings-segmented-item">
+          {option.label}
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
 function SwitchControl(props: { checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <button
-      type="button"
-      className={props.checked ? "gt-switch on" : "gt-switch"}
-      aria-pressed={props.checked}
+    <Switch
+      checked={props.checked}
       disabled={props.disabled}
-      onClick={() => props.onChange(!props.checked)}
-    >
-      <span className="gt-switch-thumb" aria-hidden="true" />
-    </button>
+      onCheckedChange={props.onChange}
+      aria-label={props.checked ? "已开启" : "已关闭"}
+      className="settings-switch"
+    />
   );
 }
 
 function LanguagePicker(props: { value: GeneralSettingsDraft["language"]; systemLabel: string; onChange: (value: GeneralSettingsDraft["language"]) => void }) {
-  const [open, setOpen] = useState(false);
   const selected = LANGUAGE_OPTIONS.find((option) => option.value === props.value) || LANGUAGE_OPTIONS[0];
   const labelFor = (option: { label: string; system?: boolean }) => option.system ? props.systemLabel : option.label;
   return (
     <div className="settings-language-picker">
-      <button type="button" className="settings-language-trigger" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <span>{labelFor(selected)}</span>
-        <span className="settings-language-chevron" aria-hidden="true">⌄</span>
-      </button>
-      {open ? (
-        <div className="settings-language-menu" role="listbox">
+      <Select value={selected.value} onValueChange={(value) => props.onChange(value as GeneralSettingsDraft["language"])}>
+        <SelectTrigger className="settings-language-trigger">
+          <SelectValue placeholder={labelFor(selected)} />
+        </SelectTrigger>
+        <SelectContent className="settings-language-menu">
+          <SelectGroup>
           {LANGUAGE_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="option"
-              aria-selected={props.value === option.value}
-              className={props.value === option.value ? "active" : ""}
-              onClick={() => {
-                props.onChange(option.value);
-                setOpen(false);
-              }}
-            >
-              <span>{labelFor(option)}</span>
-              {props.value === option.value ? <span aria-hidden="true">✓</span> : null}
-            </button>
+            <SelectItem key={option.value} value={option.value} className="settings-language-option">
+              {labelFor(option)}
+            </SelectItem>
           ))}
-        </div>
-      ) : null}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
     </div>
   );
 }
@@ -352,7 +360,18 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {
           title: text.theme,
           description: text.themeDesc,
-          action: <SegmentedControl options={[text.light, text.dark]} value={props.theme === "dark" ? text.dark : text.light} onChange={(value) => { if ((value === text.dark) !== (props.theme === "dark")) props.onToggleTheme(); }} />
+          action: (
+            <SegmentedControl
+              options={[
+                { value: "light", label: text.light },
+                { value: "dark", label: text.dark }
+              ]}
+              value={props.theme}
+              onChange={(value) => {
+                if (value !== props.theme) props.onToggleTheme();
+              }}
+            />
+          )
         },
         {
           title: text.uiFont,
@@ -369,16 +388,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         ...((Object.entries(rightModuleLabels) as Array<[RightModuleKey, { title: string; description: string }]>).map(([key, item]) => ({
         title: item.title,
         description: item.description,
-        action: (
-          <button
-            type="button"
-            className={props.rightModules[key] ? "gt-switch on" : "gt-switch"}
-            aria-pressed={props.rightModules[key]}
-            onClick={() => props.onToggleRightModule(key)}
-          >
-            <span className="gt-switch-thumb" aria-hidden="true" />
-          </button>
-        )
+        action: <SwitchControl checked={props.rightModules[key]} onChange={() => props.onToggleRightModule(key)} />
       })))
       ],
       plugins: [],
@@ -400,23 +410,40 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {
           title: text.port,
           description: text.portDesc,
-          action: <input className="path-input settings-inline-input" type="number" min={1} max={65535} value={String(props.controlSettings.port)} disabled={!props.controlInstalled} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, port: Number(e.target.value || "0") })} />
+          action: (
+            <Input
+              className="settings-inline-input"
+              type="number"
+              min={1}
+              max={65535}
+              value={String(props.controlSettings.port)}
+              disabled={!props.controlInstalled}
+              onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, port: Number(e.target.value || "0") })}
+            />
+          )
         },
         {
           title: text.publicUrl,
           description: text.publicUrlDesc,
-          action: <input className="path-input settings-inline-input settings-inline-input-wide" placeholder="http://192.168.1.23:4100" value={props.controlSettings.publicBaseUrl} disabled={!props.controlInstalled} onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, publicBaseUrl: e.target.value })} />
+          action: (
+            <Input
+              className="settings-inline-input settings-inline-input-wide"
+              placeholder="http://192.168.1.23:4100"
+              value={props.controlSettings.publicBaseUrl}
+              disabled={!props.controlInstalled}
+              onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, publicBaseUrl: e.target.value })}
+            />
+          )
         },
         {
           title: text.authMode,
           description: text.authModeDesc,
           action: (
-            <select
-              className="path-input settings-inline-input settings-inline-input-wide"
+            <Select
               value={props.controlSettings.authMode}
               disabled={!props.controlInstalled}
-              onChange={(e) => {
-                const authMode = e.target.value as ControlServerSettingsDraft["authMode"];
+              onValueChange={(value) => {
+                const authMode = value as ControlServerSettingsDraft["authMode"];
                 props.onControlSettingsChange({
                   ...props.controlSettings,
                   authMode,
@@ -428,31 +455,55 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 });
               }}
             >
-              <option value="none">{text.noAuth}</option>
-              <option value="pair_code">{text.pairCodeAuth}</option>
-            </select>
+              <SelectTrigger className="settings-inline-input settings-inline-input-wide">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="none">{text.noAuth}</SelectItem>
+                  <SelectItem value="pair_code">{text.pairCodeAuth}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           )
         },
         {
           title: text.validPeriod,
           description: text.validPeriodDesc,
           action: (
-            <select
-              className="path-input settings-inline-input settings-inline-input-wide"
+            <Select
               value={props.controlSettings.pairCodeTtlMode === "none" ? lastPairCodeTtlModeRef.current : props.controlSettings.pairCodeTtlMode}
               disabled={!props.controlInstalled || props.controlSettings.authMode === "none"}
-              onChange={(e) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: e.target.value as ControlServerSettingsDraft["pairCodeTtlMode"] })}
+              onValueChange={(value) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: value as ControlServerSettingsDraft["pairCodeTtlMode"] })}
             >
-              <option value="24h">{text.hours24}</option>
-              <option value="7d">{text.days7}</option>
-              <option value="forever">{text.forever}</option>
-            </select>
+              <SelectTrigger className="settings-inline-input settings-inline-input-wide">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="24h">{text.hours24}</SelectItem>
+                  <SelectItem value="7d">{text.days7}</SelectItem>
+                  <SelectItem value="forever">{text.forever}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           )
         },
         {
           title: text.opencodeApi,
           description: props.opencodeBusy ? text.opencodeApiBusy : text.opencodeApiDesc,
-          action: <input className="path-input settings-inline-input" type="number" min={1} max={65535} value={String(props.opencodePort)} disabled={!props.runtimeStatus.opencode.installed || props.opencodeBusy} onChange={(e) => props.onOpencodePortChange(Number(e.target.value || "0"))} onBlur={props.onSaveOpenCodeApi} />
+          action: (
+            <Input
+              className="settings-inline-input"
+              type="number"
+              min={1}
+              max={65535}
+              value={String(props.opencodePort)}
+              disabled={!props.runtimeStatus.opencode.installed || props.opencodeBusy}
+              onChange={(e) => props.onOpencodePortChange(Number(e.target.value || "0"))}
+              onBlur={props.onSaveOpenCodeApi}
+            />
+          )
         }
       ],
       models: [],
@@ -461,7 +512,25 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {
           title: text.apiKey,
           description: props.skillsmpApiKey ? text.apiKeyConfigured : text.apiKeyDesc,
-          action: <div className="settings-inline-combo"><input className="path-input settings-inline-input settings-inline-input-wide" type="password" placeholder="sk_live_skillsmp_..." value={props.skillsmpApiKeyDraft} onChange={(e) => props.onSkillsmpApiKeyDraftChange(e.target.value)} /><button className="chip primary" onClick={props.onSaveSkillsmpApiKey}>{text.save}</button></div>
+          action: (
+            <div className="settings-inline-combo">
+              <Input
+                className="settings-inline-input settings-inline-input-wide"
+                type="password"
+                placeholder="sk_live_skillsmp_..."
+                value={props.skillsmpApiKeyDraft}
+                onChange={(e) => props.onSkillsmpApiKeyDraftChange(e.target.value)}
+              />
+              <Button variant="contrast" size="sm" className="gt-settings-action-btn" onClick={props.onSaveSkillsmpApiKey}>
+                {text.save}
+              </Button>
+              {props.skillsmpApiKey ? (
+                <Button variant="ghost" size="sm" className="gt-settings-action-btn" onClick={props.onClearSkillsmpApiKey}>
+                  清除
+                </Button>
+              ) : null}
+            </div>
+          )
         }
       ]
     };
@@ -478,7 +547,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
     const updateEntries: Array<SettingsEntry> = [
       { title: text.startupCheck, description: text.startupCheckDesc, action: <SwitchControl checked={props.generalSettings.updatesStartup} onChange={(checked) => updateGeneral({ updatesStartup: checked })} /> },
       { title: text.releaseNotes, description: text.releaseNotesDesc, action: <SwitchControl checked={props.generalSettings.releaseNotes} onChange={(checked) => updateGeneral({ releaseNotes: checked })} /> },
-      { title: text.checkNow, description: text.checkNowDesc, action: <button className="chip" disabled={props.runtimeChecking} onClick={props.onCheckUpdates}>{props.runtimeChecking ? text.checking : text.check}</button> }
+      {
+        title: text.checkNow,
+        description: text.checkNowDesc,
+        action: (
+          <Button variant="secondary" size="sm" className="gt-settings-action-btn" disabled={props.runtimeChecking} onClick={props.onCheckUpdates}>
+            {props.runtimeChecking ? text.checking : text.check}
+          </Button>
+        )
+      }
     ];
     const desktopEntries = [...entriesBySection.general.slice(0, 2), ...entriesBySection.appearance];
     const openCodeEntries = entriesBySection.general.slice(2);
@@ -533,9 +610,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
                     {props.runtimeJob?.name === dep.name ? <p>{props.runtimeJob.action} · {props.runtimeJob.status} · {props.installingElapsed}s</p> : null}
                   </div>
                   <div className="settings-panel-action">
-                    <button className="chip" disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={() => props.onRunDependencyAction(depName, action)}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gt-settings-action-btn"
+                      disabled={props.runtimeChecking || Boolean(props.installingDep)}
+                      onClick={() => props.onRunDependencyAction(depName, action)}
+                    >
                       {busy ? `${action === "install" ? text.installing : text.uninstalling}...` : dep.installed ? text.uninstall : text.install}
-                    </button>
+                    </Button>
                   </div>
                 </article>
               );
@@ -558,9 +641,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
                     <div className="settings-mobile-summary-meta">
                       <div className="settings-mobile-meta-block settings-mobile-summary-item">
                         <strong className="settings-mobile-summary-label">{text.connectionAddress}</strong>
-                        <button
+                        <Button
+                          variant="ghost"
                           className="settings-mobile-url-button"
-                          type="button"
                           title={text.copyUrl}
                           disabled={!props.controlSettings.enabled || !props.controlConnectionUrl}
                           onClick={props.onCopyControlUrl}
@@ -570,7 +653,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                               ? (props.controlConnectionUrl || text.qrWaiting).replace(/^https?:\/\//i, "")
                               : text.qrDisabled}
                           </span>
-                        </button>
+                        </Button>
                       </div>
                       <div className="settings-mobile-meta-block settings-mobile-summary-item">
                         <strong className="settings-mobile-summary-label">{text.authCode}</strong>
@@ -582,15 +665,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
                                 ? text.noAuth
                                 : props.controlPairCode || "------"}
                           </div>
-                          <button
-                            className="gt-icon-chip settings-mobile-inline-icon"
-                            type="button"
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="settings-mobile-inline-icon"
                             title={text.refreshCode}
                             disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.authMode === "none"}
                             onClick={props.onRefreshControlPairCode}
                           >
                             <RefreshIcon />
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     </div>
@@ -614,13 +698,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
                   title: text.mobileControl,
                   description: text.mobileControlMissing,
                   action: (
-                    <button
-                      className="chip"
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gt-settings-action-btn"
                       title={text.installDependencyTitle}
                       onClick={() => props.onRunDependencyAction("giteam", "install")}
                     >
                       {text.installFirst}
-                    </button>
+                    </Button>
                   )
                 }]}
                 wide
@@ -673,51 +759,69 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const active = sections.find((section) => section.id === activeSection) || sections[0];
 
   return (
-    <div className="modal-mask" onClick={() => void props.onClose()}>
-      <div className="modal-card settings-card settings-card--redesigned" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-shell">
-          <aside className="settings-sidebar">
-            <div className="settings-sidebar-head">
-              <button className="settings-back" type="button" onClick={() => void props.onClose()}>{text.back}</button>
-              <p>{text.sidebarIntro}</p>
-            </div>
-            <div className="settings-nav">
+    <Dialog open onOpenChange={(open) => {
+      if (!open) void props.onClose();
+    }}>
+      <DialogContent className="gt-settings-dialog-content">
+        <DialogTitle className="sr-only">{text.general}</DialogTitle>
+        <DialogDescription className="sr-only">{text.sidebarIntro}</DialogDescription>
+        <div className="modal-card settings-card settings-card--redesigned">
+          <div className="settings-shell">
+            <aside className="settings-sidebar">
+              <div className="settings-sidebar-head">
+                <Button variant="ghost" size="sm" className="settings-back" onClick={() => void props.onClose()}>
+                  {text.back}
+                </Button>
+                <p>{text.sidebarIntro}</p>
+              </div>
+              <ScrollArea className="settings-nav-scroll">
+                <div className="settings-nav">
               {sections.map((section) => (
-                <button
+                <Button
                   key={section.id}
-                  type="button"
-                  className={activeSection === section.id ? "settings-nav-item active" : "settings-nav-item"}
+                  variant="ghost"
+                  className={activeSection === section.id ? "settings-nav-item active !grid !h-auto !w-full !justify-start !whitespace-normal" : "settings-nav-item !grid !h-auto !w-full !justify-start !whitespace-normal"}
                   onClick={() => setActiveSection(section.id)}
                 >
                   <span>{section.title}</span>
-                </button>
+                </Button>
               ))}
-            </div>
-          </aside>
+                </div>
+              </ScrollArea>
+            </aside>
 
-          <section className="settings-main">
-            <div className="settings-main-head">
-              <div>
-                <span className="gt-module-kicker">{active.kicker}</span>
-                <h4>{active.title}</h4>
-                {active.description && active.id !== "mobile" ? <p>{active.description}</p> : null}
+            <section className="settings-main">
+              <div className="settings-main-head">
+                <div>
+                  <span className="gt-module-kicker">{active.kicker}</span>
+                  <h4>{active.title}</h4>
+                  {active.description && active.id !== "mobile" ? <p>{active.description}</p> : null}
+                </div>
+                {active.id === "plugins" ? (
+                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>
+                    <RefreshIcon />
+                  </Button>
+                ) : active.id === "skillsmp" ? (
+                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>
+                    <RefreshIcon />
+                  </Button>
+                ) : active.id === "mcp" ? (
+                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>
+                    <RefreshIcon />
+                  </Button>
+                ) : null}
               </div>
-              {active.id === "plugins" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>↻</button>
-              ) : active.id === "skillsmp" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>↻</button>
-              ) : active.id === "mcp" ? (
-                <button className="gt-icon-chip" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>↻</button>
-              ) : null}
-            </div>
 
-            <div className="settings-main-body">
-              {active.content ? active.content : null}
-              {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
-            </div>
-          </section>
+              <ScrollArea className="settings-main-body">
+                <div className="settings-main-body-inner">
+                  {active.content ? active.content : null}
+                  {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
+                </div>
+              </ScrollArea>
+            </section>
+          </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

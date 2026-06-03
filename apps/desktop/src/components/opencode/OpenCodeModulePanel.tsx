@@ -1,4 +1,3 @@
-import { createPortal } from "react-dom";
 import { CloseIcon } from "../icons";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
@@ -8,6 +7,27 @@ import {
 import type { OpencodeAgentInfo } from "../../lib/opencodeAgents";
 import type { OpencodePermissionReply, OpencodePermissionRequest } from "../../lib/opencodePermissions";
 import { OPENCODE_RECOMMENDED_SKILLS, type OpencodeSkillSearchResult } from "../../lib/opencodeSkillMarketplace";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from "../ui/dialog";
+import { Input } from "../ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../ui/select";
+import { Switch } from "../ui/switch";
+import { Textarea } from "../ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 
 export type OpencodeModuleTab = "agents" | "permissions" | "mcp" | "skills";
 
@@ -87,30 +107,38 @@ type OpenCodeModulePanelProps = {
 export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
   if (!props.open) return null;
 
-  return createPortal(
-    <div
-      className="gt-module-layer"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) props.onClose();
-      }}
-    >
-      <div className="gt-module-panel" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="gt-module-head">
+  return (
+    <Dialog open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
+      <DialogContent className="gt-module-panel gt-module-dialog">
+        <DialogHeader className="gt-module-head">
           <div>
             <div className="gt-module-kicker">OpenCode Modules</div>
-            <h2>Agent / 权限 / MCP / Skills</h2>
+            <DialogTitle>Agent / 权限 / MCP / Skills</DialogTitle>
+            <DialogDescription className="sr-only">管理 OpenCode 的 agent、权限、MCP 与 skills。</DialogDescription>
           </div>
-          <button type="button" className="modal-close" onClick={props.onClose}><CloseIcon /></button>
-        </div>
+          <DialogClose asChild>
+            <Button type="button" variant="ghost" size="icon" className="modal-close"><CloseIcon /></Button>
+          </DialogClose>
+        </DialogHeader>
         <div className="gt-module-tabs">
-          {([
-            ["agents", "Agents"],
-            ["permissions", `权限${props.activePermissions.length ? ` (${props.activePermissions.length})` : ""}`],
-            ["mcp", "MCP"],
-            ["skills", "Skills"]
-          ] as Array<[OpencodeModuleTab, string]>).map(([tab, label]) => (
-            <button key={tab} type="button" className={props.activeTab === tab ? "active" : ""} onClick={() => props.onTabChange(tab)}>{label}</button>
-          ))}
+          <ToggleGroup
+            type="single"
+            value={props.activeTab}
+            onValueChange={(value) => {
+              if (value) props.onTabChange(value as OpencodeModuleTab);
+            }}
+            variant="outline"
+            size="sm"
+          >
+            {([
+              ["agents", "Agents"],
+              ["permissions", `权限${props.activePermissions.length ? ` (${props.activePermissions.length})` : ""}`],
+              ["mcp", "MCP"],
+              ["skills", "Skills"]
+            ] as Array<[OpencodeModuleTab, string]>).map(([tab, label]) => (
+              <ToggleGroupItem key={tab} value={tab}>{label}</ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </div>
         <div className="gt-module-body">
           {props.activeTab === "agents" ? <AgentsSection {...props} /> : null}
@@ -118,9 +146,8 @@ export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
           {props.activeTab === "mcp" ? <McpSection {...props} /> : null}
           {props.activeTab === "skills" ? <SkillsSection {...props} /> : null}
         </div>
-      </div>
-    </div>,
-    document.body
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -128,17 +155,17 @@ function AgentsSection(props: OpenCodeModulePanelProps) {
   return (
     <div className="gt-module-section">
       <div className="gt-module-toolbar">
-        <input className="path-input" placeholder="搜索 agent" value={props.agentSearch} onChange={(event) => props.onAgentSearchChange(event.target.value)} />
-        <button className="chip" onClick={props.onRefreshAgents} disabled={props.agentsLoading}>刷新</button>
+        <Input className="path-input" placeholder="搜索 agent" value={props.agentSearch} onChange={(event) => props.onAgentSearchChange(event.target.value)} />
+        <Button variant="outline" size="sm" onClick={props.onRefreshAgents} disabled={props.agentsLoading}>刷新</Button>
       </div>
       {props.agentsError ? <div className="small" style={{ color: "var(--danger)" }}>{props.agentsError}</div> : null}
       <div className="gt-module-list">
         {props.visibleAgents.map((agent) => (
-          <button key={agent.name} type="button" className={agent.name === props.activeAgent ? "gt-module-row selected" : "gt-module-row"} onClick={() => props.onApplyAgent(agent.name)}>
+          <Button key={agent.name} variant="ghost" className={agent.name === props.activeAgent ? "gt-module-row selected" : "gt-module-row"} onClick={() => props.onApplyAgent(agent.name)}>
             <span className="gt-module-row-title">@{agent.name}</span>
             <span className="gt-module-row-desc">{agent.description || agent.mode || "agent"}</span>
             <span className="gt-module-row-meta">{agent.mode || "all"}{agent.native ? " · native" : ""}</span>
-          </button>
+          </Button>
         ))}
       </div>
     </div>
@@ -153,12 +180,10 @@ function PermissionsSection(props: OpenCodeModulePanelProps) {
           <strong>自动接受权限</strong>
           <small>为当前会话写入 allow-all 规则，并自动回复后续 permission.asked。</small>
         </span>
-        <button type="button" className={props.autoAcceptPermissions ? "gt-switch active" : "gt-switch"} onClick={props.onToggleAutoAccept}>
-          {props.autoAcceptPermissions ? "ON" : "OFF"}
-        </button>
+        <Switch checked={props.autoAcceptPermissions} className="gt-switch" aria-label="自动接受权限" onCheckedChange={props.onToggleAutoAccept} />
       </label>
       <div className="gt-module-toolbar">
-        <button className="chip" onClick={props.onRefreshPermissions} disabled={props.permissionLoading}>刷新权限请求</button>
+        <Button variant="outline" size="sm" onClick={props.onRefreshPermissions} disabled={props.permissionLoading}>刷新权限请求</Button>
       </div>
       {props.activePermissions.length === 0 ? (
         <div className="gt-module-empty">当前没有待处理授权。</div>
@@ -170,9 +195,9 @@ function PermissionsSection(props: OpenCodeModulePanelProps) {
               <span className="gt-module-row-desc">{(req.patterns || []).join(", ") || "*"}</span>
               <span className="gt-module-row-meta">{req.id}</span>
               <span className="gt-module-row-actions">
-                <button className="chip" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</button>
-                <button className="chip primary" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</button>
-                <button className="chip danger" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</button>
+                <Button variant="outline" size="sm" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</Button>
+                <Button variant="contrast" size="sm" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</Button>
+                <Button variant="destructive" size="sm" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</Button>
               </span>
             </div>
           ))}
@@ -186,27 +211,34 @@ function McpSection(props: OpenCodeModulePanelProps) {
   return (
     <div className="gt-module-section">
       <div className="gt-module-toolbar">
-        <button className="chip" onClick={props.onRefreshMcp} disabled={props.mcpLoading}>刷新 MCP</button>
+        <Button variant="outline" size="sm" onClick={props.onRefreshMcp} disabled={props.mcpLoading}>刷新 MCP</Button>
         {props.mcpError ? <span className="small" style={{ color: "var(--danger)" }}>{props.mcpError}</span> : null}
       </div>
       <div className="gt-module-form">
-        <input className="path-input" placeholder="mcp 名称，例如 context7" value={props.mcpAddForm.name} onChange={(event) => props.mcpAddForm.setName(event.target.value)} />
-        <select className="path-input" value={props.mcpAddForm.type} onChange={(event) => props.mcpAddForm.setType(event.target.value as "remote" | "local")}>
-          <option value="remote">remote</option>
-          <option value="local">local</option>
-        </select>
+        <Input className="path-input" placeholder="mcp 名称，例如 context7" value={props.mcpAddForm.name} onChange={(event) => props.mcpAddForm.setName(event.target.value)} />
+        <Select value={props.mcpAddForm.type} onValueChange={(value) => props.mcpAddForm.setType(value as "remote" | "local")}>
+          <SelectTrigger className="path-input">
+            <SelectValue placeholder="选择类型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="remote">remote</SelectItem>
+              <SelectItem value="local">local</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
         {props.mcpAddForm.type === "remote" ? (
           <>
-            <input className="path-input" placeholder="https://mcp.example.com/mcp" value={props.mcpAddForm.url} onChange={(event) => props.mcpAddForm.setUrl(event.target.value)} />
-            <textarea className="path-input gt-module-textarea" placeholder="Headers，每行 KEY=VALUE（可选）" value={props.mcpAddForm.headers} onChange={(event) => props.mcpAddForm.setHeaders(event.target.value)} />
+            <Input className="path-input" placeholder="https://mcp.example.com/mcp" value={props.mcpAddForm.url} onChange={(event) => props.mcpAddForm.setUrl(event.target.value)} />
+            <Textarea className="path-input gt-module-textarea" placeholder="Headers，每行 KEY=VALUE（可选）" value={props.mcpAddForm.headers} onChange={(event) => props.mcpAddForm.setHeaders(event.target.value)} />
           </>
         ) : (
           <>
-            <input className="path-input" placeholder="npx -y @modelcontextprotocol/server-everything" value={props.mcpAddForm.command} onChange={(event) => props.mcpAddForm.setCommand(event.target.value)} />
-            <textarea className="path-input gt-module-textarea" placeholder="Environment，每行 KEY=VALUE（可选）" value={props.mcpAddForm.env} onChange={(event) => props.mcpAddForm.setEnv(event.target.value)} />
+            <Input className="path-input" placeholder="npx -y @modelcontextprotocol/server-everything" value={props.mcpAddForm.command} onChange={(event) => props.mcpAddForm.setCommand(event.target.value)} />
+            <Textarea className="path-input gt-module-textarea" placeholder="Environment，每行 KEY=VALUE（可选）" value={props.mcpAddForm.env} onChange={(event) => props.mcpAddForm.setEnv(event.target.value)} />
           </>
         )}
-        <button className="chip primary" onClick={props.onAddMcp} disabled={!!props.mcpBusyName}>添加 MCP</button>
+        <Button variant="contrast" size="sm" onClick={props.onAddMcp} disabled={!!props.mcpBusyName}>添加 MCP</Button>
       </div>
       {props.mcpRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。可添加 Context7、Sentry、Grep 等。</div> : null}
       <div className="gt-module-list">
@@ -219,10 +251,10 @@ function McpSection(props: OpenCodeModulePanelProps) {
               <span className="gt-module-row-desc">{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</span>
               <span className="gt-module-row-meta">{String(status?.type || "mcp")}</span>
               <span className="gt-module-row-actions">
-                <button className="chip" onClick={() => props.onRunMcpAction(name, "connect")} disabled={!!props.mcpBusyName}>连接</button>
-                <button className="chip" onClick={() => props.onRunMcpAction(name, "disconnect")} disabled={!!props.mcpBusyName}>断开</button>
-                <button className="chip" onClick={() => props.onRunMcpAction(name, "auth")} disabled={!!props.mcpBusyName}>OAuth</button>
-                <button className="chip danger" onClick={() => props.onRunMcpAction(name, "logout")} disabled={!!props.mcpBusyName}>登出</button>
+                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "connect")} disabled={!!props.mcpBusyName}>连接</Button>
+                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "disconnect")} disabled={!!props.mcpBusyName}>断开</Button>
+                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "auth")} disabled={!!props.mcpBusyName}>OAuth</Button>
+                <Button variant="destructive" size="sm" onClick={() => props.onRunMcpAction(name, "logout")} disabled={!!props.mcpBusyName}>登出</Button>
               </span>
             </div>
           );
@@ -236,7 +268,7 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
   return (
     <div className="gt-module-section">
       <div className="gt-module-toolbar">
-        <button className="chip" onClick={props.onRefreshSkills} disabled={props.skillsLoading}>刷新 Skills</button>
+        <Button variant="outline" size="sm" onClick={props.onRefreshSkills} disabled={props.skillsLoading}>刷新 Skills</Button>
         {props.skillsError ? <span className="small" style={{ color: "var(--danger)" }}>{props.skillsError}</span> : null}
       </div>
       <div className="gt-skills-hero">
@@ -253,8 +285,10 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
       </div>
       <div className="gt-skill-scope-picker">
         <span>安装范围</span>
-        <button type="button" className={props.skillInstallScope === "project" ? "active" : ""} onClick={() => props.onSkillInstallScopeChange("project")}>当前仓库</button>
-        <button type="button" className={props.skillInstallScope === "global" ? "active" : ""} onClick={() => props.onSkillInstallScopeChange("global")}>全局通用</button>
+        <ToggleGroup type="single" value={props.skillInstallScope} onValueChange={(value) => { if (value) props.onSkillInstallScopeChange(value as "project" | "global"); }} variant="outline" size="sm">
+          <ToggleGroupItem value="project">当前仓库</ToggleGroupItem>
+          <ToggleGroupItem value="global">全局通用</ToggleGroupItem>
+        </ToggleGroup>
       </div>
       {props.skillBusy ? (
         <div className="gt-skill-progress">
@@ -281,15 +315,15 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
             <strong>{skill.title}</strong>
             <p>{skill.description}</p>
             <div className="gt-skill-recommend-actions">
-              <button className="chip" onClick={() => props.onSkillInstallSpecChange(skill.spec)}>填入</button>
-              <button className="chip primary" onClick={() => props.onInstallSkill(skill.spec, props.skillInstallScope)} disabled={props.skillBusy}>安装</button>
+              <Button variant="outline" size="sm" onClick={() => props.onSkillInstallSpecChange(skill.spec)}>填入</Button>
+              <Button variant="contrast" size="sm" onClick={() => props.onInstallSkill(skill.spec, props.skillInstallScope)} disabled={props.skillBusy}>安装</Button>
             </div>
             <code>{skill.spec}</code>
           </div>
         ))}
       </div>
       <div className="gt-module-form compact gt-skill-enter-search">
-        <input
+        <Input
           className="path-input"
           placeholder="搜索 skills，例如 frontend / react / testing"
           value={props.skillSearchQuery}
@@ -307,37 +341,46 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
               <span className="gt-module-row-desc">{result.package}</span>
               <span className="gt-module-row-meta">{result.installs ? `${result.installs} installs` : result.url}</span>
               <span className="gt-module-row-actions">
-                <button className="chip" onClick={() => props.onSkillInstallSpecChange(result.installSpec || result.spec)}>填入</button>
-                <button className="chip primary" onClick={() => props.onInstallSkill(result.installSpec || result.spec, props.skillInstallScope)} disabled={props.skillBusy}>安装</button>
+                <Button variant="outline" size="sm" onClick={() => props.onSkillInstallSpecChange(result.installSpec || result.spec)}>填入</Button>
+                <Button variant="contrast" size="sm" onClick={() => props.onInstallSkill(result.installSpec || result.spec, props.skillInstallScope)} disabled={props.skillBusy}>安装</Button>
               </span>
             </div>
           ))}
         </div>
       ) : null}
       <div className="gt-module-form">
-        <input className="path-input" placeholder="skills.sh 条目，如 anthropics/skills@frontend-design" value={props.skillInstallSpec} onChange={(event) => props.onSkillInstallSpecChange(event.target.value)} />
-        <button className="chip primary" onClick={() => props.onInstallSkill(undefined, props.skillInstallScope)} disabled={props.skillBusy}>从 skills.sh 安装</button>
+        <Input className="path-input" placeholder="skills.sh 条目，如 anthropics/skills@frontend-design" value={props.skillInstallSpec} onChange={(event) => props.onSkillInstallSpecChange(event.target.value)} />
+        <Button variant="contrast" size="sm" onClick={() => props.onInstallSkill(undefined, props.skillInstallScope)} disabled={props.skillBusy}>从 skills.sh 安装</Button>
       </div>
       <div className="gt-module-form compact">
-        <select className="path-input" value={props.skillSourceKind} onChange={(event) => props.onSkillSourceKindChange(event.target.value as "url" | "path")}>
-          <option value="url">skills.urls</option>
-          <option value="path">skills.paths</option>
-        </select>
-        <input className="path-input" placeholder={props.skillSourceKind === "url" ? "https://example.com/.well-known/skills/" : "/path/to/skills"} value={props.skillSourceInput} onChange={(event) => props.onSkillSourceInputChange(event.target.value)} />
-        <button className="chip" onClick={props.onAddSkillSource} disabled={props.skillBusy}>添加来源</button>
+        <Select value={props.skillSourceKind} onValueChange={(value) => props.onSkillSourceKindChange(value as "url" | "path")}>
+          <SelectTrigger className="path-input">
+            <SelectValue placeholder="选择来源类型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="url">skills.urls</SelectItem>
+              <SelectItem value="path">skills.paths</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <Input className="path-input" placeholder={props.skillSourceKind === "url" ? "https://example.com/.well-known/skills/" : "/path/to/skills"} value={props.skillSourceInput} onChange={(event) => props.onSkillSourceInputChange(event.target.value)} />
+        <Button variant="outline" size="sm" onClick={props.onAddSkillSource} disabled={props.skillBusy}>添加来源</Button>
       </div>
       <div className="gt-installed-skill-tools">
         <div className="gt-skill-filter-tabs">
-          {([
-            ["all", `全部 ${props.skills.length}`],
-            ["global", `Global ${props.skills.filter((skill) => skill.scope === "global").length}`],
-            ["project", `Repo ${props.skills.filter((skill) => skill.scope === "project").length}`],
-            ["source", `Source ${props.skills.filter((skill) => (skill.scope || "source") === "source").length}`]
-          ] as Array<["all" | "global" | "project" | "source", string]>).map(([filter, label]) => (
-            <button key={filter} type="button" className={props.skillListFilter === filter ? "active" : ""} onClick={() => props.onSkillListFilterChange(filter)}>{label}</button>
-          ))}
+          <ToggleGroup type="single" value={props.skillListFilter} onValueChange={(value) => { if (value) props.onSkillListFilterChange(value as "all" | "global" | "project" | "source"); }} variant="outline" size="sm">
+            {([
+              ["all", `全部 ${props.skills.length}`],
+              ["global", `Global ${props.skills.filter((skill) => skill.scope === "global").length}`],
+              ["project", `Repo ${props.skills.filter((skill) => skill.scope === "project").length}`],
+              ["source", `Source ${props.skills.filter((skill) => (skill.scope || "source") === "source").length}`]
+            ] as Array<["all" | "global" | "project" | "source", string]>).map(([filter, label]) => (
+              <ToggleGroupItem key={filter} value={filter}>{label}</ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </div>
-        <input className="path-input" placeholder="过滤已安装 skills" value={props.skillListQuery} onChange={(event) => props.onSkillListQueryChange(event.target.value)} />
+        <Input className="path-input" placeholder="过滤已安装 skills" value={props.skillListQuery} onChange={(event) => props.onSkillListQueryChange(event.target.value)} />
       </div>
       {props.skills.length === 0 ? <div className="gt-module-empty">暂无 Skills。OpenCode 会扫描 .opencode/skills、.claude/skills 和全局 skills。</div> : null}
       {props.skills.length > 0 && props.filteredSkills.length === 0 ? <div className="gt-module-empty">没有匹配当前过滤条件的 Skill。</div> : null}
@@ -359,8 +402,8 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
                 <span className="gt-module-row-desc">{skill.description || INSTALLED_VIA_SKILLS_DESCRIPTION}</span>
                 <span className="gt-module-row-meta">{skill.path || skill.location || skill.license || "skill"}</span>
                 <span className="gt-module-row-actions">
-                  <button className="chip" onClick={() => props.onReferenceSkill(skill)}>查看</button>
-                  <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => props.onRemoveSkill(skill)}>{removing ? "Removing" : "Uninstall"}</button>
+                  <Button variant="outline" size="sm" onClick={() => props.onReferenceSkill(skill)}>查看</Button>
+                  <Button variant="destructive" size="sm" disabled={group.removableItems.length === 0 || removing} onClick={() => props.onRemoveSkill(skill)}>{removing ? "Removing" : "Uninstall"}</Button>
                 </span>
               </div>
             );
@@ -371,8 +414,8 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
               <span className="gt-module-row-desc">{group.items.map((skill) => skill.name).join(" · ") || "No description"}</span>
               <span className="gt-module-row-meta">{group.items[0]?.path || group.items[0]?.location || group.items[0]?.license || "skill"}</span>
               <span className="gt-module-row-actions">
-                <button className="chip" onClick={() => props.onReferenceSkill(group.items[0])}>查看</button>
-                <button className="chip danger" disabled={group.removableItems.length === 0 || removing} onClick={() => props.onRemoveSkillGroup(group)}>{removing ? "Removing" : "Uninstall"}</button>
+                <Button variant="outline" size="sm" onClick={() => props.onReferenceSkill(group.items[0])}>查看</Button>
+                <Button variant="destructive" size="sm" disabled={group.removableItems.length === 0 || removing} onClick={() => props.onRemoveSkillGroup(group)}>{removing ? "Removing" : "Uninstall"}</Button>
               </span>
             </div>
           );

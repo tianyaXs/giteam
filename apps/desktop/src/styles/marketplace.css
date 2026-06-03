@@ -835,6 +835,11 @@
   color: var(--accent);
 }
 
+.gt-skill-mode-toggle button[data-state="on"] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: var(--accent);
+}
+
 .gt-skill-select-wrap {
   display: inline-flex;
   align-items: center;
@@ -868,6 +873,10 @@
   font-family: inherit;
   font-size: var(--gt-text-sm);
   padding: var(--gt-space-1-5) 0;
+}
+
+.gt-skill-market-tabs button[data-state="on"] {
+  color: var(--text);
 }
 
 .gt-skill-market-meta {
@@ -932,11 +941,6 @@
 }
 
 .gt-skill-install-menu {
-  position: absolute;
-  z-index: 8;
-  top: 36px;
-  left: 0;
-  right: 0;
   display: grid;
   gap: var(--gt-space-1);
   border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
@@ -947,11 +951,8 @@
 }
 
 .gt-skill-install-menu button {
-  border: 0;
   border-radius: var(--gt-radius-lg);
-  background: transparent;
   color: var(--text);
-  cursor: pointer;
   font-size: var(--gt-text-base);
   padding: var(--gt-space-2) var(--gt-space-2-5);
   text-align: left;
@@ -1430,6 +1431,11 @@
   font-size: 10px;
 }
 
+.gt-gittree-create-chip {
+  min-height: 25px;
+  padding-inline: 10px;
+}
+
 .gt-gittree-action-chip svg,
 .gt-gittree-inline-chip svg {
   width: 14px;
@@ -1756,6 +1762,10 @@
   max-width: 34ch;
   line-height: 1.55;
   text-wrap: pretty;
+}
+
+.gt-gittree-empty-action {
+  margin-top: 2px;
 }
 
 .gt-gittree-worktree-state {
@@ -3936,27 +3946,33 @@
   padding: 0;
 }
 
-.gt-installed-skills-collapsible summary {
+.gt-installed-collapsible-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--gt-space-2-5);
-  cursor: pointer;
-  list-style: none;
   padding: var(--gt-space-3) var(--gt-space-3-5);
 }
 
-.gt-installed-skills-collapsible summary::-webkit-details-marker {
-  display: none;
+.gt-installed-collapsible-trigger {
+  width: 100%;
+  justify-content: space-between;
+  padding: 0;
 }
 
-.gt-installed-skills-collapsible summary span {
+.gt-installed-collapsible-trigger span {
   color: var(--text);
   font-weight: var(--gt-font-bold);
 }
 
-.gt-installed-skills-collapsible summary small {
+.gt-installed-collapsible-trigger small {
   color: var(--muted);
+}
+
+.gt-installed-collapsible-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
 }
 
 .gt-installed-skill-grid {
@@ -3988,18 +4004,29 @@
   align-items: center;
 }
 
-.gt-installed-skill-group summary {
-  list-style: none;
+.gt-installed-skill-group-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--gt-space-2);
   align-items: center;
   padding: var(--gt-space-2-5);
-  cursor: pointer;
 }
 
-.gt-installed-skill-group summary::-webkit-details-marker {
-  display: none;
+.gt-installed-skill-group-trigger {
+  height: auto;
+  justify-content: space-between;
+  padding: 0;
+  text-align: left;
+}
+
+.gt-installed-skill-group-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.gt-installed-skill-group-trigger[data-state="open"] .gt-installed-skill-group-chevron {
+  transform: rotate(180deg);
 }
 
 .gt-installed-skill-group-main {
@@ -4262,6 +4289,12 @@
   color: var(--accent);
 }
 
+.gt-skill-market-tabs button[data-state="on"] {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: var(--accent);
+}
+
 .gt-skill-market-meta {
   margin: var(--gt-space-2-5) 0 var(--gt-space-1);
   gap: var(--gt-space-2-5);
@@ -4278,18 +4311,14 @@
 .gt-skill-card-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "copy action"
-    "meta action";
-  align-items: start;
-  column-gap: var(--gt-space-4);
+  align-items: center;
+  column-gap: var(--gt-space-3);
   row-gap: var(--gt-space-2-5);
   border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
   border-radius: var(--gt-radius-lg);
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 26%),
     color-mix(in srgb, var(--bg) 78%, transparent);
-  cursor: pointer;
   min-height: 126px;
   padding: var(--gt-space-4) var(--gt-space-4);
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
@@ -4301,6 +4330,20 @@
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   box-shadow: 0 16px 28px color-mix(in srgb, var(--accent) 8%, transparent);
   transform: translateY(-1px);
+}
+
+.gt-skill-card-main {
+  height: auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "copy"
+    "meta";
+  justify-items: start;
+  row-gap: var(--gt-space-2-5);
+  padding: 0;
+  text-align: left;
 }
 
 .gt-skill-card-rank {
@@ -4400,7 +4443,6 @@
 }
 
 .gt-skill-get-btn {
-  grid-area: action;
   width: 64px;
   height: 32px;
   border: 0;
@@ -4411,6 +4453,10 @@
   font-weight: var(--gt-font-bold);
   padding: 0 var(--gt-space-3-5);
   align-self: center;
+}
+
+.gt-skill-card-install-log {
+  grid-column: 1 / -1;
 }
 
 .gt-skill-get-btn:disabled {
@@ -4773,10 +4819,14 @@
   text-align: left;
 }
 
-.opencode-provider-picker-card {
+.opencode-provider-picker-dialog {
   width: min(900px, 94vw);
+  max-width: min(900px, 94vw);
   min-width: min(900px, 94vw);
-  border-radius: var(--gt-radius-lg);
+  max-height: min(76vh, 760px);
+  display: grid;
+  gap: var(--gt-space-3);
+  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
   background: color-mix(in srgb, var(--composer-surface) 92%, transparent);
   box-shadow:
@@ -4786,22 +4836,27 @@
   padding: var(--gt-space-3);
 }
 
+.opencode-provider-picker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gt-space-3);
+}
+
 .opencode-provider-picker-title {
   display: grid;
   gap: var(--gt-space-0-5);
 }
 
-.opencode-provider-picker-title h3 {
-  margin: 0;
+.opencode-provider-picker-title .gt-dialog-title {
   font-size: var(--gt-text-lg);
 }
 
-.opencode-provider-picker-title p {
-  margin: 0;
+.opencode-provider-picker-title .gt-dialog-description {
+  max-width: 54ch;
 }
 
-.opencode-provider-picker-toolbar .path-input {
-  margin: 0;
+.opencode-provider-picker-input {
   height: 38px;
   border-radius: var(--gt-radius-pill);
   border-color: color-mix(in srgb, var(--line) 56%, transparent);
@@ -4816,15 +4871,10 @@
 }
 
 .opencode-provider-add-btn {
-  min-width: 38px;
-  height: 38px;
-  padding: 0;
   border-radius: var(--gt-radius-lg);
-  font-size: var(--gt-text-xl);
-  line-height: 1;
 }
 
-.opencode-provider-picker-card .settings-model-col {
+.opencode-provider-picker-dialog .settings-model-col {
   border: 1px solid color-mix(in srgb, var(--line) 54%, transparent);
   border-radius: var(--gt-radius-lg);
   background: color-mix(in srgb, var(--bg) 42%, transparent);
@@ -4832,7 +4882,7 @@
   scrollbar-gutter: stable;
 }
 
-.opencode-provider-picker-card .file-item {
+.opencode-provider-picker-dialog .file-item {
   margin-bottom: var(--gt-space-1-5);
   border-radius: var(--gt-radius-lg);
   border: 1px solid transparent;
@@ -4841,16 +4891,16 @@
   padding: var(--gt-space-2) var(--gt-space-2-5);
 }
 
-.opencode-provider-picker-card .file-item:last-child {
+.opencode-provider-picker-dialog .file-item:last-child {
   margin-bottom: 0;
 }
 
-.opencode-provider-picker-card .file-item:hover {
+.opencode-provider-picker-dialog .file-item:hover {
   background: color-mix(in srgb, var(--interactive-hover) 92%, var(--bg-panel));
   border-color: color-mix(in srgb, var(--line) 40%, transparent);
 }
 
-.opencode-provider-picker-card .file-item.selected {
+.opencode-provider-picker-dialog .file-item.selected {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
   box-shadow: none;
@@ -4908,124 +4958,6 @@
   }
 }
 
-@media (max-width: 1120px) {
-  .wb {
-    grid-template-columns: 48px minmax(220px, var(--wb-sidebar-width, 260px)) 1px minmax(0, 1fr);
-  }
-
-  .wb-editor-inner {
-    padding: var(--gt-space-2-5) var(--gt-space-2);
-  }
-
-  .wb-editor-content {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(260px, 1fr) minmax(320px, 0.95fr);
-  }
-
-  .wb-col-splitter {
-    display: none;
-  }
-
-  .wb-col-right {
-    min-height: 320px;
-  }
-
-  .opencode-msg {
-    max-width: 96%;
-  }
-
-  .opencode-msg-user {
-    margin-left: 0;
-  }
-
-  .opencode-msg-assistant {
-    margin-right: 0;
-  }
-}
-
-@media (max-width: 900px) {
-  .wb {
-    grid-template-columns: 44px minmax(200px, var(--wb-sidebar-width, 220px)) 1px minmax(0, 1fr);
-  }
-
-  .opencode-shell {
-    position: relative;
-    grid-template-columns: 1fr;
-  }
-
-  .opencode-session-rail {
-    position: absolute;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 40;
-    background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
-    box-shadow: 10px 0 20px rgba(0, 0, 0, 0.18);
-  }
-
-  .opencode-session-rail.open {
-    width: min(72vw, 248px);
-  }
-
-  .opencode-headline {
-    min-height: 40px;
-    padding: var(--gt-space-1-5) var(--gt-space-2);
-  }
-
-  .opencode-session-tabs {
-    min-height: 38px;
-    padding: var(--gt-space-1-5) var(--gt-space-1-5);
-  }
-
-  .opencode-input-row {
-    padding: var(--gt-space-2-5) var(--gt-space-2);
-  }
-
-  .opencode-composer-body {
-    gap: var(--gt-space-1-5);
-    padding: var(--gt-space-2) var(--gt-space-2) var(--gt-space-2);
-  }
-
-  .opencode-composer-toolbar {
-    gap: var(--gt-space-1-5);
-    padding: var(--gt-space-1-5) var(--gt-space-2) var(--gt-space-2);
-    flex-wrap: wrap;
-  }
-
-  .opencode-composer-send {
-    min-width: 64px;
-  }
-}
-
-@media (max-width: 760px) {
-  .wb {
-    grid-template-columns: 40px minmax(180px, 44vw) 8px minmax(0, 1fr);
-  }
-
-  .wb-editor-inner {
-    padding: var(--gt-space-2) var(--gt-space-1-5);
-  }
-
-  .opencode-thread {
-    padding: var(--gt-space-2) var(--gt-space-2) var(--gt-space-1-5);
-  }
-
-  .gt-chat-main:not(.is-empty) .opencode-thread {
-    padding-inline: calc(8px + var(--gt-center-pane-pad, 0px));
-  }
-
-  .opencode-msg {
-    max-width: 100%;
-    padding: 0;
-  }
-
-  .opencode-msg-user,
-  .opencode-msg-assistant {
-    margin-left: 0;
-    margin-right: 0;
-  }
-}
-
 .opencode-inline-loading {
   display: inline-flex;
   align-items: center;
@@ -5043,9 +4975,20 @@
 }
 
 .opencode-provider-row {
+  width: 100%;
+  height: auto;
   justify-content: space-between;
   align-items: center;
+  text-align: left;
   transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.gt-installed-skill-group-trigger:hover,
+.gt-installed-skill-group-trigger:focus-visible,
+.gt-skill-card-main:hover,
+.gt-skill-card-main:focus-visible,
+.opencode-provider-model-main:hover {
+  background: transparent;
 }
 
 .opencode-provider-row-main {
@@ -5070,17 +5013,7 @@
 
 .opencode-provider-state {
   flex: 0 0 auto;
-  font-size: var(--gt-text-xs);
-  color: var(--muted);
-  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-  border-radius: var(--gt-radius-pill);
-  padding: var(--gt-space-0-5) var(--gt-space-1-5);
-}
-
-.opencode-provider-state.connected {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 55%, transparent);
-  background: color-mix(in srgb, var(--success) 12%, transparent);
+  letter-spacing: 0.04em;
 }
 
 .opencode-provider-divider {
@@ -5112,53 +5045,59 @@
   min-width: 0;
 }
 
-.opencode-provider-panel-actions {
-  position: relative;
+.opencode-provider-menu-trigger {
   flex: 0 0 auto;
 }
 
-.opencode-provider-menu-trigger {
-  min-width: 30px;
-  height: 28px;
-  padding: 0 var(--gt-space-2);
+.opencode-provider-menu-trigger span {
+  font-weight: var(--gt-font-bold);
+  letter-spacing: 0.06em;
 }
 
-.opencode-provider-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 156px;
-  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  border-radius: var(--gt-radius-lg);
-  background: color-mix(in srgb, var(--composer-surface) 94%, transparent);
-  box-shadow: var(--gt-shadow-4);
-  padding: var(--gt-space-1-5);
-  display: grid;
-  gap: var(--gt-space-1);
-  z-index: 15;
+.opencode-provider-menu-panel {
+  min-width: 172px;
 }
 
-.opencode-provider-menu-item {
-  border: 1px solid transparent;
-  border-radius: var(--gt-radius-md);
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  padding: var(--gt-space-1-5) var(--gt-space-2);
-  cursor: pointer;
-}
-
-.opencode-provider-menu-item:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bg-soft) 65%, transparent);
-}
-
-.opencode-provider-menu-item.danger {
+.opencode-provider-menu-danger {
   color: var(--danger);
 }
 
-.opencode-provider-menu-item:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.opencode-provider-form-dialog {
+  width: min(560px, calc(100vw - 36px));
+  max-width: min(560px, calc(100vw - 36px));
+  display: grid;
+  gap: var(--gt-space-3);
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: var(--gt-radius-xl);
+  background: color-mix(in srgb, var(--bg-panel) 97%, var(--bg-soft));
+  box-shadow: 0 24px 68px color-mix(in srgb, black 16%, transparent);
+  padding: var(--gt-space-4);
+}
+
+.opencode-provider-form-dialog-lg {
+  width: min(760px, calc(100vw - 40px));
+  max-width: min(760px, calc(100vw - 40px));
+}
+
+.opencode-provider-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gt-space-3);
+}
+
+.opencode-provider-form-head > div:first-child {
+  display: grid;
+  gap: var(--gt-space-1);
+}
+
+.opencode-provider-form-grid {
+  margin-top: 0;
+}
+
+.opencode-provider-form-actions {
+  justify-content: flex-end;
+  margin-top: 0;
 }
 
 .opencode-provider-connect-compact {
@@ -5187,13 +5126,32 @@
 .opencode-provider-model-main {
   flex: 1;
   min-width: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
+  height: auto;
+  justify-content: flex-start;
   text-align: left;
   padding: var(--gt-space-0-5) 0;
-  cursor: pointer;
   display: grid;
+}
+
+.opencode-provider-model-copy {
+  min-width: 0;
+  display: grid;
+}
+
+.opencode-provider-model-copy-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-1-5);
+  flex-wrap: wrap;
+}
+
+.opencode-provider-model-copy-head > span:first-child {
+  min-width: 0;
+}
+
+.opencode-provider-model-badge {
+  letter-spacing: 0.04em;
 }
 
 .opencode-provider-model-main small {
@@ -5205,39 +5163,31 @@
 }
 
 .opencode-switch {
-  position: relative;
   width: 32px;
   height: 18px;
-  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-  border-radius: var(--gt-radius-md);
+  border-width: 1px;
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
   background: color-mix(in srgb, var(--bg-soft) 65%, #ececec);
-  cursor: pointer;
-  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.1s ease;
   flex: 0 0 auto;
   padding: 0;
 }
 
-.opencode-switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
+.opencode-switch > span {
   width: 12px;
   height: 12px;
-  border-radius: var(--gt-radius-sm);
-  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 999px;
   background: #fff;
-  transition: left 0.16s ease, border-color 0.16s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
 }
 
-.opencode-switch.is-on {
+.opencode-switch[data-state="checked"] {
   border-color: color-mix(in srgb, #21191b 76%, transparent);
   background: color-mix(in srgb, #21191b 88%, var(--bg-soft));
 }
 
-.opencode-switch.is-on::after {
-  left: 16px;
-  border-color: color-mix(in srgb, #21191b 46%, transparent);
+.opencode-switch[data-state="unchecked"] {
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 65%, #ececec);
 }
 
 .opencode-switch:hover {
@@ -5248,16 +5198,11 @@
   transform: scale(0.96);
 }
 
-.opencode-switch:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
 .opencode-provider-model-row:hover .opencode-provider-model-main span {
   color: color-mix(in srgb, var(--text) 96%, var(--accent));
 }
 
-:root[data-theme="light"] .opencode-provider-picker-card {
+:root[data-theme="light"] .opencode-provider-picker-dialog {
   box-shadow:
     0 24px 54px rgba(15, 23, 42, 0.12),
     0 1px 0 rgba(255, 255, 255, 0.7) inset;
@@ -5339,4 +5284,495 @@ button:disabled {
 .file-list {
   max-height: 230px;
   overflow: auto;
+}
+
+/* Resource marketplace polish: Skills and MCP share this calmer desktop rhythm. */
+.gt-skill-market-shell {
+  padding: var(--gt-space-2);
+  gap: var(--gt-space-2);
+  background: transparent;
+}
+
+.gt-skill-market-shell .gt-resource-installed-panel,
+.gt-skill-market-shell .gt-installed-skills-collapsible {
+  overflow: hidden;
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  box-shadow: none;
+}
+
+.gt-skill-market-shell .gt-installed-collapsible-head {
+  min-height: 42px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px 10px 6px 12px;
+}
+
+.gt-skill-market-shell .gt-installed-collapsible-trigger {
+  height: 30px;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 0 8px 0 0;
+  font-weight: var(--gt-font-semibold);
+}
+
+.gt-skill-market-shell .gt-installed-collapsible-trigger small {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+  font-size: var(--gt-text-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--gt-font-medium);
+}
+
+.gt-installed-collapsible-chevron {
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease, color 140ms ease;
+}
+
+.gt-installed-collapsible-trigger:hover .gt-installed-collapsible-chevron,
+.gt-installed-collapsible-trigger:focus-visible .gt-installed-collapsible-chevron,
+.gt-installed-collapsible-trigger[data-state="open"] .gt-installed-collapsible-chevron {
+  opacity: 1;
+}
+
+.gt-installed-collapsible-trigger[data-state="open"] .gt-installed-collapsible-chevron {
+  transform: rotate(180deg);
+}
+
+.gt-skill-market-shell .gt-installed-collapsible-actions {
+  gap: 4px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-grid {
+  max-height: min(38vh, 430px);
+  gap: 6px;
+  padding: 8px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group,
+.gt-skill-market-shell .gt-installed-skill-chip,
+.gt-skill-market-shell .gt-mcp-installed-chip {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-head,
+.gt-skill-market-shell .gt-installed-skill-group.is-flat {
+  padding: 6px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-trigger {
+  min-height: 30px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-main {
+  gap: 8px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-main div,
+.gt-skill-market-shell .gt-installed-skill-chip div {
+  gap: 1px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-main strong,
+.gt-skill-market-shell .gt-installed-skill-chip strong {
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+  line-height: 1.2;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-main small,
+.gt-skill-market-shell .gt-installed-skill-chip small {
+  font-size: var(--gt-text-xs);
+  line-height: 1.25;
+}
+
+.gt-skill-market-shell .gt-installed-skill-group-items {
+  max-height: 220px;
+  gap: 5px;
+  padding: 6px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-chip {
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.gt-skill-market-shell .gt-installed-skill-delete {
+  min-height: 26px;
+  height: 26px;
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
+.gt-skill-market-shell .gt-skill-market-layout {
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--gt-space-2);
+}
+
+.gt-skill-market-shell {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.gt-skill-market-shell .gt-skill-leaderboard-card,
+.gt-skill-market-shell .gt-skill-inspector-card,
+.gt-skill-market-shell .gt-mcp-market-list {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  box-shadow: none;
+  padding: 10px;
+}
+
+.gt-skill-market-shell .gt-skill-leaderboard-card {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.gt-skill-market-shell .gt-skill-market-toolbar {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.gt-skill-market-shell .gt-skill-searchbox {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.gt-skill-market-shell .gt-skill-searchbox input {
+  height: 34px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-normal);
+}
+
+.gt-skill-market-shell .gt-skill-searchbox input:focus-visible {
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+.gt-skill-market-shell .gt-skill-filterbar {
+  margin-top: 8px;
+}
+
+.gt-skill-market-shell .gt-skill-mode-toggle,
+.gt-skill-market-shell .gt-skill-market-tabs {
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.gt-skill-market-shell .gt-skill-mode-toggle button,
+.gt-skill-market-shell .gt-skill-market-tabs button {
+  min-height: 28px;
+  height: 28px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: var(--gt-text-xs);
+  font-weight: var(--gt-font-medium);
+}
+
+.gt-skill-market-shell .gt-skill-market-tabs {
+  min-height: 36px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  padding: 2px 0 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.gt-skill-market-shell .gt-skill-market-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.gt-skill-market-shell .gt-skill-card-list,
+.gt-skill-market-shell .gt-skill-skeleton-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 8px;
+}
+
+.gt-skill-market-shell .gt-skill-card-item {
+  min-height: 102px;
+  border-radius: 12px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  box-shadow: none;
+}
+
+.gt-skill-market-shell .gt-skill-card-item:hover,
+.gt-skill-market-shell .gt-skill-card-item.active {
+  transform: none;
+  box-shadow: none;
+}
+
+.gt-skill-market-shell .gt-skill-card-copy {
+  gap: 4px;
+}
+
+.gt-skill-market-shell .gt-skill-card-copy strong {
+  font-size: var(--gt-text-sm);
+  font-weight: var(--gt-font-semibold);
+  line-height: 1.25;
+}
+
+.gt-skill-market-shell .gt-skill-card-copy small,
+.gt-skill-market-shell .gt-skill-card-stats small,
+.gt-skill-market-shell .gt-skill-market-meta,
+.gt-skill-market-shell .gt-skill-market-pager {
+  font-size: var(--gt-text-xs);
+}
+
+.gt-skill-market-shell .gt-skill-market-meta {
+  min-height: 30px;
+  margin: 0 0 8px;
+}
+
+.gt-skill-market-shell .gt-skill-market-meta > button {
+  height: 28px;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
+.gt-skill-market-installed-grid {
+  max-height: none;
+  overflow: visible;
+  border-top: 0;
+  padding: 0;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group {
+  margin-bottom: 6px;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group:last-child {
+  margin-bottom: 0;
+}
+
+.gt-skill-market-shell .gt-skill-get-btn {
+  height: 28px;
+  min-width: 54px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: var(--gt-text-xs);
+}
+
+/* Skills installed tab: remove the canvas and make the list read like a native resource table. */
+.gt-skill-market-shell {
+  padding: 0;
+}
+
+.gt-skill-market-shell .gt-skill-leaderboard-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 22px 28px 18px;
+}
+
+.gt-skill-market-shell .gt-skill-searchbox {
+  min-height: 42px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 74%, white 8%);
+}
+
+.gt-skill-market-shell .gt-skill-filterbar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.gt-skill-market-shell .gt-skill-mode-toggle {
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  padding: 4px;
+}
+
+.gt-skill-market-shell .gt-skill-mode-toggle button {
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+}
+
+.gt-skill-market-shell .gt-skill-mode-toggle button[data-state="on"] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
+.gt-skill-market-shell .gt-skill-filter-hint {
+  color: color-mix(in srgb, var(--muted) 84%, transparent);
+  font-size: var(--gt-text-sm);
+}
+
+.gt-skill-market-shell .gt-skill-market-tabs {
+  min-height: 34px;
+  margin-top: 12px;
+  margin-bottom: 14px;
+  padding: 0;
+  border: 0;
+}
+
+.gt-skill-market-shell .gt-skill-market-tabs button {
+  height: 30px;
+  min-height: 30px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+}
+
+.gt-skill-market-shell .gt-skill-market-tabs button[data-state="on"] {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: color-mix(in srgb, var(--accent) 82%, var(--text));
+}
+
+.gt-skill-market-shell .gt-skill-market-meta {
+  min-height: 32px;
+  margin: 0 0 8px;
+  padding: 0;
+  color: color-mix(in srgb, var(--muted) 86%, transparent);
+}
+
+.gt-skill-market-shell .gt-skill-market-meta > button {
+  color: var(--text);
+}
+
+.gt-skill-market-installed-grid {
+  display: grid;
+  gap: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg) 52%, transparent);
+  overflow: hidden;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+  background: transparent;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group:last-child {
+  border-bottom: 0;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group.is-flat {
+  padding: 0;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-flat-row,
+.gt-skill-market-installed-grid .gt-installed-skill-group-head {
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 14px;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-head {
+  grid-template-columns: minmax(0, 1fr) 30px auto;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-trigger {
+  min-height: 40px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-main {
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-main strong,
+.gt-skill-market-installed-grid .gt-installed-skill-chip strong {
+  font-size: var(--gt-text-md);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-main small,
+.gt-skill-market-installed-grid .gt-installed-skill-chip small {
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+  font-size: var(--gt-text-sm);
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-main span {
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+  font-size: var(--gt-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-chevron {
+  justify-self: center;
+  opacity: 0.58;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-chip {
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  padding: 0;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-chip:hover,
+.gt-skill-market-installed-grid .gt-installed-skill-group-trigger:hover,
+.gt-skill-market-installed-grid .gt-installed-skill-group-trigger:focus-visible {
+  background: transparent;
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-delete {
+  height: 32px;
+  min-height: 32px;
+  border-radius: 10px;
+  border-color: color-mix(in srgb, var(--danger) 24%, var(--line));
+  background: transparent;
+  color: color-mix(in srgb, var(--danger) 74%, var(--text));
+  font-weight: var(--gt-font-semibold);
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.gt-skill-market-installed-grid .gt-installed-skill-group-items {
+  max-height: 240px;
+  gap: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
+  padding: 6px 10px 8px 28px;
+}
+
+.gt-skill-market-installed-grid .gt-scope-badge {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 0 9px;
+}
+
+.gt-skill-market-shell .gt-skill-market-pager {
+  justify-content: flex-start;
+  min-height: 34px;
+  border-top: 0;
+  color: color-mix(in srgb, var(--muted) 76%, transparent);
+  padding-top: 10px;
 }

@@ -11,11 +11,12 @@ import type {
 } from "../../lib/types";
 import { ChevronRightIcon, RefreshIcon } from "../icons";
 import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
+import { Button, buttonVariants } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
+import { cn } from "@/lib/utils";
 
 type GitTreeTopologyPanelProps = {
   defaultSidebarSize: number;
@@ -85,6 +86,7 @@ export function GitTreeTopologyPanel({
   onClearCommitHover,
   onToggleBranchCollapse,
   onInspectCommit,
+  onOpenTopologyCreateDialog,
   onSelectWorktree,
   onOpenWorktreeMenu,
   onActivateWorktree,
@@ -145,6 +147,7 @@ export function GitTreeTopologyPanel({
           ? "Remote"
           : "Local"
       : "No branch";
+  const activeBranchNodeId = activeTreeBranch ? `branch:${activeTreeBranch}` : "";
 
   const renderBranchRow = (branchName: string, depth = 0, childrenMap = localChildrenByParent): ReactNode => {
     const childBranches = childrenMap.get(branchName) || [];
@@ -369,6 +372,18 @@ export function GitTreeTopologyPanel({
                       <Badge variant="secondary" className="gt-gittree-toolbar-badge">
                         {activeBranchWorktrees.length}
                       </Badge>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="gt-gittree-inline-chip gt-gittree-create-chip"
+                        onClick={() => {
+                          if (!activeBranchNodeId) return;
+                          onOpenTopologyCreateDialog("worktree", activeBranchNodeId);
+                        }}
+                        disabled={!activeBranchNodeId}
+                      >
+                        新建
+                      </Button>
                     </div>
                   </div>
                   <ScrollArea className="gt-gittree-worktree-list-scroll">
@@ -378,7 +393,10 @@ export function GitTreeTopologyPanel({
                           key={worktree.path}
                           role="button"
                           tabIndex={0}
-                          className={selectedWorktreePath === worktree.path ? "gt-gittree-worktree-row selected" : "gt-gittree-worktree-row"}
+                          className={cn(
+                            buttonVariants({ variant: "ghost", size: "sm" }),
+                            selectedWorktreePath === worktree.path ? "gt-gittree-worktree-row selected" : "gt-gittree-worktree-row"
+                          )}
                           onClick={() => onSelectWorktree(worktree.path)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
@@ -390,6 +408,7 @@ export function GitTreeTopologyPanel({
                             event.preventDefault();
                             onOpenWorktreeMenu(event.clientX, event.clientY, worktree.path);
                           }}
+                          aria-pressed={selectedWorktreePath === worktree.path}
                         >
                           <Badge
                             className="gt-gittree-worktree-state"
@@ -423,7 +442,19 @@ export function GitTreeTopologyPanel({
                       )) : (
                         <div className="gt-gittree-empty gt-gittree-empty-inline">
                           <strong>这个分支还没有 worktree</strong>
-                          <span>当前这里只保留 worktree 列表，创建入口请走列表右键菜单。</span>
+                          <span>可以直接在这里为当前分支新建一个 worktree。</span>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gt-gittree-empty-action"
+                            onClick={() => {
+                              if (!activeBranchNodeId) return;
+                              onOpenTopologyCreateDialog("worktree", activeBranchNodeId);
+                            }}
+                            disabled={!activeBranchNodeId}
+                          >
+                            新建 worktree
+                          </Button>
                         </div>
                       )}
                     </div>

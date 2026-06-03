@@ -1,4 +1,7 @@
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 
 type RuntimeSetupDialogProps = {
   runtimeStatus: RuntimeRequirementsStatus;
@@ -43,17 +46,21 @@ function RuntimeDependencyRow(props: {
   return (
     <div className="env-check-row">
       <div>
-        <strong>{props.dep.name}</strong>{" "}
-        <span className={props.checking ? "muted" : props.dep.installed ? "env-ok" : "env-missing"}>
-          {props.checking ? "Checking..." : (props.dep.checked ? (props.dep.installed ? "Installed" : "Missing") : "Unknown")}
-        </span>
+        <div className="env-row-head">
+          <strong>{props.dep.name}</strong>
+          <Badge variant={props.checking ? "secondary" : props.dep.installed ? "success" : "destructive"} className="env-status-badge">
+            {props.checking ? "Checking..." : (props.dep.checked ? (props.dep.installed ? "Installed" : "Missing") : "Unknown")}
+          </Badge>
+        </div>
         {props.dep.version && !props.checking ? <div className="small muted">{props.dep.version}</div> : null}
         {props.dep.path ? <div className="small muted">{props.dep.path}</div> : null}
         {!props.dep.installed ? <div className="small muted">{props.dep.installHint}</div> : null}
       </div>
       <div className="toolbar">
-        <button
-          className={busy ? "chip env-chip-loading" : "chip"}
+        <Button
+          variant={props.dep.installed ? "ghost" : "secondary"}
+          size="sm"
+          className={busy ? "gt-settings-action-btn env-chip-loading" : "gt-settings-action-btn"}
           disabled={disabled}
           onClick={() => props.onRunDependencyAction(depName, action)}
         >
@@ -65,12 +72,13 @@ function RuntimeDependencyRow(props: {
           ) : (
             `${props.dep.installed ? "Uninstall" : "Install"} ${props.dep.name}`
           )}
-        </button>
+        </Button>
       </div>
       {props.runtimeJob && props.runtimeJob.name === props.dep.name ? (
         <div className="env-inline-status">
-          <button
-            className="env-progress-button"
+          <Button
+            variant="ghost"
+            className="env-progress-button !grid !h-auto !w-full !justify-stretch"
             onClick={() => props.onToggleLog(depName)}
             title={props.expandedLogDep === depName ? "Hide details" : "Show details"}
           >
@@ -80,7 +88,7 @@ function RuntimeDependencyRow(props: {
             <span className="env-progress-label">
               {props.runtimeJob.action} · {props.runtimeJob.status} {busy ? `· ${props.installingElapsed}s` : ""}
             </span>
-          </button>
+          </Button>
           <div className="env-log-tail" title={props.runtimeLogTail || "No logs yet"}>
             {props.runtimeLogTail || "Waiting for logs..."}
           </div>
@@ -104,88 +112,102 @@ export function RuntimeSetupDialog(props: RuntimeSetupDialogProps) {
   const autoInitBusy = Boolean(props.installingDep) || props.runtimeChecking;
 
   return (
-    <div className="modal-mask" onClick={props.onClose}>
-      <div className="modal-card env-setup-card" onClick={(e) => e.stopPropagation()}>
-        <div className="env-setup-head">
-          <h3>Runtime Setup</h3>
-          <button
-            className="env-refresh-circle"
-            title="Refresh runtime check"
-            aria-label="Refresh runtime check"
-            disabled={props.runtimeChecking || Boolean(props.installingDep)}
-            onClick={props.onRefresh}
-          >
-            <span className={props.runtimeChecking ? "refresh-spin" : ""}>↻</span>
-          </button>
-        </div>
-        <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
-
-        {props.autoInitAvailable ? (
-          <div className="toolbar" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-            <div className="small muted">macOS can automatically initialize the full runtime on first launch.</div>
-            <button
-              className={autoInitRunning ? "chip env-chip-loading" : "chip"}
-              disabled={autoInitBusy}
-              onClick={props.onRunAutoInit}
+    <Dialog open onOpenChange={(open) => {
+      if (!open) props.onClose();
+    }}>
+      <DialogContent className="gt-settings-dialog-content">
+        <DialogTitle className="sr-only">Runtime Setup</DialogTitle>
+        <DialogDescription className="sr-only">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</DialogDescription>
+        <div className="modal-card env-setup-card">
+          <div className="env-setup-head">
+            <h3>Runtime Setup</h3>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="env-refresh-circle"
+              title="Refresh runtime check"
+              aria-label="Refresh runtime check"
+              disabled={props.runtimeChecking || Boolean(props.installingDep)}
+              onClick={props.onRefresh}
             >
-              {autoInitRunning ? (
-                <>
-                  <span className="env-btn-spinner" aria-hidden="true" />
-                  Auto initializing... {props.installingElapsed}s
-                </>
-              ) : (
-                "Auto initialize"
-              )}
-            </button>
+              <span className={props.runtimeChecking ? "refresh-spin" : ""}>↻</span>
+            </Button>
           </div>
-        ) : null}
+          <p className="small muted">Manage git, Entire CLI, OpenCode plugin, and giteam runtime.</p>
 
-        {showGlobalRuntimeJob ? (
-          <div className="env-inline-status" style={{ marginBottom: 12 }}>
-            <div className="env-progress-button" title={props.runtimeLogTail || "No logs yet"}>
-              <span className="env-progress-track-inline" aria-hidden="true">
-                <span className={props.runtimeJob?.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
-              </span>
-              <span className="env-progress-label">
-                {props.runtimeJob?.action} · {props.runtimeJob?.status} {props.installingDep ? `· ${props.installingElapsed}s` : ""}
-              </span>
+          {props.autoInitAvailable ? (
+            <div className="toolbar" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+              <div className="small muted">macOS can automatically initialize the full runtime on first launch.</div>
+              <Button
+                variant="contrast"
+                size="sm"
+                className={autoInitRunning ? "gt-settings-action-btn env-chip-loading" : "gt-settings-action-btn"}
+                disabled={autoInitBusy}
+                onClick={props.onRunAutoInit}
+              >
+                {autoInitRunning ? (
+                  <>
+                    <span className="env-btn-spinner" aria-hidden="true" />
+                    Auto initializing... {props.installingElapsed}s
+                  </>
+                ) : (
+                  "Auto initialize"
+                )}
+              </Button>
             </div>
-            <div className="env-log-tail" title={props.runtimeLogTail || "No logs yet"}>
-              {props.runtimeLogTail || "Waiting for logs..."}
+          ) : null}
+
+          {showGlobalRuntimeJob ? (
+            <div className="env-inline-status" style={{ marginBottom: 12 }}>
+              <div className="env-progress-button" title={props.runtimeLogTail || "No logs yet"}>
+                <span className="env-progress-track-inline" aria-hidden="true">
+                  <span className={props.runtimeJob?.status === "running" ? "env-progress-inline-indeterminate" : "env-progress-inline-done"} />
+                </span>
+                <span className="env-progress-label">
+                  {props.runtimeJob?.action} · {props.runtimeJob?.status} {props.installingDep ? `· ${props.installingElapsed}s` : ""}
+                </span>
+              </div>
+              <div className="env-log-tail" title={props.runtimeLogTail || "No logs yet"}>
+                {props.runtimeLogTail || "Waiting for logs..."}
+              </div>
+              <pre className="env-install-log">{props.runtimeInstallLog || "No logs yet."}</pre>
             </div>
-            <pre className="env-install-log">{props.runtimeInstallLog || "No logs yet."}</pre>
-          </div>
-        ) : null}
+          ) : null}
 
-        <div className="env-check-list">
-          {deps.map((dep) => {
-            const depName = runtimeDepName(dep);
-            return (
-              <RuntimeDependencyRow
-                key={dep.name}
-                dep={dep}
-                checking={props.checkingDeps[depName]}
-                installingDep={props.installingDep}
-                installingElapsed={props.installingElapsed}
-                runtimeJob={props.runtimeJob}
-                runtimeInstallLog={props.runtimeInstallLog}
-                runtimeLogTail={props.runtimeLogTail}
-                expandedLogDep={props.expandedLogDep}
-                onRunDependencyAction={props.onRunDependencyAction}
-                onToggleLog={props.onToggleLog}
-              />
-            );
-          })}
-        </div>
+          <div className="env-check-list">
+            {deps.map((dep) => {
+              const depName = runtimeDepName(dep);
+              return (
+                <RuntimeDependencyRow
+                  key={dep.name}
+                  dep={dep}
+                  checking={props.checkingDeps[depName]}
+                  installingDep={props.installingDep}
+                  installingElapsed={props.installingElapsed}
+                  runtimeJob={props.runtimeJob}
+                  runtimeInstallLog={props.runtimeInstallLog}
+                  runtimeLogTail={props.runtimeLogTail}
+                  expandedLogDep={props.expandedLogDep}
+                  onRunDependencyAction={props.onRunDependencyAction}
+                  onToggleLog={props.onToggleLog}
+                />
+              );
+            })}
+          </div>
 
-        <div className="toolbar" style={{ justifyContent: "space-between" }}>
-          <div />
-          <div className="toolbar">
-            <button className="chip" onClick={props.onDismiss}>Continue anyway</button>
-            <button className="chip" onClick={props.onClose}>Close</button>
+          <div className="toolbar" style={{ justifyContent: "space-between" }}>
+            <div />
+            <div className="toolbar">
+              <Button variant="ghost" size="sm" className="gt-settings-action-btn" onClick={props.onDismiss}>
+                Continue anyway
+              </Button>
+              <Button variant="secondary" size="sm" className="gt-settings-action-btn" onClick={props.onClose}>
+                Close
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

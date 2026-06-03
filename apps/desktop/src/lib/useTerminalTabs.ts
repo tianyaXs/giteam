@@ -15,7 +15,6 @@ export function useTerminalTabs() {
   const terminalSeqRef = useRef<Record<string, number>>(
     Object.fromEntries((initialSnapshot?.tabs || fallbackTabs).map((tab) => [tab.id, 0]))
   );
-  const terminalBufferedOutputRef = useRef<Record<string, string>>({});
 
   return {
     terminalTabs,
@@ -25,7 +24,6 @@ export function useTerminalTabs() {
     terminalSidebarVisible,
     setTerminalSidebarVisible,
     terminalTabCounterRef,
-    terminalSeqRef,
-    terminalBufferedOutputRef
+    terminalSeqRef
   };
 }

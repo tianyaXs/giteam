@@ -15,11 +15,15 @@ import type {
   OpencodeDetailedMessage,
   OpencodeDetailedPart
 } from "../../lib/opencodeSessions";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 
 type OpencodePreviewImage = {
   uri: string;
   filename?: string;
 };
+
+type OpencodeMessageAttachment = NonNullable<OpencodeChatMessage["attachments"]>[number];
 
 type OpencodeMessageRenderRow = {
   msg: OpencodeChatMessage;
@@ -134,6 +138,15 @@ function shouldCollapseMessage(text: string): boolean {
   if (!normalized) return false;
   const lineCount = normalized.split(/\r?\n/).length;
   return lineCount > COLLAPSE_LINE_LIMIT || normalized.length > COLLAPSE_CHAR_LIMIT;
+}
+
+function isMessageImageAttachment(attachment: OpencodeMessageAttachment): boolean {
+  return isImageAttachment({
+    kind: attachment.kind,
+    mime: attachment.mime || "",
+    dataUrl: attachment.uri,
+    filename: attachment.filename || ""
+  });
 }
 
 function collapsePreview(text: string): string {
@@ -268,6 +281,7 @@ export function OpencodeMessageStream({
   onOpenAttachment
 }: OpencodeMessageStreamProps) {
   const [timelineOpenState, setTimelineOpenState] = useState<Record<string, boolean>>({});
+  const [messageOpenState, setMessageOpenState] = useState<Record<string, boolean>>({});
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
   const openLocalFile = (absolutePath: string) => {
     onOpenAttachment(localPathToFileUrl(absolutePath), filenameFromPath(absolutePath));
@@ -404,16 +418,16 @@ export function OpencodeMessageStream({
                             : (running ? "编辑中" : "已编辑");
                           const isOpen = timelineOpenState[timelineKey] ?? false;
                           return (
-                            <details
+                            <Collapsible
                               key={timelineKey}
                               className={`opencode-tool-batch opencode-tool-batch-${group.batchKind}`}
                               open={isOpen}
-                              onToggle={(event) => {
-                                const target = event.currentTarget;
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              onOpenChange={(open) => {
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
                               }}
                             >
-                              <summary className="opencode-tool-batch-head">
+                              <CollapsibleTrigger asChild>
+                                <Button className="opencode-tool-batch-head" variant="ghost">
                                 <strong>{label}</strong>
                                 <span className="opencode-tool-batch-count">{group.parts.length} {noun}</span>
                                 <span className="opencode-context-caret" aria-hidden="true">
@@ -421,8 +435,9 @@ export function OpencodeMessageStream({
                                     <path d="M4 2.5 8 6 4 9.5" />
                                   </svg>
                                 </span>
-                              </summary>
-                              <div className="opencode-exec-list opencode-tool-batch-list">
+                                </Button>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent className="opencode-exec-list opencode-tool-batch-list">
                                 {group.parts.map((part, partIndex) => (
                                   <OpencodeExecutionPartView
                                     key={`${group.key}:${part.id || partIndex}`}
@@ -433,8 +448,8 @@ export function OpencodeMessageStream({
                                     onOpenToolFile={onOpenToolFile}
                                   />
                                 ))}
-                              </div>
-                            </details>
+                              </CollapsibleContent>
+                            </Collapsible>
                           );
                         }
 
@@ -444,16 +459,16 @@ export function OpencodeMessageStream({
                           const summary = summarizeContextCounts(counts) || "已收集上下文";
                           const isOpen = timelineOpenState[timelineKey] ?? false;
                           return (
-                            <details
+                            <Collapsible
                               key={timelineKey}
                               className="opencode-exec-context"
                               open={isOpen}
-                              onToggle={(event) => {
-                                const target = event.currentTarget;
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              onOpenChange={(open) => {
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
                               }}
                             >
-                              <summary className="opencode-exec-context-head">
+                              <CollapsibleTrigger asChild>
+                                <Button className="opencode-exec-context-head" variant="ghost">
                                 <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
                                   已探索
                                 </strong>
@@ -465,8 +480,9 @@ export function OpencodeMessageStream({
                                     <path d="M4 2.5 8 6 4 9.5" />
                                   </svg>
                                 </span>
-                              </summary>
-                              <div className="opencode-exec-list">
+                                </Button>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent className="opencode-exec-list">
                                 {group.parts.map((part, partIndex) => (
                                   <OpencodeExecutionPartView
                                     key={`${group.key}:${partIndex}`}
@@ -477,8 +493,8 @@ export function OpencodeMessageStream({
                                     onOpenToolFile={onOpenToolFile}
                                   />
                                 ))}
-                              </div>
-                            </details>
+                              </CollapsibleContent>
+                            </Collapsible>
                           );
                         }
 
@@ -505,16 +521,16 @@ export function OpencodeMessageStream({
 
                           const thinkIsOpen = timelineOpenState[timelineKey] ?? false;
                           return (
-                            <details
+                            <Collapsible
                               key={timelineKey}
                               className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}
                               open={thinkIsOpen}
-                              onToggle={(event) => {
-                                const target = event.currentTarget;
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: target.open }));
+                              onOpenChange={(open) => {
+                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
                               }}
                             >
-                              <summary className="opencode-think-card-summary">
+                              <CollapsibleTrigger asChild>
+                                <Button className="opencode-think-card-summary" variant="ghost">
                                 <span className="opencode-think-label">
                                   {activeThink ? "思考中" : "已思考"}
                                 </span>
@@ -533,11 +549,12 @@ export function OpencodeMessageStream({
                                     </span>
                                   </span>
                                 ) : null}
-                              </summary>
-                              <div className="opencode-msg-body">
+                                </Button>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent className="opencode-msg-body">
                                 {renderMarkdown(text, activeThink)}
-                              </div>
-                            </details>
+                              </CollapsibleContent>
+                            </Collapsible>
                           );
                         }
 
@@ -586,79 +603,94 @@ export function OpencodeMessageStream({
                 )
               ) : msg.content.trim() || (msg.attachments && msg.attachments.length > 0) ? (
                 <div className="opencode-msg-body">
-                  {msg.attachments && msg.attachments.length > 0 ? (
-                    <div className="opencode-msg-attachments">
-                      {msg.attachments.map((attachment, imageIndex) => {
-                        if (isImageAttachment({
-                          kind: attachment.kind,
-                          mime: attachment.mime || "",
-                          dataUrl: attachment.uri,
-                          filename: attachment.filename || ""
-                        })) {
-                          return (
-                            <button
-                              key={attachment.id}
-                              type="button"
-                              className="opencode-msg-image-btn"
-                              onClick={() => onPreviewImageGroup(
-                                (msg.attachments || [])
-                                  .filter((item) => isImageAttachment({
-                                    kind: item.kind,
-                                    mime: item.mime || "",
-                                    dataUrl: item.uri,
-                                    filename: item.filename || ""
-                                  }))
-                                  .map((item) => ({ uri: item.uri, filename: item.filename })),
-                                Math.max(0, (msg.attachments || [])
-                                  .filter((item) => isImageAttachment({
-                                    kind: item.kind,
-                                    mime: item.mime || "",
-                                    dataUrl: item.uri,
-                                    filename: item.filename || ""
-                                  }))
-                                  .findIndex((item) => item.id === attachment.id))
-                              )}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                onCopyAttachmentUri(attachment.uri);
-                              }}
-                              title="点击查看，右键复制图片数据"
-                            >
-                              <img className="opencode-msg-image" src={attachment.uri} alt={attachment.filename || "attachment"} />
-                            </button>
-                          );
-                        }
-                        return (
-                          <button
-                            key={attachment.id}
-                            type="button"
-                            className="opencode-msg-file-btn"
-                            onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              onCopyAttachmentUri(attachment.uri);
-                            }}
-                            title={attachment.filename || attachment.mime || "附件"}
-                          >
-                            <span className="opencode-msg-file-name">{attachment.filename || "attachment"}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+                  {(() => {
+                    const attachments = msg.attachments || [];
+                    const imageAttachments = attachments.filter(isMessageImageAttachment);
+                    const fileAttachments = attachments.filter((attachment) => !isMessageImageAttachment(attachment));
+                    const previewImages = imageAttachments.map((item) => ({
+                      uri: item.uri,
+                      filename: item.filename
+                    }));
+                    if (attachments.length <= 0) return null;
+
+                    return (
+                      <div
+                        className={[
+                          "opencode-msg-attachments",
+                          imageAttachments.length === 1 ? "is-single-image" : "",
+                          imageAttachments.length > 1 ? "is-image-grid" : "",
+                          imageAttachments.length > 0 && fileAttachments.length > 0 ? "is-mixed" : ""
+                        ].filter(Boolean).join(" ")}
+                      >
+                        {imageAttachments.length > 0 ? (
+                          <div className="opencode-msg-image-grid" aria-label="图片附件">
+                            {imageAttachments.map((attachment) => {
+                              return (
+                                <Button
+                                  key={attachment.id}
+                                  className="opencode-msg-image-btn"
+                                  onClick={() => onPreviewImageGroup(
+                                    previewImages,
+                                    Math.max(0, imageAttachments.findIndex((item) => item.id === attachment.id))
+                                  )}
+                                  onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    onCopyAttachmentUri(attachment.uri);
+                                  }}
+                                  title="点击查看，右键复制图片数据"
+                                  variant="ghost"
+                                >
+                                  <img className="opencode-msg-image" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        {fileAttachments.length > 0 ? (
+                          <div className="opencode-msg-file-list" aria-label="文件附件">
+                            {fileAttachments.map((attachment) => (
+                              <Button
+                                key={attachment.id}
+                                className="opencode-msg-file-btn"
+                                onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  onCopyAttachmentUri(attachment.uri);
+                                }}
+                                title={attachment.filename || attachment.mime || "附件"}
+                                variant="ghost"
+                              >
+                                <span className="opencode-msg-file-name">{attachment.filename || "attachment"}</span>
+                              </Button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                   {msg.content.trim() ? (
                     shouldCollapseMessage(msg.content) ? (
-                      <details className="opencode-msg-collapsible">
-                        <summary className="opencode-msg-collapsible-summary">
-                          <span className="opencode-msg-collapsible-preview">
+                      <Collapsible
+                        className="opencode-msg-collapsible"
+                        open={messageOpenState[msg.id] ?? false}
+                        onOpenChange={(open) => {
+                          setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
+                        }}
+                      >
+                        {messageOpenState[msg.id] ? null : (
+                          <div className="opencode-msg-collapsible-preview">
                             {renderMarkdown(collapsePreview(msg.content))}
-                          </span>
-                          <span className="opencode-msg-collapsible-toggle">展开全文</span>
-                        </summary>
-                        <div className="opencode-msg-collapsible-body">
+                          </div>
+                        )}
+                        <CollapsibleContent className="opencode-msg-collapsible-body">
                           {renderMarkdown(msg.content)}
-                        </div>
-                      </details>
+                        </CollapsibleContent>
+                        <CollapsibleTrigger asChild>
+                          <Button className="opencode-msg-collapsible-toggle" size="sm" variant="ghost">
+                            {messageOpenState[msg.id] ? "收起" : "展开全文"}
+                          </Button>
+                        </CollapsibleTrigger>
+                      </Collapsible>
                     ) : renderMarkdown(msg.content)
                   ) : null}
                 </div>

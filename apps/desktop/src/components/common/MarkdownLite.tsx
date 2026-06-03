@@ -4,6 +4,7 @@ import { cjk as streamdownCjk } from "@streamdown/cjk";
 import { createCodePlugin } from "@streamdown/code";
 import { math as streamdownMath } from "@streamdown/math";
 import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
+import { Button } from "../ui/button";
 
 const streamdownCode = createCodePlugin({
   themes: ["github-light", "github-dark"]
@@ -384,53 +385,53 @@ function renderPathButton(
 ) {
   if (target.kind === "local-directory" && props.onOpenLocalDirectory) {
     return (
-      <button
-        type="button"
+      <Button
         className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
         title={target.absolutePath}
         onClick={() => props.onOpenLocalDirectory?.(target.absolutePath)}
+        variant="ghost"
       >
         {compact ? getPathDisplayName(target.absolutePath) : children}
-      </button>
+      </Button>
     );
   }
 
   if (target.kind === "local-file" && props.onOpenLocalFile) {
     return (
-      <button
-        type="button"
+      <Button
         className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
         title={target.absolutePath}
         onClick={() => props.onOpenLocalFile?.(target.absolutePath, target.line)}
+        variant="ghost"
       >
         {compact ? getPathDisplayName(target.absolutePath, target.line) : children}
-      </button>
+      </Button>
     );
   }
 
   if (target.kind === "workspace-file" && props.onOpenWorkspacePath) {
     return (
-      <button
-        type="button"
+      <Button
         className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
         title={target.relativePath}
         onClick={() => props.onOpenWorkspacePath?.(target.relativePath, target.line)}
+        variant="ghost"
       >
         {compact ? getPathDisplayName(target.relativePath, target.line) : children}
-      </button>
+      </Button>
     );
   }
 
   if (target.kind === "workspace-directory" && props.onOpenWorkspaceDirectory) {
     return (
-      <button
-        type="button"
+      <Button
         className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
         title={target.relativePath}
         onClick={() => props.onOpenWorkspaceDirectory?.(target.relativePath)}
+        variant="ghost"
       >
         {compact ? getPathDisplayName(target.relativePath) : children}
-      </button>
+      </Button>
     );
   }
 

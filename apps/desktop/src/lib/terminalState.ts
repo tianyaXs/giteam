@@ -14,8 +14,6 @@ export type TerminalTabState = {
   completionToken: string;
 };
 
-export type TerminalCompletionGroup = "Directories" | "Files" | "Commands";
-
 const TERMINAL_TABS_STORAGE_KEY = "giteam.terminal-tabs.v1";
 
 export function createTerminalTabState(id: string, title: string, cwd = ""): TerminalTabState {
@@ -53,39 +51,6 @@ export function appendTerminalError(tab: TerminalTabState, message: string): Ter
   return {
     ...tab,
     output: `${tab.output}${tab.output.endsWith("\n") || !tab.output ? "" : "\n"}[error] ${message}\n`
-  };
-}
-
-export function browseTerminalHistoryState(
-  tab: TerminalTabState,
-  direction: "older" | "newer"
-): TerminalTabState {
-  if (tab.history.length === 0) return tab;
-  if (direction === "older") {
-    const next = tab.historyIndex < 0 ? 0 : Math.min(tab.historyIndex + 1, tab.history.length - 1);
-    return {
-      ...tab,
-      historyIndex: next,
-      historyDraft: tab.historyIndex < 0 ? tab.input : tab.historyDraft,
-      input: tab.history[next] || ""
-    };
-  }
-  if (tab.historyIndex <= 0) {
-    return { ...tab, historyIndex: -1, input: tab.historyDraft };
-  }
-  const next = tab.historyIndex - 1;
-  return { ...tab, historyIndex: next, input: tab.history[next] || "" };
-}
-
-export function clearTerminalCompletion(tab: TerminalTabState, input: string): TerminalTabState {
-  return {
-    ...tab,
-    input,
-    historyIndex: -1,
-    historyDraft: input,
-    completionItems: [],
-    completionIndex: 0,
-    completionToken: ""
   };
 }
 
@@ -127,79 +92,4 @@ export function writeTerminalTabSnapshot(activeId: string, counter: number, tabs
   } catch {
     // ignore terminal snapshot persistence failures
   }
-}
-
-export function sanitizeTerminalOutput(text: string): string {
-  const cleaned = text
-    .replace(/\x1B\[[0-9;]*D/g, "\r")
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B\][^\x07]*(\x07|\x1B\\)/g, "")
-    .replace(/\x1B[P^_][\s\S]*?\x1B\\/g, "")
-    .replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/�\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/^.*openclaw\.zsh:\d+:\s*command not found:\s*compdef\n?/gm, "");
-
-  const lines = [""];
-  let col = 0;
-  for (const ch of cleaned) {
-    if (ch === "\b" || ch === "\u007f") {
-      if (col > 0) col -= 1;
-      continue;
-    }
-    if (ch === "\r") {
-      col = 0;
-      continue;
-    }
-    if (ch === "\n") {
-      lines.push("");
-      col = 0;
-      continue;
-    }
-    const current = lines.length - 1;
-    const line = lines[current] || "";
-    if (col >= line.length) {
-      lines[current] = `${line}${" ".repeat(col - line.length)}${ch}`;
-    } else {
-      lines[current] = `${line.slice(0, col)}${ch}${line.slice(col + 1)}`;
-    }
-    col += 1;
-  }
-  return lines.join("\n");
-}
-
-export function splitTerminalOutputForInput(text: string): { body: string; prompt: string } {
-  const source = text || "";
-  const lines = source.split(/\r?\n/);
-  let idx = lines.length - 1;
-  while (idx >= 0 && !lines[idx]?.trim()) idx -= 1;
-  if (idx < 0) return { body: "", prompt: "" };
-  const last = lines[idx] || "";
-  const looksLikePrompt = /[#$%]\s*$/.test(last) || /\)\s+[^\n]*\s[%#$]\s*$/.test(last);
-  if (!looksLikePrompt) return { body: source, prompt: "" };
-  const bodyLines = lines.slice(0, idx).filter((line) => !/^\s*%\s*$/.test(line || ""));
-  const body = bodyLines.join("\n");
-  return { body, prompt: last };
-}
-
-export function escapeTerminalCompletionValue(value: string): string {
-  if (typeof window !== "undefined" && window.navigator.userAgent.toLowerCase().includes("win")) {
-    return value.replace(/([\s\\"'`$&|<>^()])/g, "^$1");
-  }
-  return value.replace(/([\s\\"'`$])/g, "\\$1");
-}
-
-export function applyTerminalCompletionCandidate(input: string, token: string, candidate: string): string {
-  if (!token) return input;
-  const isDir = candidate.endsWith("/") || candidate.endsWith("\\");
-  const replacement = isDir
-    ? escapeTerminalCompletionValue(candidate)
-    : `${escapeTerminalCompletionValue(candidate)} `;
-  const keep = input.length - token.length;
-  return `${input.slice(0, Math.max(0, keep))}${replacement}`;
-}
-
-export function getTerminalCompletionGroup(input: string, item: string): TerminalCompletionGroup {
-  const beforeToken = input.slice(0, Math.max(0, input.length - (input.split(/\s+/).pop() || "").length)).trim();
-  if (!beforeToken) return "Commands";
-  return (item.endsWith("/") || item.endsWith("\\")) ? "Directories" : "Files";
 }

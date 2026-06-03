@@ -59,6 +59,18 @@ fn terminal_proxy_envs() -> Vec<(String, String)> {
     ]
 }
 
+fn terminal_shell_envs() -> Vec<(String, String)> {
+    let mut envs = terminal_proxy_envs();
+    // The desktop app owns terminal session state; avoid inheriting Apple Terminal's
+    // zsh session restore, which prints "Restored session" on every embedded shell.
+    envs.extend([
+        ("SHELL_SESSIONS_DISABLE".to_string(), "1".to_string()),
+        ("TERM_SESSION_ID".to_string(), String::new()),
+        ("SHELL_SESSION_DID_INIT".to_string(), "1".to_string()),
+    ]);
+    envs
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoTerminalSnapshot {
@@ -428,7 +440,7 @@ fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSes
     let mut child = Command::new("/usr/bin/script")
         .args(["-q", "/dev/null", "/bin/zsh", "-il"])
         .current_dir(repo_path)
-        .envs(terminal_proxy_envs())
+        .envs(terminal_shell_envs())
         .env("TERM", "xterm-256color")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -1,294 +1,277 @@
-import type { CSSProperties, KeyboardEvent, RefObject } from "react";
-import { Fragment } from "react";
-import { createPortal } from "react-dom";
-import { CloseIcon, MenuIcon, PlusIcon } from "../icons";
-import {
-  getTerminalCompletionGroup,
-  type TerminalTabState
-} from "../../lib/terminalState";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { ListIcon, PlusIcon, SquareTerminalIcon, Trash2Icon, XIcon } from "lucide-react";
+import type { TerminalTabState } from "../../lib/terminalState";
+import { Button } from "../ui/button";
 
-type TerminalTabPatch = Partial<TerminalTabState> | ((prev: TerminalTabState) => TerminalTabState);
-
-type TerminalView = {
-  body: string;
-  prompt: string;
-};
+function getTerminalDisplayTitle(tab?: TerminalTabState): string {
+  const raw = String(tab?.title || "").trim();
+  if (!raw || /^终端\s*\d+$/i.test(raw) || /^terminal\s*\d+$/i.test(raw)) return "zsh";
+  return raw;
+}
 
 type TerminalPanelProps = {
   tabs: TerminalTabState[];
   activeTabId: string;
   activeTab?: TerminalTabState;
-  activeView: TerminalView;
-  ghostText: string;
   sidebarVisible: boolean;
-  inputNearTop: boolean;
-  bodyRef: RefObject<HTMLDivElement>;
-  logRef: RefObject<HTMLDivElement>;
-  inputShellRef: RefObject<HTMLDivElement>;
-  inputRef: RefObject<HTMLTextAreaElement>;
-  hasTextSelection: () => boolean;
-  markTextSelecting: (selecting: boolean) => void;
-  flushBufferedOutput: (tabId?: string) => void;
+  theme: "dark" | "light";
   onToggleSidebar: () => void;
   onCreateTab: () => void;
   onCloseTab: (tabId: string) => void;
   onSelectTab: (tabId: string) => void;
   onClearActiveTab: () => void | Promise<void>;
-  onUpdateTab: (tabId: string, patch: TerminalTabPatch) => void;
-  onRunCommand: () => void | Promise<void>;
-  onBrowseHistory: (tabId: string, direction: "older" | "newer") => void;
-  onApplyCompletion: (tab: TerminalTabState) => void | Promise<void>;
-  onSelectCompletion: (tab: TerminalTabState, index: number) => void;
-  onInterrupt: (tab: TerminalTabState) => void | Promise<void>;
+  onInput: (tabId: string, data: string) => void | Promise<void>;
 };
 
 export function TerminalPanel({
   tabs,
   activeTabId,
   activeTab,
-  activeView,
-  ghostText,
   sidebarVisible,
-  inputNearTop,
-  bodyRef,
-  logRef,
-  inputShellRef,
-  inputRef,
-  hasTextSelection,
-  markTextSelecting,
-  flushBufferedOutput,
+  theme,
   onToggleSidebar,
   onCreateTab,
   onCloseTab,
   onSelectTab,
   onClearActiveTab,
-  onUpdateTab,
-  onRunCommand,
-  onBrowseHistory,
-  onApplyCompletion,
-  onSelectCompletion,
-  onInterrupt
+  onInput
 }: TerminalPanelProps) {
-  const activeInput = activeTab?.input || "";
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const activeTabIdRef = useRef(activeTabId);
+  const writtenLengthByTabRef = useRef<Record<string, number>>({});
+  const displayedTabIdRef = useRef("");
+  const startupWriteTimersRef = useRef<Record<string, number>>({});
+  const onInputRef = useRef(onInput);
+  const activeTitle = getTerminalDisplayTitle(activeTab);
+  const terminalCountLabel = `${tabs.length} ${tabs.length === 1 ? "Terminal" : "Terminals"}`;
 
-  function finishTextSelection() {
-    window.setTimeout(() => {
-      if (hasTextSelection()) return;
-      markTextSelecting(false);
-      flushBufferedOutput(activeTabId);
-    }, 0);
-  }
+  activeTabIdRef.current = activeTabId;
+  onInputRef.current = onInput;
 
-  function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (!activeTab) return;
-    if (event.key === "Escape") {
-      onUpdateTab(activeTab.id, { completionItems: [], completionIndex: 0, completionToken: "" });
+  const terminalTheme = useMemo(() => (
+    theme === "dark"
+      ? {
+        background: "#0b0f14",
+        foreground: "#d6deeb",
+        cursor: "#d6deeb",
+        selectionBackground: "#2d4f78",
+        black: "#111827",
+        red: "#f87171",
+        green: "#8bd49c",
+        yellow: "#f5d67b",
+        blue: "#82aaff",
+        magenta: "#c792ea",
+        cyan: "#89ddff",
+        white: "#d6deeb"
+      }
+      : {
+        background: "#ffffff",
+        foreground: "#1f2937",
+        cursor: "#1f2937",
+        selectionBackground: "#cfe4ff",
+        black: "#111827",
+        red: "#dc2626",
+        green: "#15803d",
+        yellow: "#a16207",
+        blue: "#2563eb",
+        magenta: "#9333ea",
+        cyan: "#0891b2",
+        white: "#f8fafc"
+      }
+  ), [theme]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    const fitAddon = new FitAddon();
+    const terminal = new Terminal({
+      allowProposedApi: false,
+      convertEol: true,
+      cursorBlink: true,
+      cursorStyle: "block",
+      disableStdin: false,
+      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontSize: 12,
+      lineHeight: 1.28,
+      macOptionIsMeta: true,
+      scrollback: 6000,
+      theme: terminalTheme
+    });
+
+    terminal.loadAddon(fitAddon);
+    terminal.open(host);
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+
+    const inputDisposable = terminal.onData((data) => {
+      const tabId = activeTabIdRef.current;
+      if (!tabId) return;
+      void onInputRef.current(tabId, data);
+    });
+
+    const resize = () => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // xterm can throw while its host is temporarily hidden during pane transitions.
+      }
+    };
+    const ro = new ResizeObserver(resize);
+    ro.observe(host);
+    requestAnimationFrame(resize);
+
+    return () => {
+      ro.disconnect();
+      for (const timer of Object.values(startupWriteTimersRef.current)) {
+        window.clearTimeout(timer);
+      }
+      startupWriteTimersRef.current = {};
+      inputDisposable.dispose();
+      terminal.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    terminalRef.current.options.theme = terminalTheme;
+  }, [terminalTheme]);
+
+  useEffect(() => {
+    for (const tab of tabs) {
+      if (writtenLengthByTabRef.current[tab.id] !== undefined) continue;
+      writtenLengthByTabRef.current[tab.id] = 0;
+    }
+  }, [tabs]);
+
+  useLayoutEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !activeTab) return;
+    const output = activeTab.output || "";
+    const writtenLength = writtenLengthByTabRef.current[activeTab.id] ?? 0;
+    const writeStartupFrame = () => {
+      terminal.reset();
+      terminal.write(output);
+      writtenLengthByTabRef.current[activeTab.id] = output.length;
+      displayedTabIdRef.current = activeTab.id;
+      delete startupWriteTimersRef.current[activeTab.id];
+    };
+
+    if (displayedTabIdRef.current !== activeTab.id) {
+      if (!output) {
+        terminal.reset();
+        writtenLengthByTabRef.current[activeTab.id] = 0;
+        displayedTabIdRef.current = activeTab.id;
+        return;
+      }
+      const existingTimer = startupWriteTimersRef.current[activeTab.id];
+      if (existingTimer) window.clearTimeout(existingTimer);
+      startupWriteTimersRef.current[activeTab.id] = window.setTimeout(writeStartupFrame, 45);
       return;
     }
-    if (activeTab.completionItems.length > 0 && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      event.preventDefault();
-      onUpdateTab(activeTab.id, (prev) => ({
-        ...prev,
-        completionIndex: event.key === "ArrowUp"
-          ? (prev.completionIndex - 1 + prev.completionItems.length) % prev.completionItems.length
-          : (prev.completionIndex + 1) % prev.completionItems.length
-      }));
+
+    if (writtenLength > output.length) {
+      terminal.reset();
+      terminal.write(output);
+      writtenLengthByTabRef.current[activeTab.id] = output.length;
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void onRunCommand();
-      return;
+
+    if (writtenLength === 0) {
+      const existingTimer = startupWriteTimersRef.current[activeTab.id];
+      if (existingTimer) window.clearTimeout(existingTimer);
+      startupWriteTimersRef.current[activeTab.id] = window.setTimeout(writeStartupFrame, 45);
+    } else if (output.length > writtenLength) {
+      const existingTimer = startupWriteTimersRef.current[activeTab.id];
+      if (existingTimer) {
+        window.clearTimeout(existingTimer);
+        startupWriteTimersRef.current[activeTab.id] = window.setTimeout(writeStartupFrame, 45);
+        return;
+      }
+      terminal.write(output.slice(writtenLength));
+      writtenLengthByTabRef.current[activeTab.id] = output.length;
     }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      onBrowseHistory(activeTab.id, "older");
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      onBrowseHistory(activeTab.id, "newer");
-      return;
-    }
-    if (event.key === "Tab") {
-      event.preventDefault();
-      void onApplyCompletion(activeTab);
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && !activeTab.input.trim()) {
-      event.preventDefault();
-      void onInterrupt(activeTab);
-    }
-  }
+  }, [activeTab?.id, activeTab?.output]);
+
+  useEffect(() => {
+    terminalRef.current?.focus();
+    requestAnimationFrame(() => {
+      try {
+        fitAddonRef.current?.fit();
+      } catch {
+        // ignore hidden-pane fit failures
+      }
+    });
+  }, [activeTabId, sidebarVisible]);
 
   return (
     <div className="gt-panel-stack gt-panel-stack-terminal">
-      <div className="gt-terminal-header">
-        <button
-          type="button"
-          className={sidebarVisible ? "chip" : "chip active"}
-          onClick={onToggleSidebar}
-          title={sidebarVisible ? "隐藏终端列表" : "显示终端列表"}
-        >
-          <MenuIcon />
-        </button>
-        <span className="gt-terminal-label">zsh</span>
-        <div className="gt-terminal-actions">
-          <button className="chip" onClick={() => void onClearActiveTab()}>Clear</button>
+      <div className={sidebarVisible ? "gt-terminal-header has-sidebar" : "gt-terminal-header"}>
+        {sidebarVisible ? (
+          <div className="gt-terminal-header-rail">
+            <Button className="gt-terminal-icon-btn" onClick={onToggleSidebar} title="隐藏终端列表" variant="ghost" size="icon">
+              <ListIcon />
+            </Button>
+            <span className="gt-terminal-sidebar-meta">{terminalCountLabel}</span>
+            <Button className="gt-terminal-icon-btn" onClick={onCreateTab} title="新建终端" variant="ghost" size="icon">
+              <PlusIcon />
+            </Button>
+          </div>
+        ) : null}
+        <div className="gt-terminal-header-main">
+          {!sidebarVisible ? (
+            <Button className="gt-terminal-icon-btn active" onClick={onToggleSidebar} title="显示终端列表" variant="ghost" size="icon">
+              <ListIcon />
+            </Button>
+          ) : null}
+          <span className="gt-terminal-label">{activeTitle}</span>
+          <Button className="gt-terminal-icon-btn gt-terminal-clear-btn" onClick={() => void onClearActiveTab()} title="清空终端" variant="ghost" size="icon">
+            <Trash2Icon />
+          </Button>
         </div>
       </div>
+
       <div className={sidebarVisible ? "gt-terminal-layout" : "gt-terminal-layout sidebar-hidden"}>
         {sidebarVisible ? (
           <aside className="gt-terminal-sidebar">
-            <div className="gt-terminal-sidebar-head">
-              <strong>{tabs.length} Terminals</strong>
-              <button type="button" className="chip" onClick={onCreateTab} title="新建终端"><PlusIcon /></button>
-            </div>
             <div className="gt-terminal-sidebar-list">
               {tabs.map((tab) => (
-                <button
-                  key={`terminal-side-${tab.id}`}
-                  type="button"
-                  className={tab.id === activeTabId ? "gt-terminal-side-item active" : "gt-terminal-side-item"}
-                  onClick={() => onSelectTab(tab.id)}
-                >
-                  <span className="gt-terminal-side-item-title">{tab.title}</span>
+                <div key={`terminal-side-${tab.id}`} className={tab.id === activeTabId ? "gt-terminal-side-item active" : "gt-terminal-side-item"}>
+                  <Button className="gt-terminal-side-item-trigger" onClick={() => onSelectTab(tab.id)} variant="ghost">
+                    <span className="gt-terminal-side-item-icon" aria-hidden="true">
+                      <SquareTerminalIcon />
+                    </span>
+                    <span className="gt-terminal-side-item-title">{getTerminalDisplayTitle(tab)}</span>
+                  </Button>
                   {tabs.length > 1 ? (
-                    <span
+                    <Button
                       className="gt-terminal-side-item-close"
                       onClick={(event) => {
                         event.stopPropagation();
                         void onCloseTab(tab.id);
                       }}
-                      aria-hidden="true"
+                      aria-label={`关闭终端 ${tab.title}`}
+                      variant="ghost"
+                      size="icon"
                     >
-                      <CloseIcon width={14} height={14} />
-                    </span>
+                      <XIcon />
+                    </Button>
                   ) : null}
-                </button>
+                </div>
               ))}
             </div>
           </aside>
         ) : null}
-        <div
-          className="gt-terminal-body"
-          ref={bodyRef}
-          onClick={() => {
-            if (hasTextSelection()) return;
-            inputRef.current?.focus();
-          }}
-        >
-          <div
-            ref={logRef}
-            className="gt-terminal-console"
-            onMouseDown={(event) => {
-              if ((event.target as HTMLElement).closest(".gt-terminal-output")) markTextSelecting(true);
-            }}
-            onMouseUp={finishTextSelection}
-            onCopy={finishTextSelection}
-          >
-            <pre className="gt-terminal-output">{activeView.body || ""}</pre>
-            <div className="gt-terminal-inline-input">
-              <span className="gt-terminal-prompt">{activeView.prompt || ""}</span>
-              <div className="gt-terminal-input-shell" ref={inputShellRef}>
-                <textarea
-                  ref={inputRef}
-                  className="gt-terminal-input"
-                  rows={1}
-                  value={activeInput}
-                  onChange={(event) => {
-                    if (!activeTab) return;
-                    onUpdateTab(activeTab.id, (prev) => ({
-                      ...prev,
-                      input: event.target.value,
-                      historyIndex: -1,
-                      historyDraft: event.target.value,
-                      completionItems: [],
-                      completionIndex: 0,
-                      completionToken: ""
-                    }));
-                  }}
-                  onKeyDown={handleInputKeyDown}
-                  placeholder=""
-                  spellCheck={false}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                />
-                {ghostText ? (
-                  <span
-                    className="gt-terminal-ghost"
-                    style={{ left: `${Math.max(0, activeInput.length) * 7.05}px` }}
-                  >
-                    {ghostText}
-                  </span>
-                ) : null}
-                <TerminalCompletionPopover
-                  activeTab={activeTab}
-                  inputNearTop={inputNearTop}
-                  inputShellRef={inputShellRef}
-                  onSelectCompletion={onSelectCompletion}
-                />
-              </div>
-            </div>
-          </div>
+        <div className="gt-terminal-body">
+          <div className="gt-terminal-xterm-host" ref={hostRef} />
         </div>
       </div>
     </div>
-  );
-}
-
-function TerminalCompletionPopover({
-  activeTab,
-  inputNearTop,
-  inputShellRef,
-  onSelectCompletion
-}: {
-  activeTab?: TerminalTabState;
-  inputNearTop: boolean;
-  inputShellRef: RefObject<HTMLDivElement>;
-  onSelectCompletion: (tab: TerminalTabState, index: number) => void;
-}) {
-  if (!activeTab?.completionItems?.length) return null;
-
-  const items = activeTab.completionItems;
-  const idx = activeTab.completionIndex;
-  const popoverContent = (
-    <div className={`gt-terminal-completion-popover${inputNearTop ? " is-below" : ""}`}>
-      {items.map((item, i) => {
-        const group = getTerminalCompletionGroup(activeTab.input, item);
-        const prev = i > 0 ? getTerminalCompletionGroup(activeTab.input, items[i - 1]) : "";
-        return (
-          <Fragment key={`terminal-completion-wrap-${item}-${i}`}>
-            {group !== prev ? <div className="gt-terminal-completion-group">{group}</div> : null}
-            <button
-              type="button"
-              className={i === idx ? "gt-terminal-completion-item active" : "gt-terminal-completion-item"}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => onSelectCompletion(activeTab, i)}
-            >
-              <span>{item}</span>
-              {i === idx ? <kbd>TAB</kbd> : null}
-            </button>
-          </Fragment>
-        );
-      })}
-    </div>
-  );
-
-  if (!inputNearTop) return popoverContent;
-
-  const inputRect = inputShellRef.current?.getBoundingClientRect();
-  const style: CSSProperties = inputRect ? {
-    position: "fixed",
-    left: inputRect.left,
-    top: inputRect.bottom + 6,
-    minWidth: Math.min(420, inputRect.width),
-    maxWidth: Math.min(560, inputRect.width),
-    zIndex: 9999
-  } : {};
-  return createPortal(
-    <div style={style}>{popoverContent}</div>,
-    document.body
   );
 }

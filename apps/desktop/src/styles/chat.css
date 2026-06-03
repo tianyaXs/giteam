@@ -639,6 +639,10 @@
   overflow: hidden;
 }
 
+.gt-module-dialog {
+  padding: 0;
+}
+
 .gt-module-head {
   display: flex;
   align-items: flex-start;
@@ -649,6 +653,11 @@
 }
 
 .gt-module-head h2 {
+  margin: var(--gt-space-0-5) 0 0;
+  font-size: var(--gt-text-xl);
+}
+
+.gt-module-head .gt-dialog-title {
   margin: var(--gt-space-0-5) 0 0;
   font-size: var(--gt-text-xl);
 }
@@ -669,7 +678,8 @@
   overflow-x: auto;
 }
 
-.gt-module-tabs button {
+.gt-module-tabs button,
+.gt-module-tabs [role="radio"] {
   border: 1px solid var(--border);
   border-radius: var(--gt-radius-pill);
   background: transparent;
@@ -678,7 +688,8 @@
   font-size: var(--gt-text-sm);
 }
 
-.gt-module-tabs button.active {
+.gt-module-tabs button.active,
+.gt-module-tabs [data-state="on"] {
   border-color: var(--primary);
   background: var(--primary-soft);
   color: var(--text);
@@ -892,7 +903,8 @@
   padding: 0 var(--gt-space-1);
 }
 
-.gt-skill-scope-picker button {
+.gt-skill-scope-picker button,
+.gt-skill-filter-tabs button {
   border: 1px solid transparent;
   border-radius: var(--gt-radius-pill);
   background: transparent;
@@ -901,7 +913,10 @@
   font-size: var(--gt-text-sm);
 }
 
-.gt-skill-scope-picker button.active {
+.gt-skill-scope-picker button.active,
+.gt-skill-scope-picker [data-state="on"],
+.gt-skill-filter-tabs button.active,
+.gt-skill-filter-tabs [data-state="on"] {
   border-color: var(--primary);
   background: var(--primary-soft);
   color: var(--text);
@@ -1052,21 +1067,6 @@
   gap: var(--gt-space-2);
 }
 
-.gt-skill-filter-tabs button {
-  border: 1px solid var(--border);
-  border-radius: var(--gt-radius-pill);
-  background: transparent;
-  color: var(--muted);
-  padding: var(--gt-space-2) var(--gt-space-2-5);
-  font-size: var(--gt-text-sm);
-}
-
-.gt-skill-filter-tabs button.active {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-  color: var(--text);
-}
-
 .gt-module-row-desc,
 .gt-module-row-meta {
   min-width: 0;
@@ -1116,15 +1116,10 @@
   color: transparent;
   cursor: pointer;
   padding: 0;
-  position: relative;
   transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.gt-switch::after {
-  content: "";
-  position: absolute;
-  left: 2px;
-  top: 2px;
+.gt-switch > span {
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -1133,18 +1128,13 @@
   transition: transform 170ms cubic-bezier(.2,.8,.2,1), background 150ms ease;
 }
 
-.gt-switch-thumb { display: none; }
-
-.gt-switch.on,
-.gt-switch.active {
+.gt-switch[data-state="checked"] {
   border-color: color-mix(in srgb, #32d06d 78%, var(--line));
   background: #2ebd5b;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, white 14%, transparent);
 }
 
-.gt-switch.on::after,
-.gt-switch.active::after {
-  transform: translateX(20px);
+.gt-switch[data-state="checked"] > span {
   background: #fff;
 }
 
@@ -2012,37 +2002,6 @@
   font-size: var(--gt-text-xs);
 }
 
-.opencode-config-switch {
-  width: 36px;
-  height: 22px;
-  border-radius: var(--gt-radius-pill);
-  background: color-mix(in srgb, var(--text) 14%, transparent);
-  position: relative;
-  transition: background 150ms ease;
-}
-
-.opencode-config-switch::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: var(--gt-radius-pill);
-  background: color-mix(in srgb, var(--bg) 96%, white);
-  box-shadow: var(--gt-shadow-1);
-  transition: transform 160ms cubic-bezier(.2,.8,.2,1);
-}
-
-.opencode-config-toggle.active .opencode-config-switch {
-  background: #2ebd5b;
-}
-
-.opencode-config-toggle.active .opencode-config-switch::after {
-  transform: translateX(14px);
-  background: #fff;
-}
-
 .opencode-config-panel .opencode-model-list-col {
   max-height: 248px;
   border-radius: var(--gt-radius-lg);
@@ -2168,18 +2127,19 @@
 .opencode-config-switch {
   width: 34px;
   height: 20px;
+  border-width: 1px;
+  border-color: color-mix(in srgb, var(--line) 74%, transparent);
   background: color-mix(in srgb, var(--text) 14%, transparent);
 }
 
-.opencode-config-switch::after {
-  top: 3px;
-  left: 3px;
+.opencode-config-switch > span {
   width: 14px;
   height: 14px;
 }
 
-.opencode-config-toggle.active .opencode-config-switch::after {
-  transform: translateX(14px);
+.opencode-config-switch[data-state="checked"] {
+  background: #2ebd5b;
+  border-color: color-mix(in srgb, #32d06d 76%, var(--line));
 }
 
 .opencode-config-divider {
@@ -2410,11 +2370,14 @@
 
 .opencode-attachment-menu {
   min-width: 214px;
+  padding: 4px;
 }
 
 .opencode-attachment-menu-item {
   min-height: 46px;
   white-space: nowrap;
+  justify-content: flex-start;
+  gap: var(--gt-space-2);
 }
 
 .opencode-attachment-menu-label {
@@ -2537,7 +2500,7 @@
   box-sizing: border-box;
   max-width: 850px;
   padding-left: 0;
-  transform: translateX(14px);
+  transform: none;
 }
 
 .gt-center-pane-left-closed .gt-chat-main:not(.is-empty) .gt-chat-stream,
@@ -2624,4 +2587,396 @@
 .opencode-composer-send {
   display: grid;
   place-items: center;
+}
+
+.opencode-composer .opencode-input-shell,
+.opencode-composer .opencode-input-shell:focus-within {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.opencode-composer textarea.gt-textarea.opencode-input,
+.opencode-composer textarea.gt-textarea.opencode-input:focus,
+.opencode-composer textarea.gt-textarea.opencode-input:focus-visible {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  box-shadow: none;
+  outline: none;
+  resize: none;
+}
+
+.gt-chat-main.is-empty .opencode-composer textarea.gt-textarea.opencode-input {
+  padding: 8px 0 0 22px;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer textarea.gt-textarea.opencode-input {
+  padding: 2px 0 0;
+}
+
+.opencode-composer-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 104px;
+  padding: 12px 14px;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--line) 46%, transparent);
+  background: color-mix(in srgb, var(--bg) 98%, var(--surface) 2%);
+  box-shadow:
+    0 16px 42px color-mix(in srgb, #000 11%, transparent),
+    0 1px 0 color-mix(in srgb, white 22%, transparent) inset;
+}
+
+.opencode-composer-v2::after {
+  display: none;
+}
+
+.opencode-composer-v2:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  box-shadow:
+    0 18px 46px color-mix(in srgb, #000 13%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent),
+    0 1px 0 color-mix(in srgb, white 24%, transparent) inset;
+}
+
+.opencode-composer-v2 .opencode-composer-main {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 38px;
+  padding: 0;
+}
+
+.opencode-composer-v2 .opencode-composer-editor {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.opencode-composer-v2 textarea.gt-textarea.opencode-input,
+.opencode-composer-v2 textarea.gt-textarea.opencode-input:focus,
+.opencode-composer-v2 textarea.gt-textarea.opencode-input:focus-visible {
+  min-height: 38px;
+  max-height: 156px;
+  padding: 4px 2px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.42;
+  letter-spacing: 0;
+  caret-color: color-mix(in srgb, var(--accent) 82%, var(--text));
+}
+
+.opencode-composer-v2 textarea.gt-textarea.opencode-input::placeholder {
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+  font-size: 14px;
+  font-weight: var(--gt-font-medium);
+}
+
+.opencode-composer-v2 .opencode-composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  margin: 0;
+  padding: 0;
+  gap: 10px;
+}
+
+.opencode-composer-v2 .opencode-composer-actions-left,
+.opencode-composer-v2 .opencode-composer-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.opencode-composer-v2 .opencode-composer-actions-left {
+  min-width: 0;
+}
+
+.opencode-composer-v2 .opencode-composer-actions-right {
+  margin-left: auto;
+}
+
+.opencode-composer-v2 .opencode-image-btn,
+.opencode-composer-v2 .opencode-composer-send {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  border-radius: var(--gt-radius-pill);
+}
+
+.opencode-composer-v2 .opencode-image-btn {
+  background: color-mix(in srgb, var(--bg-soft) 58%, transparent);
+  color: color-mix(in srgb, var(--muted) 84%, var(--text));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 34%, transparent);
+}
+
+.opencode-composer-v2 .opencode-image-btn:hover,
+.opencode-composer-v2 .opencode-image-btn.open {
+  background: color-mix(in srgb, var(--bg-soft) 82%, var(--bg));
+  color: var(--text);
+  transform: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 48%, transparent);
+}
+
+.opencode-composer-v2 .opencode-config-inline {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.opencode-composer-v2 .opencode-config-trigger {
+  height: 36px;
+  min-height: 36px;
+  max-width: 178px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: var(--gt-radius-pill);
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 76%, var(--muted));
+  box-shadow: none;
+}
+
+.opencode-composer-v2 .opencode-config-trigger:hover,
+.opencode-composer-v2 .opencode-config-trigger[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+  color: var(--text);
+}
+
+.opencode-composer-v2 .opencode-config-trigger-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-composer-v2 .opencode-composer-send {
+  box-shadow: var(--gt-shadow-4);
+}
+
+.opencode-composer-v2 .opencode-composer-send:disabled {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 28%, transparent);
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-areas: "follow-left follow-editor follow-right";
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 8px 10px 8px 6px;
+  border-radius: 28px;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2:has(.opencode-composer-chips) {
+  grid-template-areas:
+    "attachments attachments attachments"
+    "follow-left follow-editor follow-right";
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 .opencode-composer-main {
+  grid-area: follow-editor;
+  min-height: 34px;
+  align-self: center;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 .opencode-composer-actions {
+  display: contents;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 .opencode-composer-actions-left {
+  grid-area: follow-left;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 .opencode-composer-actions-right {
+  grid-area: follow-right;
+}
+
+.gt-chat-main:not(.is-empty) .opencode-composer-v2 textarea.gt-textarea.opencode-input {
+  min-height: 30px;
+  padding: 3px 0 0;
+  font-size: 13.5px;
+}
+
+.gt-chat-main.is-empty .opencode-composer-v2 textarea.gt-textarea.opencode-input {
+  padding: 4px 0;
+}
+
+.opencode-composer-v2 textarea.gt-textarea.opencode-input,
+.opencode-composer-v2 textarea.gt-textarea.opencode-input:focus,
+.opencode-composer-v2 textarea.gt-textarea.opencode-input:focus-visible {
+  color: color-mix(in srgb, var(--text) 74%, var(--muted));
+}
+
+.opencode-composer-v2 textarea.gt-textarea.opencode-input::selection {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+
+:root .opencode-exec-context .opencode-exec-tool-open-trigger {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--gt-space-2) 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+:root .opencode-exec-context .opencode-exec-tool-open-trigger:hover,
+:root .opencode-exec-context .opencode-exec-tool-open-trigger:focus-visible {
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .opencode-exec-context .opencode-exec-tool-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--gt-space-2);
+  padding: 0;
+}
+
+:root .opencode-exec-context .opencode-exec-tool-head > strong {
+  flex: 0 0 42px;
+  min-width: 42px;
+}
+
+:root .opencode-exec-context .opencode-tool-file-pill {
+  transform: none;
+}
+
+/* Sent message attachments live in the message bubble, not the composer chip layout. */
+:root .opencode-msg-user {
+  width: fit-content;
+  min-width: 0;
+  max-width: min(74%, 620px);
+}
+
+:root .opencode-msg-user .opencode-msg-body {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+:root .opencode-msg-user .opencode-msg-attachments {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+:root .opencode-msg-user .opencode-msg-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  gap: 7px;
+  width: min(100%, 292px);
+  min-width: 0;
+}
+
+:root .opencode-msg-user .opencode-msg-attachments.is-single-image .opencode-msg-image-grid {
+  width: min(100%, 220px);
+}
+
+:root .opencode-msg-user .opencode-msg-image-btn {
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, #fff 74%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
+  cursor: zoom-in;
+}
+
+:root .opencode-msg-user .opencode-msg-attachments.is-single-image .opencode-msg-image-btn {
+  aspect-ratio: 4 / 3;
+}
+
+:root .opencode-msg-user .opencode-msg-image-btn:hover,
+:root .opencode-msg-user .opencode-msg-image-btn:focus-visible {
+  background: #fff;
+  box-shadow:
+    0 4px 14px color-mix(in srgb, #000 10%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+:root .opencode-msg-user .opencode-msg-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-soft) 80%, white 20%);
+  object-fit: cover;
+}
+
+:root .opencode-msg-user .opencode-msg-file-list {
+  display: grid;
+  gap: 6px;
+  min-width: min(220px, 100%);
+  max-width: 100%;
+}
+
+:root .opencode-msg-user .opencode-msg-file-btn {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 30px;
+  justify-content: flex-start;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--line) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, #fff 58%, transparent);
+  color: color-mix(in srgb, var(--text) 78%, #1f2937);
+  text-align: left;
+}
+
+:root .opencode-msg-user .opencode-msg-file-btn:hover,
+:root .opencode-msg-user .opencode-msg-file-btn:focus-visible {
+  background: color-mix(in srgb, #fff 86%, transparent);
+  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+}
+
+:root .opencode-msg-user .opencode-msg-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .opencode-msg-user .markdown-lite {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  :root .opencode-msg-user {
+    max-width: calc(100% - 28px);
+    margin-left: 28px;
+  }
+
+  :root .opencode-msg-user .opencode-msg-image-grid,
+  :root .opencode-msg-user .opencode-msg-attachments.is-single-image .opencode-msg-image-grid {
+    width: min(100%, 196px);
+  }
 }

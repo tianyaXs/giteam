@@ -1,6 +1,8 @@
 import { resolveProviderAliasWithNames } from "../../lib/opencodeModels";
 import { OpenCodeProviderList } from "./OpenCodeProviderList";
 import { OpenCodeProviderModelList } from "./OpenCodeProviderModelList";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 type OpenCodeProviderSettingsPanelProps = {
   providerSearch: string;
@@ -80,14 +82,14 @@ export function OpenCodeProviderSettingsPanel({
   return (
     <div className="settings-model-inline">
       <div className="settings-model-head opencode-provider-picker-toolbar">
-        <input
-          className="path-input"
+        <Input
+          className="opencode-provider-picker-input"
           placeholder="搜索提供商..."
           value={providerSearch}
           onChange={(event) => onProviderSearchChange(event.target.value)}
         />
-        <input
-          className="path-input"
+        <Input
+          className="opencode-provider-picker-input"
           placeholder="搜索模型..."
           value={modelSearch}
           onChange={(event) => onModelSearchChange(event.target.value)}
@@ -126,27 +128,28 @@ export function OpenCodeProviderSettingsPanel({
                       : `${providerName} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`}
                   </div>
                   {connected ? (
-                    <button className="chip" onClick={() => onToggleInlineAuth(providerId, providerName)}>
+                    <Button variant="outline" size="sm" onClick={() => onToggleInlineAuth(providerId, providerName)}>
                       {authOpen ? "收起密钥编辑" : "更新 API Key"}
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
                 {authOpen ? (
                   <>
-                    <input
-                      className="path-input"
+                    <Input
+                      className="opencode-provider-picker-input"
                       placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
                       value={keyValue}
                       onChange={(event) => onConnectApiKeyChange(providerId, providerName, event.target.value)}
                     />
                     <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)", marginBottom: connected ? "0" : "var(--gt-space-3)" }}>
-                      <button
-                        className="chip"
+                      <Button
+                        variant="contrast"
+                        size="sm"
                         disabled={connectBusy || connectProviderId !== providerId || !connectApiKey.trim()}
                         onClick={() => onConnectProvider(providerId, connected)}
                       >
                         {connectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
-                      </button>
+                      </Button>
                     </div>
                   </>
                 ) : null}

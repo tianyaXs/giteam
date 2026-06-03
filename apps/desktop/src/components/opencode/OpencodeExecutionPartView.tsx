@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { isOpencodeContextTool, parseOpencodeTaskSessionId, toDisplayJson } from "../../lib/opencodeParts";
 import type { OpencodeDetailedPart } from "../../lib/opencodeSessions";
 import { parseReadToolOutput, withLineNumbers } from "../../lib/textFormatting";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 
 type NormalizedEditFileDiff = {
   file: string;
@@ -271,7 +274,6 @@ export function OpencodeExecutionPartView({
   const running = status.toLowerCase() === "running" || status.toLowerCase() === "pending";
   const input = state.input;
   const subtitle = toolDetail(input);
-  const ioLabel = running ? toolMode(tool) : "";
   const taskSessionId = tool === "task" ? parseOpencodeTaskSessionId(part) : "";
   const taskSubagent = tool === "task" ? String(input?.subagent_type || "").trim() : "";
   const taskTitleHint =
@@ -286,6 +288,7 @@ export function OpencodeExecutionPartView({
   const outputPreview = previewLines.join("\n") + (rawLines.length > 12 ? "\n..." : "");
   const shellTool = tool === "bash";
   const editTool = tool === "write" || tool === "edit" || tool === "apply_patch";
+  const ioLabel = running && !editTool ? toolMode(tool) : "";
   const writeSummary = normalizeText(metadata?.writeSummary);
   const fileDiff = normalizeEditFileDiff(tool, state, metadata);
   const patchFiles = tool === "apply_patch" ? normalizePatchFiles(metadata) : undefined;
@@ -366,12 +369,13 @@ export function OpencodeExecutionPartView({
     }
     return null;
   })();
+  const suppressRunningEditDetails = running && editTool;
   const showPreview = !toolFileTarget && !contextTool && !!outputPreview && (status === "error" || (!shellTool && !editTool));
   const detailDefaultOpen =
     status === "error" ||
-    running ||
+    (running && !editTool) ||
     (shellTool && shellToolPartsExpanded) ||
-    (editTool && editToolPartsExpanded);
+    (editTool && !running && editToolPartsExpanded);
   const hasInlineDetails = (
     (shellTool && (!!bashCommand || !!outputText)) ||
     !!parsedRead?.content ||
@@ -397,13 +401,16 @@ export function OpencodeExecutionPartView({
   const renderToolHead = () => (
     <div className="opencode-exec-tool-head">
       <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
-      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && toolDisplayName(tool) !== tool ? <span className="opencode-tool-chip">{tool}</span> : null}
+      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && toolDisplayName(tool) !== tool ? (
+        <Badge variant="secondary" className="opencode-tool-chip">{tool}</Badge>
+      ) : null}
       {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-      {detailFileLabel ? <span className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span> : null}
+      {detailFileLabel ? (
+        <Badge variant="secondary" className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</Badge>
+      ) : null}
       {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
       {taskSessionId ? (
-        <button
-          type="button"
+        <Button
           className="opencode-task-link"
           onClick={(event) => {
             event.preventDefault();
@@ -411,9 +418,11 @@ export function OpencodeExecutionPartView({
             onOpenTaskSession(taskSessionId, taskTitleHint);
           }}
           title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
+          variant="ghost"
+          size="sm"
         >
           {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -503,30 +512,42 @@ export function OpencodeExecutionPartView({
     </div>
   );
 
-  if (hasInlineDetails && hasExpandedContent && !contextTool) {
+  if (hasInlineDetails && hasExpandedContent && !contextTool && !suppressRunningEditDetails) {
     return (
-      <details
+      <Collapsible
         className={toolFileTarget ? "opencode-exec-item opencode-exec-tool opencode-tool-details opencode-exec-tool-openable" : "opencode-exec-item opencode-exec-tool opencode-tool-details"}
         open={detailsOpen ?? detailDefaultOpen}
-        onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+        onOpenChange={setDetailsOpen}
       >
-        <summary className="opencode-tool-summary">
-          {renderToolHead()}
-        </summary>
+        <CollapsibleTrigger asChild>
+          <div className="opencode-tool-summary" role="button" tabIndex={0}>
+            {renderToolHead()}
+          </div>
+        </CollapsibleTrigger>
         {showPreview ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
-        {renderDetailsBody()}
-      </details>
+        <CollapsibleContent>
+          {renderDetailsBody()}
+        </CollapsibleContent>
+      </Collapsible>
     );
   }
 
   return (
-    <div className={toolFileTarget ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-openable" : "opencode-exec-item opencode-exec-tool"}>
+    <div
+      className={
+        toolFileTarget
+          ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-openable"
+          : suppressRunningEditDetails
+            ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-inline"
+            : "opencode-exec-item opencode-exec-tool"
+      }
+    >
       {toolFileTarget ? (
-        <button
-          type="button"
+        <Button
           className="opencode-exec-tool-open-trigger"
           onClick={() => onOpenToolFile(toolFileTarget)}
           title="在右侧打开文件"
+          variant="ghost"
         >
           <div className="opencode-exec-tool-head">
             <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
@@ -534,7 +555,7 @@ export function OpencodeExecutionPartView({
             {detailFileLabel ? <span className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span> : null}
             {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
           </div>
-        </button>
+        </Button>
       ) : (
         renderToolHead()
       )}

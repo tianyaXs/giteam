@@ -1,4 +1,8 @@
 import { normalizeModelRef } from "../../lib/opencodeModels";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { cn } from "@/lib/utils";
 
 type OpenCodeProviderModelListProps = {
   models: string[];
@@ -29,7 +33,8 @@ export function OpenCodeProviderModelList(props: OpenCodeProviderModelListProps)
         const refNorm = normalizeModelRef(ref);
         const configured = (props.configuredModelsByProvider[props.configuredProviderId] ?? []).includes(modelId);
         const locallyEnabled = !!refNorm && props.enabledModels.has(refNorm);
-        const enabled = !!refNorm && !props.hiddenModels.has(refNorm) && (configured || locallyEnabled);
+        const hidden = !!refNorm && props.hiddenModels.has(refNorm);
+        const enabled = !!refNorm && !hidden && (configured || locallyEnabled);
         const modelDisplay =
           props.modelNamesByProvider[props.providerId]?.[modelId] ||
           props.configuredModelNamesByProvider[props.configuredProviderId]?.[modelId] ||
@@ -38,29 +43,37 @@ export function OpenCodeProviderModelList(props: OpenCodeProviderModelListProps)
         return (
           <div
             key={`provider-model-pick-${refNorm || ref}`}
-            className={active === refNorm ? "file-item selected opencode-provider-model-row" : "file-item opencode-provider-model-row"}
+            className={cn("file-item opencode-provider-model-row", active === refNorm && "selected")}
           >
-            <button
+            <Button
+              variant="ghost"
               className="opencode-provider-model-main"
               onClick={() => {
                 if (refNorm) props.onSelectModel(refNorm);
               }}
               title={refNorm || ref}
             >
-              <span>{modelDisplay}</span>
-              {modelDisplay !== modelId ? <small>{modelId}</small> : null}
-            </button>
-            <button
-              type="button"
-              className={enabled ? "opencode-switch is-on" : "opencode-switch"}
-              aria-pressed={enabled}
-              aria-label={enabled ? "隐藏模型" : "启用模型"}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
+              <span className="opencode-provider-model-copy">
+                <span className="opencode-provider-model-copy-head">
+                  <span>{modelDisplay}</span>
+                  {configured ? <Badge variant="secondary" className="opencode-provider-model-badge">默认</Badge> : null}
+                  {!configured && locallyEnabled ? <Badge variant="outline" className="opencode-provider-model-badge">临时</Badge> : null}
+                </span>
+                {modelDisplay !== modelId ? <small>{modelId}</small> : null}
+              </span>
+            </Button>
+            <Switch
+              checked={enabled}
+              className="opencode-switch"
+              aria-label={enabled ? "隐藏模型" : "显示模型"}
+              title={enabled ? "隐藏模型" : "显示模型"}
+              disabled={!refNorm}
+              onClick={(event) => event.stopPropagation()}
+              onCheckedChange={(checked) => {
                 if (!refNorm) return;
-                if (enabled) props.onHideModel(refNorm);
-                else props.onEnableModel(refNorm);
+                if (checked === enabled) return;
+                if (checked) props.onEnableModel(refNorm);
+                else props.onHideModel(refNorm);
               }}
             />
           </div>
