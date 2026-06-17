@@ -1,15 +1,11 @@
 import { forwardRef, type ReactNode } from "react";
-import {
-  GitBranchIcon,
-  ListChecksIcon,
-  PlugIcon,
-  SparklesIcon,
-  SquareTerminalIcon,
-  XIcon,
-  type LucideIcon,
-} from "lucide-react";
+import { XIcon } from "lucide-react";
 
-import type { RightPaneTab } from "../common/AppChromeIcons";
+import {
+  PINNED_RIGHT_PANE_TAB,
+  RIGHT_PANE_TAB_ICONS,
+  type RightPaneTab,
+} from "../common/AppChromeIcons";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -20,29 +16,17 @@ import {
 } from "../ui/sidebar";
 
 type RightSidebarProps = {
+  openTabs: RightPaneTab[];
   activeTab: RightPaneTab;
-  modules: Record<RightPaneTab, boolean>;
   tabLabels: Record<RightPaneTab, string>;
   fileTabLabel?: string;
   closeFileLabel: string;
+  closeTabLabel: string;
   children: ReactNode;
   onSelectTab: (tab: RightPaneTab) => void;
-  onWarmSkills: () => void | Promise<void>;
+  onCloseTab: (tab: RightPaneTab) => void;
   onCloseFileTab: () => void;
 };
-
-type RightTabConfig = {
-  tab: RightPaneTab;
-  icon: LucideIcon;
-};
-
-const rightTabs: RightTabConfig[] = [
-  { tab: "changes", icon: ListChecksIcon },
-  { tab: "worktree", icon: GitBranchIcon },
-  { tab: "terminal", icon: SquareTerminalIcon },
-  { tab: "skills", icon: SparklesIcon },
-  { tab: "mcp", icon: PlugIcon },
-];
 
 export type RightSidebarPanelVariant = "default" | "workspace" | "terminal";
 
@@ -79,14 +63,15 @@ export const RightSidebarPanel = forwardRef<HTMLDivElement, RightSidebarPanelPro
 );
 
 export function RightSidebar({
+  openTabs,
   activeTab,
-  modules,
   tabLabels,
   fileTabLabel,
   closeFileLabel,
+  closeTabLabel,
   children,
   onSelectTab,
-  onWarmSkills,
+  onCloseTab,
   onCloseFileTab,
 }: RightSidebarProps) {
   return (
@@ -95,43 +80,63 @@ export function RightSidebar({
       collapsible="none"
       className="h-full overflow-hidden border-l border-sidebar-border bg-sidebar text-sidebar-foreground"
     >
-      <SidebarHeader className="h-10 shrink-0 border-b border-sidebar-border px-3 py-0">
+      <SidebarHeader className="h-10 shrink-0 border-b border-sidebar-border py-0 pl-2 pr-11">
         <div className="flex h-full min-w-0 items-center gap-1" data-tauri-drag-region>
-          <div className="flex min-w-0 shrink-0 items-center gap-1">
-            {rightTabs.map(({ tab, icon: Icon }) =>
-              modules[tab] ? (
-                <Button
-                  key={tab}
-                  variant={activeTab === tab ? "secondary" : "ghost"}
-                  size="icon"
-                  className={cn(
-                    "size-7 rounded-md",
-                    activeTab === tab ? "text-sidebar-accent-foreground" : "text-muted-foreground"
-                  )}
-                  title={tabLabels[tab]}
-                  aria-label={tabLabels[tab]}
-                  aria-pressed={activeTab === tab}
-                  onClick={() => onSelectTab(tab)}
-                  onMouseEnter={tab === "skills" ? () => void onWarmSkills() : undefined}
-                  onFocus={tab === "skills" ? () => void onWarmSkills() : undefined}
-                >
-                  <Icon data-icon="inline-start" aria-hidden="true" />
-                </Button>
-              ) : null
-            )}
-          </div>
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {openTabs.map((tab) => {
+              const Icon = RIGHT_PANE_TAB_ICONS[tab];
+              const isActive = activeTab === tab;
+              const isPinned = tab === PINNED_RIGHT_PANE_TAB;
 
-          {fileTabLabel ? (
-            <div className="ml-2 flex min-w-[76px] max-w-[min(340px,100%)] flex-1 items-center">
+              return (
+                <Badge
+                  key={tab}
+                  variant={isActive ? "secondary" : "outline"}
+                  className={cn(
+                    "h-7 shrink-0 gap-0 rounded-md px-0.5 font-normal",
+                    isActive ? "text-sidebar-accent-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 gap-1 rounded-sm px-1.5 hover:bg-transparent"
+                    title={tabLabels[tab]}
+                    aria-label={tabLabels[tab]}
+                    aria-pressed={isActive}
+                    onClick={() => onSelectTab(tab)}
+                  >
+                    <Icon data-icon="inline-start" aria-hidden="true" />
+                    <span className="max-w-[88px] truncate text-xs">{tabLabels[tab]}</span>
+                  </Button>
+                  {!isPinned ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
+                      title={`${closeTabLabel} ${tabLabels[tab]}`}
+                      aria-label={`${closeTabLabel} ${tabLabels[tab]}`}
+                      onClick={() => onCloseTab(tab)}
+                    >
+                      <XIcon aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                </Badge>
+              );
+            })}
+
+            {fileTabLabel ? (
               <Badge
                 variant="secondary"
-                className="h-7 min-w-0 max-w-full gap-1 rounded-md px-2 normal-case tracking-normal"
+                className="h-7 min-w-0 max-w-[min(240px,55vw)] shrink-0 gap-1 rounded-md px-2 normal-case tracking-normal"
               >
-                <span className="min-w-0 max-w-[260px] truncate text-xs font-semibold">{fileTabLabel}</span>
+                <span className="min-w-0 truncate text-xs font-semibold">{fileTabLabel}</span>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-5 rounded-full text-muted-foreground hover:text-foreground"
+                  className="size-5 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
                   title={closeFileLabel}
                   aria-label={closeFileLabel}
                   onClick={onCloseFileTab}
@@ -139,8 +144,8 @@ export function RightSidebar({
                   <XIcon data-icon="inline-start" aria-hidden="true" />
                 </Button>
               </Badge>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
       </SidebarHeader>
 

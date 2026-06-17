@@ -42,6 +42,7 @@ const ToggleGroupItem = React.forwardRef<
   return (
     <ToggleGroupPrimitive.Item
       ref={ref}
+      type="button"
       className={cn(
         toggleVariants({
           variant: context.variant || variant,

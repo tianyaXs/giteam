@@ -1,16 +1,21 @@
-import { memo, useMemo, type ReactNode } from "react";
 import {
-  Box,
   Folder,
   FolderOpen,
+  GitBranch,
   PencilLine,
+  Plug,
   Plus,
   Settings,
+  Sparkles,
+  SquareTerminal,
 } from "lucide-react";
+import { memo, useMemo, type ReactNode } from "react";
 
-import { firstLetter } from "../../lib/textFormatting";
+import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
+
 import type { AppText } from "../../lib/generalSettings";
 import type { OpencodeChatSession } from "../../lib/opencodeSessions";
+import { firstLetter } from "../../lib/textFormatting";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import {
@@ -36,7 +41,6 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "../ui/sidebar";
-import { Button } from "../ui/button";
 import pinnedIconUrl from "./sidebar-pin.png";
 
 function formatRelativeTimeLocalized(timestamp: number, text: AppText): string {
@@ -82,9 +86,28 @@ type DesktopSidebarProps = {
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
-  onOpenSkills: () => void;
+  rightDrawerOpen: boolean;
+  rightPaneTab: RightPaneTab;
+  rightOptionalTabs: OptionalRightPaneTab[];
+  rightModules: Record<RightPaneTab, boolean>;
+  onOpenRightPane: (tab: RightPaneTab) => void;
   onOpenSettings: () => void;
 };
+
+const SECTION_LABEL_CLASS = "h-6 min-w-0 flex-1 px-1.5 text-sm font-medium text-muted-foreground";
+
+type LeftNavPaneTab = Exclude<RightPaneTab, "changes">;
+
+const LEFT_NAV_PANES: Array<{
+  tab: LeftNavPaneTab;
+  icon: React.ComponentType<{ className?: string }>;
+  labelKey: keyof Pick<AppText, "worktree" | "terminal" | "skills" | "mcp">;
+}> = [
+  { tab: "worktree", icon: GitBranch, labelKey: "worktree" },
+  { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
+  { tab: "skills", icon: Sparkles, labelKey: "skills" },
+  { tab: "mcp", icon: Plug, labelKey: "mcp" },
+];
 
 export function DesktopSidebar(props: DesktopSidebarProps) {
   const {
@@ -112,7 +135,11 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     onOpenSession,
     onOpenSessionContextMenu,
     onLoadMoreSessions,
-    onOpenSkills,
+    rightDrawerOpen,
+    rightPaneTab,
+    rightOptionalTabs,
+    rightModules,
+    onOpenRightPane,
     onOpenSettings,
   } = props;
 
@@ -131,49 +158,54 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
       collapsible="none"
       className="h-full overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
     >
-      <SidebarHeader className="shrink-0 px-4 pb-4 pt-10" data-tauri-drag-region>
-        <SidebarMenu className="gap-0.5">
+      <SidebarHeader className="shrink-0 gap-1 p-2 pt-10" data-tauri-drag-region>
+        <SidebarMenu>
           <NavItem
             icon={PencilLine}
             label={text.newSession}
             onClick={() => void (noRepos ? onImportRepository() : onCreateSession())}
             disabled={noRepos ? busy : busy || !opencodeInstalled}
-            prominent
           />
-          <NavItem icon={Box} label={text.skills} onClick={onOpenSkills} />
+          {LEFT_NAV_PANES.map(({ tab, icon, labelKey }) =>
+            rightModules[tab] ? (
+              <NavItem
+                key={tab}
+                icon={icon}
+                label={text[labelKey]}
+                isActive={rightDrawerOpen && rightOptionalTabs.includes(tab) && rightPaneTab === tab}
+                onClick={() => onOpenRightPane(tab)}
+              />
+            ) : null
+          )}
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent className="gap-4 overflow-x-hidden overflow-y-auto px-4 pb-5 pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <SidebarContent className="gap-1 overflow-x-hidden overflow-y-auto p-2 pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {noRepos ? (
-          <SidebarGroup className="min-w-0 gap-2 p-0">
-            <div className="flex min-h-7 min-w-0 items-center gap-2">
-              <SidebarGroupLabel className="h-auto min-w-0 flex-1 px-0 text-[14px] font-semibold text-sidebar-foreground/28">
+          <SidebarGroup className="gap-0 p-0">
+            <div className="flex min-h-6 items-center gap-1">
+              <SidebarGroupLabel className={SECTION_LABEL_CLASS}>
                 <span className="truncate">{text.projects}</span>
               </SidebarGroupLabel>
               <SidebarGroupAction
-                className="static size-8 shrink-0 text-sidebar-foreground/40 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="static"
                 title={text.openWorkspace}
                 onClick={() => void onImportRepository()}
                 disabled={busy}
               >
-                <Plus className="size-4" />
+                <Plus />
               </SidebarGroupAction>
             </div>
-            <SidebarGroupContent className="min-w-0 overflow-x-hidden">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-10 w-full min-w-0 justify-start gap-3 px-0 text-left text-[16px] font-medium text-sidebar-foreground/52 hover:bg-transparent hover:text-sidebar-foreground"
-                onClick={() => void onImportRepository()}
-                disabled={busy}
-              >
-                <Folder className="size-5 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{text.openWorkspace}</span>
-              </Button>
-              <p className="m-0 mt-1.5 max-w-full text-[15px] font-medium leading-6 text-sidebar-foreground/32">
-                {text.noProjectsHint}
-              </p>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton onClick={() => void onImportRepository()} disabled={busy}>
+                    <Folder />
+                    <span className="truncate">{text.openWorkspace}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+              <p className="px-2 text-xs text-muted-foreground">{text.noProjectsHint}</p>
             </SidebarGroupContent>
           </SidebarGroup>
         ) : null}
@@ -228,29 +260,28 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             onLoadMoreSessions={onLoadMoreSessions}
             headerAction={
               <SidebarGroupAction
-                className="static size-8 shrink-0 text-sidebar-foreground/40 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="static"
                 title={text.openWorkspace}
                 onClick={() => void onImportRepository()}
                 disabled={busy}
               >
-                <Plus className="size-4" />
+                <Plus />
               </SidebarGroupAction>
             }
           />
         ) : null}
       </SidebarContent>
 
-      <SidebarFooter className="shrink-0 px-4 pb-2 pt-3">
-        <Button
-          type="button"
-          variant="ghost"
-          className="min-h-8 w-full min-w-0 justify-start gap-2.5 px-0 py-0.5 text-left text-sidebar-foreground/86 hover:bg-transparent hover:text-sidebar-foreground"
-          onClick={onOpenSettings}
-        >
-          <Settings className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5">{text.settings}</span>
-          <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
-        </Button>
+      <SidebarFooter className="shrink-0 p-2">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton size="sm" onClick={onOpenSettings}>
+              <Settings />
+              <span className="truncate">{text.settings}</span>
+              <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
   );
@@ -261,25 +292,16 @@ type NavItemProps = {
   label: string;
   onClick?: () => void;
   disabled?: boolean;
-  muted?: boolean;
-  prominent?: boolean;
+  isActive?: boolean;
+  size?: "sm" | "default";
 };
 
-function NavItem({ icon: Icon, label, onClick, disabled = false, muted = false, prominent = false }: NavItemProps) {
+function NavItem({ icon: Icon, label, onClick, disabled = false, isActive = false, size = "default" }: NavItemProps) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        className={cn(
-          "h-[32px] min-w-0 gap-3 rounded-lg px-0 !text-[14px] font-semibold text-sidebar-foreground/82 transition-[background-color,color] hover:bg-transparent hover:text-sidebar-foreground active:bg-transparent [&>svg]:!size-4",
-          prominent && "h-9 !text-[14.5px] leading-5 [&>svg]:!size-4",
-          muted && "text-sidebar-foreground/34 hover:text-sidebar-foreground/48",
-          disabled && "cursor-not-allowed opacity-55"
-        )}
-        disabled={disabled}
-        onClick={onClick}
-      >
-        <Icon className="size-4" />
-        <span className={cn("min-w-0 flex-1 truncate", prominent ? "!text-[14.5px]" : "!text-[14px]")}>{label}</span>
+      <SidebarMenuButton size={size} isActive={isActive} disabled={disabled} onClick={onClick}>
+        <Icon />
+        <span className="truncate">{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
@@ -361,15 +383,15 @@ function ProjectSection(props: ProjectSectionProps) {
   } = props;
 
   return (
-    <SidebarGroup className="min-w-0 gap-2 p-0">
-      <div className="flex min-h-7 min-w-0 items-center gap-2">
-        <SidebarGroupLabel className="h-auto min-w-0 flex-1 px-0 text-[14px] font-semibold text-sidebar-foreground/28">
+    <SidebarGroup className="gap-0 p-0">
+      <div className="flex min-h-6 items-center gap-1">
+        <SidebarGroupLabel className={SECTION_LABEL_CLASS}>
           <span className="truncate">{title}</span>
         </SidebarGroupLabel>
         {headerAction}
       </div>
-      <SidebarGroupContent className="min-w-0 overflow-x-hidden">
-        <SidebarMenu className="min-w-0 gap-0.5 overflow-x-hidden">
+      <SidebarGroupContent>
+        <SidebarMenu className="gap-px">
           {repos.map((repo) => (
             <ProjectRow
               key={repo.id}
@@ -464,10 +486,8 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
       <SidebarMenuItem className="min-w-0 overflow-x-hidden">
         <CollapsibleTrigger asChild>
           <SidebarMenuButton
-            className={cn(
-              "h-9 min-w-0 gap-3 rounded-lg px-0 text-[17px] font-semibold text-sidebar-foreground/50 transition-colors hover:bg-transparent hover:text-sidebar-foreground/74 active:bg-transparent data-[active=true]:bg-transparent [&>svg]:size-5",
-              expanded && "text-sidebar-foreground/58"
-            )}
+            size="sm"
+            className="text-sm text-muted-foreground"
             disabled={busy}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -475,15 +495,11 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
               onOpenRepoContextMenu(event.clientX, event.clientY, repo);
             }}
           >
-            {expanded ? <FolderOpen className="size-5" /> : <Folder className="size-5" />}
-            <span className="min-w-0 flex-1 truncate">{repo.name}</span>
+            {expanded ? <FolderOpen /> : <Folder />}
+            <span className="truncate">{repo.name}</span>
             <SidebarMenuAction
               type="button"
               showOnHover={!pinned}
-              className={cn(
-                "right-0.5 top-1.5 size-6",
-                pinned ? "text-sidebar-foreground/50" : "text-sidebar-foreground/36"
-              )}
               onClick={(event) => {
                 event.stopPropagation();
                 onTogglePinnedRepo(repo.id);
@@ -506,13 +522,13 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
             )}
           >
             <div className="min-h-0 overflow-hidden">
-              <SidebarMenuSub className="mx-0 w-full translate-x-0 gap-0.5 overflow-x-hidden border-l-0 px-0 py-0.5">
+              <SidebarMenuSub className="gap-px border-l-0 py-0.5">
                 {hasDraftForRepo ? (
                   <SessionRow active title={text.newSession} onClick={onFocusDraftSession} />
                 ) : null}
 
                 {!opencodeInstalled ? (
-                  <div className="min-w-0 py-2 pl-11 pr-3 text-[15px] leading-6 text-sidebar-foreground/32">{text.opencodeRequired}</div>
+                  <p className="px-2 py-1 text-xs text-muted-foreground">{text.opencodeRequired}</p>
                 ) : null}
 
                 {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
@@ -521,31 +537,34 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
 
                 {opencodeInstalled
                   ? sessions.map((session) => (
-                      <SessionRow
-                        key={`left-session-${session.id}`}
-                        active={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId}
-                        title={session.title}
-                        time={session.updatedAt || session.createdAt ? formatRelativeTimeLocalized(session.updatedAt || session.createdAt, text) : ""}
-                        onClick={() => onOpenSession(repo, session)}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
-                        }}
-                      />
-                    ))
+                    <SessionRow
+                      key={`left-session-${session.id}`}
+                      active={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId}
+                      title={session.title}
+                      time={session.updatedAt || session.createdAt ? formatRelativeTimeLocalized(session.updatedAt || session.createdAt, text) : ""}
+                      onClick={() => onOpenSession(repo, session)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
+                      }}
+                    />
+                  ))
                   : null}
 
                 {opencodeInstalled && hasMoreSessions ? (
                   <SidebarMenuSubItem>
-                    <SidebarMenuSubButton asChild className="h-8 w-full min-w-0 translate-x-0 rounded-xl pl-[33px] pr-3 text-[15px] font-semibold text-sidebar-foreground/34 hover:bg-transparent hover:text-sidebar-foreground/50 active:bg-transparent">
+                    <SidebarMenuSubButton
+                      asChild
+                      className="text-muted-foreground"
+                    >
                       <button
                         type="button"
                         onClick={() => void onLoadMoreSessions(repo)}
                         disabled={sessionsLoading || sessionsPaging}
                         aria-busy={sessionsPaging}
                       >
-                        <span className="min-w-0 flex-1 truncate text-left">{loadMoreLabel}</span>
+                        <span className="truncate">{loadMoreLabel}</span>
                       </button>
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
@@ -574,17 +593,17 @@ const SessionRow = memo(function SessionRow({ title, active = false, time = "", 
         asChild
         isActive={active}
         className={cn(
-          "h-[34px] w-full min-w-0 translate-x-0 rounded-xl pl-[33px] pr-3 text-[15.5px] font-semibold text-sidebar-foreground/76 hover:bg-sidebar-accent/70 active:bg-sidebar-accent",
-          active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_rgba(0,0,0,0.01)]"
+          active && "bg-secondary text-secondary-foreground hover:bg-secondary hover:text-secondary-foreground"
         )}
       >
         <button
           type="button"
+          className="flex w-full min-w-0 items-center gap-2"
           onClick={onClick}
           onContextMenu={onContextMenu}
         >
           <span className="min-w-0 flex-1 truncate text-left">{title}</span>
-          {time ? <span className="ml-3 shrink-0 text-[13px] font-medium text-sidebar-foreground/40 tabular-nums">{time}</span> : null}
+          {time ? <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{time}</span> : null}
         </button>
       </SidebarMenuSubButton>
     </SidebarMenuSubItem>

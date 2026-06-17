@@ -1,6 +1,7 @@
 import type { MutableRefObject, ReactNode, RefObject, UIEventHandler, WheelEventHandler } from "react";
 import { Card, CardContent, CardFooter } from "../ui/card";
 import { ScrollArea } from "../ui/scroll-area";
+import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
 
 type OpencodeChatFrameProps = {
@@ -24,32 +25,36 @@ export function OpencodeChatFrame({
     (threadRef as MutableRefObject<HTMLDivElement | null>).current = node;
   };
 
+  if (empty) {
+    return (
+      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-hidden border-0 bg-transparent px-4 py-6 shadow-none">
+        <CardContent className="mx-auto w-full max-w-[620px] p-0">
+          {composer}
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
-    <Card
-      className={cn(
-        "flex min-h-0 w-full flex-col overflow-hidden border-0 bg-transparent shadow-none",
-        empty ? "h-full justify-center px-4 py-6" : "h-full"
-      )}
-    >
-      <CardContent className={cn("min-h-0 flex-1 p-0", empty && "hidden")}>
+    <Card className="flex h-full min-h-0 w-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
+      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
         <ScrollArea
           type="always"
-          className="h-full min-h-0 w-full"
+          className="min-h-0 flex-1"
           viewportRef={setThreadNode}
           viewportClassName="pt-4"
           viewportProps={{
             onScroll: onThreadScroll,
             onWheel: onThreadWheel
           }}
-          scrollBarClassName="w-3 bg-transparent px-0 py-2"
-          thumbClassName="bg-muted/55 hover:bg-muted/70"
         >
-          <div className="mx-auto flex min-h-full w-full max-w-[860px] flex-col px-6">
+          <div className="mx-auto flex w-full max-w-[860px] flex-col px-6 pb-4">
             {stream}
           </div>
         </ScrollArea>
       </CardContent>
-      <CardFooter className={cn("mx-auto block w-full shrink-0 p-0", empty ? "max-w-[620px]" : "max-w-[860px]")}>
+      <Separator />
+      <CardFooter className="mx-auto w-full max-w-[860px] shrink-0 p-0">
         {composer}
       </CardFooter>
     </Card>

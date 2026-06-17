@@ -1,6 +1,6 @@
-import { invoke } from "./platform";
 import type { GeneralSettingsDraft } from "../components/settings/SettingsDialog";
 import { loadLocalBool, saveLocalBool } from "./localPreferences";
+import { invoke } from "./platform";
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   language: "system",
@@ -83,14 +83,14 @@ const APP_TEXT: Record<AppLocale, {
   timeYears: string;
 }> = {
   "zh-CN": {
-    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "变更", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
+    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "审查", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
     createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
     createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
     commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步",
     timeNow: "刚刚", timeMinutes: "分钟", timeHours: "小时", timeDays: "天", timeWeeks: "周", timeMonths: "个月", timeYears: "年"
   },
   "zh-TW": {
-    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "变更", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
+    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "审查", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
     createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
     createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
     commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步",
@@ -180,7 +180,7 @@ export function playSettingsTone(kind: "agent" | "permission" | "error"): void {
     gain.connect(ctx.destination);
     osc.start();
     osc.stop(ctx.currentTime + 0.24);
-    window.setTimeout(() => void ctx.close().catch(() => {}), 360);
+    window.setTimeout(() => void ctx.close().catch(() => { }), 360);
   } catch {
     // ignore unavailable audio
   }

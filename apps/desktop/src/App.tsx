@@ -1,77 +1,63 @@
-import { invoke, listen, IS_TAURI } from "./lib/platform";
+import { motion, useReducedMotion } from "motion/react";
+import QRCode from "qrcode";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { createPortal } from "react-dom";
-import { motion, useReducedMotion } from "motion/react";
-import QRCode from "qrcode";
-import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
+import rawMcpServers from "../servers.json";
 import {
-  normalizeControlAuthMode,
-  DEFAULT_CONTROL_SERVER_SETTINGS,
-  controlServerSettingsChanged,
-  normalizeControlPairMode,
-  normalizeControlPublicBaseUrl,
-  normalizeControlServerSettings,
-  resolveControlPairCodeMode,
-  type ControlAccessInfo,
-  type ControlAuthMode,
-  type ControlPairCodeInfo,
-  type ControlServerSettings,
-  type GiteamMobileServiceStatus
-} from "./lib/controlServer";
+  PINNED_RIGHT_PANE_TAB,
+  ShellPanelToggle,
+  type OptionalRightPaneTab,
+  type RightPaneTab,
+} from "./components/common/AppChromeIcons";
+import { GitChangesPanel } from "./components/git/GitChangesPanel";
+import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import {
-  OPENCODE_ATTACHMENT_INPUT_ACCEPT,
-  attachmentsFromLocalPaths,
-  encodeFilePathForUrl,
-  extractClipboardFilePaths,
-  extractTransferFiles,
-  fileUrlToPath,
-  getAttachmentDataUrlMime,
-  hasClipboardFileReference,
-  hasPlainClipboardText,
-  hasTransferAttachments,
-  isOfficeAttachment,
-  isOpencodeSupportedAttachmentMedia,
-  mergeUniqueAttachments,
-  pickDesktopAttachments,
-  readBrowserClipboardAttachments,
-  readDesktopClipboardImageAttachment,
-  readDesktopAttachmentsFromPaths,
-  readDesktopClipboardFilePaths,
-  readLocalAttachmentPreview,
-  readFileAsAttachment,
-  type OpencodeAttachment
-} from "./lib/imageAttachments";
+  CheckIcon,
+  CloseIcon
+} from "./components/icons";
+import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
+import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
+import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
+import { OpenCodeModulePanel, type OpencodeModuleTab } from "./components/opencode/OpenCodeModulePanel";
+import { OpenCodeProviderPickerDialog } from "./components/opencode/OpenCodeProviderPickerDialog";
+import { OpenCodeProviderSettingsPanel } from "./components/opencode/OpenCodeProviderSettingsPanel";
+import { EditorSessionHeader } from "./components/opencode/EditorSessionHeader";
+import { OpencodeChatFrame } from "./components/opencode/OpencodeChatFrame";
+import { OpencodeComposerPanel } from "./components/opencode/OpencodeComposerPanel";
 import {
-  OPENCODE_COMPOSER_AGENT_OPTIONS,
-  OPENCODE_THINKING_LEVELS,
-  allowAllPermissionRules,
-  isComposerAgentName,
-  normalizeComposerAgentName,
-  normalizeThinkingLevel,
-  type OpencodeComposerAgentName,
-  type OpencodePermissionRule,
-  type OpencodeThinkingLevel
-} from "./lib/opencodeComposerSettings";
-import { parseOpencodeAgents, type OpencodeAgentInfo } from "./lib/opencodeAgents";
+  OpencodeMcpDialogs,
+  OpencodeMcpMarketPanel,
+  OpencodeSettingsMcpGrid
+} from "./components/opencode/OpencodeMcpPanels";
+import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
 import {
-  loadCachedRuntimeStatus,
-  GITTREE_SIDEBAR_WIDTH_CACHE_KEY,
-  loadCachedWidth,
-  getRuntimeLogTail,
-  RIGHT_PANE_WIDTH_CACHE_KEY,
-  saveCachedRuntimeStatus,
-  saveCachedWidth,
-  SIDEBAR_WIDTH_CACHE_KEY,
-  type RuntimeActionJobStatus,
-  type RuntimeDepName,
-  type RuntimeDependencyStatus,
-  type RuntimeRequirementsStatus
-} from "./lib/appCache";
-import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
-import type { PanelPlacement } from "./layout/Workbench";
-import { Workbench } from "./layout/Workbench";
+  OpencodeSettingsSkillsGrid,
+  OpencodeSkillsMarketPanel
+} from "./components/opencode/OpencodeSkillsPanels";
+import { MobileControlDialog } from "./components/settings/MobileControlDialog";
+import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
+import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
+import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
+import { RightSidebar, RightSidebarPanel } from "./components/sidebar/RightSidebar";
+import { TerminalPanel } from "./components/terminal/TerminalPanel";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle
+} from "./components/ui/alert-dialog";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle
+} from "./components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -82,22 +68,6 @@ import {
   DialogTitle
 } from "./components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogTitle
-} from "./components/ui/alert-dialog";
-import { Button } from "./components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle
-} from "./components/ui/card";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -105,15 +75,120 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "./components/ui/dropdown-menu";
+import { Input } from "./components/ui/input";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { Skeleton } from "./components/ui/skeleton";
-import { Toggle } from "./components/ui/toggle";
-import { Badge } from "./components/ui/badge";
-import { Input } from "./components/ui/input";
 import { Field, FieldLabel, Textarea } from "./components/ui/textarea";
+import type { PanelPlacement } from "./layout/Workbench";
+import { Workbench } from "./layout/Workbench";
+import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
+import {
+  GITTREE_SIDEBAR_WIDTH_CACHE_KEY,
+  RIGHT_PANE_WIDTH_CACHE_KEY,
+  SIDEBAR_WIDTH_CACHE_KEY,
+  getRuntimeLogTail,
+  loadCachedRuntimeStatus,
+  loadCachedWidth,
+  saveCachedRuntimeStatus,
+  saveCachedWidth,
+  type RuntimeActionJobStatus,
+  type RuntimeDepName,
+  type RuntimeDependencyStatus,
+  type RuntimeRequirementsStatus
+} from "./lib/appCache";
+import { clamp, makeId, scheduleAfterInteraction, waitForPaint } from "./lib/browserRuntime";
+import {
+  DEFAULT_CONTROL_SERVER_SETTINGS,
+  controlServerSettingsChanged,
+  normalizeControlAuthMode,
+  normalizeControlPairMode,
+  normalizeControlPublicBaseUrl,
+  normalizeControlServerSettings,
+  resolveControlPairCodeMode,
+  type ControlAccessInfo,
+  type ControlPairCodeInfo,
+  type ControlServerSettings,
+  type GiteamMobileServiceStatus
+} from "./lib/controlServer";
+import {
+  hasRuntimeFirstCheckCompleted,
+  isRuntimeSetupDismissed,
+  markRuntimeFirstCheckCompleted,
+  markRuntimeReady,
+  setRuntimeSetupDismissed
+} from "./lib/desktopPreferences";
 import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
-import { cn } from "./lib/utils";
+import {
+  getAppText,
+  loadGeneralSettings,
+  playSettingsTone,
+  saveGeneralSettings,
+  showSettingsNotification
+} from "./lib/generalSettings";
+import {
+  clearRepoTerminalSession,
+  closeRepoTerminalSession,
+  getCommitChangedFiles,
+  getCommitFilePatch,
+  getGitWorktreeFileContent,
+  getGitWorktreeFilePatch,
+  readRepoTerminalOutput,
+  sendRepoTerminalInput,
+  startGitWorktreeWatcher,
+  startRepoTerminalSession,
+  stopGitWorktreeWatcher
+} from "./lib/gitAdapter";
+import {
+  OPENCODE_ATTACHMENT_INPUT_ACCEPT,
+  attachmentsFromLocalPaths,
+  encodeFilePathForUrl,
+  extractClipboardFilePaths,
+  extractTransferFiles,
+  fileUrlToPath,
+  getAttachmentDataUrlMime,
+  hasClipboardFileReference,
+  hasPlainClipboardText,
+  isOfficeAttachment,
+  isOpencodeSupportedAttachmentMedia,
+  mergeUniqueAttachments,
+  pickDesktopAttachments,
+  readBrowserClipboardAttachments,
+  readDesktopClipboardFilePaths,
+  readDesktopClipboardImageAttachment,
+  readFileAsAttachment,
+  readLocalAttachmentPreview,
+  type OpencodeAttachment
+} from "./lib/imageAttachments";
+import {
+  loadLocalBool,
+  loadLocalString,
+  saveLocalBool,
+  saveLocalString
+} from "./lib/localPreferences";
+import { normalizeMcpMarketData } from "./lib/mcpMarket";
+import { parseOpencodeAgents, type OpencodeAgentInfo } from "./lib/opencodeAgents";
+import {
+  OPENCODE_THINKING_LEVELS,
+  allowAllPermissionRules,
+  isComposerAgentName,
+  normalizeComposerAgentName,
+  normalizeThinkingLevel,
+  type OpencodeComposerAgentName,
+  type OpencodeThinkingLevel
+} from "./lib/opencodeComposerSettings";
+import {
+  buildOpencodeMcpPanelRows,
+  buildOpencodeMcpRows,
+  buildUpdatedMcpParamConfig,
+  getCustomMcpParamSpecs,
+  getEditableMcpParamValues,
+  getInstalledMcpParamSpecs as getInstalledMcpParamSpecsFromMarket,
+  getInstalledMcpTools as getInstalledMcpToolsFromMarket,
+  getMissingMcpRequiredParams,
+  normalizeCustomMcpJson,
+  replaceMcpConfigPlaceholders
+} from "./lib/opencodeMcpConfig";
 import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
@@ -122,6 +197,23 @@ import {
   parseModelRef,
   resolveProviderAliasWithNames,
 } from "./lib/opencodeModels";
+import {
+  buildOpencodeImageAttachmentsFromParts,
+  buildOpencodeMainLineMarkdownFromParts,
+  mergeOpencodeMessageAttachments,
+  mergeOpencodeStreamText,
+  readOpencodeTodosFromPart,
+  toDisplayJson
+} from "./lib/opencodeParts";
+import {
+  filterPermissionsBySession,
+  parseOpencodePermissionRequests,
+  removePermissionsById,
+  replaceSessionPermissions,
+  upsertPermissionRequest,
+  type OpencodePermissionReply,
+  type OpencodePermissionRequest
+} from "./lib/opencodePermissions";
 import {
   applyOpencodeCatalog,
   buildOpencodeConfiguredProviderSnapshot,
@@ -140,85 +232,33 @@ import {
   type OpencodeServerProviderState,
   type OpencodeServiceSettings
 } from "./lib/opencodeProviderCatalog";
-import {
-  buildOpencodeTurnRanges,
-  clipOpencodeSessionTitle,
-  compareOpencodeSessionActivity,
-  getInitialOpencodeTurnStart,
-  newOpencodeSession,
-  opencodeSessionFromSummary,
-  sliceOpencodeMessagesByTurnStart,
-  sortOpencodeSessionSummaries,
-  toOpencodeSessionTitle,
-  type OpencodeChatMessage,
-  type OpencodeChatSession,
-  type OpencodeDetailedMessage,
-  type OpencodeDetailedPart,
-  type OpencodeMessagePageCacheEntry,
-  type OpencodeMessageWindowCacheEntry,
-  type OpencodeSessionMessage,
-  type OpencodeSessionSummary,
-  type OpencodeTodoItem
-} from "./lib/opencodeSessions";
-import {
-  buildOpencodeImageAttachmentsFromParts,
-  buildOpencodeMainLineMarkdownFromParts,
-  mergeOpencodeMessageAttachments,
-  mergeOpencodeStreamText,
-  readOpencodeTodosFromPart,
-  toDisplayJson
-} from "./lib/opencodeParts";
-import {
-  closeRepoTerminalSession,
-  clearRepoTerminalSession,
-  getCommitChangedFiles,
-  getCommitFilePatch,
-  getGitWorktreeFileContent,
-  getGitWorktreeFilePatch,
-  readRepoTerminalOutput,
-  sendRepoTerminalInput,
-  startGitWorktreeWatcher,
-  startRepoTerminalSession,
-  stopGitWorktreeWatcher
-} from "./lib/gitAdapter";
-import { runReviewForCommit } from "./lib/reviewOrchestrator";
-import {
-  filterPermissionsBySession,
-  parseOpencodePermissionRequests,
-  removePermissionsById,
-  replaceSessionPermissions,
-  upsertPermissionRequest,
-  type OpencodePermissionReply,
-  type OpencodePermissionRequest
-} from "./lib/opencodePermissions";
+import { PROVIDER_PRESETS, getProviderDisplayName } from "./lib/opencodeProviders";
 import {
   fetchOpencodeQuestions,
   postOpencodeQuestionReject,
   postOpencodeQuestionReply
 } from "./lib/opencodeQuestions";
 import {
-  hasRuntimeFirstCheckCompleted,
-  isRuntimeSetupDismissed,
-  markRuntimeFirstCheckCompleted,
-  markRuntimeReady,
-  setRuntimeSetupDismissed
-} from "./lib/desktopPreferences";
-import {
-  getAppText,
-  loadGeneralSettings,
-  playSettingsTone,
-  saveGeneralSettings,
-  showSettingsNotification
-} from "./lib/generalSettings";
-import {
-  loadLocalBool,
-  loadLocalString,
-  saveLocalBool,
-  saveLocalString
-} from "./lib/localPreferences";
+  buildOpencodeTurnRanges,
+  clipOpencodeSessionTitle,
+  compareOpencodeSessionActivity,
+  getInitialOpencodeTurnStart,
+  opencodeSessionFromSummary,
+  sliceOpencodeMessagesByTurnStart,
+  sortOpencodeSessionSummaries,
+  type OpencodeChatMessage,
+  type OpencodeChatSession,
+  type OpencodeDetailedMessage,
+  type OpencodeDetailedPart,
+  type OpencodeMessagePageCacheEntry,
+  type OpencodeSessionSummary,
+  type OpencodeTodoItem
+} from "./lib/opencodeSessions";
 import {
   type OpencodeSkillInfo,
 } from "./lib/opencodeSkillData";
+import { IS_TAURI, invoke, listen } from "./lib/platform";
+import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
   addRepository,
   listRepositories,
@@ -233,38 +273,9 @@ import {
   appendTerminalError,
   createTerminalTabState,
   recordTerminalCommand,
-  type TerminalTabState,
-  writeTerminalTabSnapshot
+  writeTerminalTabSnapshot,
+  type TerminalTabState
 } from "./lib/terminalState";
-import { useTerminalTabs } from "./lib/useTerminalTabs";
-import { useGitWorkspaceController } from "./lib/useGitWorkspaceController";
-import {
-  normalizeWorkspacePath,
-  readBranchParentMap,
-  readWorkspaceAgentBindings,
-  readWorktreeParentMap,
-  type WorkspaceAgentBinding,
-  writeBranchParentMap,
-  writeWorkspaceAgentBindings,
-  writeWorktreeParentMap
-} from "./lib/workspaceBindings";
-import {
-  buildWorktreeTree,
-  collectWorktreeDirPaths,
-  getDiscardableWorktreeEntryCount,
-  getWorktreeChangeStats,
-  getWorktreeStatusText,
-  toDiffRows,
-  type DiffRow
-} from "./lib/worktreeDiff";
-import {
-  buildTopologyModel,
-  parseRefs,
-  pathLeaf,
-  shortSha,
-  type TopologyGraphModel,
-  type TopologyNode
-} from "./lib/worktreeTopology";
 import type {
   GitBranchSummary,
   GitCommitSummary,
@@ -272,76 +283,50 @@ import type {
   GitLinkedWorktree,
   GitUserIdentity,
   GitWorktreeFileContent,
-  GitWorktreeEntry,
   GitWorktreeOverview,
-  QuestionRequest,
   QuestionAnswer,
+  QuestionRequest,
   RepositoryEntry,
   ReviewAction,
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
-import { PanelToggleIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
-import { GitChangesPanel } from "./components/git/GitChangesPanel";
-import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
-import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
-import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
-import { OpencodeChatFrame } from "./components/opencode/OpencodeChatFrame";
-import { OpencodeComposerPanel } from "./components/opencode/OpencodeComposerPanel";
-import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
-import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
-import { OpenCodeModulePanel, type OpencodeModuleTab } from "./components/opencode/OpenCodeModulePanel";
-import { OpenCodeProviderPickerDialog } from "./components/opencode/OpenCodeProviderPickerDialog";
-import { OpenCodeProviderSettingsPanel } from "./components/opencode/OpenCodeProviderSettingsPanel";
-import {
-  OpencodeMcpDialogs,
-  OpencodeMcpMarketPanel,
-  OpencodeSettingsMcpGrid
-} from "./components/opencode/OpencodeMcpPanels";
-import {
-  OpencodeSkillsMarketPanel,
-  OpencodeSettingsSkillsGrid
-} from "./components/opencode/OpencodeSkillsPanels";
-import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
-import { RightSidebar, RightSidebarPanel } from "./components/sidebar/RightSidebar";
-import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
-import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
-import rawMcpServers from "../servers.json";
-import { normalizeMcpMarketData } from "./lib/mcpMarket";
-import {
-  buildOpencodeMcpPanelRows,
-  buildOpencodeMcpRows,
-  buildUpdatedMcpParamConfig,
-  getEditableMcpParamValues,
-  getCustomMcpParamSpecs,
-  getInstalledMcpParamSpecs as getInstalledMcpParamSpecsFromMarket,
-  getInstalledMcpTools as getInstalledMcpToolsFromMarket,
-  getMissingMcpRequiredParams,
-  normalizeCustomMcpJson,
-  replaceMcpConfigPlaceholders
-} from "./lib/opencodeMcpConfig";
-import { getProviderDisplayName, PROVIDER_PRESETS } from "./lib/opencodeProviders";
-import {
-  getSkillAvatarLabel,
-} from "./lib/opencodeSkillMarketplace";
-import { useDesktopTheme } from "./lib/useDesktopTheme";
 import { useAppearanceFontSize } from "./lib/useAppearanceFontSize";
+import { useDesktopTheme } from "./lib/useDesktopTheme";
+import { useGitWorkspaceController } from "./lib/useGitWorkspaceController";
 import { useOpencodeInstalledSkills } from "./lib/useOpencodeInstalledSkills";
-import { useOpencodeSkillMarketplace } from "./lib/useOpencodeSkillMarketplace";
-import { useOpencodeModelVisibility } from "./lib/useOpencodeModelVisibility";
-import { useOpencodeModelSelection } from "./lib/useOpencodeModelSelection";
-import { shouldUsePromptHistoryKey, useOpencodePromptHistory } from "./lib/useOpencodePromptHistory";
-import { useOpencodeMessageCache } from "./lib/useOpencodeMessageCache";
 import { useOpencodeMcpAddForm } from "./lib/useOpencodeMcpAddForm";
+import { useOpencodeMessageCache } from "./lib/useOpencodeMessageCache";
+import { useOpencodeModelSelection } from "./lib/useOpencodeModelSelection";
+import { useOpencodeModelVisibility } from "./lib/useOpencodeModelVisibility";
+import { shouldUsePromptHistoryKey, useOpencodePromptHistory } from "./lib/useOpencodePromptHistory";
+import { useOpencodeSkillMarketplace } from "./lib/useOpencodeSkillMarketplace";
 import { usePinnedRepoIds } from "./lib/usePinnedRepoIds";
 import { useRightModuleVisibility } from "./lib/useRightModuleVisibility";
-import { TerminalPanel } from "./components/terminal/TerminalPanel";
-import { MobileControlDialog } from "./components/settings/MobileControlDialog";
+import { useTerminalTabs } from "./lib/useTerminalTabs";
+import { cn } from "./lib/utils";
 import {
-  CheckIcon,
-  ChevronDownIcon,
-  CloseIcon,
-} from "./components/icons";
+  normalizeWorkspacePath,
+  readBranchParentMap,
+  readWorkspaceAgentBindings,
+  readWorktreeParentMap,
+  writeBranchParentMap,
+  writeWorkspaceAgentBindings,
+  writeWorktreeParentMap,
+  type WorkspaceAgentBinding
+} from "./lib/workspaceBindings";
+import {
+  buildWorktreeTree,
+  collectWorktreeDirPaths,
+  getDiscardableWorktreeEntryCount,
+  getWorktreeChangeStats,
+  toDiffRows
+} from "./lib/worktreeDiff";
+import {
+  buildTopologyModel,
+  pathLeaf,
+  shortSha
+} from "./lib/worktreeTopology";
 
 const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
 
@@ -617,7 +602,12 @@ export function App() {
   const [actions, setActions] = useState<ReviewAction[]>([]);
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
-  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>("changes");
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
+  const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
+  const rightOpenTabs = useMemo(
+    (): RightPaneTab[] => [PINNED_RIGHT_PANE_TAB, ...rightOptionalTabs],
+    [rightOptionalTabs]
+  );
   const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitDialogAction, setCommitDialogAction] = useState<"commit" | "commitPush" | "commitSync" | null>(null);
@@ -1179,7 +1169,7 @@ export function App() {
               ? "Cherry-picking..."
               : gitOperation === "revert"
                 ? "Reverting..."
-            : "";
+                : "";
 
   useEffect(() => {
     worktreePatchByPathRef.current = worktreePatchByPath;
@@ -2166,12 +2156,12 @@ export function App() {
         return prev.map((s) =>
           s.id === session.id
             ? {
-                ...s,
-                title: s.title,
-                createdAt: session.createdAt,
-                updatedAt: session.updatedAt,
-                loaded: s.loaded
-              }
+              ...s,
+              title: s.title,
+              createdAt: session.createdAt,
+              updatedAt: session.updatedAt,
+              loaded: s.loaded
+            }
             : s
         );
       }
@@ -2275,8 +2265,8 @@ export function App() {
       };
     }
     const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt, targetRepoPath);
-      const existingSession = opencodeSessions.find((session) => session.id === id);
-      const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
+    const existingSession = opencodeSessions.find((session) => session.id === id);
+    const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
     const turnCount = buildOpencodeTurnRanges(mapped).length;
     opencodeMessageCache.setWindowEntry(targetRepoPath, id, {
       limit,
@@ -4478,7 +4468,7 @@ export function App() {
         return;
       }
       if (trigger === "terminal") {
-        setRightPaneTab("terminal");
+        openRightPane("terminal");
         return;
       }
     }
@@ -4727,7 +4717,7 @@ export function App() {
     const tab = activeTerminalTab || terminalTabs[0];
     if (!tab) return;
     setRightModuleVisibility((prev) => ({ ...prev, terminal: true }));
-    setRightPaneTab("terminal");
+    openRightPane("terminal");
     setActiveTerminalTabId(tab.id);
     try {
       await sendRepoTerminalInput(repoPath, `${command}\r`, tab.id);
@@ -4938,8 +4928,7 @@ export function App() {
       return;
     }
     setSelectedAttachmentPreviewPath("");
-    setRightDrawerOpen(true);
-    setRightPaneTab("changes");
+    openRightPane("changes");
     setSelectedWorktreeFile(target.relativePath);
     setSelectedWorktreeLine(line);
     setSelectedWorktreeViewMode("editor");
@@ -4989,8 +4978,7 @@ export function App() {
     }
     flushSync(() => {
       setSelectedAttachmentPreviewPath(absolutePath);
-      setRightDrawerOpen(true);
-      setRightPaneTab("changes");
+      openRightPane("changes");
       setSelectedWorktreeFile(filename || absolutePath.split("/").filter(Boolean).pop() || absolutePath);
       setSelectedWorktreeLine(undefined);
       setSelectedWorktreeViewMode("editor");
@@ -5023,11 +5011,35 @@ export function App() {
     setSelectedWorktreeLine(undefined);
     setSelectedWorktreePatch("");
     setSelectedWorktreeContent(EMPTY_WORKTREE_FILE_CONTENT);
-    setRightDrawerOpen(false);
   }
 
   function toggleRightDrawer() {
-    setRightDrawerOpen((open) => !open);
+    setRightDrawerOpen((wasOpen) => {
+      if (!wasOpen) {
+        setRightPaneTab((tab) => tab || PINNED_RIGHT_PANE_TAB);
+      }
+      return !wasOpen;
+    });
+  }
+
+  function selectRightPaneTab(tab: RightPaneTab) {
+    if (tab !== PINNED_RIGHT_PANE_TAB && !rightOptionalTabs.includes(tab)) return;
+    setRightPaneTab(tab);
+  }
+
+  function closeRightPaneTab(tab: RightPaneTab) {
+    if (tab === PINNED_RIGHT_PANE_TAB) return;
+    setRightOptionalTabs((tabs) => tabs.filter((item) => item !== tab));
+    setRightPaneTab((current) => (current === tab ? PINNED_RIGHT_PANE_TAB : current));
+  }
+
+  function openRightPane(tab: RightPaneTab) {
+    if (tab !== PINNED_RIGHT_PANE_TAB) {
+      setRightOptionalTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
+    }
+    setRightPaneTab(tab);
+    setRightDrawerOpen(true);
+    if (tab === "skills") void warmSkillsMarketplace();
   }
 
   async function openToolFileInRightPane(input: {
@@ -5045,8 +5057,7 @@ export function App() {
       return;
     }
     setSelectedAttachmentPreviewPath("");
-    setRightDrawerOpen(true);
-    setRightPaneTab("changes");
+    openRightPane("changes");
     setSelectedWorktreeFile(target.relativePath);
     setSelectedWorktreeViewMode(input.preferDiff ? "diff" : "editor");
     try {
@@ -5251,7 +5262,7 @@ export function App() {
 
   useEffect(() => {
     if (!gitPanePath) {
-      void stopGitWorktreeWatcher().catch(() => {});
+      void stopGitWorktreeWatcher().catch(() => { });
       return;
     }
     void startGitWorktreeWatcher(gitPanePath).catch((e) => setError(String(e)));
@@ -5296,8 +5307,8 @@ export function App() {
         window.clearTimeout(gitAutoRefreshTimerRef.current);
         gitAutoRefreshTimerRef.current = null;
       }
-      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
-      void stopGitWorktreeWatcher().catch(() => {});
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => { });
+      void stopGitWorktreeWatcher().catch(() => { });
     };
   }, []);
 
@@ -5497,13 +5508,13 @@ export function App() {
     };
     const url = controlAccessInfo?.port ? `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state` : "";
     const timer = window.setTimeout(() => {
-      void invoke("set_mobile_model_state_from_desktop", { state: payload }).catch(() => {});
+      void invoke("set_mobile_model_state_from_desktop", { state: payload }).catch(() => { });
       if (url) {
         void fetch(url, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        }).catch(() => {});
+        }).catch(() => { });
       }
     }, 150);
     return () => window.clearTimeout(timer);
@@ -5778,7 +5789,7 @@ export function App() {
         if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
         opencodeMessageCache.invalidate(repoPath, sessionId);
         void loadOpencodeSessionMessages(sessionId).catch((e) => setError(String(e)));
-        void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch(() => {});
+        void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch(() => { });
       }, delay);
     };
     const handleRawEvent = (raw: string) => {
@@ -5943,11 +5954,11 @@ export function App() {
             header: String(q?.header || "").trim() || undefined,
             options: Array.isArray(q?.options)
               ? q.options
-                  .map((opt: any) => ({
-                    label: String(opt?.label || "").trim(),
-                    description: String(opt?.description || "").trim() || undefined,
-                  }))
-                  .filter((opt: any) => opt.label)
+                .map((opt: any) => ({
+                  label: String(opt?.label || "").trim(),
+                  description: String(opt?.description || "").trim() || undefined,
+                }))
+                .filter((opt: any) => opt.label)
               : [],
             multiple: q?.multiple === true,
             custom: q?.custom !== false,
@@ -6433,11 +6444,11 @@ export function App() {
       onOpenSession={openSidebarOpencodeSession}
       onOpenSessionContextMenu={(x, y, repo, session) => setSessionContextMenu({ x, y, repo, session })}
       onLoadMoreSessions={(repo) => void loadMoreSidebarRepoSessions(repo)}
-      onOpenSkills={() => {
-        setRightDrawerOpen(true);
-        setRightPaneTab("skills");
-        void warmSkillsMarketplace();
-      }}
+      rightDrawerOpen={rightDrawerOpen}
+      rightPaneTab={rightPaneTab}
+      rightOptionalTabs={rightOptionalTabs}
+      rightModules={rightModuleVisibility}
+      onOpenRightPane={openRightPane}
       onOpenSettings={() => {
         setSettingsInitialSection("general");
         setShowSettings(true);
@@ -6447,14 +6458,14 @@ export function App() {
 
   const centerPane = runtimeStatus.opencode.installed ? (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
-        <div className={opencodeShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
-          <OpencodeChatFrame
-            empty={opencodeShowEmptyState}
-            threadRef={opencodeThreadRef}
-            onThreadScroll={onOpencodeThreadScroll}
-            onThreadWheel={onOpencodeThreadWheel}
-            stream={(
-              <OpencodeMessageStream
+      <div className={opencodeShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
+        <OpencodeChatFrame
+          empty={opencodeShowEmptyState}
+          threadRef={opencodeThreadRef}
+          onThreadScroll={onOpencodeThreadScroll}
+          onThreadWheel={onOpencodeThreadWheel}
+          stream={(
+            <OpencodeMessageStream
               sessionLoading={opencodeSessionLoading}
               messages={opencodeMessages}
               renderedMessages={opencodeRenderedMessages}
@@ -6496,204 +6507,204 @@ export function App() {
                 void openAttachmentInRightPane(uri, filename, mime);
               }}
             />
-            )}
-            composer={(
-              <OpencodeComposerPanel
-          showSessionProgressBar={generalSettings.showSessionProgressBar}
-          todoDockVisible={opencodeTodoDockVisible}
-          todoDockCollapsed={opencodeTodoDockCollapsed}
-          activeTodos={opencodeActiveTodos}
-          todoProgress={opencodeTodoProgress}
-          onToggleTodoDockCollapsed={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
-          permissions={opencodeActivePermissions}
-          onOpenPermissionsPanel={() => openOpencodeModulePanel("permissions")}
-          onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
-          questionLoading={opencodeQuestionLoading}
-          activeQuestions={opencodeActiveQuestions}
-          staleQuestions={opencodeStaleQuestions}
-          onReplyQuestion={(requestId, answers) => {
-            void sendQuestionReply(requestId, answers).then((ok) => {
-              if (!ok) return;
-              setOpencodeDismissedQuestionsBySession((prev) => ({
-                ...prev,
-                [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-              }));
-            });
-          }}
-          onDismissQuestion={(requestId) => {
-            void sendQuestionReject(requestId).then((ok) => {
-              if (!ok) return;
-              setOpencodeDismissedQuestionsBySession((prev) => ({
-                ...prev,
-                [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-              }));
-            });
-          }}
-          onDismissStaleQuestion={(requestId) => {
-            setOpencodeDismissedQuestionsBySession((prev) => ({
-              ...prev,
-              [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
-            }));
-          }}
-          showEmptyState={opencodeShowEmptyState}
-          selectedRepoName={selectedRepo?.name || "Giteam"}
-          showJumpLatest={opencodeShowJumpLatest}
-          onJumpLatest={jumpOpencodeToLatest}
-          attachments={opencodeImageAttachments}
-          mcpPromptRefs={opencodeMcpPromptRefs}
-          onRemoveAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
-          onRemoveMcpPromptRef={(name) => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
-          slashOpen={opencodeSlashOpen}
-          slashSuggestions={opencodeSlashSuggestions}
-          slashActiveIndex={opencodeSlashActiveIndex}
-          onHoverSlashSuggestion={setOpencodeSlashActiveIndex}
-          onActivateSlashCommand={activateOpencodeSlashCommand}
-          promptInputRef={opencodeInputRef}
-          promptInput={opencodePromptInput}
-          onPromptCompositionStart={() => {
-            opencodeInputComposingRef.current = true;
-          }}
-          onPromptCompositionEnd={() => {
-            opencodeInputComposingRef.current = false;
-          }}
-          onPromptChange={(event) => {
-            const value = event.target.value;
-            captureOpencodePromptHistoryDraft(value);
-            setOpencodePromptInput(value);
-            const isSlash = /^\//.test(value) && !value.includes(" ");
-            setOpencodeSlashOpen(isSlash);
-            setOpencodeSlashActiveIndex(0);
-          }}
-          onPromptKeyDown={(event) => {
-            if (activeOpencodeSessionBusy) return;
-            const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-            if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
-            if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
-              if (event.key === "ArrowDown") {
+          )}
+          composer={(
+            <OpencodeComposerPanel
+              showSessionProgressBar={generalSettings.showSessionProgressBar}
+              todoDockVisible={opencodeTodoDockVisible}
+              todoDockCollapsed={opencodeTodoDockCollapsed}
+              activeTodos={opencodeActiveTodos}
+              todoProgress={opencodeTodoProgress}
+              onToggleTodoDockCollapsed={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
+              permissions={opencodeActivePermissions}
+              onOpenPermissionsPanel={() => openOpencodeModulePanel("permissions")}
+              onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
+              questionLoading={opencodeQuestionLoading}
+              activeQuestions={opencodeActiveQuestions}
+              staleQuestions={opencodeStaleQuestions}
+              onReplyQuestion={(requestId, answers) => {
+                void sendQuestionReply(requestId, answers).then((ok) => {
+                  if (!ok) return;
+                  setOpencodeDismissedQuestionsBySession((prev) => ({
+                    ...prev,
+                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                  }));
+                });
+              }}
+              onDismissQuestion={(requestId) => {
+                void sendQuestionReject(requestId).then((ok) => {
+                  if (!ok) return;
+                  setOpencodeDismissedQuestionsBySession((prev) => ({
+                    ...prev,
+                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                  }));
+                });
+              }}
+              onDismissStaleQuestion={(requestId) => {
+                setOpencodeDismissedQuestionsBySession((prev) => ({
+                  ...prev,
+                  [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                }));
+              }}
+              showEmptyState={opencodeShowEmptyState}
+              selectedRepoName={selectedRepo?.name || "Giteam"}
+              showJumpLatest={opencodeShowJumpLatest}
+              onJumpLatest={jumpOpencodeToLatest}
+              attachments={opencodeImageAttachments}
+              mcpPromptRefs={opencodeMcpPromptRefs}
+              onRemoveAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+              onRemoveMcpPromptRef={(name) => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
+              slashOpen={opencodeSlashOpen}
+              slashSuggestions={opencodeSlashSuggestions}
+              slashActiveIndex={opencodeSlashActiveIndex}
+              onHoverSlashSuggestion={setOpencodeSlashActiveIndex}
+              onActivateSlashCommand={activateOpencodeSlashCommand}
+              promptInputRef={opencodeInputRef}
+              promptInput={opencodePromptInput}
+              onPromptCompositionStart={() => {
+                opencodeInputComposingRef.current = true;
+              }}
+              onPromptCompositionEnd={() => {
+                opencodeInputComposingRef.current = false;
+              }}
+              onPromptChange={(event) => {
+                const value = event.target.value;
+                captureOpencodePromptHistoryDraft(value);
+                setOpencodePromptInput(value);
+                const isSlash = /^\//.test(value) && !value.includes(" ");
+                setOpencodeSlashOpen(isSlash);
+                setOpencodeSlashActiveIndex(0);
+              }}
+              onPromptKeyDown={(event) => {
+                if (activeOpencodeSessionBusy) return;
+                const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+                if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
+                if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setOpencodeSlashActiveIndex((index) => (index + 1) % opencodeSlashSuggestions.length);
+                    return;
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setOpencodeSlashActiveIndex((index) => (index - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
+                    return;
+                  }
+                  if (event.key === "Enter" || event.key === "Tab") {
+                    event.preventDefault();
+                    const command = opencodeSlashSuggestions[opencodeSlashActiveIndex];
+                    if (command) activateOpencodeSlashCommand(command);
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    setOpencodeSlashOpen(false);
+                    return;
+                  }
+                }
+                if (event.key === "ArrowUp" && shouldUsePromptHistoryKey(event, "older")) {
+                  event.preventDefault();
+                  browseOpencodePromptHistory("older");
+                  return;
+                }
+                if (event.key === "ArrowDown" && shouldUsePromptHistoryKey(event, "newer")) {
+                  event.preventDefault();
+                  browseOpencodePromptHistory("newer");
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void runOpencodePrompt();
+                }
+              }}
+              onPromptPaste={async (event) => {
+                const hasBrowserAttachments = hasClipboardFileReference(event.clipboardData);
+                if (!hasBrowserAttachments && hasPlainClipboardText(event.clipboardData)) {
+                  return;
+                }
                 event.preventDefault();
-                setOpencodeSlashActiveIndex((index) => (index + 1) % opencodeSlashSuggestions.length);
-                return;
-              }
-              if (event.key === "ArrowUp") {
+                let attachments = hasBrowserAttachments ? await readTransferAttachments(event.clipboardData) : [];
+                if (attachments.length === 0) {
+                  attachments = await readBrowserClipboardAttachments();
+                }
+                if (attachments.length === 0) {
+                  attachments = await readDesktopClipboardImageAttachment();
+                }
+                if (attachments.length === 0) {
+                  const desktopClipboardPaths = await readDesktopClipboardFilePaths();
+                  attachments = attachmentsFromLocalPaths(desktopClipboardPaths);
+                }
+                if (attachments.length === 0) {
+                  return;
+                }
+                appendOpencodeAttachments(attachments);
+              }}
+              onPromptDragOver={(event) => {
+                if ((event.dataTransfer?.files?.length || 0) <= 0) return;
                 event.preventDefault();
-                setOpencodeSlashActiveIndex((index) => (index - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
-                return;
-              }
-              if (event.key === "Enter" || event.key === "Tab") {
+                event.dataTransfer.dropEffect = "copy";
+              }}
+              onPromptDrop={async (event) => {
                 event.preventDefault();
-                const command = opencodeSlashSuggestions[opencodeSlashActiveIndex];
-                if (command) activateOpencodeSlashCommand(command);
-                return;
-              }
-              if (event.key === "Escape") {
-                setOpencodeSlashOpen(false);
-                return;
-              }
-            }
-            if (event.key === "ArrowUp" && shouldUsePromptHistoryKey(event, "older")) {
-              event.preventDefault();
-              browseOpencodePromptHistory("older");
-              return;
-            }
-            if (event.key === "ArrowDown" && shouldUsePromptHistoryKey(event, "newer")) {
-              event.preventDefault();
-              browseOpencodePromptHistory("newer");
-              return;
-            }
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void runOpencodePrompt();
-            }
-          }}
-          onPromptPaste={async (event) => {
-            const hasBrowserAttachments = hasClipboardFileReference(event.clipboardData);
-            if (!hasBrowserAttachments && hasPlainClipboardText(event.clipboardData)) {
-              return;
-            }
-            event.preventDefault();
-            let attachments = hasBrowserAttachments ? await readTransferAttachments(event.clipboardData) : [];
-            if (attachments.length === 0) {
-              attachments = await readBrowserClipboardAttachments();
-            }
-            if (attachments.length === 0) {
-              attachments = await readDesktopClipboardImageAttachment();
-            }
-            if (attachments.length === 0) {
-              const desktopClipboardPaths = await readDesktopClipboardFilePaths();
-              attachments = attachmentsFromLocalPaths(desktopClipboardPaths);
-            }
-            if (attachments.length === 0) {
-              return;
-            }
-            appendOpencodeAttachments(attachments);
-          }}
-          onPromptDragOver={(event) => {
-            if ((event.dataTransfer?.files?.length || 0) <= 0) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-          }}
-          onPromptDrop={async (event) => {
-            event.preventDefault();
-            const attachments = await readTransferAttachments(event.dataTransfer);
-            if (attachments.length === 0) return;
-            appendOpencodeAttachments(attachments);
-          }}
-          attachmentMenuOpen={opencodeAttachmentMenuOpen}
-          onToggleAttachmentMenu={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
-          attachmentInputRef={opencodeImageInputRef}
-          attachmentInputAccept={OPENCODE_ATTACHMENT_INPUT_ACCEPT}
-          onOpenAttachmentPicker={() => {
-            void openOpencodeAttachmentPicker();
-          }}
-          onAttachmentInputChange={async (event) => {
-            const files = Array.from(event.target.files || []);
-            if (files.length === 0) return;
-            const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
-            appendOpencodeAttachments(attachments.filter(Boolean) as OpencodeAttachment[]);
-            event.currentTarget.value = "";
-          }}
-          modelPickerRef={opencodeModelPickerRef}
-          showModelPicker={showOpencodeModelPicker}
-          onToggleModelPicker={() => setShowOpencodeModelPicker((prev) => !prev)}
-          modelPickerSearch={opencodeModelPickerSearch}
-          onModelPickerSearchChange={setOpencodeModelPickerSearch}
-          activeAgent={activeOpencodeAgent}
-          onApplyAgent={applyOpencodeAgent}
-          autoAcceptPermissions={opencodeAutoAcceptPermissions}
-          onToggleAutoAcceptPermissions={() => {
-            const next = !opencodeAutoAcceptPermissions;
-            setOpencodeAutoAcceptPermissions(next);
-            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
-          }}
-          configuredModelCandidates={opencodeConfiguredModelCandidates}
-          activeModel={activeOpencodeModel}
-          getModelDisplay={getOpencodeModelDisplay}
-          onApplyModel={(modelRef) => {
-            void applyOpencodeModel(modelRef);
-            setShowOpencodeModelPicker(false);
-          }}
-          onOpenModelSettings={() => {
-            setSettingsInitialSection("models");
-            setShowSettings(true);
-            setOpencodeProviderPickerSearch("");
-            setOpencodeProviderPickerProvider(opencodeModelProvider);
-            setOpencodeProviderPickerModelSearch("");
-            setShowOpencodeModelPicker(false);
-          }}
-          activeSessionBusy={activeOpencodeSessionBusy}
-          canSubmit={Boolean(opencodePromptInput.trim() || opencodeMcpPromptRefs.length > 0 || opencodeImageAttachments.length > 0)}
-          onPrimaryAction={() => {
-            if (activeOpencodeSessionBusy) {
-              void stopOpencodePrompt();
-            } else {
-              void runOpencodePrompt();
-            }
-          }}
+                const attachments = await readTransferAttachments(event.dataTransfer);
+                if (attachments.length === 0) return;
+                appendOpencodeAttachments(attachments);
+              }}
+              attachmentMenuOpen={opencodeAttachmentMenuOpen}
+              onToggleAttachmentMenu={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
+              attachmentInputRef={opencodeImageInputRef}
+              attachmentInputAccept={OPENCODE_ATTACHMENT_INPUT_ACCEPT}
+              onOpenAttachmentPicker={() => {
+                void openOpencodeAttachmentPicker();
+              }}
+              onAttachmentInputChange={async (event) => {
+                const files = Array.from(event.target.files || []);
+                if (files.length === 0) return;
+                const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
+                appendOpencodeAttachments(attachments.filter(Boolean) as OpencodeAttachment[]);
+                event.currentTarget.value = "";
+              }}
+              modelPickerRef={opencodeModelPickerRef}
+              showModelPicker={showOpencodeModelPicker}
+              onToggleModelPicker={() => setShowOpencodeModelPicker((prev) => !prev)}
+              modelPickerSearch={opencodeModelPickerSearch}
+              onModelPickerSearchChange={setOpencodeModelPickerSearch}
+              activeAgent={activeOpencodeAgent}
+              onApplyAgent={applyOpencodeAgent}
+              autoAcceptPermissions={opencodeAutoAcceptPermissions}
+              onToggleAutoAcceptPermissions={() => {
+                const next = !opencodeAutoAcceptPermissions;
+                setOpencodeAutoAcceptPermissions(next);
+                saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+                if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+              }}
+              configuredModelCandidates={opencodeConfiguredModelCandidates}
+              activeModel={activeOpencodeModel}
+              getModelDisplay={getOpencodeModelDisplay}
+              onApplyModel={(modelRef) => {
+                void applyOpencodeModel(modelRef);
+                setShowOpencodeModelPicker(false);
+              }}
+              onOpenModelSettings={() => {
+                setSettingsInitialSection("models");
+                setShowSettings(true);
+                setOpencodeProviderPickerSearch("");
+                setOpencodeProviderPickerProvider(opencodeModelProvider);
+                setOpencodeProviderPickerModelSearch("");
+                setShowOpencodeModelPicker(false);
+              }}
+              activeSessionBusy={activeOpencodeSessionBusy}
+              canSubmit={Boolean(opencodePromptInput.trim() || opencodeMcpPromptRefs.length > 0 || opencodeImageAttachments.length > 0)}
+              onPrimaryAction={() => {
+                if (activeOpencodeSessionBusy) {
+                  void stopOpencodePrompt();
+                } else {
+                  void runOpencodePrompt();
+                }
+              }}
+            />
+          )}
         />
-            )}
-          />
-        </div>
+      </div>
       {showOpencodeDebugLog ? (
         <Card className="mx-2.5 mb-2.5 overflow-hidden rounded-lg">
           <CardHeader className="flex min-h-8 flex-row items-center justify-between gap-2 border-b border-border/60 px-2 py-1.5">
@@ -6721,231 +6732,231 @@ export function App() {
       variant={rightPaneTab === "changes" || rightPaneTab === "worktree"
         ? "workspace"
         : rightPaneTab === "terminal"
-        ? "terminal"
+          ? "terminal"
           : "default"}
     >
-        {rightPaneTab === "worktree" ? (
-          <div className="flex h-full min-h-0 w-full overflow-hidden">
-            <GitTreeTopologyPanel
-              defaultSidebarSize={gitTreeSidebarSize}
-              selectedRepo={selectedRepo}
-              linkedWorktrees={linkedWorktrees}
-              branchParentMap={branchParentMap}
-              branches={branches}
-              commitGraph={commitGraph}
-              worktreeOverview={worktreeOverview}
-              selectedBranch={selectedBranch}
-              topologySelectionId={topologySelectionId}
-              worktreeParentMap={worktreeParentMap}
-              commits={commits}
-              selectedCommit={selectedCommit}
-              collapsedBranchIds={collapsedBranchIds}
-              selectedExplain={selectedExplain}
-              selectedWorktreePath={selectedWorktreePath}
-              busy={busy}
-              onRefresh={() => void refreshScm()}
-              onChooseBranch={(branchName) => void chooseBranch(branchName)}
-              onCheckoutBranch={(branchName) => void checkoutBranchFromTopology(branchName)}
-              onSelectCommit={setSelectedCommit}
-              onSelectTopology={setTopologySelectionId}
-              onOpenDetailContext={() => setDetailTab("context")}
-              onOpenBranchMenu={(x, y, nodeId) => setTopologyContextMenu({ x, y, nodeId })}
-              onOpenCommitMenu={(x, y, commit, branch) => setCommitContextMenu({ x, y, sha: commit.sha, branch, subject: commit.subject })}
-              onHoverCommit={(x, y, commit, branch) => setCommitHoverCard({ x, y, sha: commit.sha, branch, subject: commit.subject, author: commit.author, date: commit.date })}
-              onMoveCommitHover={(x, y, sha) => setCommitHoverCard((prev) => prev?.sha === sha ? { ...prev, x, y } : prev)}
-              onClearCommitHover={() => setCommitHoverCard(null)}
-              onToggleBranchCollapse={(treeKey) => setCollapsedBranchIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(treeKey)) next.delete(treeKey);
-                else next.add(treeKey);
-                return next;
-              })}
-              onOpenCommitWorktreeDialog={openCommitWorktreeDialog}
-              onInspectCommit={(sha) => void inspectCommitFromTopology(sha)}
-              onOpenTopologyCreateDialog={openTopologyCreateDialog}
-              onSelectWorktree={setSelectedWorktreePath}
-              onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
-              onActivateWorktree={(path) => void activateLinkedWorktree(path)}
-              onSidebarSizeChange={setGitTreeSidebarSize}
-            />
-          </div>
-        ) : null}
-
-        {rightPaneTab === "changes" ? (
-          <GitChangesPanel
-            branchName={worktreeOverview.branch || selectedBranch || "no branch"}
-            changesSidebarWidth={changesSidebarWidth}
-            isResizing={draggingSplit?.kind === "changes"}
-            changeStats={worktreeChangeStats}
-            lineStats={{ added: worktreeOverview.addedLines, deleted: worktreeOverview.deletedLines }}
-            entries={worktreePatchStreamEntries}
-            patchByPath={worktreePatchByPath}
-            stagedTree={stagedTree}
-            unstagedTree={unstagedTree}
-            expandedDirs={expandedWorktreeDirs}
-            selectedFile={selectedWorktreeFile}
-            selectedEntry={selectedWorktreeEntry}
-            selectedContent={selectedWorktreeContent}
-            selectedLine={selectedWorktreeLine}
-            viewMode={selectedWorktreeViewMode}
-            committing={committing}
-            pushing={pushing}
-            gitOperationLabel={gitOperationLabel}
-            commitMenuAvailable={commitMenuAvailable}
-            stagingFile={stagingFile}
-            unstagingFile={unstagingFile}
-            discardingFile={discardingFile}
-            discardingAll={discardingAll}
-            theme={theme}
-            onToggleStageAll={() => void handleToggleStageAll()}
-            onOpenDiscardAllConfirm={openDiscardAllConfirm}
-            onCommit={() => {
-              setCommitDialogAction("commit");
-            }}
-            onCommitAndPush={() => {
-              setCommitDialogAction("commitPush");
-            }}
-            onCommitAndSync={() => {
-              setCommitDialogAction("commitSync");
-            }}
-            onPatchWindowChange={handleWorktreePatchWindowChange}
-            onToggleDir={toggleWorktreeDir}
-            onOpenFile={(path) => {
-              setSelectedAttachmentPreviewPath("");
-              setSelectedWorktreeLine(undefined);
-              setSelectedWorktreeViewMode("auto");
-              void refreshSelectedWorktreePatch(path);
-            }}
-            onStageFile={(path) => void handleStageFile(path)}
-            onUnstageFile={(path) => void handleUnstageFile(path)}
-            onStagePaths={(paths, label) => void handleStagePaths(paths, label)}
-            onUnstagePaths={(paths, label) => void handleUnstagePaths(paths, label)}
-            onDiscardFile={(path, isUntracked) => void handleDiscardChanges(path, isUntracked)}
-            onDiscardEntries={(entries, label) => void handleDiscardEntries(entries, label)}
-            onCopyText={(text) => void copyText(text)}
-            onBeginResize={(clientX) => setDraggingSplit({ kind: "changes", startX: clientX, startWidth: changesSidebarWidth })}
+      {rightPaneTab === "worktree" ? (
+        <div className="flex h-full min-h-0 w-full overflow-hidden">
+          <GitTreeTopologyPanel
+            defaultSidebarSize={gitTreeSidebarSize}
+            selectedRepo={selectedRepo}
+            linkedWorktrees={linkedWorktrees}
+            branchParentMap={branchParentMap}
+            branches={branches}
+            commitGraph={commitGraph}
+            worktreeOverview={worktreeOverview}
+            selectedBranch={selectedBranch}
+            topologySelectionId={topologySelectionId}
+            worktreeParentMap={worktreeParentMap}
+            commits={commits}
+            selectedCommit={selectedCommit}
+            collapsedBranchIds={collapsedBranchIds}
+            selectedExplain={selectedExplain}
+            selectedWorktreePath={selectedWorktreePath}
+            busy={busy}
+            onRefresh={() => void refreshScm()}
+            onChooseBranch={(branchName) => void chooseBranch(branchName)}
+            onCheckoutBranch={(branchName) => void checkoutBranchFromTopology(branchName)}
+            onSelectCommit={setSelectedCommit}
+            onSelectTopology={setTopologySelectionId}
+            onOpenDetailContext={() => setDetailTab("context")}
+            onOpenBranchMenu={(x, y, nodeId) => setTopologyContextMenu({ x, y, nodeId })}
+            onOpenCommitMenu={(x, y, commit, branch) => setCommitContextMenu({ x, y, sha: commit.sha, branch, subject: commit.subject })}
+            onHoverCommit={(x, y, commit, branch) => setCommitHoverCard({ x, y, sha: commit.sha, branch, subject: commit.subject, author: commit.author, date: commit.date })}
+            onMoveCommitHover={(x, y, sha) => setCommitHoverCard((prev) => prev?.sha === sha ? { ...prev, x, y } : prev)}
+            onClearCommitHover={() => setCommitHoverCard(null)}
+            onToggleBranchCollapse={(treeKey) => setCollapsedBranchIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(treeKey)) next.delete(treeKey);
+              else next.add(treeKey);
+              return next;
+            })}
+            onOpenCommitWorktreeDialog={openCommitWorktreeDialog}
+            onInspectCommit={(sha) => void inspectCommitFromTopology(sha)}
+            onOpenTopologyCreateDialog={openTopologyCreateDialog}
+            onSelectWorktree={setSelectedWorktreePath}
+            onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
+            onActivateWorktree={(path) => void activateLinkedWorktree(path)}
+            onSidebarSizeChange={setGitTreeSidebarSize}
           />
-        ) : null}
+        </div>
+      ) : null}
 
-        {rightPaneTab === "skills" ? (
-          <OpencodeSkillsMarketPanel
-            groups={groupedOpencodeSkills}
-            skills={opencodeSkills}
-            skillsLoading={opencodeSkillsLoading}
-            skillsError={opencodeSkillsError}
-            skillsmpApiKey={skillsmpApiKey}
-            removingKey={opencodeSkillRemovingKey}
-            skillBusy={opencodeSkillBusy}
-            skillInstallingSpec={opencodeSkillInstallingSpec}
-            skillInstallNotice={opencodeSkillInstallNotice}
-            skillInstallLog={opencodeSkillInstallLog}
-            marketListRef={opencodeSkillMarketListRef}
-            searchQuery={opencodeSkillSearchQuery}
-            searchStrategy={opencodeSkillSearchStrategy}
-            searchResults={opencodeSkillSearchResults}
-            catalogView={opencodeSkillCatalogView}
-            catalogPage={opencodeSkillCatalogPage}
-            catalogTotal={opencodeSkillCatalogTotal}
-            searchMeta={opencodeSkillSearchMeta}
-            selectedMarketplaceSkill={selectedMarketplaceSkill}
-            selectedSkillDetail={selectedSkillDetail}
-            selectedSkillAudits={selectedSkillAudits}
-            selectedSkillLoading={selectedSkillLoading}
-            showSkillInstallMenu={showSkillInstallMenu}
-            marketplaceRows={opencodeMarketplaceRows}
-            visibleMarketplaceRows={visibleOpencodeMarketplaceRows}
-            initialLoading={opencodeSkillsInitialLoading}
-            searching={opencodeSkillsSearching}
-            paging={opencodeSkillsPaging}
-            canAutoLoadMore={opencodeCanAutoLoadMore}
-            onSearchQueryChange={setOpencodeSkillSearchQuery}
-            onSearch={() => void searchOpencodeSkillRegistry()}
-            onSearchStrategyChange={setOpencodeSkillSearchStrategy}
-            onSwitchCatalogView={switchOpencodeSkillCatalogView}
-            onRefreshSkills={() => void refreshOpencodeSkills()}
-            onScrollMarket={handleOpencodeSkillMarketScroll}
-            onSelectMarketplaceSkill={selectMarketplaceSkill}
-            onInstallMarketplaceSkill={(spec) => void installOpencodeSkillFromRegistry(spec, "project")}
-            onToggleSkillInstallMenu={() => setShowSkillInstallMenu((prev) => !prev)}
-            onInstallSelectedMarketplaceSkill={(scope) => {
-              if (!selectedMarketplaceSkill) return;
-              setShowSkillInstallMenu(false);
-              void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
-            }}
-            onLoadSelectedSkillDetails={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)}
-            onReferenceSkill={referenceOpencodeSkill}
-            onRemoveSkill={removeOpencodeSkill}
-            onRemoveSkillGroup={removeOpencodeSkillGroup}
-          />
-        ) : null}
-
-        {rightPaneTab === "mcp" ? (
-          <OpencodeMcpMarketPanel
-            rows={opencodeMcpPanelRows}
-            loading={opencodeMcpLoading}
-            error={opencodeMcpError}
-            installedOpen={mcpInstalledOpen}
-            servers={MCP_MARKET_SERVERS}
-            configuredMcpNames={opencodeMcpRows.map(([name]) => name)}
-            onInstalledOpenChange={setMcpInstalledOpen}
-            onShowCustomAdd={() => setShowMcpAddForm(true)}
-            onRefresh={() => void refreshOpencodeMcpStatus()}
-            onReferenceMcp={referenceOpencodeMcp}
-            onAddMcpFromMarket={addOpencodeMcpServerFromMarket}
-          />
-        ) : null}
-
-        <OpencodeMcpDialogs
-          showCustomAdd={showMcpAddForm}
-          customName={opencodeMcpAddForm.name}
-          customJson={opencodeMcpAddForm.json}
-          customParamValues={opencodeMcpAddForm.paramValues}
-          busyName={opencodeMcpBusyName}
-          customParamSpecs={getCustomMcpParamSpecs(opencodeMcpAddForm.json, opencodeMcpAddForm.name)}
-          normalizeConfig={normalizeCustomMcpJson}
-          onCloseCustomAdd={() => setShowMcpAddForm(false)}
-          onCustomNameChange={opencodeMcpAddForm.setName}
-          onCustomJsonChange={opencodeMcpAddForm.setJson}
-          onCustomParamChange={opencodeMcpAddForm.setParamValue}
-          onAddCustomMcp={addOpencodeMcpServer}
-          editingName={editingMcpName}
-          editingStatus={opencodeMcpStatus[editingMcpName]}
-          editingSpecs={getInstalledMcpParamSpecs(editingMcpName, opencodeMcpStatus[editingMcpName])}
-          editingTools={getInstalledMcpTools(editingMcpName)}
-          editingParamValues={editingMcpParamValues}
-          onCloseEditing={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}
-          onEditingParamChange={(key, value) => setEditingMcpParamValues((prev) => ({ ...prev, [key]: value }))}
-          onRemoveEditingMcp={() => removeOpencodeMcpServer(editingMcpName)}
-          onSaveEditingMcp={() => saveMcpParams(editingMcpName, opencodeMcpStatus[editingMcpName])}
+      {rightPaneTab === "changes" ? (
+        <GitChangesPanel
+          branchName={worktreeOverview.branch || selectedBranch || "no branch"}
+          changesSidebarWidth={changesSidebarWidth}
+          isResizing={draggingSplit?.kind === "changes"}
+          changeStats={worktreeChangeStats}
+          lineStats={{ added: worktreeOverview.addedLines, deleted: worktreeOverview.deletedLines }}
+          entries={worktreePatchStreamEntries}
+          patchByPath={worktreePatchByPath}
+          stagedTree={stagedTree}
+          unstagedTree={unstagedTree}
+          expandedDirs={expandedWorktreeDirs}
+          selectedFile={selectedWorktreeFile}
+          selectedEntry={selectedWorktreeEntry}
+          selectedContent={selectedWorktreeContent}
+          selectedLine={selectedWorktreeLine}
+          viewMode={selectedWorktreeViewMode}
+          committing={committing}
+          pushing={pushing}
+          gitOperationLabel={gitOperationLabel}
+          commitMenuAvailable={commitMenuAvailable}
+          stagingFile={stagingFile}
+          unstagingFile={unstagingFile}
+          discardingFile={discardingFile}
+          discardingAll={discardingAll}
+          theme={theme}
+          onToggleStageAll={() => void handleToggleStageAll()}
+          onOpenDiscardAllConfirm={openDiscardAllConfirm}
+          onCommit={() => {
+            setCommitDialogAction("commit");
+          }}
+          onCommitAndPush={() => {
+            setCommitDialogAction("commitPush");
+          }}
+          onCommitAndSync={() => {
+            setCommitDialogAction("commitSync");
+          }}
+          onPatchWindowChange={handleWorktreePatchWindowChange}
+          onToggleDir={toggleWorktreeDir}
+          onOpenFile={(path) => {
+            setSelectedAttachmentPreviewPath("");
+            setSelectedWorktreeLine(undefined);
+            setSelectedWorktreeViewMode("auto");
+            void refreshSelectedWorktreePatch(path);
+          }}
+          onStageFile={(path) => void handleStageFile(path)}
+          onUnstageFile={(path) => void handleUnstageFile(path)}
+          onStagePaths={(paths, label) => void handleStagePaths(paths, label)}
+          onUnstagePaths={(paths, label) => void handleUnstagePaths(paths, label)}
+          onDiscardFile={(path, isUntracked) => void handleDiscardChanges(path, isUntracked)}
+          onDiscardEntries={(entries, label) => void handleDiscardEntries(entries, label)}
+          onCopyText={(text) => void copyText(text)}
+          onBeginResize={(clientX) => setDraggingSplit({ kind: "changes", startX: clientX, startWidth: changesSidebarWidth })}
         />
+      ) : null}
 
-        {rightPaneTab === "terminal" ? (
-          <TerminalPanel
-            tabs={terminalTabs}
-            activeTabId={activeTerminalTabId}
-            activeTab={activeTerminalTab}
-            sidebarVisible={terminalSidebarVisible}
-            theme={theme}
-            onToggleSidebar={() => setTerminalSidebarVisible((visible) => !visible)}
-            onCreateTab={createTerminalTab}
-            onCloseTab={closeTerminalTab}
-            onSelectTab={setActiveTerminalTabId}
-            onClearActiveTab={async () => {
-              if (!selectedRepo || !activeTerminalTab) return;
-              await clearRepoTerminalSession(selectedRepo.path, activeTerminalTab.id);
-              terminalSeqRef.current[activeTerminalTab.id] = 0;
-              updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
-            }}
-            onInput={sendTerminalData}
-          />
-        ) : null}
+      {rightPaneTab === "skills" ? (
+        <OpencodeSkillsMarketPanel
+          groups={groupedOpencodeSkills}
+          skills={opencodeSkills}
+          skillsLoading={opencodeSkillsLoading}
+          skillsError={opencodeSkillsError}
+          skillsmpApiKey={skillsmpApiKey}
+          removingKey={opencodeSkillRemovingKey}
+          skillBusy={opencodeSkillBusy}
+          skillInstallingSpec={opencodeSkillInstallingSpec}
+          skillInstallNotice={opencodeSkillInstallNotice}
+          skillInstallLog={opencodeSkillInstallLog}
+          marketListRef={opencodeSkillMarketListRef}
+          searchQuery={opencodeSkillSearchQuery}
+          searchStrategy={opencodeSkillSearchStrategy}
+          searchResults={opencodeSkillSearchResults}
+          catalogView={opencodeSkillCatalogView}
+          catalogPage={opencodeSkillCatalogPage}
+          catalogTotal={opencodeSkillCatalogTotal}
+          searchMeta={opencodeSkillSearchMeta}
+          selectedMarketplaceSkill={selectedMarketplaceSkill}
+          selectedSkillDetail={selectedSkillDetail}
+          selectedSkillAudits={selectedSkillAudits}
+          selectedSkillLoading={selectedSkillLoading}
+          showSkillInstallMenu={showSkillInstallMenu}
+          marketplaceRows={opencodeMarketplaceRows}
+          visibleMarketplaceRows={visibleOpencodeMarketplaceRows}
+          initialLoading={opencodeSkillsInitialLoading}
+          searching={opencodeSkillsSearching}
+          paging={opencodeSkillsPaging}
+          canAutoLoadMore={opencodeCanAutoLoadMore}
+          onSearchQueryChange={setOpencodeSkillSearchQuery}
+          onSearch={() => void searchOpencodeSkillRegistry()}
+          onSearchStrategyChange={setOpencodeSkillSearchStrategy}
+          onSwitchCatalogView={switchOpencodeSkillCatalogView}
+          onRefreshSkills={() => void refreshOpencodeSkills()}
+          onScrollMarket={handleOpencodeSkillMarketScroll}
+          onSelectMarketplaceSkill={selectMarketplaceSkill}
+          onInstallMarketplaceSkill={(spec) => void installOpencodeSkillFromRegistry(spec, "project")}
+          onToggleSkillInstallMenu={() => setShowSkillInstallMenu((prev) => !prev)}
+          onInstallSelectedMarketplaceSkill={(scope) => {
+            if (!selectedMarketplaceSkill) return;
+            setShowSkillInstallMenu(false);
+            void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
+          }}
+          onLoadSelectedSkillDetails={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)}
+          onReferenceSkill={referenceOpencodeSkill}
+          onRemoveSkill={removeOpencodeSkill}
+          onRemoveSkillGroup={removeOpencodeSkillGroup}
+        />
+      ) : null}
+
+      {rightPaneTab === "mcp" ? (
+        <OpencodeMcpMarketPanel
+          rows={opencodeMcpPanelRows}
+          loading={opencodeMcpLoading}
+          error={opencodeMcpError}
+          installedOpen={mcpInstalledOpen}
+          servers={MCP_MARKET_SERVERS}
+          configuredMcpNames={opencodeMcpRows.map(([name]) => name)}
+          onInstalledOpenChange={setMcpInstalledOpen}
+          onShowCustomAdd={() => setShowMcpAddForm(true)}
+          onRefresh={() => void refreshOpencodeMcpStatus()}
+          onReferenceMcp={referenceOpencodeMcp}
+          onAddMcpFromMarket={addOpencodeMcpServerFromMarket}
+        />
+      ) : null}
+
+      <OpencodeMcpDialogs
+        showCustomAdd={showMcpAddForm}
+        customName={opencodeMcpAddForm.name}
+        customJson={opencodeMcpAddForm.json}
+        customParamValues={opencodeMcpAddForm.paramValues}
+        busyName={opencodeMcpBusyName}
+        customParamSpecs={getCustomMcpParamSpecs(opencodeMcpAddForm.json, opencodeMcpAddForm.name)}
+        normalizeConfig={normalizeCustomMcpJson}
+        onCloseCustomAdd={() => setShowMcpAddForm(false)}
+        onCustomNameChange={opencodeMcpAddForm.setName}
+        onCustomJsonChange={opencodeMcpAddForm.setJson}
+        onCustomParamChange={opencodeMcpAddForm.setParamValue}
+        onAddCustomMcp={addOpencodeMcpServer}
+        editingName={editingMcpName}
+        editingStatus={opencodeMcpStatus[editingMcpName]}
+        editingSpecs={getInstalledMcpParamSpecs(editingMcpName, opencodeMcpStatus[editingMcpName])}
+        editingTools={getInstalledMcpTools(editingMcpName)}
+        editingParamValues={editingMcpParamValues}
+        onCloseEditing={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}
+        onEditingParamChange={(key, value) => setEditingMcpParamValues((prev) => ({ ...prev, [key]: value }))}
+        onRemoveEditingMcp={() => removeOpencodeMcpServer(editingMcpName)}
+        onSaveEditingMcp={() => saveMcpParams(editingMcpName, opencodeMcpStatus[editingMcpName])}
+      />
+
+      {rightPaneTab === "terminal" ? (
+        <TerminalPanel
+          tabs={terminalTabs}
+          activeTabId={activeTerminalTabId}
+          activeTab={activeTerminalTab}
+          sidebarVisible={terminalSidebarVisible}
+          theme={theme}
+          onToggleSidebar={() => setTerminalSidebarVisible((visible) => !visible)}
+          onCreateTab={createTerminalTab}
+          onCloseTab={closeTerminalTab}
+          onSelectTab={setActiveTerminalTabId}
+          onClearActiveTab={async () => {
+            if (!selectedRepo || !activeTerminalTab) return;
+            await clearRepoTerminalSession(selectedRepo.path, activeTerminalTab.id);
+            terminalSeqRef.current[activeTerminalTab.id] = 0;
+            updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
+          }}
+          onInput={sendTerminalData}
+        />
+      ) : null}
     </RightSidebarPanel>
   );
 
   const rightSidebarPanel = (
     <RightSidebar
+      openTabs={rightOpenTabs}
       activeTab={rightPaneTab}
-      modules={rightModuleVisibility}
       tabLabels={{
         changes: appText.changes,
         worktree: appText.worktree,
@@ -6955,8 +6966,9 @@ export function App() {
       }}
       fileTabLabel={standaloneRightFileTab?.label}
       closeFileLabel={appText.closeFileView}
-      onSelectTab={(tab) => setRightPaneTab(tab)}
-      onWarmSkills={() => void warmSkillsMarketplace()}
+      closeTabLabel={appText.close}
+      onSelectTab={selectRightPaneTab}
+      onCloseTab={closeRightPaneTab}
       onCloseFileTab={closeRightFileView}
     >
       {rightPane}
@@ -6968,7 +6980,7 @@ export function App() {
     !runtimeStatus.opencode.installed && "px-3 sm:px-4 lg:px-6"
   );
   const editorShellClass = cn(
-    "wb-editor-inner min-h-0 flex-1 overflow-hidden",
+    "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden",
     !runtimeStatus.opencode.installed && "p-3"
   );
 
@@ -6978,20 +6990,19 @@ export function App() {
 
   const editor = (
     <div className={editorShellClass}>
-        <motion.div
-          className="wb-editor-header justify-start border-b border-border/60 bg-background py-1.5 pr-4"
-          data-tauri-drag-region
-          initial={false}
-          animate={{ paddingLeft: leftDrawerOpen ? 16 : TITLEBAR_COLLAPSED_TITLE_INSET }}
-          transition={editorHeaderTransition}
-        >
-          <div className="wb-breadcrumbs">
-            <strong>{activeOpencodeSession?.title || (draftOpencodeSession ? "New Session" : "会话摘要")}</strong>
-          </div>
-        </motion.div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className={centerColClass}>{centerPane}</div>
-        </div>
+      <motion.div
+        className="shrink-0"
+        initial={false}
+        animate={{ paddingLeft: leftDrawerOpen ? 16 : TITLEBAR_COLLAPSED_TITLE_INSET }}
+        transition={editorHeaderTransition}
+      >
+        <EditorSessionHeader
+          title={activeOpencodeSession?.title || (draftOpencodeSession ? appText.newSession : "会话摘要")}
+        />
+      </motion.div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className={centerColClass}>{centerPane}</div>
+      </div>
     </div>
   );
 
@@ -7144,27 +7155,19 @@ export function App() {
 
   const shellToggles = (
     <div className="pointer-events-none fixed inset-0 z-[1001]" aria-label="布局显隐控制">
-      <Toggle
-        pressed={leftDrawerOpen}
-        size="sm"
-        className="pointer-events-auto fixed top-2 z-[1001] size-7 rounded-md bg-transparent p-0 text-[#7c8692] hover:bg-transparent hover:text-[#4f5863] data-[state=on]:bg-transparent data-[state=on]:text-[#5f6772]"
+      <ShellPanelToggle
+        side="left"
+        className="pointer-events-auto fixed top-2.5 z-[1001]"
         style={{ left: TITLEBAR_LEFT_TOGGLE_X }}
         title={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
-        aria-label={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
         onClick={() => setLeftDrawerOpen((open) => !open)}
-      >
-        <PanelToggleIcon side="left" />
-      </Toggle>
-      <Toggle
-        pressed={rightDrawerOpen}
-        size="sm"
-        className="pointer-events-auto fixed right-3 top-2 size-7 rounded-md bg-transparent p-0 text-[#7c8692] hover:bg-transparent hover:text-[#4f5863] data-[state=on]:bg-transparent data-[state=on]:text-[#5f6772]"
+      />
+      <ShellPanelToggle
+        side="right"
+        className="pointer-events-auto fixed top-2.5 right-3 z-[1001]"
         title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
-        aria-label={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
         onClick={toggleRightDrawer}
-      >
-        <PanelToggleIcon side="right" />
-      </Toggle>
+      />
     </div>
   );
 
@@ -7500,15 +7503,15 @@ export function App() {
               if (!open) setWorktreeContextMenu(null);
             }}
           >
-              <DropdownMenuItem
-                onSelect={() => {
-                  setWorktreeToRemove(worktreeContextMenu.path);
-                  setShowRemoveWorktreeConfirm(true);
-                  setWorktreeContextMenu(null);
-                }}
-              >
-                {appText.removeWorktree}
-              </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setWorktreeToRemove(worktreeContextMenu.path);
+                setShowRemoveWorktreeConfirm(true);
+                setWorktreeContextMenu(null);
+              }}
+            >
+              {appText.removeWorktree}
+            </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
 
@@ -8021,12 +8024,12 @@ export function App() {
               if (!open) setRepoContextMenu(null);
             }}
           >
-              <DropdownMenuItem
-                onSelect={() => void closeRepository(repoContextMenu.repo)}
-                disabled={busy}
-              >
-                {appText.closeProject}
-              </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => void closeRepository(repoContextMenu.repo)}
+              disabled={busy}
+            >
+              {appText.closeProject}
+            </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
 
@@ -8039,16 +8042,16 @@ export function App() {
               if (!open) setSessionContextMenu(null);
             }}
           >
-              <DropdownMenuItem
-                onSelect={() => {
-                  const menu = sessionContextMenu;
-                  setSessionContextMenu(null);
-                  void archiveOpencodeSession(menu.repo, menu.session.id);
-                }}
-                disabled={busy || !runtimeStatus.opencode.installed}
-              >
-                {appText.archiveSession}
-              </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                const menu = sessionContextMenu;
+                setSessionContextMenu(null);
+                void archiveOpencodeSession(menu.repo, menu.session.id);
+              }}
+              disabled={busy || !runtimeStatus.opencode.installed}
+            >
+              {appText.archiveSession}
+            </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
 
@@ -8061,41 +8064,41 @@ export function App() {
               if (!open) setCommitContextMenu(null);
             }}
           >
-              <DropdownMenuItem
-                onSelect={() => openCommitWorktreeDialog({
-                  sha: commitContextMenu.sha,
-                  subject: commitContextMenu.subject || "",
-                  author: "",
-                  date: ""
-                }, commitContextMenu.branch)}
-              >
-                {appText.createWorktreeFromCommit}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  setCommitContextMenu(null);
-                  openTopologyCreateDialog("branch", `commit:${commitContextMenu.branch || currentTopologyBaseBranch()}:${commitContextMenu.sha}`);
-                }}
-              >
-                {appText.createBranchFromCommit}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  setCommitContextMenu(null);
-                  void inspectCommitFromTopology(commitContextMenu.sha);
-                }}
-              >
-                {appText.explainInspectCommit}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
-                {appText.cherryPickCurrentBranch}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
-                {appText.revertCurrentBranch}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void copyCommitId(commitContextMenu.sha)}>
-                {appText.copyCommitId}
-              </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => openCommitWorktreeDialog({
+                sha: commitContextMenu.sha,
+                subject: commitContextMenu.subject || "",
+                author: "",
+                date: ""
+              }, commitContextMenu.branch)}
+            >
+              {appText.createWorktreeFromCommit}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setCommitContextMenu(null);
+                openTopologyCreateDialog("branch", `commit:${commitContextMenu.branch || currentTopologyBaseBranch()}:${commitContextMenu.sha}`);
+              }}
+            >
+              {appText.createBranchFromCommit}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setCommitContextMenu(null);
+                void inspectCommitFromTopology(commitContextMenu.sha);
+              }}
+            >
+              {appText.explainInspectCommit}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
+              {appText.cherryPickCurrentBranch}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
+              {appText.revertCurrentBranch}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void copyCommitId(commitContextMenu.sha)}>
+              {appText.copyCommitId}
+            </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
 
@@ -8119,7 +8122,7 @@ export function App() {
           let worktreePath = "";
           let isBranch = false;
           let isWorktree = false;
-          
+
           if (node) {
             // 旧版拓扑模型节点
             isBranch = node.kind === "branch";
@@ -8140,16 +8143,16 @@ export function App() {
             // Commit 节点 - 不提供右键菜单
             return null;
           }
-          
+
           if (!isBranch && !isWorktree) return null;
-          
+
           const branchInfo = isBranch ? branches.find((b) => b.name === branchName) : null;
           const isRemoteBranch = !!branchInfo?.isRemote;
           const hasWorktree = isBranch && linkedWorktrees.some((w) => w.branch === branchName);
           const nodeWorkspacePath = isWorktree ? normalizeWorkspacePath(worktreePath) : "";
           const nodeAgentBinding = nodeWorkspacePath ? workspaceAgentBindings[nodeWorkspacePath] || null : null;
           const isCurrentBranch = isBranch && (worktreeOverview.branch === branchName || !!branchInfo?.isCurrent);
-          
+
           return (
             <FloatingContextMenu
               contentClassName="min-w-48"

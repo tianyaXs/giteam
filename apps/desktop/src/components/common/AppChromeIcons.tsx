@@ -1,7 +1,61 @@
+import type { CSSProperties } from "react";
+import {
+  GitBranchIcon,
+  ListChecksIcon,
+  PlugIcon,
+  SparklesIcon,
+  SquareTerminalIcon,
+  type LucideIcon,
+} from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import layoutSidebarIconUrl from "./layout_sidebar_icon_159994.png";
 import layoutSidebarReverseIconUrl from "./layout_sidebar_reverse_icon_184859.png";
 
 export type RightPaneTab = "worktree" | "changes" | "terminal" | "skills" | "mcp";
+
+export const PINNED_RIGHT_PANE_TAB = "changes" satisfies RightPaneTab;
+
+export type OptionalRightPaneTab = Exclude<RightPaneTab, typeof PINNED_RIGHT_PANE_TAB>;
+
+export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "skills", "mcp"];
+
+export const RIGHT_PANE_TAB_ICONS: Record<RightPaneTab, LucideIcon> = {
+  changes: ListChecksIcon,
+  worktree: GitBranchIcon,
+  terminal: SquareTerminalIcon,
+  skills: SparklesIcon,
+  mcp: PlugIcon,
+};
+
+export function ShellPanelToggle(props: {
+  side: "left" | "right";
+  title: string;
+  className?: string;
+  style?: CSSProperties;
+  onClick: () => void;
+}) {
+  const { side, title, className, style, onClick } = props;
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "size-7 text-muted-foreground hover:bg-transparent hover:text-foreground",
+        className
+      )}
+      style={style}
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+    >
+      <PanelToggleIcon side={side} />
+    </Button>
+  );
+}
 
 export function PanelToggleIcon(props: { side: "left" | "right" }) {
   const iconUrl = props.side === "left" ? layoutSidebarIconUrl : layoutSidebarReverseIconUrl;
