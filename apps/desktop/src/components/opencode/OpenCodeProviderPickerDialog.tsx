@@ -3,6 +3,7 @@ import { OpenCodeProviderList } from "./OpenCodeProviderList";
 import { OpenCodeProviderModelList } from "./OpenCodeProviderModelList";
 import { PlusIcon } from "../icons";
 import { Button } from "../ui/button";
+import { Card, CardContent } from "../ui/card";
 import {
   Dialog,
   DialogClose,
@@ -18,7 +19,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
+import { ScrollArea } from "../ui/scroll-area";
 
 type OpenCodeProviderPickerDialogProps = {
   loading: boolean;
@@ -114,16 +117,15 @@ export function OpenCodeProviderPickerDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="opencode-provider-picker-dialog">
-        <DialogHeader className="opencode-provider-picker-head">
-          <div className="opencode-provider-picker-title">
-            <DialogTitle>Provider & Model Manager</DialogTitle>
-            <DialogDescription>集中管理提供商连接、API Key 与可用模型。</DialogDescription>
+      <DialogContent className="w-[min(1040px,calc(100vw-32px))]">
+        <DialogHeader className="flex-row items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <DialogTitle className="text-2xl">Provider & Model Manager</DialogTitle>
+            <DialogDescription className="text-[15px] leading-7">集中管理提供商连接、API Key 与可用模型。</DialogDescription>
           </div>
-          <div className="toolbar">
+          <div className="flex items-center gap-2">
             {loading ? (
-              <span className="opencode-inline-loading" aria-live="polite">
-                <span />
+              <span className="text-[14px] text-muted-foreground" aria-live="polite">
                 读取中
               </span>
             ) : null}
@@ -132,15 +134,15 @@ export function OpenCodeProviderPickerDialog({
             </DialogClose>
           </div>
         </DialogHeader>
-        <div className="settings-model-head opencode-provider-picker-toolbar">
+        <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
           <Input
-            className="opencode-provider-picker-input"
+            className="h-11 rounded-xl px-4 text-[16px] font-semibold shadow-sm"
             placeholder="搜索提供商..."
             value={providerSearch}
             onChange={(event) => onProviderSearchChange(event.target.value)}
           />
           <Input
-            className="opencode-provider-picker-input"
+            className="h-11 rounded-xl px-4 text-[16px] font-semibold shadow-sm"
             placeholder="搜索模型..."
             value={modelSearch}
             onChange={(event) => onModelSearchChange(event.target.value)}
@@ -148,7 +150,6 @@ export function OpenCodeProviderPickerDialog({
           <Button
             variant="outline"
             size="icon"
-            className="opencode-provider-add-btn"
             title="新增自定义提供商"
             aria-label="新增自定义提供商"
             onClick={onOpenCustomProvider}
@@ -156,81 +157,91 @@ export function OpenCodeProviderPickerDialog({
             <PlusIcon />
           </Button>
         </div>
-        <div className="settings-model-lists opencode-provider-picker-grid">
-          <div className="settings-model-col" style={{ maxHeight: 420 }}>
-            <OpenCodeProviderList
-              providers={providers}
-              selectedProvider={selectedProvider}
-              connectedProviders={connectedProviders}
-              providerNames={providerNames}
-              modelCountsByProvider={modelCountsByProvider}
-              getProviderTag={getProviderTag}
-              getProviderDisplayName={getProviderDisplayName}
-              onSelectProvider={onSelectProvider}
-            />
-          </div>
-          <div className="settings-model-col" style={{ maxHeight: 420 }}>
-            {!selectedProvider ? (
-              <div className="small muted opencode-provider-empty">先从左侧选择一个提供商。</div>
-            ) : (
-              <div className="opencode-provider-right-panel">
-                <div className="opencode-provider-panel-head">
-                  <div className="opencode-provider-panel-title">
-                    <strong>{displayName}</strong>
-                    <small className="small muted">{`${providerId} · ${providerTag}`}</small>
-                  </div>
-                  <DropdownMenu
-                    open={menuOpen}
-                    onOpenChange={(open) => {
-                      if (open !== menuOpen) onToggleProviderMenu(providerId);
-                    }}
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="opencode-provider-menu-trigger"
-                        title="更多操作"
-                      >
-                        <span aria-hidden="true">...</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="opencode-provider-menu-panel">
-                      <DropdownMenuGroup>
-                        <DropdownMenuItem onClick={() => onOpenAuthDialog(providerId, displayName)}>
-                          更新 API Key
-                        </DropdownMenuItem>
-                        {getProviderSource(providerId) !== "env" ? (
-                          <DropdownMenuItem
-                            className="opencode-provider-menu-danger"
-                            disabled={disconnectingProvider === providerId}
-                            onClick={() => onDisconnectProvider(providerId)}
-                          >
-                            {disconnectingProvider === providerId ? "处理中..." : "断开连接"}
-                          </DropdownMenuItem>
-                        ) : null}
-                      </DropdownMenuGroup>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+        <div className="grid min-h-[560px] gap-5 lg:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.45fr)]">
+          <Card className="min-h-0 overflow-hidden rounded-xl shadow-none">
+            <CardContent className="h-full p-0">
+              <ScrollArea className="h-[560px]">
+                <div className="flex flex-col gap-1 p-3">
+                  <OpenCodeProviderList
+                    providers={providers}
+                    selectedProvider={selectedProvider}
+                    connectedProviders={connectedProviders}
+                    providerNames={providerNames}
+                    modelCountsByProvider={modelCountsByProvider}
+                    getProviderTag={getProviderTag}
+                    getProviderDisplayName={getProviderDisplayName}
+                    onSelectProvider={onSelectProvider}
+                  />
                 </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+          <Card className="min-h-0 overflow-hidden rounded-xl shadow-none">
+            <CardContent className="h-full p-0">
+            {!selectedProvider ? (
+              <Empty className="h-[560px] border-0">
+                <EmptyHeader>
+                  <EmptyTitle>选择提供商</EmptyTitle>
+                  <EmptyDescription>先从左侧选择一个提供商，再连接密钥并管理模型。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <div className="flex h-[560px] min-h-0 flex-col">
+                <div className="flex flex-col gap-4 border-b border-border p-5">
+                  <div className="flex items-start justify-between gap-5">
+                    <div className="min-w-0">
+                      <strong className="block truncate text-[17px] font-semibold leading-6">{displayName}</strong>
+                      <span className="block truncate text-[14px] leading-5 text-muted-foreground">{`${providerId} · ${providerTag}`}</span>
+                    </div>
+                    <DropdownMenu
+                      open={menuOpen}
+                      onOpenChange={(open) => {
+                        if (open !== menuOpen) onToggleProviderMenu(providerId);
+                      }}
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          title="更多操作"
+                        >
+                          <span aria-hidden="true">...</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuGroup>
+                          <DropdownMenuItem onClick={() => onOpenAuthDialog(providerId, displayName)}>
+                            更新 API Key
+                          </DropdownMenuItem>
+                          {getProviderSource(providerId) !== "env" ? (
+                            <DropdownMenuItem
+                              disabled={disconnectingProvider === providerId}
+                              onClick={() => onDisconnectProvider(providerId)}
+                            >
+                              {disconnectingProvider === providerId ? "处理中..." : "断开连接"}
+                            </DropdownMenuItem>
+                          ) : null}
+                        </DropdownMenuGroup>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
 
-                <div className="opencode-provider-connect">
-                  <div className="small muted" style={{ marginBottom: "var(--gt-space-2)" }}>
+                  <p className="m-0 max-w-[460px] text-[16px] font-medium leading-7 text-muted-foreground">
                     {connected
                       ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
                       : `${displayName} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`}
-                  </div>
+                  </p>
                   <Input
-                    className="opencode-provider-picker-input"
+                    className="h-10 rounded-lg px-3 text-[15px]"
                     placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
                     value={keyValue}
                     onChange={(event) => onConnectApiKeyChange(providerId, displayName, event.target.value)}
                   />
-                  <div className="toolbar" style={{ marginTop: "var(--gt-space-2-5)" }}>
+                  <div className="flex justify-start">
                     <Button
+                      className="h-9 px-4 text-[14px]"
                       variant="contrast"
-                      size="sm"
                       disabled={connectBusy || connectProviderId !== providerId || !connectApiKey.trim()}
                       onClick={() => onConnectProvider(providerId, connected)}
                     >
@@ -240,24 +251,29 @@ export function OpenCodeProviderPickerDialog({
                 </div>
 
                 {connected ? (
-                  <OpenCodeProviderModelList
-                    models={filteredModels}
-                    providerId={providerId}
-                    configuredProviderId={configuredProviderId}
-                    activeModel={activeModel}
-                    configuredModelsByProvider={configuredModelsByProvider}
-                    configuredModelNamesByProvider={configuredModelNamesByProvider}
-                    modelNamesByProvider={modelNamesByProvider}
-                    hiddenModels={hiddenModels}
-                    enabledModels={enabledModels}
-                    onSelectModel={onSelectModel}
-                    onHideModel={onHideModel}
-                    onEnableModel={onEnableModel}
-                  />
+                  <ScrollArea className="min-h-0 flex-1">
+                    <div className="flex flex-col gap-3 p-5">
+                      <OpenCodeProviderModelList
+                        models={filteredModels}
+                        providerId={providerId}
+                        configuredProviderId={configuredProviderId}
+                        activeModel={activeModel}
+                        configuredModelsByProvider={configuredModelsByProvider}
+                        configuredModelNamesByProvider={configuredModelNamesByProvider}
+                        modelNamesByProvider={modelNamesByProvider}
+                        hiddenModels={hiddenModels}
+                        enabledModels={enabledModels}
+                        onSelectModel={onSelectModel}
+                        onHideModel={onHideModel}
+                        onEnableModel={onEnableModel}
+                      />
+                    </div>
+                  </ScrollArea>
                 ) : null}
               </div>
             )}
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </DialogContent>
     </Dialog>

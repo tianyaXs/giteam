@@ -1,5 +1,21 @@
-import { useState, useMemo, useCallback } from "react";
-import type { QuestionRequest, QuestionAnswer, QuestionInfo } from "../lib/types";
+import { useCallback, useMemo, useState } from "react";
+import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import type { QuestionAnswer, QuestionInfo, QuestionRequest } from "../lib/types";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+import { Collapsible, CollapsibleContent } from "./ui/collapsible";
+import { Input } from "./ui/input";
+import { Separator } from "./ui/separator";
+import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group";
+import { cn } from "../lib/utils";
 
 interface QuestionDockProps {
   request: QuestionRequest;
@@ -12,322 +28,341 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
   const [currentTab, setCurrentTab] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [customInputs, setCustomInputs] = useState<string[]>([]);
-  const [selectedOption, setSelectedOption] = useState<number>(0);
+  const [selectedOption, setSelectedOption] = useState(0);
   const [isEditing, setIsEditing] = useState(false);
   const [collapsed, setCollapsed] = useState(!!disabledReason);
 
   const questions = useMemo(() => request.questions || [], [request.questions]);
-  const singleQuestion = useMemo(() => questions.length === 1, [questions.length]);
-  const isConfirmTab = useMemo(() => !singleQuestion && currentTab === questions.length, [singleQuestion, currentTab, questions.length]);
-  
+  const singleQuestion = questions.length === 1;
+  const isConfirmTab = !singleQuestion && currentTab === questions.length;
   const currentQuestion: QuestionInfo | undefined = questions[currentTab];
   const options = useMemo(() => currentQuestion?.options || [], [currentQuestion]);
-  const isMultiSelect = useMemo(() => currentQuestion?.multiple === true, [currentQuestion]);
-  const allowCustom = useMemo(() => currentQuestion?.custom !== false, [currentQuestion]);
-  const isOtherOption = useMemo(() => allowCustom && selectedOption === options.length, [allowCustom, selectedOption, options.length]);
-  
+  const isMultiSelect = currentQuestion?.multiple === true;
+  const allowCustom = currentQuestion?.custom !== false;
+  const isOtherOption = allowCustom && selectedOption === options.length;
+  const currentAnswers = answers[currentTab] || [];
   const currentCustomInput = customInputs[currentTab] || "";
-  const isCustomPicked = useMemo(() => {
-    if (!currentCustomInput) return false;
-    return (answers[currentTab] || []).includes(currentCustomInput);
-  }, [currentCustomInput, answers, currentTab]);
+  const currentCustomValue = currentCustomInput.trim();
+  const isCustomPicked = !!currentCustomValue && currentAnswers.includes(currentCustomValue);
 
-  const isOptionSelected = useCallback((optionLabel: string) => {
-    return (answers[currentTab] || []).includes(optionLabel);
-  }, [answers, currentTab]);
+  const updateAnswersForCurrent = useCallback((next: string[]) => {
+    setAnswers((previous) => {
+      const updated = [...previous];
+      updated[currentTab] = next;
+      return updated;
+    });
+  }, [currentTab]);
 
-  const handlePick = useCallback((answer: string, isCustom: boolean = false) => {
+  const updateCustomInputForCurrent = useCallback((next: string) => {
+    setCustomInputs((previous) => {
+      const updated = [...previous];
+      updated[currentTab] = next;
+      return updated;
+    });
+  }, [currentTab]);
+
+  const handlePick = useCallback((answer: string, isCustom = false) => {
     if (disabledReason) return;
-    const newAnswers = [...answers];
-    newAnswers[currentTab] = [answer];
-    setAnswers(newAnswers);
-    
+
+    setAnswers((previous) => {
+      const updated = [...previous];
+      updated[currentTab] = [answer];
+      return updated;
+    });
+
     if (isCustom) {
-      const newCustomInputs = [...customInputs];
-      newCustomInputs[currentTab] = answer;
-      setCustomInputs(newCustomInputs);
+      updateCustomInputForCurrent(answer);
     }
-    
+
     if (singleQuestion) {
       onReply(request.id, [[answer]]);
       return;
     }
-    
+
     setCurrentTab(currentTab + 1);
     setSelectedOption(0);
-  }, [answers, currentTab, customInputs, singleQuestion, request.id, onReply, disabledReason]);
+  }, [currentTab, disabledReason, onReply, request.id, singleQuestion, updateCustomInputForCurrent]);
 
-  const handleToggle = useCallback((answer: string) => {
+  const handleMultiChange = useCallback((values: string[]) => {
     if (disabledReason) return;
-    const existing = answers[currentTab] || [];
-    const index = existing.indexOf(answer);
-    let next: string[];
-    
-    if (index === -1) {
-      next = [...existing, answer];
-    } else {
-      next = existing.filter((_, i) => i !== index);
+
+    const optionLabels = new Set(options.map((option) => option.label));
+    const next = values.filter((value) => optionLabels.has(value));
+    if (currentCustomValue && currentAnswers.includes(currentCustomValue)) {
+      next.push(currentCustomValue);
     }
-    
-    const newAnswers = [...answers];
-    newAnswers[currentTab] = next;
-    setAnswers(newAnswers);
-  }, [answers, currentTab, disabledReason]);
+
+    updateAnswersForCurrent(next);
+  }, [currentAnswers, currentCustomValue, disabledReason, options, updateAnswersForCurrent]);
 
   const handleCustomSubmit = useCallback(() => {
-    const text = currentCustomInput.trim();
-    const prev = customInputs[currentTab];
-    
+    const text = currentCustomValue;
+    const previousCustom = customInputs[currentTab];
+
     if (!text) {
-      if (prev) {
-        const newCustomInputs = [...customInputs];
-        newCustomInputs[currentTab] = "";
-        setCustomInputs(newCustomInputs);
-        
-        const newAnswers = [...answers];
-        newAnswers[currentTab] = (newAnswers[currentTab] || []).filter((x) => x !== prev);
-        setAnswers(newAnswers);
+      if (previousCustom) {
+        updateCustomInputForCurrent("");
+        updateAnswersForCurrent(currentAnswers.filter((answer) => answer !== previousCustom));
       }
       setIsEditing(false);
       return;
     }
-    
+
     if (isMultiSelect) {
-      const newCustomInputs = [...customInputs];
-      newCustomInputs[currentTab] = text;
-      setCustomInputs(newCustomInputs);
-      
-      const existing = answers[currentTab] || [];
-      let next = [...existing];
-      if (prev) {
-        next = next.filter((x) => x !== prev);
-      }
-      if (!next.includes(text)) {
-        next.push(text);
-      }
-      
-      const newAnswers = [...answers];
-      newAnswers[currentTab] = next;
-      setAnswers(newAnswers);
+      const withoutPrevious = previousCustom
+        ? currentAnswers.filter((answer) => answer !== previousCustom)
+        : currentAnswers;
+      updateCustomInputForCurrent(text);
+      updateAnswersForCurrent(withoutPrevious.includes(text) ? withoutPrevious : [...withoutPrevious, text]);
       setIsEditing(false);
-    } else {
-      handlePick(text, true);
-      setIsEditing(false);
+      return;
     }
-  }, [currentCustomInput, customInputs, currentTab, answers, isMultiSelect, handlePick]);
+
+    handlePick(text, true);
+    setIsEditing(false);
+  }, [
+    currentAnswers,
+    currentCustomValue,
+    currentTab,
+    customInputs,
+    handlePick,
+    isMultiSelect,
+    updateAnswersForCurrent,
+    updateCustomInputForCurrent,
+  ]);
 
   const handleSubmitAll = useCallback(() => {
     if (disabledReason) return;
-    const finalAnswers = questions.map((_, i) => answers[i] || []);
-    onReply(request.id, finalAnswers);
-  }, [questions, answers, request.id, onReply, disabledReason]);
+    onReply(request.id, questions.map((_, index) => answers[index] || []));
+  }, [answers, disabledReason, onReply, questions, request.id]);
 
   const handleDismiss = useCallback(() => {
-    if (onDismiss) {
-      onDismiss(request.id);
-    }
+    onDismiss?.(request.id);
   }, [onDismiss, request.id]);
+
+  const goToQuestion = useCallback((index: number) => {
+    setCurrentTab(index);
+    setSelectedOption(0);
+    setIsEditing(false);
+  }, []);
 
   if (questions.length === 0) return null;
 
-  return (
-    <div className="gt-question-dock">
-      <div className="gt-question-dock-header" onClick={() => setCollapsed(!collapsed)}>
-        <div className="gt-question-dock-title">
-          <span className="gt-question-dock-count">
-            {singleQuestion ? "" : `${Math.min(currentTab + 1, questions.length)}/${questions.length} `}
-            个问题
-          </span>
-          {!singleQuestion && (
-            <span className="gt-question-dock-tabs">
-              {questions.map((_, idx) => (
-                <span
-                  key={idx}
-                  className={`gt-question-dock-tab ${idx === currentTab ? "active" : ""} ${answers[idx]?.length > 0 ? "answered" : ""}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setCurrentTab(idx);
-                    setSelectedOption(0);
-                  }}
-                />
-              ))}
-            </span>
-          )}
-        </div>
-        <button className="gt-question-dock-toggle" aria-label={collapsed ? "展开" : "收起"}>
-          {collapsed ? "▲" : "▼"}
-        </button>
-      </div>
+  const renderOptionContent = (option: { label: string; description?: string }, picked: boolean) => (
+    <span className="flex min-w-0 flex-1 items-start justify-between gap-3 text-left">
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-medium">{option.label}</span>
+        {option.description ? (
+          <span className="mt-1 block text-xs leading-5 text-muted-foreground">{option.description}</span>
+        ) : null}
+      </span>
+      {picked ? <CheckIcon data-icon="inline-end" /> : null}
+    </span>
+  );
 
-      {!collapsed && (
-        <>
-          <div className="gt-question-dock-body">
+  const customDescription = currentCustomValue || "输入你的答案...";
+  const canSubmitCurrent = currentAnswers.length > 0;
+
+  return (
+    <Card className="mx-3 mb-3 overflow-hidden shadow-sm">
+      <Collapsible open={!collapsed} onOpenChange={(open) => setCollapsed(!open)}>
+        <CardHeader className="flex-row items-center justify-between gap-3 p-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <Badge variant={disabledReason ? "secondary" : "default"}>
+              {singleQuestion ? "问题" : `${Math.min(currentTab + 1, questions.length)}/${questions.length}`}
+            </Badge>
+            <CardTitle className="truncate text-sm">
+              {disabledReason ? "等待处理" : "需要确认"}
+            </CardTitle>
+            {!singleQuestion ? (
+              <div className="flex items-center gap-1">
+                {questions.map((_, index) => (
+                  <Button
+                    key={index}
+                    variant={index === currentTab ? "default" : answers[index]?.length ? "secondary" : "outline"}
+                    className="size-2.5 rounded-full p-0"
+                    aria-label={`第 ${index + 1} 个问题`}
+                    onClick={() => goToQuestion(index)}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label={collapsed ? "展开问题" : "收起问题"}
+            onClick={() => setCollapsed((value) => !value)}
+          >
+            {collapsed ? <ChevronUpIcon data-icon="icon" /> : <ChevronDownIcon data-icon="icon" />}
+          </Button>
+        </CardHeader>
+
+        <CollapsibleContent>
+          <Separator />
+          <CardContent className="flex flex-col gap-3 p-3">
             {isConfirmTab ? (
-              <div className="gt-question-confirm">
-                <div className="gt-question-confirm-title">确认您的选择</div>
-                <div className="gt-question-confirm-list">
-                  {questions.map((q, idx) => (
-                    <div key={idx} className="gt-question-confirm-item">
-                      <div className="gt-question-confirm-q">{q.question}</div>
-                      <div className="gt-question-confirm-a">
-                        {(answers[idx] || []).length > 0 
-                          ? answers[idx].join(", ") 
-                          : <span className="gt-question-confirm-empty">未选择</span>
-                        }
-                      </div>
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
+                  <CardTitle>确认您的选择</CardTitle>
+                  <CardDescription>提交前快速检查每个问题的答案。</CardDescription>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {questions.map((question, index) => (
+                    <div key={index} className="rounded-lg bg-muted/45 p-3">
+                      <p className="text-xs leading-5 text-muted-foreground">{question.question}</p>
+                      <p className="mt-1 text-sm font-medium">
+                        {(answers[index] || []).length > 0 ? answers[index].join(", ") : "未选择"}
+                      </p>
                     </div>
                   ))}
                 </div>
               </div>
             ) : (
-              <>
-                <div className="gt-question-header">
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
                   {currentQuestion?.header ? (
-                    <div className="gt-question-header-text">{currentQuestion.header}</div>
+                    <CardDescription>{currentQuestion.header}</CardDescription>
                   ) : null}
-                  <div className="gt-question-text">{currentQuestion?.question}</div>
-                </div>
-                
-                <div className="gt-question-hint">
-                  {isMultiSelect ? "选择多个答案" : "选择一个答案"}
+                  <CardTitle className="text-base leading-6">{currentQuestion?.question}</CardTitle>
+                  <CardDescription>{isMultiSelect ? "选择多个答案" : "选择一个答案"}</CardDescription>
                 </div>
 
-                <div className="gt-question-options">
-                  {options.map((opt, idx) => (
-                    <div
-                      key={idx}
-                      className={`gt-question-option ${disabledReason ? "disabled" : ""} ${idx === selectedOption ? "selected" : ""} ${isOptionSelected(opt.label) ? "picked" : ""}`}
-                      onClick={() => {
-                        if (disabledReason) return;
-                        setSelectedOption(idx);
-                        if (isMultiSelect) {
-                          handleToggle(opt.label);
-                        } else {
-                          handlePick(opt.label);
-                        }
-                      }}
-                    >
-                      <div className="gt-question-option-radio">
-                        {isMultiSelect ? (
-                          <div className={`gt-question-checkbox ${isOptionSelected(opt.label) ? "checked" : ""}`}>
-                            {isOptionSelected(opt.label) && (
-                              <svg viewBox="0 0 24 24" width="14" height="14">
-                                <path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            )}
-                          </div>
-                        ) : (
-                          <div className={`gt-question-radio ${isOptionSelected(opt.label) ? "checked" : ""}`} />
-                        )}
-                      </div>
-                      <div className="gt-question-option-content">
-                        <div className="gt-question-option-label">{opt.label}</div>
-                        {opt.description ? (
-                          <div className="gt-question-option-desc">{opt.description}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))}
-                  
-                  {allowCustom && (
-                    <div
-                      className={`gt-question-option custom ${disabledReason ? "disabled" : ""} ${isOtherOption ? "selected" : ""} ${isCustomPicked ? "picked" : ""}`}
-                      onClick={() => {
-                        if (disabledReason) return;
-                        setSelectedOption(options.length);
-                        if (isMultiSelect && currentCustomInput && isCustomPicked) {
-                          handleToggle(currentCustomInput);
-                          return;
-                        }
-                        setIsEditing(true);
-                      }}
-                    >
-                      <div className="gt-question-option-radio">
-                        {isMultiSelect ? (
-                          <div className={`gt-question-checkbox ${isCustomPicked ? "checked" : ""}`}>
-                            {isCustomPicked && (
-                              <svg viewBox="0 0 24 24" width="14" height="14">
-                                <path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            )}
-                          </div>
-                        ) : (
-                          <div className={`gt-question-radio ${isCustomPicked ? "checked" : ""}`} />
-                        )}
-                      </div>
-                      <div className="gt-question-option-content">
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            className="gt-question-custom-input"
-                            value={currentCustomInput}
-                            onChange={(e) => {
-                              const newCustomInputs = [...customInputs];
-                              newCustomInputs[currentTab] = e.target.value;
-                              setCustomInputs(newCustomInputs);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                handleCustomSubmit();
-                              } else if (e.key === "Escape") {
-                                setIsEditing(false);
-                              }
-                            }}
-                            onBlur={handleCustomSubmit}
-                            autoFocus
-                            placeholder="输入你的答案..."
-                          />
-                        ) : (
-                          <>
-                            <div className="gt-question-option-label">输入自己的答案</div>
-                            <div className="gt-question-option-desc">
-                              {currentCustomInput || "输入你的答案..."}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </>
+                {isMultiSelect ? (
+                  <ToggleGroup
+                    type="multiple"
+                    variant="outline"
+                    value={currentAnswers.filter((answer) => options.some((option) => option.label === answer))}
+                    onValueChange={handleMultiChange}
+                    className="flex-col items-stretch gap-2"
+                  >
+                    {options.map((option, index) => (
+                      <ToggleGroupItem
+                        key={option.label}
+                        value={option.label}
+                        disabled={!!disabledReason}
+                        className="h-auto w-full justify-start rounded-lg px-3 py-2 data-[state=on]:border-primary/35"
+                        onClick={() => setSelectedOption(index)}
+                      >
+                        {renderOptionContent(option, currentAnswers.includes(option.label))}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                ) : (
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    value={currentAnswers[0] || ""}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      handlePick(value);
+                    }}
+                    className="flex-col items-stretch gap-2"
+                  >
+                    {options.map((option, index) => (
+                      <ToggleGroupItem
+                        key={option.label}
+                        value={option.label}
+                        disabled={!!disabledReason}
+                        className="h-auto w-full justify-start rounded-lg px-3 py-2 data-[state=on]:border-primary/35"
+                        onClick={() => setSelectedOption(index)}
+                      >
+                        {renderOptionContent(option, currentAnswers.includes(option.label))}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                )}
+
+                {allowCustom ? (
+                  <div
+                    className={cn(
+                      "rounded-lg border border-border p-3",
+                      isOtherOption || isCustomPicked ? "bg-accent text-accent-foreground" : "bg-background"
+                    )}
+                  >
+                    {isEditing ? (
+                      <Input
+                        type="text"
+                        value={currentCustomInput}
+                        onChange={(event) => updateCustomInputForCurrent(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            handleCustomSubmit();
+                          } else if (event.key === "Escape") {
+                            setIsEditing(false);
+                          }
+                        }}
+                        onBlur={handleCustomSubmit}
+                        autoFocus
+                        placeholder="输入你的答案..."
+                      />
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        className="h-auto w-full justify-between px-0 py-0 text-left hover:bg-transparent"
+                        disabled={!!disabledReason}
+                        onClick={() => {
+                          setSelectedOption(options.length);
+                          if (isMultiSelect && currentCustomValue) {
+                            updateAnswersForCurrent(
+                              isCustomPicked
+                                ? currentAnswers.filter((answer) => answer !== currentCustomValue)
+                                : [...currentAnswers, currentCustomValue]
+                            );
+                            return;
+                          }
+                          setIsEditing(true);
+                        }}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">输入自己的答案</span>
+                          <span className="mt-1 block truncate text-xs leading-5 text-muted-foreground">
+                            {customDescription}
+                          </span>
+                        </span>
+                        {isCustomPicked ? <CheckIcon data-icon="inline-end" /> : null}
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             )}
-          </div>
+          </CardContent>
 
-          <div className="gt-question-dock-footer">
-            <button className="gt-question-btn gt-question-btn-secondary" onClick={handleDismiss}>
+          <Separator />
+          <CardFooter className="justify-between p-3">
+            <Button variant="secondary" size="sm" onClick={handleDismiss}>
               忽略
-            </button>
+            </Button>
             {disabledReason ? (
-              <span className="gt-question-disabled-reason">{disabledReason}</span>
+              <CardDescription className="max-w-[60%] text-right">{disabledReason}</CardDescription>
             ) : isConfirmTab ? (
-              <button className="gt-question-btn gt-question-btn-primary" onClick={handleSubmitAll}>
+              <Button size="sm" onClick={handleSubmitAll}>
                 提交
-              </button>
+              </Button>
             ) : singleQuestion ? (
-              <button
-                className="gt-question-btn gt-question-btn-primary"
-                onClick={handleSubmitAll}
-                disabled={(answers[0] || []).length === 0}
-              >
+              <Button size="sm" onClick={handleSubmitAll} disabled={!canSubmitCurrent}>
                 提交
-              </button>
+              </Button>
             ) : (
-              <button
-                className="gt-question-btn gt-question-btn-primary"
+              <Button
+                size="sm"
                 onClick={() => {
                   setCurrentTab(currentTab + 1);
                   setSelectedOption(0);
+                  setIsEditing(false);
                 }}
-                disabled={currentTab >= questions.length - 1 && (answers[currentTab] || []).length === 0}
+                disabled={currentTab >= questions.length - 1 && !canSubmitCurrent}
               >
                 下一步
-              </button>
+              </Button>
             )}
-          </div>
-        </>
-      )}
-    </div>
+          </CardFooter>
+        </CollapsibleContent>
+      </Collapsible>
+    </Card>
   );
 }
 

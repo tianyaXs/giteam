@@ -182,6 +182,41 @@ export function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] |
   mode: string;
   detail: string;
 } {
+  const normalizeToolText = (value: unknown) => String(value || "").trim();
+  const readableSearchText = (value: unknown) =>
+    normalizeToolText(value)
+      .replace(/\\\./g, ".")
+      .replace(/\\\//g, "/")
+      .replace(/\\-/g, "-");
+  const wildcardOnly = (value: string) => {
+    const text = normalizeToolText(value).replace(/\s+/g, "");
+    return text === "*" || text === "**/*" || text === "./*" || text === ".";
+  };
+  const meaningfulSearchText = (value: unknown) => {
+    const text = readableSearchText(value);
+    return text && !wildcardOnly(text) ? text : "";
+  };
+  const searchDetail = (input: any, title: string) => {
+    const candidates = [
+      input?.description,
+      input?.query,
+      input?.search,
+      input?.keyword,
+      input?.text,
+      input?.regex,
+      input?.regexp,
+      input?.pattern,
+      input?.include,
+      input?.glob,
+      input?.filePattern,
+      input?.filePath,
+      input?.path,
+      title
+    ]
+      .map((item) => meaningfulSearchText(item))
+      .filter(Boolean);
+    return candidates[0] || "";
+  };
   const rows = Array.isArray(parts) ? parts : [];
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const p = rows[i] as any;
@@ -191,8 +226,12 @@ export function summarizeOpencodeContextProgress(parts: OpencodeDetailedPart[] |
     const title = String(p?.state?.title || "").trim();
     const tool = String(p?.tool || "").trim();
     const input = p?.state?.input || {};
-    const subtitle = String(input?.description || input?.filePath || input?.pattern || input?.path || "").trim();
-    const detail = [tool, title || subtitle].filter(Boolean).join(" · ");
+    const searchTool = tool === "glob" || tool === "grep" || tool === "search";
+    const subtitle = searchTool
+      ? searchDetail(input, title)
+      : String(input?.description || title || input?.filePath || input?.pattern || input?.path || "").trim();
+    const detailTitle = searchTool ? subtitle : title || subtitle;
+    const detail = searchTool && !detailTitle ? "" : [tool, detailTitle].filter(Boolean).join(" · ");
     const mode =
       tool === "read" || tool === "list" || tool === "glob" || tool === "grep" || tool === "search"
         ? "读取"

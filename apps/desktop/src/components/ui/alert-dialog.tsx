@@ -14,7 +14,10 @@ const AlertDialogOverlay = forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialogPrimitive.Overlay
     ref={ref}
-    className={cn("gt-dialog-overlay", className)}
+    className={cn(
+      "fixed inset-0 z-[2400] bg-background/70 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
+      className
+    )}
     {...props}
   />
 ));
@@ -28,7 +31,10 @@ const AlertDialogContent = forwardRef<
     <AlertDialogOverlay />
     <AlertDialogPrimitive.Content
       ref={ref}
-      className={cn("gt-dialog-content", className)}
+      className={cn(
+        "fixed left-1/2 top-1/2 z-[2401] min-w-0 -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-background p-6 shadow-lg outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+        className
+      )}
       {...props}
     />
   </AlertDialogPortal>
@@ -36,12 +42,12 @@ const AlertDialogContent = forwardRef<
 AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName;
 
 const AlertDialogHeader = ({ className, ...props }: ComponentPropsWithoutRef<"div">) => (
-  <div className={cn("gt-dialog-header", className)} {...props} />
+  <div className={cn("flex flex-col gap-1.5 text-left", className)} {...props} />
 );
 AlertDialogHeader.displayName = "AlertDialogHeader";
 
 const AlertDialogFooter = ({ className, ...props }: ComponentPropsWithoutRef<"div">) => (
-  <div className={cn("gt-dialog-footer", className)} {...props} />
+  <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} {...props} />
 );
 AlertDialogFooter.displayName = "AlertDialogFooter";
 
@@ -51,7 +57,7 @@ const AlertDialogTitle = forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialogPrimitive.Title
     ref={ref}
-    className={cn("gt-dialog-title", className)}
+    className={cn("text-lg font-semibold leading-none tracking-tight text-foreground", className)}
     {...props}
   />
 ));
@@ -63,7 +69,7 @@ const AlertDialogDescription = forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialogPrimitive.Description
     ref={ref}
-    className={cn("gt-dialog-description", className)}
+    className={cn("text-sm text-muted-foreground", className)}
     {...props}
   />
 ));

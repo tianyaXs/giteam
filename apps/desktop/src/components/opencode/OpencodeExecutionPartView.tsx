@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { isOpencodeContextTool, parseOpencodeTaskSessionId, toDisplayJson } from "../../lib/opencodeParts";
 import type { OpencodeDetailedPart } from "../../lib/opencodeSessions";
 import { parseReadToolOutput, withLineNumbers } from "../../lib/textFormatting";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { cn } from "../../lib/utils";
 
 type NormalizedEditFileDiff = {
   file: string;
@@ -55,6 +55,17 @@ function readableSearchPattern(pattern: unknown): string {
     .replace(/\\-/g, "-");
 }
 
+function isWildcardOnly(value: string): boolean {
+  const text = normalizeText(value).replace(/\s+/g, "");
+  return text === "*" || text === "**/*" || text === "./*" || text === ".";
+}
+
+function meaningfulSearchToken(value: unknown, compact = false): string {
+  const text = compact ? compactPath(normalizeText(value)) : readableSearchPattern(value);
+  if (!text || isWildcardOnly(text)) return "";
+  return text;
+}
+
 function compactPath(input: string): string {
   const path = normalizeText(input).replace(/\\/g, "/");
   if (!path) return "";
@@ -99,11 +110,41 @@ function toolMode(tool: string): string {
   return "";
 }
 
-function toolDetail(input: any): string {
+function searchToolDetail(input: any, state: any): string {
+  const title = meaningfulSearchToken(state?.title);
+  const description = meaningfulSearchToken(input?.description);
+  const query =
+    meaningfulSearchToken(input?.query) ||
+    meaningfulSearchToken(input?.search) ||
+    meaningfulSearchToken(input?.keyword) ||
+    meaningfulSearchToken(input?.text) ||
+    meaningfulSearchToken(input?.regex) ||
+    meaningfulSearchToken(input?.regexp) ||
+    meaningfulSearchToken(input?.pattern);
+  const include =
+    meaningfulSearchToken(input?.include) ||
+    meaningfulSearchToken(input?.glob) ||
+    meaningfulSearchToken(input?.filePattern) ||
+    meaningfulSearchToken(input?.files);
+  const path =
+    meaningfulSearchToken(input?.filePath, true) ||
+    meaningfulSearchToken(input?.path, true) ||
+    meaningfulSearchToken(input?.cwd, true);
+  const parts = [description || title, query, include, path]
+    .filter(Boolean)
+    .filter((item, index, rows) => rows.indexOf(item) === index);
+  return parts.join(" · ");
+}
+
+function toolDetail(tool: string, input: any, state: any): string {
+  if (tool === "glob" || tool === "grep" || tool === "search") {
+    return searchToolDetail(input, state);
+  }
   return (
     normalizeText(input?.description) ||
+    normalizeText(state?.title) ||
     compactPath(normalizeText(input?.filePath)) ||
-    readableSearchPattern(input?.pattern) ||
+    meaningfulSearchToken(input?.pattern) ||
     normalizeText(input?.query) ||
     normalizeText(input?.url) ||
     compactPath(normalizeText(input?.path))
@@ -251,6 +292,110 @@ function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function ToolCodeBlock({ children }: { children: ReactNode }) {
+  return (
+    <pre className="max-h-[340px] max-w-full overflow-auto rounded-md bg-muted/20 p-3 font-mono text-xs leading-relaxed text-foreground/85 whitespace-pre-wrap break-words">
+      {children}
+    </pre>
+  );
+}
+
+function ToolCommandBlock({ command }: { command: string }) {
+  if (!command) return null;
+  return (
+    <div className="max-w-full rounded-md bg-muted/20 px-3 py-2 font-mono text-xs text-foreground/85">
+      <code className="break-words">{command}</code>
+    </div>
+  );
+}
+
+function ToolSection({
+  title,
+  meta,
+  children
+}: {
+  title?: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="grid min-w-0 gap-2 py-2">
+      {title || meta ? (
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          {title ? <strong className="min-w-0 truncate text-xs font-semibold text-foreground">{title}</strong> : <span />}
+          {meta ? <span className="shrink-0 text-xs text-muted-foreground">{meta}</span> : null}
+        </div>
+      ) : null}
+      {children}
+    </section>
+  );
+}
+
+function ToolSubsection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-xs font-medium text-muted-foreground">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function ToolHeader({
+  running,
+  tool,
+  contextTool,
+  ioLabel,
+  detailFileLabel,
+  detailFilePath,
+  detailMeta,
+  taskSessionId,
+  taskSubagent,
+  taskTitleHint,
+  onOpenTaskSession
+}: {
+  running: boolean;
+  tool: string;
+  contextTool: boolean;
+  ioLabel: string;
+  detailFileLabel: string;
+  detailFilePath: string;
+  detailMeta: string;
+  taskSessionId: string;
+  taskSubagent: string;
+  taskTitleHint: string;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+}) {
+  const displayName = toolDisplayName(tool);
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-left">
+      <strong className="text-sm font-semibold text-foreground">{displayName}</strong>
+      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && displayName !== tool ? (
+        <span className="text-xs font-medium text-muted-foreground">{tool}</span>
+      ) : null}
+      {ioLabel ? <span className="text-xs font-medium text-muted-foreground">{ioLabel}</span> : null}
+      {detailFileLabel ? (
+        <span className="max-w-[180px] truncate text-xs font-medium text-muted-foreground" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span>
+      ) : null}
+      {detailMeta ? <span className="min-w-0 truncate text-xs text-muted-foreground">{detailMeta}</span> : null}
+      {taskSessionId ? (
+        <Button
+          className="ml-auto h-7 px-2 text-xs"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenTaskSession(taskSessionId, taskTitleHint);
+          }}
+          title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
+          variant="ghost"
+          size="sm"
+        >
+          {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export function OpencodeExecutionPartView({
   part,
   shellToolPartsExpanded,
@@ -273,7 +418,7 @@ export function OpencodeExecutionPartView({
   const status = String(state.status || "").trim();
   const running = status.toLowerCase() === "running" || status.toLowerCase() === "pending";
   const input = state.input;
-  const subtitle = toolDetail(input);
+  const subtitle = toolDetail(tool, input, state);
   const taskSessionId = tool === "task" ? parseOpencodeTaskSessionId(part) : "";
   const taskSubagent = tool === "task" ? String(input?.subagent_type || "").trim() : "";
   const taskTitleHint =
@@ -399,115 +544,81 @@ export function OpencodeExecutionPartView({
   }, [contextTool, detailDefaultOpen, detailsOpen, hasExpandedContent, hasInlineDetails]);
 
   const renderToolHead = () => (
-    <div className="opencode-exec-tool-head">
-      <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
-      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && toolDisplayName(tool) !== tool ? (
-        <Badge variant="secondary" className="opencode-tool-chip">{tool}</Badge>
-      ) : null}
-      {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-      {detailFileLabel ? (
-        <Badge variant="secondary" className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</Badge>
-      ) : null}
-      {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
-      {taskSessionId ? (
-        <Button
-          className="opencode-task-link"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenTaskSession(taskSessionId, taskTitleHint);
-          }}
-          title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
-          variant="ghost"
-          size="sm"
-        >
-          {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
-        </Button>
-      ) : null}
-    </div>
+    <ToolHeader
+      running={running}
+      tool={tool}
+      contextTool={contextTool}
+      ioLabel={ioLabel}
+      detailFileLabel={detailFileLabel}
+      detailFilePath={detailFilePath}
+      detailMeta={detailMeta}
+      taskSessionId={taskSessionId}
+      taskSubagent={taskSubagent}
+      taskTitleHint={taskTitleHint}
+      onOpenTaskSession={onOpenTaskSession}
+    />
   );
 
   const renderDetailsBody = () => (
-    <div className="opencode-tool-details-body">
+    <div className="grid min-w-0 gap-3 pt-2">
       {shellTool ? (
-        <div className="opencode-tool-section">
-          {bashCommand ? <div className="opencode-tool-command"><code>{bashCommand}</code></div> : null}
-          {outputText ? <pre className="opencode-tool-output">{outputText}</pre> : null}
-        </div>
+        <ToolSection>
+          <ToolCommandBlock command={bashCommand} />
+          {outputText ? <ToolCodeBlock>{outputText}</ToolCodeBlock> : null}
+        </ToolSection>
       ) : null}
 
       {parsedRead?.content ? (
-        <div className="opencode-tool-section">
-          <div className="opencode-tool-section-head">
-            <strong>{compactPath(parsedRead.path || subtitle) || "文件内容"}</strong>
-            {parsedRead.type ? <span className="small muted">{parsedRead.type}</span> : null}
-          </div>
-          <pre className="opencode-tool-output">{withLineNumbers(parsedRead.content, 120)}</pre>
-        </div>
+        <ToolSection title={compactPath(parsedRead.path || subtitle) || "文件内容"} meta={parsedRead.type || ""}>
+          <ToolCodeBlock>{withLineNumbers(parsedRead.content, 120)}</ToolCodeBlock>
+        </ToolSection>
       ) : null}
 
       {tool === "write" && typeof input?.content === "string" && input.content.trim() ? (
-        <div className="opencode-tool-section">
-          <div className="opencode-tool-section-head">
-            <strong>{compactPath(input?.filePath || input?.path) || "写入内容"}</strong>
-            <span className="small muted">{input.content.split(/\r?\n/).length} 行</span>
-          </div>
-          <pre className="opencode-tool-output">{withLineNumbers(input.content, 180)}</pre>
-        </div>
+        <ToolSection title={compactPath(input?.filePath || input?.path) || "写入内容"} meta={`${input.content.split(/\r?\n/).length} 行`}>
+          <ToolCodeBlock>{withLineNumbers(input.content, 180)}</ToolCodeBlock>
+        </ToolSection>
       ) : null}
 
       {fileDiff ? (
-        <div className="opencode-tool-section">
-          <div className="opencode-tool-section-head">
-            <strong>{compactPath(fileDiff.file) || "编辑内容"}</strong>
-            <span className="small muted">+{fileDiff.additions} -{fileDiff.deletions}</span>
-          </div>
-          {fileDiff.patch ? <pre className="opencode-tool-output">{withLineNumbers(fileDiff.patch, 220)}</pre> : null}
+        <ToolSection title={compactPath(fileDiff.file) || "编辑内容"} meta={`+${fileDiff.additions} -${fileDiff.deletions}`}>
+          {fileDiff.patch ? <ToolCodeBlock>{withLineNumbers(fileDiff.patch, 220)}</ToolCodeBlock> : null}
           {fileDiff.before ? (
-            <div className="opencode-tool-subsection">
-              <div className="opencode-tool-subtitle">修改前</div>
-              <pre className="opencode-tool-output">{withLineNumbers(fileDiff.before, 160)}</pre>
-            </div>
+            <ToolSubsection title="修改前">
+              <ToolCodeBlock>{withLineNumbers(fileDiff.before, 160)}</ToolCodeBlock>
+            </ToolSubsection>
           ) : null}
           {fileDiff.after ? (
-            <div className="opencode-tool-subsection">
-              <div className="opencode-tool-subtitle">修改后</div>
-              <pre className="opencode-tool-output">{withLineNumbers(fileDiff.after, 160)}</pre>
-            </div>
+            <ToolSubsection title="修改后">
+              <ToolCodeBlock>{withLineNumbers(fileDiff.after, 160)}</ToolCodeBlock>
+            </ToolSubsection>
           ) : null}
-        </div>
+        </ToolSection>
       ) : null}
 
       {patchFiles?.length ? (
-        <div className="opencode-tool-section">
-          <div className="opencode-tool-section-head">
-            <strong>补丁文件</strong>
-            <span className="small muted">{patchFiles.length} 个文件</span>
-          </div>
-          <div className="opencode-tool-file-list">
+        <ToolSection title="补丁文件" meta={`${patchFiles.length} 个文件`}>
+          <div className="grid min-w-0 gap-2">
             {patchFiles.map((file, index) => (
-              <div key={`${file.filePath}:${index}`} className="opencode-tool-file-card">
-                <div className="opencode-tool-file-head">
-                  <strong>{compactPath(file.relativePath || file.filePath) || file.filePath}</strong>
-                  <span className="small muted">
+              <div key={`${file.filePath}:${index}`} className="grid min-w-0 gap-2 py-1.5">
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <strong className="min-w-0 truncate text-xs font-semibold">{compactPath(file.relativePath || file.filePath) || file.filePath}</strong>
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {file.type} · +{file.additions} -{file.deletions}
                   </span>
                 </div>
-                {file.movePath ? <div className="small muted">move to {file.movePath}</div> : null}
-                {file.patch ? <pre className="opencode-tool-output">{withLineNumbers(file.patch, 220)}</pre> : null}
+                {file.movePath ? <div className="text-xs text-muted-foreground">move to {file.movePath}</div> : null}
+                {file.patch ? <ToolCodeBlock>{withLineNumbers(file.patch, 220)}</ToolCodeBlock> : null}
               </div>
             ))}
           </div>
-        </div>
+        </ToolSection>
       ) : null}
 
       {!parsedRead && !shellTool && !fileDiff && !patchFiles?.length && outputText ? (
-        <div className="opencode-tool-section">
-          <div className="opencode-tool-section-head">
-            <strong>输出</strong>
-          </div>
-          <pre className="opencode-tool-output">{outputText}</pre>
-        </div>
+        <ToolSection title="输出">
+          <ToolCodeBlock>{outputText}</ToolCodeBlock>
+        </ToolSection>
       ) : null}
     </div>
   );
@@ -515,16 +626,19 @@ export function OpencodeExecutionPartView({
   if (hasInlineDetails && hasExpandedContent && !contextTool && !suppressRunningEditDetails) {
     return (
       <Collapsible
-        className={toolFileTarget ? "opencode-exec-item opencode-exec-tool opencode-tool-details opencode-exec-tool-openable" : "opencode-exec-item opencode-exec-tool opencode-tool-details"}
+        className={cn(
+          "grid min-w-0 gap-1 py-1.5",
+          toolFileTarget && "hover:text-foreground"
+        )}
         open={detailsOpen ?? detailDefaultOpen}
         onOpenChange={setDetailsOpen}
       >
         <CollapsibleTrigger asChild>
-          <div className="opencode-tool-summary" role="button" tabIndex={0}>
+          <Button className="h-auto w-full justify-start rounded-md px-0 py-1.5 hover:bg-transparent hover:text-foreground" variant="ghost">
             {renderToolHead()}
-          </div>
+          </Button>
         </CollapsibleTrigger>
-        {showPreview ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
+        {showPreview ? <ToolCodeBlock>{outputPreview}</ToolCodeBlock> : null}
         <CollapsibleContent>
           {renderDetailsBody()}
         </CollapsibleContent>
@@ -534,33 +648,26 @@ export function OpencodeExecutionPartView({
 
   return (
     <div
-      className={
-        toolFileTarget
-          ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-openable"
-          : suppressRunningEditDetails
-            ? "opencode-exec-item opencode-exec-tool opencode-exec-tool-inline"
-            : "opencode-exec-item opencode-exec-tool"
-      }
+      className={cn(
+        "grid min-w-0 gap-1 py-1.5",
+        toolFileTarget && "hover:text-foreground",
+        suppressRunningEditDetails && "text-muted-foreground"
+      )}
     >
       {toolFileTarget ? (
         <Button
-          className="opencode-exec-tool-open-trigger"
+          className="h-auto w-full justify-start rounded-md px-0 py-1.5 hover:bg-transparent hover:text-foreground"
           onClick={() => onOpenToolFile(toolFileTarget)}
           title="在右侧打开文件"
           variant="ghost"
         >
-          <div className="opencode-exec-tool-head">
-            <strong className={running ? "opencode-live-text" : ""}>{toolDisplayName(tool)}</strong>
-            {ioLabel ? <span className="opencode-io-live">{ioLabel}</span> : null}
-            {detailFileLabel ? <span className="opencode-tool-file-pill" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span> : null}
-            {detailMeta ? <span className="small muted opencode-tool-detail-label">{detailMeta}</span> : null}
-          </div>
+          {renderToolHead()}
         </Button>
       ) : (
         renderToolHead()
       )}
 
-      {showPreview ? <pre className="opencode-tool-output">{outputPreview}</pre> : null}
+      {showPreview ? <ToolCodeBlock>{outputPreview}</ToolCodeBlock> : null}
     </div>
   );
 }

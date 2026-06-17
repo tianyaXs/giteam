@@ -87,16 +87,33 @@ import {
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
   AlertDialogTitle
 } from "./components/ui/alert-dialog";
 import { Button } from "./components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle
+} from "./components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "./components/ui/dropdown-menu";
+import { SidebarProvider } from "./components/ui/sidebar";
+import { Skeleton } from "./components/ui/skeleton";
+import { Toggle } from "./components/ui/toggle";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Field, FieldLabel, Textarea } from "./components/ui/textarea";
 import { explainCommit, explainCommitShort } from "./lib/entireAdapter";
 import { parseExplainCommit } from "./lib/explainParser";
+import { cn } from "./lib/utils";
 import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
@@ -264,11 +281,12 @@ import type {
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
-import { PanelToggleIcon, RightPaneTabIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
+import { PanelToggleIcon, SendIcon, type RightPaneTab } from "./components/common/AppChromeIcons";
 import { GitChangesPanel } from "./components/git/GitChangesPanel";
 import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
 import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
+import { OpencodeChatFrame } from "./components/opencode/OpencodeChatFrame";
 import { OpencodeComposerPanel } from "./components/opencode/OpencodeComposerPanel";
 import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
 import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
@@ -285,6 +303,7 @@ import {
   OpencodeSettingsSkillsGrid
 } from "./components/opencode/OpencodeSkillsPanels";
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
+import { RightSidebar, RightSidebarPanel } from "./components/sidebar/RightSidebar";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import rawMcpServers from "../servers.json";
@@ -349,9 +368,9 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: "var(--gt-space-4)", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-          <div style={{ marginBottom: "var(--gt-space-2)", fontWeight: "var(--gt-font-semibold)" }}>UI crashed</div>
-          <pre style={{ whiteSpace: "pre-wrap", margin: 0, color: "var(--danger)" }}>{this.state.error}</pre>
+        <div className="p-4 font-mono">
+          <div className="mb-2 font-semibold">UI crashed</div>
+          <pre className="m-0 whitespace-pre-wrap text-destructive">{this.state.error}</pre>
         </div>
       );
     }
@@ -405,18 +424,113 @@ const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
 const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
+const TITLEBAR_LEFT_TOGGLE_X = 76;
+const TITLEBAR_COLLAPSED_TITLE_INSET = 220;
+const DRAG_REGION_INTERACTIVE_SELECTOR = [
+  "a",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "summary",
+  "[contenteditable='true']",
+  "[data-tauri-no-drag]",
+  "[role='button']",
+  "[role='checkbox']",
+  "[role='combobox']",
+  "[role='menuitem']",
+  "[role='option']",
+  "[role='radio']",
+  "[role='slider']",
+  "[role='switch']",
+  "[role='tab']"
+].join(",");
 const OPENCODE_AGENT_SELECTION_KEY = "giteam.opencode.agent-selection.v1";
 const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
 const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
+
+type TauriDragWindow = {
+  startDragging?: () => Promise<void> | void;
+};
+
+function useTauriDragRegions() {
+  const windowRef = useRef<TauriDragWindow | null>(null);
+
+  useEffect(() => {
+    if (!IS_TAURI) return undefined;
+
+    let disposed = false;
+
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        if (!disposed) windowRef.current = getCurrentWindow() as TauriDragWindow;
+      })
+      .catch(() => {
+        windowRef.current = null;
+      });
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const region = target.closest("[data-tauri-drag-region]");
+      if (!region || target.closest(DRAG_REGION_INTERACTIVE_SELECTOR)) return;
+
+      event.preventDefault();
+      void windowRef.current?.startDragging?.();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
+
+    return () => {
+      disposed = true;
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+    };
+  }, []);
+}
+
+function FloatingContextMenu({
+  children,
+  contentClassName,
+  onOpenChange,
+  open,
+  x,
+  y
+}: {
+  children: ReactNode;
+  contentClassName?: string;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  x: number;
+  y: number;
+}) {
+  return (
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-hidden="true"
+          tabIndex={-1}
+          className="fixed size-px opacity-0"
+          style={{ left: x, top: y }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className={contentClassName} side="right" sideOffset={0}>
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function App() {
   const reduceMotion = useReducedMotion();
+  useTauriDragRegions();
   const [theme, toggleTheme] = useDesktopTheme();
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
   const { uiFontSize, codeFontSize, setUiFontSize, setCodeFontSize } = useAppearanceFontSize();
   const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
-  const [panelPlacement, setPanelPlacement] = useState<PanelPlacement>("hidden");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp" | "mcp">("general");
   const [settingsMobileVisible, setSettingsMobileVisible] = useState(false);
@@ -427,12 +541,13 @@ export function App() {
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 320, 240, 520));
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 304, 292, 340));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
   const [gitTreeSidebarSize, setGitTreeSidebarSize] = useState(() => loadCachedWidth(GITTREE_SIDEBAR_WIDTH_CACHE_KEY, 34, 24, 48));
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+  const panelPlacement: PanelPlacement = rightDrawerOpen ? "right" : "hidden";
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right" | "changes";
@@ -721,6 +836,7 @@ export function App() {
   const worktreePatchStreamKeyRef = useRef("");
   const worktreePatchByPathRef = useRef<Record<string, string>>({});
   const sidebarOpencodeSessionsByRepoRef = useRef<Record<string, OpencodeChatSession[]>>({});
+  const sidebarOpencodeSessionFetchLimitByRepoRef = useRef<Record<string, number>>({});
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
@@ -1072,6 +1188,10 @@ export function App() {
   useEffect(() => {
     sidebarOpencodeSessionsByRepoRef.current = sidebarOpencodeSessionsByRepo;
   }, [sidebarOpencodeSessionsByRepo]);
+
+  useEffect(() => {
+    sidebarOpencodeSessionFetchLimitByRepoRef.current = sidebarOpencodeSessionFetchLimitByRepo;
+  }, [sidebarOpencodeSessionFetchLimitByRepo]);
 
   const handleWorktreePatchWindowChange = useCallback((count: number) => {
     setWorktreePatchLoadLimit((limit) => Math.max(limit, count));
@@ -1479,7 +1599,7 @@ export function App() {
   function getRepoSessionFetchLimit(repoId: string): number {
     const id = repoId.trim();
     if (!id) return OPENCODE_SESSION_PAGE_SIZE;
-    return sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE;
+    return sidebarOpencodeSessionFetchLimitByRepoRef.current[id] ?? sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE;
   }
 
   function getRepoSessionsForSidebar(repoId: string): OpencodeChatSession[] {
@@ -1492,7 +1612,7 @@ export function App() {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
     setSidebarOpencodeSessionsByRepo((prev) => {
-      const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE);
+      const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, getRepoSessionFetchLimit(id));
       const existing = prev[id] || [];
       const merged = [session, ...existing.filter((item) => item.id !== session.id)]
         .sort(compareOpencodeSessionActivity)
@@ -1503,6 +1623,10 @@ export function App() {
       ...prev,
       [id]: Math.max(OPENCODE_SESSION_PAGE_SIZE, prev[id] ?? OPENCODE_SESSION_PAGE_SIZE)
     }));
+    sidebarOpencodeSessionFetchLimitByRepoRef.current = {
+      ...sidebarOpencodeSessionFetchLimitByRepoRef.current,
+      [id]: Math.max(OPENCODE_SESSION_PAGE_SIZE, sidebarOpencodeSessionFetchLimitByRepoRef.current[id] ?? OPENCODE_SESSION_PAGE_SIZE)
+    };
   }
 
   function updateSidebarOpencodeSession(repoId: string, sessionId: string, updater: (session: OpencodeChatSession) => OpencodeChatSession) {
@@ -1522,7 +1646,8 @@ export function App() {
   function getVisibleRepoSessions(repoId: string): OpencodeChatSession[] {
     const sessions = getRepoSessionsForSidebar(repoId);
     const limit = getRepoSessionFetchLimit(repoId);
-    return sessions.slice(0, Math.max(OPENCODE_SESSION_PAGE_SIZE, limit));
+    const visibleLimit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limit);
+    return sessions.length > visibleLimit ? sessions.slice(0, visibleLimit) : sessions;
   }
 
   function hasMoreRepoSessions(repoId: string): boolean {
@@ -2202,13 +2327,27 @@ export function App() {
       const hasMore = sorted.length > limit;
       setSidebarOpencodeSessionsByRepo((prev) => {
         const cachedSessions = prev[repoId] || [];
+        const cachedById = new Map(cachedSessions.map((item) => [item.id, item]));
+        const activeById = new Map(opencodeSessions.map((item) => [item.id, item]));
         const mapped = sorted.slice(0, limit).map((s, i) => {
           const base = opencodeSessionFromSummary(s, i + 1);
-          const cached = cachedSessions.find((item) => item.id === base.id) || opencodeSessions.find((item) => item.id === base.id);
+          const cached = cachedById.get(base.id) || activeById.get(base.id);
           return cached && cached.title.trim() ? { ...base, title: cached.title } : base;
         });
-        return { ...prev, [repoId]: mapped };
+        if (!paging) return { ...prev, [repoId]: mapped };
+
+        const mappedById = new Map(mapped.map((item) => [item.id, item]));
+        const kept = cachedSessions
+          .map((session) => mappedById.get(session.id))
+          .filter((session): session is OpencodeChatSession => Boolean(session));
+        const keptIds = new Set(kept.map((session) => session.id));
+        const appended = mapped.filter((session) => !keptIds.has(session.id));
+        return { ...prev, [repoId]: [...kept, ...appended] };
       });
+      sidebarOpencodeSessionFetchLimitByRepoRef.current = {
+        ...sidebarOpencodeSessionFetchLimitByRepoRef.current,
+        [repoId]: limit
+      };
       setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
       setSidebarOpencodeSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
     } finally {
@@ -2223,6 +2362,7 @@ export function App() {
   async function loadMoreSidebarRepoSessions(repo: RepositoryEntry) {
     const repoId = repo.id.trim();
     if (!repoId) return;
+    if (sidebarOpencodeSessionLoadingByRepo[repoId] || sidebarOpencodeSessionPagingByRepo[repoId]) return;
     const nextLimit = getRepoSessionFetchLimit(repoId) + OPENCODE_SESSION_PAGE_SIZE;
     await refreshSidebarRepoSessions(repo, { limit: nextLimit, paging: true });
     if (repoId === selectedRepo?.id) {
@@ -2763,7 +2903,7 @@ export function App() {
     const onMove = (e: MouseEvent) => {
       const delta = e.clientX - draggingSplit.startX;
       if (draggingSplit.kind === "sidebar") {
-        setSidebarWidth(clamp(draggingSplit.startWidth + delta, 240, 520));
+        setSidebarWidth(clamp(draggingSplit.startWidth + delta, 292, 340));
       } else if (draggingSplit.kind === "right") {
         setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 520, 1120));
       } else {
@@ -5037,6 +5177,10 @@ export function App() {
   }, [runtimeStatus]);
 
   useEffect(() => {
+    setSidebarWidth((width) => clamp(width, 292, 340));
+  }, []);
+
+  useEffect(() => {
     saveCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, sidebarWidth);
   }, [sidebarWidth]);
 
@@ -6244,16 +6388,6 @@ export function App() {
     const onNativeContextMenu = (evt: MouseEvent) => {
       const target = evt.target as HTMLElement | null;
       if (!target) return;
-      const topologyNode = target.closest(".gt-topology-node[data-node-id]") as HTMLElement | null;
-      if (topologyNode) {
-        const nodeId = topologyNode.dataset.nodeId;
-        if (!nodeId) return;
-        evt.preventDefault();
-        evt.stopPropagation();
-        setTopologySelectionId(nodeId);
-        openTopologyContextMenu(evt.clientX, evt.clientY, nodeId);
-        return;
-      }
       const btn = target.closest(".wb-repo-ico[data-repo-id]") as HTMLElement | null;
       if (!btn) return;
       const repoId = btn.dataset.repoId;
@@ -6270,11 +6404,12 @@ export function App() {
     return () => window.removeEventListener("contextmenu", onNativeContextMenu, { capture: true });
   }, [repos]);
 
-  const activityBar = <div />;
+  const activityBar = null;
   const noRepos = repos.length === 0;
 
   const sideBar = (
     <DesktopSidebar
+      text={appText}
       noRepos={noRepos}
       busy={busy}
       opencodeInstalled={runtimeStatus.opencode.installed}
@@ -6285,17 +6420,12 @@ export function App() {
       activeSessionId={activeOpencodeSessionId}
       draftRepoId={draftOpencodeSession ? (selectedRepo?.id || "") : ""}
       gitUserIdentity={gitUserIdentity}
-      fallbackIdentityName={selectedRepo?.name || "g"}
       getVisibleRepoSessions={getVisibleRepoSessions}
       hasMoreRepoSessions={hasMoreRepoSessions}
       isRepoSessionsLoading={isRepoSessionsLoading}
       isRepoSessionsPaging={isRepoSessionsPaging}
       onImportRepository={() => void pickAndImportRepository()}
       onCreateSession={() => void createAndSwitchOpencodeSessionForSidebar()}
-      onSelectRepo={(repo) => {
-        setSelectedRepo(repo);
-        setGitPaneRepo(repo);
-      }}
       onToggleRepoSessions={toggleRepoSessions}
       onOpenRepoContextMenu={openRepoContextMenu}
       onTogglePinnedRepo={togglePinnedRepo}
@@ -6303,15 +6433,28 @@ export function App() {
       onOpenSession={openSidebarOpencodeSession}
       onOpenSessionContextMenu={(x, y, repo, session) => setSessionContextMenu({ x, y, repo, session })}
       onLoadMoreSessions={(repo) => void loadMoreSidebarRepoSessions(repo)}
-      onOpenSettings={() => setShowSettings(true)}
+      onOpenSkills={() => {
+        setRightDrawerOpen(true);
+        setRightPaneTab("skills");
+        void warmSkillsMarketplace();
+      }}
+      onOpenSettings={() => {
+        setSettingsInitialSection("general");
+        setShowSettings(true);
+      }}
     />
   );
 
   const centerPane = runtimeStatus.opencode.installed ? (
-    <div className={`panel opencode-canvas gt-chat-canvas${opencodeMessages.length > 0 ? " has-chat" : ""}`}>
-        <div className={opencodeShowEmptyState ? "opencode-main gt-chat-main is-empty" : "opencode-main gt-chat-main"}>
-          <div className="opencode-thread" ref={opencodeThreadRef} onScroll={onOpencodeThreadScroll} onWheel={onOpencodeThreadWheel}>
-            <OpencodeMessageStream
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
+        <div className={opencodeShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
+          <OpencodeChatFrame
+            empty={opencodeShowEmptyState}
+            threadRef={opencodeThreadRef}
+            onThreadScroll={onOpencodeThreadScroll}
+            onThreadWheel={onOpencodeThreadWheel}
+            stream={(
+              <OpencodeMessageStream
               sessionLoading={opencodeSessionLoading}
               messages={opencodeMessages}
               renderedMessages={opencodeRenderedMessages}
@@ -6353,8 +6496,9 @@ export function App() {
                 void openAttachmentInRightPane(uri, filename, mime);
               }}
             />
-          </div>
-        <OpencodeComposerPanel
+            )}
+            composer={(
+              <OpencodeComposerPanel
           showSessionProgressBar={generalSettings.showSessionProgressBar}
           todoDockVisible={opencodeTodoDockVisible}
           todoDockCollapsed={opencodeTodoDockCollapsed}
@@ -6547,87 +6691,83 @@ export function App() {
             }
           }}
         />
-      </div>
-      {showOpencodeDebugLog ? (
-        <div className="opencode-debug-panel">
-          <div className="opencode-debug-head">
-            <strong>OpenCode Debug Log</strong>
-            <Button variant="ghost" size="sm" onClick={() => setOpencodeDebugLogs([])}>Clear</Button>
-          </div>
-          <pre className="opencode-debug-log">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
+            )}
+          />
         </div>
+      {showOpencodeDebugLog ? (
+        <Card className="mx-2.5 mb-2.5 overflow-hidden rounded-lg">
+          <CardHeader className="flex min-h-8 flex-row items-center justify-between gap-2 border-b border-border/60 px-2 py-1.5">
+            <CardTitle className="text-xs font-medium">OpenCode Debug Log</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => setOpencodeDebugLogs([])}>Clear</Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <pre className="max-h-44 overflow-auto bg-muted/35 p-2 font-mono text-xs leading-relaxed text-foreground">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
+          </CardContent>
+        </Card>
       ) : null}
     </div>
   ) : (
-    <div className="panel opencode-panel opencode-empty-panel gt-chat-disabled">
-      <div className="opencode-hero">
-        <div className="opencode-hero-title">OpenCode Agent</div>
-        <p className="small muted">Install `opencode` from Plugins to enable the coding area.</p>
-      </div>
-    </div>
+    <Card className="flex h-full min-h-0 items-center justify-center rounded-none border-0 bg-background shadow-none">
+      <CardContent className="flex max-w-md flex-col items-center gap-2 text-center">
+        <div className="text-lg font-semibold tracking-[-0.01em] text-foreground">OpenCode Agent</div>
+        <p className="text-sm text-muted-foreground">Install `opencode` from Plugins to enable the coding area.</p>
+      </CardContent>
+    </Card>
   );
 
   const rightPane = (
-    <div
-      className={rightPaneTab === "changes" || rightPaneTab === "worktree"
-        ? "gt-right-pane is-workspace"
-        : rightPaneTab === "terminal"
-          ? "gt-right-pane is-terminal"
-          : "gt-right-pane"}
+    <RightSidebarPanel
       ref={opencodeRightPaneRef}
-    >
-      <div className={rightPaneTab === "changes" || rightPaneTab === "worktree"
-        ? "gt-right-panel is-bleed"
+      variant={rightPaneTab === "changes" || rightPaneTab === "worktree"
+        ? "workspace"
         : rightPaneTab === "terminal"
-          ? "gt-right-panel is-terminal-bleed"
-          : "gt-right-panel"}
-      >
+        ? "terminal"
+          : "default"}
+    >
         {rightPaneTab === "worktree" ? (
-          <div className="gt-worktree-topology-shell">
-            <div className="gt-gittree-panel-host">
-              <GitTreeTopologyPanel
-                defaultSidebarSize={gitTreeSidebarSize}
-                selectedRepo={selectedRepo}
-                linkedWorktrees={linkedWorktrees}
-                branchParentMap={branchParentMap}
-                branches={branches}
-                commitGraph={commitGraph}
-                worktreeOverview={worktreeOverview}
-                selectedBranch={selectedBranch}
-                topologySelectionId={topologySelectionId}
-                worktreeParentMap={worktreeParentMap}
-                commits={commits}
-                selectedCommit={selectedCommit}
-                collapsedBranchIds={collapsedBranchIds}
-                selectedExplain={selectedExplain}
-                selectedWorktreePath={selectedWorktreePath}
-                busy={busy}
-                onRefresh={() => void refreshScm()}
-                onChooseBranch={(branchName) => void chooseBranch(branchName)}
-                onCheckoutBranch={(branchName) => void checkoutBranchFromTopology(branchName)}
-                onSelectCommit={setSelectedCommit}
-                onSelectTopology={setTopologySelectionId}
-                onOpenDetailContext={() => setDetailTab("context")}
-                onOpenBranchMenu={(x, y, nodeId) => setTopologyContextMenu({ x, y, nodeId })}
-                onOpenCommitMenu={(x, y, commit, branch) => setCommitContextMenu({ x, y, sha: commit.sha, branch, subject: commit.subject })}
-                onHoverCommit={(x, y, commit, branch) => setCommitHoverCard({ x, y, sha: commit.sha, branch, subject: commit.subject, author: commit.author, date: commit.date })}
-                onMoveCommitHover={(x, y, sha) => setCommitHoverCard((prev) => prev?.sha === sha ? { ...prev, x, y } : prev)}
-                onClearCommitHover={() => setCommitHoverCard(null)}
-                onToggleBranchCollapse={(treeKey) => setCollapsedBranchIds((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(treeKey)) next.delete(treeKey);
-                  else next.add(treeKey);
-                  return next;
-                })}
-                onOpenCommitWorktreeDialog={openCommitWorktreeDialog}
-                onInspectCommit={(sha) => void inspectCommitFromTopology(sha)}
-                onOpenTopologyCreateDialog={openTopologyCreateDialog}
-                onSelectWorktree={setSelectedWorktreePath}
-                onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
-                onActivateWorktree={(path) => void activateLinkedWorktree(path)}
-                onSidebarSizeChange={setGitTreeSidebarSize}
-              />
-            </div>
+          <div className="flex h-full min-h-0 w-full overflow-hidden">
+            <GitTreeTopologyPanel
+              defaultSidebarSize={gitTreeSidebarSize}
+              selectedRepo={selectedRepo}
+              linkedWorktrees={linkedWorktrees}
+              branchParentMap={branchParentMap}
+              branches={branches}
+              commitGraph={commitGraph}
+              worktreeOverview={worktreeOverview}
+              selectedBranch={selectedBranch}
+              topologySelectionId={topologySelectionId}
+              worktreeParentMap={worktreeParentMap}
+              commits={commits}
+              selectedCommit={selectedCommit}
+              collapsedBranchIds={collapsedBranchIds}
+              selectedExplain={selectedExplain}
+              selectedWorktreePath={selectedWorktreePath}
+              busy={busy}
+              onRefresh={() => void refreshScm()}
+              onChooseBranch={(branchName) => void chooseBranch(branchName)}
+              onCheckoutBranch={(branchName) => void checkoutBranchFromTopology(branchName)}
+              onSelectCommit={setSelectedCommit}
+              onSelectTopology={setTopologySelectionId}
+              onOpenDetailContext={() => setDetailTab("context")}
+              onOpenBranchMenu={(x, y, nodeId) => setTopologyContextMenu({ x, y, nodeId })}
+              onOpenCommitMenu={(x, y, commit, branch) => setCommitContextMenu({ x, y, sha: commit.sha, branch, subject: commit.subject })}
+              onHoverCommit={(x, y, commit, branch) => setCommitHoverCard({ x, y, sha: commit.sha, branch, subject: commit.subject, author: commit.author, date: commit.date })}
+              onMoveCommitHover={(x, y, sha) => setCommitHoverCard((prev) => prev?.sha === sha ? { ...prev, x, y } : prev)}
+              onClearCommitHover={() => setCommitHoverCard(null)}
+              onToggleBranchCollapse={(treeKey) => setCollapsedBranchIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(treeKey)) next.delete(treeKey);
+                else next.add(treeKey);
+                return next;
+              })}
+              onOpenCommitWorktreeDialog={openCommitWorktreeDialog}
+              onInspectCommit={(sha) => void inspectCommitFromTopology(sha)}
+              onOpenTopologyCreateDialog={openTopologyCreateDialog}
+              onSelectWorktree={setSelectedWorktreePath}
+              onOpenWorktreeMenu={(x, y, path) => setWorktreeContextMenu({ x, y, path })}
+              onActivateWorktree={(path) => void activateLinkedWorktree(path)}
+              onSidebarSizeChange={setGitTreeSidebarSize}
+            />
           </div>
         ) : null}
 
@@ -6799,128 +6939,59 @@ export function App() {
             onInput={sendTerminalData}
           />
         ) : null}
-      </div>
-    </div>
+    </RightSidebarPanel>
   );
 
-  const centerColClass =
-    !leftDrawerOpen && !rightDrawerOpen
-      ? "wb-col wb-col-center gt-center-pane gt-center-pane-wide"
-      : !rightDrawerOpen
-        ? "wb-col wb-col-center gt-center-pane gt-center-pane-right-closed"
-        : !leftDrawerOpen
-          ? "wb-col wb-col-center gt-center-pane gt-center-pane-left-closed"
-          : "wb-col wb-col-center gt-center-pane";
+  const rightSidebarPanel = (
+    <RightSidebar
+      activeTab={rightPaneTab}
+      modules={rightModuleVisibility}
+      tabLabels={{
+        changes: appText.changes,
+        worktree: appText.worktree,
+        terminal: appText.terminal,
+        skills: appText.skills,
+        mcp: appText.mcp,
+      }}
+      fileTabLabel={standaloneRightFileTab?.label}
+      closeFileLabel={appText.closeFileView}
+      onSelectTab={(tab) => setRightPaneTab(tab)}
+      onWarmSkills={() => void warmSkillsMarketplace()}
+      onCloseFileTab={closeRightFileView}
+    >
+      {rightPane}
+    </RightSidebar>
+  );
 
-  const rightDrawerTransition = reduceMotion
+  const centerColClass = cn(
+    "wb-col wb-col-center min-h-0 min-w-0 flex-1 overflow-hidden",
+    !runtimeStatus.opencode.installed && "px-3 sm:px-4 lg:px-6"
+  );
+  const editorShellClass = cn(
+    "wb-editor-inner min-h-0 flex-1 overflow-hidden",
+    !runtimeStatus.opencode.installed && "p-3"
+  );
+
+  const editorHeaderTransition = reduceMotion
     ? { duration: 0 }
-    : { type: "spring" as const, stiffness: 360, damping: 34, mass: 0.94 };
-
-  const editorRailClass = rightDrawerOpen ? "wb-editor-rail is-right-open" : "wb-editor-rail is-right-closed";
+    : { type: "spring" as const, stiffness: 360, damping: 34, mass: 0.92 };
 
   const editor = (
-    <div className="wb-editor-inner gt-editor-shell">
-      <div
-        className={editorRailClass}
-        style={{
-          "--wb-right-width": `${rightPaneWidth}px`,
-          "--wb-right-current-width": rightDrawerOpen ? `${rightPaneWidth}px` : "0px",
-          "--wb-right-split-width": rightDrawerOpen ? "1px" : "0px"
-        } as CSSProperties}
-      >
-        <div className="wb-editor-rail__head-center wb-editor-header gt-editor-header" data-tauri-drag-region>
+    <div className={editorShellClass}>
+        <motion.div
+          className="wb-editor-header justify-start border-b border-border/60 bg-background py-1.5 pr-4"
+          data-tauri-drag-region
+          initial={false}
+          animate={{ paddingLeft: leftDrawerOpen ? 16 : TITLEBAR_COLLAPSED_TITLE_INSET }}
+          transition={editorHeaderTransition}
+        >
           <div className="wb-breadcrumbs">
             <strong>{activeOpencodeSession?.title || (draftOpencodeSession ? "New Session" : "会话摘要")}</strong>
           </div>
-        </div>
-        <div
-          className={draggingSplit?.kind === "right" ? "wb-editor-rail__split active" : "wb-editor-rail__split"}
-          role="separator"
-          aria-orientation="vertical"
-          aria-hidden={!rightDrawerOpen}
-          onMouseDown={rightDrawerOpen ? (e) => beginSplitDrag("right", e.clientX) : undefined}
-        />
-        <motion.div
-          className="wb-editor-rail__head-right"
-          data-tauri-drag-region
-          aria-hidden={!rightDrawerOpen}
-          initial={false}
-          animate={rightDrawerOpen
-            ? { opacity: 1, x: 0, scale: 1 }
-            : { opacity: 0, x: 24, scale: 0.985 }}
-          transition={rightDrawerTransition}
-          style={{ pointerEvents: rightDrawerOpen ? "auto" : "none" }}
-        >
-          <div className="toolbar gt-titlebar-tools gt-titlebar-tools--rail">
-            <div className="gt-right-tabs gt-right-tabs-titlebar" data-tauri-drag-region>
-              {rightModuleVisibility.changes ? (
-                <Button variant="ghost" size="icon" className={rightPaneTab === "changes" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("changes")} title="Changes" aria-label="Changes">
-                  <RightPaneTabIcon tab="changes" active={rightPaneTab === "changes"} />
-                </Button>
-              ) : null}
-              {rightModuleVisibility.worktree ? (
-                <Button variant="ghost" size="icon" className={rightPaneTab === "worktree" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("worktree")} title="GitTree" aria-label="GitTree">
-                  <RightPaneTabIcon tab="worktree" active={rightPaneTab === "worktree"} />
-                </Button>
-              ) : null}
-              {rightModuleVisibility.terminal ? (
-                <Button variant="ghost" size="icon" className={rightPaneTab === "terminal" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => setRightPaneTab("terminal")} title="Terminal" aria-label="Terminal">
-                  <RightPaneTabIcon tab="terminal" active={rightPaneTab === "terminal"} />
-                </Button>
-              ) : null}
-              {rightModuleVisibility.skills ? (
-                <Button variant="ghost" size="icon" className={rightPaneTab === "skills" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
-                  setRightPaneTab("skills");
-                }} onMouseEnter={() => void warmSkillsMarketplace()} onFocus={() => void warmSkillsMarketplace()} title="Skills" aria-label="Skills">
-                  <RightPaneTabIcon tab="skills" active={rightPaneTab === "skills"} />
-                </Button>
-              ) : null}
-              {rightModuleVisibility.mcp ? (
-                <Button variant="ghost" size="icon" className={rightPaneTab === "mcp" ? "gt-right-tab active" : "gt-right-tab"} onClick={() => {
-                  setRightPaneTab("mcp");
-                }} title="MCP" aria-label="MCP">
-                  <RightPaneTabIcon tab="mcp" active={rightPaneTab === "mcp"} />
-                </Button>
-              ) : null}
-            </div>
-            {standaloneRightFileTab ? (
-              <div className="gt-titlebar-file-tabs">
-                <div className="gt-titlebar-file-tab">
-                  <span className="gt-titlebar-file-label">{standaloneRightFileTab.label}</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="gt-titlebar-file-close"
-                    title="关闭文件视图"
-                    aria-label="关闭文件视图"
-                    onClick={closeRightFileView}
-                  >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M4.5 4.5 11.5 11.5" />
-                      <path d="M11.5 4.5 4.5 11.5" />
-                    </svg>
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-          </div>
         </motion.div>
-        <div className="wb-editor-rail__body-center wb-editor-content gt-editor-rail-center">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className={centerColClass}>{centerPane}</div>
         </div>
-        <motion.div
-          className="wb-editor-rail__body-right wb-col wb-col-right"
-          aria-hidden={!rightDrawerOpen}
-          initial={false}
-          animate={rightDrawerOpen
-            ? { opacity: 1, x: 0, scale: 1 }
-            : { opacity: 0, x: 28, scale: 0.985 }}
-          transition={rightDrawerTransition}
-          style={{ pointerEvents: rightDrawerOpen ? "auto" : "none" }}
-        >
-          {rightPane}
-        </motion.div>
-      </div>
     </div>
   );
 
@@ -7069,16 +7140,31 @@ export function App() {
     await submitOpencodeProviderAuthKey(providerId, true, { closeDialog: true });
   }
 
-  const panel = <div className="wb-panel-inner" />;
+  const panel = rightSidebarPanel;
 
   const shellToggles = (
-    <div className="gt-shell-toggle-layer" aria-label="布局显隐控制">
-      <Button variant="ghost" size="icon" className={leftDrawerOpen ? "gt-shell-toggle gt-shell-toggle-left is-sidebar-open" : "gt-shell-toggle gt-shell-toggle-left is-sidebar-closed"} title={leftDrawerOpen ? "收起左侧栏" : "展开左侧栏"} onClick={() => setLeftDrawerOpen((v) => !v)}>
-        <PanelToggleIcon side="left" collapsed={!leftDrawerOpen} />
-      </Button>
-      <Button variant="ghost" size="icon" className="gt-shell-toggle gt-shell-toggle-right" title={rightDrawerOpen ? "收起右侧栏" : "展开右侧栏"} onClick={toggleRightDrawer}>
-        <PanelToggleIcon side="right" collapsed={!rightDrawerOpen} />
-      </Button>
+    <div className="pointer-events-none fixed inset-0 z-[1001]" aria-label="布局显隐控制">
+      <Toggle
+        pressed={leftDrawerOpen}
+        size="sm"
+        className="pointer-events-auto fixed top-2 z-[1001] size-7 rounded-md bg-transparent p-0 text-[#7c8692] hover:bg-transparent hover:text-[#4f5863] data-[state=on]:bg-transparent data-[state=on]:text-[#5f6772]"
+        style={{ left: TITLEBAR_LEFT_TOGGLE_X }}
+        title={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
+        aria-label={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
+        onClick={() => setLeftDrawerOpen((open) => !open)}
+      >
+        <PanelToggleIcon side="left" />
+      </Toggle>
+      <Toggle
+        pressed={rightDrawerOpen}
+        size="sm"
+        className="pointer-events-auto fixed right-3 top-2 size-7 rounded-md bg-transparent p-0 text-[#7c8692] hover:bg-transparent hover:text-[#4f5863] data-[state=on]:bg-transparent data-[state=on]:text-[#5f6772]"
+        title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
+        aria-label={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
+        onClick={toggleRightDrawer}
+      >
+        <PanelToggleIcon side="right" />
+      </Toggle>
     </div>
   );
 
@@ -7086,27 +7172,51 @@ export function App() {
     <AppErrorBoundary>
       <>
         {shellToggles}
-        <Workbench
-          activityBar={activityBar}
-          sideBar={sideBar}
-          editor={editor}
-          panel={panel}
-          sidebarWidth={sidebarWidth}
-          sidebarCollapsed={!leftDrawerOpen}
-          sidebarResizing={draggingSplit?.kind === "sidebar"}
-          onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
-          panelPlacement={panelPlacement}
-        />
+        <SidebarProvider
+          open={leftDrawerOpen}
+          onOpenChange={setLeftDrawerOpen}
+          style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+        >
+          <Workbench
+            activityBar={activityBar}
+            sideBar={sideBar}
+            editor={editor}
+            panel={panel}
+            sidebarWidth={sidebarWidth}
+            rightPanelWidth={rightPaneWidth}
+            sidebarCollapsed={!leftDrawerOpen}
+            sidebarResizing={draggingSplit?.kind === "sidebar"}
+            rightPanelResizing={draggingSplit?.kind === "right"}
+            onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
+            onRightPanelResizeStart={(e) => beginSplitDrag("right", e.clientX)}
+            panelPlacement={panelPlacement}
+          />
+        </SidebarProvider>
 
-        {overlayBusy ? (
-          <div className="ui-busy-layer" role="status" aria-live="polite">
-            <div className="ui-busy-card">
-              <span className="ui-busy-spinner" aria-hidden="true" />
-              <div className="ui-busy-copy">{message || "Loading..."}</div>
-              <div className="ui-busy-track" aria-hidden="true">
-                <span className="ui-busy-bar" />
-              </div>
-              <div className="toolbar" style={{ justifyContent: "center" }}>
+        <Dialog
+          open={overlayBusy}
+          onOpenChange={(open) => {
+            if (open) return;
+            setOverlayBusy(false);
+            setBusy(false);
+            setMessage("");
+          }}
+        >
+          <DialogContent className="w-[min(420px,calc(100vw-32px))]">
+            <Card role="status" aria-live="polite" className="shadow-none">
+              <CardHeader className="text-center">
+                <DialogTitle asChild>
+                  <CardTitle>{message || "Loading..."}</CardTitle>
+                </DialogTitle>
+                <DialogDescription>
+                  The current operation is still running. You can dismiss this status layer and continue.
+                </DialogDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <Skeleton className="h-2 w-full" aria-hidden="true" />
+                <Skeleton className="mx-auto h-2 w-2/3" aria-hidden="true" />
+              </CardContent>
+              <CardFooter className="justify-center">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -7118,18 +7228,20 @@ export function App() {
                 >
                   Dismiss
                 </Button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+              </CardFooter>
+            </Card>
+          </DialogContent>
+        </Dialog>
 
         {mobileStatusChangeToast.visible ? (
-          <div className="mobile-status-toast" role="status" aria-live="polite">
-            <span className={`mobile-status-toast-icon ${mobileStatusChangeToast.message === "Disconnected" ? "disconnected" : "connected"}`}>
-              {mobileStatusChangeToast.message === "Disconnected" ? <CloseIcon width={16} height={16} /> : <CheckIcon width={16} height={16} />}
-            </span>
-            <span className="mobile-status-toast-msg">{mobileStatusChangeToast.message}</span>
-          </div>
+          <Card className="fixed bottom-9 left-1/2 z-[2300] -translate-x-1/2 shadow-lg" role="status" aria-live="polite">
+            <CardContent className="flex items-center gap-2 px-3 py-2 text-sm font-medium">
+              <span className={mobileStatusChangeToast.message === "Disconnected" ? "text-muted-foreground" : "text-[var(--success)]"}>
+                {mobileStatusChangeToast.message === "Disconnected" ? <CloseIcon /> : <CheckIcon />}
+              </span>
+              <span>{mobileStatusChangeToast.message}</span>
+            </CardContent>
+          </Card>
         ) : null}
 
         <Dialog
@@ -7139,7 +7251,7 @@ export function App() {
           }}
         >
           <DialogContent
-            className="gt-commit-dialog-card"
+            className="w-[min(500px,calc(100vw-36px))]"
             onOpenAutoFocus={(event) => {
               event.preventDefault();
               requestAnimationFrame(() => {
@@ -7157,99 +7269,88 @@ export function App() {
               if (committing || pushing) event.preventDefault();
             }}
           >
-            <DialogClose asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="gt-commit-dialog-close"
-                disabled={committing || pushing}
-                aria-label="关闭提交弹窗"
-              >
-                <CloseIcon width={18} height={18} />
-              </Button>
-            </DialogClose>
-            <DialogHeader className="gt-commit-dialog-head">
-              <div className="gt-commit-dialog-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M4 12h16" />
-                  <circle cx="12" cy="12" r="4" />
-                </svg>
-              </div>
-              <div className="gt-commit-dialog-copy">
-                <Badge variant="outline" className="gt-commit-dialog-kicker">
+            <Card className="relative shadow-none">
+              <DialogClose asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-3 top-3"
+                  disabled={committing || pushing}
+                  aria-label="关闭提交弹窗"
+                >
+                  <CloseIcon />
+                </Button>
+              </DialogClose>
+              <CardHeader className="pr-14">
+                <Badge variant="outline" className="w-fit">
                   {commitDialogAction === "commitPush"
                     ? "Push"
                     : commitDialogAction === "commitSync"
                       ? "Create PR"
                       : "Commit"}
                 </Badge>
-                <DialogTitle>提交更改</DialogTitle>
-              </div>
-            </DialogHeader>
-            <div className="gt-commit-dialog-summary">
-              <div className="gt-commit-dialog-row">
-                <span>分支</span>
-                <strong>
-                  <Badge variant="outline" className="gt-commit-dialog-branch-badge">
-                    {worktreeOverview.branch || selectedBranch || "main"}
-                  </Badge>
-                </strong>
-              </div>
-              <div className="gt-commit-dialog-row">
-                <span>更改</span>
-                <strong className="gt-commit-dialog-stats">
-                  <Badge variant="secondary" className="gt-commit-dialog-stat-badge">
-                    {worktreeChangeStats.total} 个文件
-                  </Badge>
-                  <Badge variant="success" className="gt-commit-dialog-stat-badge is-add">
-                    +{worktreeOverview.addedLines}
-                  </Badge>
-                  <Badge variant="destructive" className="gt-commit-dialog-stat-badge is-del">
-                    -{worktreeOverview.deletedLines}
-                  </Badge>
-                </strong>
-              </div>
-            </div>
-            <Field className="gt-commit-dialog-field">
-              <div className="gt-commit-dialog-field-head">
-                <FieldLabel>提交消息</FieldLabel>
-              </div>
-              <Textarea
-                ref={commitMessageInputRef}
-                className="gt-commit-dialog-textarea"
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-                placeholder="输入提交消息"
-                disabled={committing || pushing}
-                autoFocus
-              />
-            </Field>
-            <DialogFooter className="gt-commit-dialog-actions">
-              <DialogClose asChild>
-                <Button variant="secondary" size="lg" className="gt-commit-dialog-cancel" disabled={committing || pushing}>取消</Button>
-              </DialogClose>
-              <Button
-                variant="contrast"
-                size="lg"
-                className="gt-commit-dialog-submit"
-                disabled={committing || pushing}
-                onClick={() => {
-                  const action = commitDialogAction;
-                  setCommitDialogAction(null);
-                  if (action === "commitPush") void handleGitCommitAndPush();
-                  else if (action === "commitSync") void handleGitCommitAndSync();
-                  else void handleGitCommit();
-                }}
-              >
-                {committing || pushing
-                  ? "提交中..."
-                  : commitDialogAction === "commitPush"
-                    ? "Commit & Push"
-                    : commitDialogAction === "commitSync"
-                      ? "Commit & Create PR"
-                      : "Commit"}
-              </Button>
-            </DialogFooter>
+                <DialogTitle asChild>
+                  <CardTitle>提交更改</CardTitle>
+                </DialogTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <Card className="shadow-none">
+                  <CardContent className="flex flex-col gap-2 p-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-sm font-medium text-muted-foreground">分支</span>
+                      <Badge variant="outline" className="max-w-full truncate">
+                        {worktreeOverview.branch || selectedBranch || "main"}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-sm font-medium text-muted-foreground">更改</span>
+                      <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                        <Badge variant="secondary">{worktreeChangeStats.total} 个文件</Badge>
+                        <Badge variant="success">+{worktreeOverview.addedLines}</Badge>
+                        <Badge variant="destructive">-{worktreeOverview.deletedLines}</Badge>
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Field>
+                  <FieldLabel>提交消息</FieldLabel>
+                  <Textarea
+                    ref={commitMessageInputRef}
+                    className="min-h-24"
+                    value={commitMessage}
+                    onChange={(event) => setCommitMessage(event.target.value)}
+                    placeholder="输入提交消息"
+                    disabled={committing || pushing}
+                    autoFocus
+                  />
+                </Field>
+              </CardContent>
+              <CardFooter className="justify-end">
+                <DialogClose asChild>
+                  <Button variant="secondary" size="lg" disabled={committing || pushing}>取消</Button>
+                </DialogClose>
+                <Button
+                  variant="contrast"
+                  size="lg"
+                  disabled={committing || pushing}
+                  onClick={() => {
+                    const action = commitDialogAction;
+                    setCommitDialogAction(null);
+                    if (action === "commitPush") void handleGitCommitAndPush();
+                    else if (action === "commitSync") void handleGitCommitAndSync();
+                    else void handleGitCommit();
+                  }}
+                >
+                  {committing || pushing
+                    ? "提交中..."
+                    : commitDialogAction === "commitPush"
+                      ? "Commit & Push"
+                      : commitDialogAction === "commitSync"
+                        ? "Commit & Create PR"
+                        : "Commit"}
+                </Button>
+              </CardFooter>
+            </Card>
           </DialogContent>
         </Dialog>
 
@@ -7259,55 +7360,65 @@ export function App() {
             if (!creatingTopologyNode && !open) setShowTopologyCreateDialog(false);
           }}
         >
-          <DialogContent className="gt-topology-dialog-card">
-            <DialogHeader className="gt-topology-dialog-head">
-              <DialogTitle>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</DialogTitle>
-              <DialogDescription>
-                {topologyCreateMode === "worktree"
-                  ? "会在来源分支或 commit 下创建一个独立 worktree 目录，不会额外创建子分支。"
-                  : "从来源分支创建新分支，创建后会选中新分支。"}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="gt-topology-create-grid">
-              <div className="gt-topology-form-field is-static">
-                <span>{topologyCreateSourceNodeId.startsWith("commit:") ? "来源 Commit" : "来源分支"}</span>
-                <strong>{topologyCreateSourceNodeId.startsWith("commit:") ? shortSha(topologyCreateSource(topologyCreateSourceNodeId).startPoint, 10) : topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}</strong>
-              </div>
-              <Field className="gt-topology-form-field">
-                <FieldLabel>{topologyCreateMode === "worktree" ? "工作空间目录名" : "新分支名"}</FieldLabel>
-                <Input
-                  value={topologyCreateBranchName}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setTopologyCreateBranchName(next);
-                    if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
-                      const base = topologyCreateSource(topologyCreateSourceNodeId).baseBranch || topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
-                      setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
-                    }
-                  }}
-                  placeholder={topologyCreateMode === "worktree" ? "ui-v2" : "feature/my-node"}
-                  autoFocus
-                />
-              </Field>
-              {topologyCreateMode === "worktree" ? (
-                <Field className="gt-topology-form-field gt-topology-form-field-wide">
-                  <FieldLabel>目标目录</FieldLabel>
+          <DialogContent className="w-[min(560px,calc(100vw-32px))]">
+            <Card className="shadow-none">
+              <CardHeader>
+                <DialogTitle asChild>
+                  <CardTitle>{topologyCreateMode === "worktree" ? "基于分支创建工作空间" : "从分支拉新分支"}</CardTitle>
+                </DialogTitle>
+                <DialogDescription>
+                  {topologyCreateMode === "worktree"
+                    ? "会在来源分支或 commit 下创建一个独立 worktree 目录，不会额外创建子分支。"
+                    : "从来源分支创建新分支，创建后会选中新分支。"}
+                </DialogDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <Card className="shadow-none">
+                  <CardContent className="flex items-center justify-between gap-4 p-3">
+                    <span className="text-sm font-medium text-muted-foreground">
+                      {topologyCreateSourceNodeId.startsWith("commit:") ? "来源 Commit" : "来源分支"}
+                    </span>
+                    <Badge variant="outline" className="max-w-full truncate">
+                      {topologyCreateSourceNodeId.startsWith("commit:") ? shortSha(topologyCreateSource(topologyCreateSourceNodeId).startPoint, 10) : topologyCreateSourceNode?.branch || topologyCreateSourceNode?.label || currentTopologyBaseBranch() || "-"}
+                    </Badge>
+                  </CardContent>
+                </Card>
+                <Field>
+                  <FieldLabel>{topologyCreateMode === "worktree" ? "工作空间目录名" : "新分支名"}</FieldLabel>
                   <Input
-                    value={topologyCreateTargetPath}
-                    onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
-                    placeholder="留空则自动生成"
+                    value={topologyCreateBranchName}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setTopologyCreateBranchName(next);
+                      if (topologyCreateMode === "worktree" && (!topologyCreateTargetPath.trim() || topologyCreateTargetPath.includes(".worktrees/"))) {
+                        const base = topologyCreateSource(topologyCreateSourceNodeId).baseBranch || topologyCreateSourceNode?.branch || currentTopologyBaseBranch();
+                        setTopologyCreateTargetPath(suggestedTopologyPath(base, next));
+                      }
+                    }}
+                    placeholder={topologyCreateMode === "worktree" ? "ui-v2" : "feature/my-node"}
+                    autoFocus
                   />
                 </Field>
-              ) : null}
-            </div>
-            <DialogFooter className="gt-topology-dialog-actions">
-              <DialogClose asChild>
-                <Button variant="outline" disabled={creatingTopologyNode}>取消</Button>
-              </DialogClose>
-              <Button variant="default" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
-                {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
-              </Button>
-            </DialogFooter>
+                {topologyCreateMode === "worktree" ? (
+                  <Field>
+                    <FieldLabel>目标目录</FieldLabel>
+                    <Input
+                      value={topologyCreateTargetPath}
+                      onChange={(e) => setTopologyCreateTargetPath(e.target.value)}
+                      placeholder="留空则自动生成"
+                    />
+                  </Field>
+                ) : null}
+              </CardContent>
+              <CardFooter className="justify-end">
+                <DialogClose asChild>
+                  <Button variant="outline" disabled={creatingTopologyNode}>取消</Button>
+                </DialogClose>
+                <Button variant="default" onClick={() => void submitTopologyCreateDialog()} disabled={creatingTopologyNode || !topologyCreateBranchName.trim()}>
+                  {topologyCreateMode === "worktree" ? "创建工作空间" : "创建分支"}
+                </Button>
+              </CardFooter>
+            </Card>
           </DialogContent>
         </Dialog>
 
@@ -7318,26 +7429,34 @@ export function App() {
           }}
         >
           {topologyInspectNode ? (
-            <DialogContent className="gt-topology-inspect-card">
-              <DialogHeader className="gt-worktree-topology-info-head">
-                <DialogTitle>{topologyInspectNode.label}</DialogTitle>
-                <DialogDescription>{topologyInspectNode.kind}</DialogDescription>
-              </DialogHeader>
-              <div className="gt-worktree-topology-info-grid">
-                <div className="gt-worktree-topology-metric"><span>Branch</span><strong>{topologyInspectNode.branch || worktreeOverview.branch || "-"}</strong></div>
-                <div className="gt-worktree-topology-metric"><span>Commit</span><strong>{topologyInspectNode.sha ? shortSha(topologyInspectNode.sha) : shortSha(selectedCommit || commits[0]?.sha || "")}</strong></div>
-                <div className="gt-worktree-topology-metric"><span>Status</span><strong>{topologyInspectNode.kind === "commit" ? "history" : topologyInspectNode.dirtyCount ? `dirty ${topologyInspectNode.dirtyCount}` : worktreeOverview.clean ? "clean" : "dirty"}</strong></div>
-                <div className="gt-worktree-topology-metric"><span>Ahead / Behind</span><strong>{worktreeOverview.ahead} / {worktreeOverview.behind}</strong></div>
-              </div>
-              <div className="gt-worktree-topology-detail-list">
-                {topologyInspectNode.path ? <div className="gt-worktree-topology-detail-item"><span>Path</span><strong>{topologyInspectNode.path}</strong></div> : null}
-                {topologyInspectNode.author ? <div className="gt-worktree-topology-detail-item"><span>Author</span><strong>{topologyInspectNode.author}</strong></div> : null}
-                {topologyInspectNode.date ? <div className="gt-worktree-topology-detail-item"><span>Date</span><strong>{topologyInspectNode.date}</strong></div> : null}
-                {topologyInspectNode.refs?.length ? <div className="gt-worktree-topology-detail-item"><span>Refs</span><strong>{topologyInspectNode.refs.join(" · ")}</strong></div> : null}
-                {topologyInspectNode.kind === "commit" && selectedParsed?.hasCheckpoint ? <div className="gt-worktree-topology-detail-item"><span>Checkpoint</span><strong>{selectedParsed.checkpointId || "已关联"}</strong></div> : null}
-                {topologyInspectNode.kind === "commit" && selectedParsed?.sessionId ? <div className="gt-worktree-topology-detail-item"><span>Session</span><strong>{selectedParsed.sessionId}</strong></div> : null}
-              </div>
-              <pre className="gt-worktree-topology-context-preview">{topologyInspectNode.kind === "commit" ? (selectedExplain || "当前 commit 未解析到 Entire agent 上下文。") : (worktreeOverview.raw || "git status -sb")}</pre>
+            <DialogContent className="w-[min(680px,calc(100vw-32px))]">
+              <Card className="shadow-none">
+                <CardHeader>
+                  <DialogTitle asChild>
+                    <CardTitle>{topologyInspectNode.label}</CardTitle>
+                  </DialogTitle>
+                  <DialogDescription>{topologyInspectNode.kind}</DialogDescription>
+                </CardHeader>
+                <CardContent className="flex max-h-[min(72vh,760px)] flex-col gap-4 overflow-auto">
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <Card className="shadow-none"><CardContent className="p-3"><span className="text-xs text-muted-foreground">Branch</span><strong className="block truncate text-sm">{topologyInspectNode.branch || worktreeOverview.branch || "-"}</strong></CardContent></Card>
+                    <Card className="shadow-none"><CardContent className="p-3"><span className="text-xs text-muted-foreground">Commit</span><strong className="block truncate text-sm">{topologyInspectNode.sha ? shortSha(topologyInspectNode.sha) : shortSha(selectedCommit || commits[0]?.sha || "")}</strong></CardContent></Card>
+                    <Card className="shadow-none"><CardContent className="p-3"><span className="text-xs text-muted-foreground">Status</span><strong className="block truncate text-sm">{topologyInspectNode.kind === "commit" ? "history" : topologyInspectNode.dirtyCount ? `dirty ${topologyInspectNode.dirtyCount}` : worktreeOverview.clean ? "clean" : "dirty"}</strong></CardContent></Card>
+                    <Card className="shadow-none"><CardContent className="p-3"><span className="text-xs text-muted-foreground">Ahead / Behind</span><strong className="block truncate text-sm">{worktreeOverview.ahead} / {worktreeOverview.behind}</strong></CardContent></Card>
+                  </div>
+                  <Card className="shadow-none">
+                    <CardContent className="flex flex-col gap-2 p-3">
+                      {topologyInspectNode.path ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Path</span><strong className="min-w-0 break-all text-right font-medium">{topologyInspectNode.path}</strong></div> : null}
+                      {topologyInspectNode.author ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Author</span><strong className="min-w-0 break-words text-right font-medium">{topologyInspectNode.author}</strong></div> : null}
+                      {topologyInspectNode.date ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Date</span><strong className="min-w-0 break-words text-right font-medium">{topologyInspectNode.date}</strong></div> : null}
+                      {topologyInspectNode.refs?.length ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Refs</span><strong className="min-w-0 break-words text-right font-medium">{topologyInspectNode.refs.join(" · ")}</strong></div> : null}
+                      {topologyInspectNode.kind === "commit" && selectedParsed?.hasCheckpoint ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Checkpoint</span><strong className="min-w-0 break-words text-right font-medium">{selectedParsed.checkpointId || "已关联"}</strong></div> : null}
+                      {topologyInspectNode.kind === "commit" && selectedParsed?.sessionId ? <div className="flex items-start justify-between gap-4 text-sm"><span className="text-muted-foreground">Session</span><strong className="min-w-0 break-words text-right font-medium">{selectedParsed.sessionId}</strong></div> : null}
+                    </CardContent>
+                  </Card>
+                  <pre className="max-h-64 overflow-auto rounded-xl border border-border bg-muted/40 p-3 text-xs text-foreground">{topologyInspectNode.kind === "commit" ? (selectedExplain || "当前 commit 未解析到 Entire agent 上下文。") : (worktreeOverview.raw || "git status -sb")}</pre>
+                </CardContent>
+              </Card>
             </DialogContent>
           ) : null}
         </Dialog>
@@ -7348,47 +7467,49 @@ export function App() {
             if (!discardingAll && !open) setShowDiscardAllConfirm(false);
           }}
         >
-          <AlertDialogContent className="gt-confirm-dialog-card">
-            <AlertDialogHeader>
-              <AlertDialogTitle>撤销全部修改？</AlertDialogTitle>
-              <AlertDialogDescription>
-                将撤销 {discardAllCount} 个文件的修改。未跟踪文件会被删除，已跟踪文件会恢复到 HEAD。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="gt-confirm-dialog-actions">
-              <AlertDialogCancel asChild>
-                <Button variant="outline" disabled={discardingAll}>取消</Button>
-              </AlertDialogCancel>
-              <AlertDialogAction asChild>
-                <Button variant="destructive" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
-                {discardingAll ? "撤销中..." : "确认撤销"}
-                </Button>
-              </AlertDialogAction>
-            </AlertDialogFooter>
+          <AlertDialogContent className="w-[min(460px,calc(100vw-32px))]">
+            <Card className="shadow-none">
+              <CardHeader>
+                <AlertDialogTitle asChild>
+                  <CardTitle>撤销全部修改？</CardTitle>
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  将撤销 {discardAllCount} 个文件的修改。未跟踪文件会被删除，已跟踪文件会恢复到 HEAD。
+                </AlertDialogDescription>
+              </CardHeader>
+              <CardFooter className="justify-end">
+                <AlertDialogCancel asChild>
+                  <Button variant="outline" disabled={discardingAll}>取消</Button>
+                </AlertDialogCancel>
+                <AlertDialogAction asChild>
+                  <Button variant="destructive" onClick={() => void handleDiscardAllChanges()} disabled={discardingAll || discardAllCount === 0}>
+                    {discardingAll ? "撤销中..." : "确认撤销"}
+                  </Button>
+                </AlertDialogAction>
+              </CardFooter>
+            </Card>
           </AlertDialogContent>
         </AlertDialog>
 
         {worktreeContextMenu ? (
-          <div className="repo-context-layer" onClick={() => setWorktreeContextMenu(null)}>
-            <div
-              className="repo-context-menu"
-              style={{ left: worktreeContextMenu.x, top: worktreeContextMenu.y }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => {
+          <FloatingContextMenu
+            open={Boolean(worktreeContextMenu)}
+            x={worktreeContextMenu.x}
+            y={worktreeContextMenu.y}
+            onOpenChange={(open) => {
+              if (!open) setWorktreeContextMenu(null);
+            }}
+          >
+              <DropdownMenuItem
+                onSelect={() => {
                   setWorktreeToRemove(worktreeContextMenu.path);
                   setShowRemoveWorktreeConfirm(true);
                   setWorktreeContextMenu(null);
                 }}
               >
                 {appText.removeWorktree}
-              </Button>
-            </div>
-          </div>
+              </DropdownMenuItem>
+          </FloatingContextMenu>
         ) : null}
 
         <AlertDialog
@@ -7400,21 +7521,25 @@ export function App() {
             }
           }}
         >
-          <AlertDialogContent className="gt-confirm-dialog-card">
-            <AlertDialogHeader>
-              <AlertDialogTitle>{appText.removeWorktreeTitle}</AlertDialogTitle>
-              <AlertDialogDescription>{appText.removeWorktreeDesc}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="gt-confirm-dialog-actions">
-              <AlertDialogCancel asChild>
-                <Button variant="outline" disabled={!!removingWorktreePath}>{appText.cancel}</Button>
-              </AlertDialogCancel>
-              <AlertDialogAction asChild>
-                <Button variant="destructive" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
-                {removingWorktreePath ? appText.removing : appText.confirmRemove}
-                </Button>
-              </AlertDialogAction>
-            </AlertDialogFooter>
+          <AlertDialogContent className="w-[min(460px,calc(100vw-32px))]">
+            <Card className="shadow-none">
+              <CardHeader>
+                <AlertDialogTitle asChild>
+                  <CardTitle>{appText.removeWorktreeTitle}</CardTitle>
+                </AlertDialogTitle>
+                <AlertDialogDescription>{appText.removeWorktreeDesc}</AlertDialogDescription>
+              </CardHeader>
+              <CardFooter className="justify-end">
+                <AlertDialogCancel asChild>
+                  <Button variant="outline" disabled={!!removingWorktreePath}>{appText.cancel}</Button>
+                </AlertDialogCancel>
+                <AlertDialogAction asChild>
+                  <Button variant="destructive" onClick={() => void handleRemoveWorktree(worktreeToRemove)} disabled={!!removingWorktreePath || !worktreeToRemove}>
+                    {removingWorktreePath ? appText.removing : appText.confirmRemove}
+                  </Button>
+                </AlertDialogAction>
+              </CardFooter>
+            </Card>
           </AlertDialogContent>
         </AlertDialog>
 
@@ -7607,24 +7732,24 @@ export function App() {
           <Dialog open onOpenChange={(open) => {
             if (!open) setShowSkillsmpSettings(false);
           }}>
-            <DialogContent className="gt-settings-dialog-content">
-              <div className="modal-card skillsmp-key-modal">
-                <DialogHeader className="skillsmp-key-modal-head">
-                  <div>
-                    <span className="gt-module-kicker">SkillsMP</span>
+            <DialogContent className="max-w-lg">
+              <div className="grid gap-4">
+                <DialogHeader className="flex-row items-start justify-between gap-3">
+                  <div className="grid gap-1">
+                    <Badge variant="outline" className="w-fit normal-case tracking-normal">SkillsMP</Badge>
                     <DialogTitle>配置 API Key</DialogTitle>
                     <DialogDescription>关键词搜索可匿名使用；AI 语义搜索和更高额度需要 API Key。</DialogDescription>
                   </div>
                   <DialogClose asChild>
-                    <Button variant="ghost" size="icon" className="gt-diff-icon-btn" aria-label="关闭">
+                    <Button variant="ghost" size="icon" aria-label="关闭">
                       <CloseIcon />
                     </Button>
                   </DialogClose>
                 </DialogHeader>
-                <label className="skillsmp-key-field">
-                  <span>API Key</span>
+                <label className="grid gap-1.5">
+                  <span className="text-xs font-medium">API Key</span>
                   <Input
-                    className="path-input"
+                    className="h-10 rounded-lg"
                     type="password"
                     placeholder="sk_live_skillsmp_..."
                     value={skillsmpApiKeyDraft}
@@ -7632,7 +7757,7 @@ export function App() {
                     autoFocus
                   />
                 </label>
-                <DialogFooter className="skillsmp-key-actions">
+                <DialogFooter>
                   <Button variant="contrast" size="sm" onClick={() => {
                     const next = skillsmpApiKeyDraft.trim();
                     setSkillsmpApiKey(next);
@@ -7791,14 +7916,23 @@ export function App() {
           />
         ) : null}
 
-        {opencodePreviewImage ? (() => {
-          const image = opencodePreviewImage.images[opencodePreviewImage.index] || opencodePreviewImage.images[0];
-          if (!image) return null;
-          return (
-            <div className="modal-mask opencode-image-preview-mask" onClick={() => setOpencodePreviewImage(null)}>
-              <div className="opencode-image-preview-card" onClick={(e) => e.stopPropagation()}>
+        <Dialog
+          open={Boolean(opencodePreviewImage)}
+          onOpenChange={(open) => {
+            if (!open) setOpencodePreviewImage(null);
+          }}
+        >
+          {opencodePreviewImage ? (() => {
+            const image = opencodePreviewImage.images[opencodePreviewImage.index] || opencodePreviewImage.images[0];
+            if (!image) return null;
+            return (
+              <DialogContent className="!border-0 !bg-transparent !p-0 !shadow-none max-w-[calc(100vw-32px)]">
+                <DialogTitle className="sr-only">{image.filename || "Image preview"}</DialogTitle>
+                <DialogDescription className="sr-only">
+                  Preview the selected image. Click the left or right side of the image to move between attachments.
+                </DialogDescription>
                 <img
-                  className="opencode-image-preview-img"
+                  className="block max-h-[calc(100vh-32px)] max-w-[calc(100vw-32px)] object-contain"
                   src={image.uri}
                   alt={image.filename || "preview"}
                   onClick={(e) => {
@@ -7808,10 +7942,10 @@ export function App() {
                     setOpencodePreviewImage((prev) => prev ? { ...prev, index: (prev.index + next + prev.images.length) % prev.images.length } : prev);
                   }}
                 />
-              </div>
-            </div>
-          );
-        })() : null}
+              </DialogContent>
+            );
+          })() : null}
+        </Dialog>
 
         <OpenCodeModulePanel
           open={showOpencodeModulePanel}
@@ -7879,37 +8013,34 @@ export function App() {
         />
 
         {repoContextMenu ? (
-          <div className="repo-context-layer" onClick={() => setRepoContextMenu(null)}>
-            <div
-              className="repo-context-menu"
-              style={{ left: repoContextMenu.x, top: repoContextMenu.y }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => void closeRepository(repoContextMenu.repo)}
+          <FloatingContextMenu
+            open={Boolean(repoContextMenu)}
+            x={repoContextMenu.x}
+            y={repoContextMenu.y}
+            onOpenChange={(open) => {
+              if (!open) setRepoContextMenu(null);
+            }}
+          >
+              <DropdownMenuItem
+                onSelect={() => void closeRepository(repoContextMenu.repo)}
                 disabled={busy}
               >
-                Close
-              </Button>
-            </div>
-          </div>
+                {appText.closeProject}
+              </DropdownMenuItem>
+          </FloatingContextMenu>
         ) : null}
 
         {sessionContextMenu ? (
-          <div className="repo-context-layer" onClick={() => setSessionContextMenu(null)}>
-            <div
-              className="repo-context-menu"
-              style={{ left: sessionContextMenu.x, top: sessionContextMenu.y }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => {
+          <FloatingContextMenu
+            open={Boolean(sessionContextMenu)}
+            x={sessionContextMenu.x}
+            y={sessionContextMenu.y}
+            onOpenChange={(open) => {
+              if (!open) setSessionContextMenu(null);
+            }}
+          >
+              <DropdownMenuItem
+                onSelect={() => {
                   const menu = sessionContextMenu;
                   setSessionContextMenu(null);
                   void archiveOpencodeSession(menu.repo, menu.session.id);
@@ -7917,23 +8048,21 @@ export function App() {
                 disabled={busy || !runtimeStatus.opencode.installed}
               >
                 {appText.archiveSession}
-              </Button>
-            </div>
-          </div>
+              </DropdownMenuItem>
+          </FloatingContextMenu>
         ) : null}
 
         {commitContextMenu ? (
-          <div className="repo-context-layer" onClick={() => setCommitContextMenu(null)}>
-            <div
-              className="repo-context-menu"
-              style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => openCommitWorktreeDialog({
+          <FloatingContextMenu
+            open={Boolean(commitContextMenu)}
+            x={commitContextMenu.x}
+            y={commitContextMenu.y}
+            onOpenChange={(open) => {
+              if (!open) setCommitContextMenu(null);
+            }}
+          >
+              <DropdownMenuItem
+                onSelect={() => openCommitWorktreeDialog({
                   sha: commitContextMenu.sha,
                   subject: commitContextMenu.subject || "",
                   author: "",
@@ -7941,51 +8070,46 @@ export function App() {
                 }, commitContextMenu.branch)}
               >
                 {appText.createWorktreeFromCommit}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => {
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
                   setCommitContextMenu(null);
                   openTopologyCreateDialog("branch", `commit:${commitContextMenu.branch || currentTopologyBaseBranch()}:${commitContextMenu.sha}`);
                 }}
               >
                 {appText.createBranchFromCommit}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="repo-context-item"
-                onClick={() => {
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
                   setCommitContextMenu(null);
                   void inspectCommitFromTopology(commitContextMenu.sha);
                 }}
               >
                 {appText.explainInspectCommit}
-              </Button>
-              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("cherryPick")} disabled={busy}>
                 {appText.cherryPickCurrentBranch}
-              </Button>
-              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void applyCommitFromContextMenu("revert")} disabled={busy}>
                 {appText.revertCurrentBranch}
-              </Button>
-              <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void copyCommitId(commitContextMenu.sha)}>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void copyCommitId(commitContextMenu.sha)}>
                 {appText.copyCommitId}
-              </Button>
-            </div>
-          </div>
+              </DropdownMenuItem>
+          </FloatingContextMenu>
         ) : null}
 
         {commitHoverCard && !commitContextMenu ? (
-          <div
-            className="gt-commit-hover-card"
+          <Card
+            className="pointer-events-none fixed z-[2200] w-[min(300px,calc(100vw-32px))] shadow-lg"
             style={{ left: Math.min(commitHoverCard.x + 14, window.innerWidth - 320), top: Math.min(commitHoverCard.y + 14, window.innerHeight - 150) }}
           >
-            <strong>{commitHoverCard.subject || "(no subject)"}</strong>
-            <span>{shortSha(commitHoverCard.sha, 12)}{commitHoverCard.branch ? ` · ${commitHoverCard.branch}` : ""}</span>
-            <small>{commitHoverCard.author || "unknown"} · {commitHoverCard.date || "unknown date"}</small>
-          </div>
+            <CardContent className="flex flex-col gap-1 p-3">
+              <strong className="truncate text-sm font-semibold">{commitHoverCard.subject || "(no subject)"}</strong>
+              <span className="truncate text-xs text-muted-foreground">{shortSha(commitHoverCard.sha, 12)}{commitHoverCard.branch ? ` · ${commitHoverCard.branch}` : ""}</span>
+              <small className="truncate text-xs text-muted-foreground">{commitHoverCard.author || "unknown"} · {commitHoverCard.date || "unknown date"}</small>
+            </CardContent>
+          </Card>
         ) : null}
 
         {topologyContextMenu ? (() => {
@@ -8027,68 +8151,68 @@ export function App() {
           const isCurrentBranch = isBranch && (worktreeOverview.branch === branchName || !!branchInfo?.isCurrent);
           
           return (
-            <div className="repo-context-layer" onClick={() => setTopologyContextMenu(null)}>
-              <div
-                className="repo-context-menu repo-context-menu-wide"
-                style={{ left: topologyContextMenu.x, top: topologyContextMenu.y }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {isBranch ? (
-                  <>
-                    <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
-                      {branchName}
-                    </div>
-                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      {appText.createBranch}
-                    </Button>
-                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
-                      {appText.createWorktree}
-                    </Button>
-                    {isRemoteBranch ? (
-                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void checkoutRemoteBranchFromTopology(branchName)}>
-                        {appText.checkoutNewLocalBranch}
-                      </Button>
-                    ) : (
-                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void checkoutBranchFromTopology(branchName)}>
-                        {appText.checkout}
-                      </Button>
-                    )}
-                    {!isRemoteBranch && branchName !== "main" && branchName !== "master" && !hasWorktree ? (
-                      <Button variant="ghost" size="sm" className="repo-context-item danger" onClick={() => void deleteBranchFromTopology(branchName)}>
-                        {appText.deleteBranch}
-                      </Button>
-                    ) : null}
-                  </>
-                ) : null}
-                {isWorktree ? (
-                  <>
-                    <div className="repo-context-header" style={{ padding: "var(--gt-space-1-5) var(--gt-space-3)", fontSize: "var(--gt-text-sm)", fontWeight: "var(--gt-font-semibold)", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
-                      {worktreePath.split(/[\\/]/).pop() || worktreePath}
-                    </div>
-                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
-                      {appText.createBranchFromWorktree}
-                    </Button>
-                    <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void activateLinkedWorktree(worktreePath)}>
-                      {appText.openWorktree}
-                    </Button>
-                    {nodeAgentBinding ? (
-                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
-                        {appText.unbindAgent}
-                      </Button>
-                    ) : (
-                      <Button variant="ghost" size="sm" className="repo-context-item" onClick={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
-                        {appText.bindAgent}
-                      </Button>
-                    )}
-                    {!isCurrentBranch ? (
-                      <Button variant="ghost" size="sm" className="repo-context-item danger" onClick={() => void removeTopologyWorktree(worktreePath)}>
-                        {appText.removeWorktree}
-                      </Button>
-                    ) : null}
-                  </>
-                ) : null}
-              </div>
-            </div>
+            <FloatingContextMenu
+              contentClassName="min-w-48"
+              open={Boolean(topologyContextMenu)}
+              x={topologyContextMenu.x}
+              y={topologyContextMenu.y}
+              onOpenChange={(open) => {
+                if (!open) setTopologyContextMenu(null);
+              }}
+            >
+              {isBranch ? (
+                <>
+                  <DropdownMenuLabel>{branchName}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                    {appText.createBranch}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => openTopologyCreateDialog("worktree", topologyContextMenu.nodeId)}>
+                    {appText.createWorktree}
+                  </DropdownMenuItem>
+                  {isRemoteBranch ? (
+                    <DropdownMenuItem onSelect={() => void checkoutRemoteBranchFromTopology(branchName)}>
+                      {appText.checkoutNewLocalBranch}
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onSelect={() => void checkoutBranchFromTopology(branchName)}>
+                      {appText.checkout}
+                    </DropdownMenuItem>
+                  )}
+                  {!isRemoteBranch && branchName !== "main" && branchName !== "master" && !hasWorktree ? (
+                    <DropdownMenuItem className="text-destructive data-[highlighted]:text-destructive" onSelect={() => void deleteBranchFromTopology(branchName)}>
+                      {appText.deleteBranch}
+                    </DropdownMenuItem>
+                  ) : null}
+                </>
+              ) : null}
+              {isWorktree ? (
+                <>
+                  <DropdownMenuLabel>{worktreePath.split(/[\\/]/).pop() || worktreePath}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => openTopologyCreateDialog("branch", topologyContextMenu.nodeId)}>
+                    {appText.createBranchFromWorktree}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void activateLinkedWorktree(worktreePath)}>
+                    {appText.openWorktree}
+                  </DropdownMenuItem>
+                  {nodeAgentBinding ? (
+                    <DropdownMenuItem onSelect={() => unbindAgentFromWorkspacePath(nodeWorkspacePath)}>
+                      {appText.unbindAgent}
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onSelect={() => void bindAgentToWorkspacePath(nodeWorkspacePath, branchName)}>
+                      {appText.bindAgent}
+                    </DropdownMenuItem>
+                  )}
+                  {!isCurrentBranch ? (
+                    <DropdownMenuItem className="text-destructive data-[highlighted]:text-destructive" onSelect={() => void removeTopologyWorktree(worktreePath)}>
+                      {appText.removeWorktree}
+                    </DropdownMenuItem>
+                  ) : null}
+                </>
+              ) : null}
+            </FloatingContextMenu>
           );
         })() : null}
 

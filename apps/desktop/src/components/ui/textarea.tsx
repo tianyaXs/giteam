@@ -1,28 +1,25 @@
-import {
-  Description as HeadlessDescription,
-  Field as HeadlessField,
-  Label as HeadlessLabel,
-  Textarea as HeadlessTextarea
-} from "@headlessui/react";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 import { cn } from "@/lib/utils";
 
-const Field = ({ className, ...props }: ComponentPropsWithoutRef<typeof HeadlessField>) => (
-  <HeadlessField className={cn("gt-field", className)} {...props} />
+const Field = ({ className, ...props }: ComponentPropsWithoutRef<"div">) => (
+  <div className={cn("grid gap-2", className)} {...props} />
 );
 
-const FieldLabel = ({ className, ...props }: ComponentPropsWithoutRef<typeof HeadlessLabel>) => (
-  <HeadlessLabel className={cn("gt-field-label", className)} {...props} />
+const FieldLabel = ({ className, ...props }: ComponentPropsWithoutRef<"label">) => (
+  <label className={cn("text-sm font-medium text-foreground", className)} {...props} />
 );
 
-const FieldDescription = ({ className, ...props }: ComponentPropsWithoutRef<typeof HeadlessDescription>) => (
-  <HeadlessDescription className={cn("gt-field-description", className)} {...props} />
+const FieldDescription = ({ className, ...props }: ComponentPropsWithoutRef<"p">) => (
+  <p className={cn("text-sm text-muted-foreground", className)} {...props} />
 );
 
 const Textarea = forwardRef<HTMLTextAreaElement, ComponentPropsWithoutRef<"textarea">>(({ className, ...props }, ref) => (
-  <HeadlessTextarea
+  <textarea
     ref={ref}
-    className={cn("gt-textarea", className)}
+    className={cn(
+      "flex min-h-20 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50",
+      className
+    )}
     {...props}
   />
 ));

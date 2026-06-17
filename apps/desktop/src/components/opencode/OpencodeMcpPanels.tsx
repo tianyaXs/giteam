@@ -1,7 +1,9 @@
 import type { McpServerMarketData } from "../../lib/mcpMarket";
 import { CloseIcon } from "../icons";
 import { McpMarketplace } from "../mcp/McpMarketplace";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Card, CardContent } from "../ui/card";
 import {
   Dialog,
   DialogClose,
@@ -18,8 +20,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
+import { cn } from "../../lib/utils";
 
 export type OpencodeMcpPanelRow = {
   name: string;
@@ -35,6 +39,33 @@ export type OpencodeMcpParamSpec = {
   example: string;
 };
 
+function McpModuleEmpty({ title, description, danger = false }: { title: string; description?: string; danger?: boolean }) {
+  return (
+    <Empty className={cn("min-h-24 flex-none border border-dashed border-border bg-muted/30 p-4 md:p-6", danger && "border-destructive/40 bg-destructive/10")}>
+      <EmptyHeader>
+        <EmptyTitle className="text-sm">{title}</EmptyTitle>
+        {description ? <EmptyDescription>{description}</EmptyDescription> : null}
+      </EmptyHeader>
+    </Empty>
+  );
+}
+
+function InstalledMcpButton({ row, onClick }: { row: OpencodeMcpPanelRow; onClick: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      className="h-auto w-full justify-start rounded-lg border border-border bg-card px-3 py-2 text-left shadow-none hover:bg-accent hover:text-accent-foreground"
+      onClick={onClick}
+      title={`添加 MCP 引用：use the ${row.name} mcp server`}
+    >
+      <div className="grid min-w-0 gap-1">
+        <strong className="truncate text-base font-semibold">{row.name}</strong>
+        <small className="truncate text-[14px] text-muted-foreground">{row.sourceLabel} · {row.typeLabel} · {row.toolsCount} tools</small>
+      </div>
+    </Button>
+  );
+}
+
 type InstalledMcpGridProps = {
   rows: OpencodeMcpPanelRow[];
   loading: boolean;
@@ -46,23 +77,12 @@ export function OpencodeInstalledMcpGrid(props: InstalledMcpGridProps) {
   const { rows, loading, error, onReferenceMcp } = props;
 
   return (
-    <div className="gt-installed-mcp-grid">
-      {error ? <div className="gt-module-empty danger">{error}</div> : null}
-      {loading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
-      {!loading && rows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。从下方市场安装后会显示在这里。</div> : null}
+    <div className="grid gap-2">
+      {error ? <McpModuleEmpty title="MCP 加载失败" description={error} danger /> : null}
+      {loading ? <McpModuleEmpty title="正在加载 MCP..." /> : null}
+      {!loading && rows.length === 0 ? <McpModuleEmpty title="暂无 MCP server" description="从下方市场安装后会显示在这里。" /> : null}
       {rows.map((row) => (
-        <Button
-          key={row.name}
-          variant="ghost"
-          className="gt-mcp-installed-chip gt-mcp-installed-chip-use"
-          onClick={() => onReferenceMcp(row.name)}
-          title={`添加 MCP 引用：use the ${row.name} mcp server`}
-        >
-          <div className="gt-mcp-installed-main">
-            <strong>{row.name}</strong>
-            <small>{row.sourceLabel} · {row.typeLabel} · {row.toolsCount} tools</small>
-          </div>
-        </Button>
+        <InstalledMcpButton key={row.name} row={row} onClick={() => onReferenceMcp(row.name)} />
       ))}
     </div>
   );
@@ -80,36 +100,40 @@ export function OpencodeSettingsMcpGrid(props: SettingsMcpGridProps) {
   const { rows, error, busyName, onEditMcp, onRemoveMcp } = props;
 
   return (
-    <div className="settings-skills-manager">
-      {error ? <div className="gt-module-empty danger">{error}</div> : null}
-      <div className="settings-skills-grid">
-        {rows.length === 0 ? <div className="gt-module-empty">暂无已安装 MCP Server。</div> : rows.map((row) => (
-          <article key={row.name} className="settings-skill-card">
-            <Button variant="ghost" className="settings-skill-card-main gt-settings-mcp-card-main" onClick={() => onEditMcp(row.name)}>
-              <div className="settings-skill-card-title">
-                <strong>{row.name}</strong>
-                <span>{row.typeLabel}</span>
-              </div>
-              <p>{row.sourceLabel} · {row.toolsCount} tools · use {row.name}</p>
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="gt-icon-chip settings-skill-menu-trigger" aria-label={`${row.name} actions`} title="Actions">
-                  <span aria-hidden="true">...</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="settings-skill-menu-panel">
-                <DropdownMenuGroup>
-                  <DropdownMenuItem className="settings-mcp-action" onClick={() => onEditMcp(row.name)}>
-                    配置参数
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="settings-skill-remove" disabled={!!busyName} onClick={() => void onRemoveMcp(row.name)}>
-                    {busyName.endsWith(":remove") ? "删除中" : "删除"}
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </article>
+    <div className="flex flex-col gap-3">
+      {error ? <McpModuleEmpty title="MCP 加载失败" description={error} danger /> : null}
+      <div className="grid gap-2">
+        {rows.length === 0 ? <McpModuleEmpty title="暂无已安装 MCP Server。" /> : rows.map((row) => (
+          <Card key={row.name} className="rounded-lg shadow-none">
+            <CardContent className="flex items-center gap-2 p-2">
+              <Button variant="ghost" className="h-auto min-w-0 flex-1 justify-start p-2 text-left" onClick={() => onEditMcp(row.name)}>
+                <div className="grid min-w-0 gap-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <strong className="truncate text-base font-semibold">{row.name}</strong>
+                    <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">{row.typeLabel}</Badge>
+                  </div>
+                  <p className="truncate text-[14px] text-muted-foreground">{row.sourceLabel} · {row.toolsCount} tools · use {row.name}</p>
+                </div>
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" aria-label={`${row.name} actions`} title="Actions">
+                    <span aria-hidden="true">...</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem onClick={() => onEditMcp(row.name)}>
+                      配置参数
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={!!busyName} onClick={() => void onRemoveMcp(row.name)}>
+                      {busyName.endsWith(":remove") ? "删除中" : "删除"}
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </CardContent>
+          </Card>
         ))}
       </div>
     </div>
@@ -166,61 +190,61 @@ export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
     <Dialog open onOpenChange={(open) => {
       if (!open) onClose();
     }}>
-      <DialogContent className="gt-settings-dialog-content">
-        <section className="gt-mcp-custom-add-card">
-          <DialogHeader className="gt-mcp-custom-add-head">
-            <div>
-              <span className="gt-module-kicker">custom mcp</span>
+      <DialogContent className="max-w-3xl">
+        <section className="grid gap-4">
+          <DialogHeader className="flex-row items-start justify-between gap-3">
+            <div className="grid gap-1">
+              <Badge variant="outline" className="w-fit normal-case tracking-normal">custom mcp</Badge>
               <DialogTitle>自定义添加 MCP Server</DialogTitle>
               <DialogDescription>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</DialogDescription>
             </div>
             <DialogClose asChild>
-              <Button variant="ghost" size="icon" className="gt-icon-chip" aria-label="关闭自定义添加">
+              <Button variant="ghost" size="icon" aria-label="关闭自定义添加">
                 <CloseIcon />
               </Button>
             </DialogClose>
           </DialogHeader>
-          <div className="gt-mcp-custom-add-body">
-            <div className="gt-mcp-custom-add-editor">
-              <div className="gt-mcp-custom-add-strip">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="grid gap-3">
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-[14px] text-muted-foreground">
                 <span>JSON 会自动识别 name、command/url、env/headers 和必填参数</span>
               </div>
-              <label>
-                <span>名称</span>
-                <Input className="path-input" placeholder="名称，例如 context7" value={name} onChange={(event) => onNameChange(event.target.value)} />
+              <label className="grid gap-1.5">
+                <span className="text-[14px] font-medium">名称</span>
+                <Input className="h-10 rounded-lg" placeholder="名称，例如 context7" value={name} onChange={(event) => onNameChange(event.target.value)} />
               </label>
-              <label className="gt-mcp-custom-json-label">
-                <span>JSON 配置</span>
-                <Textarea className="path-input gt-module-textarea gt-mcp-json-input" value={json} placeholder={customMcpJsonPlaceholder} onChange={(event) => onJsonChange(event.target.value)} />
+              <label className="grid gap-1.5">
+                <span className="text-[14px] font-medium">JSON 配置</span>
+                <Textarea className="min-h-48 rounded-lg font-mono text-[14px]" value={json} placeholder={customMcpJsonPlaceholder} onChange={(event) => onJsonChange(event.target.value)} />
               </label>
             </div>
-            <aside className="gt-mcp-custom-add-side">
-              <div className="gt-mcp-json-preview">
-                <strong>预览</strong>
-                <code>{previewText}</code>
-              </div>
+            <aside className="grid content-start gap-3">
+              <Card className="rounded-lg p-3 shadow-none">
+                <strong className="text-base font-semibold">预览</strong>
+                <code className="mt-2 block whitespace-pre-wrap break-words rounded-md bg-muted/40 p-2 text-[14px] text-muted-foreground">{previewText}</code>
+              </Card>
               {paramSpecs.length > 0 ? (
-                <div className="gt-mcp-custom-param-fields">
-                  <strong>连接参数</strong>
+                <Card className="grid gap-3 rounded-lg p-3 shadow-none">
+                  <strong className="text-base font-semibold">连接参数</strong>
                   {paramSpecs.map((spec) => (
-                    <label key={spec.key}>
-                      <span>{spec.key}{spec.required ? " *" : ""}</span>
-                      {spec.description ? <small>{spec.description}</small> : null}
+                    <label key={spec.key} className="grid gap-1.5">
+                      <span className="text-[14px] font-medium">{spec.key}{spec.required ? " *" : ""}</span>
+                      {spec.description ? <small className="text-[14px] text-muted-foreground">{spec.description}</small> : null}
                       <Input
-                        className="path-input"
+                        className="h-10 rounded-lg"
                         value={paramValues[spec.key] || ""}
                         placeholder={spec.example || spec.key}
                         onChange={(event) => onParamChange(spec.key, event.target.value)}
                       />
                     </label>
                   ))}
-                </div>
+                </Card>
               ) : (
-                <div className="gt-mcp-custom-add-hint">没有检测到必填参数。添加后会写入当前项目的 OpenCode 配置。</div>
+                <McpModuleEmpty title="没有检测到必填参数" description="添加后会写入当前项目的 OpenCode 配置。" />
               )}
             </aside>
           </div>
-          <DialogFooter className="gt-mcp-custom-add-actions">
+          <DialogFooter>
             <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
             <Button variant="contrast" size="sm" onClick={() => void onAdd()} disabled={!!busyName || !json.trim()}>
               {busyName ? "添加中..." : "添加 MCP"}
@@ -254,24 +278,24 @@ export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
     <Dialog open onOpenChange={(open) => {
       if (!open) onClose();
     }}>
-      <DialogContent className="gt-settings-dialog-content">
-        <div className="gt-mcp-config-card">
-          <DialogHeader className="gt-mcp-config-head">
-            <div>
-              <span className="gt-module-kicker">update mcp params</span>
+      <DialogContent className="max-w-2xl">
+        <div className="grid gap-4">
+          <DialogHeader>
+            <div className="grid gap-1">
+              <Badge variant="outline" className="w-fit normal-case tracking-normal">update mcp params</Badge>
               <DialogTitle>{name}</DialogTitle>
               <DialogDescription className="sr-only">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</DialogDescription>
             </div>
           </DialogHeader>
-          <p>更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
-          {specs.length === 0 ? <div className="gt-module-empty">这个 MCP 当前没有可编辑参数。</div> : (
-            <div className="gt-mcp-config-fields">
+          <p className="m-0 text-[15px] text-muted-foreground">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
+          {specs.length === 0 ? <McpModuleEmpty title="这个 MCP 当前没有可编辑参数。" /> : (
+            <div className="grid gap-3">
               {specs.map((spec) => (
-                <label key={spec.key}>
-                  <span>{spec.key}{spec.required ? " *" : ""}</span>
-                  {spec.description ? <small>{spec.description}</small> : null}
+                <label key={spec.key} className="grid gap-1.5">
+                  <span className="text-[14px] font-medium">{spec.key}{spec.required ? " *" : ""}</span>
+                  {spec.description ? <small className="text-[14px] text-muted-foreground">{spec.description}</small> : null}
                   <Input
-                    className="path-input"
+                    className="h-10 rounded-lg"
                     value={paramValues[spec.key] || ""}
                     placeholder={spec.example || spec.key}
                     onChange={(event) => onParamChange(spec.key, event.target.value)}
@@ -280,17 +304,27 @@ export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
               ))}
             </div>
           )}
-          <div className="gt-mcp-config-tools">
-            <div className="gt-mcp-config-tools-head"><strong>工具列表</strong><span>{tools.length} tools</span></div>
+          <div className="grid gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <strong className="text-base font-semibold">工具列表</strong>
+              <Badge variant="secondary" className="normal-case tracking-normal">{tools.length} tools</Badge>
+            </div>
             {tools.length === 0 ? (
-              <div className="gt-module-empty">暂无工具清单。</div>
+              <McpModuleEmpty title="暂无工具清单。" />
             ) : (
-              <div className="gt-mcp-config-tool-grid">
-                {tools.map((tool) => <div key={tool.name} className="gt-mcp-config-tool-cell"><code>{tool.name}</code><p>{tool.description || "No description"}</p></div>)}
+              <div className="grid max-h-56 gap-2 overflow-auto sm:grid-cols-2">
+                {tools.map((tool) => (
+                  <Card key={tool.name} className="rounded-lg shadow-none">
+                    <CardContent className="grid gap-1 p-3">
+                      <code className="truncate text-[14px]">{tool.name}</code>
+                      <p className="m-0 text-[14px] text-muted-foreground">{tool.description || "No description"}</p>
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
             )}
           </div>
-          <DialogFooter className="gt-mcp-config-actions">
+          <DialogFooter>
             <Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
             <Button variant="destructive" size="sm" onClick={() => void onRemove()} disabled={!!busyName}>
               {busyName.endsWith(":remove") ? "删除中..." : "删除"}
@@ -333,7 +367,7 @@ export function OpencodeMcpMarketPanel(props: McpMarketPanelProps) {
   } = props;
 
   return (
-    <div className="gt-mcp-market-shell">
+    <div className="min-h-0">
       <McpMarketplace
         servers={servers}
         configuredMcps={configuredMcpNames}

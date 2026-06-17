@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { OpencodeExecutionPartView, type OpencodeToolFileTarget } from "./OpencodeExecutionPartView";
 import { isImageAttachment } from "../../lib/imageAttachments";
@@ -17,6 +17,8 @@ import type {
 } from "../../lib/opencodeSessions";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Skeleton } from "../ui/skeleton";
+import { cn } from "../../lib/utils";
 
 type OpencodePreviewImage = {
   uri: string;
@@ -189,6 +191,10 @@ function getBatchKind(group: OpencodeAssistantRenderGroup): "shell" | "edit" | "
   return "";
 }
 
+function isEmptyAssistantPlaceholder(row: OpencodeMessageRenderRow): boolean {
+  return row.isAssistant && !row.hasTimeline && !row.fallbackReply && !row.detailsLoading && !row.detailsError;
+}
+
 function buildBatchedTimelineGroups(groups: OpencodeAssistantRenderGroup[]): OpencodeDisplayTimelineGroup[] {
   const out: OpencodeDisplayTimelineGroup[] = [];
   let pendingKind: "shell" | "edit" | "" = "";
@@ -253,6 +259,560 @@ type OpencodeMessageStreamProps = {
   onCopyAttachmentUri: (uri: string) => void;
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
 };
+
+type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
+
+function StreamLoadingState() {
+  return (
+    <div className="flex flex-col gap-2 px-1 py-2 text-sm text-muted-foreground">
+      <span>加载会话中…</span>
+      <Skeleton className="h-3 w-2/3" />
+      <Skeleton className="h-3 w-1/2" />
+    </div>
+  );
+}
+
+function ActivityStatus({
+  active,
+  activeLabel,
+  doneLabel,
+  className
+}: {
+  active: boolean;
+  activeLabel: string;
+  doneLabel: string;
+  className?: string;
+}) {
+  return (
+    <span className={cn("inline-flex items-center gap-2 font-semibold", active ? "text-foreground" : "text-muted-foreground", className)}>
+      <span className={cn(active && "animate-pulse")}>{active ? activeLabel : doneLabel}</span>
+    </span>
+  );
+}
+
+function ThinkingPlaceholder() {
+  return (
+    <div className="flex w-full items-center gap-2 py-1.5" aria-live="polite" aria-label="思考中">
+      <ActivityStatus active activeLabel="思考中" doneLabel="已思考" className="text-sm" />
+    </div>
+  );
+}
+
+function MessageShell({
+  isAssistant,
+  children
+}: {
+  isAssistant: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn("flex w-full min-w-0 overflow-hidden", isAssistant ? "justify-start" : "justify-end")}>
+      <div
+        className={cn(
+          "min-w-0 max-w-full",
+          isAssistant
+            ? "w-full"
+            : "max-w-[min(74%,620px)] rounded-[20px] bg-muted px-4 py-3 text-sm font-medium leading-relaxed text-foreground"
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ToolBatchGroup({
+  timelineKey,
+  group,
+  open,
+  onOpenChange,
+  shellToolPartsExpanded,
+  editToolPartsExpanded,
+  onOpenTaskSession,
+  onOpenToolFile
+}: {
+  timelineKey: string;
+  group: Extract<OpencodeDisplayTimelineGroup, { kind: "tool-batch" }>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  shellToolPartsExpanded: boolean;
+  editToolPartsExpanded: boolean;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  onOpenToolFile: (target: OpencodeToolFileTarget) => void;
+}) {
+  const running = group.parts.some(isRunningToolPart);
+  const shell = group.batchKind === "shell";
+  const noun = shell ? "条命令" : "个文件";
+  const label = shell ? (running ? "运行中" : "已运行") : (running ? "编辑中" : "已编辑");
+
+  return (
+    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
+      <CollapsibleTrigger asChild>
+        <Button className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+            <ActivityStatus active={running} activeLabel={label} doneLabel={label} className="shrink-0 text-sm" />
+            <span className="text-xs font-medium text-muted-foreground">{group.parts.length} {noun}</span>
+          </span>
+          <span className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true">›</span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col gap-2 pb-2 pl-3">
+        {group.parts.map((part, partIndex) => (
+          <OpencodeExecutionPartView
+            key={`${timelineKey}:${part.id || partIndex}`}
+            part={part}
+            shellToolPartsExpanded={shellToolPartsExpanded}
+            editToolPartsExpanded={editToolPartsExpanded}
+            onOpenTaskSession={onOpenTaskSession}
+            onOpenToolFile={onOpenToolFile}
+          />
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ContextGroup({
+  timelineKey,
+  group,
+  streaming,
+  open,
+  onOpenChange,
+  shellToolPartsExpanded,
+  editToolPartsExpanded,
+  onOpenTaskSession,
+  onOpenToolFile
+}: {
+  timelineKey: string;
+  group: Extract<OpencodeAssistantRenderGroup, { kind: "context" }>;
+  streaming: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  shellToolPartsExpanded: boolean;
+  editToolPartsExpanded: boolean;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  onOpenToolFile: (target: OpencodeToolFileTarget) => void;
+}) {
+  const counts = summarizeOpencodeContextToolCounts(group.parts);
+  const progress = summarizeOpencodeContextProgress(group.parts);
+  const summary = summarizeContextCounts(counts) || "已收集上下文";
+  const active = streaming || progress.active;
+
+  return (
+    <Collapsible className="grid min-w-0 gap-1 py-1" open={open} onOpenChange={onOpenChange}>
+      <CollapsibleTrigger asChild>
+        <Button className="h-auto w-full justify-between rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+          <span className="flex min-w-0 items-center gap-2">
+            <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
+            <span className="truncate text-xs text-muted-foreground">
+              {progress.detail ? `${summary} · ${progress.detail}` : summary}
+            </span>
+          </span>
+          <span className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true">›</span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="flex flex-col gap-2 pb-2 pl-3">
+        {group.parts.map((part, partIndex) => (
+          <OpencodeExecutionPartView
+            key={`${timelineKey}:${partIndex}`}
+            part={part}
+            shellToolPartsExpanded={shellToolPartsExpanded}
+            editToolPartsExpanded={editToolPartsExpanded}
+            onOpenTaskSession={onOpenTaskSession}
+            onOpenToolFile={onOpenToolFile}
+          />
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ReasoningGroup({
+  timelineKey,
+  group,
+  active,
+  open,
+  onOpenChange,
+  renderMarkdown
+}: {
+  timelineKey: string;
+  group: Extract<OpencodeAssistantRenderGroup, { kind: "reasoning" }>;
+  active: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  renderMarkdown: RenderMarkdown;
+}) {
+  const text = group.parts
+    .map((part) => String((part as { text?: string }).text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  if (!text) return null;
+
+  const preview = text
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(-1)[0] || "整理推理摘要";
+
+  return (
+    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
+      <CollapsibleTrigger asChild>
+        <Button className="h-auto w-full min-w-0 overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+          <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 shrink-0 text-sm" />
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm">
+        <div className="min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
+          {renderMarkdown(text, active)}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function AssistantTextBlock({
+  text,
+  streaming,
+  renderMarkdown
+}: {
+  text: string;
+  streaming: boolean;
+  renderMarkdown: RenderMarkdown;
+}) {
+  return (
+    <div className="min-w-0 max-w-full overflow-hidden break-words text-sm leading-7 text-foreground [overflow-wrap:anywhere]">
+      {renderMarkdown(text, streaming)}
+    </div>
+  );
+}
+
+function AssistantTimeline({
+  msg,
+  isStreaming,
+  renderParts,
+  timelineGroups,
+  timelineOpenState,
+  setTimelineOpenState,
+  showReasoningSummaries,
+  shellToolPartsExpanded,
+  editToolPartsExpanded,
+  onOpenTaskSession,
+  onOpenToolFile,
+  renderMarkdown
+}: {
+  msg: OpencodeChatMessage;
+  isStreaming: boolean;
+  renderParts: OpencodeDetailedPart[];
+  timelineGroups: OpencodeAssistantRenderGroup[];
+  timelineOpenState: Record<string, boolean>;
+  setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
+  showReasoningSummaries: boolean;
+  shellToolPartsExpanded: boolean;
+  editToolPartsExpanded: boolean;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  onOpenToolFile: (target: OpencodeToolFileTarget) => void;
+  renderMarkdown: RenderMarkdown;
+}) {
+  const activeReasoningPartId = isStreaming
+    ? [...renderParts]
+      .reverse()
+      .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
+    : "";
+  const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
+
+  return (
+    <div className="flex min-w-0 max-w-full flex-col gap-1 overflow-hidden">
+      {displayTimelineGroups.map((group, index) => {
+        const timelineKey = `${msg.id}:${group.key}`;
+        const isOpen = timelineOpenState[timelineKey] ?? false;
+        const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
+
+        if (group.kind === "tool-batch") {
+          return (
+            <ToolBatchGroup
+              key={timelineKey}
+              timelineKey={timelineKey}
+              group={group}
+              open={isOpen}
+              onOpenChange={setOpen}
+              shellToolPartsExpanded={shellToolPartsExpanded}
+              editToolPartsExpanded={editToolPartsExpanded}
+              onOpenTaskSession={onOpenTaskSession}
+              onOpenToolFile={onOpenToolFile}
+            />
+          );
+        }
+
+        if (group.kind === "context") {
+          return (
+            <ContextGroup
+              key={timelineKey}
+              timelineKey={timelineKey}
+              group={group}
+              streaming={isStreaming}
+              open={isOpen}
+              onOpenChange={setOpen}
+              shellToolPartsExpanded={shellToolPartsExpanded}
+              editToolPartsExpanded={editToolPartsExpanded}
+              onOpenTaskSession={onOpenTaskSession}
+              onOpenToolFile={onOpenToolFile}
+            />
+          );
+        }
+
+        if (group.kind === "reasoning") {
+          if (!showReasoningSummaries) return null;
+          const active = isStreaming && group.parts.some((part) => String(part.id || "") === activeReasoningPartId);
+          return (
+            <ReasoningGroup
+              key={timelineKey}
+              timelineKey={timelineKey}
+              group={group}
+              active={active}
+              open={isOpen}
+              onOpenChange={setOpen}
+              renderMarkdown={renderMarkdown}
+            />
+          );
+        }
+
+        if (group.kind !== "part") return null;
+        const type = String((group.part as { type?: string }).type || "");
+        if (type === "text") {
+          const text = String((group.part as { text?: string }).text || "").trim();
+          if (!text) return null;
+          const last = index === displayTimelineGroups.length - 1;
+          return (
+            <AssistantTextBlock
+              key={timelineKey}
+              text={text}
+              streaming={isStreaming && last}
+              renderMarkdown={renderMarkdown}
+            />
+          );
+        }
+
+        return (
+          <OpencodeExecutionPartView
+            key={timelineKey}
+            part={group.part}
+            shellToolPartsExpanded={shellToolPartsExpanded}
+            editToolPartsExpanded={editToolPartsExpanded}
+            onOpenTaskSession={onOpenTaskSession}
+            onOpenToolFile={onOpenToolFile}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function CollapsibleUserText({
+  messageId,
+  text,
+  open,
+  onOpenChange,
+  renderMarkdown
+}: {
+  messageId: string;
+  text: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  renderMarkdown: RenderMarkdown;
+}) {
+  return (
+    <Collapsible className="grid gap-2" open={open} onOpenChange={onOpenChange}>
+      {open ? null : (
+        <div className="min-w-0 text-sm leading-relaxed">
+          {renderMarkdown(collapsePreview(text))}
+        </div>
+      )}
+      <CollapsibleContent className="min-w-0 text-sm leading-relaxed">
+        {renderMarkdown(text)}
+      </CollapsibleContent>
+      <CollapsibleTrigger asChild>
+        <Button className="h-7 w-fit px-2 text-xs" size="sm" variant="ghost" aria-controls={`message-${messageId}`}>
+          {open ? "收起" : "展开全文"}
+        </Button>
+      </CollapsibleTrigger>
+    </Collapsible>
+  );
+}
+
+function UserMessage({
+  msg,
+  messageOpenState,
+  setMessageOpenState,
+  renderMarkdown,
+  onPreviewImageGroup,
+  onCopyAttachmentUri,
+  onOpenAttachment
+}: {
+  msg: OpencodeChatMessage;
+  messageOpenState: Record<string, boolean>;
+  setMessageOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
+  renderMarkdown: RenderMarkdown;
+  onPreviewImageGroup: (images: OpencodePreviewImage[], index: number) => void;
+  onCopyAttachmentUri: (uri: string) => void;
+  onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
+}) {
+  const attachments = msg.attachments || [];
+  const hasContent = Boolean(msg.content.trim());
+  if (!hasContent && attachments.length === 0) return null;
+
+  return (
+    <div className="grid min-w-0 gap-2">
+      <MessageAttachments
+        attachments={attachments}
+        onPreviewImageGroup={onPreviewImageGroup}
+        onCopyAttachmentUri={onCopyAttachmentUri}
+        onOpenAttachment={onOpenAttachment}
+      />
+      {hasContent ? (
+        shouldCollapseMessage(msg.content) ? (
+          <CollapsibleUserText
+            messageId={msg.id}
+            text={msg.content}
+            open={messageOpenState[msg.id] ?? false}
+            onOpenChange={(open) => {
+              setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
+            }}
+            renderMarkdown={renderMarkdown}
+          />
+        ) : renderMarkdown(msg.content)
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantMessage({
+  row,
+  timelineOpenState,
+  setTimelineOpenState,
+  showReasoningSummaries,
+  shellToolPartsExpanded,
+  editToolPartsExpanded,
+  onOpenTaskSession,
+  onOpenToolFile,
+  renderMarkdown
+}: {
+  row: OpencodeMessageRenderRow;
+  timelineOpenState: Record<string, boolean>;
+  setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
+  showReasoningSummaries: boolean;
+  shellToolPartsExpanded: boolean;
+  editToolPartsExpanded: boolean;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  onOpenToolFile: (target: OpencodeToolFileTarget) => void;
+  renderMarkdown: RenderMarkdown;
+}) {
+  const {
+    msg,
+    isStreaming,
+    renderParts,
+    timelineGroups,
+    hasTimeline,
+    fallbackReply,
+    detailsError
+  } = row;
+
+  return (
+    <div className="grid min-w-0 gap-2">
+      {hasTimeline ? (
+        <AssistantTimeline
+          msg={msg}
+          isStreaming={isStreaming}
+          renderParts={renderParts}
+          timelineGroups={timelineGroups}
+          timelineOpenState={timelineOpenState}
+          setTimelineOpenState={setTimelineOpenState}
+          showReasoningSummaries={showReasoningSummaries}
+          shellToolPartsExpanded={shellToolPartsExpanded}
+          editToolPartsExpanded={editToolPartsExpanded}
+          onOpenTaskSession={onOpenTaskSession}
+          onOpenToolFile={onOpenToolFile}
+          renderMarkdown={renderMarkdown}
+        />
+      ) : fallbackReply ? (
+        <AssistantTextBlock text={fallbackReply} streaming={isStreaming} renderMarkdown={renderMarkdown} />
+      ) : (
+        <ThinkingPlaceholder />
+      )}
+      {detailsError ? (
+        <div className="mt-1 text-xs text-destructive">
+          {detailsError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageAttachments({
+  attachments,
+  onPreviewImageGroup,
+  onCopyAttachmentUri,
+  onOpenAttachment
+}: {
+  attachments: OpencodeMessageAttachment[];
+  onPreviewImageGroup: (images: OpencodePreviewImage[], index: number) => void;
+  onCopyAttachmentUri: (uri: string) => void;
+  onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
+}) {
+  const imageAttachments = attachments.filter(isMessageImageAttachment);
+  const fileAttachments = attachments.filter((attachment) => !isMessageImageAttachment(attachment));
+  const previewImages = imageAttachments.map((item) => ({
+    uri: item.uri,
+    filename: item.filename
+  }));
+  if (attachments.length <= 0) return null;
+
+  return (
+    <div className="grid min-w-0 gap-2">
+      {imageAttachments.length > 0 ? (
+        <div className="grid max-w-[292px] grid-cols-[repeat(auto-fit,minmax(86px,1fr))] gap-2" aria-label="图片附件">
+          {imageAttachments.map((attachment) => (
+            <Button
+              key={attachment.id}
+              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-xl border border-border/50 bg-background p-0 hover:bg-background"
+              onClick={() => onPreviewImageGroup(
+                previewImages,
+                Math.max(0, imageAttachments.findIndex((item) => item.id === attachment.id))
+              )}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onCopyAttachmentUri(attachment.uri);
+              }}
+              title="点击查看，右键复制图片数据"
+              variant="ghost"
+            >
+              <img className="size-full object-cover" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      {fileAttachments.length > 0 ? (
+        <div className="grid min-w-[min(220px,100%)] gap-1.5" aria-label="文件附件">
+          {fileAttachments.map((attachment) => (
+            <Button
+              key={attachment.id}
+              className="h-auto min-h-8 w-full justify-start rounded-lg border border-border/45 bg-background/60 px-2.5 py-1.5 text-left text-xs text-foreground/80 hover:bg-background"
+              onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onCopyAttachmentUri(attachment.uri);
+              }}
+              title={attachment.filename || attachment.mime || "附件"}
+              variant="ghost"
+            >
+              <span className="min-w-0 truncate">{attachment.filename || "attachment"}</span>
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function OpencodeMessageStream({
   sessionLoading,
@@ -330,6 +890,15 @@ export function OpencodeMessageStream({
   const mergedRenderRows = renderRows.reduce<OpencodeMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
     if (row.isAssistant && last?.isAssistant) {
+      if (isEmptyAssistantPlaceholder(last)) {
+        row.isStreaming = last.isStreaming || row.isStreaming;
+        row.liveParts = [...last.liveParts, ...row.liveParts];
+        row.renderParts = [...last.renderParts, ...row.renderParts];
+        row.detailsLoading = last.detailsLoading || row.detailsLoading;
+        row.msg = { ...row.msg, id: `${last.msg.id}:${row.msg.id}` };
+        out[out.length - 1] = row;
+        return out;
+      }
       const lastTimelineOnly = last.hasTimeline && !last.fallbackReply;
       const rowTimelineOnly = row.hasTimeline && !row.fallbackReply;
       const mergedBoundary = mergeContextBoundary(last.timelineGroups, row.timelineGroups);
@@ -339,7 +908,7 @@ export function OpencodeMessageStream({
         last.hasTimeline = last.timelineGroups.length > 0;
         row.hasTimeline = row.timelineGroups.length > 0;
       }
-      if (row.timelineGroups.length === 0 && !row.fallbackReply && !row.detailsLoading && !row.detailsError) {
+      if (isEmptyAssistantPlaceholder(row)) {
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = [...last.liveParts, ...row.liveParts];
         last.renderParts = [...last.renderParts, ...row.renderParts];
@@ -371,338 +940,42 @@ export function OpencodeMessageStream({
     out.push(row);
     return out;
   }, []);
+  const visibleRenderRows = mergedRenderRows.filter((row) => !isEmptyAssistantPlaceholder(row) || row.isStreaming);
 
 
 
   return (
-    <div className="gt-chat-stream">
+    <div className="flex w-full flex-col gap-4">
       {sessionLoading ? (
-        <div className="opencode-session-loading small muted">加载会话中…</div>
+        <StreamLoadingState />
       ) : messages.length === 0 ? null : (
-        mergedRenderRows.map((row) => {
-          const {
-            msg,
-            isAssistant,
-            isStreaming,
-            liveParts,
-            renderParts,
-            timelineGroups,
-            hasTimeline,
-            fallbackReply,
-            detailsLoading,
-            detailsError
-          } = row;
-
-          return (
-            <div key={msg.id} className={isAssistant ? "opencode-msg opencode-msg-assistant" : "opencode-msg opencode-msg-user"}>
-
-              {isAssistant ? (
-                hasTimeline ? (
-                  <div className="opencode-assistant-timeline">
-                    {(() => {
-                      const activeReasoningPartId = isStreaming
-                        ? [...renderParts]
-                          .reverse()
-                          .find((part) => String((part as { type?: string }).type || "") === "reasoning")?.id || ""
-                        : "";
-
-                      const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
-                      return displayTimelineGroups.map((group, index) => {
-                        const timelineKey = `${msg.id}:${group.key}`;
-                        if (group.kind === "tool-batch") {
-                          const running = group.parts.some(isRunningToolPart);
-                          const shell = group.batchKind === "shell";
-                          const noun = shell ? "条命令" : "个文件";
-                          const label = shell
-                            ? (running ? "运行中" : "已运行")
-                            : (running ? "编辑中" : "已编辑");
-                          const isOpen = timelineOpenState[timelineKey] ?? false;
-                          return (
-                            <Collapsible
-                              key={timelineKey}
-                              className={`opencode-tool-batch opencode-tool-batch-${group.batchKind}`}
-                              open={isOpen}
-                              onOpenChange={(open) => {
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
-                              }}
-                            >
-                              <CollapsibleTrigger asChild>
-                                <Button className="opencode-tool-batch-head" variant="ghost">
-                                <strong>{label}</strong>
-                                <span className="opencode-tool-batch-count">{group.parts.length} {noun}</span>
-                                <span className="opencode-context-caret" aria-hidden="true">
-                                  <svg viewBox="0 0 12 12">
-                                    <path d="M4 2.5 8 6 4 9.5" />
-                                  </svg>
-                                </span>
-                                </Button>
-                              </CollapsibleTrigger>
-                              <CollapsibleContent className="opencode-exec-list opencode-tool-batch-list">
-                                {group.parts.map((part, partIndex) => (
-                                  <OpencodeExecutionPartView
-                                    key={`${group.key}:${part.id || partIndex}`}
-                                    part={part}
-                                    shellToolPartsExpanded={shellToolPartsExpanded}
-                                    editToolPartsExpanded={editToolPartsExpanded}
-                                    onOpenTaskSession={onOpenTaskSession}
-                                    onOpenToolFile={onOpenToolFile}
-                                  />
-                                ))}
-                              </CollapsibleContent>
-                            </Collapsible>
-                          );
-                        }
-
-                        if (group.kind === "context") {
-                          const counts = summarizeOpencodeContextToolCounts(group.parts);
-                          const progress = summarizeOpencodeContextProgress(group.parts);
-                          const summary = summarizeContextCounts(counts) || "已收集上下文";
-                          const isOpen = timelineOpenState[timelineKey] ?? false;
-                          return (
-                            <Collapsible
-                              key={timelineKey}
-                              className="opencode-exec-context"
-                              open={isOpen}
-                              onOpenChange={(open) => {
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
-                              }}
-                            >
-                              <CollapsibleTrigger asChild>
-                                <Button className="opencode-exec-context-head" variant="ghost">
-                                <strong className={isStreaming || progress.active ? "opencode-live-text" : ""}>
-                                  已探索
-                                </strong>
-                                <span className="small muted">
-                                  {progress.detail ? `${summary} · ${progress.detail}` : summary}
-                                </span>
-                                <span className="opencode-context-caret" aria-hidden="true">
-                                  <svg viewBox="0 0 12 12">
-                                    <path d="M4 2.5 8 6 4 9.5" />
-                                  </svg>
-                                </span>
-                                </Button>
-                              </CollapsibleTrigger>
-                              <CollapsibleContent className="opencode-exec-list">
-                                {group.parts.map((part, partIndex) => (
-                                  <OpencodeExecutionPartView
-                                    key={`${group.key}:${partIndex}`}
-                                    part={part}
-                                    shellToolPartsExpanded={shellToolPartsExpanded}
-                                    editToolPartsExpanded={editToolPartsExpanded}
-                                    onOpenTaskSession={onOpenTaskSession}
-                                    onOpenToolFile={onOpenToolFile}
-                                  />
-                                ))}
-                              </CollapsibleContent>
-                            </Collapsible>
-                          );
-                        }
-
-                        if (group.kind === "reasoning") {
-                          if (!showReasoningSummaries) return null;
-                          const text = group.parts
-                            .map((part) => String((part as { text?: string }).text || "").trim())
-                            .filter(Boolean)
-                            .join("\n\n");
-                          if (!text) return null;
-
-                          const activeThink = isStreaming && group.parts.some((part) => String(part.id || "") === activeReasoningPartId);
-                          const thinkPreviewLines = text
-                            .split(/\r?\n+/)
-                            .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
-                            .filter(Boolean)
-                            .slice(-4);
-                          const thinkPreview = thinkPreviewLines.length > 0
-                            ? thinkPreviewLines
-                            : ["Reading context", "Tracing changes", "Composing answer"];
-                          const thinkTrackStyle = {
-                            ["--think-count" as any]: thinkPreview.length
-                          } as CSSProperties;
-
-                          const thinkIsOpen = timelineOpenState[timelineKey] ?? false;
-                          return (
-                            <Collapsible
-                              key={timelineKey}
-                              className={activeThink ? "opencode-think-card is-active" : "opencode-think-card"}
-                              open={thinkIsOpen}
-                              onOpenChange={(open) => {
-                                setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
-                              }}
-                            >
-                              <CollapsibleTrigger asChild>
-                                <Button className="opencode-think-card-summary" variant="ghost">
-                                <span className="opencode-think-label">
-                                  {activeThink ? "思考中" : "已思考"}
-                                </span>
-                                {thinkPreview.length > 0 ? (
-                                  <span className={activeThink ? "opencode-think-carousel is-active" : "opencode-think-carousel"} aria-label="thinking preview">
-                                    <span className="opencode-think-carousel-track" style={thinkTrackStyle}>
-                                      {thinkPreview.map((line, lineIndex) => (
-                                        <span
-                                          key={`${group.key}:think-preview:${lineIndex}`}
-                                          className="opencode-think-carousel-line"
-                                          style={{ ["--think-index" as any]: lineIndex }}
-                                        >
-                                          {line}
-                                        </span>
-                                      ))}
-                                    </span>
-                                  </span>
-                                ) : null}
-                                </Button>
-                              </CollapsibleTrigger>
-                              <CollapsibleContent className="opencode-msg-body">
-                                {renderMarkdown(text, activeThink)}
-                              </CollapsibleContent>
-                            </Collapsible>
-                          );
-                        }
-
-                        if (group.kind !== "part") return null;
-                        const type = String((group.part as { type?: string }).type || "");
-                        if (type === "text") {
-                          const text = String((group.part as { text?: string }).text || "").trim();
-                          if (!text) return null;
-                          return (
-                            <div key={`${msg.id}:${group.key}`} className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                              {renderMarkdown(text, isStreaming && index === displayTimelineGroups.length - 1)}
-                              {isStreaming && index === displayTimelineGroups.length - 1 ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <OpencodeExecutionPartView
-                            key={`${msg.id}:${group.key}`}
-                            part={group.part}
-                            shellToolPartsExpanded={shellToolPartsExpanded}
-                            editToolPartsExpanded={editToolPartsExpanded}
-                            onOpenTaskSession={onOpenTaskSession}
-                            onOpenToolFile={onOpenToolFile}
-                          />
-                        );
-                      });
-                    })()}
-                  </div>
-                ) : fallbackReply ? (
-                  <div className={isStreaming ? "opencode-msg-body opencode-msg-body-streaming" : "opencode-msg-body"}>
-                    {renderMarkdown(fallbackReply, isStreaming)}
-                    {isStreaming ? <span className="opencode-stream-caret" aria-label="running" /> : null}
-                  </div>
-                ) : (
-                  <div className="opencode-thinking-placeholder" aria-live="polite" aria-label="思考中">
-                    <div className="opencode-thinking-placeholder-head">
-                      <span className="opencode-think-label opencode-live-text">思考中</span>
-                      <span className="opencode-thinking-placeholder-wave" aria-hidden="true">
-                        <span className="opencode-thinking-placeholder-bar" />
-                        <span className="opencode-thinking-placeholder-bar" />
-                        <span className="opencode-thinking-placeholder-bar" />
-                      </span>
-                    </div>
-                  </div>
-                )
-              ) : msg.content.trim() || (msg.attachments && msg.attachments.length > 0) ? (
-                <div className="opencode-msg-body">
-                  {(() => {
-                    const attachments = msg.attachments || [];
-                    const imageAttachments = attachments.filter(isMessageImageAttachment);
-                    const fileAttachments = attachments.filter((attachment) => !isMessageImageAttachment(attachment));
-                    const previewImages = imageAttachments.map((item) => ({
-                      uri: item.uri,
-                      filename: item.filename
-                    }));
-                    if (attachments.length <= 0) return null;
-
-                    return (
-                      <div
-                        className={[
-                          "opencode-msg-attachments",
-                          imageAttachments.length === 1 ? "is-single-image" : "",
-                          imageAttachments.length > 1 ? "is-image-grid" : "",
-                          imageAttachments.length > 0 && fileAttachments.length > 0 ? "is-mixed" : ""
-                        ].filter(Boolean).join(" ")}
-                      >
-                        {imageAttachments.length > 0 ? (
-                          <div className="opencode-msg-image-grid" aria-label="图片附件">
-                            {imageAttachments.map((attachment) => {
-                              return (
-                                <Button
-                                  key={attachment.id}
-                                  className="opencode-msg-image-btn"
-                                  onClick={() => onPreviewImageGroup(
-                                    previewImages,
-                                    Math.max(0, imageAttachments.findIndex((item) => item.id === attachment.id))
-                                  )}
-                                  onContextMenu={(event) => {
-                                    event.preventDefault();
-                                    onCopyAttachmentUri(attachment.uri);
-                                  }}
-                                  title="点击查看，右键复制图片数据"
-                                  variant="ghost"
-                                >
-                                  <img className="opencode-msg-image" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
-                                </Button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                        {fileAttachments.length > 0 ? (
-                          <div className="opencode-msg-file-list" aria-label="文件附件">
-                            {fileAttachments.map((attachment) => (
-                              <Button
-                                key={attachment.id}
-                                className="opencode-msg-file-btn"
-                                onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  onCopyAttachmentUri(attachment.uri);
-                                }}
-                                title={attachment.filename || attachment.mime || "附件"}
-                                variant="ghost"
-                              >
-                                <span className="opencode-msg-file-name">{attachment.filename || "attachment"}</span>
-                              </Button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })()}
-                  {msg.content.trim() ? (
-                    shouldCollapseMessage(msg.content) ? (
-                      <Collapsible
-                        className="opencode-msg-collapsible"
-                        open={messageOpenState[msg.id] ?? false}
-                        onOpenChange={(open) => {
-                          setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
-                        }}
-                      >
-                        {messageOpenState[msg.id] ? null : (
-                          <div className="opencode-msg-collapsible-preview">
-                            {renderMarkdown(collapsePreview(msg.content))}
-                          </div>
-                        )}
-                        <CollapsibleContent className="opencode-msg-collapsible-body">
-                          {renderMarkdown(msg.content)}
-                        </CollapsibleContent>
-                        <CollapsibleTrigger asChild>
-                          <Button className="opencode-msg-collapsible-toggle" size="sm" variant="ghost">
-                            {messageOpenState[msg.id] ? "收起" : "展开全文"}
-                          </Button>
-                        </CollapsibleTrigger>
-                      </Collapsible>
-                    ) : renderMarkdown(msg.content)
-                  ) : null}
-                </div>
-              ) : null}
-              {isAssistant && detailsError ? (
-                <div className="small" style={{ color: "var(--danger)", marginTop: "var(--gt-space-2)" }}>
-                  {detailsError}
-                </div>
-              ) : null}
-            </div>
-          );
-        })
+        visibleRenderRows.map((row) => (
+          <MessageShell key={row.msg.id} isAssistant={row.isAssistant}>
+            {row.isAssistant ? (
+              <AssistantMessage
+                row={row}
+                timelineOpenState={timelineOpenState}
+                setTimelineOpenState={setTimelineOpenState}
+                showReasoningSummaries={showReasoningSummaries}
+                shellToolPartsExpanded={shellToolPartsExpanded}
+                editToolPartsExpanded={editToolPartsExpanded}
+                onOpenTaskSession={onOpenTaskSession}
+                onOpenToolFile={onOpenToolFile}
+                renderMarkdown={renderMarkdown}
+              />
+            ) : (
+              <UserMessage
+                msg={row.msg}
+                messageOpenState={messageOpenState}
+                setMessageOpenState={setMessageOpenState}
+                renderMarkdown={renderMarkdown}
+                onPreviewImageGroup={onPreviewImageGroup}
+                onCopyAttachmentUri={onCopyAttachmentUri}
+                onOpenAttachment={onOpenAttachment}
+              />
+            )}
+          </MessageShell>
+        ))
       )}
     </div>
   );

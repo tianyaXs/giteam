@@ -1,21 +1,42 @@
 import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
-import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from "react";
+import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type Ref } from "react";
 import { cn } from "@/lib/utils";
+
+type ScrollAreaProps = ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> & {
+  viewportClassName?: string;
+  viewportRef?: Ref<HTMLDivElement>;
+  viewportProps?: ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Viewport>;
+  scrollBarClassName?: string;
+  thumbClassName?: string;
+};
 
 const ScrollArea = forwardRef<
   ElementRef<typeof ScrollAreaPrimitive.Root>,
-  ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
->(({ className, children, ...props }, ref) => (
+  ScrollAreaProps
+>(({
+  className,
+  children,
+  viewportClassName,
+  viewportRef,
+  viewportProps,
+  scrollBarClassName,
+  thumbClassName,
+  ...props
+}, ref) => (
   <ScrollAreaPrimitive.Root
     ref={ref}
-    className={cn("gt-scroll-area", className)}
+    className={cn("relative min-w-0 max-w-full overflow-hidden", className)}
     {...props}
   >
-    <ScrollAreaPrimitive.Viewport className="gt-scroll-area-viewport">
+    <ScrollAreaPrimitive.Viewport
+      ref={viewportRef}
+      className={cn("size-full min-w-0 max-w-full rounded-[inherit] overflow-x-hidden", viewportClassName)}
+      {...viewportProps}
+    >
       {children}
     </ScrollAreaPrimitive.Viewport>
-    <ScrollBar />
-    <ScrollAreaPrimitive.Corner className="gt-scroll-area-corner" />
+    <ScrollBar className={scrollBarClassName} thumbClassName={thumbClassName} />
+    <ScrollAreaPrimitive.Corner className="bg-transparent" />
   </ScrollAreaPrimitive.Root>
 ));
 
@@ -23,21 +44,21 @@ ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName;
 
 const ScrollBar = forwardRef<
   ElementRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>,
-  ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>
->(({ className, orientation = "vertical", ...props }, ref) => (
+  ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar> & { thumbClassName?: string }
+>(({ className, thumbClassName, orientation = "vertical", ...props }, ref) => (
   <ScrollAreaPrimitive.ScrollAreaScrollbar
     ref={ref}
     orientation={orientation}
     className={cn(
-      "gt-scroll-area-scrollbar",
+      "flex touch-none select-none transition-colors",
       orientation === "vertical"
-        ? "gt-scroll-area-scrollbar-vertical"
-        : "gt-scroll-area-scrollbar-horizontal",
+        ? "h-full w-2.5 border-l border-l-transparent p-px"
+        : "h-2.5 flex-col border-t border-t-transparent p-px",
       className
     )}
     {...props}
   >
-    <ScrollAreaPrimitive.ScrollAreaThumb className="gt-scroll-area-thumb" />
+    <ScrollAreaPrimitive.ScrollAreaThumb className={cn("relative flex-1 rounded-full bg-border", thumbClassName)} />
   </ScrollAreaPrimitive.ScrollAreaScrollbar>
 ));
 

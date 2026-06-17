@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { ListIcon, PlusIcon, SquareTerminalIcon, Trash2Icon, XIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { TerminalTabState } from "../../lib/terminalState";
 import { Button } from "../ui/button";
+import { Card } from "../ui/card";
 
 function getTerminalDisplayTitle(tab?: TerminalTabState): string {
   const raw = String(tab?.title || "").trim();
@@ -211,52 +213,73 @@ export function TerminalPanel({
   }, [activeTabId, sidebarVisible]);
 
   return (
-    <div className="gt-panel-stack gt-panel-stack-terminal">
-      <div className={sidebarVisible ? "gt-terminal-header has-sidebar" : "gt-terminal-header"}>
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-background">
+      <div
+        className={cn(
+          "grid min-h-[34px] border-b border-border/60 bg-background",
+          sidebarVisible ? "grid-cols-[minmax(0,1fr)] xl:grid-cols-[196px_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"
+        )}
+      >
         {sidebarVisible ? (
-          <div className="gt-terminal-header-rail">
-            <Button className="gt-terminal-icon-btn" onClick={onToggleSidebar} title="隐藏终端列表" variant="ghost" size="icon">
+          <div className="hidden min-h-[34px] min-w-0 items-center gap-1.5 border-r border-border/60 bg-card/60 px-2.5 xl:flex">
+            <Button className="size-6 rounded-sm text-muted-foreground" onClick={onToggleSidebar} title="隐藏终端列表" variant="ghost" size="icon">
               <ListIcon />
             </Button>
-            <span className="gt-terminal-sidebar-meta">{terminalCountLabel}</span>
-            <Button className="gt-terminal-icon-btn" onClick={onCreateTab} title="新建终端" variant="ghost" size="icon">
+            <span className="min-w-0 flex-1 truncate text-[11px] font-medium tabular-nums text-muted-foreground">{terminalCountLabel}</span>
+            <Button className="size-6 rounded-sm text-muted-foreground" onClick={onCreateTab} title="新建终端" variant="ghost" size="icon">
               <PlusIcon />
             </Button>
           </div>
         ) : null}
-        <div className="gt-terminal-header-main">
+        <div className="flex min-h-[34px] min-w-0 items-center gap-1.5 bg-background px-2.5">
           {!sidebarVisible ? (
-            <Button className="gt-terminal-icon-btn active" onClick={onToggleSidebar} title="显示终端列表" variant="ghost" size="icon">
+            <Button className="size-6 rounded-sm text-foreground" onClick={onToggleSidebar} title="显示终端列表" variant="ghost" size="icon">
               <ListIcon />
             </Button>
           ) : null}
-          <span className="gt-terminal-label">{activeTitle}</span>
-          <Button className="gt-terminal-icon-btn gt-terminal-clear-btn" onClick={() => void onClearActiveTab()} title="清空终端" variant="ghost" size="icon">
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{activeTitle}</span>
+          <Button className="ml-auto size-6 rounded-sm text-muted-foreground" onClick={() => void onClearActiveTab()} title="清空终端" variant="ghost" size="icon">
             <Trash2Icon />
           </Button>
         </div>
       </div>
 
-      <div className={sidebarVisible ? "gt-terminal-layout" : "gt-terminal-layout sidebar-hidden"}>
+      <div
+        className={cn(
+          "grid h-full min-h-0 bg-background",
+          sidebarVisible ? "grid-cols-[minmax(0,1fr)] xl:grid-cols-[196px_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"
+        )}
+      >
         {sidebarVisible ? (
-          <aside className="gt-terminal-sidebar">
-            <div className="gt-terminal-sidebar-list">
+          <Card className="hidden min-h-0 w-[196px] flex-col overflow-hidden rounded-none border-0 border-r border-border/60 bg-card/60 shadow-none xl:flex">
+            <div className="grid gap-1 overflow-auto p-1.5">
               {tabs.map((tab) => (
-                <div key={`terminal-side-${tab.id}`} className={tab.id === activeTabId ? "gt-terminal-side-item active" : "gt-terminal-side-item"}>
-                  <Button className="gt-terminal-side-item-trigger" onClick={() => onSelectTab(tab.id)} variant="ghost">
-                    <span className="gt-terminal-side-item-icon" aria-hidden="true">
+                <div
+                  key={`terminal-side-${tab.id}`}
+                  className={cn(
+                    "group/terminal flex min-h-8 items-center overflow-hidden rounded-lg border border-transparent text-foreground transition-colors hover:bg-accent/70",
+                    tab.id === activeTabId && "border-border bg-muted"
+                  )}
+                >
+                  <Button
+                    className="min-h-[30px] min-w-0 flex-1 justify-start gap-2 rounded-[inherit] bg-transparent px-2.5 py-1 text-xs font-medium hover:bg-transparent"
+                    onClick={() => onSelectTab(tab.id)}
+                    variant="ghost"
+                  >
+                    <span className="inline-flex shrink-0 items-center justify-center text-muted-foreground" aria-hidden="true">
                       <SquareTerminalIcon />
                     </span>
-                    <span className="gt-terminal-side-item-title">{getTerminalDisplayTitle(tab)}</span>
+                    <span className="min-w-0 truncate">{getTerminalDisplayTitle(tab)}</span>
                   </Button>
                   {tabs.length > 1 ? (
                     <Button
-                      className="gt-terminal-side-item-close"
+                      className="mr-1 size-5 rounded-sm text-muted-foreground opacity-0 transition-opacity group-hover/terminal:opacity-100 group-focus-within/terminal:opacity-100 data-[active=true]:opacity-100"
                       onClick={(event) => {
                         event.stopPropagation();
                         void onCloseTab(tab.id);
                       }}
                       aria-label={`关闭终端 ${tab.title}`}
+                      data-active={tab.id === activeTabId}
                       variant="ghost"
                       size="icon"
                     >
@@ -266,10 +289,10 @@ export function TerminalPanel({
                 </div>
               ))}
             </div>
-          </aside>
+          </Card>
         ) : null}
-        <div className="gt-terminal-body">
-          <div className="gt-terminal-xterm-host" ref={hostRef} />
+        <div className="min-h-0 min-w-0 overflow-hidden bg-background">
+          <div className="terminal-xterm-host h-full w-full overflow-hidden bg-background p-2.5 px-3" ref={hostRef} />
         </div>
       </div>
     </div>

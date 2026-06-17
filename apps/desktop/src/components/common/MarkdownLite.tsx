@@ -5,6 +5,7 @@ import { createCodePlugin } from "@streamdown/code";
 import { math as streamdownMath } from "@streamdown/math";
 import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
 import { Button } from "../ui/button";
+import { cn } from "../../lib/utils";
 
 const streamdownCode = createCodePlugin({
   themes: ["github-light", "github-dark"]
@@ -22,6 +23,9 @@ const STREAMDOWN_PLUGINS = {
   math: streamdownMath,
   mermaid: streamdownMermaid
 };
+
+const MARKDOWN_INLINE_WRAP_CLASS = "min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]";
+const MARKDOWN_LINK_WRAP_CLASS = "inline break-words text-left font-mono text-[0.94em] [overflow-wrap:anywhere]";
 
 const MERMAID_START_RE =
   /^(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|gantt|journey|pie|gitGraph|mindmap|timeline|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic)\b/i;
@@ -383,15 +387,21 @@ function renderPathButton(
   props: MarkdownLiteProps,
   compact = false
 ) {
+  const className = MARKDOWN_LINK_WRAP_CLASS;
+  const content = compact ? getPathDisplayName(
+    target.kind === "local-directory" || target.kind === "local-file" ? target.absolutePath : target.relativePath,
+    target.kind === "local-file" || target.kind === "workspace-file" ? target.line : undefined
+  ) : children;
   if (target.kind === "local-directory" && props.onOpenLocalDirectory) {
     return (
       <Button
-        className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
+        className={className}
         title={target.absolutePath}
         onClick={() => props.onOpenLocalDirectory?.(target.absolutePath)}
-        variant="ghost"
+        variant="link"
+        size="inline"
       >
-        {compact ? getPathDisplayName(target.absolutePath) : children}
+        {content}
       </Button>
     );
   }
@@ -399,12 +409,13 @@ function renderPathButton(
   if (target.kind === "local-file" && props.onOpenLocalFile) {
     return (
       <Button
-        className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
+        className={className}
         title={target.absolutePath}
         onClick={() => props.onOpenLocalFile?.(target.absolutePath, target.line)}
-        variant="ghost"
+        variant="link"
+        size="inline"
       >
-        {compact ? getPathDisplayName(target.absolutePath, target.line) : children}
+        {content}
       </Button>
     );
   }
@@ -412,12 +423,13 @@ function renderPathButton(
   if (target.kind === "workspace-file" && props.onOpenWorkspacePath) {
     return (
       <Button
-        className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
+        className={className}
         title={target.relativePath}
         onClick={() => props.onOpenWorkspacePath?.(target.relativePath, target.line)}
-        variant="ghost"
+        variant="link"
+        size="inline"
       >
-        {compact ? getPathDisplayName(target.relativePath, target.line) : children}
+        {content}
       </Button>
     );
   }
@@ -425,12 +437,13 @@ function renderPathButton(
   if (target.kind === "workspace-directory" && props.onOpenWorkspaceDirectory) {
     return (
       <Button
-        className={compact ? "markdown-app-link markdown-path-code" : "markdown-app-link"}
+        className={className}
         title={target.relativePath}
         onClick={() => props.onOpenWorkspaceDirectory?.(target.relativePath)}
-        variant="ghost"
+        variant="link"
+        size="inline"
       >
-        {compact ? getPathDisplayName(target.relativePath) : children}
+        {content}
       </Button>
     );
   }
@@ -459,7 +472,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
         if (pathButton) return pathButton;
 
         return (
-          <code data-streamdown="inline-code" {...codeProps}>
+          <code data-streamdown="inline-code" {...codeProps} className={cn(codeProps.className, MARKDOWN_INLINE_WRAP_CLASS)}>
             {children}
           </code>
         );
@@ -479,6 +492,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
             target={external ? "_blank" : undefined}
             rel={external ? "noreferrer" : undefined}
             {...anchorProps}
+            className={cn(anchorProps.className, MARKDOWN_INLINE_WRAP_CLASS)}
           >
             {children}
           </a>
@@ -490,7 +504,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
   if (!text) return <p className="muted">等待上下文加载...</p>;
 
   return (
-    <div className="markdown-lite">
+    <div className="markdown-lite min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
       <Streamdown
         controls={STREAMDOWN_CONTROLS}
         dir="auto"

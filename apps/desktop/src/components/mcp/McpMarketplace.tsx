@@ -13,6 +13,7 @@ import {
 } from "../../lib/mcpMarket";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "../ui/card";
 import {
   Dialog,
   DialogClose,
@@ -30,7 +31,10 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
+import { Separator } from "../ui/separator";
+import { cn } from "../../lib/utils";
 
 interface McpMarketplaceProps {
   servers: McpServerMarketData;
@@ -47,6 +51,17 @@ interface McpMarketplaceProps {
 function getDefaultInstallKey(server: McpServerDefinition) {
   const entries = Object.entries(server.installations);
   return entries.find(([, install]) => install.recommended)?.[0] || entries[0]?.[0] || "";
+}
+
+function McpEmpty({ title, description, danger = false }: { title: string; description?: string; danger?: boolean }) {
+  return (
+    <Empty className={cn("min-h-28 flex-none border border-dashed border-border bg-muted/30 p-4 md:p-6", danger && "border-destructive/40 bg-destructive/10")}>
+      <EmptyHeader>
+        <EmptyTitle className="text-sm">{title}</EmptyTitle>
+        {description ? <EmptyDescription>{description}</EmptyDescription> : null}
+      </EmptyHeader>
+    </Empty>
+  );
 }
 
 export function McpMarketplace({
@@ -146,35 +161,36 @@ export function McpMarketplace({
   }
 
   return (
-    <section className="gt-mcp-market-list">
-      <div className="gt-mcp-market-toolbar">
-        <div className="gt-mcp-searchbox">
-          <span aria-hidden="true">⌕</span>
+    <section className="flex min-h-0 flex-col gap-3">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3">
+          <span className="text-[15px] text-muted-foreground" aria-hidden="true">⌕</span>
           <Input
+            className="h-9 border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0"
             placeholder="搜索 MCP 服务、标签、分类..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
-          <div className="gt-mcp-filter-select">
+          <div className="shrink-0">
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gt-mcp-filter-trigger" aria-label="MCP 分类筛选">
+                <Button variant="ghost" size="sm" aria-label="MCP 分类筛选">
                   <span>{selectedCategoryLabel}</span>
-                  <ChevronDown aria-hidden="true" />
+                  <ChevronDown data-icon="inline-end" aria-hidden="true" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="bottom" align="end" sideOffset={6} collisionPadding={12} className="gt-mcp-filter-menu">
+              <DropdownMenuContent side="bottom" align="end" sideOffset={6} collisionPadding={12}>
                 <DropdownMenuGroup>
                   <DropdownMenuRadioGroup value={selectedCategory} onValueChange={setSelectedCategory}>
-                    <DropdownMenuRadioItem value="all" className="gt-mcp-filter-option">
+                    <DropdownMenuRadioItem value="all">
                       <span>全部</span>
                     </DropdownMenuRadioItem>
                     {categories.map((category) => (
-                      <DropdownMenuRadioItem key={category} value={category} className="gt-mcp-filter-option">
+                      <DropdownMenuRadioItem key={category} value={category}>
                         <span>{getCategoryLabel(category)}</span>
                       </DropdownMenuRadioItem>
                     ))}
-                    <DropdownMenuRadioItem value="installed" className="gt-mcp-filter-option">
+                    <DropdownMenuRadioItem value="installed">
                       <span>已安装 ({installedRows.length})</span>
                     </DropdownMenuRadioItem>
                   </DropdownMenuRadioGroup>
@@ -184,84 +200,128 @@ export function McpMarketplace({
           </div>
         </div>
       </div>
-      {notice ? <div className="gt-mcp-market-notice">{notice}</div> : null}
-      <div className="gt-mcp-market-meta">
-        <span>{browsingInstalled ? `${installedRows.length} installed servers` : `${filteredServers.length} servers · 点击详情查看完整配置`}</span>
+      {notice ? <div className="rounded-lg border border-border bg-muted/40 p-3 text-[15px] text-muted-foreground">{notice}</div> : null}
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <span className="text-[14px] text-muted-foreground">{browsingInstalled ? `${installedRows.length} installed servers` : `${filteredServers.length} servers · 点击详情查看完整配置`}</span>
         {browsingInstalled ? (
-          <div className="gt-mcp-installed-inline-actions">
+          <div className="flex flex-wrap gap-2">
             <Button variant="ghost" size="sm" onClick={onShowCustomAdd}>
-              <Plus />
+              <Plus data-icon="inline-start" />
               自定义添加
             </Button>
             <Button variant="ghost" size="sm" onClick={() => void onRefreshInstalled?.()} disabled={installedLoading}>
-              <RefreshCw />
+              <RefreshCw data-icon="inline-start" />
               刷新
             </Button>
           </div>
         ) : null}
       </div>
       {browsingInstalled ? (
-        <div className="gt-installed-mcp-grid gt-mcp-market-installed-grid">
-          {installedError ? <div className="gt-module-empty danger">{installedError}</div> : null}
-          {installedLoading ? <div className="gt-module-empty">正在加载 MCP...</div> : null}
-          {!installedLoading && installedRows.length === 0 ? <div className="gt-module-empty">暂无 MCP server。从市场安装或自定义添加后会显示在这里。</div> : null}
+        <div className="grid gap-2 md:grid-cols-2">
+          {installedError ? <McpEmpty title="MCP 加载失败" description={installedError} danger /> : null}
+          {installedLoading ? <McpEmpty title="正在加载 MCP..." /> : null}
+          {!installedLoading && installedRows.length === 0 ? <McpEmpty title="暂无 MCP server" description="从市场安装或自定义添加后会显示在这里。" /> : null}
           {installedRows.map((row) => (
-            <Button
-              key={row.name}
-              variant="ghost"
-              className="gt-mcp-installed-chip gt-mcp-installed-chip-use"
-              onClick={() => onReferenceMcp?.(row.name)}
-              title={`添加 MCP 引用：use the ${row.name} mcp server`}
-            >
-              <div className="gt-mcp-installed-main">
-                <strong>{row.name}</strong>
-                <small>{row.sourceLabel} · {row.typeLabel} · {row.toolsCount} tools</small>
-              </div>
-            </Button>
+            <Card key={row.name} className="grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors hover:border-primary/30 hover:bg-accent/40">
+              <CardHeader className="p-0">
+                <Button
+                  variant="ghost"
+                  className="h-auto min-w-0 justify-start gap-3 p-2 text-left"
+                  onClick={() => onReferenceMcp?.(row.name)}
+                  title={`添加 MCP 引用：use the ${row.name} mcp server`}
+                >
+                  <div className="grid min-w-0 flex-1 gap-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <CardTitle className="truncate text-base">{row.name}</CardTitle>
+                      <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">{row.typeLabel}</Badge>
+                    </div>
+                    <CardDescription className="truncate text-[14px]">{row.sourceLabel}</CardDescription>
+                  </div>
+                </Button>
+              </CardHeader>
+              <CardFooter className="justify-between p-2 pt-0">
+                <Badge variant="outline" className="normal-case tracking-normal">{row.toolsCount} tools</Badge>
+                <Button variant="outline" size="sm" onClick={() => onReferenceMcp?.(row.name)}>
+                  引用
+                </Button>
+              </CardFooter>
+            </Card>
           ))}
         </div>
       ) : filteredServers.length === 0 ? (
-        <div className="gt-mcp-empty-state"><strong>没有找到匹配的 MCP</strong><span>试试清空搜索词或切换分类。</span></div>
+        <McpEmpty title="没有找到匹配的 MCP" description="试试清空搜索词或切换分类。" />
       ) : (
-        <div className="gt-mcp-resource-grid">
+        <div className="grid gap-2.5 md:grid-cols-2">
           {filteredServers.map((server) => {
             const isConfigured = configuredMcps.includes(server.name);
             const installKey = getDefaultInstallKey(server);
             const install = installKey ? server.installations[installKey] : null;
+            const visibleTags = server.tags.slice(0, 4);
+            const hiddenTagCount = Math.max(0, server.tags.length - visibleTags.length);
             return (
-              <article key={server.name} className={`gt-mcp-resource-card ${isConfigured ? "configured" : ""}`}>
-                <div className="gt-mcp-resource-main">
-                  <div className="gt-mcp-resource-title">
-                    <strong>{server.display_name}</strong>
-                    <span>{getCategoryLabel(getPrimaryCategory(server))}</span>
-                  </div>
-                  <p>{server.description}</p>
-                  <div className="gt-mcp-resource-tags">
-                    {server.is_official ? <Badge variant="default" className="official">官方</Badge> : null}
-                    {server.tags.slice(0, 3).map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}
-                  </div>
-                </div>
-                <div className="gt-mcp-resource-actions">
-                  <span>{server.tools?.length || 0} tools</span>
-                  <span>{install ? getInstallationTypeLabel(install.type) : "no install"}</span>
-                  <Button variant="ghost" size="sm" className="gt-mcp-detail-button" onClick={() => setDetailServer(server)}>
-                    详情
+              <Card
+                key={server.name}
+                className={cn(
+                  "grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors hover:border-primary/35 hover:bg-accent/35",
+                  isConfigured && "border-primary/40 bg-primary/5"
+                )}
+              >
+                <CardHeader className="p-0">
+                  <Button
+                    variant="ghost"
+                    className="h-auto min-w-0 justify-start gap-3 p-2 text-left"
+                    onClick={() => setDetailServer(server)}
+                  >
+                    <div className="grid min-w-0 flex-1 gap-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <CardTitle className="truncate text-base">{server.display_name}</CardTitle>
+                        <Badge variant="outline" className="shrink-0 normal-case tracking-normal">
+                          {getCategoryLabel(getPrimaryCategory(server))}
+                        </Badge>
+                      </div>
+                      <CardDescription className="line-clamp-2 text-[14px] leading-5">{server.description}</CardDescription>
+                    </div>
                   </Button>
-                  {isConfigured ? (
-                    <span className="gt-mcp-installed-badge">Added</span>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className={`gt-mcp-get-button ${addingServer === server.name ? "is-installing" : ""}`}
-                      onClick={() => openConfigure(server)}
-                      disabled={addingServer === server.name}
-                    >
-                      {addingServer === server.name ? "..." : "Get"}
+                </CardHeader>
+                <CardContent className="grid gap-2 p-2 pt-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden">
+                    {server.is_official ? <Badge variant="default" className="shrink-0 normal-case tracking-normal">官方</Badge> : null}
+                    {isConfigured ? <Badge variant="success" className="shrink-0 normal-case tracking-normal">已添加</Badge> : null}
+                    {visibleTags.map((tag) => (
+                      <Badge key={tag} variant="secondary" className="max-w-32 truncate normal-case tracking-normal">
+                        {tag}
+                      </Badge>
+                    ))}
+                    {hiddenTagCount > 0 ? <Badge variant="outline" className="normal-case tracking-normal">+{hiddenTagCount}</Badge> : null}
+                  </div>
+                </CardContent>
+                <Separator className="mx-2 w-auto" />
+                <CardFooter className="justify-between p-2 pt-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <Badge variant="outline" className="normal-case tracking-normal">{server.tools?.length || 0} tools</Badge>
+                    <Badge variant="outline" className="normal-case tracking-normal">{install ? getInstallationTypeLabel(install.type) : "No install"}</Badge>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setDetailServer(server)}>
+                      详情
                     </Button>
-                  )}
-                </div>
-              </article>
+                    {isConfigured ? (
+                      <Button variant="secondary" size="sm" disabled>
+                        已添加
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="contrast"
+                        size="sm"
+                        onClick={() => openConfigure(server)}
+                        disabled={addingServer === server.name}
+                      >
+                        {addingServer === server.name ? "添加中" : "添加"}
+                      </Button>
+                    )}
+                  </div>
+                </CardFooter>
+              </Card>
             );
           })}
         </div>
@@ -270,59 +330,61 @@ export function McpMarketplace({
         <Dialog open onOpenChange={(open) => {
           if (!open) setDetailServer(null);
         }}>
-          <DialogContent className="gt-settings-dialog-content gt-mcp-market-detail-dialog">
-            <DialogHeader className="gt-mcp-detail-head">
-              <div>
-                <span className="gt-module-kicker">mcp server</span>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader className="flex-row items-start justify-between gap-3">
+              <div className="grid gap-1">
+                <Badge variant="outline" className="w-fit normal-case tracking-normal">mcp server</Badge>
                 <DialogTitle>{detailServer.display_name}</DialogTitle>
                 <DialogDescription>{detailServer.description}</DialogDescription>
               </div>
               <DialogClose asChild>
-                <Button variant="ghost" size="icon" className="gt-icon-chip" aria-label="关闭详情">
-                  <X />
+                <Button variant="ghost" size="icon" aria-label="关闭详情">
+                  <X data-icon="inline-start" />
                 </Button>
               </DialogClose>
             </DialogHeader>
-            <div className="gt-mcp-detail-body">
-              <div className="gt-mcp-detail-row">
-                <span>分类</span>
-                <strong>{getCategoryLabel(getPrimaryCategory(detailServer))}</strong>
-              </div>
-              <div className="gt-mcp-detail-row">
-                <span>协议</span>
-                <strong>{detailServer.license || "未知"}</strong>
+            <div className="grid gap-3">
+              <div className="grid grid-cols-2 gap-2">
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] text-muted-foreground">分类</span>
+                  <strong className="mt-1 block text-base font-semibold">{getCategoryLabel(getPrimaryCategory(detailServer))}</strong>
+                </Card>
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] text-muted-foreground">协议</span>
+                  <strong className="mt-1 block text-base font-semibold">{detailServer.license || "未知"}</strong>
+                </Card>
               </div>
               {detailServer.tags.length > 0 ? (
-                <div className="gt-mcp-detail-section">
-                  <span>标签</span>
-                  <div className="gt-mcp-detail-tags">
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] font-medium text-muted-foreground">标签</span>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     {detailServer.tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}
                   </div>
-                </div>
+                </Card>
               ) : null}
               {detailServer.arguments && Object.keys(detailServer.arguments).length > 0 ? (
-                <div className="gt-mcp-detail-section">
-                  <span>配置参数</span>
-                  <div className="gt-mcp-detail-code-list">
-                    {Object.entries(detailServer.arguments).map(([key, arg]) => <code key={key}>{key}{arg.required ? " *" : ""}</code>)}
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] font-medium text-muted-foreground">配置参数</span>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {Object.entries(detailServer.arguments).map(([key, arg]) => <Badge key={key} variant="outline" className="normal-case tracking-normal">{key}{arg.required ? " *" : ""}</Badge>)}
                   </div>
-                </div>
+                </Card>
               ) : null}
               {detailServer.tools && detailServer.tools.length > 0 ? (
-                <div className="gt-mcp-detail-section">
-                  <span>工具预览</span>
-                  <div className="gt-mcp-detail-code-list">
-                    {detailServer.tools.slice(0, 12).map((tool) => <code key={tool.name}>{tool.name}</code>)}
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] font-medium text-muted-foreground">工具预览</span>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {detailServer.tools.slice(0, 12).map((tool) => <Badge key={tool.name} variant="outline" className="normal-case tracking-normal">{tool.name}</Badge>)}
                   </div>
-                </div>
+                </Card>
               ) : null}
               {getDefaultInstallKey(detailServer) ? (
-                <div className="gt-mcp-detail-section">
-                  <span>安装命令</span>
-                  <code className="gt-mcp-detail-command">
+                <Card className="rounded-lg p-3 shadow-none">
+                  <span className="text-[14px] font-medium text-muted-foreground">安装命令</span>
+                  <code className="mt-2 block overflow-auto rounded-md bg-muted/40 p-2 text-[14px]">
                     {detailServer.installations[getDefaultInstallKey(detailServer)]?.command} {detailServer.installations[getDefaultInstallKey(detailServer)]?.args.join(" ")}
                   </code>
-                </div>
+                </Card>
               ) : null}
             </div>
           </DialogContent>
@@ -332,28 +394,28 @@ export function McpMarketplace({
         <Dialog open onOpenChange={(open) => {
           if (!open) setConfigServer(null);
         }}>
-          <DialogContent className="gt-mcp-market-config-dialog">
-            <DialogHeader className="gt-mcp-config-head">
-              <div>
-                <span className="gt-module-kicker">configure mcp</span>
+          <DialogContent className="max-w-xl">
+            <DialogHeader className="flex-row items-start justify-between gap-3">
+              <div className="grid gap-1">
+                <Badge variant="outline" className="w-fit normal-case tracking-normal">configure mcp</Badge>
                 <DialogTitle>{configServer.display_name}</DialogTitle>
                 <DialogDescription>填写连接所需参数后再添加到 OpenCode 配置。</DialogDescription>
               </div>
               <DialogClose asChild>
-                <Button variant="ghost" size="icon" className="gt-icon-chip" aria-label="关闭配置">
-                  <X />
+                <Button variant="ghost" size="icon" aria-label="关闭配置">
+                  <X data-icon="inline-start" />
                 </Button>
               </DialogClose>
             </DialogHeader>
-            <div className="gt-mcp-config-fields">
+            <div className="grid gap-3">
               {getParamKeys(configServer).map((param) => (
-                <label key={param.key}>
-                  <span>{param.key}{param.required ? " *" : ""}</span>
-                  <Input className="path-input" value={paramValues[param.key] || ""} placeholder={param.meta?.example || param.meta?.description || param.key} onChange={(e) => setParamValues((prev) => ({ ...prev, [param.key]: e.target.value }))} />
+                <label key={param.key} className="grid gap-1.5">
+                  <span className="text-[14px] font-medium">{param.key}{param.required ? " *" : ""}</span>
+                  <Input className="h-10 rounded-lg" value={paramValues[param.key] || ""} placeholder={param.meta?.example || param.meta?.description || param.key} onChange={(e) => setParamValues((prev) => ({ ...prev, [param.key]: e.target.value }))} />
                 </label>
               ))}
             </div>
-            <DialogFooter className="gt-mcp-config-actions">
+            <DialogFooter>
               <Button variant="ghost" size="sm" onClick={() => setConfigServer(null)}>取消</Button>
               <Button variant="contrast" size="sm" onClick={() => void handleAddServer(configServer, paramValues)} disabled={addingServer === configServer.name}>{addingServer === configServer.name ? "添加中..." : "确认添加"}</Button>
             </DialogFooter>

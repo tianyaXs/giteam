@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { createPortal } from "react-dom";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
-import { RefreshIcon } from "../icons";
+import { cn } from "../../lib/utils";
+import { AutomationIcon, FolderIcon, ImageIcon, PluginsIcon, RefreshIcon, SettingsIcon, SkillsIcon, StarIcon, SyncIcon } from "../icons";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
+import { Card, CardContent } from "../ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -191,14 +195,30 @@ type SettingsSection = {
   content?: ReactNode;
 };
 
+type SettingsNavIcon = (props: SVGProps<SVGSVGElement>) => ReactNode;
+
+const SETTINGS_SECTION_ICONS: Record<SettingsSectionId, SettingsNavIcon> = {
+  general: SettingsIcon,
+  appearance: ImageIcon,
+  workspace: FolderIcon,
+  models: StarIcon,
+  skillsmp: SkillsIcon,
+  mcp: PluginsIcon,
+  plugins: PluginsIcon,
+  mobile: SyncIcon,
+  updates: SyncIcon,
+  notifications: AutomationIcon,
+  sounds: AutomationIcon
+};
+
 function FontSizeStepper(props: { value: number; min: number; max: number; onChange: (value: number) => void }) {
   return (
-    <div className="settings-stepper">
-      <Button variant="ghost" size="sm" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}>
+    <div className="inline-flex h-9 items-center overflow-hidden rounded-md border border-border bg-muted/30">
+      <Button className="h-9 rounded-none px-3 text-[15px]" variant="ghost" size="sm" disabled={props.value <= props.min} onClick={() => props.onChange(props.value - 1)}>
         −
       </Button>
-      <span>{props.value}</span>
-      <Button variant="ghost" size="sm" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}>
+      <span className="min-w-11 text-center text-base font-medium tabular-nums text-foreground">{props.value}</span>
+      <Button className="h-9 rounded-none px-3 text-[15px]" variant="ghost" size="sm" disabled={props.value >= props.max} onClick={() => props.onChange(props.value + 1)}>
         ＋
       </Button>
     </div>
@@ -211,7 +231,7 @@ function SegmentedControl(props: { options: Array<{ value: string; label: string
       type="single"
       variant="outline"
       size="sm"
-      className="settings-segmented"
+      className="rounded-md bg-muted/40 p-0.5"
       value={props.value}
       onValueChange={(value) => {
         if (!value) return;
@@ -219,7 +239,7 @@ function SegmentedControl(props: { options: Array<{ value: string; label: string
       }}
     >
       {props.options.map((option) => (
-        <ToggleGroupItem key={option.value} value={option.value} className="settings-segmented-item">
+        <ToggleGroupItem key={option.value} value={option.value} className="h-9 min-w-20 rounded-sm px-4 text-[15px]">
           {option.label}
         </ToggleGroupItem>
       ))}
@@ -234,7 +254,6 @@ function SwitchControl(props: { checked: boolean; disabled?: boolean; onChange: 
       disabled={props.disabled}
       onCheckedChange={props.onChange}
       aria-label={props.checked ? "已开启" : "已关闭"}
-      className="settings-switch"
     />
   );
 }
@@ -243,45 +262,45 @@ function LanguagePicker(props: { value: GeneralSettingsDraft["language"]; system
   const selected = LANGUAGE_OPTIONS.find((option) => option.value === props.value) || LANGUAGE_OPTIONS[0];
   const labelFor = (option: { label: string; system?: boolean }) => option.system ? props.systemLabel : option.label;
   return (
-    <div className="settings-language-picker">
-      <Select value={selected.value} onValueChange={(value) => props.onChange(value as GeneralSettingsDraft["language"])}>
-        <SelectTrigger className="settings-language-trigger">
-          <SelectValue placeholder={labelFor(selected)} />
-        </SelectTrigger>
-        <SelectContent className="settings-language-menu">
-          <SelectGroup>
+    <Select value={selected.value} onValueChange={(value) => props.onChange(value as GeneralSettingsDraft["language"])}>
+      <SelectTrigger className="h-9 w-52 rounded-md bg-muted/30 text-[15px]">
+        <SelectValue placeholder={labelFor(selected)} />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
           {LANGUAGE_OPTIONS.map((option) => (
-            <SelectItem key={option.value} value={option.value} className="settings-language-option">
+            <SelectItem key={option.value} value={option.value}>
               {labelFor(option)}
             </SelectItem>
           ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </div>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   );
 }
 
 function SettingsRows(props: { entries: Array<SettingsEntry> }) {
   return (
-    <div className="settings-panel-list">
-      {props.entries.map((entry) => (
-        <article key={entry.title} className="settings-panel-card">
-          <div className="settings-panel-copy">
-            <strong>{entry.title}</strong>
-            <p>{entry.description}</p>
-          </div>
-          <div className="settings-panel-action">{entry.action}</div>
-        </article>
-      ))}
-    </div>
+    <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+      <CardContent className="p-0">
+        {props.entries.map((entry) => (
+          <article key={entry.title} className="grid min-h-[76px] grid-cols-[minmax(0,1fr)_auto] items-center gap-8 border-b border-border/70 px-4 py-3.5 last:border-b-0">
+            <div className="min-w-0">
+              <strong className="block text-base font-semibold leading-6 text-foreground">{entry.title}</strong>
+              <p className="mt-1 text-[14px] leading-6 text-muted-foreground">{entry.description}</p>
+            </div>
+            <div className="flex min-w-44 items-center justify-end gap-2">{entry.action}</div>
+          </article>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
 function SettingsGroup(props: { title: string; entries: Array<SettingsEntry>; wide?: boolean }) {
   return (
-    <section className={props.wide ? "settings-general-group is-wide" : "settings-general-group"}>
-      <div className="settings-subsection-title">{props.title}</div>
+    <section className={cn("flex flex-col gap-3", props.wide ? "w-full" : undefined)}>
+      <div className="px-1 text-[15px] font-medium text-muted-foreground">{props.title}</div>
       <SettingsRows entries={props.entries} />
     </section>
   );
@@ -313,6 +332,21 @@ export function SettingsDialog(props: SettingsDialogProps) {
     if (activeSection === "mcp") props.onMcpVisible?.();
     props.onMobileVisibilityChange?.(activeSection === "mobile");
   }, [activeSection]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") void props.onClose();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [props.onClose]);
 
   const sections = useMemo(() => {
     const rightModuleLabels: Record<RightModuleKey, { title: string; description: string }> = {
@@ -412,7 +446,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           description: text.portDesc,
           action: (
             <Input
-              className="settings-inline-input"
+              className="h-9 w-24 rounded-md bg-muted/30 text-[15px]"
               type="number"
               min={1}
               max={65535}
@@ -427,7 +461,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           description: text.publicUrlDesc,
           action: (
             <Input
-              className="settings-inline-input settings-inline-input-wide"
+              className="h-9 w-72 rounded-md bg-muted/30 text-[15px]"
               placeholder="http://192.168.1.23:4100"
               value={props.controlSettings.publicBaseUrl}
               disabled={!props.controlInstalled}
@@ -455,7 +489,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 });
               }}
             >
-              <SelectTrigger className="settings-inline-input settings-inline-input-wide">
+              <SelectTrigger className="h-9 w-56 rounded-md bg-muted/30 text-[15px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -476,7 +510,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               disabled={!props.controlInstalled || props.controlSettings.authMode === "none"}
               onValueChange={(value) => props.onControlSettingsChange({ ...props.controlSettings, pairCodeTtlMode: value as ControlServerSettingsDraft["pairCodeTtlMode"] })}
             >
-              <SelectTrigger className="settings-inline-input settings-inline-input-wide">
+              <SelectTrigger className="h-9 w-56 rounded-md bg-muted/30 text-[15px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -494,7 +528,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           description: props.opencodeBusy ? text.opencodeApiBusy : text.opencodeApiDesc,
           action: (
             <Input
-              className="settings-inline-input"
+              className="h-9 w-24 rounded-md bg-muted/30 text-[15px]"
               type="number"
               min={1}
               max={65535}
@@ -513,19 +547,19 @@ export function SettingsDialog(props: SettingsDialogProps) {
           title: text.apiKey,
           description: props.skillsmpApiKey ? text.apiKeyConfigured : text.apiKeyDesc,
           action: (
-            <div className="settings-inline-combo">
+            <div className="flex items-center justify-end gap-2">
               <Input
-                className="settings-inline-input settings-inline-input-wide"
+                className="h-9 w-64 rounded-md bg-muted/30 text-[15px]"
                 type="password"
                 placeholder="sk_live_skillsmp_..."
                 value={props.skillsmpApiKeyDraft}
                 onChange={(e) => props.onSkillsmpApiKeyDraftChange(e.target.value)}
               />
-              <Button variant="contrast" size="sm" className="gt-settings-action-btn" onClick={props.onSaveSkillsmpApiKey}>
+              <Button variant="secondary" size="sm" onClick={props.onSaveSkillsmpApiKey}>
                 {text.save}
               </Button>
               {props.skillsmpApiKey ? (
-                <Button variant="ghost" size="sm" className="gt-settings-action-btn" onClick={props.onClearSkillsmpApiKey}>
+                <Button variant="ghost" size="sm" onClick={props.onClearSkillsmpApiKey}>
                   清除
                 </Button>
               ) : null}
@@ -551,7 +585,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: text.checkNow,
         description: text.checkNowDesc,
         action: (
-          <Button variant="secondary" size="sm" className="gt-settings-action-btn" disabled={props.runtimeChecking} onClick={props.onCheckUpdates}>
+          <Button variant="secondary" size="sm" disabled={props.runtimeChecking} onClick={props.onCheckUpdates}>
             {props.runtimeChecking ? text.checking : text.check}
           </Button>
         )
@@ -570,7 +604,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: text.general,
         description: text.generalDesc,
         content: (
-          <div className="settings-general-stack">
+          <div className="flex flex-col gap-6">
             <SettingsGroup title={text.basics} entries={desktopEntries} />
             <SettingsGroup title={text.sessionDisplay} entries={openCodeEntries} />
           </div>
@@ -588,7 +622,14 @@ export function SettingsDialog(props: SettingsDialogProps) {
         kicker: text.modelsKicker,
         title: text.models,
         description: text.modelsDesc,
-        content: props.modelsContent || <div className="settings-panel-list"><div className="settings-panel-card"><div className="settings-panel-copy"><strong>{text.models}</strong><p>{text.modelsEmpty}</p></div></div></div>
+        content: props.modelsContent || (
+          <Empty className="min-h-64 border bg-card">
+            <EmptyHeader>
+              <EmptyTitle>{text.models}</EmptyTitle>
+              <EmptyDescription>{text.modelsEmpty}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )
       },
       {
         id: "plugins" as const,
@@ -596,34 +637,48 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: text.dependencies,
         description: text.dependenciesDesc,
         content: (
-          <div className="settings-panel-list">
-            {pluginDeps.map((dep) => {
-              const depName = dep.name as RuntimeDepName;
-              const busy = props.installingDep === dep.name;
-              const action = dep.installed ? "uninstall" : "install";
-              return (
-                <article key={dep.name} className="settings-panel-card settings-plugin-row">
-                  <div className="settings-panel-copy">
-                    <strong>{dep.name}</strong>
-                    <p>{props.checkingDeps[depName] ? text.checking : dep.installed ? `${text.installed}${dep.version ? ` · ${dep.version}` : ""}` : dep.installHint || text.missing}</p>
-                    {dep.path ? <p className="settings-plugin-path">{dep.path}</p> : null}
-                    {props.runtimeJob?.name === dep.name ? <p>{props.runtimeJob.action} · {props.runtimeJob.status} · {props.installingElapsed}s</p> : null}
-                  </div>
-                  <div className="settings-panel-action">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="gt-settings-action-btn"
-                      disabled={props.runtimeChecking || Boolean(props.installingDep)}
-                      onClick={() => props.onRunDependencyAction(depName, action)}
-                    >
-                      {busy ? `${action === "install" ? text.installing : text.uninstalling}...` : dep.installed ? text.uninstall : text.install}
-                    </Button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+          <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+            <CardContent className="p-0">
+              {pluginDeps.map((dep) => {
+                const depName = dep.name as RuntimeDepName;
+                const busy = props.installingDep === dep.name;
+                const action = dep.installed ? "uninstall" : "install";
+                return (
+                  <article key={dep.name} className="grid min-h-[76px] grid-cols-[minmax(0,1fr)_auto] items-center gap-8 border-b border-border/70 px-4 py-3.5 last:border-b-0">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <strong className="text-base font-semibold text-foreground">{dep.name}</strong>
+                        <Badge variant={dep.installed ? "success" : "secondary"}>
+                          {props.checkingDeps[depName] ? text.checking : dep.installed ? text.installed : text.missing}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[14px] leading-6 text-muted-foreground">
+                        {props.checkingDeps[depName]
+                          ? text.checking
+                          : dep.installed
+                            ? dep.version || text.installed
+                            : dep.installHint || text.missing}
+                      </p>
+                      {dep.path ? <p className="mt-1 truncate font-mono text-[13px] text-muted-foreground">{dep.path}</p> : null}
+                      {props.runtimeJob?.name === dep.name ? (
+                        <p className="mt-1 text-[14px] text-muted-foreground">{props.runtimeJob.action} · {props.runtimeJob.status} · {props.installingElapsed}s</p>
+                      ) : null}
+                    </div>
+                    <div className="flex min-w-36 justify-end">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={props.runtimeChecking || Boolean(props.installingDep)}
+                        onClick={() => props.onRunDependencyAction(depName, action)}
+                      >
+                        {busy ? `${action === "install" ? text.installing : text.uninstalling}...` : dep.installed ? text.uninstall : text.install}
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </CardContent>
+          </Card>
         )
       },
       {
@@ -632,33 +687,33 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: text.api,
         description: text.apiDesc,
         content: (
-          <div className="settings-general-stack settings-mobile-layout">
-            <section className="settings-general-group is-wide">
-              <div className="settings-subsection-title">{text.apiKicker}</div>
-              <div className="settings-panel-list">
-                <article className="settings-panel-card settings-mobile-summary-card">
-                  <div className="settings-mobile-summary-box">
-                    <div className="settings-mobile-summary-meta">
-                      <div className="settings-mobile-meta-block settings-mobile-summary-item">
-                        <strong className="settings-mobile-summary-label">{text.connectionAddress}</strong>
+          <div className="flex flex-col gap-6">
+            <section className="flex flex-col gap-2">
+              <div className="px-1 text-[15px] font-medium text-muted-foreground">{text.apiKicker}</div>
+              <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+                <CardContent className="p-0">
+                  <div className="grid gap-6 p-4 sm:grid-cols-[minmax(0,1fr)_144px]">
+                    <div className="flex min-w-0 flex-col gap-5">
+                      <div className="min-w-0">
+                        <strong className="block text-base font-semibold text-foreground">{text.connectionAddress}</strong>
                         <Button
                           variant="ghost"
-                          className="settings-mobile-url-button"
+                          className="mt-1 h-auto max-w-full justify-start px-0 py-1 text-left font-mono text-[14px] text-muted-foreground hover:bg-transparent"
                           title={text.copyUrl}
                           disabled={!props.controlSettings.enabled || !props.controlConnectionUrl}
                           onClick={props.onCopyControlUrl}
                         >
-                          <span className="settings-mobile-url-text settings-mobile-url-text-plain">
+                          <span className="truncate">
                             {props.controlSettings.enabled
                               ? (props.controlConnectionUrl || text.qrWaiting).replace(/^https?:\/\//i, "")
                               : text.qrDisabled}
                           </span>
                         </Button>
                       </div>
-                      <div className="settings-mobile-meta-block settings-mobile-summary-item">
-                        <strong className="settings-mobile-summary-label">{text.authCode}</strong>
-                        <div className="settings-mobile-inline-row settings-mobile-inline-row-compact">
-                          <div className="mobile-qr-code">
+                      <div>
+                        <strong className="block text-base font-semibold text-foreground">{text.authCode}</strong>
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="inline-flex h-9 min-w-28 items-center justify-center rounded-md border border-border bg-muted px-3 font-mono text-[15px] font-semibold tracking-[0.18em] text-foreground">
                             {!props.controlSettings.enabled
                               ? "------"
                               : props.controlSettings.authMode === "none"
@@ -668,7 +723,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="settings-mobile-inline-icon"
                             title={text.refreshCode}
                             disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.authMode === "none"}
                             onClick={props.onRefreshControlPairCode}
@@ -678,18 +732,18 @@ export function SettingsDialog(props: SettingsDialogProps) {
                         </div>
                       </div>
                     </div>
-                    <div className="mobile-qr-visual settings-mobile-summary-qr">
+                    <div className="flex size-36 items-center justify-center rounded-lg border border-border bg-background p-3">
                       {props.controlSettings.enabled && props.controlPairQrUrl ? (
-                        <img src={props.controlPairQrUrl} alt="Mobile pair QR code" />
+                        <img className="size-full rounded-md object-contain" src={props.controlPairQrUrl} alt="Mobile pair QR code" />
                       ) : (
-                        <div className="small muted">
+                        <div className="text-center text-[14px] leading-6 text-muted-foreground">
                           {props.controlSettings.enabled ? text.qrWaiting : text.qrDisabled}
                         </div>
                       )}
                     </div>
                   </div>
-                </article>
-              </div>
+                </CardContent>
+              </Card>
             </section>
             {!props.controlInstalled ? (
               <SettingsGroup
@@ -701,7 +755,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="gt-settings-action-btn"
                       title={text.installDependencyTitle}
                       onClick={() => props.onRunDependencyAction("giteam", "install")}
                     >
@@ -758,70 +811,83 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
   const active = sections.find((section) => section.id === activeSection) || sections[0];
 
-  return (
-    <Dialog open onOpenChange={(open) => {
-      if (!open) void props.onClose();
-    }}>
-      <DialogContent className="gt-settings-dialog-content">
-        <DialogTitle className="sr-only">{text.general}</DialogTitle>
-        <DialogDescription className="sr-only">{text.sidebarIntro}</DialogDescription>
-        <div className="modal-card settings-card settings-card--redesigned">
-          <div className="settings-shell">
-            <aside className="settings-sidebar">
-              <div className="settings-sidebar-head">
-                <Button variant="ghost" size="sm" className="settings-back" onClick={() => void props.onClose()}>
-                  {text.back}
-                </Button>
-                <p>{text.sidebarIntro}</p>
-              </div>
-              <ScrollArea className="settings-nav-scroll">
-                <div className="settings-nav">
-              {sections.map((section) => (
+  return createPortal(
+    <div
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      className="fixed inset-0 z-[2600] grid h-svh min-h-0 grid-cols-[clamp(216px,20vw,276px)_minmax(0,1fr)] overflow-hidden bg-background text-foreground"
+      role="dialog"
+    >
+      <div className="fixed inset-x-0 top-0 z-[2601] h-8" data-tauri-drag-region aria-hidden="true" />
+      <aside className="grid min-h-0 grid-rows-[auto_1fr] border-r border-sidebar-border bg-sidebar px-[clamp(8px,1vw,12px)] py-[clamp(22px,3.2vh,36px)] text-sidebar-foreground">
+        <div className="pb-[clamp(18px,3vh,28px)]">
+          <Button variant="ghost" className="h-8 justify-start gap-2 px-2 font-normal text-sidebar-foreground/58 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" onClick={() => void props.onClose()}>
+            <span className="text-[13px] leading-4" aria-hidden="true">←</span>
+            <span className="text-[13px] leading-4">返回应用</span>
+          </Button>
+        </div>
+        <ScrollArea className="min-h-0">
+          <div className="flex flex-col gap-[clamp(4px,0.9vh,8px)] pr-1">
+            {sections.map((section) => {
+              const Icon = SETTINGS_SECTION_ICONS[section.id];
+              return (
                 <Button
                   key={section.id}
                   variant="ghost"
-                  className={activeSection === section.id ? "settings-nav-item active !grid !h-auto !w-full !justify-start !whitespace-normal" : "settings-nav-item !grid !h-auto !w-full !justify-start !whitespace-normal"}
+                  className={cn(
+                    "h-[clamp(34px,4.5vh,40px)] w-full justify-start gap-3 rounded-lg px-3 font-normal text-sidebar-foreground/72 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg]:size-4",
+                    activeSection === section.id && "bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )}
                   onClick={() => setActiveSection(section.id)}
                 >
-                  <span>{section.title}</span>
+                  <Icon className="shrink-0" />
+                  <span className="truncate text-[14px] leading-5 font-medium">{section.title}</span>
                 </Button>
-              ))}
-                </div>
-              </ScrollArea>
-            </aside>
+              );
+            })}
+          </div>
+        </ScrollArea>
+      </aside>
 
-            <section className="settings-main">
-              <div className="settings-main-head">
-                <div>
-                  <span className="gt-module-kicker">{active.kicker}</span>
-                  <h4>{active.title}</h4>
-                  {active.description && active.id !== "mobile" ? <p>{active.description}</p> : null}
-                </div>
+      <section className="min-h-0 bg-background">
+        <ScrollArea className="h-full min-h-0">
+          <div
+            className={cn(
+              "mx-auto flex w-full flex-col gap-[clamp(22px,3vh,32px)] px-[clamp(24px,3vw,32px)] py-[clamp(34px,6vh,56px)]",
+              active.id === "models" || active.id === "skillsmp" || active.id === "mcp"
+                ? "max-w-[1120px]"
+                : "max-w-[680px]"
+            )}
+          >
+            <header className="flex items-center justify-between gap-4">
+              <div>
+                <h2 id="settings-title" className="text-[clamp(21px,2vw,24px)] font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
+                {active.description ? <p className="mt-[clamp(12px,2vh,20px)] text-[15px] leading-7 text-muted-foreground">{active.description}</p> : null}
+              </div>
+              <div className="flex h-8 shrink-0 items-center justify-end">
                 {active.id === "plugins" ? (
-                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>
+                  <Button variant="ghost" size="icon" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>
                     <RefreshIcon />
                   </Button>
                 ) : active.id === "skillsmp" ? (
-                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>
+                  <Button variant="ghost" size="icon" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>
                     <RefreshIcon />
                   </Button>
                 ) : active.id === "mcp" ? (
-                  <Button variant="ghost" size="icon" className="gt-settings-icon-btn" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>
+                  <Button variant="ghost" size="icon" title={text.refresh} disabled={props.mcpLoading} onClick={props.onRefreshMcp}>
                     <RefreshIcon />
                   </Button>
                 ) : null}
               </div>
-
-              <ScrollArea className="settings-main-body">
-                <div className="settings-main-body-inner">
-                  {active.content ? active.content : null}
-                  {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
-                </div>
-              </ScrollArea>
-            </section>
+            </header>
+            <div className="flex flex-col gap-8">
+              {active.content ? active.content : null}
+              {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
+            </div>
           </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </ScrollArea>
+      </section>
+    </div>,
+    document.body
   );
 }

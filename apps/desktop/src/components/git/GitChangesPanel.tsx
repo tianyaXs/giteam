@@ -1,8 +1,10 @@
 import type { CSSProperties } from "react";
-import { Suspense, lazy, memo, useEffect, useMemo, useRef } from "react";
+import { Suspense, lazy, memo, useEffect, useMemo, useRef, useState } from "react";
 import { Decoration, Diff, Hunk, getCollapsedLinesCountBetween, markEdits, parseDiff, tokenize, type FileData, type HunkData } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { GroupedVirtuoso, type GroupedVirtuosoHandle, type ListRange } from "react-virtuoso";
+import { CheckIcon as StageAllIcon, MinusIcon as UnstageAllIcon, RotateCcwIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { DesktopTheme } from "../../lib/desktopPreferences";
 import type { GitWorktreeEntry, GitWorktreeFileContent } from "../../lib/types";
 import {
@@ -10,10 +12,11 @@ import {
   getWorktreeDisplayStatus,
   type WorktreeTreeNode
 } from "../../lib/worktreeDiff";
-import { CheckIcon, ChevronDownIcon, CopyIcon, MinusIcon, PlusIcon } from "../icons";
+import { CheckIcon, ChevronDownIcon, CopyIcon } from "../icons";
 import { IconButton } from "../ui/icon-button";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
+import { Card } from "../ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +26,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
+import { ScrollArea } from "../ui/scroll-area";
+import { Skeleton } from "../ui/skeleton";
 import { GitStageToggle } from "./GitStageToggle";
 import { WorktreeChangesList } from "./WorktreeFileTree";
 
@@ -34,6 +40,7 @@ const DocumentPreviewViewer = lazy(() => import("./DocumentPreviewViewer").then(
 const DIFF_STREAM_BATCH_SIZE = 10;
 const DIFF_STREAM_PRELOAD_SIZE = 10;
 const DIFF_STREAM_OVERSCAN_PX = 720;
+const DIFF_STREAM_SELECTOR = ".worktree-diff-stream";
 
 type WorktreeChangeStats = {
   total: number;
@@ -168,17 +175,20 @@ const DiffFileHeader = memo(function DiffFileHeader({
   onCopyText
 }: DiffFileBlockProps) {
   const status = getWorktreeDisplayStatus(entry);
+  const statusVariant = status.toLowerCase() === "d" ? "destructive" : status.toLowerCase() === "a" ? "success" : "secondary";
 
   return (
     <div
-      className={isSelected ? "gt-diff-file-head is-selected" : "gt-diff-file-head"}
+      className={cn(
+        "sticky top-0 flex min-h-8 items-center justify-between gap-2 border-b border-border/35 bg-card px-3 py-1 pr-5",
+        isSelected && "shadow-[inset_2px_0_0_var(--ring)]"
+      )}
       id={`diff-${entry.path.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
     >
-      <div className="gt-diff-file-title">
-        <strong>{entry.path}</strong>
+      <div className="inline-flex min-w-0 flex-1 items-center gap-1">
+        <strong className="min-w-0 truncate text-[11.25px] font-medium tracking-[-0.01em] text-foreground">{entry.path}</strong>
         <IconButton
           type="button"
-          className="gt-diff-icon-btn"
           size="md"
           title="复制文件路径"
           onClick={() => onCopyText(entry.path)}
@@ -186,38 +196,40 @@ const DiffFileHeader = memo(function DiffFileHeader({
           <CopyIcon />
         </IconButton>
       </div>
-      <div className="gt-diff-file-actions">
-        {stats.added > 0 ? <span className="meta-chip is-add">+{stats.added}</span> : null}
-        {stats.deleted > 0 ? <span className="meta-chip is-del">-{stats.deleted}</span> : null}
-        <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-        <GitStageToggle
-          checked={entry.staged}
-          compact
-          title={entry.staged ? "取消暂存" : "暂存"}
-          onChange={() => {
-            if (entry.staged) {
-              onUnstageFile(entry.path);
-            } else {
-              onStageFile(entry.path);
-            }
-          }}
-          disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
-        />
-        {(entry.staged || entry.unstaged || entry.untracked) ? (
-          <IconButton
-            className="gt-diff-icon-btn"
-            tone="danger"
-            size="md"
-            title="撤销修改"
-            onClick={() => onDiscardFile(entry.path, entry.untracked)}
-            disabled={discardingFile === entry.path}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M6 4 3 7l3 3" />
-              <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-            </svg>
-          </IconButton>
-        ) : null}
+      <div className="inline-flex min-w-0 shrink-0 items-center gap-1">
+        <div className="inline-flex min-w-0 items-center justify-end gap-1">
+          {stats.added > 0 ? <Badge variant="success" className="px-1.5 tracking-normal">+{stats.added}</Badge> : null}
+          {stats.deleted > 0 ? <Badge variant="destructive" className="px-1.5 tracking-normal">-{stats.deleted}</Badge> : null}
+          <Badge variant={statusVariant} className="min-w-5 justify-center px-1.5 tracking-normal">{status}</Badge>
+        </div>
+        <div className="inline-flex w-14 shrink-0 justify-end gap-1">
+          {(entry.staged || entry.unstaged || entry.untracked) ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive [&_svg]:size-3.5"
+              title="撤销修改"
+              aria-label="撤销修改"
+              onClick={() => onDiscardFile(entry.path, entry.untracked)}
+              disabled={discardingFile === entry.path}
+            >
+              <RotateCcwIcon aria-hidden="true" />
+            </Button>
+          ) : null}
+          <GitStageToggle
+            checked={entry.staged}
+            compact
+            title={entry.staged ? "取消暂存" : "暂存"}
+            onChange={() => {
+              if (entry.staged) {
+                onUnstageFile(entry.path);
+              } else {
+                onStageFile(entry.path);
+              }
+            }}
+            disabled={(entry.staged ? unstagingFile : stagingFile) === entry.path}
+          />
+        </div>
       </div>
     </div>
   );
@@ -233,11 +245,19 @@ const DiffFileContent = memo(function DiffFileContent({ model }: { model: DiffFi
   }, [file]);
 
   if (model.state === "loading") {
-    return <div className="gt-diff-loading-row">Loading diff...</div>;
+    return (
+      <div className="flex min-h-12 items-center px-3">
+        <Skeleton className="h-4 w-40 rounded-full" />
+      </div>
+    );
   }
 
   if (!file || file.hunks.length === 0) {
-    return <div className="gt-diff-loading-row">No visible diff for this file.</div>;
+    return (
+      <Empty className="min-h-12 rounded-none border-0 py-2">
+        <EmptyDescription>No visible diff for this file.</EmptyDescription>
+      </Empty>
+    );
   }
 
   return (
@@ -360,6 +380,7 @@ export function GitChangesPanel({
     () => diffFileModels.map(() => 1),
     [diffFileModels]
   );
+  const [diffScrollbarGutter, setDiffScrollbarGutter] = useState(0);
 
   const groupItemStartIndexes = useMemo(() => {
     let nextIndex = 0;
@@ -401,30 +422,72 @@ export function GitChangesPanel({
     });
   }, [entries, entries.length, onPatchWindowChange, selectedFile]);
 
+  useEffect(() => {
+    const pane = diffPaneRef.current;
+    if (!pane || standaloneFileView) return;
+
+    let animationFrame = 0;
+    const measure = () => {
+      const stream = pane.querySelector<HTMLElement>(DIFF_STREAM_SELECTOR);
+      const gutter = stream ? Math.max(0, stream.offsetWidth - stream.clientWidth) : 0;
+      setDiffScrollbarGutter((current) => current === gutter ? current : gutter);
+    };
+    const scheduleMeasure = () => {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      animationFrame = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      };
+    }
+
+    const resizeObserver = new ResizeObserver(scheduleMeasure);
+    resizeObserver.observe(pane);
+    const stream = pane.querySelector<HTMLElement>(DIFF_STREAM_SELECTOR);
+    if (stream) {
+      resizeObserver.observe(stream);
+    }
+
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+    };
+  }, [patchStreamKey, standaloneFileView]);
+
   const commitPrimaryContent = gitOperationLabel ? (
-    <span className="gt-commit-main-content">
-      <span className="gt-commit-main-label">{gitOperationLabel}</span>
-    </span>
+    <span>{gitOperationLabel}</span>
   ) : (
-    <span className="gt-commit-main-content">
-      <CheckIcon width={16} height={16} />
-      <span className="gt-commit-main-label">Commit & Push</span>
+    <span className="inline-flex items-center gap-2">
+      <CheckIcon data-icon="inline-start" />
+      <span>Commit & Push</span>
     </span>
   );
 
   const renderUnsupportedPreview = () => (
-    <div className="gt-worktree-patch-empty gt-worktree-preview-empty">
-      <div className="gt-worktree-preview-copy">
-        <strong>不支持的预览类型</strong>
-        <p>{previewFileName}</p>
-        <span>{previewReason}</span>
-      </div>
-    </div>
+    <Empty className="h-full rounded-none border-0 bg-background/60">
+      <EmptyHeader>
+        <EmptyTitle>不支持的预览类型</EmptyTitle>
+        <EmptyDescription>
+          <span className="block break-words font-mono text-foreground">{previewFileName}</span>
+          <span className="block">{previewReason}</span>
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
   );
 
   const renderPreviewContent = (shellClassName?: string) => {
     if (!selectedFile) {
-      return <div className="gt-worktree-patch-empty">没有可显示的文件。</div>;
+      return (
+        <Empty className="h-full rounded-none border-0">
+          <EmptyDescription>没有可显示的文件。</EmptyDescription>
+        </Empty>
+      );
     }
     if (!previewSupported) {
       return renderUnsupportedPreview();
@@ -432,7 +495,11 @@ export function GitChangesPanel({
     if (shouldUseDocumentPreview) {
       return (
         <div className={`${shellClassName ?? "gt-monaco-diff-shell"} gt-monaco-diff-shell-document`}>
-          <Suspense fallback={<div className="gt-worktree-patch-empty">Loading document preview...</div>}>
+          <Suspense fallback={(
+            <Empty className="h-full rounded-none border-0">
+              <EmptyDescription>Loading document preview...</EmptyDescription>
+            </Empty>
+          )}>
             <DocumentPreviewViewer filePath={selectedFile} content={selectedContent} />
           </Suspense>
         </div>
@@ -440,7 +507,11 @@ export function GitChangesPanel({
     }
     return (
       <div className={shellClassName ?? "gt-monaco-diff-shell"}>
-        <Suspense fallback={<div className="gt-worktree-patch-empty">Loading diff viewer...</div>}>
+        <Suspense fallback={(
+          <Empty className="h-full rounded-none border-0">
+            <EmptyDescription>Loading diff viewer...</EmptyDescription>
+          </Empty>
+        )}>
           <MonacoDiffViewer
             filePath={selectedFile}
             original={selectedContent.original}
@@ -458,13 +529,17 @@ export function GitChangesPanel({
 
   const renderPatchStream = () => {
     if (entries.length === 0) {
-      return <div className="gt-worktree-patch-empty">当前 worktree 没有待提交文件。</div>;
+      return (
+        <Empty className="h-full rounded-none border-0">
+          <EmptyDescription>当前 worktree 没有待提交文件。</EmptyDescription>
+        </Empty>
+      );
     }
 
     return (
       <GroupedVirtuoso
         ref={virtuosoRef}
-        className="gt-worktree-diff-stream"
+        className="worktree-diff-stream h-full min-h-0 overflow-auto bg-background font-mono text-[11.6px] leading-[1.36] [scrollbar-gutter:stable]"
         groupCounts={groupCounts}
         increaseViewportBy={{ top: DIFF_STREAM_OVERSCAN_PX, bottom: DIFF_STREAM_OVERSCAN_PX }}
         rangeChanged={handleVirtualRangeChanged}
@@ -497,154 +572,158 @@ export function GitChangesPanel({
 
   if (standaloneFileView) {
     return (
-      <div className="gt-standalone-file-pane">
-        {renderPreviewContent("gt-monaco-diff-shell gt-monaco-diff-shell-standalone")}
+      <div className="flex h-full min-h-0 flex-col">
+        {renderPreviewContent("gt-monaco-diff-shell h-full rounded-none border-0")}
       </div>
     );
   }
 
   return (
     <div
-      className="gt-panel-stack gt-panel-stack-split gt-changes-workspace"
-      style={{ "--changes-sidebar-width": `${changesSidebarWidth}px` } as CSSProperties}
+      className="grid h-full min-h-0 overflow-hidden border-0 bg-border/55"
+      style={{
+        "--changes-sidebar-width": `${changesSidebarWidth}px`,
+        gridTemplateColumns: "var(--changes-sidebar-width, 276px) 1px minmax(0, 1fr)",
+        gridTemplateRows: "auto minmax(0, 1fr)"
+      } as CSSProperties}
     >
-      <div className="gt-changes-toolbar">
-        <div className="gt-changes-toolbar-row gt-changes-branch-row">
-          <div className="gt-changes-branch">
-            <Badge variant="outline" className="gt-changes-branch-badge">Local</Badge>
-            <span className="gt-changes-branch-name">{branchName || "no branch"}</span>
+      <div className="col-span-full grid min-w-0 grid-rows-[33px_28px] border-b border-border/40 bg-background">
+        <div className="grid min-w-0 grid-cols-[var(--changes-sidebar-width,276px)_1px_minmax(0,1fr)] items-center border-b border-border/35">
+          <div className="inline-flex min-w-0 items-center gap-1 px-3 text-muted-foreground">
+            <Badge variant="outline" className="h-5 px-2 text-[10px] tracking-wide">Local</Badge>
+            <span className="min-w-0 truncate text-[11px] font-medium text-foreground/78">{branchName || "no branch"}</span>
           </div>
+          <div className="h-full bg-border/45" aria-hidden="true" />
           {showPrimaryCommitAction ? (
-            <div className="gt-changes-toolbar-commit" onClick={(event) => event.stopPropagation()}>
-              <div className="gt-changes-commit-actions">
-                <div className="gt-commit-split-wrap">
-                  <Button
-                    variant="contrast"
-                    size="sm"
-                    className={isGitBusy
-                      ? "gt-commit-main-btn is-loading"
-                      : "gt-commit-main-btn"}
-                    onClick={onCommitAndPush}
-                    disabled={!hasSelectedCommitContent}
-                    aria-busy={isGitBusy}
-                    title={!hasSelectedCommitContent ? "没有可提交的已暂存更改" : ""}
-                  >
-                    {isGitBusy ? <span className="gt-btn-spinner" aria-hidden="true" /> : null}
-                    {commitPrimaryContent}
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="contrast"
-                        size="icon"
-                        className={isGitBusy ? "gt-commit-menu-btn is-loading" : "gt-commit-menu-btn"}
-                        disabled={isGitBusy}
-                        title="更多提交操作"
-                      >
-                        <ChevronDownIcon className="gt-commit-chevron" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="end"
-                      className="gt-commit-action-menu"
+            <div className="col-start-3 flex min-w-0 justify-end px-2" onClick={(event) => event.stopPropagation()}>
+              <div className="inline-flex items-center rounded-md shadow-sm">
+                <Button
+                  variant="contrast"
+                  size="sm"
+                  className="rounded-r-none"
+                  onClick={onCommitAndPush}
+                  disabled={!hasSelectedCommitContent}
+                  aria-busy={isGitBusy}
+                  title={!hasSelectedCommitContent ? "没有可提交的已暂存更改" : ""}
+                >
+                  {commitPrimaryContent}
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="contrast"
+                      size="icon"
+                      className="size-8 rounded-l-none border-l border-background/20 px-2"
+                      disabled={isGitBusy}
+                      title="更多提交操作"
+                      aria-label="更多提交操作"
                     >
-                      <DropdownMenuLabel className="gt-commit-action-label">
-                        提交操作
-                      </DropdownMenuLabel>
-                      <DropdownMenuGroup>
-                        <DropdownMenuItem
-                          className="gt-commit-action-item"
-                          onClick={onCommitAndPush}
-                          disabled={isGitBusy || !hasSelectedCommitContent}
-                        >
-                          Commit & Push
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          className="gt-commit-action-item"
-                          onClick={onCommit}
-                          disabled={isGitBusy || !hasSelectedCommitContent}
-                        >
-                          Commit
-                        </DropdownMenuItem>
-                      </DropdownMenuGroup>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuGroup>
-                        <DropdownMenuItem
-                          className="gt-commit-action-item"
-                          onClick={onCommitAndSync}
-                          disabled={isGitBusy || !hasSelectedCommitContent}
-                        >
-                          Commit & Create PR
-                        </DropdownMenuItem>
-                      </DropdownMenuGroup>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
+                      <ChevronDownIcon data-icon="inline-start" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuLabel>
+                      提交操作
+                    </DropdownMenuLabel>
+                    <DropdownMenuGroup>
+                      <DropdownMenuItem
+                        onClick={onCommitAndPush}
+                        disabled={isGitBusy || !hasSelectedCommitContent}
+                      >
+                        Commit & Push
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={onCommit}
+                        disabled={isGitBusy || !hasSelectedCommitContent}
+                      >
+                        Commit
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuGroup>
+                      <DropdownMenuItem
+                        onClick={onCommitAndSync}
+                        disabled={isGitBusy || !hasSelectedCommitContent}
+                      >
+                        Commit & Create PR
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
           ) : null}
         </div>
-        <div className="gt-changes-toolbar-row gt-changes-summary-row">
-          <div className="gt-changes-summary">
-            <span className="gt-changes-summary-count">{changeStats.total} Uncommitted Changes</span>
-            <Badge variant="success" className="gt-changes-summary-badge">+{lineStats.added}</Badge>
-            <Badge variant="destructive" className="gt-changes-summary-badge">-{lineStats.deleted}</Badge>
+        <div className="grid min-w-0 grid-cols-[var(--changes-sidebar-width,276px)_1px_minmax(0,1fr)] items-center bg-muted/10">
+          <div className="flex min-w-0 items-center gap-2 px-2">
+            <div className="inline-flex min-w-0 items-center gap-1 text-[11px] text-foreground/86">
+              <span className="min-w-0 truncate">{changeStats.total} Uncommitted Changes</span>
+              <Badge variant="success" className="px-1.5 text-[10px] tracking-normal">+{lineStats.added}</Badge>
+              <Badge variant="destructive" className="px-1.5 text-[10px] tracking-normal">-{lineStats.deleted}</Badge>
+            </div>
           </div>
-          <div className="gt-changes-bulk-actions">
-            {changeStats.total > 0 ? (
-              <Button
-                variant="outline"
-                size="icon"
-                className="gt-icon-chip is-danger"
-                title="撤销全部修改"
-                disabled={discardingAll}
-                onClick={onOpenDiscardAllConfirm}
-              >
-                <svg className="gt-icon-chip-svg" viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M6 4 3 7l3 3" />
-                  <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                </svg>
-              </Button>
-            ) : null}
-            {changeStats.total > 0 ? (
-              <Button
-                variant="outline"
-                size="icon"
-                className="gt-icon-chip"
-                title={changeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
-                onClick={onToggleStageAll}
-              >
-                {changeStats.unstaged > 0 ? <PlusIcon /> : <MinusIcon />}
-              </Button>
-            ) : null}
+          <div className="h-full bg-border/45" aria-hidden="true" />
+          <div className="col-start-3 flex min-w-0 justify-end pl-2" style={{ paddingRight: 20 + diffScrollbarGutter }}>
+            <div className="inline-flex w-14 justify-end gap-1">
+              {changeStats.total > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive [&_svg]:size-3.5"
+                  title="撤销全部修改"
+                  aria-label="撤销全部修改"
+                  disabled={discardingAll}
+                  onClick={onOpenDiscardAllConfirm}
+                >
+                  <RotateCcwIcon aria-hidden="true" />
+                </Button>
+              ) : null}
+              {changeStats.total > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 rounded-sm text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground [&_svg]:size-3.5"
+                  title={changeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
+                  aria-label={changeStats.unstaged > 0 ? "暂存所有更改" : "取消全部暂存"}
+                  onClick={onToggleStageAll}
+                >
+                  {changeStats.unstaged > 0 ? <StageAllIcon aria-hidden="true" /> : <UnstageAllIcon aria-hidden="true" />}
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
-      <div className="gt-right-card gt-right-card-files">
-        <div className="gt-worktree-file-list gt-worktree-tree-list">
-          <WorktreeChangesList
-            stagedTree={stagedTree}
-            unstagedTree={unstagedTree}
-            stagedCount={changeStats.staged}
-            unstagedCount={changeStats.unstaged}
-            expandedDirs={expandedDirs}
-            selectedFile={selectedFile}
-            stagingFile={stagingFile}
-            unstagingFile={unstagingFile}
-            discardingFile={discardingFile}
-            onToggleDir={onToggleDir}
-            onOpenFile={onOpenFile}
-            onStageFile={onStageFile}
-            onUnstageFile={onUnstageFile}
-            onStagePaths={onStagePaths}
-            onUnstagePaths={onUnstagePaths}
-            onDiscardFile={onDiscardFile}
-            onDiscardEntries={onDiscardEntries}
-          />
-        </div>
-      </div>
+      <Card className="flex min-h-0 flex-col overflow-hidden rounded-none border-0 bg-card shadow-none">
+        <ScrollArea className="min-h-0 flex-1" viewportClassName="min-h-0">
+          <div className="flex min-h-0 flex-col gap-1 p-1.5 pb-2">
+            <WorktreeChangesList
+              stagedTree={stagedTree}
+              unstagedTree={unstagedTree}
+              stagedCount={changeStats.staged}
+              unstagedCount={changeStats.unstaged}
+              expandedDirs={expandedDirs}
+              selectedFile={selectedFile}
+              stagingFile={stagingFile}
+              unstagingFile={unstagingFile}
+              discardingFile={discardingFile}
+              onToggleDir={onToggleDir}
+              onOpenFile={onOpenFile}
+              onStageFile={onStageFile}
+              onUnstageFile={onUnstageFile}
+              onStagePaths={onStagePaths}
+              onUnstagePaths={onUnstagePaths}
+              onDiscardFile={onDiscardFile}
+              onDiscardEntries={onDiscardEntries}
+            />
+          </div>
+        </ScrollArea>
+      </Card>
       <div
-        className={isResizing ? "gt-changes-splitter active" : "gt-changes-splitter"}
+        className={cn(
+          "relative w-px cursor-col-resize bg-border/60 after:absolute after:inset-y-0 after:left-1/2 after:w-2.5 after:-translate-x-1/2 after:bg-transparent hover:bg-ring/60",
+          isResizing && "bg-ring/60"
+        )}
         role="separator"
         aria-orientation="vertical"
         aria-label="调整 Changes 文件树宽度"
@@ -653,12 +732,12 @@ export function GitChangesPanel({
           onBeginResize(event.clientX);
         }}
       />
-      <div
+      <Card
         ref={diffPaneRef}
-        className="gt-right-card gt-right-card-fill gt-diff-editor-pane gt-diff-stream-pane"
+        className="grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden rounded-none border-0 bg-background shadow-none"
       >
         {renderPatchStream()}
-      </div>
+      </Card>
     </div>
   );
 }

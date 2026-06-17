@@ -1,20 +1,64 @@
-import type { ReactNode } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ChevronRightIcon, EditIcon, FolderIcon, MoreHorizontalIcon, PlusIcon } from "../icons";
-import { firstLetter, formatRelativeTime } from "../../lib/textFormatting";
+import { memo, useMemo, type ReactNode } from "react";
+import {
+  Box,
+  Folder,
+  FolderOpen,
+  PencilLine,
+  Plus,
+  Settings,
+} from "lucide-react";
+
+import { firstLetter } from "../../lib/textFormatting";
+import type { AppText } from "../../lib/generalSettings";
 import type { OpencodeChatSession } from "../../lib/opencodeSessions";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
+import { cn } from "../../lib/utils";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "../ui/collapsible";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupAction,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarMenuSkeleton,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+} from "../ui/sidebar";
+import { Button } from "../ui/button";
 import pinnedIconUrl from "./sidebar-pin.png";
 
-const SIDEBAR_LAYOUT_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+function formatRelativeTimeLocalized(timestamp: number, text: AppText): string {
+  const diff = Date.now() - timestamp;
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  const weeks = Math.floor(days / 7);
+  const months = Math.floor(days / 30);
+  const years = Math.floor(days / 365);
 
-function sidebarLayoutTransition(reduceMotion: boolean) {
-  return reduceMotion
-    ? { duration: 0.12, ease: "linear" as const }
-    : { duration: 0.24, ease: SIDEBAR_LAYOUT_EASE };
+  if (years > 0) return `${years} ${text.timeYears || "年"}`;
+  if (months > 0) return `${months} ${text.timeMonths || "个月"}`;
+  if (weeks > 0) return `${weeks} ${text.timeWeeks || "周"}`;
+  if (days > 0) return `${days} ${text.timeDays || "天"}`;
+  if (hours > 0) return `${hours} ${text.timeHours || "小时"}`;
+  if (minutes > 0) return `${minutes} ${text.timeMinutes || "分钟"}`;
+  return text.timeNow || "刚刚";
 }
 
 type DesktopSidebarProps = {
+  text: AppText;
   noRepos: boolean;
   busy: boolean;
   opencodeInstalled: boolean;
@@ -25,14 +69,12 @@ type DesktopSidebarProps = {
   activeSessionId: string;
   draftRepoId: string;
   gitUserIdentity: GitUserIdentity;
-  fallbackIdentityName: string;
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
   onImportRepository: () => void | Promise<void>;
   onCreateSession: () => void | Promise<void>;
-  onSelectRepo: (repo: RepositoryEntry) => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
@@ -40,11 +82,13 @@ type DesktopSidebarProps = {
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
+  onOpenSkills: () => void;
   onOpenSettings: () => void;
 };
 
 export function DesktopSidebar(props: DesktopSidebarProps) {
   const {
+    text,
     noRepos,
     busy,
     opencodeInstalled,
@@ -55,14 +99,12 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     activeSessionId,
     draftRepoId,
     gitUserIdentity,
-    fallbackIdentityName,
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
     isRepoSessionsPaging,
     onImportRepository,
     onCreateSession,
-    onSelectRepo,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
@@ -70,41 +112,81 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     onOpenSession,
     onOpenSessionContextMenu,
     onLoadMoreSessions,
-    onOpenSettings
+    onOpenSkills,
+    onOpenSettings,
   } = props;
 
-  const pinnedRepos = repos.filter((repo) => pinnedRepoIds.includes(repo.id));
-  const otherRepos = repos.filter((repo) => !pinnedRepoIds.includes(repo.id));
+  const { pinnedRepos, otherRepos } = useMemo(() => {
+    const pinnedRepoIdSet = new Set(pinnedRepoIds);
+    return {
+      pinnedRepos: repos.filter((repo) => pinnedRepoIdSet.has(repo.id)),
+      otherRepos: repos.filter((repo) => !pinnedRepoIdSet.has(repo.id)),
+    };
+  }, [pinnedRepoIds, repos]);
+  const expandedProjectIdSet = useMemo(() => new Set(expandedProjectIds), [expandedProjectIds]);
+  const pinnedTitle = text.pinnedProjects.replace(/项目$/, "");
 
   return (
-    <div className="wb-sidebar-inner gt-sidebar-inner">
-      <div className="gt-sidebar-top">
-        <button
-          className="gt-new-session-btn"
-          onClick={() => void (noRepos ? onImportRepository() : onCreateSession())}
-          disabled={noRepos ? busy : busy || !opencodeInstalled}
-        >
-          <div className="gt-new-session-main">
-            <span className="gt-new-session-icon">{noRepos ? <FolderIcon /> : <EditIcon />}</span>
-            <span className="gt-new-session-label">{noRepos ? "导入项目" : "New Session"}</span>
-          </div>
-          {!noRepos ? <span className="gt-new-session-kbd" aria-hidden="true"><kbd>⌘N</kbd></span> : null}
-        </button>
-      </div>
+    <Sidebar
+      collapsible="none"
+      className="h-full overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+    >
+      <SidebarHeader className="shrink-0 px-4 pb-4 pt-10" data-tauri-drag-region>
+        <SidebarMenu className="gap-0.5">
+          <NavItem
+            icon={PencilLine}
+            label={text.newSession}
+            onClick={() => void (noRepos ? onImportRepository() : onCreateSession())}
+            disabled={noRepos ? busy : busy || !opencodeInstalled}
+            prominent
+          />
+          <NavItem icon={Box} label={text.skills} onClick={onOpenSkills} />
+        </SidebarMenu>
+      </SidebarHeader>
 
-      <div className="gt-project-stack">
+      <SidebarContent className="gap-4 overflow-x-hidden overflow-y-auto px-4 pb-5 pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {noRepos ? (
-          <div className="gt-empty-hint">还没有项目，先通过顶部入口导入一个本地工作区。</div>
+          <SidebarGroup className="min-w-0 gap-2 p-0">
+            <div className="flex min-h-7 min-w-0 items-center gap-2">
+              <SidebarGroupLabel className="h-auto min-w-0 flex-1 px-0 text-[14px] font-semibold text-sidebar-foreground/28">
+                <span className="truncate">{text.projects}</span>
+              </SidebarGroupLabel>
+              <SidebarGroupAction
+                className="static size-8 shrink-0 text-sidebar-foreground/40 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                title={text.openWorkspace}
+                onClick={() => void onImportRepository()}
+                disabled={busy}
+              >
+                <Plus className="size-4" />
+              </SidebarGroupAction>
+            </div>
+            <SidebarGroupContent className="min-w-0 overflow-x-hidden">
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-10 w-full min-w-0 justify-start gap-3 px-0 text-left text-[16px] font-medium text-sidebar-foreground/52 hover:bg-transparent hover:text-sidebar-foreground"
+                onClick={() => void onImportRepository()}
+                disabled={busy}
+              >
+                <Folder className="size-5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{text.openWorkspace}</span>
+              </Button>
+              <p className="m-0 mt-1.5 max-w-full text-[15px] font-medium leading-6 text-sidebar-foreground/32">
+                {text.noProjectsHint}
+              </p>
+            </SidebarGroupContent>
+          </SidebarGroup>
         ) : null}
 
         {pinnedRepos.length > 0 ? (
           <ProjectSection
-            title="Pinned"
+            text={text}
+            title={pinnedTitle}
             repos={pinnedRepos}
             isPinnedSection
             busy={busy}
             opencodeInstalled={opencodeInstalled}
-            expandedProjectIds={expandedProjectIds}
+            expandedProjectIdSet={expandedProjectIdSet}
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
             draftRepoId={draftRepoId}
@@ -112,7 +194,6 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
             isRepoSessionsPaging={isRepoSessionsPaging}
-            onSelectRepo={onSelectRepo}
             onToggleRepoSessions={onToggleRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
             onTogglePinnedRepo={onTogglePinnedRepo}
@@ -123,13 +204,14 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
           />
         ) : null}
 
-        {repos.length > 0 ? (
+        {otherRepos.length > 0 ? (
           <ProjectSection
-            title="Projects"
+            text={text}
+            title={text.projects}
             repos={otherRepos}
             busy={busy}
             opencodeInstalled={opencodeInstalled}
-            expandedProjectIds={expandedProjectIds}
+            expandedProjectIdSet={expandedProjectIdSet}
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
             draftRepoId={draftRepoId}
@@ -137,7 +219,6 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
             isRepoSessionsPaging={isRepoSessionsPaging}
-            onSelectRepo={onSelectRepo}
             onToggleRepoSessions={onToggleRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
             onTogglePinnedRepo={onTogglePinnedRepo}
@@ -145,70 +226,104 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             onOpenSession={onOpenSession}
             onOpenSessionContextMenu={onOpenSessionContextMenu}
             onLoadMoreSessions={onLoadMoreSessions}
-            headerAction={(
-              <button
-                className="gt-sidebar-action-btn"
-                title="Open Workspace"
+            headerAction={
+              <SidebarGroupAction
+                className="static size-8 shrink-0 text-sidebar-foreground/40 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                title={text.openWorkspace}
                 onClick={() => void onImportRepository()}
                 disabled={busy}
               >
-                <PlusIcon />
-              </button>
-            )}
+                <Plus className="size-4" />
+              </SidebarGroupAction>
+            }
           />
         ) : null}
-      </div>
+      </SidebarContent>
 
-      <div className="gt-sidebar-footer">
-        <div className="gt-user-row">
-          <div className="gt-user-main">
-            <span className="gt-user-avatar">{firstLetter(gitUserIdentity.name || gitUserIdentity.email || fallbackIdentityName || "g")}</span>
-            <span className="gt-user-meta">
-              <strong>{gitUserIdentity.name || "Git User"}</strong>
-              <small>{gitUserIdentity.email || "No git email configured"}</small>
-            </span>
-          </div>
-          <button className="gt-user-settings" title="Settings" onClick={onOpenSettings} aria-label="Settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Z" fill="none" stroke="currentColor" strokeWidth="1.55" />
-              <path d="M19 13.2v-2.4l-1.9-.34a5.7 5.7 0 0 0-.47-1.13l1.1-1.57-1.7-1.7-1.57 1.1c-.36-.2-.74-.36-1.14-.47L13 4.8h-2.4l-.34 1.89c-.4.11-.78.27-1.14.47l-1.57-1.1-1.7 1.7 1.1 1.57c-.2.36-.36.74-.47 1.13L4.6 10.8v2.4l1.88.34c.11.39.27.77.47 1.13l-1.1 1.57 1.7 1.7 1.57-1.1c.36.2.74.36 1.14.47l.34 1.89H13l.33-1.89c.4-.11.78-.27 1.14-.47l1.57 1.1 1.7-1.7-1.1-1.57c.2-.36.36-.74.47-1.13L19 13.2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
+      <SidebarFooter className="shrink-0 px-4 pb-2 pt-3">
+        <Button
+          type="button"
+          variant="ghost"
+          className="min-h-8 w-full min-w-0 justify-start gap-2.5 px-0 py-0.5 text-left text-sidebar-foreground/86 hover:bg-transparent hover:text-sidebar-foreground"
+          onClick={onOpenSettings}
+        >
+          <Settings className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5">{text.settings}</span>
+          <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
+        </Button>
+      </SidebarFooter>
+    </Sidebar>
+  );
+}
+
+type NavItemProps = {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  muted?: boolean;
+  prominent?: boolean;
+};
+
+function NavItem({ icon: Icon, label, onClick, disabled = false, muted = false, prominent = false }: NavItemProps) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        className={cn(
+          "h-[32px] min-w-0 gap-3 rounded-lg px-0 !text-[14px] font-semibold text-sidebar-foreground/82 transition-[background-color,color] hover:bg-transparent hover:text-sidebar-foreground active:bg-transparent [&>svg]:!size-4",
+          prominent && "h-9 !text-[14.5px] leading-5 [&>svg]:!size-4",
+          muted && "text-sidebar-foreground/34 hover:text-sidebar-foreground/48",
+          disabled && "cursor-not-allowed opacity-55"
+        )}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        <Icon className="size-4" />
+        <span className={cn("min-w-0 flex-1 truncate", prominent ? "!text-[14.5px]" : "!text-[14px]")}>{label}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   );
 }
 
 function SidebarPinnedIcon() {
   return (
     <span
-      className="gt-sidebar-pinned-icon"
+      className="inline-block size-3.5 bg-current opacity-70"
       aria-hidden="true"
       style={{
         WebkitMaskImage: `url(${pinnedIconUrl})`,
-        maskImage: `url(${pinnedIconUrl})`
+        maskImage: `url(${pinnedIconUrl})`,
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
       }}
     />
   );
 }
 
+function getIdentityInitial(identity: GitUserIdentity): string {
+  const value = identity.name.trim() || identity.email.trim() || "G";
+  return firstLetter(value).toUpperCase();
+}
+
 type ProjectSectionProps = {
+  text: AppText;
   title: string;
   repos: RepositoryEntry[];
   isPinnedSection?: boolean;
   busy: boolean;
   opencodeInstalled: boolean;
-  expandedProjectIds: string[];
+  expandedProjectIdSet: ReadonlySet<string>;
   selectedRepoId: string;
   activeSessionId: string;
   draftRepoId: string;
-  headerAction?: ReactNode;
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
-  onSelectRepo: (repo: RepositoryEntry) => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
@@ -216,50 +331,54 @@ type ProjectSectionProps = {
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
+  headerAction?: ReactNode;
 };
 
 function ProjectSection(props: ProjectSectionProps) {
   const {
+    text,
     title,
     repos,
     isPinnedSection = false,
     busy,
     opencodeInstalled,
-    expandedProjectIds,
+    expandedProjectIdSet,
     selectedRepoId,
     activeSessionId,
     draftRepoId,
-    headerAction,
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
     isRepoSessionsPaging,
-    onSelectRepo,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
     onFocusDraftSession,
     onOpenSession,
     onOpenSessionContextMenu,
-    onLoadMoreSessions
+    onLoadMoreSessions,
+    headerAction,
   } = props;
 
   return (
-    <div className="gt-sidebar-section">
-      <div className="gt-sidebar-section-header">
-        <span className="gt-sidebar-section-title">{title}</span>
-        {headerAction ? <div className="gt-sidebar-actions">{headerAction}</div> : null}
+    <SidebarGroup className="min-w-0 gap-2 p-0">
+      <div className="flex min-h-7 min-w-0 items-center gap-2">
+        <SidebarGroupLabel className="h-auto min-w-0 flex-1 px-0 text-[14px] font-semibold text-sidebar-foreground/28">
+          <span className="truncate">{title}</span>
+        </SidebarGroupLabel>
+        {headerAction}
       </div>
-      <div className="gt-sidebar-project-list">
-        <AnimatePresence initial={false}>
+      <SidebarGroupContent className="min-w-0 overflow-x-hidden">
+        <SidebarMenu className="min-w-0 gap-0.5 overflow-x-hidden">
           {repos.map((repo) => (
             <ProjectRow
               key={repo.id}
+              text={text}
               repo={repo}
               pinned={isPinnedSection}
               busy={busy}
               opencodeInstalled={opencodeInstalled}
-              expanded={expandedProjectIds.includes(repo.id)}
+              expanded={expandedProjectIdSet.has(repo.id)}
               selectedRepoId={selectedRepoId}
               activeSessionId={activeSessionId}
               hasDraftForRepo={draftRepoId === repo.id}
@@ -267,7 +386,6 @@ function ProjectSection(props: ProjectSectionProps) {
               hasMoreSessions={hasMoreRepoSessions(repo.id)}
               sessionsLoading={isRepoSessionsLoading(repo.id)}
               sessionsPaging={isRepoSessionsPaging(repo.id)}
-              onSelectRepo={onSelectRepo}
               onToggleRepoSessions={onToggleRepoSessions}
               onOpenRepoContextMenu={onOpenRepoContextMenu}
               onTogglePinnedRepo={onTogglePinnedRepo}
@@ -277,13 +395,14 @@ function ProjectSection(props: ProjectSectionProps) {
               onLoadMoreSessions={onLoadMoreSessions}
             />
           ))}
-        </AnimatePresence>
-      </div>
-    </div>
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }
 
 type ProjectRowProps = {
+  text: AppText;
   repo: RepositoryEntry;
   pinned: boolean;
   busy: boolean;
@@ -296,7 +415,6 @@ type ProjectRowProps = {
   hasMoreSessions: boolean;
   sessionsLoading: boolean;
   sessionsPaging: boolean;
-  onSelectRepo: (repo: RepositoryEntry) => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
@@ -306,9 +424,9 @@ type ProjectRowProps = {
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
 };
 
-function ProjectRow(props: ProjectRowProps) {
-  const reduceMotion = useReducedMotion();
+const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
   const {
+    text,
     repo,
     pinned,
     busy,
@@ -321,118 +439,154 @@ function ProjectRow(props: ProjectRowProps) {
     hasMoreSessions,
     sessionsLoading,
     sessionsPaging,
-    onSelectRepo,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
     onFocusDraftSession,
     onOpenSession,
     onOpenSessionContextMenu,
-    onLoadMoreSessions
+    onLoadMoreSessions,
   } = props;
 
-  const shouldRenderChildren = expanded && (sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !opencodeInstalled);
-  const layoutTransition = sidebarLayoutTransition(Boolean(reduceMotion));
+  const hasCollapsibleContent = sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !opencodeInstalled;
+  const loadMoreLabel = sessionsPaging ? `${text.loadMore}...` : text.loadMore;
 
   return (
-    <motion.div
-      className="gt-sidebar-project-wrap"
-      transition={layoutTransition}
-      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+    <Collapsible
+      asChild
+      className="group/project"
+      open={expanded}
+      onOpenChange={(open) => {
+        if (busy || open === expanded) return;
+        onToggleRepoSessions(repo);
+      }}
     >
-      <motion.div
-        className="gt-sidebar-project-row"
-        title={repo.path}
-        transition={layoutTransition}
-        onClick={() => {
-          if (busy) return;
-          onSelectRepo(repo);
-          onToggleRepoSessions(repo);
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onOpenRepoContextMenu(event.clientX, event.clientY, repo);
-        }}
-      >
-        <span className="gt-sidebar-project-icon"><FolderIcon /></span>
-        <span className="gt-sidebar-project-name">{repo.name}</span>
-        <span className={expanded ? "gt-sidebar-project-chevron is-open" : "gt-sidebar-project-chevron"} aria-hidden="true"><ChevronRightIcon width={14} height={14} /></span>
-        <button
-          className={pinned ? "gt-sidebar-project-pin active" : "gt-sidebar-project-pin"}
-          title={pinned ? "取消置顶" : "置顶"}
-          onClick={(event) => {
-            event.stopPropagation();
-            onTogglePinnedRepo(repo.id);
-          }}
-        >
-          <SidebarPinnedIcon />
-        </button>
-      </motion.div>
-
-      <AnimatePresence initial={false}>
-        {shouldRenderChildren ? (
-          <motion.div
-            key={`${repo.id}:children`}
-            className="gt-sidebar-project-children-shell"
-            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -6 }}
-            animate={reduceMotion ? { opacity: 1 } : { opacity: 1, height: "auto", y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
-            transition={layoutTransition}
+      <SidebarMenuItem className="min-w-0 overflow-x-hidden">
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton
+            className={cn(
+              "h-9 min-w-0 gap-3 rounded-lg px-0 text-[17px] font-semibold text-sidebar-foreground/50 transition-colors hover:bg-transparent hover:text-sidebar-foreground/74 active:bg-transparent data-[active=true]:bg-transparent [&>svg]:size-5",
+              expanded && "text-sidebar-foreground/58"
+            )}
+            disabled={busy}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenRepoContextMenu(event.clientX, event.clientY, repo);
+            }}
           >
-            <div className="gt-sidebar-project-children">
-              {hasDraftForRepo ? (
-                <button
-                  className="gt-session-item active gt-session-item-draft"
-                  onClick={onFocusDraftSession}
-                >
-                  <span className="gt-session-title">New Session</span>
-                </button>
-              ) : null}
-              {!opencodeInstalled ? <div className="gt-empty-hint">安装 `opencode` 后可用会话。</div> : null}
-              {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
-                <div className="gt-tree-loading" aria-hidden="true">
-                  <span className="gt-tree-loading-row" />
-                  <span className="gt-tree-loading-row" />
-                  <span className="gt-tree-loading-row short" />
-                </div>
-              ) : null}
-              {opencodeInstalled ? sessions.map((session) => (
-                <button
-                  key={`left-session-${session.id}`}
-                  className={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId ? "gt-session-item active" : "gt-session-item"}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
-                  }}
-                  onClick={() => onOpenSession(repo, session)}
-                >
-                  <span className="gt-session-title">{session.title}</span>
-                  {session.updatedAt || session.createdAt ? (
-                    <span className="gt-session-time">{formatRelativeTime(session.updatedAt || session.createdAt)}</span>
-                  ) : null}
-                </button>
-              )) : null}
-              {opencodeInstalled && hasMoreSessions ? (
-                <motion.button
-                  key={`${repo.id}:more`}
-                  layout="position"
-                  transition={layoutTransition}
-                  className="gt-load-more-btn"
-                  onClick={() => void onLoadMoreSessions(repo)}
-                  disabled={sessionsLoading || sessionsPaging}
-                >
-                  <span className="gt-load-more-icon" aria-hidden="true"><MoreHorizontalIcon /></span>
-                  <span>More</span>
-                </motion.button>
-              ) : null}
+            {expanded ? <FolderOpen className="size-5" /> : <Folder className="size-5" />}
+            <span className="min-w-0 flex-1 truncate">{repo.name}</span>
+            <SidebarMenuAction
+              type="button"
+              showOnHover={!pinned}
+              className={cn(
+                "right-0.5 top-1.5 size-6",
+                pinned ? "text-sidebar-foreground/50" : "text-sidebar-foreground/36"
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTogglePinnedRepo(repo.id);
+              }}
+              title={pinned ? text.unpinProject : text.pinProject}
+              aria-label={pinned ? text.unpinProject : text.pinProject}
+            >
+              <SidebarPinnedIcon />
+            </SidebarMenuAction>
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+
+        {hasCollapsibleContent ? (
+          <CollapsibleContent
+            forceMount
+            className={cn(
+              "grid overflow-hidden transition-[grid-template-rows,opacity] duration-[180ms] ease-[cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:grid-rows-[0fr] data-[state=open]:grid-rows-[1fr]",
+              "data-[state=closed]:opacity-0 data-[state=open]:opacity-100",
+              "motion-reduce:transition-none"
+            )}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <SidebarMenuSub className="mx-0 w-full translate-x-0 gap-0.5 overflow-x-hidden border-l-0 px-0 py-0.5">
+                {hasDraftForRepo ? (
+                  <SessionRow active title={text.newSession} onClick={onFocusDraftSession} />
+                ) : null}
+
+                {!opencodeInstalled ? (
+                  <div className="min-w-0 py-2 pl-11 pr-3 text-[15px] leading-6 text-sidebar-foreground/32">{text.opencodeRequired}</div>
+                ) : null}
+
+                {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
+                  <SidebarMenuSkeleton />
+                ) : null}
+
+                {opencodeInstalled
+                  ? sessions.map((session) => (
+                      <SessionRow
+                        key={`left-session-${session.id}`}
+                        active={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId}
+                        title={session.title}
+                        time={session.updatedAt || session.createdAt ? formatRelativeTimeLocalized(session.updatedAt || session.createdAt, text) : ""}
+                        onClick={() => onOpenSession(repo, session)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
+                        }}
+                      />
+                    ))
+                  : null}
+
+                {opencodeInstalled && hasMoreSessions ? (
+                  <SidebarMenuSubItem>
+                    <SidebarMenuSubButton asChild className="h-8 w-full min-w-0 translate-x-0 rounded-xl pl-[33px] pr-3 text-[15px] font-semibold text-sidebar-foreground/34 hover:bg-transparent hover:text-sidebar-foreground/50 active:bg-transparent">
+                      <button
+                        type="button"
+                        onClick={() => void onLoadMoreSessions(repo)}
+                        disabled={sessionsLoading || sessionsPaging}
+                        aria-busy={sessionsPaging}
+                      >
+                        <span className="min-w-0 flex-1 truncate text-left">{loadMoreLabel}</span>
+                      </button>
+                    </SidebarMenuSubButton>
+                  </SidebarMenuSubItem>
+                ) : null}
+              </SidebarMenuSub>
             </div>
-          </motion.div>
+          </CollapsibleContent>
         ) : null}
-      </AnimatePresence>
-    </motion.div>
+      </SidebarMenuItem>
+    </Collapsible>
   );
-}
+});
+
+type SessionRowProps = {
+  title: string;
+  active?: boolean;
+  time?: string;
+  onClick: () => void;
+  onContextMenu?: React.MouseEventHandler<HTMLButtonElement>;
+};
+
+const SessionRow = memo(function SessionRow({ title, active = false, time = "", onClick, onContextMenu }: SessionRowProps) {
+  return (
+    <SidebarMenuSubItem>
+      <SidebarMenuSubButton
+        asChild
+        isActive={active}
+        className={cn(
+          "h-[34px] w-full min-w-0 translate-x-0 rounded-xl pl-[33px] pr-3 text-[15.5px] font-semibold text-sidebar-foreground/76 hover:bg-sidebar-accent/70 active:bg-sidebar-accent",
+          active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_rgba(0,0,0,0.01)]"
+        )}
+      >
+        <button
+          type="button"
+          onClick={onClick}
+          onContextMenu={onContextMenu}
+        >
+          <span className="min-w-0 flex-1 truncate text-left">{title}</span>
+          {time ? <span className="ml-3 shrink-0 text-[13px] font-medium text-sidebar-foreground/40 tabular-nums">{time}</span> : null}
+        </button>
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  );
+});

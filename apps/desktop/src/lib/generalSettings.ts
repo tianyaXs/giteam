@@ -23,7 +23,32 @@ export type AppLocale = "zh-CN" | "zh-TW" | "en-US";
 
 const APP_TEXT: Record<AppLocale, {
   close: string;
+  closeProject: string;
   archiveSession: string;
+  newSession: string;
+  importProject: string;
+  pinnedProjects: string;
+  projects: string;
+  openWorkspace: string;
+  loadMore: string;
+  pinProject: string;
+  unpinProject: string;
+  settings: string;
+  noProjectsHint: string;
+  opencodeRequired: string;
+  collapseSidebar: string;
+  expandSidebar: string;
+  collapseRightSidebar: string;
+  expandRightSidebar: string;
+  changes: string;
+  worktree: string;
+  terminal: string;
+  skills: string;
+  plugins: string;
+  automation: string;
+  search: string;
+  mcp: string;
+  closeFileView: string;
   removeWorktree: string;
   removeWorktreeTitle: string;
   removeWorktreeDesc: string;
@@ -49,26 +74,38 @@ const APP_TEXT: Record<AppLocale, {
   push: string;
   commitPush: string;
   commitSync: string;
+  timeNow: string;
+  timeMinutes: string;
+  timeHours: string;
+  timeDays: string;
+  timeWeeks: string;
+  timeMonths: string;
+  timeYears: string;
 }> = {
   "zh-CN": {
-    close: "关闭", archiveSession: "归档会话", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
+    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "变更", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
     createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
     createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
-    commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步"
+    commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步",
+    timeNow: "刚刚", timeMinutes: "分钟", timeHours: "小时", timeDays: "天", timeWeeks: "周", timeMonths: "个月", timeYears: "年"
   },
   "zh-TW": {
-    close: "關閉", archiveSession: "封存會話", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "這會刪除 worktree 目錄並清理 Git worktree 記錄，目錄內檔案會被刪除。", removing: "移除中...", confirmRemove: "確認移除", cancel: "取消",
-    createWorktreeFromCommit: "從提交建立 worktree", createBranchFromCommit: "從提交建立分支", explainInspectCommit: "解釋 / 檢查提交", cherryPickCurrentBranch: "Cherry-pick 到目前分支", revertCurrentBranch: "在目前分支 Revert", copyCommitId: "複製提交 ID",
-    createBranch: "建立分支", createWorktree: "建立 worktree", checkoutNewLocalBranch: "檢出為本地新分支", checkout: "檢出", deleteBranch: "刪除分支", createBranchFromWorktree: "從 worktree 建立分支", openWorktree: "開啟 worktree", bindAgent: "綁定 Agent", unbindAgent: "解除綁定 Agent",
-    commit: "提交", push: "推送", commitPush: "提交並推送", commitSync: "提交並同步"
+    close: "关闭", closeProject: "关闭项目", archiveSession: "归档会话", newSession: "新对话", importProject: "导入项目", pinnedProjects: "置顶项目", projects: "项目", openWorkspace: "打开工作区", loadMore: "加载更多", pinProject: "置顶项目", unpinProject: "取消置顶", settings: "设置", noProjectsHint: "还没有项目，先导入一个本地工作区。", opencodeRequired: "安装 `opencode` 后可用会话。", collapseSidebar: "收起左侧栏", expandSidebar: "展开左侧栏", collapseRightSidebar: "收起右侧栏", expandRightSidebar: "展开右侧栏", changes: "变更", worktree: "工作树", terminal: "终端", skills: "技能", plugins: "插件", automation: "自动化", search: "搜索", mcp: "MCP", closeFileView: "关闭文件视图", removeWorktree: "移除 worktree", removeWorktreeTitle: "移除 worktree？", removeWorktreeDesc: "这会删除 worktree 目录并清理 Git worktree 记录，目录内文件会被删除。", removing: "移除中...", confirmRemove: "确认移除", cancel: "取消",
+    createWorktreeFromCommit: "从提交创建 worktree", createBranchFromCommit: "从提交创建分支", explainInspectCommit: "解释 / 检查提交", cherryPickCurrentBranch: "Cherry-pick 到当前分支", revertCurrentBranch: "在当前分支 Revert", copyCommitId: "复制提交 ID",
+    createBranch: "创建分支", createWorktree: "创建 worktree", checkoutNewLocalBranch: "检出为本地新分支", checkout: "检出", deleteBranch: "删除分支", createBranchFromWorktree: "从 worktree 创建分支", openWorktree: "打开 worktree", bindAgent: "绑定 Agent", unbindAgent: "解绑 Agent",
+    commit: "提交", push: "推送", commitPush: "提交并推送", commitSync: "提交并同步",
+    timeNow: "刚刚", timeMinutes: "分钟", timeHours: "小时", timeDays: "天", timeWeeks: "周", timeMonths: "个月", timeYears: "年"
   },
   "en-US": {
-    close: "Close", archiveSession: "Archive session", removeWorktree: "Remove worktree", removeWorktreeTitle: "Remove worktree?", removeWorktreeDesc: "This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.", removing: "Removing...", confirmRemove: "Confirm Remove", cancel: "Cancel",
+    close: "Close", closeProject: "Close Project", archiveSession: "Archive Session", newSession: "New Session", importProject: "Import Project", pinnedProjects: "Pinned", projects: "Projects", openWorkspace: "Open Workspace", loadMore: "Load More", pinProject: "Pin Project", unpinProject: "Unpin Project", settings: "Settings", noProjectsHint: "No projects yet. Import a local workspace to get started.", opencodeRequired: "Install `opencode` to use sessions.", collapseSidebar: "Collapse Sidebar", expandSidebar: "Expand Sidebar", collapseRightSidebar: "Collapse Right Panel", expandRightSidebar: "Expand Right Panel", changes: "Changes", worktree: "Worktree", terminal: "Terminal", skills: "Skills", plugins: "Plugins", automation: "Automation", search: "Search", mcp: "MCP", closeFileView: "Close File View", removeWorktree: "Remove worktree", removeWorktreeTitle: "Remove worktree?", removeWorktreeDesc: "This will remove the worktree directory and clean up the Git worktree entry. Files inside will be deleted.", removing: "Removing...", confirmRemove: "Confirm Remove", cancel: "Cancel",
     createWorktreeFromCommit: "Create worktree from commit", createBranchFromCommit: "Create branch from commit", explainInspectCommit: "Explain / inspect commit", cherryPickCurrentBranch: "Cherry-pick to current branch", revertCurrentBranch: "Revert on current branch", copyCommitId: "Copy commit ID",
     createBranch: "Create Branch", createWorktree: "Create Worktree", checkoutNewLocalBranch: "Checkout as new local branch", checkout: "Checkout", deleteBranch: "Delete Branch", createBranchFromWorktree: "Create Branch from Worktree", openWorktree: "Open Worktree", bindAgent: "Bind Agent", unbindAgent: "Unbind Agent",
-    commit: "Commit", push: "Push", commitPush: "Commit & Push", commitSync: "Commit & Sync"
+    commit: "Commit", push: "Push", commitPush: "Commit & Push", commitSync: "Commit & Sync",
+    timeNow: "just now", timeMinutes: "min", timeHours: "h", timeDays: "d", timeWeeks: "w", timeMonths: "mo", timeYears: "y"
   }
 };
+
+export type AppText = (typeof APP_TEXT)[AppLocale];
 
 function normalizeAppLocale(value: string): AppLocale {
   const normalized = value.toLowerCase();
@@ -81,7 +118,7 @@ function normalizeStoredLanguage(value: unknown): GeneralSettingsDraft["language
   return value === "system" || value === "zh-CN" || value === "zh-TW" || value === "en-US" ? value : "system";
 }
 
-export function getAppText(language: GeneralSettingsDraft["language"]): (typeof APP_TEXT)[AppLocale] {
+export function getAppText(language: GeneralSettingsDraft["language"]): AppText {
   const locale = language === "system" ? normalizeAppLocale(navigator.language || "zh-CN") : normalizeAppLocale(language);
   return APP_TEXT[locale];
 }

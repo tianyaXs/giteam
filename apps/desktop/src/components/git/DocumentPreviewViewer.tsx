@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import DocViewer, { DocViewerRenderers } from "@cyntler/react-doc-viewer";
 import { renderAsync } from "docx-preview";
 import * as XLSX from "xlsx";
 import "@cyntler/react-doc-viewer/dist/index.css";
+import { cn } from "@/lib/utils";
 import type { GitWorktreeFileContent } from "../../lib/types";
+import { Card, CardContent } from "../ui/card";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 
 type DocumentPreviewViewerProps = {
   filePath: string;
@@ -51,6 +55,25 @@ function getSheetData(workbook: XLSX.WorkBook, sheetName: string): (string | num
   return XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }) as (string | number | null)[][];
 }
 
+function PreviewEmpty({ title, description }: { title: string; description: string }) {
+  return (
+    <Empty className="min-h-60 border-0">
+      <EmptyHeader>
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription>{description}</EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+}
+
+function PreviewShell({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <Card className={cn("h-full min-h-0 border-0 bg-background shadow-none", className)}>
+      <CardContent className="h-full min-h-0 p-0">{children}</CardContent>
+    </Card>
+  );
+}
+
 export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewViewerProps) {
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
   const [blobUrl, setBlobUrl] = useState("");
@@ -82,7 +105,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
     setDocxError("");
     const blob = blobFromBase64(content.dataBase64, content.mime);
     void renderAsync(blob, container, undefined, {
-      className: "gt-docx-preview-doc",
+      className: "docx-preview-page",
       inWrapper: true,
       ignoreWidth: false,
       ignoreHeight: false,
@@ -160,92 +183,111 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
 
   if (!content.dataBase64) {
     return (
-      <div className="gt-document-preview-empty">
-        <strong>不支持的预览类型</strong>
-        <span>没有可用于预览的文件数据。</span>
-      </div>
+      <PreviewEmpty title="不支持的预览类型" description="没有可用于预览的文件数据。" />
     );
   }
 
   if (isDocx) {
     return (
-      <div className="gt-document-preview-shell is-docx">
+      <PreviewShell>
         {docxError ? (
-          <div className="gt-document-preview-empty">
-            <strong>DOCX 预览失败</strong>
-            <span>{docxError}</span>
-          </div>
+          <PreviewEmpty title="DOCX 预览失败" description={docxError} />
         ) : (
-          <div className="gt-document-preview-scroll is-docx">
-            <div ref={docxContainerRef} className="gt-docx-preview" />
+          <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-background p-3 pb-5 md:p-4">
+            <div
+              ref={docxContainerRef}
+              className={cn(
+                "min-h-full w-full overflow-x-hidden",
+                "[&_.docx-preview-page-wrapper]:!flex [&_.docx-preview-page-wrapper]:!min-h-full",
+                "[&_.docx-preview-page-wrapper]:!items-start [&_.docx-preview-page-wrapper]:!justify-center",
+                "[&_.docx-preview-page-wrapper]:!bg-background [&_.docx-preview-page-wrapper]:!p-0",
+                "[&_.docx-preview-page-wrapper]:!shadow-none",
+                "[&_.docx-preview-page]:!mx-auto [&_.docx-preview-page]:!mb-5",
+                "[&_.docx-preview-page]:shadow-sm"
+              )}
+            />
           </div>
         )}
-      </div>
+      </PreviewShell>
     );
   }
 
   if (isSpreadsheet) {
     if (xlsxError) {
       return (
-        <div className="gt-document-preview-shell">
-          <div className="gt-document-preview-empty">
-            <strong>Excel 预览失败</strong>
-            <span>{xlsxError}</span>
-          </div>
-        </div>
+        <PreviewShell>
+          <PreviewEmpty title="Excel 预览失败" description={xlsxError} />
+        </PreviewShell>
       );
     }
     if (!xlsxWorkbook) {
       return (
-        <div className="gt-document-preview-shell">
-          <div className="gt-document-preview-empty">
-            <strong>正在准备预览</strong>
-            <span>正在解析 Excel 文件数据...</span>
-          </div>
-        </div>
+        <PreviewShell>
+          <PreviewEmpty title="正在准备预览" description="正在解析 Excel 文件数据..." />
+        </PreviewShell>
       );
     }
     return (
-      <div className="gt-document-preview-shell">
-        <div className="gt-spreadsheet-preview-scroll">
-          <div className="gt-spreadsheet-preview">
+      <PreviewShell>
+        <div className="h-full min-h-0 overflow-auto bg-background p-4">
+          <div className="inline-block min-w-full align-top">
             {xlsxWorkbook.SheetNames.length > 1 && (
-              <div className="gt-spreadsheet-tabs">
+              <ToggleGroup
+                type="single"
+                value={activeSheet}
+                onValueChange={(sheetName) => {
+                  if (sheetName) handleSwitchSheet(sheetName);
+                }}
+                variant="outline"
+                size="sm"
+                className="mb-3 max-w-full justify-start overflow-x-auto rounded-lg bg-muted/35 p-1"
+              >
                 {xlsxWorkbook.SheetNames.map((sheetName: string) => (
-                  <button
-                    type="button"
+                  <ToggleGroupItem
                     key={sheetName}
-                    className={sheetName === activeSheet ? "gt-spreadsheet-tab active" : "gt-spreadsheet-tab"}
-                    onClick={() => handleSwitchSheet(sheetName)}
+                    value={sheetName}
+                    className="max-w-56 justify-start truncate px-3"
                   >
                     {sheetName}
-                  </button>
+                  </ToggleGroupItem>
                 ))}
-              </div>
+              </ToggleGroup>
             )}
-            <table className="gt-spreadsheet-table">
-              <tbody>
-                {sheetRows.map((row: (string | number | null)[], rowIndex: number) => (
-                  <tr key={rowIndex}>
-                    <td className="gt-spreadsheet-row-header">{rowIndex + 1}</td>
-                    {row.map((cell: string | number | null, cellIndex: number) => (
-                      <td key={cellIndex} className={rowIndex === 0 ? "gt-spreadsheet-header-cell" : "gt-spreadsheet-cell"}>
-                        {cell ?? ""}
+            <div className="inline-block min-w-full overflow-hidden rounded-lg border border-border bg-card align-top">
+              <table className="min-w-full border-collapse bg-card font-mono text-xs text-card-foreground">
+                <tbody>
+                  {sheetRows.map((row: (string | number | null)[], rowIndex: number) => (
+                    <tr key={rowIndex}>
+                      <td className="sticky left-0 min-w-10 border border-border bg-muted px-2 py-1.5 text-center font-semibold text-muted-foreground">
+                        {rowIndex + 1}
                       </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      {row.map((cell: string | number | null, cellIndex: number) => (
+                        <td
+                          key={cellIndex}
+                          className={cn(
+                            "min-w-20 max-w-80 truncate border border-border px-2 py-1.5 align-middle",
+                            rowIndex === 0
+                              ? "sticky top-0 bg-muted font-semibold text-foreground"
+                              : "bg-card text-foreground"
+                          )}
+                        >
+                          {cell ?? ""}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
+      </PreviewShell>
     );
   }
 
   return (
-    <div className="gt-document-preview-shell">
-      <div className="gt-document-preview-viewer">
+    <PreviewShell>
+      <div className="h-full min-h-0 overflow-auto bg-background [&_#proxy-renderer]:min-h-full [&_#react-doc-viewer]:min-h-full [&_#react-doc-viewer]:bg-transparent">
         {documents.length > 0 ? (
           <DocViewer
             documents={documents}
@@ -256,12 +298,9 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
             }}
           />
         ) : (
-          <div className="gt-document-preview-empty">
-            <strong>正在准备预览</strong>
-            <span>文件数据载入后会自动显示。</span>
-          </div>
+          <PreviewEmpty title="正在准备预览" description="文件数据载入后会自动显示。" />
         )}
       </div>
-    </div>
+    </PreviewShell>
   );
 }

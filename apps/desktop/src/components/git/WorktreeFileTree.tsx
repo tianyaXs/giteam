@@ -1,8 +1,11 @@
 import type { ReactNode } from "react";
+import { RotateCcwIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { GitWorktreeEntry } from "../../lib/types";
-import { IconButton } from "../ui/icon-button";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Empty, EmptyDescription } from "../ui/empty";
+import { ChevronRightIcon } from "../icons";
 import { GitStageToggle } from "./GitStageToggle";
 import {
   collectWorktreeNodeEntries,
@@ -30,6 +33,16 @@ type WorktreeFileTreeProps = {
   onDiscardFile: (path: string, isUntracked: boolean) => void;
   onDiscardEntries: (entries: GitWorktreeEntry[], label: string) => void;
 };
+
+function WorktreeStatusBadge({ status }: { status: string }) {
+  const variant = status.toLowerCase() === "d" ? "destructive" : status.toLowerCase() === "a" ? "success" : "secondary";
+
+  return (
+    <Badge variant={variant} className="min-w-5 justify-center px-1.5 tracking-normal">
+      {status}
+    </Badge>
+  );
+}
 
 export function WorktreeFileTree({
   nodes,
@@ -71,11 +84,12 @@ export function WorktreeFileTree({
       const canDiscardDir = entries.some((entry) => entry.staged || entry.unstaged || entry.untracked);
       const containsSelected = selectedFile ? filePaths.includes(selectedFile) : false;
       return (
-        <div key={node.path} className="gt-worktree-tree-group">
+        <div key={node.path} className="flex flex-col gap-0">
           <div
-            className={containsSelected
-              ? "gt-worktree-tree-row gt-worktree-tree-dir is-ancestor-active"
-              : "gt-worktree-tree-row gt-worktree-tree-dir"}
+            className={cn(
+              "group relative flex min-h-7 items-center gap-1 rounded-md border border-transparent pr-1 transition-colors hover:bg-accent/60",
+              containsSelected && "bg-accent/40 text-accent-foreground"
+            )}
             style={{ paddingLeft: `${depth * 11 + 4}px` }}
             title={collapsed.node.path}
           >
@@ -83,18 +97,38 @@ export function WorktreeFileTree({
               type="button"
               variant="ghost"
               size="sm"
-              className="gt-worktree-dir-main-btn"
+              className="h-7 min-w-0 flex-1 justify-start gap-1 px-0 text-xs font-normal hover:bg-transparent hover:text-inherit"
               onClick={() => onToggleDir(collapsed.node.path)}
               aria-pressed={expanded}
             >
-              <svg className={expanded ? "gt-worktree-tree-chevron is-open" : "gt-worktree-tree-chevron"} viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M6 4.5 10 8 6 11.5" />
-              </svg>
-              <span className="gt-worktree-tree-name">{collapsed.label}</span>
+              <ChevronRightIcon
+                data-icon="inline-start"
+                className={cn("transition-transform", expanded && "rotate-90")}
+              />
+              <span className="truncate">{collapsed.label}</span>
             </Button>
-            <div className="gt-worktree-row-tail">
-              <span className="gt-worktree-tree-status is-dir">{filePaths.length}</span>
-              <div className="gt-worktree-file-actions">
+            <div className="flex min-w-0 items-center justify-end gap-1">
+              <Badge variant="secondary" className="min-w-5 justify-center px-1.5 tracking-normal group-hover:opacity-0">
+                {filePaths.length}
+              </Badge>
+              <div className="pointer-events-none absolute right-1 top-1/2 flex w-14 -translate-y-1/2 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+                {canDiscardDir ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive [&_svg]:size-3.5"
+                    title="丢弃此目录变更"
+                    aria-label="丢弃此目录变更"
+                    disabled={discardingFile === collapsed.node.path}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDiscardEntries(entries, collapsed.node.path);
+                    }}
+                  >
+                    {discardingFile === collapsed.node.path ? "..." : <RotateCcwIcon aria-hidden="true" />}
+                  </Button>
+                ) : null}
                 <GitStageToggle
                   checked={mode === "unstage"}
                   title={mode === "unstage" ? "取消暂存此目录" : "暂存此目录"}
@@ -104,30 +138,10 @@ export function WorktreeFileTree({
                     else onStagePaths(filePaths, collapsed.node.path);
                   }}
                 />
-                {canDiscardDir ? (
-                  <IconButton
-                    type="button"
-                    className="gt-worktree-action-btn"
-                    tone="danger"
-                    title="丢弃此目录变更"
-                    disabled={discardingFile === collapsed.node.path}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDiscardEntries(entries, collapsed.node.path);
-                    }}
-                  >
-                    {discardingFile === collapsed.node.path ? "..." : (
-                      <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M6 4 3 7l3 3" />
-                        <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                      </svg>
-                    )}
-                  </IconButton>
-                ) : null}
               </div>
             </div>
           </div>
-          {expanded ? <div className="gt-worktree-tree-children">{renderNodes(collapsed.node.children, depth + 1)}</div> : null}
+          {expanded ? <div className="flex flex-col gap-0">{renderNodes(collapsed.node.children, depth + 1)}</div> : null}
         </div>
       );
     }
@@ -139,7 +153,10 @@ export function WorktreeFileTree({
     return (
       <div
         key={node.path}
-        className={selectedFile === entry.path ? "gt-worktree-tree-row gt-worktree-tree-file active" : "gt-worktree-tree-row gt-worktree-tree-file"}
+        className={cn(
+          "group relative flex min-h-7 items-center gap-1 rounded-md border border-transparent pr-1 transition-colors hover:bg-accent/60",
+          selectedFile === entry.path && "border-primary/20 bg-accent text-accent-foreground shadow-sm"
+        )}
         style={{ paddingLeft: `${depth * 11 + 4}px` }}
         title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
       >
@@ -147,15 +164,34 @@ export function WorktreeFileTree({
           type="button"
           variant="ghost"
           size="sm"
-          className="gt-worktree-file-main-btn"
+          className="h-7 min-w-0 flex-1 justify-start px-0 text-xs font-normal hover:bg-transparent hover:text-inherit"
           onClick={() => onOpenFile(entry.path)}
           aria-pressed={selectedFile === entry.path}
         >
-          <span className="gt-worktree-tree-name">{node.name}</span>
+          <span className="truncate">{node.name}</span>
         </Button>
-        <div className="gt-worktree-row-tail">
-          <span className={`gt-worktree-tree-status is-${status.toLowerCase()}`}>{status}</span>
-          <div className="gt-worktree-file-actions">
+        <div className="flex min-w-0 items-center justify-end gap-1">
+          <div className="group-hover:opacity-0">
+            <WorktreeStatusBadge status={status} />
+          </div>
+          <div className="pointer-events-none absolute right-1 top-1/2 flex w-14 -translate-y-1/2 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            {canDiscard ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 rounded-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive [&_svg]:size-3.5"
+                title={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
+                aria-label={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
+                disabled={discardingFile === entry.path}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDiscardFile(entry.path, entry.untracked);
+                }}
+              >
+                {discardingFile === entry.path ? "..." : <RotateCcwIcon aria-hidden="true" />}
+              </Button>
+            ) : null}
             <GitStageToggle
               checked={entry.staged}
               title={entry.staged ? "取消暂存" : "暂存更改"}
@@ -165,28 +201,6 @@ export function WorktreeFileTree({
                 else onStageFile(entry.path);
               }}
             />
-            {canDiscard ? (
-              <IconButton
-                type="button"
-                className="gt-worktree-action-btn"
-                tone="danger"
-                title={entry.untracked ? "删除文件 (撤销新建)" : "撤销修改"}
-                disabled={discardingFile === entry.path}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDiscardFile(entry.path, entry.untracked);
-                }}
-              >
-                {discardingFile === entry.path ? (
-                  "..."
-                ) : (
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M6 4 3 7l3 3" />
-                    <path d="M3.5 7H10a3 3 0 1 1 0 6H8" />
-                  </svg>
-                )}
-              </IconButton>
-            ) : null}
           </div>
         </div>
       </div>
@@ -211,34 +225,38 @@ export function WorktreeChangesList({
   ...treeProps
 }: WorktreeChangesListProps) {
   if (stagedTree.length === 0 && unstagedTree.length === 0) {
-    return <div className="gt-empty-hint">当前 worktree 没有待提交文件。</div>;
+    return (
+      <Empty className="min-h-24 border bg-transparent p-4 md:p-4">
+        <EmptyDescription>当前 worktree 没有待提交文件。</EmptyDescription>
+      </Empty>
+    );
   }
 
   return (
-    <>
+    <div className="flex flex-col gap-1">
       {stagedTree.length > 0 ? (
-        <div className="gt-changes-group">
-          <div className="gt-changes-group-header">
-            <span className="gt-changes-group-title">Staged Changes</span>
-            <Badge variant="secondary" className="gt-changes-group-count">{stagedCount}</Badge>
+        <section className="flex flex-col gap-0">
+          <div className="flex min-h-6 items-center justify-between border-b bg-muted/30 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span>Staged Changes</span>
+            <Badge variant="secondary" className="min-w-6 justify-center px-1.5 tracking-normal">{stagedCount}</Badge>
           </div>
-          <div className="gt-changes-group-list">
+          <div className="flex flex-col gap-0">
             <WorktreeFileTree {...treeProps} nodes={stagedTree} mode="unstage" />
           </div>
-        </div>
+        </section>
       ) : null}
 
       {unstagedTree.length > 0 ? (
-        <div className="gt-changes-group">
-          <div className="gt-changes-group-header">
-            <span className="gt-changes-group-title">Changes</span>
-            <Badge variant="secondary" className="gt-changes-group-count">{unstagedCount}</Badge>
+        <section className="flex flex-col gap-0">
+          <div className="flex min-h-6 items-center justify-between border-b bg-muted/30 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span>Changes</span>
+            <Badge variant="secondary" className="min-w-6 justify-center px-1.5 tracking-normal">{unstagedCount}</Badge>
           </div>
-          <div className="gt-changes-group-list">
+          <div className="flex flex-col gap-0">
             <WorktreeFileTree {...treeProps} nodes={unstagedTree} mode="stage" />
           </div>
-        </div>
+        </section>
       ) : null}
-    </>
+    </div>
   );
 }

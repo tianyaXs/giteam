@@ -23,25 +23,23 @@ type OpenCodeAuthDialogProps = {
 export function OpenCodeAuthDialog(props: OpenCodeAuthDialogProps) {
   return (
     <Dialog open onOpenChange={(open) => { if (!open) props.onClose(); }}>
-      <DialogContent className="opencode-provider-form-dialog">
-        <DialogHeader className="opencode-provider-form-head">
-          <div>
-            <DialogTitle>{`更新 API Key · ${props.providerName}`}</DialogTitle>
-            <DialogDescription>{`${props.providerTag} provider`}</DialogDescription>
+      <DialogContent className="w-[min(560px,calc(100vw-32px))]">
+        <DialogHeader className="flex-row items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <DialogTitle className="text-xl">{`更新 API Key · ${props.providerName}`}</DialogTitle>
+            <DialogDescription className="text-[14px] leading-6">{`${props.providerTag} provider`}</DialogDescription>
           </div>
           <DialogClose asChild>
             <Button variant="outline" size="sm">关闭</Button>
           </DialogClose>
         </DialogHeader>
-        <div className="settings-provider-form opencode-provider-form-grid">
-          <Input
-            className="opencode-provider-picker-input"
-            placeholder="输入新的 API 密钥"
-            value={props.apiKey}
-            onChange={(e) => props.onApiKeyChange(e.target.value)}
-          />
-        </div>
-        <div className="toolbar opencode-provider-form-actions">
+        <Input
+          className="h-9 text-[15px]"
+          placeholder="输入新的 API 密钥"
+          value={props.apiKey}
+          onChange={(e) => props.onApiKeyChange(e.target.value)}
+        />
+        <div className="flex justify-end">
           <Button
             variant="contrast"
             size="sm"

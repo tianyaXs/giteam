@@ -24,9 +24,7 @@ code,
 kbd,
 pre,
 textarea,
-.terminal-log,
-.gt-skill-card-spec,
-.gt-skill-card-rank {
+.terminal-log {
   font-size: var(--gt-code-font-size);
 }
 
@@ -38,4 +36,3 @@ textarea,
 :root[data-theme="light"] #root {
   background: var(--bg);
 }
-

@@ -11,8 +11,8 @@ const Separator = forwardRef<
     decorative={decorative}
     orientation={orientation}
     className={cn(
-      "gt-separator",
-      orientation === "horizontal" ? "gt-separator-horizontal" : "gt-separator-vertical",
+      "shrink-0 bg-border/80",
+      orientation === "horizontal" ? "h-px w-full" : "h-full w-px",
       className
     )}
     {...props}

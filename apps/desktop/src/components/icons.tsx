@@ -47,8 +47,45 @@ export function CopyIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEleme
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="1.5"
+        strokeWidth="1.6"
       />
+    </svg>
+  );
+}
+
+export function SearchIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M14 14L17 17" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+export function SkillsIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path d="M10 2L12 7H17L13 10L15 15L10 12L5 15L7 10L3 7H8L10 2Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+export function PluginsIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="11" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="3" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="11" y="11" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+export function AutomationIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10 6V10L13 13" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
     </svg>
   );
 }
@@ -178,6 +215,15 @@ export function RefreshIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEl
   );
 }
 
+export function SettingsIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path d="M12 8.7a3.3 3.3 0 1 0 0 6.6 3.3 3.3 0 0 0 0-6.6Z" fill="none" stroke="currentColor" strokeWidth="1.55" />
+      <path d="M19 13.2v-2.4l-1.9-.34a5.7 5.7 0 0 0-.47-1.13l1.1-1.57-1.7-1.7-1.57 1.1c-.36-.2-.74-.36-1.14-.47L13 4.8h-2.4l-.34 1.89c-.4.11-.78.27-1.14.47l-1.57-1.1-1.7 1.7 1.1 1.57c-.2.36-.36.74-.47 1.13L4.6 10.8v2.4l1.88.34c.11.39.27.77.47 1.13l-1.1 1.57 1.7 1.7 1.57-1.1c.36.2.74.36 1.14.47l.34 1.89H13l.33-1.89c.4-.11.78-.27 1.14-.47l1.57 1.1 1.7-1.7-1.1-1.57c.2-.36.36-.74.47-1.13L19 13.2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function SyncIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
   return (
     <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
@@ -188,6 +234,15 @@ export function SyncIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEleme
         strokeLinejoin="round"
         strokeWidth="1.6"
       />
+    </svg>
+  );
+}
+
+export function PanelLeftIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7 3V17" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
