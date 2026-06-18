@@ -838,10 +838,15 @@ fn build_stream_path_env() -> String {
         .map(ToString::to_string)
         .collect();
     let extra = [
+        format!("{home}/.opencode/bin"),
+        format!("{home}/.npm-global/bin"),
         format!("{home}/.local/bin"),
+        format!("{home}/.cargo/bin"),
         format!("{home}/miniconda3/bin"),
         format!("{home}/anaconda3/bin"),
         format!("{home}/.pyenv/shims"),
+        "/opt/homebrew/Caskroom/miniconda/base/bin".to_string(),
+        "/opt/homebrew/Caskroom/miniconda3/base/bin".to_string(),
         "/opt/homebrew/bin".to_string(),
         "/usr/local/bin".to_string(),
         "/usr/bin".to_string(),
@@ -855,6 +860,19 @@ fn build_stream_path_env() -> String {
         }
     }
     dirs.join(":")
+}
+
+fn resolve_opencode_executable() -> Result<PathBuf, String> {
+    let path_env = build_stream_path_env();
+    for dir in path_env.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+        let candidate = Path::new(dir).join("opencode");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "opencode executable not found in PATH (searched: {path_env})"
+    ))
 }
 
 #[cfg(feature = "tauri-app")]
@@ -1332,7 +1350,8 @@ fn start_opencode_service(
         // A healthy service is already listening on the configured endpoint.
         return Ok((None, base));
     }
-    let mut serve = Command::new("opencode");
+    let opencode_bin = resolve_opencode_executable()?;
+    let mut serve = Command::new(&opencode_bin);
     serve
         .arg("serve")
         .arg("--hostname")
@@ -1350,7 +1369,7 @@ fn start_opencode_service(
         .stderr(Stdio::null());
     let child = serve
         .spawn()
-        .map_err(|e| format!("failed to start `opencode serve`: {e}"))?;
+        .map_err(|e| format!("failed to start `{} serve`: {e}", opencode_bin.display()))?;
 
     let wait_deadline = Instant::now() + Duration::from_secs(12);
     let mut ready = false;
@@ -1383,12 +1402,28 @@ pub fn shutdown_managed_opencode_service() {
 }
 
 pub fn warmup_managed_opencode_service() {
-    let repo = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| ".".to_string());
-    let _ = ensure_managed_service_local(repo.as_str());
+    // Desktop startup has no workspace selected yet. Only attach to an already-running
+    // service on the configured port; repo-scoped startup happens during workspace bootstrap.
+    let settings = read_opencode_service_settings();
+    let base = format!("http://127.0.0.1:{}", settings.port);
+    if !service_is_ready(".", base.as_str()) {
+        return;
+    }
+    if let Ok(mut guard) = service_pool().lock() {
+        let should_replace = guard
+            .as_ref()
+            .map(|svc| svc.base != base)
+            .unwrap_or(true);
+        if should_replace {
+            if let Some(mut stale) = guard.take() {
+                if let Some(mut child) = stale.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait_timeout(Duration::from_secs(1));
+                }
+            }
+            *guard = Some(ManagedOpencodeService { child: None, base });
+        }
+    }
 }
 
 fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {

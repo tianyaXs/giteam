@@ -3584,6 +3584,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     opencodeBootstrapDoneForRepoRef.current = "";
   }
 
+  async function ensureOpencodeServiceReady(repoPathArg: string): Promise<boolean> {
+    const path = repoPathArg.trim();
+    if (!path) return false;
+    try {
+      await invoke<string>("get_opencode_service_base", { repoPath: path });
+      appendOpencodeDebugLog("service.ready");
+      return true;
+    } catch (e) {
+      appendOpencodeDebugLog(`service.ready error ${String(e)}`);
+      return false;
+    }
+  }
+
   async function bootstrapOpencodeWorkspace(targetRepoId: string) {
     if (!runtimeStatus.opencode.installed) return;
     const repo = repos.find((item) => item.id === targetRepoId) || selectedRepo;
@@ -3595,6 +3608,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     appendOpencodeDebugLog(`bootstrap.start repo=${repoId}`);
 
     let providersOk = opencodeProviderCatalogLoadedRef.current;
+    let serviceOk = false;
     let configOk = false;
     let modelConfigOk = opencodeModelConfigLoadedRef.current;
     let configuredModelsOk = opencodeConfiguredModelsLoadedRef.current;
@@ -3618,6 +3632,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         if (isCancelled()) return;
 
         const isLastAttempt = attempt === OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS.length - 1;
+
+        if (!serviceOk) {
+          serviceOk = await ensureOpencodeServiceReady(repo.path);
+        }
 
         if (!providersOk) {
           providersOk = await loadOpencodeProviderCatalogOnce();
@@ -3654,16 +3672,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }
         }
 
-        if (providersOk && configOk && modelConfigOk && configuredModelsOk && sessionsOk) {
+        if (serviceOk && providersOk && configOk && modelConfigOk && configuredModelsOk && sessionsOk) {
           break;
         }
       }
 
       if (isCancelled()) return;
 
-      opencodeBootstrapDoneForRepoRef.current = providersOk ? repoId : "";
+      opencodeBootstrapDoneForRepoRef.current = serviceOk && providersOk ? repoId : "";
       appendOpencodeDebugLog(
-        `bootstrap.done repo=${repoId} providers=${providersOk} config=${configOk} modelConfig=${modelConfigOk} configuredModels=${configuredModelsOk} sessions=${sessionsOk}`
+        `bootstrap.done repo=${repoId} service=${serviceOk} providers=${providersOk} config=${configOk} modelConfig=${modelConfigOk} configuredModels=${configuredModelsOk} sessions=${sessionsOk}`
       );
     } finally {
       if (opencodeBootstrapTokenRef.current === token) {
