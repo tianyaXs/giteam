@@ -7,6 +7,225 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INSTALL_TIMEOUT_SECS: u64 = 15 * 60;
+const UNINSTALL_TIMEOUT_SECS: u64 = 2 * 60;
+
+/// Shared shell helpers for uninstall scripts. Homebrew may hang while fetching
+/// formulae.brew.sh even with HOMEBREW_NO_AUTO_UPDATE; timed brew + Cellar fallback
+/// keeps the desktop UI responsive.
+const UNINSTALL_SHELL_HELPERS: &str = r#"
+giteam_run_timed() {
+  local timeout_secs=$1
+  shift
+  "$@" &
+  local pid=$!
+  local elapsed=0
+  while kill -0 "$pid" 2>/dev/null && [ "$elapsed" -lt "$timeout_secs" ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid"
+  return $?
+}
+
+giteam_brew_cellar_name() {
+  local formula=$1
+  case "$formula" in */*) echo "${formula##*/}" ;; *) echo "$formula" ;; esac
+}
+
+giteam_brew_formula_installed() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Cellar/$base" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+giteam_brew_remove_formula() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Cellar/$base" ]; then
+      rm -rf "$prefix/Cellar/$base"
+      rm -f "$prefix/bin/$base"
+      rm -rf "$prefix/opt/$base"
+      echo "[giteam] removed $prefix/Cellar/$base directly"
+    fi
+  done
+}
+
+giteam_brew_uninstall() {
+  local formula=$1
+  if ! command -v brew >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! giteam_brew_formula_installed "$formula"; then
+    return 0
+  fi
+  echo "[giteam] uninstalling brew formula: $formula"
+  if giteam_run_timed 12 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew uninstall --force "$formula"; then
+    echo "[giteam] brew uninstall $formula succeeded"
+  else
+    echo "[giteam] brew uninstall $formula timed out or failed; removing Cellar directly"
+    giteam_brew_remove_formula "$formula"
+  fi
+}
+
+giteam_find_npm() {
+  if command -v npm >/dev/null 2>&1; then
+    command -v npm
+    return
+  fi
+  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return
+    fi
+  done
+}
+
+giteam_npm_uninstall() {
+  local npm_cmd
+  npm_cmd=$(giteam_find_npm)
+  if [ -z "$npm_cmd" ]; then
+    return 0
+  fi
+  echo "[giteam] npm uninstall: $*"
+  giteam_run_timed 60 "$npm_cmd" uninstall -g "$@" || echo "[giteam] npm uninstall timed out or failed"
+}
+"#;
+
+fn wrap_runtime_script(name: &str, action: &str, script: &str) -> String {
+    match action {
+        "uninstall" => format!("{UNINSTALL_SHELL_HELPERS}\n{script}"),
+        "bootstrap" | "install" if name == "opencode" => {
+            format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}")
+        }
+        _ => script.to_string(),
+    }
+}
+
+fn apply_homebrew_offline_env(cmd: &mut Command) {
+    cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1");
+    cmd.env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+    cmd.env("HOMEBREW_NO_ANALYTICS", "1");
+}
+
+/// Shared shell helpers for macOS runtime bootstrap. Skips brew when present,
+/// never runs `brew update`, and surfaces network timeouts clearly.
+const BOOTSTRAP_SHELL_HELPERS: &str = r#"
+giteam_run_timed() {
+  local timeout_secs=$1
+  shift
+  "$@" &
+  local pid=$!
+  local elapsed=0
+  while kill -0 "$pid" 2>/dev/null && [ "$elapsed" -lt "$timeout_secs" ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid"
+  return $?
+}
+
+giteam_network_fail() {
+  echo "NETWORK_ERROR: 安装超时，请检查网络连接后重试。"
+  exit 2
+}
+
+giteam_brew_install() {
+  local spec=$1
+  local timeout_secs=${2:-180}
+  if ! giteam_run_timed "$timeout_secs" env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew install -v "$spec"; then
+    echo "NETWORK_ERROR: $spec 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
+}
+
+giteam_npm_install_global() {
+  local timeout_secs=$1
+  shift
+  local npm_cmd=""
+  if command -v npm >/dev/null 2>&1; then
+    npm_cmd=$(command -v npm)
+  else
+    for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+      if [ -x "$p" ]; then
+        npm_cmd=$p
+        break
+      fi
+    done
+  fi
+  if [ -z "$npm_cmd" ]; then
+    echo "npm is required but not found in PATH."
+    exit 2
+  fi
+  if ! giteam_run_timed "$timeout_secs" "$npm_cmd" install -g --loglevel info --progress=true "$@"; then
+    echo "NETWORK_ERROR: npm 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
+}
+
+giteam_find_npm() {
+  if command -v npm >/dev/null 2>&1; then
+    command -v npm
+    return
+  fi
+  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return
+    fi
+  done
+}
+
+giteam_install_opencode() {
+  local timeout_secs=${1:-300}
+  local curl_timeout=60
+  export PATH="$HOME/.opencode/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+  if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+    return 0
+  fi
+  local npm_cmd
+  npm_cmd=$(giteam_find_npm)
+  if [ -n "$npm_cmd" ]; then
+    echo "[giteam] PROGRESS: 68 正在通过 npm 安装 OpenCode..."
+    if giteam_run_timed "$timeout_secs" "$npm_cmd" install -g opencode-ai; then
+      if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+        echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+        return 0
+      fi
+    fi
+    echo "[giteam] npm 安装失败，尝试官方脚本..."
+  fi
+  echo "[giteam] PROGRESS: 74 正在通过官方脚本安装 OpenCode..."
+  if giteam_run_timed "$curl_timeout" bash -c 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'; then
+    if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+      echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+      return 0
+    fi
+  fi
+  if [ -z "$npm_cmd" ]; then
+    echo "NETWORK_ERROR: OpenCode 安装失败，未找到 npm 且官方脚本不可用。请检查网络后重试。"
+  else
+    echo "NETWORK_ERROR: OpenCode 安装失败，请检查网络连接后重试。"
+  fi
+  exit 2
+}
+"#;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +301,7 @@ fn build_path_env() -> String {
         .map(ToString::to_string)
         .collect();
     let extras = [
+        format!("{home}/.opencode/bin"),
         format!("{home}/.local/bin"),
         format!("{home}/.npm-global/bin"),
         format!("{home}/.cargo/bin"),
@@ -274,7 +494,7 @@ pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencySta
         "opencode" => Ok(check_dep(
             "opencode",
             &["--version"],
-            "npm i -g opencode-ai",
+            "npm install -g opencode-ai",
         )),
         "giteam" => Ok(check_giteam_npm_global()),
         _ => Err(format!("unsupported dependency: {}", dep_name)),
@@ -339,7 +559,7 @@ else
   echo "Homebrew not found. Triggered Xcode Command Line Tools installer."
 fi"#),
         ("git", "uninstall") => Ok(r#"if command -v brew >/dev/null 2>&1; then
-  brew uninstall git || true
+  giteam_brew_uninstall git || true
 else
   echo "Git installed by Xcode Command Line Tools must be removed manually."
 fi"#),
@@ -349,27 +569,19 @@ fi"#),
 fi
 brew tap entireio/tap
 brew install entireio/tap/entire"#),
-        ("entire", "uninstall") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew uninstall entireio/tap/entire || true
-fi
+        ("entire", "uninstall") => Ok(r##"giteam_brew_uninstall entire
 if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished.""##),
-        ("opencode", "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
-  npm install -g opencode-ai
-else
-  echo "npm is required to install OpenCode (not found in PATH)."
-  exit 2
-fi"##),
-        ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
-  opencode uninstall --force || true
-fi
-if command -v brew >/dev/null 2>&1; then
-  brew uninstall anomalyco/tap/opencode || true
-fi
-if command -v npm >/dev/null 2>&1; then
-  npm uninstall -g opencode-ai || true
+        ("opencode", "install") => Ok(r##"giteam_install_opencode 300
+echo "OpenCode install finished.""##),
+        ("opencode", "uninstall") => Ok(r##"giteam_brew_uninstall opencode
+giteam_brew_uninstall anomalyco/tap/opencode
+giteam_npm_uninstall opencode-ai @opencode-ai/opencode opencode
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  rm -f "$HOME/.opencode/bin/opencode"
+  echo "[giteam] removed $HOME/.opencode/bin/opencode"
 fi
 echo "OpenCode uninstall finished.""##),
         ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
@@ -426,20 +638,7 @@ if [ -x "$BIN" ]; then
 else
   echo "[giteam] install finished but bin not found at $BIN"
 fi"##),
-        ("giteam", "uninstall") => Ok(r##"NPM_CMD=""
-if command -v npm >/dev/null 2>&1; then
-  NPM_CMD=$(command -v npm)
-else
-  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
-    if [ -x "$p" ]; then
-      NPM_CMD=$p
-      break
-    fi
-  done
-fi
-if [ -n "$NPM_CMD" ]; then
-  "$NPM_CMD" uninstall -g giteam || true
-fi
+        ("giteam", "uninstall") => Ok(r##"giteam_npm_uninstall giteam
 echo "giteam uninstall finished.""##),
         // Mirrors the standalone macOS runtime bootstrap script so first-launch
         // setup can run inside the packaged desktop app without relying on an
@@ -477,7 +676,10 @@ install_homebrew() {
     return
   fi
   log "Installing Homebrew"
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  if ! giteam_run_timed 600 env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+    echo "NETWORK_ERROR: Homebrew 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
   ensure_brew_in_shell
   if ! has_cmd brew; then
     echo "Homebrew installation failed."
@@ -491,7 +693,7 @@ ensure_git() {
     return
   fi
   log "Installing git"
-  brew install -v git
+  giteam_brew_install git
 }
 
 ensure_node() {
@@ -500,7 +702,7 @@ ensure_node() {
     return
   fi
   log "Installing node"
-  brew install -v node
+  giteam_brew_install node
 }
 
 ensure_entire() {
@@ -509,8 +711,10 @@ ensure_entire() {
     return
   fi
   log "Installing Entire"
-  brew tap entireio/tap
-  brew install entireio/tap/entire
+  if ! giteam_run_timed 120 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew tap entireio/tap; then
+    giteam_network_fail
+  fi
+  giteam_brew_install entireio/tap/entire
 }
 
 ensure_opencode() {
@@ -519,7 +723,7 @@ ensure_opencode() {
     return
   fi
   log "Installing OpenCode"
-  npm install -g --loglevel info --progress=true opencode-ai
+  giteam_install_opencode 300
 }
 
 ensure_giteam() {
@@ -528,13 +732,11 @@ ensure_giteam() {
     return
   fi
   log "Installing giteam"
-  npm install -g --loglevel info --progress=true giteam@latest
+  giteam_npm_install_global 300 giteam@latest
 }
 
 install_homebrew
 ensure_brew_in_shell
-log "Updating Homebrew"
-brew update -v
 ensure_git
 ensure_node
 ensure_brew_in_shell
@@ -561,11 +763,7 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
         &["--version"],
         "brew tap entireio/tap && brew install entireio/tap/entire",
     );
-    let opencode = check_dep(
-        "opencode",
-        &["--version"],
-        "npm i -g opencode-ai",
-    );
+    let opencode = check_dep("opencode", &["--version"], "npm install -g opencode-ai");
     let giteam = check_giteam_npm_global();
     RuntimeRequirementsStatus {
         platform: std::env::consts::OS.to_string(),
@@ -599,12 +797,16 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
         map.insert(job_id.clone(), job);
     }
 
-    let script_owned = script.to_string();
+    let script_owned = wrap_runtime_script(name, action, script);
+    let action_owned = action.to_string();
     let job_id_for_thread = job_id.clone();
     thread::spawn(move || {
         let mut cmd = Command::new("/bin/zsh");
         cmd.args(["-fc", &script_owned]);
         cmd.env("PATH", build_path_env());
+        if action_owned == "uninstall" || action_owned == "bootstrap" {
+            apply_homebrew_offline_env(&mut cmd);
+        }
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -647,6 +849,11 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
         }
 
         let start = Instant::now();
+        let timeout_secs = if action_owned == "uninstall" {
+            UNINSTALL_TIMEOUT_SECS
+        } else {
+            INSTALL_TIMEOUT_SECS
+        };
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -663,15 +870,15 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
                     break;
                 }
                 Ok(None) => {
-                    if start.elapsed() > Duration::from_secs(INSTALL_TIMEOUT_SECS) {
+                    if start.elapsed() > Duration::from_secs(timeout_secs) {
                         let _ = child.kill();
                         let _ = child.wait();
-                        append_job_log(&job_id_for_thread, "installation timed out.");
+                        append_job_log(&job_id_for_thread, "runtime dependency action timed out.");
                         set_job_done(
                             &job_id_for_thread,
                             false,
                             Some(-1),
-                            Some("installation timed out".to_string()),
+                            Some("runtime dependency action timed out".to_string()),
                         );
                         break;
                     }

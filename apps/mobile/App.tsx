@@ -1120,6 +1120,7 @@ export default function App() {
     repoPath,
     sessions,
     sessionSearch,
+    sessionStatusMap,
     sessionDisplayedCount,
     sessionId,
     messages,

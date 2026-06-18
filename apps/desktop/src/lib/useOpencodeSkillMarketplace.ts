@@ -109,7 +109,9 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
   const [showSkillInstallMenu, setShowSkillInstallMenu] = useState(false);
 
   const opencodeSkillCatalogRequestRef = useRef(0);
+  const opencodeSkillCatalogInflightRef = useRef<Record<string, boolean>>({});
   const opencodeSkillMarketListRef = useRef<HTMLDivElement | null>(null);
+  const opencodeSkillUserNearBottomRef = useRef(false);
 
   const opencodeFallbackMarketplaceRows = useMemo(() => {
     if (!skillsVisible) return [];
@@ -276,9 +278,13 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     options: { allowBackendFallback?: boolean; force?: boolean } = {}
   ) {
     const requestRepoPath = repoPathRef.current.trim();
-    const requestId = ++opencodeSkillCatalogRequestRef.current;
+    if (!requestRepoPath) return;
     const cacheKey = buildOpencodeSkillCatalogCacheKey(viewArg, "");
+    const requestKey = `${requestRepoPath}:${cacheKey}:${pageArg}`;
+    if (!options.force && opencodeSkillCatalogInflightRef.current[requestKey]) return;
     if (!options.force && opencodeSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
+    opencodeSkillCatalogInflightRef.current[requestKey] = true;
+    const requestId = ++opencodeSkillCatalogRequestRef.current;
     startTransition(() => {
       setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
       setOpencodeSkillCatalogLoading(true);
@@ -327,6 +333,7 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
       });
       appendDebugLogRef.current(`skill.catalog.error ${String(error)}`);
     } finally {
+      delete opencodeSkillCatalogInflightRef.current[requestKey];
       if (requestId === opencodeSkillCatalogRequestRef.current && repoPathRef.current.trim() === requestRepoPath) {
         startTransition(() => setOpencodeSkillCatalogLoading(false));
       }
@@ -334,7 +341,7 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
   }
 
   async function loadInitialSkillsmpCatalog() {
-    if (!ensureRepoSelectedRef.current() || opencodeSkillCatalogLoading || opencodeSkillCatalogRows.length > 0) return;
+    if (!repoPathRef.current.trim() || opencodeSkillCatalogLoading || opencodeSkillCatalogRows.length > 0) return;
     if (opencodeSkillCatalogAttempted[buildOpencodeSkillCatalogCacheKey(opencodeSkillCatalogView, "")]) return;
     await fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0);
   }
@@ -383,7 +390,8 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     const element = opencodeSkillMarketListRef.current;
     if (!element) return;
     const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distanceToBottom > 520) return;
+    opencodeSkillUserNearBottomRef.current = distanceToBottom <= 520;
+    if (!opencodeSkillUserNearBottomRef.current) return;
     if (opencodeCanRevealMoreSkills && !opencodeSkillRevealLoading) {
       revealMoreOpencodeSkills();
       return;
@@ -522,14 +530,31 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
       revealMoreOpencodeSkills();
       return;
     }
-    if (opencodeCanFetchMoreCatalogSkills) {
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
-    }
   }, [
     skillsVisible,
     visibleOpencodeMarketplaceRows.length,
     opencodeCanFetchMoreCatalogSkills,
     opencodeCanRevealMoreSkills,
+    opencodeSkillCatalogPage,
+    opencodeSkillCatalogView,
+    opencodeSkillsInitialLoading,
+    opencodeSkillsPaging
+  ]);
+
+  useEffect(() => {
+    if (!skillsVisible || !opencodeSkillUserNearBottomRef.current) return;
+    if (opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
+    if (opencodeCanRevealMoreSkills) return;
+    if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
+      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
+    }
+  }, [
+    skillsVisible,
+    visibleOpencodeMarketplaceRows.length,
+    opencodeMarketplaceRows.length,
+    opencodeCanFetchMoreCatalogSkills,
+    opencodeCanRevealMoreSkills,
+    opencodeSkillCatalogLoading,
     opencodeSkillCatalogPage,
     opencodeSkillCatalogView,
     opencodeSkillsInitialLoading,

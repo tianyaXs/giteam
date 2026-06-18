@@ -53,6 +53,8 @@ fn file_mime_from_ext(ext: &str) -> Option<&'static str> {
     match ext {
         "doc" => Some("application/msword"),
         "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "md" | "markdown" => Some("text/markdown"),
+        "mdx" => Some("text/mdx"),
         "pdf" => Some("application/pdf"),
         "ppt" => Some("application/vnd.ms-powerpoint"),
         "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
@@ -178,7 +180,10 @@ fn attachment_from_path(path: &Path) -> Result<Option<UiOpencodeAttachment>, Str
     } else {
         (
             source_mime.clone(),
-            format!("data:{source_mime};base64,{}", BASE64_STANDARD.encode(&bytes)),
+            format!(
+                "data:{source_mime};base64,{}",
+                BASE64_STANDARD.encode(&bytes)
+            ),
         )
     };
     let kind = if mime.starts_with("image/") {
@@ -195,7 +200,9 @@ fn attachment_from_path(path: &Path) -> Result<Option<UiOpencodeAttachment>, Str
     }))
 }
 
-fn attachments_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<UiOpencodeAttachment>, String> {
+fn attachments_from_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<Vec<UiOpencodeAttachment>, String> {
     let mut out = Vec::new();
     for path in paths {
         if let Some(attachment) = attachment_from_path(&path)? {
@@ -288,7 +295,9 @@ pub fn pick_opencode_attachments() -> Result<Vec<UiOpencodeAttachment>, String> 
 }
 
 #[tauri::command]
-pub fn read_opencode_attachments_from_paths(paths: Vec<String>) -> Result<Vec<UiOpencodeAttachment>, String> {
+pub fn read_opencode_attachments_from_paths(
+    paths: Vec<String>,
+) -> Result<Vec<UiOpencodeAttachment>, String> {
     let normalized = paths
         .into_iter()
         .map(|value| value.trim().to_string())
@@ -342,7 +351,10 @@ pub fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
 #[cfg(target_os = "macos")]
 fn macos_clipboard_image_path() -> Option<PathBuf> {
     let target = std::env::temp_dir().join(format!("giteam-clipboard-{}.png", fastrand::u64(..)));
-    let target_text = target.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let target_text = target
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let script = format!(
         r#"
 use framework "AppKit"
@@ -365,7 +377,11 @@ if didWrite as boolean then return outPath
 return ""
 "#
     );
-    let output = Command::new("osascript").arg("-e").arg(script).output().ok()?;
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -432,7 +448,11 @@ pub fn read_local_attachment_preview(path: &str) -> Result<UiAttachmentPreview, 
             modified: text,
             preview_supported: true,
             preview_reason: None,
-            preview_kind: Some("text".to_string()),
+            preview_kind: Some(if matches!(ext.as_str(), "md" | "markdown" | "mdx") {
+                "markdown".to_string()
+            } else {
+                "text".to_string()
+            }),
             mime,
             data_base64: None,
         }),

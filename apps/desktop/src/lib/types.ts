@@ -90,7 +90,7 @@ export type GitWorktreeFileContent = {
   modified: string;
   previewSupported?: boolean;
   previewReason?: string;
-  previewKind?: "text" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
+  previewKind?: "text" | "markdown" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
   mime?: string;
   dataBase64?: string;
 };

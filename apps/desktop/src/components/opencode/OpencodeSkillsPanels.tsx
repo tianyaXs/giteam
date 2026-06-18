@@ -1,15 +1,12 @@
 import { useState, type ReactNode, type Ref } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { RefreshIcon, StarIcon } from "../icons";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
-  OPENCODE_SKILL_DISPLAY_BATCH_SIZE,
-  type OpencodeSkillAudit,
-  type OpencodeSkillDetail,
   type OpencodeInstalledSkillGroup,
   type OpencodeSkillInfo
 } from "../../lib/opencodeSkillData";
-import { formatSkillInstalls, skillQualityLabel, type OpencodeSkillSearchResult } from "../../lib/opencodeSkillMarketplace";
+import { type OpencodeSkillSearchResult } from "../../lib/opencodeSkillMarketplace";
 import type {
   OpencodeSkillCatalogView,
   OpencodeSkillSearchMeta,
@@ -17,10 +14,11 @@ import type {
 } from "../../lib/useOpencodeSkillMarketplace";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
+import { Separator } from "../ui/separator";
 import { Skeleton } from "../ui/skeleton";
 import {
   DropdownMenu,
@@ -31,6 +29,9 @@ import {
 } from "../ui/dropdown-menu";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { cn } from "@/lib/utils";
+
+const skillSelectedSurface = "bg-[color-mix(in_srgb,var(--foreground)_7%,transparent)]";
+const skillToggleItemClass = "data-[state=on]:bg-[color-mix(in_srgb,var(--foreground)_8%,transparent)] data-[state=on]:text-foreground hover:bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] hover:text-foreground";
 
 function ModuleEmpty({ children, danger = false }: { children: string; danger?: boolean }) {
   return (
@@ -47,18 +48,8 @@ function ScopeBadge({ scope, children }: { scope?: string; children?: ReactNode 
   const variant = scope === "global" ? "default" : scope === "project" ? "secondary" : "outline";
 
   return (
-    <Badge variant={variant} className="shrink-0 normal-case tracking-normal">
+    <Badge variant={variant} className="shrink-0 rounded-md normal-case tracking-normal">
       {children || getSkillScopeLabel(scope)}
-    </Badge>
-  );
-}
-
-function QualityBadge({ quality }: { quality: string }) {
-  const variant = quality === "popular" ? "default" : quality === "trusted" ? "success" : "secondary";
-
-  return (
-    <Badge variant={variant} className="normal-case tracking-normal">
-      {quality}
     </Badge>
   );
 }
@@ -67,7 +58,7 @@ function SkillSkeletonList({ rows = 6, className }: { rows?: number; className?:
   return (
     <div className={cn("flex flex-col gap-2", className)} aria-hidden="true">
       {Array.from({ length: rows }).map((_, index) => (
-        <Skeleton key={index} className="h-20 w-full rounded-lg" />
+        <Skeleton key={index} className="h-16 w-full rounded-md" />
       ))}
     </div>
   );
@@ -208,39 +199,35 @@ export function OpencodeMarketplaceCards(props: MarketplaceCardsProps) {
   return rows.map((result, index) => {
     const resultInstallSpec = result.installSpec || result.spec;
     const isInstallingThisSkill = installingSpec === resultInstallSpec || installingSpec === result.spec;
-    const quality = skillQualityLabel(result);
 
     return (
-      <Card
+      <div
         key={result.id || result.spec}
         className={cn(
-          "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg p-2 shadow-none transition-colors",
-          selectedSpec === result.spec && "border-primary/40 bg-primary/5"
+          "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border/70 px-1 py-2 transition-colors last:border-b-0",
+          selectedSpec === result.spec && cn("rounded-md border-b-transparent", skillSelectedSurface)
         )}
       >
         <Button
           variant="ghost"
-          className="h-auto min-w-0 justify-start gap-3 p-2 text-left"
+          className="h-auto min-w-0 justify-start gap-3 rounded-md p-2 text-left hover:bg-transparent hover:text-foreground"
           onClick={() => void onSelectSkill(result)}
         >
-          <Badge variant="outline" className="shrink-0 tabular-nums">{String(index + 1).padStart(2, "0")}</Badge>
+          <span className="w-7 shrink-0 text-center text-xs tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
           <div className="grid min-w-0 flex-1 gap-1">
             <strong className="truncate text-base font-semibold">{result.skill}</strong>
             <small className="truncate text-[14px] text-muted-foreground">{result.package}</small>
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <QualityBadge quality={quality} />
-              <Badge variant="outline" className="max-w-full normal-case tracking-normal">
-                <span className="truncate">{resultInstallSpec}</span>
-              </Badge>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-xs text-muted-foreground">{resultInstallSpec}</span>
             </div>
           </div>
           <div className="hidden min-w-28 justify-items-end gap-1 md:grid">
             <b className="inline-flex items-center gap-1 text-[14px] font-semibold"><StarIcon width={14} height={14} /> {result.installs}</b>
-            <small className="text-[14px] text-muted-foreground">{typeof result.change === "number" ? `${result.change >= 0 ? "+" : ""}${result.change} today` : "trusted listing"}</small>
+            {typeof result.change === "number" ? <small className="text-[14px] text-muted-foreground">{result.change >= 0 ? "+" : ""}{result.change} today</small> : null}
           </div>
         </Button>
         <Button
-          variant={isInstallingThisSkill ? "secondary" : "ghost"}
+          variant={isInstallingThisSkill ? "secondary" : "outline"}
           size="sm"
           className="shrink-0"
           disabled={isInstallingThisSkill || busy}
@@ -257,7 +244,7 @@ export function OpencodeMarketplaceCards(props: MarketplaceCardsProps) {
             {installLog || "正在启动安装日志..."}
           </pre>
         ) : null}
-      </Card>
+      </div>
     );
   });
 }
@@ -320,7 +307,6 @@ type SkillsMarketPanelProps = {
   skills: OpencodeSkillInfo[];
   skillsLoading: boolean;
   skillsError: string;
-  skillsmpApiKey: string;
   removingKey: string;
   skillBusy: boolean;
   skillInstallingSpec: string;
@@ -331,20 +317,13 @@ type SkillsMarketPanelProps = {
   searchStrategy: OpencodeSkillSearchStrategy;
   searchResults: OpencodeSkillSearchResult[];
   catalogView: OpencodeSkillCatalogView;
-  catalogPage: number;
-  catalogTotal: number;
   searchMeta: OpencodeSkillSearchMeta | null;
   selectedMarketplaceSkill: OpencodeSkillSearchResult | null;
-  selectedSkillDetail: OpencodeSkillDetail | null;
-  selectedSkillAudits: OpencodeSkillAudit[];
-  selectedSkillLoading: boolean;
-  showSkillInstallMenu: boolean;
   marketplaceRows: OpencodeSkillSearchResult[];
   visibleMarketplaceRows: OpencodeSkillSearchResult[];
   initialLoading: boolean;
   searching: boolean;
   paging: boolean;
-  canAutoLoadMore: boolean;
   onSearchQueryChange: (value: string) => void;
   onSearch: () => void | Promise<void>;
   onSearchStrategyChange: (value: OpencodeSkillSearchStrategy) => void;
@@ -353,9 +332,7 @@ type SkillsMarketPanelProps = {
   onScrollMarket: () => void;
   onSelectMarketplaceSkill: (skill: OpencodeSkillSearchResult) => void | Promise<void>;
   onInstallMarketplaceSkill: (spec: string) => void | Promise<void>;
-  onToggleSkillInstallMenu: () => void;
   onInstallSelectedMarketplaceSkill: (scope: "project" | "global") => void | Promise<void>;
-  onLoadSelectedSkillDetails: () => void | Promise<void>;
   onReferenceSkill: (skill: OpencodeSkillInfo) => void;
   onRemoveSkill: (skill: OpencodeSkillInfo) => void | Promise<void>;
   onRemoveSkillGroup: (group: OpencodeInstalledSkillGroup) => void | Promise<void>;
@@ -367,7 +344,6 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
     skills,
     skillsLoading,
     skillsError,
-    skillsmpApiKey,
     removingKey,
     skillBusy,
     skillInstallingSpec,
@@ -378,20 +354,13 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
     searchStrategy,
     searchResults,
     catalogView,
-    catalogPage,
-    catalogTotal,
     searchMeta,
     selectedMarketplaceSkill,
-    selectedSkillDetail,
-    selectedSkillAudits,
-    selectedSkillLoading,
-    showSkillInstallMenu,
     marketplaceRows,
     visibleMarketplaceRows,
     initialLoading,
     searching,
     paging,
-    canAutoLoadMore,
     onSearchQueryChange,
     onSearch,
     onSearchStrategyChange,
@@ -400,25 +369,24 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
     onScrollMarket,
     onSelectMarketplaceSkill,
     onInstallMarketplaceSkill,
-    onToggleSkillInstallMenu,
     onInstallSelectedMarketplaceSkill,
-    onLoadSelectedSkillDetails,
     onReferenceSkill,
     onRemoveSkill,
     onRemoveSkillGroup
   } = props;
   const [marketTab, setMarketTab] = useState<OpencodeSkillCatalogView | "installed">("all-time");
   const installedView = marketTab === "installed";
+  const activeMarketValue = installedView ? "installed" : catalogView;
 
   return (
     <div className="min-h-0">
       <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <Card className="min-h-0 overflow-auto rounded-lg p-3 shadow-none" ref={marketListRef} onScroll={onScrollMarket}>
+        <div className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3" ref={marketListRef} onScroll={onScrollMarket}>
           <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3">
-              <span className="text-[15px] text-muted-foreground" aria-hidden="true">⌕</span>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3">
+              <Search aria-hidden="true" className="text-muted-foreground" />
               <Input
-                className="h-9 rounded-lg border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0"
+                className="h-9 rounded-md border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0"
                 placeholder={searchStrategy === "ai" ? "Describe what you want to build or automate..." : "Search skills, sources, descriptions..."}
                 value={searchQuery}
                 onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -428,7 +396,7 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
               />
             </div>
           </div>
-          <div className="flex flex-col gap-2 border-b border-border py-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-2 py-3 md:flex-row md:items-center md:justify-between">
             <ToggleGroup
               type="single"
               value={searchStrategy}
@@ -443,42 +411,33 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
                 ["keyword", "关键词"],
                 ["ai", "AI 语义"]
               ] as Array<[OpencodeSkillSearchStrategy, string]>).map(([strategy, label]) => (
-                <ToggleGroupItem key={strategy} value={strategy}>{label}</ToggleGroupItem>
+                <ToggleGroupItem key={strategy} value={strategy} className={skillToggleItemClass}>{label}</ToggleGroupItem>
               ))}
             </ToggleGroup>
-            <span className="text-[14px] text-muted-foreground">
-              {searchStrategy === "ai"
-                ? (skillsmpApiKey ? "AI 语义搜索已启用" : "未配置 key 时会自动回退关键词搜索")
-                : `按 stars 排序，首屏展示 ${OPENCODE_SKILL_DISPLAY_BATCH_SIZE} 条`}
-            </span>
           </div>
-          <div className="flex flex-wrap gap-1 py-3">
-            <Button
-              variant={installedView ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setMarketTab("installed")}
-            >
-              已安装 ({skills.length})
-            </Button>
-            {([
-              ["all-time", `All Time${catalogTotal ? ` (${formatSkillInstalls(catalogTotal)})` : ""}`],
-              ["trending", "Trending (24h)"],
-              ["hot", "Hot"],
-              ["official", "Official"]
-            ] as Array<[OpencodeSkillCatalogView, string]>).map(([view, label]) => (
-              <Button
-                key={view}
-                variant={!installedView && catalogView === view && searchResults.length === 0 ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => {
-                  setMarketTab(view);
-                  onSwitchCatalogView(view);
-                }}
-              >
-                {label}
-              </Button>
-            ))}
-          </div>
+          <Separator />
+          <ToggleGroup
+            type="single"
+            value={activeMarketValue}
+            onValueChange={(value) => {
+              if (!value) return;
+              if (value === "installed") {
+                setMarketTab("installed");
+                return;
+              }
+              const next = value as OpencodeSkillCatalogView;
+              setMarketTab(next);
+              onSwitchCatalogView(next);
+            }}
+            className="flex-wrap justify-start py-3"
+            aria-label="Skill 分类"
+          >
+            <ToggleGroupItem value="installed" className={skillToggleItemClass}>已安装</ToggleGroupItem>
+            <ToggleGroupItem value="all-time" className={skillToggleItemClass}>全部</ToggleGroupItem>
+            <ToggleGroupItem value="trending" className={skillToggleItemClass}>趋势</ToggleGroupItem>
+            <ToggleGroupItem value="hot" className={skillToggleItemClass}>热门</ToggleGroupItem>
+            <ToggleGroupItem value="official" className={skillToggleItemClass}>官方</ToggleGroupItem>
+          </ToggleGroup>
           {skillsError ? <ModuleEmpty danger>{skillsError}</ModuleEmpty> : null}
           {skillInstallNotice ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{skillInstallNotice}</div> : null}
           {(skillBusy || skillInstallingSpec || skillInstallLog) ? (
@@ -495,14 +454,14 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
           <div className="flex flex-col gap-2 py-2 md:flex-row md:items-center md:justify-between">
             <span className="text-[14px] text-muted-foreground">
               {installedView
-                ? `Installed · ${groups.length} groups · ${skills.length} skills`
+                ? `已安装 ${skills.length}`
                 : searchResults.length > 0
-                  ? `Search · ${searchMeta?.searchType || "skillsmp"} · ${searchMeta?.count || searchResults.length} results`
+                  ? `搜索结果 ${searchMeta?.count || searchResults.length}`
                   : marketplaceRows.length > 0
-                    ? `${catalogView} leaderboard · page ${catalogPage + 1}`
+                    ? "Skills 市场"
                     : initialLoading
-                      ? "正在整理 Skills 市场首页..."
-                      : "展示本地推荐榜单"}
+                      ? "加载中"
+                      : "推荐"}
             </span>
             {installedView ? (
               <Button variant="ghost" size="sm" onClick={() => void onRefreshSkills()} disabled={skillsLoading}>
@@ -539,10 +498,6 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
               {(searching || paging) ? (
                 <SkillSkeletonList rows={2} />
               ) : null}
-              <div className="flex flex-col gap-1 border-t border-border pt-3 text-[14px] text-muted-foreground md:flex-row md:items-center md:justify-between">
-                <span>{initialLoading ? "首次进入时会先准备精选榜单与已安装列表" : `已显示 ${visibleMarketplaceRows.length} / ${marketplaceRows.length}`}</span>
-                {initialLoading ? <span>正在为你整理首页内容...</span> : paging ? <span>Loading more...</span> : canAutoLoadMore ? <span>滑到底部自动加载更多</span> : <span>已到底部</span>}
-              </div>
             </>
           ) : (
             <Empty className="min-h-48 flex-none border border-dashed border-border bg-muted/30">
@@ -552,17 +507,17 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
               </EmptyHeader>
             </Empty>
           )}
-        </Card>
+        </div>
 
-        <Card className="min-h-0 rounded-lg p-3 shadow-none">
+        <div className="min-h-0 rounded-md border border-border bg-background p-3">
           {selectedMarketplaceSkill ? (
             <div className="flex flex-col gap-3">
-              <CardHeader className="p-0">
-                <Badge variant="outline" className="w-fit normal-case tracking-normal">selected skill</Badge>
-                <CardTitle className="text-base">{selectedMarketplaceSkill.skill}</CardTitle>
-                <CardDescription className="truncate">{selectedMarketplaceSkill.package}</CardDescription>
-                <QualityBadge quality={skillQualityLabel(selectedMarketplaceSkill)} />
-              </CardHeader>
+              <div className="grid gap-1">
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <strong className="truncate text-base font-semibold">{selectedMarketplaceSkill.skill}</strong>
+                </div>
+                <span className="truncate text-[14px] text-muted-foreground">{selectedMarketplaceSkill.package}</span>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -577,50 +532,24 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
                     </DropdownMenuGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <Button variant="ghost" size="sm" onClick={() => void onLoadSelectedSkillDetails()} disabled={selectedSkillLoading}>
-                  查看详情
-                </Button>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Card className="rounded-lg p-2 shadow-none"><span className="flex items-center gap-1 text-[14px] text-muted-foreground"><StarIcon width={14} height={14} /><strong className="text-foreground">{selectedMarketplaceSkill.installs}</strong>Stars</span></Card>
-                <Card className="rounded-lg p-2 shadow-none"><span className="text-[14px] text-muted-foreground"><strong className="text-foreground">{selectedSkillDetail?.files?.length || 0}</strong> Files</span></Card>
-                <Card className="rounded-lg p-2 shadow-none"><span className="text-[14px] text-muted-foreground"><strong className="text-foreground">{selectedSkillAudits.length}</strong> Audits</span></Card>
-              </div>
-              {selectedSkillLoading ? <ModuleEmpty>正在加载详情...</ModuleEmpty> : null}
-              <div className="grid gap-2">
-                {selectedSkillAudits.length === 0 ? <ModuleEmpty>点击“查看详情”后加载文件快照和安全审计。</ModuleEmpty> : null}
-                {selectedSkillAudits.map((audit) => (
-                  <Card key={`${audit.provider}-${audit.slug}`} className="rounded-lg p-3 shadow-none">
-                    <div className="flex items-center justify-between gap-2">
-                      <strong className="truncate text-base font-semibold">{audit.provider}</strong>
-                      <Badge variant={audit.status === "pass" ? "success" : audit.status === "fail" ? "destructive" : "secondary"} className="shrink-0 normal-case tracking-normal">{audit.riskLevel || audit.status}</Badge>
-                    </div>
-                    <p className="mt-2 line-clamp-3 text-[14px] text-muted-foreground">{audit.summary || "No summary"}</p>
-                  </Card>
-                ))}
-              </div>
-              <div className="grid gap-2">
-                {(selectedSkillDetail?.files || []).slice(0, 8).map((file) => (
-                  <Card key={file.path} className="rounded-lg p-3 shadow-none">
-                    <strong className="block truncate text-[13px] font-mono">{file.path}</strong>
-                    <span className="text-[14px] text-muted-foreground">{file.contents.split(/\r?\n/).length} lines</span>
-                  </Card>
-                ))}
+              <Separator />
+              <div className="grid gap-1 text-[14px] text-muted-foreground">
+                <span className="flex items-center gap-1"><StarIcon width={14} height={14} /><strong className="text-foreground">{selectedMarketplaceSkill.installs}</strong> Stars</span>
               </div>
             </div>
           ) : (
             <Empty className="min-h-48 flex-none border border-dashed border-border bg-muted/30">
               <EmptyHeader>
                 <EmptyTitle>选择一个 Skill</EmptyTitle>
-                <EmptyDescription>查看来源、质量信号，并像插件市场一样直接安装。</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
-          <div className="mt-3 grid gap-2 border-t border-border pt-3">
+          <Separator className="my-3" />
+          <div className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
               <div className="grid gap-1">
                 <strong className="text-base font-semibold">已安装</strong>
-                <span className="text-[14px] text-muted-foreground">{groups.length} 组 / {skills.length} skills</span>
               </div>
               <Button variant="ghost" size="sm" onClick={() => void onRefreshSkills()} disabled={skillsLoading}>刷新</Button>
             </div>
@@ -634,7 +563,7 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
               </Button>
             ))}
           </div>
-        </Card>
+        </div>
       </div>
     </div>
   );

@@ -71,9 +71,9 @@
   --sidebar-foreground: var(--text);
   --sidebar-primary: var(--accent);
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  --sidebar-accent: var(--selection-sidebar-bg);
   --sidebar-accent-foreground: var(--text);
   --sidebar-border: color-mix(in srgb, var(--line) 66%, transparent);
-  --sidebar-ring: color-mix(in srgb, var(--accent) 42%, transparent);
+  --sidebar-ring: var(--selection-sidebar-border);
   --radius: 0.625rem;
 }

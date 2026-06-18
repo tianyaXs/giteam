@@ -64,6 +64,9 @@ function McpEmpty({ title, description, danger = false }: { title: string; descr
   );
 }
 
+const mcpHoverSurface = "hover:border-border hover:bg-[color-mix(in_srgb,var(--foreground)_5%,transparent)]";
+const mcpInnerButtonClass = "hover:bg-transparent hover:text-foreground";
+
 export function McpMarketplace({
   servers,
   configuredMcps = [],
@@ -222,11 +225,11 @@ export function McpMarketplace({
           {installedLoading ? <McpEmpty title="正在加载 MCP..." /> : null}
           {!installedLoading && installedRows.length === 0 ? <McpEmpty title="暂无 MCP server" description="从市场安装或自定义添加后会显示在这里。" /> : null}
           {installedRows.map((row) => (
-            <Card key={row.name} className="grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors hover:border-primary/30 hover:bg-accent/40">
+            <Card key={row.name} className={cn("grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors", mcpHoverSurface)}>
               <CardHeader className="p-0">
                 <Button
                   variant="ghost"
-                  className="h-auto min-w-0 justify-start gap-3 p-2 text-left"
+                  className={cn("h-auto min-w-0 justify-start gap-3 p-2 text-left", mcpInnerButtonClass)}
                   onClick={() => onReferenceMcp?.(row.name)}
                   title={`添加 MCP 引用：use the ${row.name} mcp server`}
                 >
@@ -262,14 +265,14 @@ export function McpMarketplace({
               <Card
                 key={server.name}
                 className={cn(
-                  "grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors hover:border-primary/35 hover:bg-accent/35",
-                  isConfigured && "border-primary/40 bg-primary/5"
+                  "grid min-w-0 gap-2 rounded-lg p-2 shadow-none transition-colors",
+                  mcpHoverSurface
                 )}
               >
                 <CardHeader className="p-0">
                   <Button
                     variant="ghost"
-                    className="h-auto min-w-0 justify-start gap-3 p-2 text-left"
+                    className={cn("h-auto min-w-0 justify-start gap-3 p-2 text-left", mcpInnerButtonClass)}
                     onClick={() => setDetailServer(server)}
                   >
                     <div className="grid min-w-0 flex-1 gap-1">
@@ -285,8 +288,8 @@ export function McpMarketplace({
                 </CardHeader>
                 <CardContent className="grid gap-2 p-2 pt-0">
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5 overflow-hidden">
-                    {server.is_official ? <Badge variant="default" className="shrink-0 normal-case tracking-normal">官方</Badge> : null}
-                    {isConfigured ? <Badge variant="success" className="shrink-0 normal-case tracking-normal">已添加</Badge> : null}
+                    {server.is_official ? <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">官方</Badge> : null}
+                    {isConfigured ? <Badge variant="outline" className="shrink-0 normal-case tracking-normal">已添加</Badge> : null}
                     {visibleTags.map((tag) => (
                       <Badge key={tag} variant="secondary" className="max-w-32 truncate normal-case tracking-normal">
                         {tag}

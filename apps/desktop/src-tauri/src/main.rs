@@ -6,10 +6,13 @@ mod macos_context_menu {
 
     use objc2::runtime::{AnyObject, Imp, Sel};
     use objc2::sel;
-    use objc2_app_kit::{NSEvent, NSMenu};
+    use objc2_app_kit::{NSEvent, NSMenu, NSView, NSWindow, NSWindowButton};
+    use objc2_foundation::NSPoint;
     use tauri::{App, Manager};
 
     static PATCHED: AtomicBool = AtomicBool::new(false);
+    const TRAFFIC_LIGHT_OFFSET_X: f64 = 6.0;
+    const TRAFFIC_LIGHT_OFFSET_Y: f64 = -7.0;
 
     // Instead of suppressing menuForEvent: (which also breaks the JS contextmenu
     // event chain), we let the native menu build normally and intercept
@@ -25,6 +28,23 @@ mod macos_context_menu {
         menu.removeAllItems();
     }
 
+    fn offset_standard_window_button(window: &NSWindow, button: NSWindowButton) {
+        let Some(button) = window.standardWindowButton(button) else {
+            return;
+        };
+        let frame = button.frame();
+        button.setFrameOrigin(NSPoint::new(
+            frame.origin.x + TRAFFIC_LIGHT_OFFSET_X,
+            frame.origin.y + TRAFFIC_LIGHT_OFFSET_Y,
+        ));
+    }
+
+    fn align_standard_window_buttons(window: &NSWindow) {
+        offset_standard_window_button(window, NSWindowButton::CloseButton);
+        offset_standard_window_button(window, NSWindowButton::MiniaturizeButton);
+        offset_standard_window_button(window, NSWindowButton::ZoomButton);
+    }
+
     pub fn install(app: &App) {
         if PATCHED.swap(true, Ordering::SeqCst) {
             return;
@@ -35,6 +55,11 @@ mod macos_context_menu {
         };
 
         let _ = window.with_webview(|webview| unsafe {
+            let native_view = &*webview.inner().cast::<NSView>();
+            if let Some(native_window) = native_view.window() {
+                align_standard_window_buttons(&native_window);
+            }
+
             let view = &*webview.inner().cast::<AnyObject>();
             let cls = view.class();
 

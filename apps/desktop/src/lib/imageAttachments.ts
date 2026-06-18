@@ -95,6 +95,8 @@ const FILE_EXTS = new Map([
 const TEXT_MIMES = new Set([
   "application/json",
   "application/ld+json",
+  "text/markdown",
+  "text/mdx",
   "application/toml",
   "application/x-toml",
   "application/x-yaml",
@@ -215,7 +217,7 @@ export function getAttachmentDataUrlMime(dataUrl: string): string {
 
 export function isOpencodeSupportedAttachmentMedia(mime: string): boolean {
   const normalized = normalizeMime(mime);
-  return normalized.startsWith("image/") || normalized === "text/plain" || OPENCODE_MEDIA_MIMES.has(normalized);
+  return normalized.startsWith("image/") || isTextMime(normalized) || OPENCODE_MEDIA_MIMES.has(normalized);
 }
 
 export function isOfficeAttachment(attachment: Pick<OpencodeAttachment, "mime" | "filename">): boolean {
@@ -388,6 +390,8 @@ export async function resolveAttachmentMime(file: File): Promise<string | undefi
   if (FILE_MIMES.has(type)) return type;
 
   const suffix = filenameExt(file.name);
+  if (suffix === "md" || suffix === "markdown") return "text/markdown";
+  if (suffix === "mdx") return "text/mdx";
   const fallback = IMAGE_EXTS.get(suffix) ?? FILE_EXTS.get(suffix);
   if ((!type || type === "application/octet-stream") && fallback) return fallback;
 
@@ -524,7 +528,7 @@ export async function readLocalAttachmentPreview(path: string): Promise<{
   modified: string;
   previewSupported?: boolean;
   previewReason?: string;
-  previewKind?: "text" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
+  previewKind?: "text" | "markdown" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
   mime?: string;
   dataBase64?: string;
 }> {

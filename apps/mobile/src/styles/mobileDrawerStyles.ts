@@ -731,6 +731,13 @@ export const drawerStyles = {
     fontWeight: "600",
   },
 
+  directorySessionPlainStatus: {
+    width: 22,
+    height: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   directorySessionPlainMeta: {
     fontSize: 12,
     lineHeight: 17,

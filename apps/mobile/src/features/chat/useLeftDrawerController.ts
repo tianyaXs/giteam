@@ -7,6 +7,7 @@ import {
 } from './sessionSwitchPerf';
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import { toText } from '../../lib/text';
+import type { SessionStatusInfo } from '../../types';
 
 const waitForDrawerReturnFrame = () =>
   new Promise<void>((resolve) => {
@@ -35,6 +36,7 @@ type SessionRow = {
   title: string;
   preview: string;
   timeLabel: string;
+  status: SessionStatusInfo['type'];
 };
 
 export function useLeftDrawerController(props: {
@@ -43,6 +45,7 @@ export function useLeftDrawerController(props: {
   repoPath: string;
   sessions: SessionItemLike[];
   sessionSearch: string;
+  sessionStatusMap: Record<string, SessionStatusInfo>;
   sessionDisplayedCount: number;
   sessionId: string;
   messages: any[];
@@ -96,6 +99,7 @@ export function useLeftDrawerController(props: {
     sessionDisplayedCount,
     sessionId,
     sessionIdRef,
+    sessionStatusMap,
     sessionRawMapRef,
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,
@@ -158,7 +162,8 @@ export function useLeftDrawerController(props: {
       active: session.id === sessionId,
       title: pickSessionDisplayTitle(session, session.id === sessionId ? messages : undefined),
       preview: toText(session.preview).trim(),
-      timeLabel: formatSessionTimestamp(session.updatedAt || session.createdAt)
+      timeLabel: formatSessionTimestamp(session.updatedAt || session.createdAt),
+      status: sessionStatusMap[session.id]?.type || 'idle'
     }));
   }, [
     currentWorkspaceSessions,
@@ -167,6 +172,7 @@ export function useLeftDrawerController(props: {
     pickSessionDisplayTitle,
     sessionDisplayedCount,
     sessionId,
+    sessionStatusMap,
     sessionSearch
   ]);
 

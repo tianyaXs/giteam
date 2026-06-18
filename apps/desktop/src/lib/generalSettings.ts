@@ -15,8 +15,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   soundsAgent: true,
   soundsPermissions: true,
   soundsErrors: true,
-  updatesStartup: true,
-  releaseNotes: true
+  updatesStartup: true
 };
 
 export type AppLocale = "zh-CN" | "zh-TW" | "en-US";

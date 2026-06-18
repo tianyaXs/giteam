@@ -1,19 +1,21 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { OpencodeExecutionPartView, type OpencodeToolFileTarget } from "./OpencodeExecutionPartView";
-import { isImageAttachment } from "../../lib/imageAttachments";
+import { getAttachmentBadgeLabel, isImageAttachment } from "../../lib/imageAttachments";
 import {
   type OpencodeAssistantRenderGroup,
   buildOpencodeAssistantRenderGroups,
   buildOpencodeReplyMarkdownFromParts,
   isOpencodeRenderablePart,
+  readOpencodeTodosFromPart,
   summarizeOpencodeContextProgress,
   summarizeOpencodeContextToolCounts
 } from "../../lib/opencodeParts";
 import type {
   OpencodeChatMessage,
   OpencodeDetailedMessage,
-  OpencodeDetailedPart
+  OpencodeDetailedPart,
+  OpencodeTodoItem
 } from "../../lib/opencodeSessions";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
@@ -39,6 +41,7 @@ type OpencodeMessageRenderRow = {
   detailsLoading: boolean;
   detailsError: string;
   contextOnly: boolean;
+  todoItems: OpencodeTodoItem[];
 };
 
 const COLLAPSE_LINE_LIMIT = 8;
@@ -300,19 +303,28 @@ function ThinkingPlaceholder() {
 
 function MessageShell({
   isAssistant,
+  todoItems,
+  userHasAttachments,
   children
 }: {
   isAssistant: boolean;
+  todoItems?: OpencodeTodoItem[];
+  userHasAttachments?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className={cn("flex w-full min-w-0 overflow-hidden", isAssistant ? "justify-start" : "justify-end")}>
+    <div
+      className={cn("flex w-full min-w-0 overflow-hidden", isAssistant ? "justify-start" : "justify-end")}
+      data-opencode-todos={todoItems?.length ? encodeURIComponent(JSON.stringify(todoItems)) : undefined}
+    >
       <div
         className={cn(
           "min-w-0 max-w-full",
           isAssistant
             ? "w-full"
-            : "max-w-[min(74%,620px)] rounded-[20px] bg-muted px-4 py-3 text-sm font-medium leading-relaxed text-foreground"
+            : userHasAttachments
+              ? "max-w-[min(74%,620px)]"
+            : "max-w-[min(74%,620px)] rounded-[20px] bg-muted px-4 py-3 text-[15px] font-medium leading-7 text-foreground"
         )}
       >
         {children}
@@ -348,12 +360,11 @@ function ToolBatchGroup({
   return (
     <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
       <CollapsibleTrigger asChild>
-        <Button className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+        <Button className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
           <span className="flex min-w-0 items-center gap-2 overflow-hidden">
             <ActivityStatus active={running} activeLabel={label} doneLabel={label} className="shrink-0 text-sm" />
             <span className="text-xs font-medium text-muted-foreground">{group.parts.length} {noun}</span>
           </span>
-          <span className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true">›</span>
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="flex flex-col gap-2 pb-2 pl-3">
@@ -401,14 +412,13 @@ function ContextGroup({
   return (
     <Collapsible className="grid min-w-0 gap-1 py-1" open={open} onOpenChange={onOpenChange}>
       <CollapsibleTrigger asChild>
-        <Button className="h-auto w-full justify-between rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+        <Button className="h-auto w-full min-w-0 justify-start rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
           <span className="flex min-w-0 items-center gap-2">
             <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
             <span className="truncate text-xs text-muted-foreground">
               {progress.detail ? `${summary} · ${progress.detail}` : summary}
             </span>
           </span>
-          <span className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true">›</span>
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="flex flex-col gap-2 pb-2 pl-3">
@@ -481,7 +491,7 @@ function AssistantTextBlock({
   renderMarkdown: RenderMarkdown;
 }) {
   return (
-    <div className="min-w-0 max-w-full overflow-hidden break-words text-sm leading-7 text-foreground [overflow-wrap:anywhere]">
+    <div className="min-w-0 max-w-full overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]">
       {renderMarkdown(text, streaming)}
     </div>
   );
@@ -658,29 +668,45 @@ function UserMessage({
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
 }) {
   const attachments = msg.attachments || [];
+  const hasAttachments = attachments.length > 0;
   const hasContent = Boolean(msg.content.trim());
   if (!hasContent && attachments.length === 0) return null;
 
   return (
-    <div className="grid min-w-0 gap-2">
+    <div className={cn("grid min-w-0 gap-2", hasAttachments && "justify-items-end")}>
       <MessageAttachments
         attachments={attachments}
+        className={hasAttachments ? "justify-self-end" : undefined}
         onPreviewImageGroup={onPreviewImageGroup}
         onCopyAttachmentUri={onCopyAttachmentUri}
         onOpenAttachment={onOpenAttachment}
       />
       {hasContent ? (
-        shouldCollapseMessage(msg.content) ? (
-          <CollapsibleUserText
-            messageId={msg.id}
-            text={msg.content}
-            open={messageOpenState[msg.id] ?? false}
-            onOpenChange={(open) => {
-              setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
-            }}
-            renderMarkdown={renderMarkdown}
-          />
-        ) : renderMarkdown(msg.content)
+        hasAttachments ? (
+          <div className="w-fit max-w-full rounded-[20px] bg-muted px-4 py-3 text-[15px] font-medium leading-7 text-foreground">
+            {shouldCollapseMessage(msg.content) ? (
+              <CollapsibleUserText
+                messageId={msg.id}
+                text={msg.content}
+                open={messageOpenState[msg.id] ?? false}
+                onOpenChange={(open) => {
+                  setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
+                }}
+                renderMarkdown={renderMarkdown}
+              />
+            ) : renderMarkdown(msg.content)}
+          </div>
+        ) : shouldCollapseMessage(msg.content) ? (
+            <CollapsibleUserText
+              messageId={msg.id}
+              text={msg.content}
+              open={messageOpenState[msg.id] ?? false}
+              onOpenChange={(open) => {
+                setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
+              }}
+              renderMarkdown={renderMarkdown}
+            />
+          ) : renderMarkdown(msg.content)
       ) : null}
     </div>
   );
@@ -750,11 +776,13 @@ function AssistantMessage({
 
 function MessageAttachments({
   attachments,
+  className,
   onPreviewImageGroup,
   onCopyAttachmentUri,
   onOpenAttachment
 }: {
   attachments: OpencodeMessageAttachment[];
+  className?: string;
   onPreviewImageGroup: (images: OpencodePreviewImage[], index: number) => void;
   onCopyAttachmentUri: (uri: string) => void;
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
@@ -766,15 +794,20 @@ function MessageAttachments({
     filename: item.filename
   }));
   if (attachments.length <= 0) return null;
+  const imageColumnCount = Math.min(imageAttachments.length, 3);
 
   return (
-    <div className="grid min-w-0 gap-2">
+    <div className={cn("grid min-w-0 gap-2", className)}>
       {imageAttachments.length > 0 ? (
-        <div className="grid max-w-[292px] grid-cols-[repeat(auto-fit,minmax(86px,1fr))] gap-2" aria-label="图片附件">
+        <div
+          className="grid max-w-full gap-2.5"
+          style={{ gridTemplateColumns: `repeat(${imageColumnCount}, minmax(112px, 136px))` }}
+          aria-label="图片附件"
+        >
           {imageAttachments.map((attachment) => (
             <Button
               key={attachment.id}
-              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-xl border border-border/50 bg-background p-0 hover:bg-background"
+              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:border-border/80 hover:bg-background"
               onClick={() => onPreviewImageGroup(
                 previewImages,
                 Math.max(0, imageAttachments.findIndex((item) => item.id === attachment.id))
@@ -786,17 +819,21 @@ function MessageAttachments({
               title="点击查看，右键复制图片数据"
               variant="ghost"
             >
-              <img className="size-full object-cover" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
+              <img className="size-full rounded-[14px] border border-border/35 bg-background object-contain" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
             </Button>
           ))}
         </div>
       ) : null}
       {fileAttachments.length > 0 ? (
-        <div className="grid min-w-[min(220px,100%)] gap-1.5" aria-label="文件附件">
+        <div
+          className="grid max-w-full gap-2.5"
+          style={{ gridTemplateColumns: `repeat(${Math.min(fileAttachments.length, 3)}, minmax(112px, 136px))` }}
+          aria-label="文件附件"
+        >
           {fileAttachments.map((attachment) => (
             <Button
               key={attachment.id}
-              className="h-auto min-h-8 w-full justify-start rounded-lg border border-border/45 bg-background/60 px-2.5 py-1.5 text-left text-xs text-foreground/80 hover:bg-background"
+              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:border-border/80 hover:bg-background"
               onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -805,7 +842,11 @@ function MessageAttachments({
               title={attachment.filename || attachment.mime || "附件"}
               variant="ghost"
             >
-              <span className="min-w-0 truncate">{attachment.filename || "attachment"}</span>
+              <span className="flex size-full items-center justify-center rounded-[14px] border border-border/35 bg-muted/45">
+                <span className="max-w-[72px] truncate rounded-md bg-background/80 px-2 py-1 text-[12px] font-semibold tracking-normal text-foreground/85">
+                  {getAttachmentBadgeLabel({ mime: attachment.mime || "", filename: attachment.filename || "" })}
+                </span>
+              </span>
             </Button>
           ))}
         </div>
@@ -868,6 +909,7 @@ export function OpencodeMessageStream({
     const liveParts = serverMid ? (livePartsByServerMessageId[serverMid] || []) : [];
     const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
     const renderParts = detailParts.filter(isOpencodeRenderablePart);
+    const todoItems = [...detailParts].reverse().map(readOpencodeTodosFromPart).find((todos) => todos.length > 0) || [];
     const timelineGroups = buildDisplayTimelineGroups(
       buildOpencodeAssistantRenderGroups(renderParts),
       showReasoningSummaries
@@ -884,7 +926,8 @@ export function OpencodeMessageStream({
       fallbackReply,
       detailsLoading: detailsLoadingByMessageId[msg.id],
       detailsError: detailsErrorByMessageId[msg.id] || "",
-      contextOnly: isAssistant && timelineGroups.length > 0 && timelineGroups.every((group) => group.kind === "context") && !fallbackReply
+      contextOnly: isAssistant && timelineGroups.length > 0 && timelineGroups.every((group) => group.kind === "context") && !fallbackReply,
+      todoItems
     };
   });
   const mergedRenderRows = renderRows.reduce<OpencodeMessageRenderRow[]>((out, row) => {
@@ -895,6 +938,7 @@ export function OpencodeMessageStream({
         row.liveParts = [...last.liveParts, ...row.liveParts];
         row.renderParts = [...last.renderParts, ...row.renderParts];
         row.detailsLoading = last.detailsLoading || row.detailsLoading;
+        row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
         row.msg = { ...row.msg, id: `${last.msg.id}:${row.msg.id}` };
         out[out.length - 1] = row;
         return out;
@@ -912,6 +956,7 @@ export function OpencodeMessageStream({
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = [...last.liveParts, ...row.liveParts];
         last.renderParts = [...last.renderParts, ...row.renderParts];
+        if (row.todoItems.length > 0) last.todoItems = row.todoItems;
         last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
         return out;
       }
@@ -922,6 +967,7 @@ export function OpencodeMessageStream({
         last.liveParts = [...last.liveParts, ...row.liveParts];
         last.renderParts = [...last.renderParts, ...row.renderParts];
         last.detailsLoading = last.detailsLoading || row.detailsLoading;
+        if (row.todoItems.length > 0) last.todoItems = row.todoItems;
         last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
         return out;
       }
@@ -934,6 +980,7 @@ export function OpencodeMessageStream({
       last.renderParts = [...last.renderParts, ...row.renderParts];
       last.detailsLoading = last.detailsLoading || row.detailsLoading;
       last.detailsError = last.detailsError || row.detailsError;
+      if (row.todoItems.length > 0) last.todoItems = row.todoItems;
       last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
       return out;
     }
@@ -950,7 +997,12 @@ export function OpencodeMessageStream({
         <StreamLoadingState />
       ) : messages.length === 0 ? null : (
         visibleRenderRows.map((row) => (
-          <MessageShell key={row.msg.id} isAssistant={row.isAssistant}>
+          <MessageShell
+            key={row.msg.id}
+            isAssistant={row.isAssistant}
+            todoItems={row.todoItems}
+            userHasAttachments={!row.isAssistant && Boolean(row.msg.attachments?.length)}
+          >
             {row.isAssistant ? (
               <AssistantMessage
                 row={row}

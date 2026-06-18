@@ -44,7 +44,7 @@ export function ShellPanelToggle(props: {
       variant="ghost"
       size="icon"
       className={cn(
-        "size-7 text-muted-foreground hover:bg-transparent hover:text-foreground",
+        "size-[26px] text-muted-foreground hover:bg-transparent hover:text-foreground",
         className
       )}
       style={style}
@@ -64,8 +64,8 @@ export function PanelToggleIcon(props: { side: "left" | "right" }) {
       aria-hidden="true"
       style={{
         display: "block",
-        width: 16,
-        height: 16,
+        width: 15,
+        height: 15,
         backgroundColor: "currentColor",
         WebkitMaskImage: `url(${iconUrl})`,
         maskImage: `url(${iconUrl})`,

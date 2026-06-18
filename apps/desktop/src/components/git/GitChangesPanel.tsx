@@ -3,7 +3,12 @@ import { Suspense, lazy, memo, useEffect, useMemo, useRef, useState } from "reac
 import { Decoration, Diff, Hunk, getCollapsedLinesCountBetween, markEdits, parseDiff, tokenize, type FileData, type HunkData } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { GroupedVirtuoso, type GroupedVirtuosoHandle, type ListRange } from "react-virtuoso";
-import { CheckIcon as StageAllIcon, MinusIcon as UnstageAllIcon, RotateCcwIcon } from "lucide-react";
+import {
+  CheckIcon as StageAllIcon,
+  ListTreeIcon,
+  MinusIcon as UnstageAllIcon,
+  RotateCcwIcon
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DesktopTheme } from "../../lib/desktopPreferences";
 import type { GitWorktreeEntry, GitWorktreeFileContent } from "../../lib/types";
@@ -340,9 +345,18 @@ export function GitChangesPanel({
   const previewSupported = selectedContent.previewSupported !== false;
   const previewReason = selectedContent.previewReason || "该文件可能是二进制文件或包含不可解析内容，暂不支持文本预览。";
   const previewFileName = selectedFile.split(/[\\/]/).pop() || selectedFile;
-  const shouldUseDocumentPreview = Boolean(selectedContent.dataBase64);
+  const selectedFileExt = previewFileName.split(".").pop()?.toLowerCase() || "";
+  const shouldUseMarkdownPreview = selectedContent.previewKind === "markdown" || selectedFileExt === "md" || selectedFileExt === "markdown" || selectedFileExt === "mdx";
+  const shouldUseDocumentPreview = shouldUseMarkdownPreview || (Boolean(selectedContent.dataBase64) && selectedContent.previewKind !== "text");
   const hasSelectedCommitContent = changeStats.staged > 0;
   const showPrimaryCommitAction = hasSelectedCommitContent || isGitBusy;
+  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
+  const directoryPaneLabel = directoryPaneOpen ? "收起目录区" : "展开目录区";
+  const directoryTrackWidth = directoryPaneOpen ? "min(var(--changes-sidebar-width, 276px), 42%)" : "0px";
+  const changesGridColumns = directoryPaneOpen
+    ? `${directoryTrackWidth} 1px minmax(0, 1fr)`
+    : "0px 1px minmax(0, 1fr)";
+  const gridTransitionClass = "transition-[grid-template-columns] duration-200 ease-out";
   const patchStreamKey = useMemo(
     () => entries.map((entry) => `${entry.path}:${entry.indexStatus}:${entry.worktreeStatus}`).join("|"),
     [entries]
@@ -481,6 +495,39 @@ export function GitChangesPanel({
     </Empty>
   );
 
+  const renderBranchLabel = () => (
+    <div className="inline-flex min-w-0 items-center gap-1">
+      <Badge variant="outline" className="h-5 px-2 text-[10px] tracking-wide">Local</Badge>
+      <span className="min-w-0 truncate text-[11px] font-medium text-foreground/78">{branchName || "no branch"}</span>
+    </div>
+  );
+
+  const renderChangeStats = () => (
+    <div className="inline-flex min-w-0 max-w-full items-center gap-1 text-[11px] text-foreground/86">
+      <span className="min-w-0 truncate">{changeStats.total} Uncommitted Changes</span>
+      <Badge variant="success" className="shrink-0 px-1.5 text-[10px] tracking-normal">+{lineStats.added}</Badge>
+      <Badge variant="destructive" className="shrink-0 px-1.5 text-[10px] tracking-normal">-{lineStats.deleted}</Badge>
+    </div>
+  );
+
+  const renderDirectoryPaneToggle = () => (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "size-6 shrink-0 rounded-sm text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground [&_svg]:size-3.5",
+        directoryPaneOpen && "bg-accent/45 text-accent-foreground"
+      )}
+      title={directoryPaneLabel}
+      aria-label={directoryPaneLabel}
+      aria-pressed={directoryPaneOpen}
+      onClick={() => setDirectoryPaneOpen((open) => !open)}
+    >
+      <ListTreeIcon aria-hidden="true" />
+    </Button>
+  );
+
   const renderPreviewContent = (shellClassName?: string) => {
     if (!selectedFile) {
       return (
@@ -580,22 +627,25 @@ export function GitChangesPanel({
 
   return (
     <div
-      className="grid h-full min-h-0 overflow-hidden border-0 bg-border/55"
+      className={cn("grid h-full min-h-0 overflow-hidden border-0 bg-border/55", gridTransitionClass)}
       style={{
         "--changes-sidebar-width": `${changesSidebarWidth}px`,
-        gridTemplateColumns: "var(--changes-sidebar-width, 276px) 1px minmax(0, 1fr)",
+        gridTemplateColumns: changesGridColumns,
         gridTemplateRows: "auto minmax(0, 1fr)"
       } as CSSProperties}
     >
       <div className="col-span-full grid min-w-0 grid-rows-[33px_28px] border-b border-border/40 bg-background">
-        <div className="grid min-w-0 grid-cols-[var(--changes-sidebar-width,276px)_1px_minmax(0,1fr)] items-center border-b border-border/35">
-          <div className="inline-flex min-w-0 items-center gap-1 px-3 text-muted-foreground">
-            <Badge variant="outline" className="h-5 px-2 text-[10px] tracking-wide">Local</Badge>
-            <span className="min-w-0 truncate text-[11px] font-medium text-foreground/78">{branchName || "no branch"}</span>
+        <div className={cn("grid min-w-0 items-center border-b border-border/35", gridTransitionClass)} style={{ gridTemplateColumns: changesGridColumns }}>
+          <div className={cn(
+            "inline-flex min-w-0 items-center gap-1 text-muted-foreground",
+            directoryPaneOpen ? "px-3" : "overflow-hidden"
+          )}>
+            {directoryPaneOpen ? renderBranchLabel() : null}
           </div>
           <div className="h-full bg-border/45" aria-hidden="true" />
-          {showPrimaryCommitAction ? (
-            <div className="col-start-3 flex min-w-0 justify-end px-2" onClick={(event) => event.stopPropagation()}>
+          <div className="col-start-3 flex min-w-0 items-center justify-between gap-2 px-2" onClick={(event) => event.stopPropagation()}>
+            {directoryPaneOpen ? <span className="min-w-0" /> : renderBranchLabel()}
+            {showPrimaryCommitAction ? (
               <div className="inline-flex items-center rounded-md shadow-sm">
                 <Button
                   variant="contrast"
@@ -651,20 +701,23 @@ export function GitChangesPanel({
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
-        <div className="grid min-w-0 grid-cols-[var(--changes-sidebar-width,276px)_1px_minmax(0,1fr)] items-center bg-muted/10">
-          <div className="flex min-w-0 items-center gap-2 px-2">
-            <div className="inline-flex min-w-0 items-center gap-1 text-[11px] text-foreground/86">
-              <span className="min-w-0 truncate">{changeStats.total} Uncommitted Changes</span>
-              <Badge variant="success" className="px-1.5 text-[10px] tracking-normal">+{lineStats.added}</Badge>
-              <Badge variant="destructive" className="px-1.5 text-[10px] tracking-normal">-{lineStats.deleted}</Badge>
-            </div>
+        <div className={cn("grid min-w-0 items-center bg-muted/10", gridTransitionClass)} style={{ gridTemplateColumns: changesGridColumns }}>
+          <div className={cn(
+            "flex min-w-0 items-center gap-2 px-2",
+            directoryPaneOpen ? null : "overflow-hidden px-0"
+          )}>
+            {directoryPaneOpen ? renderChangeStats() : null}
           </div>
           <div className="h-full bg-border/45" aria-hidden="true" />
-          <div className="col-start-3 flex min-w-0 justify-end pl-2" style={{ paddingRight: 20 + diffScrollbarGutter }}>
-            <div className="inline-flex w-14 justify-end gap-1">
+          <div className="col-start-3 flex min-w-0 items-center justify-between gap-2 pl-2" style={{ paddingRight: 20 + diffScrollbarGutter }}>
+            <div className="inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+              {renderDirectoryPaneToggle()}
+              {directoryPaneOpen ? null : renderChangeStats()}
+            </div>
+            <div className="inline-flex w-14 shrink-0 justify-end gap-1">
               {changeStats.total > 0 ? (
                 <Button
                   variant="ghost"
@@ -694,9 +747,15 @@ export function GitChangesPanel({
           </div>
         </div>
       </div>
-      <Card className="flex min-h-0 flex-col overflow-hidden rounded-none border-0 bg-card shadow-none">
+      <Card
+        className={cn(
+          "flex min-h-0 flex-col overflow-hidden rounded-none border-0 bg-card shadow-none transition-[opacity,transform] duration-200 ease-out",
+          directoryPaneOpen ? "translate-x-0 opacity-100" : "-translate-x-3 opacity-0 pointer-events-none"
+        )}
+        aria-hidden={!directoryPaneOpen}
+      >
         <ScrollArea className="min-h-0 flex-1" viewportClassName="min-h-0">
-          <div className="flex min-h-0 flex-col gap-1 p-1.5 pb-2">
+          <div className="flex min-h-0 flex-col gap-1 p-1.5 pb-2 pr-7">
             <WorktreeChangesList
               stagedTree={stagedTree}
               unstagedTree={unstagedTree}
@@ -722,12 +781,14 @@ export function GitChangesPanel({
       <div
         className={cn(
           "relative w-px cursor-col-resize bg-border/60 after:absolute after:inset-y-0 after:left-1/2 after:w-2.5 after:-translate-x-1/2 after:bg-transparent hover:bg-ring/60",
-          isResizing && "bg-ring/60"
+          isResizing && "bg-ring/60",
+          !directoryPaneOpen && "cursor-default hover:bg-border/60 after:hidden"
         )}
         role="separator"
         aria-orientation="vertical"
         aria-label="调整 Changes 文件树宽度"
         onMouseDown={(event) => {
+          if (!directoryPaneOpen) return;
           event.preventDefault();
           onBeginResize(event.clientX);
         }}

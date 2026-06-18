@@ -1,15 +1,20 @@
 import {
+  Archive,
   Folder,
   FolderOpen,
+  FolderPlus,
   GitBranch,
+  LoaderCircle,
+  MoreHorizontal,
   PencilLine,
   Plug,
-  Plus,
   Settings,
   Sparkles,
   SquareTerminal,
 } from "lucide-react";
-import { memo, useMemo, type ReactNode } from "react";
+import Lenis from "lenis";
+import { motion, useReducedMotion } from "motion/react";
+import { memo, useEffect, useMemo, useRef, type ComponentPropsWithoutRef, type CSSProperties, type ReactNode } from "react";
 
 import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
 
@@ -38,7 +43,6 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
   SidebarMenuSub,
-  SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "../ui/sidebar";
 import pinnedIconUrl from "./sidebar-pin.png";
@@ -72,6 +76,7 @@ type DesktopSidebarProps = {
   selectedRepoId: string;
   activeSessionId: string;
   draftRepoId: string;
+  sessionBusyById: Record<string, boolean>;
   gitUserIdentity: GitUserIdentity;
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
@@ -84,7 +89,7 @@ type DesktopSidebarProps = {
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
-  onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
   rightDrawerOpen: boolean;
   rightPaneTab: RightPaneTab;
@@ -109,6 +114,81 @@ const LEFT_NAV_PANES: Array<{
   { tab: "mcp", icon: Plug, labelKey: "mcp" },
 ];
 
+const SIDEBAR_SCROLL_EDGE_EPSILON = 1;
+const SIDEBAR_TRACKPAD_DELTA_THRESHOLD = 10;
+
+function SmoothSidebarContent({ className, children, ...props }: ComponentPropsWithoutRef<typeof SidebarContent>) {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    const content = contentRef.current;
+    if (!wrapper || !content) return;
+
+    const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    let lenis: Lenis | null = null;
+
+    const setupLenis = () => {
+      lenis?.destroy();
+      lenis = null;
+      if (reduceMotionQuery?.matches) return;
+
+      lenis = new Lenis({
+        wrapper,
+        content,
+        eventsTarget: wrapper,
+        smoothWheel: true,
+        syncTouch: false,
+        duration: 0.28,
+        easing: (t) => 1 - Math.pow(1 - t, 3),
+        wheelMultiplier: 0.88,
+        orientation: "vertical",
+        gestureOrientation: "vertical",
+        overscroll: false,
+        autoRaf: true,
+        virtualScroll: ({ deltaX, deltaY }) => {
+          if (Math.abs(deltaX) > Math.abs(deltaY)) return false;
+          if (Math.abs(deltaY) < SIDEBAR_TRACKPAD_DELTA_THRESHOLD) return false;
+
+          const maxScrollTop = Math.max(0, wrapper.scrollHeight - wrapper.clientHeight);
+          if (maxScrollTop <= 0) return false;
+
+          const atTop = wrapper.scrollTop <= SIDEBAR_SCROLL_EDGE_EPSILON;
+          const atBottom = wrapper.scrollTop >= maxScrollTop - SIDEBAR_SCROLL_EDGE_EPSILON;
+          if ((atTop && deltaY < 0) || (atBottom && deltaY > 0)) return false;
+
+          return true;
+        },
+      });
+    };
+
+    setupLenis();
+    reduceMotionQuery?.addEventListener?.("change", setupLenis);
+
+    return () => {
+      reduceMotionQuery?.removeEventListener?.("change", setupLenis);
+      lenis?.destroy();
+      lenis = null;
+    };
+  }, []);
+
+  return (
+    <SidebarContent
+      ref={wrapperRef}
+      className={cn(
+        "overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        className
+      )}
+      {...props}
+    >
+      <div ref={contentRef} className="flex min-w-0 flex-col gap-1">
+        {children}
+      </div>
+    </SidebarContent>
+  );
+}
+
 export function DesktopSidebar(props: DesktopSidebarProps) {
   const {
     text,
@@ -121,6 +201,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     selectedRepoId,
     activeSessionId,
     draftRepoId,
+    sessionBusyById,
     gitUserIdentity,
     getVisibleRepoSessions,
     hasMoreRepoSessions,
@@ -133,7 +214,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     onTogglePinnedRepo,
     onFocusDraftSession,
     onOpenSession,
-    onOpenSessionContextMenu,
+    onArchiveSession,
     onLoadMoreSessions,
     rightDrawerOpen,
     rightPaneTab,
@@ -157,9 +238,13 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     <Sidebar
       collapsible="none"
       className="h-full overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+      style={{
+        "--sidebar": "color-mix(in srgb, var(--bg) 92%, #8f8270 8%)",
+        backgroundColor: "var(--sidebar)",
+      } as CSSProperties}
     >
-      <SidebarHeader className="shrink-0 gap-1 p-2 pt-10" data-tauri-drag-region>
-        <SidebarMenu>
+      <SidebarHeader className="shrink-0 gap-1 py-2 pl-[10px] pr-2 pt-10" data-tauri-drag-region>
+        <SidebarMenu className="gap-0.5">
           <NavItem
             icon={PencilLine}
             label={text.newSession}
@@ -180,21 +265,14 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent className="gap-1 overflow-x-hidden overflow-y-auto p-2 pt-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <SmoothSidebarContent className="pb-2 pl-[10px] pr-2 pt-0">
         {noRepos ? (
           <SidebarGroup className="gap-0 p-0">
-            <div className="flex min-h-6 items-center gap-1">
+            <div className="group/project-heading flex min-h-6 items-center gap-1">
               <SidebarGroupLabel className={SECTION_LABEL_CLASS}>
                 <span className="truncate">{text.projects}</span>
               </SidebarGroupLabel>
-              <SidebarGroupAction
-                className="static"
-                title={text.openWorkspace}
-                onClick={() => void onImportRepository()}
-                disabled={busy}
-              >
-                <Plus />
-              </SidebarGroupAction>
+              <ProjectImportAction label={text.openWorkspace} disabled={busy} onClick={onImportRepository} />
             </div>
             <SidebarGroupContent>
               <SidebarMenu>
@@ -222,6 +300,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
             draftRepoId={draftRepoId}
+            sessionBusyById={sessionBusyById}
             getVisibleRepoSessions={getVisibleRepoSessions}
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
@@ -231,7 +310,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             onTogglePinnedRepo={onTogglePinnedRepo}
             onFocusDraftSession={onFocusDraftSession}
             onOpenSession={onOpenSession}
-            onOpenSessionContextMenu={onOpenSessionContextMenu}
+            onArchiveSession={onArchiveSession}
             onLoadMoreSessions={onLoadMoreSessions}
           />
         ) : null}
@@ -247,6 +326,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
             draftRepoId={draftRepoId}
+            sessionBusyById={sessionBusyById}
             getVisibleRepoSessions={getVisibleRepoSessions}
             hasMoreRepoSessions={hasMoreRepoSessions}
             isRepoSessionsLoading={isRepoSessionsLoading}
@@ -256,26 +336,19 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             onTogglePinnedRepo={onTogglePinnedRepo}
             onFocusDraftSession={onFocusDraftSession}
             onOpenSession={onOpenSession}
-            onOpenSessionContextMenu={onOpenSessionContextMenu}
+            onArchiveSession={onArchiveSession}
             onLoadMoreSessions={onLoadMoreSessions}
             headerAction={
-              <SidebarGroupAction
-                className="static"
-                title={text.openWorkspace}
-                onClick={() => void onImportRepository()}
-                disabled={busy}
-              >
-                <Plus />
-              </SidebarGroupAction>
+              <ProjectImportAction label={text.openWorkspace} disabled={busy} onClick={onImportRepository} />
             }
           />
         ) : null}
-      </SidebarContent>
+      </SmoothSidebarContent>
 
       <SidebarFooter className="shrink-0 p-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="sm" onClick={onOpenSettings}>
+            <SidebarMenuButton size="default" className="h-9 text-sm [&>svg]:size-[18px]" onClick={onOpenSettings}>
               <Settings />
               <span className="truncate">{text.settings}</span>
               <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
@@ -299,11 +372,31 @@ type NavItemProps = {
 function NavItem({ icon: Icon, label, onClick, disabled = false, isActive = false, size = "default" }: NavItemProps) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton size={size} isActive={isActive} disabled={disabled} onClick={onClick}>
+      <SidebarMenuButton
+        size={size}
+        isActive={isActive}
+        disabled={disabled}
+        className="h-8 text-sm transition-[background-color,color,box-shadow] hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] active:bg-[color-mix(in_srgb,#8f8270_14%,transparent)] data-[active=true]:!bg-[color-mix(in_srgb,#8f8270_18%,var(--bg)_82%)] data-[active=true]:!text-sidebar-foreground data-[active=true]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,#8f8270_16%,transparent)] data-[active=true]:hover:!bg-[color-mix(in_srgb,#8f8270_21%,var(--bg)_79%)]"
+        onClick={onClick}
+      >
         <Icon />
         <span className="truncate">{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
+  );
+}
+
+function ProjectImportAction({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void | Promise<void> }) {
+  return (
+    <SidebarGroupAction
+      className="static text-muted-foreground opacity-0 transition-[background-color,color,opacity,transform] duration-150 ease-out hover:text-sidebar-accent-foreground focus-visible:opacity-100 group-hover/project-heading:opacity-100 group-focus-within/project-heading:opacity-100 active:scale-95"
+      title={label}
+      aria-label={label}
+      onClick={() => void onClick()}
+      disabled={disabled}
+    >
+      <FolderPlus />
+    </SidebarGroupAction>
   );
 }
 
@@ -342,6 +435,7 @@ type ProjectSectionProps = {
   selectedRepoId: string;
   activeSessionId: string;
   draftRepoId: string;
+  sessionBusyById: Record<string, boolean>;
   getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
@@ -351,7 +445,7 @@ type ProjectSectionProps = {
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
-  onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
   headerAction?: ReactNode;
 };
@@ -368,6 +462,7 @@ function ProjectSection(props: ProjectSectionProps) {
     selectedRepoId,
     activeSessionId,
     draftRepoId,
+    sessionBusyById,
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
@@ -377,14 +472,14 @@ function ProjectSection(props: ProjectSectionProps) {
     onTogglePinnedRepo,
     onFocusDraftSession,
     onOpenSession,
-    onOpenSessionContextMenu,
+    onArchiveSession,
     onLoadMoreSessions,
     headerAction,
   } = props;
 
   return (
     <SidebarGroup className="gap-0 p-0">
-      <div className="flex min-h-6 items-center gap-1">
+      <div className="group/project-heading flex min-h-6 items-center gap-1">
         <SidebarGroupLabel className={SECTION_LABEL_CLASS}>
           <span className="truncate">{title}</span>
         </SidebarGroupLabel>
@@ -404,6 +499,7 @@ function ProjectSection(props: ProjectSectionProps) {
               selectedRepoId={selectedRepoId}
               activeSessionId={activeSessionId}
               hasDraftForRepo={draftRepoId === repo.id}
+              sessionBusyById={sessionBusyById}
               sessions={getVisibleRepoSessions(repo.id)}
               hasMoreSessions={hasMoreRepoSessions(repo.id)}
               sessionsLoading={isRepoSessionsLoading(repo.id)}
@@ -413,7 +509,7 @@ function ProjectSection(props: ProjectSectionProps) {
               onTogglePinnedRepo={onTogglePinnedRepo}
               onFocusDraftSession={onFocusDraftSession}
               onOpenSession={onOpenSession}
-              onOpenSessionContextMenu={onOpenSessionContextMenu}
+              onArchiveSession={onArchiveSession}
               onLoadMoreSessions={onLoadMoreSessions}
             />
           ))}
@@ -433,6 +529,7 @@ type ProjectRowProps = {
   selectedRepoId: string;
   activeSessionId: string;
   hasDraftForRepo: boolean;
+  sessionBusyById: Record<string, boolean>;
   sessions: OpencodeChatSession[];
   hasMoreSessions: boolean;
   sessionsLoading: boolean;
@@ -442,7 +539,7 @@ type ProjectRowProps = {
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
-  onOpenSessionContextMenu: (x: number, y: number, repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
 };
 
@@ -457,6 +554,7 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
     selectedRepoId,
     activeSessionId,
     hasDraftForRepo,
+    sessionBusyById,
     sessions,
     hasMoreSessions,
     sessionsLoading,
@@ -466,13 +564,22 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
     onTogglePinnedRepo,
     onFocusDraftSession,
     onOpenSession,
-    onOpenSessionContextMenu,
+    onArchiveSession,
     onLoadMoreSessions,
   } = props;
 
   const hasCollapsibleContent = sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !opencodeInstalled;
-  const loadMoreLabel = sessionsPaging ? `${text.loadMore}...` : text.loadMore;
-
+  const showLoadMoreRow = opencodeInstalled && (hasMoreSessions || sessionsPaging);
+  const loadMorePending = sessionsLoading || sessionsPaging;
+  const loadMoreLabel = loadMorePending ? `${text.loadMore}...` : text.loadMore;
+  const showLoadingSkeleton = opencodeInstalled && sessionsLoading && sessions.length === 0;
+  const reduceMotion = useReducedMotion();
+  const contentTransition = reduceMotion
+    ? { duration: 0.01 }
+    : {
+        height: { duration: expanded ? 0.26 : 0.18, ease: expanded ? [0.22, 1, 0.36, 1] : [0.4, 0, 0.2, 1] },
+        opacity: { duration: expanded ? 0.16 : 0.1, ease: "linear" },
+      };
   return (
     <Collapsible
       asChild
@@ -487,16 +594,30 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
         <CollapsibleTrigger asChild>
           <SidebarMenuButton
             size="sm"
-            className="text-sm text-muted-foreground"
-            disabled={busy}
+            className="h-8 rounded-lg border border-transparent pl-[10px] pr-2 text-sm text-muted-foreground transition-[background-color,border-color,color] hover:!bg-[color-mix(in_srgb,var(--text)_5%,transparent)] active:!bg-[color-mix(in_srgb,var(--text)_7%,transparent)] data-[state=open]:!bg-transparent data-[state=open]:hover:!bg-[color-mix(in_srgb,var(--text)_5%,transparent)] data-[state=open]:active:!bg-[color-mix(in_srgb,var(--text)_7%,transparent)]"
+            disabled={busy || (!expanded && sessionsLoading)}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
               onOpenRepoContextMenu(event.clientX, event.clientY, repo);
             }}
           >
-            {expanded ? <FolderOpen /> : <Folder />}
+            {!expanded && sessionsLoading ? <LoaderCircle className="animate-spin" /> : expanded ? <FolderOpen /> : <Folder />}
             <span className="truncate">{repo.name}</span>
+            <SidebarMenuAction
+              type="button"
+              showOnHover
+              className="right-7"
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = event.currentTarget.getBoundingClientRect();
+                onOpenRepoContextMenu(rect.left, rect.bottom + 4, repo);
+              }}
+              title="更多操作"
+              aria-label="更多操作"
+            >
+              <MoreHorizontal />
+            </SidebarMenuAction>
             <SidebarMenuAction
               type="button"
               showOnHover={!pinned}
@@ -512,67 +633,74 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
           </SidebarMenuButton>
         </CollapsibleTrigger>
 
-        {hasCollapsibleContent ? (
-          <CollapsibleContent
-            forceMount
-            className={cn(
-              "grid overflow-hidden transition-[grid-template-rows,opacity] duration-[180ms] ease-[cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:grid-rows-[0fr] data-[state=open]:grid-rows-[1fr]",
-              "data-[state=closed]:opacity-0 data-[state=open]:opacity-100",
-              "motion-reduce:transition-none"
-            )}
+        <CollapsibleContent
+          asChild
+          forceMount
+        >
+          <motion.div
+            initial={false}
+            animate={expanded ? "open" : "closed"}
+            variants={{
+              open: { height: "auto", opacity: 1 },
+              closed: { height: 0, opacity: 0 },
+            }}
+            transition={contentTransition}
+            className="overflow-hidden"
+            style={{ pointerEvents: expanded ? "auto" : "none" }}
           >
-            <div className="min-h-0 overflow-hidden">
-              <SidebarMenuSub className="gap-px border-l-0 py-0.5">
-                {hasDraftForRepo ? (
-                  <SessionRow active title={text.newSession} onClick={onFocusDraftSession} />
-                ) : null}
+            {hasCollapsibleContent ? (
+              <motion.div
+                variants={{
+                  open: { y: 0 },
+                  closed: { y: reduceMotion ? 0 : -6 },
+                }}
+                transition={contentTransition}
+                className="min-h-0 overflow-hidden"
+              >
+                <SidebarMenuSub className="mx-0 gap-1 border-l-0 px-2 py-1">
+                  {hasDraftForRepo ? (
+                    <SessionRow active title={text.newSession} onClick={onFocusDraftSession} />
+                  ) : null}
 
-                {!opencodeInstalled ? (
-                  <p className="px-2 py-1 text-xs text-muted-foreground">{text.opencodeRequired}</p>
-                ) : null}
+                  {!opencodeInstalled ? (
+                    <p className="px-2 py-1 text-xs text-muted-foreground">{text.opencodeRequired}</p>
+                  ) : null}
 
-                {opencodeInstalled && sessionsLoading && sessions.length === 0 ? (
-                  <SidebarMenuSkeleton />
-                ) : null}
+                  {opencodeInstalled
+                    ? sessions.map((session) => (
+                      <SessionRow
+                        key={`left-session-${session.id}`}
+                        active={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId}
+                        title={session.title}
+                        running={Boolean(sessionBusyById[session.id])}
+                        time={session.updatedAt || session.createdAt ? formatRelativeTimeLocalized(session.updatedAt || session.createdAt, text) : ""}
+                        onClick={() => onOpenSession(repo, session)}
+                        onArchive={() => void onArchiveSession(repo, session.id)}
+                        archiveLabel={text.archiveSession}
+                      />
+                    ))
+                    : null}
 
-                {opencodeInstalled
-                  ? sessions.map((session) => (
-                    <SessionRow
-                      key={`left-session-${session.id}`}
-                      active={!hasDraftForRepo && repo.id === selectedRepoId && session.id === activeSessionId}
-                      title={session.title}
-                      time={session.updatedAt || session.createdAt ? formatRelativeTimeLocalized(session.updatedAt || session.createdAt, text) : ""}
-                      onClick={() => onOpenSession(repo, session)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onOpenSessionContextMenu(event.clientX, event.clientY, repo, session);
-                      }}
-                    />
-                  ))
-                  : null}
+                  {showLoadingSkeleton ? <SidebarMenuSkeleton /> : null}
 
-                {opencodeInstalled && hasMoreSessions ? (
-                  <SidebarMenuSubItem>
-                    <SidebarMenuSubButton
-                      asChild
-                      className="text-muted-foreground"
-                    >
+                  {showLoadMoreRow ? (
+                    <SidebarMenuSubItem className="relative -mx-2">
                       <button
                         type="button"
+                        className="flex h-8 w-full min-w-0 items-center rounded-lg border-0 bg-transparent py-0 pl-[34px] pr-3 text-left text-sm text-muted-foreground outline-none ring-sidebar-ring transition-[background-color,color,box-shadow] duration-150 ease-out hover:bg-[color-mix(in_srgb,var(--text)_5%,transparent)] hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-[color-mix(in_srgb,var(--text)_7%,transparent)] disabled:pointer-events-none disabled:opacity-50"
                         onClick={() => void onLoadMoreSessions(repo)}
-                        disabled={sessionsLoading || sessionsPaging}
-                        aria-busy={sessionsPaging}
+                        disabled={loadMorePending}
+                        aria-busy={loadMorePending}
                       >
                         <span className="truncate">{loadMoreLabel}</span>
                       </button>
-                    </SidebarMenuSubButton>
-                  </SidebarMenuSubItem>
-                ) : null}
-              </SidebarMenuSub>
-            </div>
-          </CollapsibleContent>
-        ) : null}
+                    </SidebarMenuSubItem>
+                  ) : null}
+                </SidebarMenuSub>
+              </motion.div>
+            ) : null}
+          </motion.div>
+        </CollapsibleContent>
       </SidebarMenuItem>
     </Collapsible>
   );
@@ -581,31 +709,51 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
 type SessionRowProps = {
   title: string;
   active?: boolean;
+  running?: boolean;
   time?: string;
   onClick: () => void;
-  onContextMenu?: React.MouseEventHandler<HTMLButtonElement>;
+  onArchive?: () => void;
+  archiveLabel?: string;
 };
 
-const SessionRow = memo(function SessionRow({ title, active = false, time = "", onClick, onContextMenu }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ title, active = false, running = false, time = "", onClick, onArchive, archiveLabel = "归档会话" }: SessionRowProps) {
+  const hasArchive = Boolean(onArchive);
+  const hasTrailing = running || Boolean(time);
+
   return (
-    <SidebarMenuSubItem>
-      <SidebarMenuSubButton
-        asChild
-        isActive={active}
+    <SidebarMenuSubItem className="group/session-row relative -mx-2">
+      <button
+        type="button"
         className={cn(
-          active && "bg-secondary text-secondary-foreground hover:bg-secondary hover:text-secondary-foreground"
+          "relative flex h-8 w-full min-w-0 items-center rounded-lg border-0 bg-transparent py-0 pl-[34px] pr-3 text-left text-sm text-sidebar-foreground outline-none ring-sidebar-ring transition-[background-color,color,box-shadow] duration-150 ease-out hover:bg-[color-mix(in_srgb,var(--text)_5%,transparent)] hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-[color-mix(in_srgb,var(--text)_7%,transparent)]",
+          hasTrailing && "pr-[58px]",
+          hasArchive && !hasTrailing && "pr-9",
+          active && "bg-[color-mix(in_srgb,var(--text)_8%,transparent)] font-medium text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_rgba(0,0,0,0.025)] hover:bg-[color-mix(in_srgb,var(--text)_8%,transparent)]"
         )}
+        data-active={active}
+        onClick={onClick}
       >
+        <span className="min-w-0 flex-1 truncate text-left">{title}</span>
+        {running ? (
+          <LoaderCircle className="absolute right-3 size-4 animate-spin text-muted-foreground" aria-hidden="true" />
+        ) : time ? (
+          <span className={cn("absolute right-3 text-right text-xs text-muted-foreground tabular-nums transition-opacity duration-150", hasArchive && "group-hover/session-row:opacity-0 group-focus-within/session-row:opacity-0")}>{time}</span>
+        ) : null}
+      </button>
+      {hasArchive ? (
         <button
           type="button"
-          className="flex w-full min-w-0 items-center gap-2"
-          onClick={onClick}
-          onContextMenu={onContextMenu}
+          className="absolute right-3 top-1 flex size-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground opacity-0 outline-none ring-sidebar-ring transition-[background-color,color,opacity,transform] duration-150 ease-out hover:bg-[color-mix(in_srgb,var(--text)_7%,transparent)] hover:text-sidebar-accent-foreground focus-visible:opacity-100 focus-visible:ring-2 group-hover/session-row:opacity-100 group-focus-within/session-row:opacity-100 active:scale-95"
+          title={archiveLabel}
+          aria-label={archiveLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            onArchive?.();
+          }}
         >
-          <span className="min-w-0 flex-1 truncate text-left">{title}</span>
-          {time ? <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{time}</span> : null}
+          <Archive className="size-4" aria-hidden="true" />
         </button>
-      </SidebarMenuSubButton>
+      ) : null}
     </SidebarMenuSubItem>
   );
 });

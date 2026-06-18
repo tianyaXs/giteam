@@ -68,7 +68,7 @@ function getInstallHints(platform: string): Record<RuntimeDepName, string> {
   return {
     git: "brew install git",
     entire: "brew tap entireio/tap && brew install entireio/tap/entire",
-    opencode: "npm i -g opencode-ai",
+    opencode: "npm install -g opencode-ai",
     giteam: "npm install -g giteam"
   };
 }

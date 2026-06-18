@@ -83,7 +83,6 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
   const pendingSkillInstallGroupsRef = useRef<Record<string, PendingSkillInstallGroup[]>>({});
 
   const filteredOpencodeSkills = useMemo(() => {
-    if (!skillsVisible) return [];
     const query = opencodeSkillListQuery.trim().toLowerCase();
     return opencodeSkills.filter((skill) => {
       const scope = skill.scope || "source";
@@ -92,10 +91,9 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
       return [skill.name, skill.description, skill.path, skill.location]
         .some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [skillsVisible, opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
+  }, [opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
 
   const groupedOpencodeSkills = useMemo<OpencodeInstalledSkillGroup[]>(() => {
-    if (!skillsVisible) return [];
     const groups = new Map<string, OpencodeSkillInfo[]>();
     filteredOpencodeSkills.forEach((skill) => {
       const key = (skill.sourceGroup || skill.name).trim() || "Unnamed Skill";
@@ -124,7 +122,7 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [skillsVisible, filteredOpencodeSkills]);
+  }, [filteredOpencodeSkills]);
 
   function restoreCachedSkillsForRepo(targetRepoPath: string, options: { resetFilter?: boolean } = {}) {
     const cached = skillsByRepoRef.current[targetRepoPath] || null;

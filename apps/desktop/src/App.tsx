@@ -13,7 +13,6 @@ import {
 import { GitChangesPanel } from "./components/git/GitChangesPanel";
 import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import {
-  CheckIcon,
   CloseIcon
 } from "./components/icons";
 import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
@@ -31,6 +30,7 @@ import {
   OpencodeSettingsMcpGrid
 } from "./components/opencode/OpencodeMcpPanels";
 import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
+import { OpencodeTodoProgressCard } from "./components/opencode/OpencodeTodoProgressCard";
 import {
   OpencodeSettingsSkillsGrid,
   OpencodeSkillsMarketPanel
@@ -112,7 +112,6 @@ import {
 } from "./lib/controlServer";
 import {
   hasRuntimeFirstCheckCompleted,
-  isRuntimeSetupDismissed,
   markRuntimeFirstCheckCompleted,
   markRuntimeReady,
   setRuntimeSetupDismissed
@@ -409,7 +408,7 @@ const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
 const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
-const TITLEBAR_LEFT_TOGGLE_X = 76;
+const TITLEBAR_LEFT_TOGGLE_X = 80;
 const TITLEBAR_COLLAPSED_TITLE_INSET = 220;
 const DRAG_REGION_INTERACTIVE_SELECTOR = [
   "a",
@@ -526,6 +525,7 @@ export function App() {
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
+  const [runtimeStartupChecking, setRuntimeStartupChecking] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 304, 292, 340));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
@@ -541,6 +541,7 @@ export function App() {
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
   const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry; session: OpencodeChatSession } | null>(null);
+  const [composerContextMenu, setComposerContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string; branch?: string; subject?: string } | null>(null);
   const [commitHoverCard, setCommitHoverCard] = useState<{ x: number; y: number; sha: string; subject?: string; author?: string; date?: string; branch?: string } | null>(null);
   const [topologyContextMenu, setTopologyContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -611,6 +612,7 @@ export function App() {
   const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitDialogAction, setCommitDialogAction] = useState<"commit" | "commitPush" | "commitSync" | null>(null);
+  const [commitDialogSubmitting, setCommitDialogSubmitting] = useState(false);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -636,7 +638,6 @@ export function App() {
   const [installingElapsed, setInstallingElapsed] = useState(0);
   const [runtimeJobId, setRuntimeJobId] = useState("");
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
-  const [expandedLogDep, setExpandedLogDep] = useState<RuntimeDepName | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(() => loadCachedRuntimeStatus());
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
   const [opencodeProviders, setOpencodeProviders] = useState<string[]>([]);
@@ -700,39 +701,8 @@ export function App() {
   const [controlPairQrUrl, setControlPairQrUrl] = useState("");
   const [controlSettingsLoaded, setControlSettingsLoaded] = useState(false);
   const controlSettingsDirty = controlServerSettingsChanged(controlServerSettings, controlServerSettingsSaved);
-  const mobileServiceStatusRef = useRef<GiteamMobileServiceStatus | null>(null);
-  const [mobileStatusChangeToast, setMobileStatusChangeToast] = useState<{ visible: boolean; message: string }>({ visible: false, message: "" });
   const [mobileServiceStatus, setMobileServiceStatus] = useState<GiteamMobileServiceStatus | null>(null);
   const [mobileServiceStatusError, setMobileServiceStatusError] = useState("");
-
-  useEffect(() => {
-    mobileServiceStatusRef.current = mobileServiceStatus;
-  }, [mobileServiceStatus]);
-
-  useEffect(() => {
-    if (!runtimeStatus.giteam.installed) return;
-    const prevRunningRef = { current: false };
-    const interval = window.setInterval(() => {
-      const st = mobileServiceStatusRef.current;
-      if (!st) return;
-      if (prevRunningRef.current && !st.running) {
-        setMobileStatusChangeToast({ visible: true, message: "Disconnected" });
-      }
-      if (!prevRunningRef.current && st.running) {
-        setMobileStatusChangeToast({ visible: true, message: "Connected" });
-      }
-      prevRunningRef.current = st.running;
-    }, 2000);
-    return () => window.clearInterval(interval);
-  }, [runtimeStatus.giteam.installed]);
-
-  useEffect(() => {
-    if (!mobileStatusChangeToast.visible) return;
-    const t = window.setTimeout(() => {
-      setMobileStatusChangeToast((prev) => ({ ...prev, visible: false }));
-    }, 4000);
-    return () => window.clearTimeout(t);
-  }, [mobileStatusChangeToast.visible]);
 
   const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
   const [opencodePromptInput, setOpencodePromptInput] = useState("");
@@ -812,8 +782,7 @@ export function App() {
   const [opencodeDetailsLoadingByMessageId, setOpencodeDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
   const [opencodeDetailsErrorByMessageId, setOpencodeDetailsErrorByMessageId] = useState<Record<string, string>>({});
   const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
-  const [opencodeTodoDockVisible, setOpencodeTodoDockVisible] = useState(false);
-  const [opencodeTodoDockCollapsed, setOpencodeTodoDockCollapsed] = useState(false);
+  const [opencodeViewportTodos, setOpencodeViewportTodos] = useState<OpencodeTodoItem[]>([]);
   const [opencodeQuestionRequests, setOpencodeQuestionRequests] = useState<QuestionRequest[]>([]);
   const [opencodeQuestionLoading, setOpencodeQuestionLoading] = useState(false);
   const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
@@ -821,12 +790,14 @@ export function App() {
   const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const opencodeInputComposingRef = useRef(false);
   const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
+  const opencodeViewportTodosSigRef = useRef("");
   const commitMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const worktreePatchStreamSeqRef = useRef(0);
   const worktreePatchStreamKeyRef = useRef("");
   const worktreePatchByPathRef = useRef<Record<string, string>>({});
   const sidebarOpencodeSessionsByRepoRef = useRef<Record<string, OpencodeChatSession[]>>({});
   const sidebarOpencodeSessionFetchLimitByRepoRef = useRef<Record<string, number>>({});
+  const sidebarOpencodeSessionLoadedByRepoRef = useRef<Record<string, boolean>>({});
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
@@ -896,6 +867,21 @@ export function App() {
       return attachments.filter(Boolean) as OpencodeAttachment[];
     }
     return [];
+  }
+
+  async function readOpencodeClipboardAttachments(transfer?: DataTransfer | null): Promise<OpencodeAttachment[]> {
+    let attachments = transfer && hasClipboardFileReference(transfer) ? await readTransferAttachments(transfer) : [];
+    if (attachments.length === 0) {
+      attachments = await readBrowserClipboardAttachments();
+    }
+    if (attachments.length === 0) {
+      attachments = await readDesktopClipboardImageAttachment();
+    }
+    if (attachments.length === 0) {
+      const desktopClipboardPaths = await readDesktopClipboardFilePaths();
+      attachments = attachmentsFromLocalPaths(desktopClipboardPaths);
+    }
+    return attachments;
   }
 
   async function openOpencodeAttachmentPicker() {
@@ -1029,28 +1015,19 @@ export function App() {
     opencodeSkillSearchResults,
     opencodeSkillSearchLoading,
     opencodeSkillCatalogView,
-    opencodeSkillCatalogRows,
-    opencodeSkillCatalogPage,
-    opencodeSkillCatalogTotal,
     opencodeSkillSearchMeta,
     selectedMarketplaceSkill,
-    selectedSkillDetail,
-    selectedSkillAudits,
-    selectedSkillLoading,
-    showSkillInstallMenu,
     setShowSkillInstallMenu,
     opencodeMarketplaceRows,
     visibleOpencodeMarketplaceRows,
     opencodeSkillsInitialLoading,
     opencodeSkillsSearching,
     opencodeSkillsPaging,
-    opencodeCanAutoLoadMore,
     warmSkillsMarketplace,
     searchOpencodeSkillRegistry,
     switchOpencodeSkillCatalogView,
     handleOpencodeSkillMarketScroll,
-    selectMarketplaceSkill,
-    loadSelectedMarketplaceSkillDetails
+    selectMarketplaceSkill
   } = useOpencodeSkillMarketplace({
     repoPath,
     skillsVisible: opencodeSkillsVisible,
@@ -1061,6 +1038,20 @@ export function App() {
     appendDebugLog: appendOpencodeDebugLog,
     setSkillsError: setOpencodeSkillsError
   });
+
+  useEffect(() => {
+    if (!runtimeStatus.opencode.installed || !repoPath.trim()) return;
+    const timer = scheduleAfterInteraction(() => {
+      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) void refreshOpencodeSkills();
+      void warmSkillsMarketplace();
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [
+    runtimeStatus.opencode.installed,
+    repoPath,
+    opencodeSkillsLoadedOnce,
+    opencodeSkillsLoading
+  ]);
 
   useEffect(() => {
     if (!repoPath.trim()) {
@@ -1598,6 +1589,11 @@ export function App() {
     return sidebarOpencodeSessionsByRepo[id] ?? [];
   }
 
+  function hasLoadedSidebarRepoSessions(repoId: string): boolean {
+    const id = repoId.trim();
+    return Boolean(id && sidebarOpencodeSessionLoadedByRepoRef.current[id]);
+  }
+
   function upsertSidebarOpencodeSession(repoId: string, session: OpencodeChatSession) {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
@@ -1652,14 +1648,38 @@ export function App() {
     return Boolean(sidebarOpencodeSessionPagingByRepo[repoId.trim()]);
   }
 
+  function expandProjectSessions(repoId: string) {
+    const id = repoId.trim();
+    if (!id) return;
+    setExpandedProjectIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }
+
+  function collapseProjectSessions(repoId: string) {
+    const id = repoId.trim();
+    if (!id) return;
+    setExpandedProjectIds((prev) => prev.filter((item) => item !== id));
+  }
+
   function toggleRepoSessions(repo: RepositoryEntry) {
     const expanded = expandedProjectIds.includes(repo.id);
     setNewSessionTargetRepoId(repo.id);
-    setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev.filter((id) => id !== repo.id) : [...prev, repo.id]));
-    const sessionsCached = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepo, repo.id);
-    if (!expanded && runtimeStatus.opencode.installed && !sessionsCached) {
-      void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+    if (expanded) {
+      collapseProjectSessions(repo.id);
+      return;
     }
+
+    const sessionsLoaded = hasLoadedSidebarRepoSessions(repo.id);
+    if (!expanded && runtimeStatus.opencode.installed && !sessionsLoaded) {
+      if (isRepoSessionsLoading(repo.id)) return;
+      void refreshSidebarRepoSessions(repo)
+        .then(() => {
+          if (hasLoadedSidebarRepoSessions(repo.id)) expandProjectSessions(repo.id);
+        })
+        .catch((e) => setError(String(e)));
+      return;
+    }
+
+    expandProjectSessions(repo.id);
   }
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
@@ -2315,6 +2335,10 @@ export function App() {
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
       const sorted = sortOpencodeSessionSummaries(rows || []);
       const hasMore = sorted.length > limit;
+      sidebarOpencodeSessionLoadedByRepoRef.current = {
+        ...sidebarOpencodeSessionLoadedByRepoRef.current,
+        [repoId]: true
+      };
       setSidebarOpencodeSessionsByRepo((prev) => {
         const cachedSessions = prev[repoId] || [];
         const cachedById = new Map(cachedSessions.map((item) => [item.id, item]));
@@ -3204,37 +3228,70 @@ export function App() {
     }
   }
 
-  function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
-    if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
-      return job.status === "succeeded"
-        ? "Automatic runtime setup completed"
-        : "Automatic runtime setup failed";
+function runtimeJobFailureMessage(job: RuntimeActionJobStatus): string {
+  const log = job.log || "";
+  const lines = log.split("\n").filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (line.includes("NETWORK_ERROR:")) {
+      return line.replace(/^.*NETWORK_ERROR:\s*/, "").trim();
     }
-    return job.status === "succeeded"
-      ? `${job.action} ${job.name} completed`
-      : `${job.action} ${job.name} failed`;
+    if (/^curl:\s/.test(line)) {
+      return `网络连接失败（${line}）`;
+    }
   }
+  if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
+    return "运行环境准备失败";
+  }
+  const actionText = job.action === "uninstall" ? "卸载" : "安装";
+  return `${job.name} ${actionText}失败`;
+}
 
-  async function runDependencyAction(name: RuntimeDepName, action: "install" | "uninstall", options?: { showRuntimePanel?: boolean }) {
+function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
+  if (job.status === "succeeded") {
+    if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
+      return "运行环境已准备完成";
+    }
+    const actionText = job.action === "uninstall" ? "卸载" : "安装";
+    return `${job.name} ${actionText}完成`;
+  }
+  return runtimeJobFailureMessage(job);
+}
+
+function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepName[] {
+  return (["git", "entire", "opencode", "giteam"] as RuntimeDepName[]).filter((name) => !status[name].installed);
+}
+
+  async function runDependencyAction(
+    name: RuntimeDepName,
+    action: "install" | "uninstall",
+    options?: { showRuntimePanel?: boolean }
+  ) {
     flushSync(() => {
-      setShowEnvSetup(options?.showRuntimePanel ?? true);
+      setShowEnvSetup(options?.showRuntimePanel ?? false);
       setInstallingDep(name);
       setInstallingElapsed(0);
       setRuntimeInstallLog("");
       setRuntimeJob(null);
       setRuntimeJobId("");
-      setExpandedLogDep(null);
       setError("");
-      setMessage(`${action === "install" ? "Installing" : "Uninstalling"} ${name}...`);
-      setRuntimeInstallLog(`Starting ${action} for ${name}...\nPlease wait.`);
+      setMessage(`${name} ${action === "uninstall" ? "卸载" : "安装"}中...`);
     });
     try {
       const jobId = await invoke<string>("start_runtime_dependency_action", { name, action });
+      setRuntimeJob({
+        jobId,
+        name,
+        action,
+        status: "running",
+        log: "",
+        startedAtMs: Date.now()
+      });
       setRuntimeJobId(jobId);
     } catch (e) {
       setRuntimeInstallLog(String(e));
       setError(String(e));
-      setMessage(`${action} ${name} failed to start`);
+      setMessage(`${name} ${action === "uninstall" ? "卸载" : "安装"}启动失败`);
       setInstallingDep("");
       setInstallingElapsed(0);
       setRuntimeJobId("");
@@ -3249,10 +3306,9 @@ export function App() {
       setRuntimeInstallLog("");
       setRuntimeJob(null);
       setRuntimeJobId("");
-      setExpandedLogDep(null);
       setError("");
-      setMessage("Starting automatic runtime setup...");
-      setRuntimeInstallLog("Starting automatic runtime setup...\nPlease wait.");
+      setMessage("正在准备运行环境...");
+      setRuntimeInstallLog("正在准备运行环境...\n请稍候。");
     });
     try {
       const jobId = await invoke<string>("start_runtime_dependency_action", {
@@ -3263,11 +3319,28 @@ export function App() {
     } catch (e) {
       setRuntimeInstallLog(String(e));
       setError(String(e));
-      setMessage("Automatic runtime setup failed to start");
+      setMessage("运行环境准备启动失败");
       setInstallingDep("");
       setInstallingElapsed(0);
       setRuntimeJobId("");
     }
+  }
+
+  function runRuntimeSetupForMissing(
+    status: RuntimeRequirementsStatus,
+    options?: { showRuntimePanel?: boolean }
+  ) {
+    const missing = getMissingRuntimeDeps(status);
+    if (missing.length === 0) return;
+    if (status.platform === "macos" && missing.length === 1) {
+      void runDependencyAction(missing[0], "install", options);
+      return;
+    }
+    if (status.platform === "macos") {
+      void runRuntimeAutoInit(options);
+      return;
+    }
+    setShowEnvSetup(options?.showRuntimePanel ?? true);
   }
 
   async function fetchOpencodeProviders(): Promise<string[]> {
@@ -4511,6 +4584,49 @@ export function App() {
     });
   }
 
+  function insertOpencodePromptTextAtSelection(text: string) {
+    if (!text) return;
+    const el = opencodeInputRef.current;
+    const base = el?.value ?? opencodePromptInput;
+    const start = el?.selectionStart ?? base.length;
+    const end = el?.selectionEnd ?? start;
+    const next = `${base.slice(0, start)}${text}${base.slice(end)}`;
+    const cursor = start + text.length;
+    captureOpencodePromptHistoryDraft(next);
+    setOpencodePromptInput(next);
+    const isSlash = /^\//.test(next) && !next.includes(" ");
+    setOpencodeSlashOpen(isSlash);
+    setOpencodeSlashActiveIndex(0);
+    requestAnimationFrame(() => {
+      resizeOpencodeInput();
+      const current = opencodeInputRef.current;
+      if (!current) return;
+      current.focus();
+      current.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  async function pasteIntoOpencodePromptFromContextMenu() {
+    setComposerContextMenu(null);
+    const el = opencodeInputRef.current;
+    el?.focus();
+    const attachments = await readOpencodeClipboardAttachments();
+    if (attachments.length > 0) {
+      appendOpencodeAttachments(attachments);
+      return;
+    }
+    try {
+      const text = await navigator.clipboard?.readText?.();
+      if (text) {
+        insertOpencodePromptTextAtSelection(text);
+        return;
+      }
+    } catch {
+      // Some desktop shells deny Clipboard API reads; let the native paste event try next.
+    }
+    document.execCommand?.("paste");
+  }
+
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
       const base = await invoke<string>("get_opencode_service_base", { repoPath });
@@ -5160,11 +5276,22 @@ export function App() {
           setInstallingDep("");
           setInstallingElapsed(0);
           setRuntimeJobId("");
-          setMessage(describeRuntimeJobResult(job));
-          if (job.status === "failed" && job.error) {
-            setError(job.error);
-          }
-          void refreshRuntimeRequirements();
+          void refreshRuntimeRequirements().then((final) => {
+            const allInstalled = [final.git, final.entire, final.opencode, final.giteam].every((d) => d.installed);
+            if (job.status === "succeeded" || allInstalled) {
+              setRuntimeJob(null);
+              setError("");
+              setMessage("运行环境已准备完成");
+              if (allInstalled) setShowEnvSetup(false);
+            } else {
+              setRuntimeJob(null);
+              setRuntimeInstallLog(job.log || "");
+              setMessage(describeRuntimeJobResult(job));
+              if (job.status === "failed") {
+                setError(runtimeJobFailureMessage(job));
+              }
+            }
+          });
         })
         .catch((e) => {
           if (stopped) return;
@@ -5219,20 +5346,39 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!generalSettings.updatesStartup) return;
-    const hasCheckedBefore = hasRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
-    const dismissed = isRuntimeSetupDismissed();
+    let cancelled = false;
+    setRuntimeJob(null);
+    setRuntimeInstallLog("");
+    setError("");
+    setRuntimeStartupChecking(true);
     void refreshRuntimeRequirements()
       .then((res) => {
+        if (cancelled) return;
+        const firstLaunch = !hasRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
         markRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
-        const missing = [res.git, res.entire, res.opencode, res.giteam].some((d) => !d.installed);
-        if (!hasCheckedBefore && !dismissed && missing) {
+        const missing = getMissingRuntimeDeps(res);
+        if (missing.length === 0) {
+          setRuntimeSetupDismissed(false);
+          setShowEnvSetup(false);
+          return;
+        }
+
+        if (firstLaunch) {
+          setRuntimeSetupDismissed(false);
           setShowEnvSetup(true);
-          if (res.platform === "macos") void runRuntimeAutoInit({ showRuntimePanel: true });
+          runRuntimeSetupForMissing(res, { showRuntimePanel: true });
         }
       })
-      .catch((e) => setError(String(e)));
-  }, [generalSettings.updatesStartup]);
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setRuntimeStartupChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!gitPaneRepo) return;
@@ -5314,16 +5460,29 @@ export function App() {
 
   useEffect(() => {
     if (!selectedRepo?.id) return;
-    setExpandedProjectIds((prev) => (prev.includes(selectedRepo.id) ? prev : [...prev, selectedRepo.id]));
-  }, [selectedRepo?.id]);
+    const repoId = selectedRepo.id.trim();
+    if (!repoId) return;
+    if (runtimeStatus.opencode.installed && !hasLoadedSidebarRepoSessions(repoId)) return;
+    expandProjectSessions(repoId);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed || !selectedRepo) return;
     const repoId = selectedRepo.id.trim();
     if (!repoId) return;
-    const alreadyLoaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepoRef.current, repoId);
+    const alreadyLoaded = hasLoadedSidebarRepoSessions(repoId);
     if (alreadyLoaded) return;
-    void refreshSidebarRepoSessions(selectedRepo).catch((e) => setError(String(e)));
+    let cancelled = false;
+    void refreshSidebarRepoSessions(selectedRepo)
+      .then(() => {
+        if (!cancelled && hasLoadedSidebarRepoSessions(repoId)) expandProjectSessions(repoId);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
@@ -5349,7 +5508,7 @@ export function App() {
       const reposToRefresh = repos.filter((repo) => {
         const repoId = repo.id.trim();
         if (!repoId) return false;
-        const loaded = Object.prototype.hasOwnProperty.call(sidebarOpencodeSessionsByRepoRef.current, repoId);
+        const loaded = hasLoadedSidebarRepoSessions(repoId);
         if (!loaded) return false;
         return expandedRepoIds.has(repoId) || selectedRepo?.id === repoId;
       });
@@ -5652,15 +5811,6 @@ export function App() {
     if (!showOpencodeModelPicker) return;
     // Keep previous list until refresh resolves to avoid open-time flicker.
     void refreshOpencodeServerConfig();
-    const onDown = (e: MouseEvent) => {
-      const root = opencodeModelPickerRef.current;
-      if (!root) return;
-      const target = e.target as Node;
-      if (root.contains(target)) return;
-      setShowOpencodeModelPicker(false);
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
   }, [showOpencodeModelPicker]);
 
   useEffect(() => {
@@ -5755,6 +5905,11 @@ export function App() {
       opencodePrevScrollHeightRef.current = 0;
       opencodePendingAnchorSessionIdRef.current = sid;
       opencodeStickToBottomSessionRef.current = sid;
+      opencodeForceScrollLatestSessionRef.current = sid;
+      opencodePausedScrollSnapshotRef.current = null;
+      opencodeUserScrollPauseUntilRef.current = 0;
+      opencodeUserScrollUpUntilRef.current = 0;
+      opencodeUserScrollDownUntilRef.current = 0;
       setOpencodeAutoFollow(true);
       setOpencodeShowJumpLatest(false);
     }
@@ -5764,9 +5919,11 @@ export function App() {
     }
     if (!sessionChanged) return;
     requestAnimationFrame(() => {
+      if (opencodePrevActiveSessionIdRef.current !== sid) return;
       const el = opencodeThreadRef.current;
       if (!el) return;
-      el.scrollTop = 0;
+      scrollOpencodeThreadToBottomNow();
+      requestAnimationFrame(updateOpencodeViewportTodos);
     });
   }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
 
@@ -5969,43 +6126,64 @@ export function App() {
     return requests;
   }, [opencodeActiveQuestions.length, opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId, activeOpencodeSessionId, opencodeDismissedQuestionsBySession]);
 
-  const opencodeTodoProgress = useMemo(() => {
-    const total = opencodeActiveTodos.length;
-    const done = opencodeActiveTodos.filter((todo) => todo.status === "completed").length;
-    const finished = total > 0 && opencodeActiveTodos.every((todo) => todo.status === "completed" || todo.status === "cancelled");
+  const opencodeSideRailTodos = opencodeViewportTodos.length > 0 ? opencodeViewportTodos : opencodeActiveTodos;
+  const opencodeSideRailTodoProgress = useMemo(() => {
+    const total = opencodeSideRailTodos.length;
+    const done = opencodeSideRailTodos.filter((todo) => todo.status === "completed").length;
     const active =
-      opencodeActiveTodos.find((todo) => todo.status === "in_progress") ||
-      opencodeActiveTodos.find((todo) => todo.status === "pending") ||
-      opencodeActiveTodos[opencodeActiveTodos.length - 1] ||
+      opencodeSideRailTodos.find((todo) => todo.status === "in_progress") ||
+      opencodeSideRailTodos.find((todo) => todo.status === "pending") ||
+      opencodeSideRailTodos[opencodeSideRailTodos.length - 1] ||
       null;
-    return { total, done, finished, active };
-  }, [opencodeActiveTodos]);
+    return { total, done, active };
+  }, [opencodeSideRailTodos]);
+
+  function setOpencodeViewportTodosFromDom(nextTodos: OpencodeTodoItem[]) {
+    const signature = nextTodos.map((todo) => `${todo.id}:${todo.status}:${todo.content}`).join("|");
+    if (signature === opencodeViewportTodosSigRef.current) return;
+    opencodeViewportTodosSigRef.current = signature;
+    setOpencodeViewportTodos(nextTodos);
+  }
+
+  function updateOpencodeViewportTodos() {
+    const el = opencodeThreadRef.current;
+    if (!el) return;
+    const nodes = Array.from(el.querySelectorAll<HTMLElement>("[data-opencode-todos]"));
+    if (nodes.length === 0) {
+      setOpencodeViewportTodosFromDom([]);
+      return;
+    }
+    const viewportRect = el.getBoundingClientRect();
+    const anchorY = viewportRect.top + Math.min(180, Math.max(96, el.clientHeight * 0.22));
+    let bestScore = Number.POSITIVE_INFINITY;
+    let bestTodos: OpencodeTodoItem[] = [];
+
+    nodes.forEach((node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom < viewportRect.top + 24 || rect.top > viewportRect.bottom - 80) return;
+      const raw = node.dataset.opencodeTodos || "";
+      if (!raw) return;
+      let todos: OpencodeTodoItem[] = [];
+      try {
+        todos = JSON.parse(decodeURIComponent(raw)) as OpencodeTodoItem[];
+      } catch {
+        todos = [];
+      }
+      if (todos.length === 0) return;
+      const score = Math.abs(rect.top - anchorY);
+      if (score < bestScore) {
+        bestScore = score;
+        bestTodos = todos;
+      }
+    });
+
+    setOpencodeViewportTodosFromDom(bestTodos);
+  }
 
   useEffect(() => {
-    if (!generalSettings.showSessionProgressBar) {
-      setOpencodeTodoDockVisible(false);
-      setOpencodeTodoDockCollapsed(false);
-      return;
-    }
-    if (opencodeActiveTodos.length === 0) {
-      setOpencodeTodoDockVisible(false);
-      setOpencodeTodoDockCollapsed(false);
-      return;
-    }
-    if (activeOpencodeSessionBusy) {
-      setOpencodeTodoDockVisible(true);
-      setOpencodeTodoDockCollapsed(false);
-      return;
-    }
-    setOpencodeTodoDockVisible(true);
-    setOpencodeTodoDockCollapsed(true);
-  }, [opencodeActiveTodos, activeOpencodeSessionBusy, generalSettings.showSessionProgressBar]);
-
-  useEffect(() => {
-    setOpencodeTodoDockCollapsed(false);
-    setOpencodeTodoDockVisible(false);
     setOpencodeQuestionRequests([]);
     setOpencodeQuestionLoading(true);
+    setOpencodeViewportTodosFromDom([]);
   }, [activeOpencodeSessionId]);
 
   useEffect(() => {
@@ -6194,7 +6372,12 @@ export function App() {
     setOpencodeAutoFollow(true);
     setOpencodeShowJumpLatest(false);
     opencodePrevScrollTopRef.current = 0;
-    opencodeForceScrollLatestSessionRef.current = "";
+    opencodePausedScrollSnapshotRef.current = null;
+    opencodeUserScrollPauseUntilRef.current = 0;
+    opencodeUserScrollUpUntilRef.current = 0;
+    opencodeUserScrollDownUntilRef.current = 0;
+    opencodeForceScrollLatestSessionRef.current = activeOpencodeSessionId;
+    opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
   }, [activeOpencodeSessionId]);
 
   function loadOlderOpencodeHistory() {
@@ -6227,6 +6410,7 @@ export function App() {
   function onOpencodeThreadScroll() {
     const el = opencodeThreadRef.current;
     if (!el) return;
+    updateOpencodeViewportTodos();
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const nearBottom = opencodeIsNearBottom(el, 24);
     const now = Date.now();
@@ -6319,6 +6503,10 @@ export function App() {
   }
 
   useEffect(() => {
+    requestAnimationFrame(updateOpencodeViewportTodos);
+  }, [opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId, activeOpencodeSessionId]);
+
+  useEffect(() => {
     if (!opencodeLoadingOlderRef.current) return;
     const el = opencodeThreadRef.current;
     if (!el) return;
@@ -6357,10 +6545,11 @@ export function App() {
   }, [opencodeSessionLoading, opencodeHasHiddenHistory, opencodeTurnStart, opencodeMessages.length, opencodeRenderedMessages.length]);
 
   useEffect(() => {
-    if (!repoContextMenu && !sessionContextMenu && !commitContextMenu && !topologyContextMenu) return;
+    if (!repoContextMenu && !sessionContextMenu && !composerContextMenu && !commitContextMenu && !topologyContextMenu) return;
     const dismiss = () => {
       setRepoContextMenu(null);
       setSessionContextMenu(null);
+      setComposerContextMenu(null);
       setCommitContextMenu(null);
       setTopologyContextMenu(null);
     };
@@ -6368,7 +6557,7 @@ export function App() {
     return () => {
       window.removeEventListener("click", dismiss);
     };
-  }, [repoContextMenu, sessionContextMenu, commitContextMenu, topologyContextMenu]);
+  }, [repoContextMenu, sessionContextMenu, composerContextMenu, commitContextMenu, topologyContextMenu]);
 
   useEffect(() => {
     if (!opencodePreviewImage) return;
@@ -6415,6 +6604,12 @@ export function App() {
     return () => window.removeEventListener("contextmenu", onNativeContextMenu, { capture: true });
   }, [repos]);
 
+  const runtimeDeps = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam];
+  const runtimeDepsMissing = runtimeDeps.some((dep) => !dep.installed);
+  const runtimeInstallActive = Boolean(installingDep || runtimeJobId);
+  const runtimeSetupVisible =
+    showEnvSetup && (runtimeStartupChecking || runtimeDepsMissing || runtimeInstallActive);
+
   const activityBar = null;
   const noRepos = repos.length === 0;
 
@@ -6430,6 +6625,7 @@ export function App() {
       selectedRepoId={selectedRepo?.id || ""}
       activeSessionId={activeOpencodeSessionId}
       draftRepoId={draftOpencodeSession ? (selectedRepo?.id || "") : ""}
+      sessionBusyById={opencodeRunBusyBySession}
       gitUserIdentity={gitUserIdentity}
       getVisibleRepoSessions={getVisibleRepoSessions}
       hasMoreRepoSessions={hasMoreRepoSessions}
@@ -6442,7 +6638,7 @@ export function App() {
       onTogglePinnedRepo={togglePinnedRepo}
       onFocusDraftSession={() => opencodeInputRef.current?.focus()}
       onOpenSession={openSidebarOpencodeSession}
-      onOpenSessionContextMenu={(x, y, repo, session) => setSessionContextMenu({ x, y, repo, session })}
+      onArchiveSession={(repo, sessionId) => archiveOpencodeSession(repo, sessionId)}
       onLoadMoreSessions={(repo) => void loadMoreSidebarRepoSessions(repo)}
       rightDrawerOpen={rightDrawerOpen}
       rightPaneTab={rightPaneTab}
@@ -6508,14 +6704,17 @@ export function App() {
               }}
             />
           )}
+          sideRail={generalSettings.showSessionProgressBar && opencodeSideRailTodos.length > 0 ? ({ collapsed }) => (
+            <OpencodeTodoProgressCard
+              todos={opencodeSideRailTodos}
+              progress={opencodeSideRailTodoProgress}
+              activeSessionBusy={activeOpencodeSessionBusy}
+              collapsed={collapsed}
+            />
+          ) : null}
+          sideRailHidden={rightDrawerOpen}
           composer={(
             <OpencodeComposerPanel
-              showSessionProgressBar={generalSettings.showSessionProgressBar}
-              todoDockVisible={opencodeTodoDockVisible}
-              todoDockCollapsed={opencodeTodoDockCollapsed}
-              activeTodos={opencodeActiveTodos}
-              todoProgress={opencodeTodoProgress}
-              onToggleTodoDockCollapsed={() => setOpencodeTodoDockCollapsed((prev) => !prev)}
               permissions={opencodeActivePermissions}
               onOpenPermissionsPanel={() => openOpencodeModulePanel("permissions")}
               onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
@@ -6617,26 +6816,24 @@ export function App() {
                 }
               }}
               onPromptPaste={async (event) => {
-                const hasBrowserAttachments = hasClipboardFileReference(event.clipboardData);
-                if (!hasBrowserAttachments && hasPlainClipboardText(event.clipboardData)) {
+                if (!hasClipboardFileReference(event.clipboardData) && hasPlainClipboardText(event.clipboardData)) {
                   return;
                 }
                 event.preventDefault();
-                let attachments = hasBrowserAttachments ? await readTransferAttachments(event.clipboardData) : [];
-                if (attachments.length === 0) {
-                  attachments = await readBrowserClipboardAttachments();
-                }
-                if (attachments.length === 0) {
-                  attachments = await readDesktopClipboardImageAttachment();
-                }
-                if (attachments.length === 0) {
-                  const desktopClipboardPaths = await readDesktopClipboardFilePaths();
-                  attachments = attachmentsFromLocalPaths(desktopClipboardPaths);
-                }
+                const attachments = await readOpencodeClipboardAttachments(event.clipboardData);
                 if (attachments.length === 0) {
                   return;
                 }
                 appendOpencodeAttachments(attachments);
+              }}
+              onPromptContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setRepoContextMenu(null);
+                setSessionContextMenu(null);
+                setCommitContextMenu(null);
+                setTopologyContextMenu(null);
+                setComposerContextMenu({ x: event.clientX, y: event.clientY });
               }}
               onPromptDragOver={(event) => {
                 if ((event.dataTransfer?.files?.length || 0) <= 0) return;
@@ -6719,9 +6916,21 @@ export function App() {
     </div>
   ) : (
     <Card className="flex h-full min-h-0 items-center justify-center rounded-none border-0 bg-background shadow-none">
-      <CardContent className="flex max-w-md flex-col items-center gap-2 text-center">
+      <CardContent className="flex max-w-md flex-col items-center gap-4 text-center">
         <div className="text-lg font-semibold tracking-[-0.01em] text-foreground">OpenCode Agent</div>
-        <p className="text-sm text-muted-foreground">Install `opencode` from Plugins to enable the coding area.</p>
+        <p className="text-sm text-muted-foreground">
+          安装 OpenCode 后即可使用对话与 Agent 能力。也可在设置 → 依赖 中管理安装。
+        </p>
+        <Button
+          variant="secondary"
+          disabled={runtimeInstallActive}
+          onClick={() => void runDependencyAction("opencode", "install", { showRuntimePanel: false })}
+        >
+          {installingDep === "opencode" ? "安装中…" : "安装 OpenCode"}
+        </Button>
+        {error && installingDep === "opencode" ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -6844,7 +7053,6 @@ export function App() {
           skills={opencodeSkills}
           skillsLoading={opencodeSkillsLoading}
           skillsError={opencodeSkillsError}
-          skillsmpApiKey={skillsmpApiKey}
           removingKey={opencodeSkillRemovingKey}
           skillBusy={opencodeSkillBusy}
           skillInstallingSpec={opencodeSkillInstallingSpec}
@@ -6855,20 +7063,13 @@ export function App() {
           searchStrategy={opencodeSkillSearchStrategy}
           searchResults={opencodeSkillSearchResults}
           catalogView={opencodeSkillCatalogView}
-          catalogPage={opencodeSkillCatalogPage}
-          catalogTotal={opencodeSkillCatalogTotal}
           searchMeta={opencodeSkillSearchMeta}
           selectedMarketplaceSkill={selectedMarketplaceSkill}
-          selectedSkillDetail={selectedSkillDetail}
-          selectedSkillAudits={selectedSkillAudits}
-          selectedSkillLoading={selectedSkillLoading}
-          showSkillInstallMenu={showSkillInstallMenu}
           marketplaceRows={opencodeMarketplaceRows}
           visibleMarketplaceRows={visibleOpencodeMarketplaceRows}
           initialLoading={opencodeSkillsInitialLoading}
           searching={opencodeSkillsSearching}
           paging={opencodeSkillsPaging}
-          canAutoLoadMore={opencodeCanAutoLoadMore}
           onSearchQueryChange={setOpencodeSkillSearchQuery}
           onSearch={() => void searchOpencodeSkillRegistry()}
           onSearchStrategyChange={setOpencodeSkillSearchStrategy}
@@ -6877,13 +7078,11 @@ export function App() {
           onScrollMarket={handleOpencodeSkillMarketScroll}
           onSelectMarketplaceSkill={selectMarketplaceSkill}
           onInstallMarketplaceSkill={(spec) => void installOpencodeSkillFromRegistry(spec, "project")}
-          onToggleSkillInstallMenu={() => setShowSkillInstallMenu((prev) => !prev)}
           onInstallSelectedMarketplaceSkill={(scope) => {
             if (!selectedMarketplaceSkill) return;
             setShowSkillInstallMenu(false);
             void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
           }}
-          onLoadSelectedSkillDetails={() => void loadSelectedMarketplaceSkillDetails(selectedMarketplaceSkill)}
           onReferenceSkill={referenceOpencodeSkill}
           onRemoveSkill={removeOpencodeSkill}
           onRemoveSkillGroup={removeOpencodeSkillGroup}
@@ -7235,26 +7434,18 @@ export function App() {
             </Card>
           </DialogContent>
         </Dialog>
-
-        {mobileStatusChangeToast.visible ? (
-          <Card className="fixed bottom-9 left-1/2 z-[2300] -translate-x-1/2 shadow-lg" role="status" aria-live="polite">
-            <CardContent className="flex items-center gap-2 px-3 py-2 text-sm font-medium">
-              <span className={mobileStatusChangeToast.message === "Disconnected" ? "text-muted-foreground" : "text-[var(--success)]"}>
-                {mobileStatusChangeToast.message === "Disconnected" ? <CloseIcon /> : <CheckIcon />}
-              </span>
-              <span>{mobileStatusChangeToast.message}</span>
-            </CardContent>
-          </Card>
-        ) : null}
-
         <Dialog
           open={Boolean(commitDialogAction)}
           onOpenChange={(open) => {
-            if (!open && !committing && !pushing) setCommitDialogAction(null);
+            if (!open && !committing && !pushing) {
+              setCommitDialogSubmitting(false);
+              setCommitDialogAction(null);
+            }
           }}
         >
           <DialogContent
-            className="w-[min(500px,calc(100vw-36px))]"
+            className="w-[min(440px,calc(100vw-36px))] rounded-[28px] p-5"
+            overlayClassName="bg-background/55 [backdrop-filter:none]"
             onOpenAutoFocus={(event) => {
               event.preventDefault();
               requestAnimationFrame(() => {
@@ -7266,85 +7457,103 @@ export function App() {
               });
             }}
             onEscapeKeyDown={(event) => {
-              if (committing || pushing) event.preventDefault();
+              if (commitDialogSubmitting || committing || pushing) event.preventDefault();
             }}
             onPointerDownOutside={(event) => {
-              if (committing || pushing) event.preventDefault();
+              if (commitDialogSubmitting || committing || pushing) event.preventDefault();
             }}
           >
-            <Card className="relative shadow-none">
+            <motion.div
+              className="relative flex flex-col gap-4"
+              initial={{ opacity: 0, scale: 0.965, y: 10 }}
+              animate={{
+                opacity: commitDialogSubmitting ? 0.75 : 1,
+                scale: commitDialogSubmitting ? 0.985 : 1,
+                y: 0
+              }}
+              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            >
               <DialogClose asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="absolute right-3 top-3"
-                  disabled={committing || pushing}
+                  className="absolute right-0 top-0 size-7 rounded-full text-muted-foreground hover:bg-muted/70 hover:text-foreground [&_svg]:size-3.5"
+                  disabled={commitDialogSubmitting || committing || pushing}
                   aria-label="关闭提交弹窗"
                 >
                   <CloseIcon />
                 </Button>
               </DialogClose>
-              <CardHeader className="pr-14">
-                <Badge variant="outline" className="w-fit">
+              <DialogHeader className="gap-2 pr-10">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                   {commitDialogAction === "commitPush"
-                    ? "Push"
+                    ? "PUSH"
                     : commitDialogAction === "commitSync"
-                      ? "Create PR"
-                      : "Commit"}
-                </Badge>
-                <DialogTitle asChild>
-                  <CardTitle>提交更改</CardTitle>
-                </DialogTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                <Card className="shadow-none">
-                  <CardContent className="flex flex-col gap-2 p-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-sm font-medium text-muted-foreground">分支</span>
-                      <Badge variant="outline" className="max-w-full truncate">
-                        {worktreeOverview.branch || selectedBranch || "main"}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-sm font-medium text-muted-foreground">更改</span>
-                      <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                        <Badge variant="secondary">{worktreeChangeStats.total} 个文件</Badge>
-                        <Badge variant="success">+{worktreeOverview.addedLines}</Badge>
-                        <Badge variant="destructive">-{worktreeOverview.deletedLines}</Badge>
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-                <Field>
-                  <FieldLabel>提交消息</FieldLabel>
+                      ? "CREATE PR"
+                      : "COMMIT"}
+                </span>
+                <DialogTitle className="text-xl font-semibold leading-tight tracking-normal">提交更改</DialogTitle>
+              </DialogHeader>
+              <div className="grid gap-1.5 text-[14px]">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="font-medium text-muted-foreground">分支</span>
+                  <span className="min-w-0 truncate font-medium text-foreground">
+                    {worktreeOverview.branch || selectedBranch || "main"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="font-medium text-muted-foreground">更改</span>
+                  <span className="flex min-w-0 flex-wrap items-center justify-end gap-2.5 tabular-nums">
+                    <span className="text-muted-foreground">{worktreeChangeStats.total} 个文件</span>
+                    <span className="font-medium text-emerald-600">+{worktreeOverview.addedLines}</span>
+                    <span className="font-medium text-rose-600">-{worktreeOverview.deletedLines}</span>
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3">
+                <Field className="gap-2">
+                  <FieldLabel className="text-[14px]">提交消息</FieldLabel>
                   <Textarea
                     ref={commitMessageInputRef}
-                    className="min-h-24"
+                    className="min-h-20 rounded-2xl border-border/70 bg-background px-3 py-2.5 text-[14px] leading-6 shadow-none focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring/20"
                     value={commitMessage}
                     onChange={(event) => setCommitMessage(event.target.value)}
                     placeholder="输入提交消息"
-                    disabled={committing || pushing}
+                    disabled={commitDialogSubmitting || committing || pushing}
                     autoFocus
                   />
                 </Field>
-              </CardContent>
-              <CardFooter className="justify-end">
+              </div>
+              <div className="flex justify-end gap-2 pt-0.5">
                 <DialogClose asChild>
-                  <Button variant="secondary" size="lg" disabled={committing || pushing}>取消</Button>
+                  <Button
+                    variant="ghost"
+                    size="lg"
+                    className="h-9 rounded-full px-4 text-[14px] font-semibold text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                    disabled={commitDialogSubmitting || committing || pushing}
+                  >
+                    取消
+                  </Button>
                 </DialogClose>
                 <Button
                   variant="contrast"
                   size="lg"
-                  disabled={committing || pushing}
+                  className="h-9 min-w-32 rounded-full px-5 text-[14px] font-semibold shadow-none transition-[background-color,color,transform,opacity] duration-150 active:scale-[0.98]"
+                  disabled={commitDialogSubmitting || committing || pushing}
                   onClick={() => {
                     const action = commitDialogAction;
-                    setCommitDialogAction(null);
-                    if (action === "commitPush") void handleGitCommitAndPush();
-                    else if (action === "commitSync") void handleGitCommitAndSync();
-                    else void handleGitCommit();
+                    if (!action || commitDialogSubmitting) return;
+                    setCommitDialogSubmitting(true);
+                    window.setTimeout(() => {
+                      setCommitDialogAction(null);
+                      setCommitDialogSubmitting(false);
+                      if (action === "commitPush") void handleGitCommitAndPush();
+                      else if (action === "commitSync") void handleGitCommitAndSync();
+                      else void handleGitCommit();
+                    }, 150);
                   }}
                 >
-                  {committing || pushing
+                  {commitDialogSubmitting || committing || pushing
                     ? "提交中..."
                     : commitDialogAction === "commitPush"
                       ? "Commit & Push"
@@ -7352,8 +7561,8 @@ export function App() {
                         ? "Commit & Create PR"
                         : "Commit"}
                 </Button>
-              </CardFooter>
-            </Card>
+              </div>
+            </motion.div>
           </DialogContent>
         </Dialog>
 
@@ -7572,8 +7781,6 @@ export function App() {
             onOpenSkillsMarketplaceSettings={() => {
               void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" });
             }}
-            rightModules={rightModuleVisibility}
-            onToggleRightModule={toggleRightModuleVisibility}
             generalSettings={generalSettings}
             onGeneralSettingsChange={(next) => {
               setGeneralSettings(next);
@@ -7632,8 +7839,8 @@ export function App() {
             installingDep={installingDep}
             installingElapsed={installingElapsed}
             runtimeJob={runtimeJob}
-            onRefreshRuntime={() => void refreshRuntimeRequirements()}
             onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
+            onRefreshRuntime={() => void refreshRuntimeRequirements()}
             skillsContent={settingsSkillsContent}
             skillsLoading={opencodeSkillsLoading}
             onRefreshSkills={() => void refreshOpencodeSkills()}
@@ -7895,27 +8102,34 @@ export function App() {
 
         {/* inline connect UI lives inside provider picker right column */}
 
-        {showEnvSetup ? (
+        {runtimeSetupVisible ? (
           <RuntimeSetupDialog
             runtimeStatus={runtimeStatus}
-            runtimeChecking={runtimeChecking}
+            runtimeChecking={runtimeChecking || runtimeStartupChecking}
             checkingDeps={checkingDeps}
             installingDep={installingDep}
             installingElapsed={installingElapsed}
             runtimeJob={runtimeJob}
             runtimeInstallLog={runtimeInstallLog}
             runtimeLogTail={runtimeLogTail}
-            expandedLogDep={expandedLogDep}
+            installError={error}
             autoInitAvailable={runtimeStatus.platform === "macos"}
-            onClose={() => setShowEnvSetup(false)}
-            onDismiss={() => {
-              setRuntimeSetupDismissed(true);
+            onClose={() => {
               setShowEnvSetup(false);
+              setRuntimeSetupDismissed(true);
+            }}
+            onDismiss={() => {
+              setShowEnvSetup(false);
+              setRuntimeSetupDismissed(true);
             }}
             onRefresh={() => void refreshRuntimeRequirements()}
-            onRunAutoInit={() => void runRuntimeAutoInit()}
-            onRunDependencyAction={(name, action) => void runDependencyAction(name, action)}
-            onToggleLog={(name) => setExpandedLogDep((prev) => (prev === name ? null : name))}
+            onRunAutoInit={() => {
+              setRuntimeJob(null);
+              setRuntimeInstallLog("");
+              setError("");
+              setShowEnvSetup(true);
+              runRuntimeSetupForMissing(runtimeStatus, { showRuntimePanel: true });
+            }}
           />
         ) : null}
 
@@ -8051,6 +8265,24 @@ export function App() {
               disabled={busy || !runtimeStatus.opencode.installed}
             >
               {appText.archiveSession}
+            </DropdownMenuItem>
+          </FloatingContextMenu>
+        ) : null}
+
+        {composerContextMenu ? (
+          <FloatingContextMenu
+            open={Boolean(composerContextMenu)}
+            x={composerContextMenu.x}
+            y={composerContextMenu.y}
+            onOpenChange={(open) => {
+              if (!open) setComposerContextMenu(null);
+            }}
+          >
+            <DropdownMenuItem onSelect={(event) => {
+              event.preventDefault();
+              void pasteIntoOpencodePromptFromContextMenu();
+            }}>
+              粘贴
             </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}

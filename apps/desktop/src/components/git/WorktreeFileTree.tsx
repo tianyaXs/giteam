@@ -87,8 +87,8 @@ export function WorktreeFileTree({
         <div key={node.path} className="flex flex-col gap-0">
           <div
             className={cn(
-              "group relative flex min-h-7 items-center gap-1 rounded-md border border-transparent pr-1 transition-colors hover:bg-accent/60",
-              containsSelected && "bg-accent/40 text-accent-foreground"
+              "group relative grid min-h-7 grid-cols-[minmax(0,1fr)_64px] items-center gap-1 overflow-hidden rounded-md border border-transparent pr-1 transition-[background-color,border-color,color] hover:bg-[var(--selection-bg-subtle)]",
+              containsSelected && "border-[var(--selection-border)] bg-[var(--selection-bg-subtle)] text-[var(--selection-foreground)]"
             )}
             style={{ paddingLeft: `${depth * 11 + 4}px` }}
             title={collapsed.node.path}
@@ -107,11 +107,11 @@ export function WorktreeFileTree({
               />
               <span className="truncate">{collapsed.label}</span>
             </Button>
-            <div className="flex min-w-0 items-center justify-end gap-1">
-              <Badge variant="secondary" className="min-w-5 justify-center px-1.5 tracking-normal group-hover:opacity-0">
+            <div className="relative flex h-7 w-16 min-w-0 items-center justify-end gap-1">
+              <Badge variant="secondary" className="min-w-5 justify-center px-1.5 tracking-normal transition-opacity group-hover:opacity-0">
                 {filePaths.length}
               </Badge>
-              <div className="pointer-events-none absolute right-1 top-1/2 flex w-14 -translate-y-1/2 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex w-16 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
                 {canDiscardDir ? (
                   <Button
                     type="button"
@@ -154,8 +154,8 @@ export function WorktreeFileTree({
       <div
         key={node.path}
         className={cn(
-          "group relative flex min-h-7 items-center gap-1 rounded-md border border-transparent pr-1 transition-colors hover:bg-accent/60",
-          selectedFile === entry.path && "border-primary/20 bg-accent text-accent-foreground shadow-sm"
+          "group relative grid min-h-7 grid-cols-[minmax(0,1fr)_64px] items-center gap-1 overflow-hidden rounded-md border border-transparent pr-1 transition-[background-color,border-color,color] hover:bg-[var(--selection-bg-subtle)]",
+          selectedFile === entry.path && "border-[var(--selection-border)] bg-[var(--selection-bg)] text-[var(--selection-foreground)] hover:bg-[var(--selection-bg-hover)]"
         )}
         style={{ paddingLeft: `${depth * 11 + 4}px` }}
         title={`${entry.path} (${entry.indexStatus}${entry.worktreeStatus})`}
@@ -170,11 +170,11 @@ export function WorktreeFileTree({
         >
           <span className="truncate">{node.name}</span>
         </Button>
-        <div className="flex min-w-0 items-center justify-end gap-1">
-          <div className="group-hover:opacity-0">
+        <div className="relative flex h-7 w-16 min-w-0 items-center justify-end gap-1">
+          <div className="transition-opacity group-hover:opacity-0">
             <WorktreeStatusBadge status={status} />
           </div>
-          <div className="pointer-events-none absolute right-1 top-1/2 flex w-14 -translate-y-1/2 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex w-16 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
             {canDiscard ? (
               <Button
                 type="button"

@@ -657,6 +657,27 @@ fn run_git_with_timeout(
 
 const PREVIEW_SAMPLE_BYTES: usize = 4096;
 
+fn is_untracked_worktree_path(repo_path: &str, path: &str) -> bool {
+    if command_runner::validate_repo_path(repo_path).is_err() {
+        return false;
+    }
+    let output = Command::new("git")
+        .args(["ls-files", "-z", "--others", "--exclude-standard", "--", path])
+        .current_dir(repo_path)
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let path_bytes = path.as_bytes();
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|entry| entry == path_bytes)
+}
+
 fn read_git_blob_bytes(repo_path: &str, spec: &str) -> Result<Vec<u8>, String> {
     command_runner::validate_repo_path(repo_path)?;
     let output = Command::new("git")
@@ -700,6 +721,26 @@ fn decode_preview_text(bytes: Vec<u8>) -> Result<String, &'static str> {
         return Err(reason);
     }
     String::from_utf8(bytes).map_err(|_| "该文件包含不可解析内容，暂不支持文本预览。")
+}
+
+fn build_untracked_text_patch(path: &str, text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut patch = format!(
+        "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+        lines.len()
+    );
+    for line in lines {
+        patch.push('+');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    if !text.ends_with('\n') {
+        patch.push_str("\\ No newline at end of file\n");
+    }
+    patch
 }
 
 fn decode_git_quoted_path(input: &str) -> String {
@@ -1648,8 +1689,12 @@ pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<S
     if path.is_empty() {
         return Err("file path is empty".to_string());
     }
-    if path.contains('\n') || path.contains('\r') {
-        return Err("file path contains invalid line breaks".to_string());
+    if path.contains('\n') || path.contains('\r') || path.contains('\0') {
+        return Err("file path contains invalid characters".to_string());
+    }
+    let rel_path = std::path::Path::new(path);
+    if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
+        return Err("file path must be repository-relative".to_string());
     }
 
     let staged = run_git(&["diff", "--cached", "--", path], repo_path)?;
@@ -1660,6 +1705,20 @@ pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<S
     }
     if !unstaged.trim().is_empty() {
         parts.push(format!("# Working Tree\n\n{}", unstaged.trim_end()));
+    }
+    if parts.is_empty() {
+        if is_untracked_worktree_path(repo_path, path) {
+            let repo_root = normalize_repo_key(repo_path)?;
+            let full_path = PathBuf::from(repo_root).join(rel_path);
+            if let Ok(bytes) = fs::read(full_path) {
+                if let Ok(text) = decode_preview_text(bytes) {
+                    let patch = build_untracked_text_patch(path, &text);
+                    if !patch.trim().is_empty() {
+                        parts.push(format!("# Working Tree\n\n{}", patch.trim_end()));
+                    }
+                }
+            }
+        }
     }
     if parts.is_empty() {
         return Ok("No staged or unstaged patch available for this file.".to_string());
@@ -1720,14 +1779,31 @@ pub fn run_git_worktree_file_content(
         },
         Err(_) => String::new(),
     };
+    let ext = rel_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let is_markdown = matches!(ext.as_str(), "md" | "markdown" | "mdx");
 
     Ok(GitWorktreeFileContent {
         original,
         modified,
         preview_supported: true,
         preview_reason: None,
-        preview_kind: Some("text".to_string()),
-        mime: Some("text/plain".to_string()),
+        preview_kind: Some(if is_markdown {
+            "markdown".to_string()
+        } else {
+            "text".to_string()
+        }),
+        mime: Some(if matches!(ext.as_str(), "md" | "markdown") {
+            "text/markdown".to_string()
+        } else if ext == "mdx" {
+            "text/mdx".to_string()
+        } else {
+            "text/plain".to_string()
+        }),
         data_base64: None,
     })
 }

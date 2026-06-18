@@ -146,6 +146,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       imageCount: images.length,
       log: pushConnLog
     });
+    let requestSessionId = '';
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
       const normalizedModel = model.trim();
@@ -200,6 +201,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
         id: optimisticMessage.id,
         startedAt: Date.now()
       };
+      requestSessionId = targetSessionId;
+      setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'busy' } }));
       markMessageSendPerf(perf, 'send.stream.start');
       startStream(targetSessionId);
       pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'} images=${images.length}`);
@@ -269,6 +272,10 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('已发送');
     } catch (e) {
       const currentSessionId = toText(sessionIdRef.current).trim();
+      const failedSessionId = requestSessionId || currentSessionId;
+      if (failedSessionId) {
+        setSessionStatusMap((prev) => ({ ...prev, [failedSessionId]: { type: 'idle' } }));
+      }
       if (currentSessionId) {
         delete pendingPromptSessionRef.current[currentSessionId];
         dropOptimisticUserMessage(currentSessionId, optimisticMessage.id);
@@ -325,6 +332,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setBusy,
     setImageAttachments,
     setPrompt,
+    setSessionStatusMap,
     setSlashOpen,
     setStatus,
     setToken,

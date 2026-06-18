@@ -1,9 +1,7 @@
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
-import { ScrollArea } from "../ui/scroll-area";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Progress } from "../ui/progress";
 
 type RuntimeSetupDialogProps = {
   runtimeStatus: RuntimeRequirementsStatus;
@@ -14,203 +12,258 @@ type RuntimeSetupDialogProps = {
   runtimeJob: RuntimeActionJobStatus | null;
   runtimeInstallLog: string;
   runtimeLogTail: string;
-  expandedLogDep: RuntimeDepName | null;
+  installError: string;
   autoInitAvailable: boolean;
   onClose: () => void;
   onDismiss: () => void;
   onRefresh: () => void;
   onRunAutoInit: () => void;
-  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
-  onToggleLog: (name: RuntimeDepName) => void;
 };
 
-function runtimeDepName(dep: RuntimeDependencyStatus): RuntimeDepName {
-  return dep.name as RuntimeDepName;
+const RUNTIME_DEPS: RuntimeDepName[] = ["git", "entire", "opencode", "giteam"];
+
+const BOOTSTRAP_LOG_WEIGHTS: Array<[RegExp, number]> = [
+  [/homebrew/i, 12],
+  [/installing git|git already installed/i, 28],
+  [/installing node|node\/npm already installed/i, 42],
+  [/installing entire|entire already installed/i, 58],
+  [/\[giteam\] PROGRESS: 68|正在通过 npm 安装 OpenCode|installing opencode|opencode already installed/i, 72],
+  [/npm 安装失败|PROGRESS: 74|正在通过官方脚本|OpenCode includes free models|█▀▀█|\[giteam\] PROGRESS: 88/i, 86],
+  [/installing opencode|OpenCode includes free models|█▀▀█|\[giteam\] PROGRESS: 88/i, 86],
+  [/installing giteam|giteam already installed/i, 91],
+  [/installed_version|runtime bootstrap complete|setup completed|finished/i, 100]
+];
+
+function inferBootstrapStage(log: string): string {
+  const lines = (log || "").split("\n").filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].replace(/\x1b\[[0-9;]*m/g, "");
+    const progress = line.match(/\[giteam\] PROGRESS: \d+ (.+)/);
+    if (progress?.[1]) return progress[1];
+    if (/installing giteam/i.test(line)) return "正在安装 giteam";
+    if (/giteam already installed/i.test(line)) return "giteam 已就绪";
+    if (/OpenCode includes free models|█▀▀█/i.test(line)) return "OpenCode 安装完成";
+    if (/正在通过 npm 安装 OpenCode/i.test(line)) return "正在通过 npm 安装 OpenCode";
+    if (/正在通过官方脚本安装 OpenCode/i.test(line)) return "正在通过官方脚本安装 OpenCode";
+    if (/opencode already installed/i.test(line)) return "OpenCode 已就绪";
+    if (/installing entire/i.test(line)) return "正在安装 Entire";
+    if (/entire already installed/i.test(line)) return "Entire 已就绪";
+    if (/installing node/i.test(line)) return "正在安装 Node.js";
+    if (/node\/npm already installed/i.test(line)) return "Node.js 已就绪";
+    if (/installing git/i.test(line)) return "正在安装 Git";
+    if (/git already installed/i.test(line)) return "Git 已就绪";
+    if (/installing homebrew/i.test(line)) return "正在安装 Homebrew";
+    if (/homebrew already installed/i.test(line)) return "Homebrew 已就绪";
+  }
+  return "";
 }
 
-function RuntimeLogBlock(props: {
-  label: string;
-  tail: string;
-  log: string;
-  expanded?: boolean;
-  onToggle?: () => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 p-3">
-      {props.onToggle ? (
-        <Button
-          variant="ghost"
-          className="h-auto justify-start px-0 py-0 text-[14px] text-muted-foreground hover:bg-transparent"
-          onClick={props.onToggle}
-          title={props.expanded ? "Hide details" : "Show details"}
-        >
-          {props.label}
-        </Button>
-      ) : (
-        <div className="text-[14px] text-muted-foreground">{props.label}</div>
-      )}
-      <div className="truncate font-mono text-[13px] text-muted-foreground" title={props.tail || "No logs yet"}>
-        {props.tail || "Waiting for logs..."}
-      </div>
-      {props.expanded !== false ? (
-        <pre className="max-h-48 overflow-auto rounded-md bg-background p-3 font-mono text-[13px] leading-5 text-muted-foreground">{props.log || "No logs yet."}</pre>
-      ) : null}
-    </div>
-  );
+function depsFromStatus(status: RuntimeRequirementsStatus): RuntimeDependencyStatus[] {
+  return RUNTIME_DEPS.map((name) => status[name]);
 }
 
-function RuntimeDependencyRow(props: {
-  dep: RuntimeDependencyStatus;
-  checking: boolean;
+function inferBootstrapProgress(log: string): number {
+  let progress = 0;
+  for (const [pattern, weight] of BOOTSTRAP_LOG_WEIGHTS) {
+    if (pattern.test(log || "")) progress = Math.max(progress, weight);
+  }
+  return progress;
+}
+
+function deriveRuntimeProgress(args: {
+  deps: RuntimeDependencyStatus[];
   installingDep: string;
   installingElapsed: number;
+  runtimeChecking: boolean;
   runtimeJob: RuntimeActionJobStatus | null;
   runtimeInstallLog: string;
-  runtimeLogTail: string;
-  expandedLogDep: RuntimeDepName | null;
-  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
-  onToggleLog: (name: RuntimeDepName) => void;
-}) {
-  const depName = runtimeDepName(props.dep);
-  const busy = props.installingDep === props.dep.name;
-  const disabled = Boolean(props.installingDep) || props.checking;
-  const action = props.dep.installed ? "uninstall" : "install";
-  const status = props.checking ? "Checking..." : (props.dep.checked ? (props.dep.installed ? "Installed" : "Missing") : "Unknown");
+}): number {
+  if (args.runtimeJob?.status === "succeeded") return 100;
 
-  return (
-    <Card className="rounded-lg shadow-none">
-      <CardContent className="flex flex-col gap-3 p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <strong className="text-base font-semibold text-foreground">{props.dep.name}</strong>
-              <Badge variant={props.checking ? "secondary" : props.dep.installed ? "success" : "destructive"}>
-                {status}
-              </Badge>
-            </div>
-            {props.dep.version && !props.checking ? <div className="mt-1 text-[14px] leading-6 text-muted-foreground">{props.dep.version}</div> : null}
-            {props.dep.path ? <div className="mt-1 truncate font-mono text-[13px] leading-5 text-muted-foreground">{props.dep.path}</div> : null}
-            {!props.dep.installed ? <div className="mt-1 text-[14px] leading-6 text-muted-foreground">{props.dep.installHint}</div> : null}
-          </div>
-          <Button
-            variant={props.dep.installed ? "ghost" : "secondary"}
-            size="sm"
-            disabled={disabled}
-            onClick={() => props.onRunDependencyAction(depName, action)}
-          >
-            {busy
-              ? props.runtimeJob?.action === "uninstall"
-                ? `Uninstalling... ${props.installingElapsed}s`
-                : `Installing... ${props.installingElapsed}s`
-              : `${props.dep.installed ? "Uninstall" : "Install"} ${props.dep.name}`}
-          </Button>
-        </div>
-        {props.runtimeJob && props.runtimeJob.name === props.dep.name ? (
-          <RuntimeLogBlock
-            label={`${props.runtimeJob.action} · ${props.runtimeJob.status}${busy ? ` · ${props.installingElapsed}s` : ""}`}
-            tail={props.runtimeLogTail}
-            log={props.runtimeInstallLog}
-            expanded={props.expandedLogDep === depName}
-            onToggle={() => props.onToggleLog(depName)}
-          />
-        ) : null}
-      </CardContent>
-    </Card>
-  );
+  const completed = args.deps.filter((dep) => dep.installed).length;
+  const base = Math.round((completed / Math.max(args.deps.length, 1)) * 100);
+  if (base >= 100) return 100;
+
+  if (args.runtimeJob?.status === "failed") return Math.max(8, Math.min(96, base));
+
+  if (args.installingDep) {
+    const logProgress = args.installingDep === "runtime" ? inferBootstrapProgress(args.runtimeInstallLog) : 0;
+    const elapsedProgress = Math.min(94, 10 + args.installingElapsed * 0.7);
+    return Math.max(8, Math.min(96, Math.max(base, logProgress, elapsedProgress)));
+  }
+
+  if (args.runtimeChecking) return Math.max(8, Math.min(96, base || 12));
+  return base;
+}
+
+function inferBootstrapFailureMessage(log: string): string {
+  const lines = (log || "").split("\n").filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (line.includes("NETWORK_ERROR:")) {
+      return line.replace(/^.*NETWORK_ERROR:\s*/, "").trim();
+    }
+    if (/^curl:\s/.test(line)) {
+      return `网络连接失败（${line}），将自动尝试备用安装方式或请稍后重试。`;
+    }
+  }
+  return "安装过程中断，可以稍后重试。";
+}
+
+function getRuntimeCopy(args: {
+  missingCount: number;
+  runtimeChecking: boolean;
+  installing: boolean;
+  runtimeJob: RuntimeActionJobStatus | null;
+  runtimeInstallLog: string;
+  installError: string;
+  progress: number;
+}) {
+  if (args.missingCount === 0) {
+    return {
+      title: "已准备好",
+      description: "正在进入应用。"
+    };
+  }
+
+  if (args.installing) {
+    return {
+      title: "正在准备工作环境",
+      description: "保持应用打开，马上就好。"
+    };
+  }
+
+  if (args.runtimeChecking) {
+    return {
+      title: "正在检查工作环境",
+      description: "确认必要能力是否可用。"
+    };
+  }
+
+  if (args.installError.trim()) {
+    return {
+      title: "准备未完成",
+      description: args.installError.trim()
+    };
+  }
+
+  if (args.progress >= 100 || args.runtimeJob?.status === "succeeded") {
+    return {
+      title: "已准备好",
+      description: "正在进入应用。"
+    };
+  }
+
+  if (args.runtimeJob?.status === "failed") {
+    return {
+      title: "准备未完成",
+      description: inferBootstrapFailureMessage(args.runtimeInstallLog)
+    };
+  }
+
+  if (args.missingCount > 0) {
+    return {
+      title: "需要准备工作环境",
+      description: "正在自动安装缺失组件…"
+    };
+  }
+
+  return {
+    title: "工作环境已就绪",
+    description: "可以继续使用应用。"
+  };
 }
 
 export function RuntimeSetupDialog(props: RuntimeSetupDialogProps) {
-  const deps = [props.runtimeStatus.git, props.runtimeStatus.entire, props.runtimeStatus.opencode, props.runtimeStatus.giteam]
-    .filter((dep): dep is RuntimeDependencyStatus => Boolean(dep));
-  const activeJobMatchesDep = deps.some((dep) => dep.name === props.runtimeJob?.name);
-  const showGlobalRuntimeJob = Boolean(props.runtimeJob && !activeJobMatchesDep);
-  const autoInitRunning = props.runtimeJob?.name === "runtime"
-    && props.runtimeJob?.action === "bootstrap"
-    && props.runtimeJob?.status === "running";
-  const autoInitBusy = Boolean(props.installingDep) || props.runtimeChecking;
+  const deps = depsFromStatus(props.runtimeStatus);
+  const missingCount = deps.filter((dep) => !dep.installed).length;
+  const installing = Boolean(props.installingDep || props.runtimeJob?.status === "running");
+  const canStart = props.autoInitAvailable && missingCount > 0 && !installing && !props.runtimeChecking;
+  const progress = deriveRuntimeProgress({
+    deps,
+    installingDep: props.installingDep,
+    installingElapsed: props.installingElapsed,
+    runtimeChecking: props.runtimeChecking,
+    runtimeJob: props.runtimeJob,
+    runtimeInstallLog: props.runtimeInstallLog
+  });
+  const bootstrapStage =
+    props.installingDep === "runtime"
+      ? inferBootstrapStage(props.runtimeInstallLog)
+      : props.installingDep
+        ? `正在安装 ${props.installingDep}`
+        : "";
+  const copy = getRuntimeCopy({
+    missingCount,
+    runtimeChecking: props.runtimeChecking,
+    installing,
+    runtimeJob: props.runtimeJob,
+    runtimeInstallLog: props.runtimeInstallLog,
+    installError: props.installError,
+    progress
+  });
+  const showStartAction = missingCount > 0 && !installing && !props.runtimeChecking;
+  const showCloseAction = !installing;
 
   return (
     <Dialog open onOpenChange={(open) => {
-      if (!open) props.onClose();
+      if (!open && !installing) props.onClose();
     }}>
-      <DialogContent className="w-[min(880px,calc(100vw-32px))]">
-        <DialogHeader className="flex-row items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <DialogTitle className="text-2xl">Runtime Setup</DialogTitle>
-            <DialogDescription className="text-[15px] leading-7">
-              Manage git, Entire CLI, OpenCode plugin, and giteam runtime.
-            </DialogDescription>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            title="Refresh runtime check"
-            aria-label="Refresh runtime check"
-            disabled={props.runtimeChecking || Boolean(props.installingDep)}
-            onClick={props.onRefresh}
-          >
-            ↻
-          </Button>
-        </DialogHeader>
+      <DialogContent
+        className="left-0 top-0 flex h-svh w-screen max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none border-0 bg-background p-0 shadow-none outline-none"
+        overlayClassName="bg-background"
+      >
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--background)_84%,var(--card)_16%)_0%,var(--background)_50%,color-mix(in_srgb,var(--background)_88%,var(--primary)_12%)_100%)]" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-border/50" />
 
-        <ScrollArea className="max-h-[min(70vh,720px)] pr-3">
-          <div className="flex flex-col gap-4">
-            {props.autoInitAvailable ? (
-              <Card className="rounded-lg shadow-none">
-                <CardContent className="flex items-center justify-between gap-4 p-4">
-                  <p className="m-0 text-[14px] leading-6 text-muted-foreground">macOS can automatically initialize the full runtime on first launch.</p>
-                  <Button variant="contrast" size="sm" disabled={autoInitBusy} onClick={props.onRunAutoInit}>
-                    {autoInitRunning ? `Auto initializing... ${props.installingElapsed}s` : "Auto initialize"}
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {showGlobalRuntimeJob ? (
-              <Card className="rounded-lg shadow-none">
-                <CardHeader>
-                  <CardTitle>Runtime Job</CardTitle>
-                  <CardDescription>
-                    {props.runtimeJob?.action} · {props.runtimeJob?.status} {props.installingDep ? `· ${props.installingElapsed}s` : ""}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <RuntimeLogBlock tail={props.runtimeLogTail} log={props.runtimeInstallLog} label="Runtime log" />
-                </CardContent>
-              </Card>
-            ) : null}
-
-            <div className="flex flex-col gap-3">
-              {deps.map((dep) => {
-                const depName = runtimeDepName(dep);
-                return (
-                  <RuntimeDependencyRow
-                    key={dep.name}
-                    dep={dep}
-                    checking={props.checkingDeps[depName]}
-                    installingDep={props.installingDep}
-                    installingElapsed={props.installingElapsed}
-                    runtimeJob={props.runtimeJob}
-                    runtimeInstallLog={props.runtimeInstallLog}
-                    runtimeLogTail={props.runtimeLogTail}
-                    expandedLogDep={props.expandedLogDep}
-                    onRunDependencyAction={props.onRunDependencyAction}
-                    onToggleLog={props.onToggleLog}
-                  />
-                );
-              })}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <header className="flex h-16 shrink-0 items-center justify-end px-[clamp(24px,5vw,72px)]">
+            <div className="flex min-w-28 justify-end">
+              {showStartAction ? (
+                <Button variant="ghost" size="sm" onClick={props.onRunAutoInit}>
+                  {props.runtimeJob?.status === "failed" || props.installError ? "重试" : "开始"}
+                </Button>
+              ) : showCloseAction ? (
+                <Button variant="ghost" size="sm" onClick={props.onDismiss}>
+                  {missingCount > 0 && progress < 100 ? "稍后" : "进入"}
+                </Button>
+              ) : null}
             </div>
-          </div>
-        </ScrollArea>
+          </header>
 
-        <DialogFooter className="justify-between">
-          <Button variant="ghost" size="sm" onClick={props.onDismiss}>
-            Continue anyway
-          </Button>
-          <Button variant="secondary" size="sm" onClick={props.onClose}>
-            Close
-          </Button>
-        </DialogFooter>
+          <main className="grid min-h-0 flex-1 place-items-center px-[clamp(24px,5vw,72px)] py-12">
+            <section className="flex w-full max-w-[640px] flex-col gap-10">
+              <div className="text-sm font-semibold tracking-normal text-foreground">Giteam</div>
+              <DialogHeader className="gap-4 text-left">
+                <DialogTitle className="text-[clamp(30px,4.4vw,48px)] font-semibold leading-[1.1] tracking-normal text-foreground">
+                  {copy.title}
+                </DialogTitle>
+                <DialogDescription className="text-[16px] leading-7 text-muted-foreground">
+                  {copy.description}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex flex-col gap-3" role="status" aria-live="polite">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>
+                    {installing
+                      ? bootstrapStage || "安装中"
+                      : props.runtimeChecking
+                        ? "检查中"
+                        : progress >= 100
+                          ? "完成"
+                          : "等待开始"}
+                  </span>
+                  <span className="tabular-nums">{Math.round(progress)}%</span>
+                </div>
+                <Progress
+                  value={progress}
+                  className="h-0.5 bg-muted/80 [&>div]:bg-foreground [&>div]:duration-500"
+                />
+              </div>
+            </section>
+          </main>
+        </div>
       </DialogContent>
     </Dialog>
   );

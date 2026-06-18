@@ -1,4 +1,4 @@
-import { forwardRef, type ReactNode } from "react";
+import { forwardRef, type CSSProperties, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
 
 import {
@@ -79,8 +79,12 @@ export function RightSidebar({
       side="right"
       collapsible="none"
       className="h-full overflow-hidden border-l border-sidebar-border bg-sidebar text-sidebar-foreground"
+      style={{
+        "--sidebar": "color-mix(in srgb, var(--bg) 92%, #8f8270 8%)",
+        backgroundColor: "var(--sidebar)",
+      } as CSSProperties}
     >
-      <SidebarHeader className="h-10 shrink-0 border-b border-sidebar-border py-0 pl-2 pr-11">
+      <SidebarHeader className="h-10 shrink-0 border-b-0 bg-background py-0 pl-2 pr-11">
         <div className="flex h-full min-w-0 items-center gap-1" data-tauri-drag-region>
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {openTabs.map((tab) => {
@@ -93,8 +97,10 @@ export function RightSidebar({
                   key={tab}
                   variant={isActive ? "secondary" : "outline"}
                   className={cn(
-                    "h-7 shrink-0 gap-0 rounded-md px-0.5 font-normal",
-                    isActive ? "text-sidebar-accent-foreground" : "text-muted-foreground"
+                    "h-7 shrink-0 gap-0 rounded-md border-[color-mix(in_srgb,#8f8270_16%,transparent)] px-0.5 font-normal",
+                    isActive
+                      ? "bg-[color-mix(in_srgb,#8f8270_17%,var(--bg)_83%)] text-sidebar-foreground"
+                      : "bg-transparent text-muted-foreground"
                   )}
                 >
                   <Button
@@ -130,7 +136,7 @@ export function RightSidebar({
             {fileTabLabel ? (
               <Badge
                 variant="secondary"
-                className="h-7 min-w-0 max-w-[min(240px,55vw)] shrink-0 gap-1 rounded-md px-2 normal-case tracking-normal"
+                className="h-7 min-w-0 max-w-[min(240px,55vw)] shrink-0 gap-1 rounded-md border-[color-mix(in_srgb,#8f8270_16%,transparent)] bg-[color-mix(in_srgb,#8f8270_17%,var(--bg)_83%)] px-2 text-sidebar-foreground normal-case tracking-normal"
               >
                 <span className="min-w-0 truncate text-xs font-semibold">{fileTabLabel}</span>
                 <Button

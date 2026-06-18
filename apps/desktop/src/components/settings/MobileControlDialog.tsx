@@ -77,7 +77,7 @@ export function MobileControlDialog({
                   type="number"
                   min={1}
                   max={65535}
-                  disabled={!serviceEnabled}
+                  disabled={busy}
                   placeholder="Port"
                   value={String(settings.port)}
                   onChange={(event) => onSettingsChange({ port: Number(event.target.value || "0") })}
@@ -87,7 +87,7 @@ export function MobileControlDialog({
                 <span className="text-[14px] font-medium text-muted-foreground">Public URL (optional)</span>
                 <Input
                   className="h-9 text-[15px]"
-                  disabled={!serviceEnabled}
+                  disabled={busy}
                   placeholder="Public URL（默认自动取局域网 IPv4）"
                   value={settings.publicBaseUrl}
                   onChange={(event) => onSettingsChange({ publicBaseUrl: event.target.value })}
@@ -104,7 +104,7 @@ export function MobileControlDialog({
             <CardContent className="grid gap-3 sm:grid-cols-3">
               <label className="flex flex-col gap-2">
                 <span className="text-[14px] font-medium text-muted-foreground">Auth Mode</span>
-                <Select disabled={!serviceEnabled} value={settings.authMode} onValueChange={(value) => onAuthModeChange(value as ControlAuthMode)}>
+                <Select disabled={busy} value={settings.authMode} onValueChange={(value) => onAuthModeChange(value as ControlAuthMode)}>
                   <SelectTrigger className="h-9 text-[15px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -119,7 +119,7 @@ export function MobileControlDialog({
               <label className="flex flex-col gap-2">
                 <span className="text-[14px] font-medium text-muted-foreground">Pair Code Validity</span>
                 <Select
-                  disabled={!serviceEnabled || settings.authMode === "none"}
+                  disabled={busy || settings.authMode === "none"}
                   value={settings.pairCodeTtlMode === "none" ? "24h" : settings.pairCodeTtlMode}
                   onValueChange={(value) => onPairModeChange(value as ControlPairCodeMode)}
                 >

@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import "@cyntler/react-doc-viewer/dist/index.css";
 import { cn } from "@/lib/utils";
 import type { GitWorktreeFileContent } from "../../lib/types";
+import { MarkdownLite } from "../common/MarkdownLite";
 import { Card, CardContent } from "../ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
@@ -80,6 +81,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
   const [docxError, setDocxError] = useState("");
   const fileName = fileNameFromPath(filePath);
   const ext = extensionFromName(fileName);
+  const isMarkdown = ext === "md" || ext === "markdown" || ext === "mdx" || content.previewKind === "markdown";
   const isDocx = ext === "docx" && content.dataBase64;
   const isSpreadsheet = (ext === "xlsx" || ext === "xls" || ext === "csv") && content.dataBase64;
   const [xlsxWorkbook, setXlsxWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -180,6 +182,21 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
       fileType: ext
     }];
   }, [blobUrl, ext, fileName]);
+
+  if (isMarkdown) {
+    const markdown = content.modified || content.original;
+    return (
+      <PreviewShell>
+        <div className="h-full min-h-0 overflow-auto bg-background px-5 py-4 text-[13px] leading-6 md:px-7 md:py-5">
+          {markdown.trim() ? (
+            <MarkdownLite source={markdown} />
+          ) : (
+            <PreviewEmpty title="空的 Markdown 文件" description="该文件没有可显示的内容。" />
+          )}
+        </div>
+      </PreviewShell>
+    );
+  }
 
   if (!content.dataBase64) {
     return (

@@ -13,6 +13,7 @@ type SessionRow = {
   preview: string;
   timeLabel: string;
   active: boolean;
+  status: 'idle' | 'busy' | 'retry';
 };
 
 type QuickSkillRef = {

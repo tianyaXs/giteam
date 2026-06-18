@@ -14,6 +14,7 @@ type SessionRow = {
   preview: string;
   timeLabel: string;
   active: boolean;
+  status: 'idle' | 'busy' | 'retry';
 };
 
 type QuickSkillRef = {
@@ -91,6 +92,8 @@ function AnimatedSessionRow(props: {
     runReveal(-14);
   }, [animateOnMount, runReveal]);
 
+  const isRunning = session.status === 'busy' || session.status === 'retry';
+
   return (
     <Animated.View style={{ opacity, transform: [{ translateY }] }}>
       <Pressable
@@ -107,7 +110,13 @@ function AnimatedSessionRow(props: {
             >
               {session.title}
             </Text>
-            {session.timeLabel ? <Text style={[styles.directorySessionPlainTime, { color: colors.faint }]}>{session.timeLabel}</Text> : null}
+            {isRunning ? (
+              <View style={styles.directorySessionPlainStatus}>
+                <ActivityIndicator size="small" color={colors.muted} />
+              </View>
+            ) : session.timeLabel ? (
+              <Text style={[styles.directorySessionPlainTime, { color: colors.faint }]}>{session.timeLabel}</Text>
+            ) : null}
           </View>
           {session.preview ? (
             <Text numberOfLines={1} style={[styles.directorySessionPlainMeta, { color: session.active ? colors.muted : colors.faint }]}>
