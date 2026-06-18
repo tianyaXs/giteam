@@ -241,6 +241,7 @@ import {
   buildOpencodeTurnRanges,
   clipOpencodeSessionTitle,
   compareOpencodeSessionActivity,
+  filterActiveOpencodeSessionSummaries,
   getInitialOpencodeTurnStart,
   opencodeSessionFromSummary,
   sliceOpencodeMessagesByTurnStart,
@@ -799,6 +800,7 @@ export function App() {
   const sidebarOpencodeSessionsByRepoRef = useRef<Record<string, OpencodeChatSession[]>>({});
   const sidebarOpencodeSessionFetchLimitByRepoRef = useRef<Record<string, number>>({});
   const sidebarOpencodeSessionLoadedByRepoRef = useRef<Record<string, boolean>>({});
+  const archivedOpencodeSessionIdsByRepoRef = useRef<Record<string, Set<string>>>({});
   const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
@@ -1601,6 +1603,29 @@ export function App() {
     return Boolean(id && sidebarOpencodeSessionLoadedByRepoRef.current[id]);
   }
 
+  function markOpencodeSessionArchived(repoId: string, sessionId: string) {
+    const id = repoId.trim();
+    const sid = sessionId.trim();
+    if (!id || !sid) return;
+    const prev = archivedOpencodeSessionIdsByRepoRef.current[id] || new Set<string>();
+    archivedOpencodeSessionIdsByRepoRef.current = {
+      ...archivedOpencodeSessionIdsByRepoRef.current,
+      [id]: new Set([...prev, sid])
+    };
+  }
+
+  function isLocallyArchivedOpencodeSession(repoId: string, sessionId: string): boolean {
+    const id = repoId.trim();
+    const sid = sessionId.trim();
+    if (!id || !sid) return false;
+    return archivedOpencodeSessionIdsByRepoRef.current[id]?.has(sid) ?? false;
+  }
+
+  function filterVisibleOpencodeSessionsForRepo(repoId: string, rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
+    const id = repoId.trim();
+    return filterActiveOpencodeSessionSummaries(rows).filter((row) => !isLocallyArchivedOpencodeSession(id, row.id));
+  }
+
   function upsertSidebarOpencodeSession(repoId: string, session: OpencodeChatSession) {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
@@ -2340,14 +2365,14 @@ export function App() {
     try {
       const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit: limit + 1 });
       if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
-      const sorted = sortOpencodeSessionSummaries(rows || []);
+      const sorted = sortOpencodeSessionSummaries(filterVisibleOpencodeSessionsForRepo(repoId, rows || []));
       const hasMore = sorted.length > limit;
       sidebarOpencodeSessionLoadedByRepoRef.current = {
         ...sidebarOpencodeSessionLoadedByRepoRef.current,
         [repoId]: true
       };
       setSidebarOpencodeSessionsByRepo((prev) => {
-        const cachedSessions = prev[repoId] || [];
+        const cachedSessions = (prev[repoId] || []).filter((session) => !isLocallyArchivedOpencodeSession(repoId, session.id));
         const cachedById = new Map(cachedSessions.map((item) => [item.id, item]));
         const activeById = new Map(opencodeSessions.map((item) => [item.id, item]));
         const mapped = sorted.slice(0, limit).map((s, i) => {
@@ -2403,7 +2428,8 @@ export function App() {
     const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
     appendOpencodeDebugLog("session.list requested");
     const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit });
-    if (!rows || rows.length === 0) {
+    const visibleRows = filterVisibleOpencodeSessionsForRepo(repoIdAtRequest, rows || []);
+    if (!visibleRows || visibleRows.length === 0) {
       appendOpencodeDebugLog("session.list empty");
       opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
       const pendingForEmptyRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
@@ -2426,8 +2452,8 @@ export function App() {
       }
       return;
     }
-    appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
-    let mappedBase = sortOpencodeSessionSummaries(rows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    appendOpencodeDebugLog(`session.list loaded ${visibleRows.length}`);
+    let mappedBase = sortOpencodeSessionSummaries(visibleRows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
     const pendingForRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
     if (pendingForRepo && !mappedBase.some((session) => session.id === pendingForRepo.sessionId)) {
       const sidebarHit = (sidebarOpencodeSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForRepo.sessionId);
@@ -2723,8 +2749,7 @@ export function App() {
     if (!ensureRepoSelected()) return;
     let summary: OpencodeSessionSummary | null = null;
     try {
-      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit: 256 });
-      summary = (rows || []).find((s) => s.id === id) || null;
+      summary = await invoke<OpencodeSessionSummary>("get_opencode_session", { repoPath, sessionId: id });
     } catch {
       // fallback to optimistic local shell below
     }
@@ -2859,6 +2884,7 @@ export function App() {
     const fallback = nextRepoSessions[Math.max(0, idx - 1)] ?? nextRepoSessions[0] ?? null;
     setSidebarOpencodeSessionsByRepo((prev) => ({ ...prev, [repoId]: nextRepoSessions }));
     setOpencodeSessions((prev) => prev.filter((session) => session.id !== id));
+    markOpencodeSessionArchived(repoId, id);
     if (activeOpencodeSessionId === id) {
       if (fallback) {
         pendingSidebarSessionSelectionRef.current = { repoId, sessionId: fallback.id };
@@ -2884,6 +2910,15 @@ export function App() {
       setMessage("会话已归档");
     } catch (e) {
       appendOpencodeDebugLog(`session.archive.error ${id} ${String(e)}`);
+      const archivedIds = archivedOpencodeSessionIdsByRepoRef.current[repoId];
+      if (archivedIds) {
+        const next = new Set(archivedIds);
+        next.delete(id);
+        archivedOpencodeSessionIdsByRepoRef.current = {
+          ...archivedOpencodeSessionIdsByRepoRef.current,
+          [repoId]: next
+        };
+      }
       setSidebarOpencodeSessionsByRepo(sidebarSnapshot);
       setOpencodeSessions(sessionSnapshot);
       if (activeOpencodeSessionId === id) setActiveOpencodeSessionId(id);

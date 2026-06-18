@@ -448,6 +448,10 @@ pub struct OpencodeSessionSummary {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1484,11 +1488,23 @@ fn parse_session_summary(v: &Value) -> Option<OpencodeSessionSummary> {
         .and_then(|t| t.get("updated"))
         .and_then(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)))
         .unwrap_or(created_at);
+    let archived_at = time
+        .and_then(|t| t.get("archived"))
+        .and_then(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)));
+    let parent_id = v
+        .get("parentID")
+        .or_else(|| v.get("parentId"))
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Some(OpencodeSessionSummary {
         id,
         title,
         created_at,
         updated_at,
+        parent_id,
+        archived_at,
     })
 }
 
@@ -2169,7 +2185,10 @@ pub fn list_opencode_sessions(
 ) -> Result<Vec<OpencodeSessionSummary>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let mut qs = vec![format!("directory={}", urlencoding::encode(repo_path))];
+        let mut qs = vec![
+            format!("directory={}", urlencoding::encode(repo_path)),
+            "roots=true".to_string(),
+        ];
         if let Some(l) = limit {
             if l > 0 {
                 qs.push(format!("limit={}", l));
@@ -2187,10 +2206,41 @@ pub fn list_opencode_sessions(
         let arr = json
             .as_array()
             .ok_or_else(|| "invalid session list response".to_string())?;
-        let mut out: Vec<OpencodeSessionSummary> =
-            arr.iter().filter_map(parse_session_summary).collect();
+        let mut out: Vec<OpencodeSessionSummary> = arr
+            .iter()
+            .filter_map(parse_session_summary)
+            .filter(|s| s.archived_at.is_none() && s.parent_id.is_none())
+            .collect();
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
+    })
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn get_opencode_session(
+    repo_path: &str,
+    session_id: &str,
+) -> Result<OpencodeSessionSummary, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    with_service_base(repo_path, |base| {
+        let raw = run_curl_json(
+            repo_path,
+            "GET",
+            format!(
+                "{base}/session/{sid}?directory={}",
+                urlencoding::encode(repo_path)
+            )
+            .as_str(),
+            None,
+            10,
+        )?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("parse session failed: {e}"))?;
+        parse_session_summary(&json).ok_or_else(|| "invalid session response".to_string())
     })
 }
 

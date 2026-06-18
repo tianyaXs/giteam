@@ -161,6 +161,7 @@ fn main() {
             commands::opencode::post_opencode_session_prompt_async,
             commands::opencode::abort_opencode_session,
             commands::opencode::list_opencode_sessions,
+            commands::opencode::get_opencode_session,
             commands::opencode::create_opencode_session,
             commands::opencode::delete_opencode_session,
             commands::opencode::get_opencode_session_messages,

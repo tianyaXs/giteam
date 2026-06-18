@@ -22,6 +22,7 @@ export type OpencodeSessionSummary = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  parentId?: string;
   archivedAt?: number;
 };
 
@@ -157,6 +158,26 @@ export function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[]
     hidden: messages.slice(0, startMessageIndex),
     totalTurns: turns.length
   };
+}
+
+export function isArchivedOpencodeSessionSummary(
+  summary: Pick<OpencodeSessionSummary, "archivedAt">
+): boolean {
+  return typeof summary.archivedAt === "number" && summary.archivedAt > 0;
+}
+
+export function isChildOpencodeSessionSummary(
+  summary: Pick<OpencodeSessionSummary, "parentId">
+): boolean {
+  return Boolean(summary.parentId?.trim());
+}
+
+export function filterRootOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
+  return rows.filter((row) => !isChildOpencodeSessionSummary(row));
+}
+
+export function filterActiveOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
+  return filterRootOpencodeSessionSummaries(rows).filter((row) => !isArchivedOpencodeSessionSummary(row));
 }
 
 export function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
