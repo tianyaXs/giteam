@@ -404,6 +404,7 @@ const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
 const OPENCODE_PAGE_SIZE = 2;
 const OPENCODE_SESSION_PAGE_SIZE = 3;
 const OPENCODE_SIDEBAR_SESSION_POLL_MS = 45000;
+const OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
 const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const OPENCODE_TOP_LOAD_RATIO = 0.3;
@@ -908,6 +909,12 @@ export function App() {
   const terminalRepoResetReadyRef = useRef(false);
   const opencodeModelConfigLoadedRef = useRef(false);
   const opencodeConfiguredModelsLoadedRef = useRef(false);
+  const opencodeProviderCatalogLoadedRef = useRef(false);
+  const opencodeCatalogLoadInFlightRef = useRef(false);
+  const opencodeCatalogRefreshInFlightRef = useRef(false);
+  const opencodeBootstrapTokenRef = useRef(0);
+  const opencodeBootstrapDoneForRepoRef = useRef("");
+  const opencodeBootstrapInFlightRef = useRef(false);
   const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
     { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
@@ -2385,7 +2392,10 @@ export function App() {
     }
   }
 
-  async function refreshOpencodeSessions(limitArg?: number) {
+  async function refreshOpencodeSessions(
+    limitArg?: number,
+    opts?: { allowEmptyDraft?: boolean }
+  ) {
     if (!ensureRepoSelected()) return;
     const repoIdAtRequest = selectedRepo?.id || "";
     const pendingAtRequest = pendingSidebarSessionSelectionRef.current;
@@ -2411,7 +2421,9 @@ export function App() {
       }
       setOpencodeSessions([]);
       setActiveOpencodeSessionId("");
-      setDraftOpencodeSession(true);
+      if (opts?.allowEmptyDraft !== false) {
+        setDraftOpencodeSession(true);
+      }
       return;
     }
     appendOpencodeDebugLog(`session.list loaded ${rows.length}`);
@@ -2944,6 +2956,25 @@ export function App() {
     return true;
   }
 
+  function getOpencodeInvokeRepoPath(): string {
+    return (selectedRepo?.path || repos[0]?.path || "").trim();
+  }
+
+  function applyOpencodeProviderSnapshot(snapshot: ReturnType<typeof normalizeOpencodeServerProviderState>) {
+    setOpencodeProviderNames((prev) => {
+      const next = { ...prev };
+      for (const [providerId, displayName] of Object.entries(snapshot.providerNames)) {
+        if (displayName && !next[providerId]) next[providerId] = displayName;
+      }
+      return next;
+    });
+    setOpencodeProviderSourceById(snapshot.providerSources);
+    setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
+    setOpencodeModelsByProvider(snapshot.modelsByProvider);
+    setOpencodeProviders(snapshot.providers);
+    setOpencodeConnectedProviders(snapshot.connectedProviders);
+  }
+
   function ensureGitPaneSelected(): boolean {
     if (!gitPanePath.trim()) {
       setError("请先选择一个目录。");
@@ -3387,17 +3418,87 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     return models;
   }
 
-  async function refreshOpencodeCatalog(opts?: { syncSelection?: boolean; includeCurrentModel?: boolean }) {
+  async function refreshOpencodeCatalog(opts?: {
+    syncSelection?: boolean;
+    includeCurrentModel?: boolean;
+    reloadProviders?: boolean;
+  }) {
     if (!ensureRepoSelected()) return;
+    if (opencodeCatalogRefreshInFlightRef.current) return;
+    opencodeCatalogRefreshInFlightRef.current = true;
     setOpencodeCatalogLoading(true);
     try {
-      // Source of truth for configured models: /config
       await refreshOpencodeServerConfig(opts);
-      // Source of truth for directory listing: /provider
-      await refreshOpencodeServerProviders();
+      if (opts?.reloadProviders || !opencodeProviderCatalogLoadedRef.current) {
+        await loadOpencodeProviderCatalogOnce();
+      } else {
+        await refreshOpencodeConnectedProvidersOnly();
+      }
       await refreshOpencodeConfiguredModels();
     } finally {
+      opencodeCatalogRefreshInFlightRef.current = false;
       setOpencodeCatalogLoading(false);
+    }
+  }
+
+  async function waitForOpencodeCatalogLoad(): Promise<void> {
+    if (!opencodeCatalogLoadInFlightRef.current) return;
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (!opencodeCatalogLoadInFlightRef.current) {
+          resolve();
+          return;
+        }
+        window.setTimeout(check, 40);
+      };
+      check();
+    });
+  }
+
+  async function loadOpencodeProviderCatalogOnce(): Promise<boolean> {
+    const path = getOpencodeInvokeRepoPath();
+    if (!path) return false;
+    if (opencodeProviderCatalogLoadedRef.current) return true;
+    if (opencodeCatalogLoadInFlightRef.current) {
+      await waitForOpencodeCatalogLoad();
+      return opencodeProviderCatalogLoadedRef.current;
+    }
+    opencodeCatalogLoadInFlightRef.current = true;
+    try {
+      const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath: path });
+      const snapshot = normalizeOpencodeServerProviderState(state);
+      if (snapshot.providers.length === 0) {
+        appendOpencodeDebugLog("server.providers catalog empty on first load");
+        return false;
+      }
+      applyOpencodeProviderSnapshot(snapshot);
+      opencodeProviderCatalogLoadedRef.current = true;
+      appendOpencodeDebugLog(
+        `server.providers catalog loaded once providers=${snapshot.providers.length} connected=${snapshot.connectedProviders.length}`
+      );
+      return true;
+    } catch (e) {
+      appendOpencodeDebugLog(`server.providers catalog error ${String(e)}`);
+      return false;
+    } finally {
+      opencodeCatalogLoadInFlightRef.current = false;
+    }
+  }
+
+  async function refreshOpencodeConnectedProvidersOnly() {
+    const path = getOpencodeInvokeRepoPath();
+    if (!path) return;
+    try {
+      const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath: path });
+      const snapshot = normalizeOpencodeServerProviderState(state);
+      setOpencodeConnectedProviders(snapshot.connectedProviders);
+      if (!opencodeProviderCatalogLoadedRef.current && snapshot.providers.length > 0) {
+        applyOpencodeProviderSnapshot(snapshot);
+        opencodeProviderCatalogLoadedRef.current = true;
+        appendOpencodeDebugLog(`server.providers catalog loaded late providers=${snapshot.providers.length}`);
+      }
+    } catch (e) {
+      appendOpencodeDebugLog(`server.connected error ${String(e)}`);
     }
   }
 
@@ -3411,16 +3512,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     appendOpencodeDebugLog(
       `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${opencodeProviders.length} configuredProviders=${opencodeConfiguredProviders.length} connectedProviders=${opencodeConnectedProviders.length}`
     );
-    // Refresh catalog to pick up any model/provider changes from server.
-    void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
   }, [showOpencodeProviderPicker]);
 
   useEffect(() => {
     setOpencodeProviderActionMenuFor("");
   }, [opencodeProviderPickerProvider]);
 
-  async function loadOpencodeModelConfig() {
-    if (!ensureRepoSelected()) return;
+  async function loadOpencodeModelConfig(opts?: { silent?: boolean }) {
+    if (!ensureRepoSelected()) return false;
     try {
       const cfg = await invoke<OpencodeModelConfig>("get_opencode_model_config", { repoPath });
       // Do NOT let local opencode.json override server /config.model (service truth) or /global/config providers.
@@ -3431,9 +3530,110 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         exists: Boolean(cfg.exists)
       }));
       if (cfg.configuredModel) rememberOpencodeSavedModel(cfg.configuredModel);
+      return true;
     } catch (e) {
-      setError(String(e));
-      setMessage("Load model config failed");
+      if (!opts?.silent) {
+        setError(String(e));
+        setMessage("Load model config failed");
+      }
+      return false;
+    }
+  }
+
+  function resetOpencodeWorkspaceBootstrapState(nextRepoId?: string) {
+    const prev = opencodeBootstrapDoneForRepoRef.current;
+    if (prev && nextRepoId && prev === nextRepoId) return;
+    opencodeProviderCatalogLoadedRef.current = false;
+    opencodeModelConfigLoadedRef.current = false;
+    opencodeConfiguredModelsLoadedRef.current = false;
+    opencodeBootstrapDoneForRepoRef.current = "";
+  }
+
+  async function bootstrapOpencodeWorkspace(targetRepoId: string) {
+    if (!runtimeStatus.opencode.installed) return;
+    const repo = repos.find((item) => item.id === targetRepoId) || selectedRepo;
+    if (!repo?.id?.trim() || !repo.path?.trim()) return;
+    const repoId = repo.id.trim();
+
+    const token = ++opencodeBootstrapTokenRef.current;
+    opencodeBootstrapInFlightRef.current = true;
+    appendOpencodeDebugLog(`bootstrap.start repo=${repoId}`);
+
+    let providersOk = opencodeProviderCatalogLoadedRef.current;
+    let configOk = false;
+    let modelConfigOk = opencodeModelConfigLoadedRef.current;
+    let configuredModelsOk = opencodeConfiguredModelsLoadedRef.current;
+    let sessionsOk = hasLoadedSidebarRepoSessions(repoId);
+    await waitForPaint();
+    const bootstrapStartedAt = Date.now();
+    const isCancelled = () => opencodeBootstrapTokenRef.current !== token;
+
+    try {
+      await loadOpencodeServiceSettings();
+      if (isCancelled()) return;
+
+      for (let attempt = 0; attempt < OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt++) {
+        if (isCancelled()) return;
+
+        const targetDelay = OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
+        const waitMs = targetDelay - (Date.now() - bootstrapStartedAt);
+        if (waitMs > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, waitMs));
+        }
+        if (isCancelled()) return;
+
+        const isLastAttempt = attempt === OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS.length - 1;
+
+        if (!providersOk) {
+          providersOk = await loadOpencodeProviderCatalogOnce();
+        }
+
+        if (!configOk && selectedRepo?.id === repoId) {
+          await refreshOpencodeServerConfig({ syncSelection: true, includeCurrentModel: true });
+          configOk = true;
+        }
+
+        if (!modelConfigOk && selectedRepo?.id === repoId) {
+          modelConfigOk = await loadOpencodeModelConfig({ silent: !isLastAttempt });
+          if (modelConfigOk) opencodeModelConfigLoadedRef.current = true;
+        }
+
+        if (!configuredModelsOk && selectedRepo?.id === repoId) {
+          await refreshOpencodeConfiguredModels();
+          configuredModelsOk = true;
+          opencodeConfiguredModelsLoadedRef.current = true;
+        }
+
+        if (!sessionsOk) {
+          try {
+            await refreshSidebarRepoSessions(repo);
+            sessionsOk = hasLoadedSidebarRepoSessions(repoId);
+            if (selectedRepo?.id === repoId) {
+              await refreshOpencodeSessions(getRepoSessionFetchLimit(repoId), {
+                allowEmptyDraft: isLastAttempt
+              });
+            }
+            if (sessionsOk) expandProjectSessions(repoId);
+          } catch (e) {
+            appendOpencodeDebugLog(`bootstrap.sessions attempt=${attempt} error=${String(e)}`);
+          }
+        }
+
+        if (providersOk && configOk && modelConfigOk && configuredModelsOk && sessionsOk) {
+          break;
+        }
+      }
+
+      if (isCancelled()) return;
+
+      opencodeBootstrapDoneForRepoRef.current = providersOk ? repoId : "";
+      appendOpencodeDebugLog(
+        `bootstrap.done repo=${repoId} providers=${providersOk} config=${configOk} modelConfig=${modelConfigOk} configuredModels=${configuredModelsOk} sessions=${sessionsOk}`
+      );
+    } finally {
+      if (opencodeBootstrapTokenRef.current === token) {
+        opencodeBootstrapInFlightRef.current = false;
+      }
     }
   }
 
@@ -3569,8 +3769,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       appendOpencodeDebugLog(`service.settings saved port=${savedPort}`);
       setMessage("OpenCode service restarted");
       if (selectedRepo) {
-        void refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
-        void refreshOpencodeSessions().catch((e) => setError(String(e)));
+        resetOpencodeWorkspaceBootstrapState(selectedRepo.id);
+        void bootstrapOpencodeWorkspace(selectedRepo.id);
       }
       return true;
     } catch (e) {
@@ -3675,27 +3875,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function refreshOpencodeServerProviders() {
-    if (!ensureRepoSelected()) return;
-    try {
-      const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath });
-      const snapshot = normalizeOpencodeServerProviderState(state);
-      if (snapshot.providers.length === 0) return;
-      setOpencodeProviderNames((prev) => {
-        const next = { ...prev };
-        for (const [providerId, displayName] of Object.entries(snapshot.providerNames)) {
-          if (displayName && !next[providerId]) next[providerId] = displayName;
-        }
-        return next;
-      });
-      setOpencodeProviderSourceById(snapshot.providerSources);
-      setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
-      setOpencodeModelsByProvider(snapshot.modelsByProvider);
-      setOpencodeProviders(snapshot.providers);
-      setOpencodeConnectedProviders(snapshot.connectedProviders);
-      appendOpencodeDebugLog(`server.providers synced providers=${snapshot.providers.length} connected=${snapshot.connectedProviders.length}`);
-    } catch (e) {
-      appendOpencodeDebugLog(`server.providers error ${String(e)}`);
-    }
+    await loadOpencodeProviderCatalogOnce();
   }
 
   async function openConnectProvider(providerId: string) {
@@ -3820,7 +4000,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (opencodeProviderActionMenuFor === pid) {
         setOpencodeProviderActionMenuFor("");
       }
-      await refreshOpencodeCatalog({ syncSelection: false, includeCurrentModel: false });
+      await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
+      await refreshOpencodeConnectedProvidersOnly();
       setMessage(`Disconnected provider: ${pid}`);
     } catch (e) {
       setError(String(e));
@@ -5467,25 +5648,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    const repoId = selectedRepo.id.trim();
-    if (!repoId) return;
-    const alreadyLoaded = hasLoadedSidebarRepoSessions(repoId);
-    if (alreadyLoaded) return;
-    let cancelled = false;
-    void refreshSidebarRepoSessions(selectedRepo)
-      .then(() => {
-        if (!cancelled && hasLoadedSidebarRepoSessions(repoId)) expandProjectSessions(repoId);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
-
-  useEffect(() => {
     if (!runtimeStatus.opencode.installed || repos.length === 0) return;
     let cancelled = false;
     let timer: number | null = null;
@@ -5614,35 +5776,39 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [opencodeSessions, activeOpencodeSessionId, draftOpencodeSession]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (opencodeProviders.length > 0) return;
-    void refreshOpencodeCatalog();
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+    if (!runtimeStatus.opencode.installed) return;
+    const repoId = selectedRepo?.id?.trim();
+    if (!repoId) return;
 
-  useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (opencodeSessionsRepoIdRef.current === selectedRepo.id && opencodeSessions.length > 0) return;
-    void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch((e) => setError(String(e)));
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repoPath, workspaceAgentBindings, opencodeSessions.length]);
+    if (opencodeBootstrapDoneForRepoRef.current && opencodeBootstrapDoneForRepoRef.current !== repoId) {
+      resetOpencodeWorkspaceBootstrapState(repoId);
+    }
 
-  useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (opencodeModelConfigLoadedRef.current) return;
-    opencodeModelConfigLoadedRef.current = true;
-    void loadOpencodeModelConfig();
-  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
+    let cancelled = false;
+    const timer = scheduleAfterInteraction(() => {
+      if (cancelled) return;
+      void bootstrapOpencodeWorkspace(repoId);
+    }, 200);
 
-  useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (opencodeConfiguredModelsLoadedRef.current) return;
-    opencodeConfiguredModelsLoadedRef.current = true;
-    void refreshOpencodeConfiguredModels();
-  }, [runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      opencodeBootstrapTokenRef.current += 1;
+    };
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repos.length]);
 
   useEffect(() => {
     if (!runtimeStatus.opencode.installed) return;
-    void loadOpencodeServiceSettings();
-  }, [runtimeStatus.opencode.installed]);
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const repoId = selectedRepo?.id?.trim();
+      if (!repoId) return;
+      if (opencodeProviderCatalogLoadedRef.current && opencodeBootstrapDoneForRepoRef.current === repoId) return;
+      void bootstrapOpencodeWorkspace(repoId);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
 
   useEffect(() => {
     if (!selectedRepo?.id && !repoPath) return;
@@ -5687,13 +5853,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     opencodeSyncModelRefs,
     repoPath,
   ]);
-
-  useEffect(() => {
-    if (!showSettings || !runtimeStatus.opencode.installed || !selectedRepo) return;
-    if (opencodeProviders.length === 0) {
-      void refreshOpencodeCatalog();
-    }
-  }, [showSettings, runtimeStatus.opencode.installed, Boolean(selectedRepo)]);
 
   useEffect(() => {
     if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
@@ -7297,8 +7456,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
         throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
       }
-      await refreshOpencodeCatalog();
       await refreshOpencodeServerConfig();
+      await refreshOpencodeConfiguredModels();
+      ensureProviderExists(pid);
       setShowOpencodeCustomProvider(false);
       setShowOpencodeModelPicker(true);
       setOpencodeModelPickerSearch("");
@@ -7325,7 +7485,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     setError("");
     try {
       await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-      await refreshOpencodeCatalog();
+      await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
+      await refreshOpencodeConnectedProvidersOnly();
       if (!(opencodeModelsByProvider[authPid] ?? []).length) {
         await fetchOpencodeModels(authPid);
       }

@@ -636,6 +636,72 @@ fn run_curl_json(
     command_runner::run_and_capture_in_dir_with_timeout("curl", &args, repo_path, timeout_secs)
 }
 
+fn run_curl_json_global(
+    repo_path: &str,
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let mut args: Vec<String> = vec![
+        "-sS".to_string(),
+        "--fail".to_string(),
+        "--max-time".to_string(),
+        timeout_secs.to_string(),
+        "-X".to_string(),
+        method.to_string(),
+    ];
+    if body.is_some() {
+        args.push("-H".to_string());
+        args.push("Content-Type: application/json".to_string());
+    }
+    if let Some(b) = body {
+        args.push("--data-raw".to_string());
+        args.push(b.to_string());
+    }
+    args.push(url.to_string());
+    command_runner::run_and_capture_in_dir_with_timeout("curl", &args, repo_path, timeout_secs)
+}
+
+fn connected_providers_from_json(json: &Value) -> Vec<String> {
+    json.get("connected")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// OpenCode scopes `/provider` by `x-opencode-directory`. Uninitialized project directories
+/// (no session yet) return an empty catalog even though the global catalog is available.
+fn fetch_opencode_provider_json(
+    repo_path: &str,
+    base: &str,
+    timeout_secs: u64,
+) -> Result<(Value, Vec<String>), String> {
+    let url = format!("{base}/provider");
+    let mut scoped_connected = Vec::new();
+    if let Ok(raw) = run_curl_json(repo_path, "GET", url.as_str(), None, timeout_secs) {
+        if let Ok(json) = serde_json::from_str::<Value>(&raw) {
+            scoped_connected = connected_providers_from_json(&json);
+            if !parse_server_providers_from_json(&json).is_empty() {
+                return Ok((json, scoped_connected));
+            }
+        }
+    }
+    let raw = run_curl_json_global(repo_path, "GET", url.as_str(), None, timeout_secs)?;
+    let json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse /provider failed: {e}"))?;
+    let mut connected = connected_providers_from_json(&json);
+    if connected.is_empty() {
+        connected = scoped_connected;
+    }
+    Ok((json, connected))
+}
+
 fn merge_json(base: &mut Value, overlay: Value) {
     match (base, overlay) {
         (Value::Object(base_obj), Value::Object(overlay_obj)) => {
@@ -840,6 +906,24 @@ fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {
     Ok(base)
 }
 
+fn is_retryable_service_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("connection refused")
+        || e.contains("couldn't connect")
+        || e.contains("failed to connect")
+        || e.contains("timed out")
+        || e.contains("operation timed out")
+        || e.contains("opencode service did not become ready")
+        || e.contains("empty reply from server")
+        || e.contains("connection reset")
+        || e.contains("recv failure")
+}
+
+fn is_curl_http_error(err: &str) -> bool {
+    err.contains("The requested URL returned error:")
+        || err.contains("curl: (22)")
+}
+
 fn with_service_base<T, F: FnMut(&str) -> Result<T, String>>(
     repo_path: &str,
     mut task: F,
@@ -848,6 +932,9 @@ fn with_service_base<T, F: FnMut(&str) -> Result<T, String>>(
     match task(base.as_str()) {
         Ok(v) => Ok(v),
         Err(first_err) => {
+            if !is_retryable_service_error(&first_err) {
+                return Err(first_err);
+            }
             release_managed_service();
             let retry_base = ensure_managed_service_local(repo_path)?;
             task(retry_base.as_str())
@@ -1577,7 +1664,12 @@ pub fn list_opencode_sessions(
             }
         }
         let url = format!("{base}/session?{}", qs.join("&"));
-        let raw = run_curl_json(repo_path, "GET", url.as_str(), None, 10)?;
+        let raw = match run_curl_json(repo_path, "GET", url.as_str(), None, 10) {
+            Ok(v) => v,
+            // Uninitialized project directories often reject /session with HTTP 500.
+            Err(e) if is_curl_http_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         let json: Value =
             serde_json::from_str(&raw).map_err(|e| format!("parse session list failed: {e}"))?;
         let arr = json
@@ -2097,31 +2189,38 @@ pub fn get_opencode_server_provider_catalog(
 ) -> Result<Vec<OpencodeServerProviderCatalog>, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        // Source of truth for provider + model catalog is /provider.
-        let prov_raw = run_curl_json(
-            repo_path,
-            "GET",
-            format!("{base}/provider").as_str(),
-            None,
-            12,
-        )?;
-        let prov_json: Value =
-            serde_json::from_str(&prov_raw).map_err(|e| format!("parse /provider failed: {e}"))?;
+        let (prov_json, _) = fetch_opencode_provider_json(repo_path, base, 12)?;
         let parsed = parse_server_providers_from_json(&prov_json);
         if !parsed.is_empty() {
             return Ok(parsed);
         }
         // Fallback to /config/providers only when /provider returns empty in unexpected environments.
-        let cfg_raw = run_curl_json(
-            repo_path,
-            "GET",
-            format!("{base}/config/providers").as_str(),
-            None,
-            12,
-        )?;
-        let cfg_json: Value = serde_json::from_str(&cfg_raw)
-            .map_err(|e| format!("parse /config/providers failed: {e}"))?;
-        Ok(parse_server_providers_from_json(&cfg_json))
+        for fetch in [
+            run_curl_json(
+                repo_path,
+                "GET",
+                format!("{base}/config/providers").as_str(),
+                None,
+                12,
+            ),
+            run_curl_json_global(
+                repo_path,
+                "GET",
+                format!("{base}/config/providers").as_str(),
+                None,
+                12,
+            ),
+        ] {
+            if let Ok(cfg_raw) = fetch {
+                if let Ok(cfg_json) = serde_json::from_str::<Value>(&cfg_raw) {
+                    let parsed = parse_server_providers_from_json(&cfg_json);
+                    if !parsed.is_empty() {
+                        return Ok(parsed);
+                    }
+                }
+            }
+        }
+        Ok(Vec::new())
     })
 }
 
@@ -2131,25 +2230,7 @@ pub fn get_opencode_server_provider_state(
 ) -> Result<OpencodeServerProviderState, String> {
     command_runner::validate_repo_path(repo_path)?;
     with_service_base(repo_path, |base| {
-        let raw = run_curl_json(
-            repo_path,
-            "GET",
-            format!("{base}/provider").as_str(),
-            None,
-            15,
-        )?;
-        let json: Value =
-            serde_json::from_str(&raw).map_err(|e| format!("parse /provider failed: {e}"))?;
-        let connected: Vec<String> = json
-            .get("connected")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let (json, connected) = fetch_opencode_provider_json(repo_path, base, 15)?;
         let mut providers = parse_server_providers_from_json(&json);
 
         // Some OpenCode builds return only model ids in /provider, while richer model objects
@@ -2165,16 +2246,27 @@ pub fn get_opencode_server_provider_state(
             })
         });
         if needs_names {
-            if let Ok(cfg_raw) = run_curl_json(
-                repo_path,
-                "GET",
-                format!("{base}/config/providers").as_str(),
-                None,
-                12,
-            ) {
-                if let Ok(cfg_json) = serde_json::from_str::<Value>(&cfg_raw) {
-                    let extra = parse_server_providers_from_json(&cfg_json);
-                    providers = merge_server_provider_catalog(providers, extra);
+            for fetch in [
+                run_curl_json(
+                    repo_path,
+                    "GET",
+                    format!("{base}/config/providers").as_str(),
+                    None,
+                    12,
+                ),
+                run_curl_json_global(
+                    repo_path,
+                    "GET",
+                    format!("{base}/config/providers").as_str(),
+                    None,
+                    12,
+                ),
+            ] {
+                if let Ok(cfg_raw) = fetch {
+                    if let Ok(cfg_json) = serde_json::from_str::<Value>(&cfg_raw) {
+                        let extra = parse_server_providers_from_json(&cfg_json);
+                        providers = merge_server_provider_catalog(providers, extra);
+                    }
                 }
             }
         }
