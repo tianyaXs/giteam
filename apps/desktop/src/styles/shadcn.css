@@ -1,9 +1,15 @@
-@layer theme, utilities;
+@layer theme, base, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
 
 @source "../**/*.{ts,tsx}";
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+@source "../../node_modules/@streamdown/mermaid/dist/*.js";
+@source "../../node_modules/@streamdown/math/dist/*.js";
+@source "../../node_modules/@streamdown/cjk/dist/*.js";
 
 @theme inline {
   --font-sans: "Segoe UI", ui-sans-serif, system-ui, -apple-system, sans-serif;

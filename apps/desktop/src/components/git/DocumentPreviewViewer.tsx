@@ -42,6 +42,14 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function textFromBase64(base64: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(base64ToUint8Array(base64));
+  } catch {
+    return "";
+  }
+}
+
 function parseXlsxWorkbook(base64: string): XLSX.WorkBook | null {
   try {
     const data = base64ToUint8Array(base64);
@@ -184,7 +192,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
   }, [blobUrl, ext, fileName]);
 
   if (isMarkdown) {
-    const markdown = content.modified || content.original;
+    const markdown = content.modified || content.original || (content.dataBase64 ? textFromBase64(content.dataBase64) : "");
     return (
       <PreviewShell>
         <div className="h-full min-h-0 overflow-auto bg-background px-5 py-4 text-[13px] leading-6 md:px-7 md:py-5">

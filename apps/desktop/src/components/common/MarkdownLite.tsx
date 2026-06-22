@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { cloneElement, isValidElement, useMemo, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { cjk as streamdownCjk } from "@streamdown/cjk";
 import { createCodePlugin } from "@streamdown/code";
@@ -14,7 +14,12 @@ const streamdownCode = createCodePlugin({
 const STREAMDOWN_CONTROLS = {
   code: false,
   table: false,
-  mermaid: { copy: false, download: false, fullscreen: false, panZoom: true }
+  mermaid: {
+    copy: true,
+    download: true,
+    fullscreen: false,
+    panZoom: true
+  }
 };
 
 const STREAMDOWN_PLUGINS = {
@@ -26,6 +31,7 @@ const STREAMDOWN_PLUGINS = {
 
 const MARKDOWN_INLINE_WRAP_CLASS = "min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]";
 const MARKDOWN_LINK_WRAP_CLASS = "inline break-words text-left font-mono text-[0.94em] [overflow-wrap:anywhere]";
+const MERMAID_PREVIEW_MIN_HEIGHT = 220;
 
 const MERMAID_START_RE =
   /^(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|gantt|journey|pie|gitGraph|mindmap|timeline|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic)\b/i;
@@ -372,6 +378,9 @@ function normalizeMarkdownSource(source: string, options?: NormalizeMarkdownOpti
 function getInlineText(value: unknown): string {
   if (typeof value === "string" || typeof value === "number") return String(value);
   if (Array.isArray(value)) return value.map(getInlineText).join("");
+  if (value && typeof value === "object" && "props" in value) {
+    return getInlineText((value as { props?: { children?: unknown } }).props?.children);
+  }
   return "";
 }
 
@@ -379,6 +388,24 @@ function getPathDisplayName(path: string, line?: number): string {
   const normalized = path.replace(/^file:\/\//i, "").replace(/\\/g, "/").replace(/\/+$/, "");
   const name = normalized.split("/").filter(Boolean).pop() || normalized || path;
   return line ? `${name}:${line}` : name;
+}
+
+function isMermaidCodeBlock(value: unknown): boolean {
+  if (!isValidElement(value)) return false;
+  const className = String((value.props as { className?: string }).className || "");
+  return /\blanguage-mermaid\b/.test(className);
+}
+
+function renderPreBlock(children: any) {
+  if (!isValidElement(children)) return children;
+  const block = cloneElement(children, { "data-block": "true" } as any);
+  if (!isMermaidCodeBlock(children)) return block;
+
+  return (
+    <div style={{ minHeight: MERMAID_PREVIEW_MIN_HEIGHT }}>
+      {block}
+    </div>
+  );
 }
 
 function renderPathButton(
@@ -477,6 +504,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
           </code>
         );
       },
+      pre: ({ children }: any) => renderPreBlock(children),
       a: ({ href, children, node: _node, ...anchorProps }: any) => {
         const rawHref = String(href || "").trim();
         const resolved = rawHref ? resolveMarkdownPath(rawHref, markdownOptions) : null;
@@ -514,7 +542,6 @@ export function MarkdownLite(props: MarkdownLiteProps) {
         normalizeHtmlIndentation
         parseIncompleteMarkdown={Boolean(props.streaming)}
         plugins={STREAMDOWN_PLUGINS}
-        prefix="sd"
         components={components}
       >
         {text}

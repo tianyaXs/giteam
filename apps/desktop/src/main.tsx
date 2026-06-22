@@ -5,7 +5,6 @@ import "streamdown/styles.css";
 import { App } from "./App";
 import "./styles/shadcn.css";
 import "./styles/index.css";
-import "./styles/streamdown.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

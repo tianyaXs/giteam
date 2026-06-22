@@ -536,9 +536,6 @@ export function GitChangesPanel({
         </Empty>
       );
     }
-    if (!previewSupported) {
-      return renderUnsupportedPreview();
-    }
     if (shouldUseDocumentPreview) {
       return (
         <div className={`${shellClassName ?? "gt-monaco-diff-shell"} gt-monaco-diff-shell-document`}>
@@ -551,6 +548,9 @@ export function GitChangesPanel({
           </Suspense>
         </div>
       );
+    }
+    if (!previewSupported) {
+      return renderUnsupportedPreview();
     }
     return (
       <div className={shellClassName ?? "gt-monaco-diff-shell"}>

@@ -1128,6 +1128,16 @@ export function App() {
     });
     return Array.from(dirs);
   }, [worktreeOverview.entries]);
+  const opencodeWorkspaceRoot = repoPath || gitPanePath;
+  const opencodeUsesGitPaneWorkspace = normalizeWorkspacePath(opencodeWorkspaceRoot) === normalizeWorkspacePath(gitPanePath);
+  const opencodeWorkspaceFileCandidates = useMemo(
+    () => opencodeUsesGitPaneWorkspace ? workspaceFileCandidates : [],
+    [opencodeUsesGitPaneWorkspace, workspaceFileCandidates]
+  );
+  const opencodeWorkspaceDirectoryCandidates = useMemo(
+    () => opencodeUsesGitPaneWorkspace ? workspaceDirectoryCandidates : [],
+    [opencodeUsesGitPaneWorkspace, workspaceDirectoryCandidates]
+  );
   const selectedWorktreeEntry = useMemo(
     () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
     [worktreeOverview.entries, selectedWorktreeFile]
@@ -5197,10 +5207,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     return matches.length === 1 ? matches[0] : null;
   }
 
-  function resolveWorkspacePathTarget(absolutePath: string): { repoRoot: string; relativePath: string } | null {
+  function uniqueNormalizedFsPaths(paths: string[]): string[] {
+    const seen = new Set<string>();
+    return paths
+      .map((path) => normalizeFsPath(path.trim()))
+      .filter((path) => {
+        if (!path || seen.has(path)) return false;
+        seen.add(path);
+        return true;
+      });
+  }
+
+  function resolveWorkspacePathTarget(absolutePath: string, preferredRepoRoot?: string): { repoRoot: string; relativePath: string } | null {
     const normalizedAbs = normalizeFsPath(absolutePath.trim());
-    const repoCandidates = [gitPanePath, repoPath].filter(Boolean)
-      .map((path) => normalizeFsPath(path))
+    const repoCandidates = uniqueNormalizedFsPaths([preferredRepoRoot || "", repoPath, gitPanePath, ...repos.map((repo) => repo.path)])
       .sort((a, b) => b.length - a.length);
     for (const root of repoCandidates) {
       if (normalizedAbs === root) return null;
@@ -5214,12 +5234,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     return null;
   }
 
-  function resolveToolFileTarget(filePath: string): { repoRoot: string; relativePath: string } | null {
+  function resolveToolFileTarget(
+    filePath: string,
+    options: { preferredRepoRoot?: string; workspaceFileCandidates?: string[] } = {}
+  ): { repoRoot: string; relativePath: string } | null {
     const normalized = normalizeFsPath(filePath.trim());
     if (!normalized) return null;
-    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
+    const repoRoot = normalizeFsPath((options.preferredRepoRoot || repoPath || gitPanePath || "").trim());
     if (!repoRoot) return null;
-    const workspaceRelative = resolveWorkspaceCandidatePath(normalized, workspaceFileCandidates);
+    const candidates = options.workspaceFileCandidates ?? (
+      normalizeWorkspacePath(repoRoot) === normalizeWorkspacePath(gitPanePath) ? workspaceFileCandidates : []
+    );
+    const workspaceRelative = resolveWorkspaceCandidatePath(normalized, candidates);
     if (workspaceRelative) {
       return {
         repoRoot,
@@ -5227,12 +5253,60 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       };
     }
     if (normalized.startsWith("/")) {
-      return resolveWorkspacePathTarget(normalized);
+      return resolveWorkspacePathTarget(normalized, repoRoot);
     }
     return {
       repoRoot,
       relativePath: normalizeRelativeFsPath(normalized)
     };
+  }
+
+  function isEmptyPreviewContent(content: GitWorktreeFileContent): boolean {
+    return content.previewSupported !== false && !content.original && !content.modified && !content.dataBase64;
+  }
+
+  function attachmentPreviewToWorktreeContent(preview: GitWorktreeFileContent): GitWorktreeFileContent {
+    return {
+      original: preview.original || "",
+      modified: preview.modified || preview.original || "",
+      previewSupported: preview.previewSupported !== false,
+      previewReason: preview.previewReason,
+      previewKind: preview.previewKind,
+      mime: preview.mime,
+      dataBase64: preview.dataBase64
+    };
+  }
+
+  async function readWorkspaceRelativeLocalPreview(
+    relativePath: string,
+    preferredRepoRoot?: string
+  ): Promise<{ repoRoot: string; absolutePath: string; content: GitWorktreeFileContent } | null> {
+    const normalizedRelativePath = normalizeRelativeFsPath(relativePath);
+    if (!normalizedRelativePath) return null;
+    const repoCandidates = uniqueNormalizedFsPaths([preferredRepoRoot || "", repoPath, gitPanePath, ...repos.map((repo) => repo.path)]);
+    for (const root of repoCandidates) {
+      const absolutePath = `${root}/${normalizedRelativePath}`;
+      const preview = await readLocalAttachmentPreview(absolutePath).catch(() => null);
+      if (!preview || isEmptyPreviewContent(preview)) continue;
+      return {
+        repoRoot: root,
+        absolutePath,
+        content: attachmentPreviewToWorktreeContent(preview)
+      };
+    }
+    return null;
+  }
+
+  async function getWorkspaceFileContentWithFallback(repoRoot: string, relativePath: string): Promise<GitWorktreeFileContent> {
+    const content = await getGitWorktreeFileContent(repoRoot, relativePath);
+    if (!isEmptyPreviewContent(content)) return content;
+    const localPreview = await readWorkspaceRelativeLocalPreview(relativePath, repoRoot);
+    return localPreview?.content || content;
+  }
+
+  function isWorktreeDiffFile(relativePath: string): boolean {
+    const normalized = normalizeRelativeFsPath(relativePath);
+    return Boolean(normalized && worktreeOverview.entries.some((entry) => entry.path === normalized));
   }
 
   function resolveFocusedWorktreeLine(source: string, focusText?: string, fallbackLine?: number): number | undefined {
@@ -5272,20 +5346,30 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function openWorkspacePathInRightPane(path: string, line?: number) {
-    const target = resolveToolFileTarget(path);
+    const target = resolveToolFileTarget(path, {
+      preferredRepoRoot: opencodeWorkspaceRoot,
+      workspaceFileCandidates: opencodeWorkspaceFileCandidates
+    });
     if (!target) {
       setMessage("该路径不在当前仓库中，暂时无法在右侧打开。");
       return;
     }
-    setSelectedAttachmentPreviewPath("");
-    openRightPane("changes");
-    setSelectedWorktreeFile(target.relativePath);
-    setSelectedWorktreeLine(line);
-    setSelectedWorktreeViewMode("editor");
     try {
+      const localPreview = isWorktreeDiffFile(target.relativePath)
+        ? null
+        : await readWorkspaceRelativeLocalPreview(target.relativePath, target.repoRoot);
+      setSelectedAttachmentPreviewPath(localPreview?.absolutePath || "");
+      openRightPane("changes");
+      setSelectedWorktreeFile(target.relativePath);
+      setSelectedWorktreeLine(line);
+      setSelectedWorktreeViewMode("editor");
       const [content, patch] = await Promise.all([
-        getGitWorktreeFileContent(target.repoRoot, target.relativePath),
-        getGitWorktreeFilePatch(target.repoRoot, target.relativePath).catch(() => "")
+        localPreview
+          ? Promise.resolve(localPreview.content)
+          : getWorkspaceFileContentWithFallback(target.repoRoot, target.relativePath),
+        localPreview
+          ? Promise.resolve("")
+          : getGitWorktreeFilePatch(target.repoRoot, target.relativePath).catch(() => "")
       ]);
       setSelectedWorktreeContent(content);
       setSelectedWorktreePatch(patch || "No staged or unstaged patch available for this file.");
@@ -5297,8 +5381,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function openWorkspaceDirectory(path: string) {
-    const repoRoot = normalizeFsPath((gitPanePath || repoPath || "").trim());
-    const relativePath = resolveWorkspaceCandidatePath(path, workspaceDirectoryCandidates) || normalizeRelativeFsPath(path);
+    const repoRoot = normalizeFsPath((opencodeWorkspaceRoot || "").trim());
+    const relativePath = resolveWorkspaceCandidatePath(path, opencodeWorkspaceDirectoryCandidates) || normalizeRelativeFsPath(path);
     if (!repoRoot || !relativePath) return;
     try {
       await invoke("open_local_path", { path: `${repoRoot}/${relativePath}` });
@@ -5401,16 +5485,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     patch?: string;
     preferDiff?: boolean;
   }) {
-    const target = resolveToolFileTarget(input.filePath);
+    const target = resolveToolFileTarget(input.filePath, {
+      preferredRepoRoot: opencodeWorkspaceRoot,
+      workspaceFileCandidates: opencodeWorkspaceFileCandidates
+    });
     if (!target) {
       setMessage("该文件暂时无法在右侧打开。");
       return;
     }
-    setSelectedAttachmentPreviewPath("");
-    openRightPane("changes");
-    setSelectedWorktreeFile(target.relativePath);
-    setSelectedWorktreeViewMode(input.preferDiff ? "diff" : "editor");
     try {
+      const canUseLocalPreview = input.original === undefined && input.modified === undefined && !input.preferDiff && !isWorktreeDiffFile(target.relativePath);
+      const localPreview = canUseLocalPreview
+        ? await readWorkspaceRelativeLocalPreview(target.relativePath, target.repoRoot)
+        : null;
+      setSelectedAttachmentPreviewPath(localPreview?.absolutePath || "");
+      openRightPane("changes");
+      setSelectedWorktreeFile(target.relativePath);
+      setSelectedWorktreeViewMode(input.preferDiff ? "diff" : "editor");
       const contentPromise = input.original !== undefined || input.modified !== undefined
         ? Promise.resolve<GitWorktreeFileContent>({
           original: input.original ?? "",
@@ -5421,11 +5512,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           mime: "text/plain",
           dataBase64: undefined
         })
-        : getGitWorktreeFileContent(target.repoRoot, target.relativePath);
+        : localPreview
+          ? Promise.resolve(localPreview.content)
+          : getWorkspaceFileContentWithFallback(target.repoRoot, target.relativePath);
       const patchPromise = input.patch !== undefined
         ? Promise.resolve(input.patch)
         : input.original !== undefined || input.modified !== undefined
           ? Promise.resolve("")
+          : localPreview
+            ? Promise.resolve("")
           : getGitWorktreeFilePatch(target.repoRoot, target.relativePath).catch(() => "");
       const [content, patch] = await Promise.all([contentPromise, patchPromise]);
       setSelectedWorktreeContent(content);
@@ -6887,9 +6982,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               showReasoningSummaries={generalSettings.showReasoningSummaries}
               shellToolPartsExpanded={generalSettings.shellToolPartsExpanded}
               editToolPartsExpanded={generalSettings.editToolPartsExpanded}
-              workspaceRoot={gitPanePath || repoPath}
-              workspaceFileCandidates={workspaceFileCandidates}
-              workspaceDirectoryCandidates={workspaceDirectoryCandidates}
+              workspaceRoot={opencodeWorkspaceRoot}
+              workspaceFileCandidates={opencodeWorkspaceFileCandidates}
+              workspaceDirectoryCandidates={opencodeWorkspaceDirectoryCandidates}
               onOpenTaskSession={(sessionId, titleHint) => {
                 void openOpencodeChildSession(sessionId, titleHint);
               }}
