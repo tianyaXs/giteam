@@ -1,0 +1,12 @@
+/* Giteam Design System — Entry Point */
+/* Order matters: tokens → base → layout → features → theme → animations */
+
+@import "./tokens.css";
+@import "./base.css";
+@import "./layout.css";
+@import "./terminal.css";
+@import "./sidebar.css";
+@import "./git.css";
+@import "./modal.css";
+@import "./theme.css";
+@import "./animations.css";

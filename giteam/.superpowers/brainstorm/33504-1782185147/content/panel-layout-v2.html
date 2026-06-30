@@ -1,0 +1,141 @@
+<h2>Remote Repository Panel - 第一阶段布局 v2</h2>
+<p class="subtitle">单仓库体验，多仓库数据结构预留</p>
+
+<div class="mockup">
+  <div class="mockup-header">giteam 左侧 Sidebar（示意）</div>
+  <div class="mockup-body" style="display: flex; gap: 0; font-family: system-ui, sans-serif; font-size: 13px; color: #333;">
+
+    <div style="width: 230px; background: #f8f9fa; border-right: 1px solid #e5e7eb; padding: 12px; display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-weight: 600; font-size: 14px; color: #111;">Local Repositories</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="padding: 6px 8px; border-radius: 6px; background: #fff; border: 1px solid #e5e7eb;">giteam</div>
+        <div style="padding: 6px 8px; border-radius: 6px;">another-repo</div>
+      </div>
+
+      <div style="border-top: 1px solid #e5e7eb; margin: 8px 0;"></div>
+
+      <!-- New Remote Repo Panel -->
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="font-weight: 600; font-size: 14px; color: #111; display: flex; align-items: center; gap: 6px;">
+          <span id="conn-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e;"></span>
+          Remote Repo
+        </div>
+
+        <!-- Repo Selector (single option in phase 1) -->
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
+          <span style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px;">remote-repo-skill-brainstorm_2_giteam</span>
+          <span style="font-size: 10px; color: #9ca3af;">▾</span>
+        </div>
+
+        <!-- Connection Header -->
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: 500; font-size: 12px;">Connected</span>
+            <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #dcfce7; color: #166534;">online</span>
+          </div>
+          <div style="font-size: 11px; color: #6b7280; cursor: help;" title="http://localhost:8000">
+            Service URL: localhost:8000
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #eff6ff; color: #1e40af;">main</span>
+            <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #f3f4f6; color: #4b5563;">v0.1.0</span>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button class="mock-button" style="font-size: 11px; padding: 4px 8px;">Sync</button>
+            <button class="mock-button" style="font-size: 11px; padding: 4px 8px;">Reconnect</button>
+            <button class="mock-button" style="font-size: 11px; padding: 4px 8px;">Settings</button>
+          </div>
+        </div>
+
+        <!-- Workspace Status Bar -->
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+          <div style="font-size: 12px; font-weight: 500; color: #374151;">Workspace Status</div>
+
+          <!-- Dirty state highlighted -->
+          <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px; padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+            <span style="font-weight: 500; color: #9a3412;">Dirty</span>
+            <span style="color: #c2410c; font-weight: 500;">2 modified, 1 untracked</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+            <span>Session</span>
+            <span title="sess_abc123def456" style="color: #6b7280; cursor: help;">2h ago</span>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+            <span>Workspace Version</span>
+            <span style="font-family: monospace;">3</span>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+            <span>Capabilities</span>
+            <span style="color: #16a34a;">GitNexus ✓ · MCP ✓</span>
+          </div>
+        </div>
+
+        <!-- File Tree -->
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+          <div style="font-size: 12px; font-weight: 500; color: #374151; display: flex; align-items: center; justify-content: space-between;">
+            <span>Workspace Files</span>
+            <span style="font-size: 10px; color: #9ca3af;"> lazy </span>
+          </div>
+          <div style="font-family: monospace; font-size: 11px; line-height: 1.6;">
+            <div>📁 src/</div>
+            <div style="padding-left: 14px;">📁 remote_repo_service/</div>
+            <div style="padding-left: 28px;">📄 app.py</div>
+            <div style="padding-left: 28px; color: #d97706;">📄 config.py <span style="font-size: 9px; padding: 1px 3px; border-radius: 3px; background: #fef3c7;">M</span></div>
+            <div style="padding-left: 28px;">📄 git_ops.py</div>
+            <div style="padding-left: 28px; color: #dc2626;">📄 models.py <span style="font-size: 9px; padding: 1px 3px; border-radius: 3px; background: #fee2e2;">M</span></div>
+            <div style="padding-left: 14px;">📁 tests/</div>
+            <div style="padding-left: 28px;">📄 test_app.py</div>
+            <div style="padding-left: 14px;">📁 docs/</div>
+            <div>📄 pyproject.toml</div>
+            <div style="color: #16a34a;">📄 README.md <span style="font-size: 9px; padding: 1px 3px; border-radius: 3px; background: #dcfce7;">U</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main area -->
+    <div style="flex: 1; background: #fff; padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div style="font-size: 18px; font-weight: 600;">remote_repo_service/models.py</div>
+        <div style="display: flex; gap: 8px;">
+          <button class="mock-button" style="font-size: 12px; padding: 6px 12px;">Open in OpenCode</button>
+          <button class="mock-button" style="font-size: 12px; padding: 6px 12px;">Edit via MCP</button>
+        </div>
+      </div>
+      <div style="background: #f8f9fa; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 12px; line-height: 1.5; color: #374151; flex: 1;">
+        <div><span style="color: #7c3aed;">class</span> <span style="color: #2563eb;">CreateSessionRequest</span>:</div>
+        <div style="padding-left: 16px;">repo_id: str</div>
+        <div style="padding-left: 16px;">ref_or_commit: str | None = None</div>
+        <div style="padding-left: 16px;">request_id: str</div>
+        <br/>
+        <div><span style="color: #7c3aed;">class</span> <span style="color: #2563eb;">RunShellRequest</span>:</div>
+        <div style="padding-left: 16px;">session_id: str</div>
+        <div style="padding-left: 16px;">command: str</div>
+      </div>
+      <div style="font-size: 12px; color: #6b7280; display: flex; align-items: center; gap: 8px;">
+        <span>只读预览 · workspace version 3</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>相比 v1 的调整</h3>
+  <ul>
+    <li>顶部预留 repo selector（第一阶段只有一个选项）</li>
+    <li>Connection Header 增加 Service URL tooltip、Reconnect 按钮</li>
+    <li>Workspace Status Bar：dirty state 用橙色背景高亮，session 显示相对时间，capabilities 合并为一行</li>
+    <li>File Tree：懒加载提示、M/D/U/C 标记样式、为 Agent 操作预留视觉位置</li>
+    <li>主区预览增加 “Open in OpenCode” / “Edit via MCP” 占位按钮</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h3>下一阶段预埋点</h3>
+  <ul>
+    <li>Repo selector 启用多选项</li>
+    <li>文件树中显示 Agent 正在操作的脉冲指示器</li>
+    <li>主区切换到 Agent Activity 视图（输入、API 调用、影响分析、patch 结果）</li>
+  </ul>
+</div>

@@ -1,0 +1,11 @@
+/* Desktop shell rail styles only.
+   Sidebar visuals now live in the shadcn sidebar components. */
+
+:root {
+  --gt-titlebar-safe-left: 92px;
+}
+
+.wb-sidebar {
+  background: var(--sidebar-bg);
+  border-right: 0;
+}

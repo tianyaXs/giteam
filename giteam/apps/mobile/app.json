@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "giteam",
+    "slug": "giteam-mobile",
+    "version": "0.1.33",
+    "icon": "../../apps/desktop/src-tauri/icons/icon.png",
+    "splash": {
+      "backgroundColor": "#f6f1e8"
+    },
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "用于从系统相册选择包含二维码的图片。"
+        }
+      ]
+    ],
+    "android": {
+      "package": "io.giteam.mobile",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "foregroundImage": "../../apps/desktop/src-tauri/icons/icon.png",
+        "backgroundColor": "#f6f1e8"
+      },
+      "splash": {
+        "backgroundColor": "#f6f1e8"
+      }
+    },
+    "ios": {
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "用于从系统相册选择包含二维码的图片。",
+        "NSLocalNetworkUsageDescription": "用于连接同一局域网内的 Giteam Desktop 控制服务。",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "8ffa54af-2a88-4355-be06-5dd32ee1959c"
+      }
+    },
+    "owner": "tianya_888"
+  }
+}

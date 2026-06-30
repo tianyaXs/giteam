@@ -1,0 +1,17 @@
+{
+  "storage_root": ".remote-repo-service",
+  "api_keys": [],
+  "command_timeout_seconds": 30,
+  "max_stdout_bytes": 64000,
+  "max_stderr_bytes": 64000,
+  "max_diff_bytes": 64000,
+  "max_file_slice_bytes": 24000,
+  "max_file_slice_lines": 120,
+  "gitnexus_analyze_command": [
+    "npx",
+    "gitnexus",
+    "analyze",
+    "--index-only"
+  ],
+  "repos": {}
+}

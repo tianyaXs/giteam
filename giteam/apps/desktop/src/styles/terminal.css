@@ -1,0 +1,24 @@
+@import "@xterm/xterm/css/xterm.css";
+
+.terminal-xterm-host .xterm {
+  height: 100%;
+}
+
+.terminal-xterm-host .xterm-viewport {
+  background: transparent !important;
+}
+
+.terminal-xterm-host .xterm-screen {
+  width: 100% !important;
+}
+
+@media (max-width: 1280px) {
+  .gt-main-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(320px, 40vh);
+  }
+
+  .gt-main-layout .wb-col-splitter {
+    display: none;
+  }
+}

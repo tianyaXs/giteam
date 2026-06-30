@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "command": {},
+  "plugin": [],
+  "disabled_providers": [],
+  "model": "vllm/qwen3-32b",
+  "username": "tianya",
+  "mode": {},
+  "agent": {},
+  "provider": {
+    "vllm": {
+      "name": "Qwen3-32b",
+      "npm": "@ai-sdk/openai-compatible",
+      "models": {
+        "qwen3-32b": {
+          "name": "qwen3-32b"
+        }
+      },
+      "options": {
+        "baseURL": "http://47.104.201.22:10510/v1"
+      }
+    }
+  },
+  "kimi-for-coding": {
+    "models": {
+      "kimi-k2-thinking": {
+        "name": "kimi-k2-thinking"
+      },
+      "k2p5": {
+        "name": "k2p5"
+      }
+    }
+  }
+}

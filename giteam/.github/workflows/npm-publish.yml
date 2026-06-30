@@ -1,0 +1,66 @@
+name: NPM Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'cli-v*.*.*'
+
+jobs:
+  publish-platform:
+    name: Publish ${{ matrix.platform.key }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - key: darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+          - key: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - key: linux-x64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+          - key: win32-x64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.rust_target }}
+      - name: Install musl tools
+        if: matrix.platform.key == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish platform package
+        working-directory: apps/cli
+        run: node ./scripts/publish-packages.js --platform ${{ matrix.platform.key }} --no-root --no-auto-bump
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-root:
+    name: Publish root package
+    needs: publish-platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Install desktop dependencies only
+        run: npm --prefix apps/desktop ci
+      - name: Publish root package
+        working-directory: apps/cli
+        run: node ./scripts/publish-packages.js --root-only --skip-build --no-auto-bump
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

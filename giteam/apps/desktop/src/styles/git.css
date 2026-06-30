@@ -1,0 +1,568 @@
+/* Workbench: commits list should fill sidebar height */
+.wb-sidebar .commit-list {
+  max-height: none;
+  height: 100%;
+  overflow: auto;
+  overflow-x: hidden;
+}
+
+.graph-row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: transparent;
+  display: grid;
+  /* Graph lane strings can get wide on complex histories; avoid clipping lanes. */
+  grid-template-columns: 140px 1fr auto;
+  gap: var(--gt-space-2);
+  align-items: center;
+  text-align: left;
+  padding: var(--gt-space-0-5) var(--gt-space-2);
+  height: 30px;
+  color: var(--text);
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+.graph-row:last-child {
+  border-bottom: 0;
+}
+
+.graph-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
+}
+
+.graph-row.selected {
+  background: color-mix(in srgb, var(--accent-soft) 65%, transparent);
+}
+
+.graph-row.connector {
+  cursor: default;
+}
+
+.graph-row.connector:hover {
+  background: transparent;
+}
+
+.graph-row.connector .graph-main,
+.graph-row.connector .graph-refs {
+  visibility: hidden;
+}
+
+.graph-ascii {
+  display: flex;
+  align-items: center;
+  min-height: 16px;
+}
+
+.graph-ascii-placeholder {
+  width: 140px;
+  height: 16px;
+}
+
+.graph-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.lane {
+  width: 8px;
+  height: 16px;
+  position: relative;
+  display: inline-block;
+}
+
+.lane-space::before {
+  content: "";
+}
+
+.lane-vert::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+}
+
+.lane-slash::before,
+.lane-backslash::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 2px;
+  height: 20px;
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+  transform-origin: center;
+}
+
+.lane-slash::before {
+  transform: translateX(-50%) rotate(34deg);
+}
+
+.lane-backslash::before {
+  transform: translateX(-50%) rotate(-34deg);
+}
+
+.lane-horiz::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  border-radius: var(--gt-radius-sm);
+}
+
+.lane-node::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-panel) 80%, transparent);
+}
+
+.graph-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--gt-space-0-5);
+}
+
+.graph-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--gt-text-base);
+  line-height: 1.15;
+}
+
+.graph-meta {
+  color: var(--muted);
+  font-size: var(--gt-text-xs);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-refs {
+  display: flex;
+  gap: var(--gt-space-1);
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  max-width: 190px;
+  overflow: hidden;
+}
+
+.graph-ref-btn {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  border-radius: var(--gt-radius-pill);
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  font-size: 10.5px;
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-ref-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+}
+
+.branch-node,
+.commit-item,
+.file-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  margin-bottom: var(--gt-space-2);
+  background: linear-gradient(180deg, var(--bg-soft), var(--bg-panel));
+  cursor: pointer;
+  color: var(--text);
+}
+
+.branch-node.selected,
+.commit-item.selected,
+.file-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.branch-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: var(--gt-space-2);
+  padding-left: var(--gt-space-2-5);
+}
+
+.branch-node .lane {
+  position: absolute;
+  left: 16px;
+  top: 24px;
+  bottom: -10px;
+  width: 2px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.branch-node:last-child .lane {
+  display: none;
+}
+
+.branch-node .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: var(--bg-panel);
+  position: relative;
+  z-index: 1;
+}
+
+.branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-badge {
+  font-size: var(--gt-text-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: var(--gt-space-0-5) var(--gt-space-1-5);
+  border-radius: var(--gt-radius-pill);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+.commit-item p,
+.finding-item p {
+  margin: var(--gt-space-1) 0;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-space-2);
+}
+
+.file-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.diff-view {
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  overflow: hidden;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.diff-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-header span {
+  padding: var(--gt-space-2) var(--gt-space-2);
+  font-size: var(--gt-text-sm);
+  color: var(--muted);
+}
+
+.diff-body {
+  max-height: none;
+  flex: 1;
+  overflow: auto;
+  font-family: "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: var(--gt-text-sm);
+}
+
+.diff-empty {
+  padding: var(--gt-space-3);
+  color: var(--muted);
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.cell {
+  padding: var(--gt-space-1) var(--gt-space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-row.add .new {
+  background: var(--add);
+}
+
+.diff-row.del .old {
+  background: var(--del);
+}
+
+.diff-row.meta .old,
+.diff-row.meta .new {
+  background: var(--bg-soft);
+  color: var(--muted);
+}
+
+.finding-item {
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  margin-bottom: var(--gt-space-2);
+  background: var(--bg-panel);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: var(--gt-text-sm);
+}
+
+.error {
+  color: var(--danger);
+}
+
+pre {
+  margin: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--gt-radius-lg);
+  padding: var(--gt-space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.wb-reading-scroll>pre {
+  max-height: none;
+  min-height: 100%;
+}
+
+.gt-monaco-focus-line {
+  background: color-mix(in srgb, var(--accent-soft) 52%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 66%, transparent);
+}
+
+.monaco-editor .view-line .gt-monaco-focus-inline,
+.monaco-diff-editor .view-line .gt-monaco-focus-inline {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  border-radius: 3px;
+}
+
+.gt-monaco-focus-line-gutter {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  margin-left: 2px;
+}
+
+.gt-monaco-focus-line-glyph {
+  background: color-mix(in srgb, var(--accent) 92%, white);
+  border-radius: 999px;
+  width: 6px !important;
+  margin-left: 4px;
+}
+
+.gt-monaco-diff-shell {
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--bg) 98%, var(--accent) 2%);
+}
+
+.gt-monaco-diff-shell .monaco-scrollable-element > .scrollbar.horizontal {
+  display: none !important;
+}
+
+.gt-react-diff-shell {
+  overflow-x: auto;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 0 10px;
+  background: inherit;
+}
+
+.gt-react-diff.diff {
+  --diff-background-color: transparent;
+  --diff-text-color: color-mix(in srgb, var(--text) 86%, var(--muted));
+  --diff-font-family: "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+  --diff-gutter-insert-background-color: color-mix(in srgb, var(--add) 68%, transparent);
+  --diff-gutter-delete-background-color: color-mix(in srgb, var(--del) 68%, transparent);
+  --diff-code-insert-background-color: color-mix(in srgb, var(--add) 74%, transparent);
+  --diff-code-delete-background-color: color-mix(in srgb, var(--del) 74%, transparent);
+  --diff-code-insert-edit-background-color: color-mix(in srgb, var(--success) 22%, var(--add));
+  --diff-code-delete-edit-background-color: color-mix(in srgb, var(--danger) 22%, var(--del));
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--diff-text-color);
+  font-size: 11.35px;
+  line-height: 1.38;
+}
+
+.gt-react-diff col.diff-gutter-col:first-child {
+  display: none;
+}
+
+.gt-react-diff .diff-gutter-col:first-child {
+  width: 0 !important;
+}
+
+.gt-react-diff .diff-line {
+  position: relative;
+  height: 19px;
+  font-family: var(--diff-font-family);
+  line-height: 19px;
+}
+
+.gt-react-diff .diff-line:hover .diff-gutter-normal,
+.gt-react-diff .diff-line:hover .diff-code-normal {
+  background-color: color-mix(in srgb, var(--accent-soft) 18%, transparent);
+}
+
+.gt-react-diff .diff-line > .diff-gutter:first-child {
+  display: none;
+}
+
+.gt-react-diff .diff-gutter {
+  width: 38px;
+  min-width: 38px;
+  padding: 0 6px 0 0;
+  border: 0;
+  color: color-mix(in srgb, var(--text) 42%, var(--muted));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.gt-react-diff .diff-gutter a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.gt-react-diff .diff-code {
+  min-width: max-content;
+  padding: 0 18px 0 6px;
+  border: 0;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  font-weight: 360;
+  line-height: 19px;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.gt-react-diff .diff-code-normal {
+  color: color-mix(in srgb, var(--text) 68%, var(--muted));
+  background: transparent;
+}
+
+.gt-react-diff .diff-code-insert,
+.gt-react-diff .diff-gutter-insert {
+  color: color-mix(in srgb, var(--success) 78%, var(--text));
+}
+
+.gt-react-diff .diff-code-delete,
+.gt-react-diff .diff-gutter-delete {
+  color: color-mix(in srgb, var(--danger) 80%, var(--text));
+}
+
+.gt-react-diff .diff-code-insert {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--success) 58%, transparent);
+}
+
+.gt-react-diff .diff-code-delete {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--danger) 58%, transparent);
+}
+
+.gt-react-diff .diff-code-edit {
+  display: inline;
+  padding: 0 1px;
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.gt-react-diff .diff-code-insert .diff-code-edit {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+.gt-react-diff .diff-code-delete .diff-code-edit {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.gt-react-diff .diff-decoration {
+  height: 34px;
+  line-height: 34px;
+}
+
+.gt-react-diff .diff-decoration-gutter {
+  width: 0;
+  padding: 0;
+}
+
+.gt-react-diff .diff-decoration-content {
+  padding: 4px 10px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  line-height: 1;
+}
+
+.gt-react-diff-fold {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 0 10px;
+  color: color-mix(in srgb, var(--text) 36%, var(--muted));
+  font-size: 10.5px;
+  font-weight: 430;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gt-react-diff-fold::before,
+.gt-react-diff-fold::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: color-mix(in srgb, var(--line) 54%, transparent);
+}
+
+.gt-react-diff-fold-copy {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}

@@ -1,0 +1,20 @@
+{
+  "storage_root": "/var/lib/giteam/remote-repo-service",
+  "api_keys": [],
+  "command_timeout_seconds": 30,
+  "max_stdout_bytes": 64000,
+  "max_stderr_bytes": 64000,
+  "max_diff_bytes": 64000,
+  "max_file_slice_bytes": 24000,
+  "max_file_slice_lines": 120,
+  "gitnexus_analyze_command": [
+    "gitnexus",
+    "analyze",
+    "--index-only"
+  ],
+  "cors_allowed_origins": [
+    "http://localhost:1420",
+    "http://127.0.0.1:1420"
+  ],
+  "repos": {}
+}
