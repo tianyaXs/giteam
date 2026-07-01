@@ -24,11 +24,70 @@ const DEFAULT_OPENCODE_SERVICE_PORT: u16 = 4098;
 struct ManagedOpencodeService {
     child: Option<std::process::Child>,
     base: String,
+    repo_path: String,
 }
 
 static OPENCODE_SERVICE_POOL: OnceLock<Mutex<Option<ManagedOpencodeService>>> = OnceLock::new();
 static OPENCODE_SKILL_INSTALLS: OnceLock<Mutex<HashMap<String, OpencodeSkillInstallStatus>>> =
     OnceLock::new();
+
+struct BuiltinOpencodeSkillFile {
+    path: &'static str,
+    contents: &'static str,
+}
+
+struct BuiltinOpencodeSkill {
+    id: &'static str,
+    name: &'static str,
+    files: &'static [BuiltinOpencodeSkillFile],
+}
+
+const REMOTE_REPO_SKILL_FILES: &[BuiltinOpencodeSkillFile] = &[
+    BuiltinOpencodeSkillFile {
+        path: "SKILL.md",
+        contents: include_str!("../resources/opencode-skills/opencode-remote-repo/SKILL.md"),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "giteam.json",
+        contents: include_str!("../resources/opencode-skills/opencode-remote-repo/giteam.json"),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "agents/openai.yaml",
+        contents: include_str!("../resources/opencode-skills/opencode-remote-repo/agents/openai.yaml"),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "references/api.md",
+        contents: include_str!("../resources/opencode-skills/opencode-remote-repo/references/api.md"),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "references/mcp-tools.md",
+        contents: include_str!(
+            "../resources/opencode-skills/opencode-remote-repo/references/mcp-tools.md"
+        ),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "scripts/remote_repo_client.py",
+        contents: include_str!(
+            "../resources/opencode-skills/opencode-remote-repo/scripts/remote_repo_client.py"
+        ),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "mcp/giteam_mcp_launcher.py",
+        contents: include_str!(
+            "../resources/opencode-skills/opencode-remote-repo/mcp/giteam_mcp_launcher.py"
+        ),
+    },
+    BuiltinOpencodeSkillFile {
+        path: "mcp/mcp_server.py",
+        contents: include_str!("../resources/opencode-skills/opencode-remote-repo/mcp/mcp_server.py"),
+    },
+];
+
+const BUILTIN_OPENCODE_SKILLS: &[BuiltinOpencodeSkill] = &[BuiltinOpencodeSkill {
+    id: "opencode-remote-repo",
+    name: "opencode-remote-repo",
+    files: REMOTE_REPO_SKILL_FILES,
+}];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +101,90 @@ pub struct OpencodeSkillInstallStatus {
 
 fn service_pool() -> &'static Mutex<Option<ManagedOpencodeService>> {
     OPENCODE_SERVICE_POOL.get_or_init(|| Mutex::new(None))
+}
+
+fn canonical_repo_path(repo_path: &str) -> String {
+    Path::new(repo_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| repo_path.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn pid_cwd(pid: u32) -> Option<String> {
+    let output = Command::new("lsof")
+        .arg("-a")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-d")
+        .arg("cwd")
+        .arg("-Fn")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find(|line| line.starts_with('n'))
+        .map(|line| line.trim_start_matches('n').to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn find_service_pid(port: u16) -> Option<u32> {
+    let output = Command::new("lsof")
+        .arg("-i")
+        .arg(format!("tcp:{port}"))
+        .arg("-sTCP:LISTEN")
+        .arg("-t")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse::<u32>().ok())
+}
+
+#[cfg(target_os = "linux")]
+fn pid_cwd(pid: u32) -> Option<String> {
+    let path = format!("/proc/{pid}/cwd");
+    std::fs::read_link(&path)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn find_service_pid(port: u16) -> Option<u32> {
+    let output = Command::new("ss")
+        .arg("-ltnp")
+        .arg(format!("sport = :{port}"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find(|line| line.contains(&format!(":{port}")))
+        .and_then(|line| {
+            line.split("pid=")
+                .nth(1)
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.parse::<u32>().ok())
+        })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn pid_cwd(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn find_service_pid(_port: u16) -> Option<u32> {
+    None
 }
 
 fn skill_install_pool() -> &'static Mutex<HashMap<String, OpencodeSkillInstallStatus>> {
@@ -1265,7 +1408,11 @@ fn write_config_file(path: &Path, json: &Value) -> Result<(), String> {
         .map_err(|e| format!("write {} failed: {e}", path.display()))
 }
 
-fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<Value, String> {
+fn upsert_mcp_to_config_file_with_changed(
+    path: &Path,
+    name: &str,
+    config: Value,
+) -> Result<(Value, bool), String> {
     let mut json = read_config_file(path)?
         .unwrap_or_else(|| serde_json::json!({ "$schema": "https://opencode.ai/config.json" }));
     if !json.is_object() {
@@ -1281,9 +1428,16 @@ fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<V
         .get_mut("mcp")
         .and_then(|v| v.as_object_mut())
         .ok_or_else(|| "mcp config is not an object".to_string())?;
+    if mcp.get(name) == Some(&config) {
+        return Ok((json, false));
+    }
     mcp.insert(name.to_string(), config);
     write_config_file(path, &json)?;
-    Ok(json)
+    Ok((json, true))
+}
+
+fn upsert_mcp_to_config_file(path: &Path, name: &str, config: Value) -> Result<Value, String> {
+    upsert_mcp_to_config_file_with_changed(path, name, config).map(|(json, _)| json)
 }
 
 fn set_mcp_enabled_in_config_file(path: &Path, name: &str, enabled: bool) -> Result<bool, String> {
@@ -1344,11 +1498,25 @@ fn service_is_ready(repo_path: &str, base: &str) -> bool {
 fn start_opencode_service(
     repo_path: &str,
     settings: &OpencodeServiceSettings,
-) -> Result<(Option<std::process::Child>, String), String> {
+) -> Result<(Option<std::process::Child>, String, String), String> {
+    let canonical_repo_path = canonical_repo_path(repo_path);
     let base = format!("http://127.0.0.1:{}", settings.port);
-    if service_is_ready(repo_path, &base) {
+    if service_is_ready(&canonical_repo_path, &base) {
         // A healthy service is already listening on the configured endpoint.
-        return Ok((None, base));
+        return Ok((None, base, canonical_repo_path));
+    }
+    // A process is listening on the port but is not ready for this repo_path (or is
+    // otherwise unhealthy). Kill it so we can start a fresh service from the correct
+    // working directory.
+    if let Some(pid) = find_service_pid(settings.port) {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if find_service_pid(settings.port).is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     let opencode_bin = resolve_opencode_executable()?;
     let mut serve = Command::new(&opencode_bin);
@@ -1359,7 +1527,7 @@ fn start_opencode_service(
         .arg("--port")
         .arg(settings.port.to_string())
         .arg("--print-logs")
-        .current_dir(repo_path)
+        .current_dir(&canonical_repo_path)
         .env("PATH", build_stream_path_env())
         .env("ACCESSIBLE", "1")
         .env("PAGER", "cat")
@@ -1374,7 +1542,7 @@ fn start_opencode_service(
     let wait_deadline = Instant::now() + Duration::from_secs(12);
     let mut ready = false;
     while Instant::now() < wait_deadline {
-        if service_is_ready(repo_path, &base) {
+        if service_is_ready(&canonical_repo_path, &base) {
             ready = true;
             break;
         }
@@ -1383,7 +1551,7 @@ fn start_opencode_service(
     if !ready {
         return Err("opencode service did not become ready".to_string());
     }
-    Ok((Some(child), base))
+    Ok((Some(child), base, canonical_repo_path))
 }
 
 fn release_managed_service() {
@@ -1403,7 +1571,9 @@ pub fn shutdown_managed_opencode_service() {
 
 pub fn warmup_managed_opencode_service() {
     // Desktop startup has no workspace selected yet. Only attach to an already-running
-    // service on the configured port; repo-scoped startup happens during workspace bootstrap.
+    // service on the configured port if we can verify its working directory; otherwise
+    // leave it for ensure_managed_service_local to replace so the service always starts
+    // from the correct repo path.
     let settings = read_opencode_service_settings();
     let base = format!("http://127.0.0.1:{}", settings.port);
     if !service_is_ready(".", base.as_str()) {
@@ -1421,7 +1591,26 @@ pub fn warmup_managed_opencode_service() {
                     let _ = child.wait_timeout(Duration::from_secs(1));
                 }
             }
-            *guard = Some(ManagedOpencodeService { child: None, base });
+            // Discover the existing process's cwd so we only reuse it when the
+            // workspace later requests the same path.
+            let repo_path = find_service_pid(settings.port)
+                .and_then(pid_cwd)
+                .map(|p| canonical_repo_path(&p))
+                .unwrap_or_default();
+            if repo_path.is_empty() {
+                // We cannot verify the cwd of the externally-started process. Kill it so
+                // the next workspace request starts a fresh service from the correct
+                // directory.
+                if let Some(pid) = find_service_pid(settings.port) {
+                    let _ = Command::new("kill").arg(pid.to_string()).status();
+                }
+            } else {
+                *guard = Some(ManagedOpencodeService {
+                    child: None,
+                    base,
+                    repo_path,
+                });
+            }
         }
     }
 }
@@ -1429,9 +1618,10 @@ pub fn warmup_managed_opencode_service() {
 fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {
     let settings = read_opencode_service_settings();
     let expected_base = format!("http://127.0.0.1:{}", settings.port);
+    let canonical_repo_path = canonical_repo_path(repo_path);
     if let Ok(mut guard) = service_pool().lock() {
         if let Some(svc) = guard.as_mut() {
-            if svc.base == expected_base {
+            if svc.base == expected_base && svc.repo_path == canonical_repo_path {
                 let child_ok = if let Some(child) = svc.child.as_mut() {
                     matches!(child.try_wait(), Ok(None))
                 } else {
@@ -1450,13 +1640,14 @@ fn ensure_managed_service_local(repo_path: &str) -> Result<String, String> {
         }
     }
 
-    let (child, base) = start_opencode_service(repo_path, &settings)?;
+    let (child, base, started_repo_path) = start_opencode_service(repo_path, &settings)?;
     let mut pool = service_pool()
         .lock()
         .map_err(|_| "opencode service lock poisoned".to_string())?;
     *pool = Some(ManagedOpencodeService {
         child,
         base: base.clone(),
+        repo_path: started_repo_path,
     });
     Ok(base)
 }
@@ -3149,19 +3340,30 @@ fn scan_installed_skill_dir(
     }
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
-pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> {
-    command_runner::validate_repo_path(repo_path)?;
+fn opencode_skill_path_priority(path: &str) -> u8 {
+    let normalized = path.replace('\\', "/");
+    if normalized.contains("/.opencode/skills/")
+        || normalized.contains("/.config/opencode/skills/")
+    {
+        return 0;
+    }
+    if normalized.contains("/.agents/skills/") {
+        return 1;
+    }
+    2
+}
+
+fn collect_installed_opencode_skills(repo_path: &str) -> Vec<OpencodeInstalledSkill> {
     let mut rows: Vec<OpencodeInstalledSkill> = Vec::new();
     let source_group_map = load_opencode_skill_source_groups(repo_path);
     scan_installed_skill_dir(
-        Path::new(repo_path).join(".agents/skills"),
+        Path::new(repo_path).join(".opencode/skills"),
         "project",
         &source_group_map,
         &mut rows,
     );
     scan_installed_skill_dir(
-        Path::new(repo_path).join(".opencode/skills"),
+        Path::new(repo_path).join(".agents/skills"),
         "project",
         &source_group_map,
         &mut rows,
@@ -3169,7 +3371,7 @@ pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> 
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
         scan_installed_skill_dir(
-            home.join(".agents/skills"),
+            home.join(".config/opencode/skills"),
             "global",
             &source_group_map,
             &mut rows,
@@ -3180,10 +3382,239 @@ pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> 
             &source_group_map,
             &mut rows,
         );
+        scan_installed_skill_dir(
+            home.join(".agents/skills"),
+            "global",
+            &source_group_map,
+            &mut rows,
+        );
     }
-    rows.sort_by(|a, b| a.scope.cmp(&b.scope).then_with(|| a.name.cmp(&b.name)));
-    rows.dedup_by(|a, b| a.scope == b.scope && a.path == b.path && a.name == b.name);
+    rows.sort_by(|a, b| {
+        a.scope
+            .cmp(&b.scope)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| {
+                opencode_skill_path_priority(&a.path).cmp(&opencode_skill_path_priority(&b.path))
+            })
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    rows.dedup_by(|a, b| a.scope == b.scope && a.name == b.name);
+    rows
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn list_installed_opencode_skills(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let rows = collect_installed_opencode_skills(repo_path);
     serde_json::to_value(rows).map_err(|e| format!("serialize installed skills failed: {e}"))
+}
+
+fn find_builtin_opencode_skill(id: &str) -> Option<&'static BuiltinOpencodeSkill> {
+    let target = id.trim();
+    BUILTIN_OPENCODE_SKILLS
+        .iter()
+        .find(|skill| skill.id == target || skill.name == target)
+}
+
+fn builtin_opencode_skill_target_dir(
+    repo_path: &str,
+    skill: &BuiltinOpencodeSkill,
+    global: bool,
+) -> Result<PathBuf, String> {
+    if global {
+        let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+        return Ok(global_opencode_skill_target_dir(Path::new(&home), skill));
+    }
+    Ok(project_opencode_skill_target_dir(Path::new(repo_path), skill))
+}
+
+fn project_opencode_skill_target_dir(repo_path: &Path, skill: &BuiltinOpencodeSkill) -> PathBuf {
+    repo_path
+        .join(".opencode")
+        .join("skills")
+        .join(skill.name)
+}
+
+fn global_opencode_skill_target_dir(home: &Path, skill: &BuiltinOpencodeSkill) -> PathBuf {
+    home.join(".config")
+        .join("opencode")
+        .join("skills")
+        .join(skill.name)
+}
+
+fn write_builtin_opencode_skill(
+    repo_path: &str,
+    skill: &BuiltinOpencodeSkill,
+    global: bool,
+) -> Result<PathBuf, String> {
+    let target_dir = builtin_opencode_skill_target_dir(repo_path, skill, global)?;
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("create builtin skill dir failed: {e}"))?;
+    for file in skill.files {
+        if file.path.split('/').any(|segment| segment == ".." || segment.is_empty()) {
+            return Err(format!("invalid builtin skill file path: {}", file.path));
+        }
+        let path = target_dir.join(file.path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create builtin skill file dir failed: {e}"))?;
+        }
+        fs::write(&path, file.contents)
+            .map_err(|e| format!("write builtin skill file {} failed: {e}", path.display()))?;
+    }
+    Ok(target_dir)
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn install_builtin_opencode_skill(
+    repo_path: &str,
+    skill_id: &str,
+    global: Option<bool>,
+) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let skill = find_builtin_opencode_skill(skill_id)
+        .ok_or_else(|| format!("unknown builtin opencode skill: {}", skill_id.trim()))?;
+    let is_global = global.unwrap_or(false);
+    let target_dir = write_builtin_opencode_skill(repo_path, skill, is_global)?;
+    let sync_result = sync_opencode_skill_mcp_manifests(repo_path)?;
+    serde_json::to_value(serde_json::json!({
+        "installed": true,
+        "builtin": true,
+        "skillId": skill.id,
+        "name": skill.name,
+        "scope": if is_global { "global" } else { "project" },
+        "path": target_dir.to_string_lossy(),
+        "mcp": sync_result,
+    }))
+    .map_err(|e| format!("serialize builtin skill install result failed: {e}"))
+}
+
+fn resolve_skill_manifest_path(skill_path: &Path, raw: &str) -> String {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        return path.to_string_lossy().to_string();
+    }
+    skill_path.join(path).to_string_lossy().to_string()
+}
+
+fn normalize_skill_mcp_config(skill_path: &Path, raw: &Value) -> Result<(String, Value), String> {
+    let mcp = raw
+        .get("giteam")
+        .and_then(|v| v.get("mcp"))
+        .or_else(|| raw.get("mcp"))
+        .ok_or_else(|| "missing giteam.mcp".to_string())?;
+    let name = mcp
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Err("mcp name must not be empty".to_string());
+    }
+    let mut config = mcp
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "giteam.mcp must be an object".to_string())?;
+    config.remove("name");
+    if !config.contains_key("enabled") {
+        config.insert("enabled".to_string(), Value::Bool(true));
+    }
+    if !config.contains_key("type") {
+        let inferred = if config.get("url").and_then(|v| v.as_str()).is_some() {
+            "remote"
+        } else {
+            "local"
+        };
+        config.insert("type".to_string(), Value::String(inferred.to_string()));
+    }
+    if let Some(command) = config.get_mut("command").and_then(|v| v.as_array_mut()) {
+        if command.len() > 1 {
+            if let Some(script) = command.get(1).and_then(|v| v.as_str()).map(str::to_string) {
+                command[1] = Value::String(resolve_skill_manifest_path(skill_path, &script));
+            }
+        }
+    }
+    Ok((name, Value::Object(config)))
+}
+
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn sync_opencode_skill_mcp_manifests(repo_path: &str) -> Result<Value, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let project_file = opencode_project_config_files(repo_path)
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from(repo_path).join("opencode.jsonc"));
+    let mut configured: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+
+    for skill in collect_installed_opencode_skills(repo_path) {
+        let skill_path = PathBuf::from(&skill.path);
+        let manifest_path = skill_path.join("giteam.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let raw = match fs::read_to_string(&manifest_path) {
+            Ok(text) => text,
+            Err(e) => {
+                skipped.push(serde_json::json!({
+                    "skill": skill.name,
+                    "path": skill.path,
+                    "reason": format!("read manifest failed: {e}"),
+                }));
+                continue;
+            }
+        };
+        let parsed = match serde_json::from_str::<Value>(&raw) {
+            Ok(value) => value,
+            Err(e) => {
+                skipped.push(serde_json::json!({
+                    "skill": skill.name,
+                    "path": skill.path,
+                    "reason": format!("parse manifest failed: {e}"),
+                }));
+                continue;
+            }
+        };
+        let (name, config) = match normalize_skill_mcp_config(&skill_path, &parsed) {
+            Ok(value) => value,
+            Err(e) => {
+                skipped.push(serde_json::json!({
+                    "skill": skill.name,
+                    "path": skill.path,
+                    "reason": e,
+                }));
+                continue;
+            }
+        };
+        let changed = match upsert_mcp_to_config_file_with_changed(&project_file, &name, config) {
+            Ok((_, changed)) => changed,
+            Err(e) => {
+                skipped.push(serde_json::json!({
+                    "skill": skill.name,
+                    "path": skill.path,
+                    "mcp": name,
+                    "reason": e,
+                }));
+                continue;
+            }
+        };
+        configured.push(serde_json::json!({
+            "skill": skill.name,
+            "path": skill.path,
+            "scope": skill.scope,
+            "mcp": name,
+            "changed": changed,
+            "configPath": project_file.to_string_lossy(),
+        }));
+    }
+
+    serde_json::to_value(serde_json::json!({
+        "configured": configured,
+        "skipped": skipped,
+        "configPath": project_file.to_string_lossy(),
+    }))
+    .map_err(|e| format!("serialize skill mcp sync result failed: {e}"))
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -4085,6 +4516,7 @@ pub fn remove_installed_opencode_skills_by_path(
     ];
     if let Ok(home) = std::env::var("HOME") {
         let home_root = PathBuf::from(home);
+        allowed_roots.push(home_root.join(".config").join("opencode").join("skills"));
         allowed_roots.push(home_root.join(".agents").join("skills"));
         allowed_roots.push(home_root.join(".opencode").join("skills"));
     }
@@ -4949,4 +5381,131 @@ pub fn run_opencode_prompt_stream(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_repo(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("giteam-opencode-test-{label}-{suffix}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn install_builtin_skill_writes_skill_and_manifest() {
+        let repo = temp_repo("builtin-skill");
+        let skill = find_builtin_opencode_skill("opencode-remote-repo").unwrap();
+
+        let target = write_builtin_opencode_skill(repo.to_str().unwrap(), skill, false).unwrap();
+
+        assert_eq!(target, repo.join(".opencode/skills/opencode-remote-repo"));
+        assert!(target.join("SKILL.md").is_file());
+        assert!(target.join("giteam.json").is_file());
+        assert!(target.join("mcp/giteam_mcp_launcher.py").is_file());
+        assert!(target.join("mcp/mcp_server.py").is_file());
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn global_builtin_skill_targets_opencode_config_skills_dir() {
+        let home = temp_repo("builtin-global-home");
+        let skill = find_builtin_opencode_skill("opencode-remote-repo").unwrap();
+
+        let target = global_opencode_skill_target_dir(&home, skill);
+
+        assert_eq!(
+            target,
+            home.join(".config/opencode/skills/opencode-remote-repo")
+        );
+
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn collect_installed_skills_prefers_opencode_native_path() {
+        let repo = temp_repo("skill-priority");
+        for dir in [".agents/skills/dup", ".opencode/skills/dup"] {
+            let skill_dir = repo.join(dir);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: dup\ndescription: test\n---\n",
+            )
+            .unwrap();
+        }
+
+        let rows = collect_installed_opencode_skills(repo.to_str().unwrap());
+
+        let dup_rows: Vec<_> = rows.iter().filter(|row| row.name == "dup").collect();
+        assert_eq!(dup_rows.len(), 1);
+        assert_eq!(
+            dup_rows[0].path,
+            repo.join(".opencode/skills/dup").to_string_lossy()
+        );
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn skill_mcp_manifest_command_is_resolved_relative_to_skill_dir() {
+        let repo = temp_repo("manifest");
+        let skill_path = repo.join(".agents/skills/opencode-remote-repo");
+        let manifest = serde_json::json!({
+            "giteam": {
+                "mcp": {
+                    "name": "remote_repo",
+                    "type": "local",
+                    "command": ["python3", "mcp/giteam_mcp_launcher.py"],
+                    "enabled": true
+                }
+            }
+        });
+
+        let (name, config) = normalize_skill_mcp_config(&skill_path, &manifest).unwrap();
+
+        assert_eq!(name, "remote_repo");
+        assert_eq!(config["type"], "local");
+        assert_eq!(config["command"][0], "python3");
+        assert_eq!(
+            config["command"][1],
+            Value::String(
+                skill_path
+                    .join("mcp/giteam_mcp_launcher.py")
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn upsert_mcp_reports_unchanged_when_config_already_matches() {
+        let repo = temp_repo("mcp-upsert");
+        let config_path = repo.join("opencode.jsonc");
+        let config = serde_json::json!({
+            "type": "local",
+            "command": ["python3", "/tmp/launcher.py"],
+            "enabled": true
+        });
+
+        let (_, first_changed) =
+            upsert_mcp_to_config_file_with_changed(&config_path, "remote_repo", config.clone())
+                .unwrap();
+        let (_, second_changed) =
+            upsert_mcp_to_config_file_with_changed(&config_path, "remote_repo", config).unwrap();
+
+        assert!(first_changed);
+        assert!(!second_changed);
+
+        let _ = fs::remove_dir_all(repo);
+    }
 }

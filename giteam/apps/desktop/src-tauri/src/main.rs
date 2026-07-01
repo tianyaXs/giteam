@@ -176,6 +176,8 @@ fn main() {
             commands::opencode::list_opencode_agents,
             commands::opencode::list_opencode_skills,
             commands::opencode::list_installed_opencode_skills,
+            commands::opencode::install_builtin_opencode_skill,
+            commands::opencode::sync_opencode_skill_mcp_manifests,
             commands::opencode::search_opencode_skill_registry,
             commands::opencode::fetch_opencode_skill_catalog,
             commands::opencode::fetch_opencode_skill_search_api,

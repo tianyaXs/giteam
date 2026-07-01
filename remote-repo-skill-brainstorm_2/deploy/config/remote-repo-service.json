@@ -16,5 +16,22 @@
     "http://localhost:1420",
     "http://127.0.0.1:1420"
   ],
-  "repos": {}
+  "repos": {
+    "debug": {
+      "repo_id": "debug",
+      "name": "debug",
+      "remote_url": "https://github.com/fwrxl/Debug.git",
+      "default_ref": "main",
+      "auth_method": null,
+      "credential_id": null
+    },
+    "Learn-agent": {
+      "repo_id": "Learn-agent",
+      "name": "Learn-agent",
+      "remote_url": "https://github.com/fwrxl/LLM-Agent-Interview-Guide.git",
+      "default_ref": "main",
+      "auth_method": null,
+      "credential_id": null
+    }
+  }
 }

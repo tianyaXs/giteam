@@ -3173,6 +3173,16 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::list_installed_opencode_skills(repo_path)
         }
+        "install_builtin_opencode_skill" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            let skill_id = get_str(&args, "skillId")?;
+            let global = args.get("global").and_then(|v| v.as_bool());
+            super::opencode::install_builtin_opencode_skill(repo_path, skill_id, global)
+        }
+        "sync_opencode_skill_mcp_manifests" => {
+            let repo_path = get_str(&args, "repoPath")?;
+            super::opencode::sync_opencode_skill_mcp_manifests(repo_path)
+        }
         "fetch_opencode_skill_detail_api" => {
             let repo_path = get_str(&args, "repoPath")?;
             let id = get_str(&args, "id")?;

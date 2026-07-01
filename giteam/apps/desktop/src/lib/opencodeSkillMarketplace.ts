@@ -24,6 +24,7 @@ export type RecommendedSkill = {
   installs: string;
   tone: string;
   description: string;
+  installSpec?: string;
 };
 
 export type SkillsMarketplaceCategory = {
@@ -34,6 +35,15 @@ export type SkillsMarketplaceCategory = {
 };
 
 export const OPENCODE_RECOMMENDED_SKILLS: RecommendedSkill[] = [
+  {
+    spec: "giteam/opencode-remote-repo@opencode-remote-repo",
+    installSpec: "giteam-builtin:opencode-remote-repo",
+    title: "Remote Repo",
+    source: "giteam/opencode-remote-repo",
+    installs: "Built-in",
+    tone: "Giteam",
+    description: "通过 Giteam 远程仓库服务和 remote_repo MCP 使用服务端工作区，不在本地直接读写业务仓库。"
+  },
   {
     spec: "anthropics/skills@frontend-design",
     title: "Frontend Design",
@@ -222,8 +232,8 @@ function skillsmpResultPathScore(item: Pick<OpencodeSkillSearchResult, "githubUr
   const url = String(item.githubUrl || "").toLowerCase();
   let score = 0;
   if (url.includes("/tree/main/skills/") || url.includes("/tree/master/skills/")) score += 10;
-  if (url.includes("/tree/main/.agents/skills/") || url.includes("/tree/master/.agents/skills/")) score += 8;
-  if (url.includes("/tree/main/.opencode/skills/") || url.includes("/tree/master/.opencode/skills/")) score += 7;
+  if (url.includes("/tree/main/.opencode/skills/") || url.includes("/tree/master/.opencode/skills/")) score += 8;
+  if (url.includes("/tree/main/.agents/skills/") || url.includes("/tree/master/.agents/skills/")) score += 7;
   if (url.includes("/tree/main/.kiro/skills/") || url.includes("/tree/master/.kiro/skills/")) score -= 4;
   if (url.includes("/docs/")) score -= 8;
   if (url.includes("/zh-cn/") || url.includes("/zh-tw/")) score -= 2;
@@ -305,7 +315,9 @@ export function getSkillAvatarLabel(skillName: string): string {
 
 export function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): boolean {
   const normalizedPath = String(item.path || "").replace(/\\/g, "/");
-  const isInstalledDir = normalizedPath.includes("/.agents/skills/") || normalizedPath.includes("/.opencode/skills/");
+  const isInstalledDir = normalizedPath.includes("/.opencode/skills/")
+    || normalizedPath.includes("/.config/opencode/skills/")
+    || normalizedPath.includes("/.agents/skills/");
   const agents = Array.isArray(item.agents) ? item.agents : [];
   const targetsOpencode = agents.length === 0 || agents.some((agent) => agent.toLowerCase() === "opencode");
   return isInstalledDir && targetsOpencode;
