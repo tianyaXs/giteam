@@ -4,7 +4,7 @@
     "remote_repo": {
       "command": [
         "python3",
-        "/Users/rxl/Desktop/repo/giteam_副本/.opencode/skills/opencode-remote-repo/mcp/giteam_mcp_launcher.py"
+        "/Users/rxl/.config/opencode/skills/opencode-remote-repo/mcp/giteam_mcp_launcher.py"
       ],
       "enabled": true,
       "timeout": 30000,
