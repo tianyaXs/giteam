@@ -66,6 +66,13 @@ function waitForPaint(): Promise<void> {
   });
 }
 
+function localBuiltinSkillSearchTerms(row: OpencodeSkillSearchResult): string[] {
+  if (String(row.installSpec || "") === "giteam-builtin:opencode-remote-repo") {
+    return ["remote repo", "remote repository", "远程仓库", "远程代码仓库", "远程 repo", "mcp"];
+  }
+  return [];
+}
+
 export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceInput) {
   const {
     repoPath,
@@ -124,16 +131,46 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
       id: skill.spec.includes("@") ? `${skill.source}/${skill.spec.split("@").pop()}` : skill.spec,
       source: skill.source,
       sourceType: "recommended",
-      change: index === 0 ? 24 : undefined
+      installSpec: skill.installSpec || null,
+      change: skill.installSpec ? undefined : index === 0 ? 24 : undefined
     }));
   }, [skillsVisible]);
 
+  const opencodeBuiltinMarketplaceRows = useMemo(
+    () => opencodeFallbackMarketplaceRows.filter((row) => String(row.installSpec || "").startsWith("giteam-builtin:")),
+    [opencodeFallbackMarketplaceRows]
+  );
+
+  const opencodeBuiltinSearchRows = useMemo(() => {
+    const query = opencodeSkillSearchQuery.trim().toLowerCase();
+    if (query.length < 2) return opencodeBuiltinMarketplaceRows;
+    return opencodeBuiltinMarketplaceRows.filter((row) => [
+      row.skill,
+      row.package,
+      row.spec,
+      row.installSpec,
+      ...localBuiltinSkillSearchTerms(row)
+    ].some((value) => String(value || "").toLowerCase().includes(query)));
+  }, [opencodeBuiltinMarketplaceRows, opencodeSkillSearchQuery]);
+
   const opencodeMarketplaceRows = useMemo(() => {
     if (!skillsVisible) return [];
-    if (opencodeSkillSearchResults.length > 0) return opencodeSkillSearchResults;
-    if (opencodeSkillCatalogRows.length > 0) return opencodeSkillCatalogRows;
+    if (opencodeSkillSearchQuery.trim().length >= 2 || opencodeSkillSearchResults.length > 0) {
+      return dedupeMarketplaceResults([...opencodeBuiltinSearchRows, ...opencodeSkillSearchResults]);
+    }
+    if (opencodeSkillCatalogRows.length > 0) {
+      return dedupeMarketplaceResults([...opencodeBuiltinMarketplaceRows, ...opencodeSkillCatalogRows]);
+    }
     return opencodeFallbackMarketplaceRows;
-  }, [skillsVisible, opencodeFallbackMarketplaceRows, opencodeSkillCatalogRows, opencodeSkillSearchResults]);
+  }, [
+    skillsVisible,
+    opencodeBuiltinMarketplaceRows,
+    opencodeBuiltinSearchRows,
+    opencodeFallbackMarketplaceRows,
+    opencodeSkillCatalogRows,
+    opencodeSkillSearchQuery,
+    opencodeSkillSearchResults
+  ]);
 
   const visibleOpencodeMarketplaceRows = useMemo(
     () => opencodeMarketplaceRows.slice(0, opencodeSkillDisplayLimit),

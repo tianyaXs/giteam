@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import {
+  CloudIcon,
   GitBranchIcon,
   ListChecksIcon,
   PlugIcon,
@@ -13,18 +14,19 @@ import { Button } from "@/components/ui/button";
 import layoutSidebarIconUrl from "./layout_sidebar_icon_159994.png";
 import layoutSidebarReverseIconUrl from "./layout_sidebar_reverse_icon_184859.png";
 
-export type RightPaneTab = "worktree" | "changes" | "terminal" | "skills" | "mcp";
+export type RightPaneTab = "worktree" | "changes" | "terminal" | "skills" | "mcp" | "remoteRepos";
 
 export const PINNED_RIGHT_PANE_TAB = "changes" satisfies RightPaneTab;
 
 export type OptionalRightPaneTab = Exclude<RightPaneTab, typeof PINNED_RIGHT_PANE_TAB>;
 
-export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "skills", "mcp"];
+export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "mcp"];
 
 export const RIGHT_PANE_TAB_ICONS: Record<RightPaneTab, LucideIcon> = {
   changes: ListChecksIcon,
   worktree: GitBranchIcon,
   terminal: SquareTerminalIcon,
+  remoteRepos: CloudIcon,
   skills: SparklesIcon,
   mcp: PlugIcon,
 };

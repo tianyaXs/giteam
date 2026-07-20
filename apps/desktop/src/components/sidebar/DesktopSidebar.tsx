@@ -1,5 +1,6 @@
 import {
   Archive,
+  Cloud,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -97,11 +98,13 @@ type DesktopSidebarProps = {
   rightModules: Record<RightPaneTab, boolean>;
   onOpenRightPane: (tab: RightPaneTab) => void;
   onOpenSettings: () => void;
+  remoteRepoActive: boolean;
+  onOpenRemoteRepos: () => void;
 };
 
 const SECTION_LABEL_CLASS = "h-6 min-w-0 flex-1 px-1.5 text-sm font-medium text-muted-foreground";
 
-type LeftNavPaneTab = Exclude<RightPaneTab, "changes">;
+type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos">;
 
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;
@@ -222,6 +225,8 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     rightModules,
     onOpenRightPane,
     onOpenSettings,
+    remoteRepoActive,
+    onOpenRemoteRepos,
   } = props;
 
   const { pinnedRepos, otherRepos } = useMemo(() => {
@@ -250,6 +255,12 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             label={text.newSession}
             onClick={() => void (noRepos ? onImportRepository() : onCreateSession())}
             disabled={noRepos ? busy : busy || !opencodeInstalled}
+          />
+          <NavItem
+            icon={Cloud}
+            label="远程仓库"
+            isActive={remoteRepoActive}
+            onClick={onOpenRemoteRepos}
           />
           {LEFT_NAV_PANES.map(({ tab, icon, labelKey }) =>
             rightModules[tab] ? (
@@ -343,6 +354,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             }
           />
         ) : null}
+
       </SmoothSidebarContent>
 
       <SidebarFooter className="shrink-0 p-2">

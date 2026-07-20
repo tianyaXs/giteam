@@ -199,6 +199,8 @@ export function OpencodeMarketplaceCards(props: MarketplaceCardsProps) {
   return rows.map((result, index) => {
     const resultInstallSpec = result.installSpec || result.spec;
     const isInstallingThisSkill = installingSpec === resultInstallSpec || installingSpec === result.spec;
+    const installsText = String(result.installs || "");
+    const isBuiltIn = resultInstallSpec.startsWith("giteam-builtin:");
 
     return (
       <div
@@ -222,7 +224,10 @@ export function OpencodeMarketplaceCards(props: MarketplaceCardsProps) {
             </div>
           </div>
           <div className="hidden min-w-28 justify-items-end gap-1 md:grid">
-            <b className="inline-flex items-center gap-1 text-[14px] font-semibold"><StarIcon width={14} height={14} /> {result.installs}</b>
+            <b className="inline-flex items-center gap-1 text-[14px] font-semibold">
+              {isBuiltIn ? null : <StarIcon width={14} height={14} />}
+              {installsText}
+            </b>
             {typeof result.change === "number" ? <small className="text-[14px] text-muted-foreground">{result.change >= 0 ? "+" : ""}{result.change} today</small> : null}
           </div>
         </Button>
@@ -535,7 +540,11 @@ export function OpencodeSkillsMarketPanel(props: SkillsMarketPanelProps) {
               </div>
               <Separator />
               <div className="grid gap-1 text-[14px] text-muted-foreground">
-                <span className="flex items-center gap-1"><StarIcon width={14} height={14} /><strong className="text-foreground">{selectedMarketplaceSkill.installs}</strong> Stars</span>
+                {String(selectedMarketplaceSkill.installSpec || "").startsWith("giteam-builtin:") ? (
+                  <span className="flex items-center gap-1"><strong className="text-foreground">Built-in</strong></span>
+                ) : (
+                  <span className="flex items-center gap-1"><StarIcon width={14} height={14} /><strong className="text-foreground">{selectedMarketplaceSkill.installs}</strong> Stars</span>
+                )}
               </div>
             </div>
           ) : (

@@ -1,0 +1,13 @@
+.git
+.gitnexus
+.pytest_cache
+.remote-repo-service
+__pycache__
+*.pyc
+*.pyo
+*.log
+*.db
+service.json
+deploy/data
+tests
+docs/superpowers

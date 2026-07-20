@@ -1,4 +1,5 @@
 mod commands;
+mod remote_repo;
 
 #[cfg(target_os = "macos")]
 mod macos_context_menu {
@@ -175,6 +176,8 @@ fn main() {
             commands::opencode::list_opencode_agents,
             commands::opencode::list_opencode_skills,
             commands::opencode::list_installed_opencode_skills,
+            commands::opencode::install_builtin_opencode_skill,
+            commands::opencode::sync_opencode_skill_mcp_manifests,
             commands::opencode::search_opencode_skill_registry,
             commands::opencode::fetch_opencode_skill_catalog,
             commands::opencode::fetch_opencode_skill_search_api,
@@ -217,6 +220,7 @@ fn main() {
             commands::db::db_add_repository,
             commands::db::db_list_repositories,
             commands::db::db_remove_repository,
+            remote_repo::commands::remote_repo,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
             commands::ui::open_external_url,

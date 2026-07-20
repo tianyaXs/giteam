@@ -13,6 +13,7 @@ import { quoteShellArg, skillSourceGroupFromSpec } from "./opencodeSkillMarketpl
 import { invoke } from "./platform";
 
 const OPENCODE_SKILL_SOURCE_GROUPS_KEY = "giteam.opencode.skill-source-groups.v1";
+const GITEAM_BUILTIN_SKILL_PREFIX = "giteam-builtin:";
 
 function waitForPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -187,6 +188,8 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
       if (sourceGroupEntries.length > 0) {
         void invoke("save_opencode_skill_source_groups", { repoPath: requestRepoPath, entries: sourceGroupEntries }).catch(() => null);
       }
+      void invoke("sync_opencode_skill_mcp_manifests", { repoPath: requestRepoPath })
+        .catch((error) => appendDebugLogRef.current(`skill.mcp.sync.error ${String(error)}`));
       const rows = buildInstalledSkillInfoRows(installedRows, sourceGroupMap);
       skillsByRepoRef.current[requestRepoPath] = rows;
       startTransition(() => {
@@ -223,6 +226,50 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
       .filter((skill) => (skill.scope || "project") === scopeArg)
       .map((skill) => String(skill.path || ""))
       .filter(Boolean);
+    if (primarySpec.startsWith(GITEAM_BUILTIN_SKILL_PREFIX)) {
+      const skillId = primarySpec.slice(GITEAM_BUILTIN_SKILL_PREFIX.length).trim();
+      if (!skillId) {
+        setErrorRef.current("内置 Skill 缺少标识。");
+        return;
+      }
+      setOpencodeSkillBusy(true);
+      setOpencodeSkillInstallingSpec(primarySpec);
+      setOpencodeSkillInstallNotice("");
+      setOpencodeSkillInstallLog(`Installing built-in skill: ${skillId}`);
+      setOpencodeSkillsError("");
+      setOpencodeSkillInstallSpec("");
+      try {
+        const result: any = await invoke("install_builtin_opencode_skill", {
+          repoPath: requestRepoPath,
+          skillId,
+          global: scopeArg === "global"
+        });
+        const installedPath = String(result?.path || "");
+        if (installedPath) {
+          skillSourceGroupsRef.current = {
+            ...skillSourceGroupsRef.current,
+            [installedPath]: groupName || skillId
+          };
+          saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, skillSourceGroupsRef.current);
+          void invoke("save_opencode_skill_source_groups", {
+            repoPath: requestRepoPath,
+            entries: [{ path: installedPath, scope: scopeArg, sourceGroup: groupName || skillId }]
+          }).catch(() => null);
+        }
+        await refreshOpencodeSkills();
+        setOpencodeSkillInstallLog(`Installed built-in skill: ${skillId}`);
+        setMessageRef.current(`Skill installed: ${skillId}`);
+      } catch (error) {
+        const message = String(error);
+        setOpencodeSkillsError(message);
+        setErrorRef.current(message);
+        setOpencodeSkillInstallLog(message);
+      } finally {
+        setOpencodeSkillBusy(false);
+        setOpencodeSkillInstallingSpec("");
+      }
+      return;
+    }
     pendingSkillInstallGroupsRef.current[requestRepoPath] = [
       ...(pendingSkillInstallGroupsRef.current[requestRepoPath] || []),
       { groupName: groupName || primarySpec, scope: scopeArg, beforePaths }

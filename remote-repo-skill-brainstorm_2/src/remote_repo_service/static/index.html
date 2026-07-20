@@ -1,0 +1,1033 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Workspace Console</title>
+  <style>
+    :root {
+      --canvas: #edf3f1;
+      --surface: #ffffff;
+      --surface-muted: #e5eeea;
+      --ink: #17302d;
+      --muted: #64726e;
+      --line: #c8d6d1;
+      --line-strong: #91aaa1;
+      --teal: #087c72;
+      --teal-deep: #075c55;
+      --coral: #cf5d42;
+      --gold: #b98718;
+      --danger: #b23f36;
+      --danger-soft: #fde9e5;
+      --success-soft: #dff5ec;
+      --mono: "SFMono-Regular", "Cascadia Mono", "Consolas", monospace;
+      --sans: "Avenir Next", "SF Pro Display", "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: var(--sans);
+    }
+
+    button, input, textarea { font: inherit; }
+
+    button {
+      min-height: 36px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--ink);
+      background: var(--surface);
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+    }
+
+    button:hover { border-color: var(--teal); background: var(--surface-muted); }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid rgba(8, 124, 114, 0.24); outline-offset: 2px; }
+    button:disabled { cursor: wait; opacity: 0.58; }
+    button.primary { border-color: var(--teal); background: var(--teal); color: #fff; }
+    button.primary:hover { background: var(--teal-deep); }
+    button.danger { border-color: var(--coral); color: var(--coral); }
+
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      padding: 9px 10px;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    textarea {
+      min-height: 132px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 28px; font-weight: 700; letter-spacing: 0; }
+    h2 { font-size: 13px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; }
+    h3 { font-size: 15px; font-weight: 700; }
+
+    code, .mono { font-family: var(--mono); }
+
+    .app-header {
+      display: flex;
+      min-height: 74px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line-strong);
+      background: var(--surface);
+    }
+
+    .identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .identity-mark {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border: 2px solid var(--teal);
+      border-radius: 5px;
+      color: var(--teal);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .identity-copy { display: grid; gap: 3px; }
+    .identity-copy span { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+    .service-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold); }
+    .service-status.ready .status-dot { background: var(--teal); }
+    .service-status.error .status-dot { background: var(--danger); }
+
+    .console {
+      display: grid;
+      grid-template-columns: minmax(244px, 296px) minmax(0, 1fr) minmax(230px, 280px);
+      min-height: calc(100vh - 74px);
+    }
+
+    .repo-rail, .activity-rail { background: var(--surface); }
+    .repo-rail { border-right: 1px solid var(--line-strong); }
+    .activity-rail { border-left: 1px solid var(--line-strong); }
+    .rail-head, .activity-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 58px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .rail-head button, .activity-head button { min-height: 31px; padding: 0 9px; font-size: 12px; }
+
+    .repo-catalog {
+      display: grid;
+      gap: 7px;
+      max-height: calc(100vh - 276px);
+      overflow: auto;
+      padding: 12px;
+    }
+    .repo-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      min-height: 72px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--line-strong);
+      border-radius: 6px;
+      text-align: left;
+    }
+    .repo-card:hover { background: var(--surface-muted); }
+    .repo-card.selected { border-color: var(--teal); border-left-color: var(--teal); background: #e9f7f2; }
+    .repo-card strong, .repo-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .repo-card strong { display: block; font-size: 14px; }
+    .repo-card small { display: block; margin-top: 4px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .repo-card em { align-self: start; padding: 3px 5px; border-radius: 4px; background: var(--surface-muted); color: var(--muted); font-family: var(--mono); font-size: 10px; font-style: normal; }
+    .repo-card em.synced { background: var(--success-soft); color: var(--teal-deep); }
+    .repo-actions { display: flex; gap: 6px; align-self: start; }
+    .repo-actions button { min-height: 24px; padding: 0 6px; font-size: 11px; }
+    .empty-state { padding: 18px; color: var(--muted); font-family: var(--mono); font-size: 12px; text-align: center; }
+
+    .selected-repo {
+      display: grid;
+      gap: 8px;
+      padding: 15px 16px;
+      border-top: 1px solid var(--line);
+    }
+    .eyebrow { color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
+    .selected-repo strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+    .selected-repo code { color: var(--muted); font-size: 11px; }
+
+    .workspace-stage { min-width: 0; background: var(--canvas); }
+    .workspace-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      min-height: 94px;
+      padding: 17px 22px;
+      border-bottom: 1px solid var(--line-strong);
+      background: #f7fbf9;
+    }
+    .workspace-copy { display: grid; gap: 6px; min-width: 0; }
+    .workspace-copy h2 { color: var(--teal-deep); }
+    .workspace-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+    .workspace-meta { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+    .metric { padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+    .metric.dirty { border-color: var(--coral); color: var(--coral); }
+
+    .session-bar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 10px;
+      align-items: end;
+      padding: 14px 22px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .session-bar .ref-field { max-width: 420px; }
+
+    .operations {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-height: 0;
+    }
+    .operation-tabs {
+      display: flex;
+      gap: 0;
+      overflow-x: auto;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line-strong);
+      background: var(--surface);
+    }
+    .operation-tab {
+      min-height: 44px;
+      border: 0;
+      border-bottom: 3px solid transparent;
+      border-radius: 0;
+      padding: 0 14px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .operation-tab:hover { border-color: var(--line-strong); background: transparent; }
+    .operation-tab.active { border-color: var(--teal); color: var(--teal-deep); }
+
+    .operation-pane { display: none; min-height: 0; padding: 22px; }
+    .operation-pane.active { display: grid; gap: 16px; align-content: start; }
+    .pane-heading { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+    .pane-heading span { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, 0.32fr); gap: 10px; align-items: end; }
+    .form-grid.three { grid-template-columns: minmax(0, 1fr) minmax(110px, 0.24fr) minmax(110px, 0.24fr); }
+    .command-actions { display: flex; gap: 8px; align-items: end; }
+    .command-actions button { flex: 1; }
+
+    .readout {
+      min-height: 180px;
+      max-height: 420px;
+      overflow: auto;
+      margin: 0;
+      padding: 13px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #132420;
+      color: #ecf7f2;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .readout.light { background: var(--surface); color: var(--ink); }
+    .split-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .output-label { margin-bottom: 6px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .output-label.error { color: var(--danger); }
+
+    .file-write {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(120px, 0.3fr);
+      gap: 10px;
+      align-items: end;
+      padding-top: 2px;
+      border-top: 1px solid var(--line);
+    }
+    .file-write textarea { min-height: 104px; }
+
+    .search-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .search-actions > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+    .graph-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: end; }
+    .target-select { display: flex; gap: 7px; }
+    .target-select button { flex: 1; }
+    .target-select button.active { border-color: var(--gold); background: #fff5d9; color: #715313; }
+
+    .activity-log {
+      max-height: calc(100vh - 132px);
+      overflow: auto;
+      margin: 0;
+      padding: 12px 14px;
+      background: #fbfdfc;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .activity-log .ok { color: var(--teal-deep); }
+    .activity-log .error { color: var(--danger); }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 5;
+      max-width: min(420px, calc(100vw - 36px));
+      padding: 10px 12px;
+      border: 1px solid var(--line-strong);
+      border-left: 4px solid var(--gold);
+      border-radius: 5px;
+      background: var(--surface);
+      box-shadow: 0 8px 22px rgba(23, 48, 45, 0.13);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { border-left-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+    .toast.success { border-left-color: var(--teal); background: var(--success-soft); color: var(--teal-deep); }
+
+    @media (max-width: 1120px) {
+      .console { grid-template-columns: minmax(224px, 272px) minmax(0, 1fr); }
+      .activity-rail { grid-column: 1 / -1; border-top: 1px solid var(--line-strong); border-left: 0; }
+      .activity-log { max-height: 220px; }
+    }
+
+    @media (max-width: 760px) {
+      .app-header { min-height: 66px; padding: 12px 14px; }
+      h1 { font-size: 21px; }
+      .identity-mark { display: none; }
+      .console { grid-template-columns: 1fr; }
+      .repo-rail { border-right: 0; border-bottom: 1px solid var(--line-strong); }
+      .repo-catalog { max-height: 232px; }
+      .workspace-summary, .session-bar, .operation-pane { padding-left: 14px; padding-right: 14px; }
+      .workspace-summary, .session-bar, .form-grid, .form-grid.three, .file-write, .search-actions, .split-readout, .graph-controls { grid-template-columns: 1fr; }
+      .workspace-meta { justify-content: flex-start; }
+      .operation-tabs { padding: 0 10px; }
+      .search-actions > div { grid-template-columns: minmax(0, 1fr) auto; }
+      .activity-rail { border-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="identity">
+      <div class="identity-mark" aria-hidden="true">RR</div>
+      <div class="identity-copy">
+        <h1>Remote Workspace Console</h1>
+        <span>session service / manual operations</span>
+      </div>
+    </div>
+    <div id="service-status" class="service-status" role="status" aria-live="polite">
+      <span class="status-dot"></span>
+      <span id="service-status-text">connecting</span>
+    </div>
+  </header>
+
+  <main class="console">
+    <aside class="repo-rail" aria-label="Connected repositories">
+      <div class="rail-head">
+        <h2>Connected Repositories</h2>
+        <div style="display:flex;gap:8px;">
+          <button id="add-repo-toggle" type="button">Add repo</button>
+          <button id="reload-config" type="button">Reload config</button>
+          <button id="refresh-repos" type="button">Refresh</button>
+        </div>
+      </div>
+      <form id="add-repo-form" class="repo-catalog" style="display:none;border-bottom:1px solid var(--line);padding-bottom:16px;" aria-label="Add repository">
+        <div class="form-grid three">
+          <label>Repo ID
+            <input id="add-repo-id" placeholder="my-repo" autocomplete="off">
+          </label>
+          <label>Name
+            <input id="add-repo-name" placeholder="My Repo" autocomplete="off">
+          </label>
+          <label>Default ref
+            <input id="add-repo-ref" value="main" autocomplete="off">
+          </label>
+        </div>
+        <label>Remote URL
+          <input id="add-repo-url" placeholder="https://gitlab.com/my-org/my-repo.git" autocomplete="off">
+        </label>
+        <div class="form-grid three">
+          <label>Auth method
+            <input id="add-repo-auth" placeholder="ssh_key" autocomplete="off">
+          </label>
+          <label>Credential ID
+            <input id="add-repo-credential" placeholder="default" autocomplete="off">
+          </label>
+          <button id="add-repo-submit" class="primary" type="submit">Add repository</button>
+        </div>
+      </form>
+      <div id="repo-catalog" class="repo-catalog" aria-live="polite">
+        <div class="empty-state">Loading repository configuration...</div>
+      </div>
+      <div class="selected-repo">
+        <span class="eyebrow">Selected</span>
+        <strong id="selected-repo-name">No repository selected</strong>
+        <code id="selected-repo-detail">--</code>
+      </div>
+    </aside>
+
+    <section class="workspace-stage">
+      <section id="workspace-summary" class="workspace-summary" aria-live="polite">
+        <div class="workspace-copy">
+          <h2>Workspace</h2>
+          <strong id="workspace-session">Create a session to open a workspace</strong>
+        </div>
+        <div class="workspace-meta">
+          <span id="workspace-version" class="metric">v0</span>
+          <span id="workspace-dirty" class="metric">clean</span>
+          <span id="workspace-commit" class="metric">no commit</span>
+        </div>
+      </section>
+
+      <section class="session-bar" aria-label="Session controls">
+        <label class="ref-field">Ref or commit
+          <input id="session-ref" value="main" autocomplete="off">
+        </label>
+        <button id="sync-selected" type="button">Sync mirror</button>
+        <button id="create-session" class="primary" type="button">Create session</button>
+      </section>
+
+      <section class="operations" aria-label="Manual operations">
+        <nav class="operation-tabs" role="tablist" aria-label="Operations">
+          <button class="operation-tab active" data-operation="shell" role="tab" aria-selected="true">Shell</button>
+          <button class="operation-tab" data-operation="files" role="tab" aria-selected="false">Files</button>
+          <button class="operation-tab" data-operation="search" role="tab" aria-selected="false">Search</button>
+          <button class="operation-tab" data-operation="graph" role="tab" aria-selected="false">Graph</button>
+        </nav>
+
+        <section class="operation-pane active" data-operation="shell" role="tabpanel">
+          <div class="pane-heading"><h3>Remote command</h3><span id="shell-status">idle</span></div>
+          <label>Command
+            <textarea id="shell-command" spellcheck="false">git status --short</textarea>
+          </label>
+          <div class="form-grid">
+            <label>Working directory
+              <input id="shell-cwd" value="." autocomplete="off">
+            </label>
+            <div class="command-actions">
+              <button id="refresh-state" type="button">State</button>
+              <button id="run-shell" class="primary" type="button">Run command</button>
+            </div>
+          </div>
+          <div class="split-readout">
+            <div><div class="output-label">stdout</div><pre id="shell-stdout" class="readout">Waiting for command output.</pre></div>
+            <div><div class="output-label error">stderr</div><pre id="shell-stderr" class="readout">No stderr output.</pre></div>
+          </div>
+        </section>
+
+        <section class="operation-pane" data-operation="files" role="tabpanel" hidden>
+          <div class="pane-heading"><h3>Read and write files</h3><span id="file-status">waiting</span></div>
+          <div class="form-grid three">
+            <label>Path
+              <input id="file-path" value="README.md" autocomplete="off">
+            </label>
+            <label>Start line
+              <input id="file-start" type="number" min="1" value="1">
+            </label>
+            <label>Max lines
+              <input id="file-lines" type="number" min="1" value="80">
+            </label>
+          </div>
+          <div class="command-actions"><button id="read-file" class="primary" type="button">Read file</button></div>
+          <pre id="file-output" class="readout light">File content will appear here.</pre>
+          <div class="file-write">
+            <label>Write content
+              <textarea id="write-content" spellcheck="false" placeholder="Content to write to the current path"></textarea>
+            </label>
+            <button id="write-file" type="button">Write file</button>
+          </div>
+        </section>
+
+        <section class="operation-pane" data-operation="search" role="tabpanel" hidden>
+          <div class="pane-heading"><h3>Workspace search</h3><span id="search-status">waiting</span></div>
+          <div class="search-actions">
+            <div>
+              <label>File name or glob
+                <input id="find-query" value="*.md" autocomplete="off">
+              </label>
+              <button id="find-files" type="button">Find files</button>
+            </div>
+            <div>
+              <label>Text pattern
+                <input id="grep-pattern" value="TODO" autocomplete="off">
+              </label>
+              <button id="grep-files" type="button">Search text</button>
+            </div>
+          </div>
+          <pre id="search-output" class="readout light">Search results will appear here.</pre>
+        </section>
+
+        <section class="operation-pane" data-operation="graph" role="tabpanel" hidden>
+          <div class="pane-heading"><h3>GitNexus graph</h3><span id="graph-status">STALE</span></div>
+          <div class="graph-controls">
+            <div class="target-select" role="group" aria-label="Graph target">
+              <button type="button" class="active" data-graph-target="repo_head">Repository head</button>
+              <button type="button" data-graph-target="session_workspace">Workspace</button>
+            </div>
+            <button id="graph-state" type="button">Status</button>
+            <button id="graph-analyze" class="primary" type="button">Analyze</button>
+          </div>
+          <pre id="graph-output" class="readout light">Graph state will appear here.</pre>
+        </section>
+      </section>
+    </section>
+
+    <aside class="activity-rail" aria-label="Activity log">
+      <div class="activity-head">
+        <h2>Activity</h2>
+        <button id="clear-log" type="button">Clear</button>
+      </div>
+      <pre id="activity-log" class="activity-log">Console ready.</pre>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const state = {
+      sequence: 0,
+      repos: [],
+      repoId: null,
+      session: null,
+      graphTarget: "repo_head",
+      toastTimer: null,
+    };
+
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+    function requestId(prefix) {
+      state.sequence += 1;
+      return `${prefix}_${Date.now()}_${state.sequence}`;
+    }
+
+    function selectedRepo() {
+      return state.repos.find((repo) => repo.repo_id === state.repoId) || null;
+    }
+
+    function log(message, tone = "info") {
+      const output = $("#activity-log");
+      if (output.textContent === "Console ready.") output.textContent = "";
+      const label = tone === "error" ? "ERR" : tone === "success" ? "OK" : "--";
+      output.textContent += `[${new Date().toLocaleTimeString()}] ${label} ${message}\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function notify(message, tone = "info") {
+      const toast = $("#toast");
+      toast.textContent = message;
+      toast.className = `toast ${tone} show`;
+      window.clearTimeout(state.toastTimer);
+      state.toastTimer = window.setTimeout(() => { toast.className = "toast"; }, 3600);
+    }
+
+    function serviceStatus(text, tone = "ready") {
+      const element = $("#service-status");
+      element.className = `service-status ${tone}`;
+      $("#service-status-text").textContent = text;
+    }
+
+    async function api(path, body) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error(`Unexpected response from ${path}`);
+      }
+      if (!response.ok || payload.ok !== true) {
+        throw new Error(payload.error?.message || `${path} failed`);
+      }
+      log(`${path} ${body.request_id}`, "success");
+      return payload;
+    }
+
+    function requireRepo() {
+      if (!state.repoId) throw new Error("Select a connected repository first.");
+    }
+
+    function requireSession() {
+      if (!state.session) throw new Error("Create a session first.");
+    }
+
+    function setBusy(button, busy) {
+      if (!button.dataset.label) button.dataset.label = button.textContent;
+      button.disabled = busy;
+      button.textContent = busy ? "Working..." : button.dataset.label;
+    }
+
+    function renderRepos() {
+      const catalog = $("#repo-catalog");
+      catalog.textContent = "";
+      if (state.repos.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.textContent = "No connected repositories are configured.";
+        catalog.appendChild(empty);
+      }
+      for (const repo of state.repos) {
+        const wrapper = document.createElement("div");
+        wrapper.className = `repo-card${repo.repo_id === state.repoId ? " selected" : ""}`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "repo-select";
+        button.style.cssText = "all:unset;flex:1 1 auto;display:grid;gap:10px;grid-template-columns:minmax(0,1fr) auto;min-width:0;cursor:pointer;";
+        const copy = document.createElement("span");
+        const name = document.createElement("strong");
+        const id = document.createElement("small");
+        const marker = document.createElement("em");
+        name.textContent = repo.name;
+        id.textContent = `${repo.repo_id} / ${repo.default_ref}`;
+        marker.textContent = repo.synced ? "mirrored" : "linked";
+        if (repo.synced) marker.classList.add("synced");
+        copy.append(name, id);
+        button.append(copy, marker);
+        button.addEventListener("click", () => selectRepo(repo.repo_id));
+
+        const actions = document.createElement("div");
+        actions.className = "repo-actions";
+        actions.addEventListener("click", (event) => event.stopPropagation());
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => startEditRepo(repo.repo_id));
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "danger";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", () => removeRepo(repo.repo_id));
+        actions.append(editBtn, removeBtn);
+
+        wrapper.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:start;padding:11px;border:1px solid var(--line);border-left:4px solid var(--line-strong);border-radius:6px;background:var(--surface);";
+        if (repo.repo_id === state.repoId) {
+          wrapper.style.borderColor = "var(--teal)";
+          wrapper.style.borderLeftColor = "var(--teal)";
+          wrapper.style.background = "#e9f7f2";
+        }
+        wrapper.append(button, actions);
+        catalog.appendChild(wrapper);
+      }
+      const repo = selectedRepo();
+      $("#selected-repo-name").textContent = repo?.name || "No repository selected";
+      const detailParts = [repo?.repo_id, repo?.default_ref];
+      if (repo?.auth_method) detailParts.push(`auth=${repo.auth_method}`);
+      if (repo?.credential_id) detailParts.push(`cred=${repo.credential_id}`);
+      $("#selected-repo-detail").textContent = repo ? detailParts.join(" / ") : "--";
+    }
+
+    function selectRepo(repoId) {
+      state.repoId = repoId;
+      state.session = null;
+      const repo = selectedRepo();
+      $("#session-ref").value = repo?.default_ref || "main";
+      renderRepos();
+      renderSession();
+      notify(`Selected ${repo?.name || repoId}.`, "success");
+    }
+
+    function renderSession() {
+      const session = state.session;
+      $("#workspace-session").textContent = session ? session.session_id : "Create a session to open a workspace";
+      $("#workspace-version").textContent = `v${session?.workspace_version || 0}`;
+      const dirty = $("#workspace-dirty");
+      dirty.textContent = session?.dirty ? "dirty" : "clean";
+      dirty.classList.toggle("dirty", Boolean(session?.dirty));
+      $("#workspace-commit").textContent = session?.base_commit ? session.base_commit.slice(0, 12) : "no commit";
+    }
+
+    function updateSession(data) {
+      state.session = { ...state.session, ...data };
+      renderSession();
+    }
+
+    async function loadDashboard() {
+      serviceStatus("loading", "ready");
+      try {
+        const response = await fetch("/v1/dashboard");
+        const payload = await response.json();
+        if (!response.ok) throw new Error("Dashboard unavailable");
+        state.repos = payload.repos || [];
+        const ids = new Set(state.repos.map((repo) => repo.repo_id));
+        if (state.repoId && !ids.has(state.repoId)) {
+          state.repoId = null;
+          state.session = null;
+        }
+        if (!state.repoId && state.repos.length) {
+          state.repoId = state.repos[0].repo_id;
+          $("#session-ref").value = state.repos[0].default_ref || "main";
+        }
+        renderRepos();
+        serviceStatus(`${payload.repos.length} linked`, "ready");
+        log(`Loaded ${payload.repos.length} configured repositories.`, "success");
+      } catch (error) {
+        serviceStatus("offline", "error");
+        log(error.message, "error");
+        notify(error.message, "error");
+      }
+    }
+
+    async function syncSelected() {
+      requireRepo();
+      const button = $("#sync-selected");
+      setBusy(button, true);
+      try {
+        await api("/v1/repos/sync", { request_id: requestId("sync"), repo_id: state.repoId });
+        const repo = selectedRepo();
+        if (repo) repo.synced = true;
+        renderRepos();
+        notify(`Mirror synced for ${state.repoId}.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    function startEditRepo(repoId) {
+      const repo = state.repos.find((r) => r.repo_id === repoId);
+      if (!repo) return;
+      $("#add-repo-id").value = repo.repo_id;
+      $("#add-repo-id").disabled = true;
+      $("#add-repo-name").value = repo.name;
+      $("#add-repo-ref").value = repo.default_ref;
+      $("#add-repo-url").value = repo.remote_url;
+      $("#add-repo-auth").value = repo.auth_method || "";
+      $("#add-repo-credential").value = repo.credential_id || "";
+      $("#add-repo-submit").textContent = "Update repository";
+      $("#add-repo-form").dataset.editing = repoId;
+      $("#add-repo-form").style.display = "grid";
+      $("#add-repo-name").focus();
+    }
+
+    function resetAddRepoForm() {
+      $("#add-repo-form").reset();
+      $("#add-repo-id").disabled = false;
+      $("#add-repo-ref").value = "main";
+      $("#add-repo-submit").textContent = "Add repository";
+      delete $("#add-repo-form").dataset.editing;
+    }
+
+    function toggleAddRepoForm() {
+      const form = $("#add-repo-form");
+      const visible = form.style.display !== "none";
+      if (visible) {
+        form.style.display = "none";
+        resetAddRepoForm();
+      } else {
+        form.style.display = "grid";
+        $("#add-repo-id").focus();
+      }
+    }
+
+    async function addRepo(event) {
+      event.preventDefault();
+      const button = $("#add-repo-submit");
+      setBusy(button, true);
+      try {
+        const editing = $("#add-repo-form").dataset.editing;
+        const body = {
+          request_id: requestId(editing ? "update_repo" : "add_repo"),
+          repo_id: $("#add-repo-id").value.trim(),
+          name: $("#add-repo-name").value.trim(),
+          remote_url: $("#add-repo-url").value.trim(),
+        };
+        if (!body.repo_id || !body.name || !body.remote_url) {
+          throw new Error("repo_id, name, and remote_url are required.");
+        }
+        const defaultRef = $("#add-repo-ref").value.trim();
+        if (defaultRef) body.default_ref = defaultRef;
+        const authMethod = $("#add-repo-auth").value.trim();
+        if (authMethod) body.auth_method = authMethod;
+        const credentialId = $("#add-repo-credential").value.trim();
+        if (credentialId) body.credential_id = credentialId;
+        const path = editing ? "/v1/repos/update" : "/v1/repos/add";
+        const payload = await api(path, body);
+        await loadDashboard();
+        if (payload.data?.repo_id) selectRepo(payload.data.repo_id);
+        $("#add-repo-form").style.display = "none";
+        resetAddRepoForm();
+        notify(`Repository ${body.repo_id} ${editing ? "updated" : "added"}.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function removeRepo(repoId) {
+      if (!confirm(`Remove repository ${repoId}?`)) return;
+      const catalog = $("#repo-catalog");
+      catalog.style.pointerEvents = "none";
+      try {
+        await api("/v1/repos/remove", { request_id: requestId("remove_repo"), repo_id: repoId });
+        if (state.repoId === repoId) {
+          state.repoId = null;
+          state.session = null;
+        }
+        await loadDashboard();
+        notify(`Repository ${repoId} removed.`, "success");
+      } finally {
+        catalog.style.pointerEvents = "";
+      }
+    }
+
+    async function reloadConfig() {
+      const button = $("#reload-config");
+      setBusy(button, true);
+      try {
+        await api("/v1/config/reload", { request_id: requestId("reload_config") });
+        await loadDashboard();
+        notify("Configuration reloaded from disk.", "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function createSession() {
+      requireRepo();
+      const button = $("#create-session");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/sessions", {
+          request_id: requestId("session"),
+          repo_id: state.repoId,
+          ref_or_commit: $("#session-ref").value.trim() || selectedRepo().default_ref,
+        });
+        updateSession(payload.data);
+        notify(`Session ${payload.data.session_id.slice(0, 14)} created.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function refreshState() {
+      requireSession();
+      const button = $("#refresh-state");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/sessions/state", { request_id: requestId("state"), session_id: state.session.session_id });
+        updateSession(payload.data);
+        notify(`Workspace state refreshed.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function runShell() {
+      requireSession();
+      const button = $("#run-shell");
+      setBusy(button, true);
+      $("#shell-status").textContent = "running";
+      try {
+        const payload = await api("/v1/shell/run", {
+          request_id: requestId("shell"),
+          session_id: state.session.session_id,
+          command: $("#shell-command").value,
+          cwd: $("#shell-cwd").value.trim() || ".",
+        });
+        $("#shell-stdout").textContent = payload.data.stdout || "No stdout output.";
+        $("#shell-stderr").textContent = payload.data.stderr || "No stderr output.";
+        $("#shell-status").textContent = `exit ${payload.data.exit_code}`;
+        updateSession({ workspace_version: payload.data.workspace_version, dirty: Boolean(payload.data.status_after) });
+        notify(`Command completed with exit ${payload.data.exit_code}.`, payload.data.exit_code === 0 ? "success" : "error");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function readFile() {
+      requireSession();
+      const button = $("#read-file");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/files/read", {
+          request_id: requestId("read"),
+          session_id: state.session.session_id,
+          path: $("#file-path").value.trim(),
+          start_line: Number($("#file-start").value || 1),
+          max_lines: Number($("#file-lines").value || 80),
+        });
+        $("#file-output").textContent = payload.data.content || "";
+        $("#file-status").textContent = payload.data.truncated ? "truncated" : "complete";
+        notify(`Read ${payload.data.path}.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function writeFile() {
+      requireSession();
+      const button = $("#write-file");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/files/write", {
+          request_id: requestId("write"),
+          session_id: state.session.session_id,
+          path: $("#file-path").value.trim(),
+          content: $("#write-content").value,
+          create_dirs: true,
+        });
+        updateSession({ workspace_version: payload.data.workspace_version, dirty: Boolean(payload.data.status_after) });
+        $("#file-status").textContent = `written v${payload.data.workspace_version}`;
+        notify(`Wrote ${payload.data.path}.`, "success");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function findFiles() {
+      requireSession();
+      const button = $("#find-files");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/find/files", {
+          request_id: requestId("find"),
+          session_id: state.session.session_id,
+          query: $("#find-query").value.trim(),
+          max_results: 100,
+        });
+        $("#search-output").textContent = payload.data.paths.join("\n") || "No matching paths.";
+        $("#search-status").textContent = `${payload.data.paths.length} paths`;
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    async function grepFiles() {
+      requireSession();
+      const button = $("#grep-files");
+      setBusy(button, true);
+      try {
+        const payload = await api("/v1/find/text", {
+          request_id: requestId("grep"),
+          session_id: state.session.session_id,
+          pattern: $("#grep-pattern").value.trim(),
+          path: ".",
+          max_results: 100,
+        });
+        const matches = payload.data.matches.map((match) => `${match.path}:${match.line_number}: ${match.line}`);
+        $("#search-output").textContent = matches.join("\n") || "No matching text.";
+        $("#search-status").textContent = `${matches.length} matches`;
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    function graphRequest(prefix) {
+      const body = { request_id: requestId(prefix), target_type: state.graphTarget };
+      if (state.graphTarget === "repo_head") {
+        requireRepo();
+        body.repo_id = state.repoId;
+      } else {
+        requireSession();
+        body.session_id = state.session.session_id;
+      }
+      return body;
+    }
+
+    async function graphAction(path, button) {
+      setBusy(button, true);
+      try {
+        const payload = await api(path, graphRequest(path.includes("analyze") ? "graph_analyze" : "graph_status"));
+        $("#graph-status").textContent = payload.data.status;
+        $("#graph-output").textContent = JSON.stringify(payload.data, null, 2);
+        notify(`Graph status: ${payload.data.status}.`, payload.data.status === "READY" ? "success" : "info");
+      } finally {
+        setBusy(button, false);
+      }
+    }
+
+    function showOperation(name) {
+      $$(".operation-tab").forEach((tab) => {
+        const active = tab.dataset.operation === name;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", String(active));
+      });
+      $$(".operation-pane").forEach((pane) => {
+        const active = pane.dataset.operation === name;
+        pane.classList.toggle("active", active);
+        pane.hidden = !active;
+      });
+    }
+
+    function handleAction(action) {
+      return action().catch((error) => {
+        log(error.message, "error");
+        notify(error.message, "error");
+      });
+    }
+
+    $("#refresh-repos").addEventListener("click", () => handleAction(loadDashboard));
+    $("#add-repo-toggle").addEventListener("click", toggleAddRepoForm);
+    $("#add-repo-form").addEventListener("submit", (event) => handleAction(() => addRepo(event)));
+    $("#reload-config").addEventListener("click", () => handleAction(reloadConfig));
+    $("#sync-selected").addEventListener("click", () => handleAction(syncSelected));
+    $("#create-session").addEventListener("click", () => handleAction(createSession));
+    $("#refresh-state").addEventListener("click", () => handleAction(refreshState));
+    $("#run-shell").addEventListener("click", () => handleAction(runShell));
+    $("#read-file").addEventListener("click", () => handleAction(readFile));
+    $("#write-file").addEventListener("click", () => handleAction(writeFile));
+    $("#find-files").addEventListener("click", () => handleAction(findFiles));
+    $("#grep-files").addEventListener("click", () => handleAction(grepFiles));
+    $("#graph-state").addEventListener("click", () => handleAction(() => graphAction("/v1/graph/status", $("#graph-state"))));
+    $("#graph-analyze").addEventListener("click", () => handleAction(() => graphAction("/v1/graph/analyze", $("#graph-analyze"))));
+    $("#clear-log").addEventListener("click", () => { $("#activity-log").textContent = "Console ready."; });
+
+    $$(".operation-tab").forEach((tab) => tab.addEventListener("click", () => showOperation(tab.dataset.operation)));
+    $$("[data-graph-target]").forEach((button) => button.addEventListener("click", () => {
+      state.graphTarget = button.dataset.graphTarget;
+      $$("[data-graph-target]").forEach((item) => item.classList.toggle("active", item === button));
+    }));
+
+    loadDashboard();
+  </script>
+</body>
+</html>

@@ -40,6 +40,15 @@ export default defineConfig({
         target: "http://127.0.0.1:5100",
         changeOrigin: true,
       },
+      // The web preview talks to the Remote Repo Service through Vite instead
+      // of calling it cross-origin. Set REMOTE_REPO_SERVICE_URL in the dev
+      // environment; production should use VITE_REMOTE_REPO_SERVICE_URL or a
+      // same-origin reverse-proxy route.
+      "/remote-repo-service": {
+        target: process.env.REMOTE_REPO_SERVICE_URL || "http://127.0.0.1:8765",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/remote-repo-service/, ""),
+      },
     },
   }
 });

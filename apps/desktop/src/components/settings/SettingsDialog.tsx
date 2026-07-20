@@ -114,6 +114,31 @@ const LANGUAGE_OPTIONS: Array<{ value: GeneralSettingsDraft["language"]; label: 
   { value: "en-US", label: "English" }
 ];
 
+function remoteRepoText(language: GeneralSettingsDraft["language"]) {
+  if (language === "en-US") {
+    return {
+      title: "Remote Repositories", kicker: "Connection", description: "Choose the Remote Repo Service used by this Giteam client.",
+      serviceUrl: "Service URL", serviceUrlDesc: "Use an http(s) address or a same-origin proxy path. The address is stored only on this client.",
+      serviceApiKey: "API Key", serviceApiKeyDesc: "Optional key sent as X-API-Key when the service requires authentication.",
+      test: "Test connection", save: "Save & use", reset: "Use default", effective: "Active endpoint",
+    };
+  }
+  if (language === "zh-TW") {
+    return {
+      title: "遠端倉庫", kicker: "連線", description: "選擇這個 Giteam 用戶端要使用的遠端倉庫服務。",
+      serviceUrl: "服務地址", serviceUrlDesc: "輸入 http(s) 位址或同源代理路徑。此地址只保存在目前用戶端。",
+      serviceApiKey: "API Key", serviceApiKeyDesc: "選填；服務要求認證時會以 X-API-Key 傳送。",
+      test: "測試連線", save: "儲存並使用", reset: "使用預設值", effective: "目前端點",
+    };
+  }
+  return {
+    title: "远程仓库", kicker: "连接", description: "选择此 Giteam 客户端要使用的远程仓库服务。",
+    serviceUrl: "服务地址", serviceUrlDesc: "输入 http(s) 地址或同源代理路径。该地址只保存在当前客户端。",
+    serviceApiKey: "API Key", serviceApiKeyDesc: "可选；服务要求认证时会通过 X-API-Key 发送。",
+    test: "测试连接", save: "保存并使用", reset: "使用默认值", effective: "当前端点",
+  };
+}
+
 type SettingsDialogProps = {
   theme: "dark" | "light";
   runtimeStatus: RuntimeRequirementsStatus;
@@ -170,9 +195,19 @@ type SettingsDialogProps = {
   onRefreshMcp?: () => void;
   onMcpVisible?: () => void;
   onToggleControlService: (enabled: boolean) => void;
+  remoteRepoServiceUrl: string;
+  remoteRepoServiceDraft: string;
+  remoteRepoServiceApiKeyDraft: string;
+  remoteRepoServiceBusy: boolean;
+  remoteRepoServiceNotice: string;
+  onRemoteRepoServiceDraftChange: (value: string) => void;
+  onRemoteRepoServiceApiKeyDraftChange: (value: string) => void;
+  onTestRemoteRepoService: () => void;
+  onSaveRemoteRepoService: () => void;
+  onResetRemoteRepoService: () => void;
 };
 
-type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "skillsmp" | "mcp" | "plugins" | "mobile";
+type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "skillsmp" | "mcp" | "plugins" | "mobile" | "remoteRepos";
 type InitialSettingsSectionId = SettingsSectionId | "modules" | "opencode";
 
 type SettingsEntry = {
@@ -200,6 +235,7 @@ const SETTINGS_SECTION_ICONS: Record<SettingsSectionId, SettingsNavIcon> = {
   mcp: PluginsIcon,
   plugins: PluginsIcon,
   mobile: SyncIcon,
+  remoteRepos: SyncIcon,
   updates: SyncIcon,
   notifications: AutomationIcon,
   sounds: AutomationIcon
@@ -308,6 +344,7 @@ function getRuntimeJobLine(job: RuntimeActionJobStatus, elapsed: number): string
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const text = useMemo(() => getSettingsText(props.generalSettings.language), [props.generalSettings.language]);
+  const remoteText = useMemo(() => remoteRepoText(props.generalSettings.language), [props.generalSettings.language]);
   const lastPairCodeTtlModeRef = useRef<Exclude<ControlServerSettingsDraft["pairCodeTtlMode"], "none">>("24h");
   const normalizeSection = (section?: InitialSettingsSectionId | "opencode"): SettingsSectionId => {
     if (section === "modules") return "general";
@@ -526,6 +563,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           )
         }
       ],
+      remoteRepos: [],
       models: [],
       mcp: [],
       skillsmp: [
@@ -767,6 +805,63 @@ export function SettingsDialog(props: SettingsDialogProps) {
               <SettingsGroup title={text.mobileControl} entries={entriesBySection.mobile} wide />
             )}
           </div>
+        )
+      },
+      {
+        id: "remoteRepos" as const,
+        kicker: remoteText.kicker,
+        title: remoteText.title,
+        description: remoteText.description,
+        content: (
+          <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+            <CardContent className="p-0">
+              <div className="border-b border-border/70 bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] px-4 py-3">
+                <strong className="text-sm font-semibold text-foreground">{remoteText.serviceUrl}</strong>
+                <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{remoteText.serviceUrlDesc}</p>
+              </div>
+              <div className="space-y-3 p-4">
+                <Input
+                  className="h-10 w-full rounded-md bg-muted/30 font-mono text-[13px]"
+                  aria-label={remoteText.serviceUrl}
+                  placeholder="https://giteam.example.com/remote-repo-service"
+                  value={props.remoteRepoServiceDraft}
+                  disabled={props.remoteRepoServiceBusy}
+                  onChange={(event) => props.onRemoteRepoServiceDraftChange(event.target.value)}
+                />
+                <div className="space-y-1.5">
+                  <div>
+                    <strong className="text-sm font-semibold text-foreground">{remoteText.serviceApiKey}</strong>
+                    <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{remoteText.serviceApiKeyDesc}</p>
+                  </div>
+                  <Input
+                    className="h-10 w-full rounded-md bg-muted/30 font-mono text-[13px]"
+                    aria-label={remoteText.serviceApiKey}
+                    placeholder="gteam-server-api-key"
+                    type="password"
+                    value={props.remoteRepoServiceApiKeyDraft}
+                    disabled={props.remoteRepoServiceBusy}
+                    onChange={(event) => props.onRemoteRepoServiceApiKeyDraftChange(event.target.value)}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" disabled={props.remoteRepoServiceBusy} onClick={props.onTestRemoteRepoService}>
+                    {props.remoteRepoServiceBusy ? text.checking : remoteText.test}
+                  </Button>
+                  <Button variant="secondary" size="sm" disabled={props.remoteRepoServiceBusy} onClick={props.onSaveRemoteRepoService}>
+                    {props.remoteRepoServiceBusy ? text.saving : remoteText.save}
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={props.remoteRepoServiceBusy || !props.remoteRepoServiceDraft} onClick={props.onResetRemoteRepoService}>
+                    {remoteText.reset}
+                  </Button>
+                </div>
+                <div className="rounded-md border border-border/70 bg-muted/25 px-3 py-2.5">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{remoteText.effective}</p>
+                  <p className="mt-1 truncate font-mono text-[12px] text-foreground" title={props.remoteRepoServiceUrl}>{props.remoteRepoServiceUrl || "—"}</p>
+                </div>
+                {props.remoteRepoServiceNotice ? <p className="text-[13px] leading-5 text-muted-foreground">{props.remoteRepoServiceNotice}</p> : null}
+              </div>
+            </CardContent>
+          </Card>
         )
       },
       {

@@ -1,0 +1,14 @@
+{
+  "giteam": {
+    "mcp": {
+      "name": "remote_repo",
+      "type": "local",
+      "command": [
+        "python3",
+        "mcp/giteam_mcp_launcher.py"
+      ],
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}

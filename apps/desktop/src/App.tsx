@@ -40,6 +40,27 @@ import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
 import { RightSidebar, RightSidebarPanel } from "./components/sidebar/RightSidebar";
+import { RemoteRepoCatalog } from "./components/remote-repo/RemoteRepoCatalog";
+import { RemoteRepoCodeResourcePanel } from "./components/remote-repo/RemoteRepoCodeResourcePanel";
+import { RemoteRepoWorkspacePanel } from "./components/remote-repo/RemoteRepoWorkspacePanel";
+import {
+  getRemoteWorkspaceGraph,
+  listRemoteRepoActivities,
+  listRemoteRepoWorkspaces,
+  resumeRemoteWorkspace,
+} from "./components/remote-repo/remoteRepoWorkspaceApi";
+import {
+  describeRemoteWorkspaceGraphAction,
+  mapGraphStatusToRemoteRepoGitNexusStatus,
+} from "./components/remote-repo/remoteRepoWorkspaceResources";
+import {
+  loadRemoteRepoServiceSetting,
+  saveRemoteRepoServiceUrl,
+  testRemoteRepoServiceUrl,
+  type RemoteRepoServiceSetting,
+} from "./components/remote-repo/remoteRepoServiceSettings";
+import { RemoteRepoFormDialog, RemoteRepoRemoveDialog, type RemoteRepoFormValues } from "./components/remote-repo/RemoteRepoDialogs";
+import { RemoteRepoOverview } from "./components/remote-repo/RemoteRepoOverview";
 import { TerminalPanel } from "./components/terminal/TerminalPanel";
 import {
   AlertDialog,
@@ -82,6 +103,14 @@ import { Field, FieldLabel, Textarea } from "./components/ui/textarea";
 import type { PanelPlacement } from "./layout/Workbench";
 import { Workbench } from "./layout/Workbench";
 import { parseAgentContextText, parseStatusText } from "./lib/agentContextParser";
+import { addRemoteRepo, listRemoteRepoBranches, listRemoteRepoFiles, listRemoteRepos, reloadRemoteRepoConfig, removeRemoteRepo, setRemoteRepoPinned, syncRemoteRepoConnection, touchRemoteRepoAccess, updateRemoteRepo } from "./components/remote-repo/remoteRepoApi";
+import type {
+  RemoteWorkspaceActivity,
+  RemoteWorkspaceSession,
+  RemoteWorkspaceSummary,
+} from "./components/remote-repo/remoteRepoWorkspaceResources";
+import type { RemoteRepo, RemoteRepoAction, RemoteRepoFileTreeStatus, RemoteRepoGitNexusStatus } from "./components/remote-repo/types";
+import type { RemoteRepoBranch } from "./components/remote-repo/remoteRepoResources";
 import {
   GITTREE_SIDEBAR_WIDTH_CACHE_KEY,
   RIGHT_PANE_WIDTH_CACHE_KEY,
@@ -363,6 +392,11 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 type OpencodeAuthPayload = { type: "api"; key: string };
+
+function remoteRepoGraphStatusKey(repoId: string, refOrCommit: string): string {
+  return `${repoId}::${refOrCommit.trim() || "HEAD"}`;
+}
+
 const EMPTY_WORKTREE: GitWorktreeOverview = {
   branch: "",
   tracking: "",
@@ -555,6 +589,37 @@ export function App() {
 
   const [repos, setRepos] = useState<RepositoryEntry[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<RepositoryEntry | null>(null);
+  const [remoteRepos, setRemoteRepos] = useState<RemoteRepo[]>([]);
+  const [remoteRepoBranches, setRemoteRepoBranches] = useState<Record<string, RemoteRepoBranch[]>>({});
+  const [remoteRepoBranchErrors, setRemoteRepoBranchErrors] = useState<Record<string, string>>({});
+  const [remoteRepoBranchesLoading, setRemoteRepoBranchesLoading] = useState<Record<string, boolean>>({});
+  const [remoteRepoSelectedRefs, setRemoteRepoSelectedRefs] = useState<Record<string, string>>({});
+  const [remoteRepoGitNexusStatuses, setRemoteRepoGitNexusStatuses] = useState<Record<string, RemoteRepoGitNexusStatus>>({});
+  const [remoteRepoGitNexusBusyKey, setRemoteRepoGitNexusBusyKey] = useState("");
+  const [remoteRepoFileTreeStatuses, setRemoteRepoFileTreeStatuses] = useState<Record<string, RemoteRepoFileTreeStatus>>({});
+  const [remoteRepoWorkspaces, setRemoteRepoWorkspaces] = useState<Record<string, RemoteWorkspaceSummary[]>>({});
+  const [remoteRepoActivities, setRemoteRepoActivities] = useState<Record<string, RemoteWorkspaceActivity[]>>({});
+  const [activeRemoteWorkspaceSession, setActiveRemoteWorkspaceSession] = useState<RemoteWorkspaceSession | null>(null);
+  const [remoteRepoServiceSetting, setRemoteRepoServiceSetting] = useState<RemoteRepoServiceSetting>({
+    configuredUrl: "",
+    effectiveUrl: "/remote-repo-service",
+    apiKey: "",
+    apiKeyConfigured: false,
+    source: "proxy",
+  });
+  const [remoteRepoServiceDraft, setRemoteRepoServiceDraft] = useState("");
+  const [remoteRepoServiceApiKeyDraft, setRemoteRepoServiceApiKeyDraft] = useState("");
+  const [remoteRepoServiceBusy, setRemoteRepoServiceBusy] = useState(false);
+  const [remoteRepoServiceNotice, setRemoteRepoServiceNotice] = useState("");
+  const [selectedRemoteRepoId, setSelectedRemoteRepoId] = useState("");
+  const [remoteRepoResourceMode, setRemoteRepoResourceMode] = useState<"branches" | "files" | "workspace" | null>(null);
+  const [remoteRepoNotice, setRemoteRepoNotice] = useState("");
+  const [remoteRepoLoading, setRemoteRepoLoading] = useState(false);
+  const [remoteRepoLoadError, setRemoteRepoLoadError] = useState("");
+  const [remoteRepoFormTarget, setRemoteRepoFormTarget] = useState<RemoteRepo | null | undefined>(undefined);
+  const [remoteRepoMutationBusy, setRemoteRepoMutationBusy] = useState(false);
+  const [remoteRepoMutationError, setRemoteRepoMutationError] = useState("");
+  const [remoteRepoPendingRemoval, setRemoteRepoPendingRemoval] = useState<RemoteRepo | null>(null);
   const [gitPaneRepo, setGitPaneRepo] = useState<RepositoryEntry | null>(null);
   const [newSessionTargetRepoId, setNewSessionTargetRepoId] = useState("");
 
@@ -6917,8 +6982,377 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   const runtimeSetupVisible =
     showEnvSetup && (runtimeStartupChecking || runtimeDepsMissing || runtimeInstallActive);
 
+  const refreshRemoteRepoGitNexusStatus = useCallback(async (repoId: string, refOrCommit: string) => {
+    const statusKey = remoteRepoGraphStatusKey(repoId, refOrCommit);
+    try {
+      const graph = await getRemoteWorkspaceGraph(repoId, null, "repo_head", false, refOrCommit);
+      setRemoteRepoGitNexusStatuses((current) => ({
+        ...current,
+        [statusKey]: mapGraphStatusToRemoteRepoGitNexusStatus(graph.status),
+      }));
+    } catch {
+      setRemoteRepoGitNexusStatuses((current) => ({ ...current, [statusKey]: "unavailable" }));
+    }
+  }, []);
+
+  const refreshRemoteRepoFileTreeStatus = useCallback(async (repoId: string) => {
+    try {
+      await listRemoteRepoFiles(repoId, ".");
+      setRemoteRepoFileTreeStatuses((current) => ({ ...current, [repoId]: "ready" }));
+    } catch {
+      setRemoteRepoFileTreeStatuses((current) => ({ ...current, [repoId]: "unavailable" }));
+    }
+  }, []);
+
+  const refreshRemoteRepoServerState = useCallback(async (repoId: string, canReadFiles: boolean) => {
+    const [workspacesResult, activitiesResult] = await Promise.allSettled([
+      listRemoteRepoWorkspaces(repoId),
+      listRemoteRepoActivities(repoId),
+    ]);
+    if (workspacesResult.status === "fulfilled") {
+      setRemoteRepoWorkspaces((current) => ({ ...current, [repoId]: workspacesResult.value }));
+    }
+    if (activitiesResult.status === "fulfilled") {
+      setRemoteRepoActivities((current) => ({ ...current, [repoId]: activitiesResult.value }));
+    }
+    if (canReadFiles) await refreshRemoteRepoFileTreeStatus(repoId);
+  }, [refreshRemoteRepoFileTreeStatus]);
+
+  const refreshRemoteRepoBranches = useCallback(async (repo: RemoteRepo) => {
+    if (repo.connectionStatus !== "connected") return;
+    setRemoteRepoBranchesLoading((current) => ({ ...current, [repo.id]: true }));
+    setRemoteRepoBranchErrors((current) => ({ ...current, [repo.id]: "" }));
+    try {
+      const rows = await listRemoteRepoBranches(repo.id);
+      setRemoteRepoBranches((current) => ({ ...current, [repo.id]: rows }));
+      setRemoteRepoSelectedRefs((current) => {
+        const selected = current[repo.id];
+        if (selected && rows.some((branch) => branch.name === selected)) return current;
+        const defaultBranch = rows.find((branch) => branch.isDefault)?.name || repo.branch;
+        return { ...current, [repo.id]: defaultBranch };
+      });
+    } catch (error) {
+      setRemoteRepoBranchErrors((current) => ({ ...current, [repo.id]: String(error) }));
+    } finally {
+      setRemoteRepoBranchesLoading((current) => ({ ...current, [repo.id]: false }));
+    }
+  }, []);
+
+  const rememberRemoteWorkspaceSession = useCallback((session: RemoteWorkspaceSession) => {
+    setActiveRemoteWorkspaceSession(session);
+    void refreshRemoteRepoServerState(session.repoId, true);
+  }, [refreshRemoteRepoServerState]);
+
+  const remoteReposWithServerState = useMemo(() => remoteRepos.map((repo) => ({
+    ...repo,
+    gitNexusStatus: remoteRepoGitNexusStatuses[remoteRepoGraphStatusKey(repo.id, remoteRepoSelectedRefs[repo.id] || repo.branch)] || repo.gitNexusStatus,
+    fileTreeStatus: remoteRepoFileTreeStatuses[repo.id] || repo.fileTreeStatus,
+    recentWorkspaces: (remoteRepoWorkspaces[repo.id] || []).map((workspace) => {
+      const branchName = (remoteRepoBranches[repo.id] || [])
+        .find((branch) => workspace.baseCommit.startsWith(branch.shortSha))?.name;
+      return {
+        id: workspace.workspaceId,
+        name: `${workspace.sessionId} · ${workspace.baseCommit.slice(0, 7) || "—"}`,
+        baseCommit: workspace.baseCommit,
+        branchName,
+        dirty: workspace.dirty,
+        workspaceVersion: workspace.workspaceVersion,
+        updatedAt: workspace.updatedAt,
+        state: workspace.state,
+      };
+    }),
+    recentActivity: (remoteRepoActivities[repo.id] || []).map((activity) => ({
+      id: activity.id,
+      summary: activity.summary,
+      occurredAt: activity.occurredAt,
+    })),
+  })), [remoteRepos, remoteRepoActivities, remoteRepoBranches, remoteRepoFileTreeStatuses, remoteRepoGitNexusStatuses, remoteRepoSelectedRefs, remoteRepoWorkspaces]);
+
   const activityBar = null;
   const noRepos = repos.length === 0;
+  const selectedRemoteRepo = remoteReposWithServerState.find((repo) => repo.id === selectedRemoteRepoId) || null;
+  const selectedRemoteRepoBranches = selectedRemoteRepo ? remoteRepoBranches[selectedRemoteRepo.id] || [] : [];
+  const selectedRemoteRepoBranchError = selectedRemoteRepo ? remoteRepoBranchErrors[selectedRemoteRepo.id] || "" : "";
+  const selectedRemoteRepoBranchesBusy = selectedRemoteRepo ? Boolean(remoteRepoBranchesLoading[selectedRemoteRepo.id]) : false;
+  const selectedRemoteRepoRef = selectedRemoteRepo
+    ? remoteRepoSelectedRefs[selectedRemoteRepo.id] || selectedRemoteRepo.branch
+    : "";
+  const selectedRemoteRepoWithRef = selectedRemoteRepo
+    ? { ...selectedRemoteRepo, branch: selectedRemoteRepoRef || selectedRemoteRepo.branch }
+    : null;
+  const selectedRemoteWorkspaceSession = selectedRemoteRepo
+    && activeRemoteWorkspaceSession?.repoId === selectedRemoteRepo.id
+    ? activeRemoteWorkspaceSession
+    : null;
+  const currentProjectId = selectedRepo?.id || "";
+
+  const refreshRemoteRepos = useCallback(async () => {
+    setRemoteRepoLoading(true);
+    try {
+      const rows = await listRemoteRepos();
+      setRemoteRepos(rows);
+      setRemoteRepoLoadError("");
+    } catch (error) {
+      setRemoteRepoLoadError(String(error));
+      setRemoteRepos([]);
+    } finally {
+      setRemoteRepoLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshRemoteRepos();
+  }, [refreshRemoteRepos]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadRemoteRepoServiceSetting()
+      .then((setting) => {
+        if (cancelled) return;
+        setRemoteRepoServiceSetting(setting);
+        setRemoteRepoServiceDraft(setting.configuredUrl);
+        setRemoteRepoServiceApiKeyDraft(setting.apiKey);
+      })
+      .catch((error) => {
+        if (!cancelled) setRemoteRepoServiceNotice(`无法读取远程服务设置：${String(error)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const repo = remoteRepos.find((item) => item.id === selectedRemoteRepoId);
+    if (!repo) return;
+    void refreshRemoteRepoServerState(repo.id, repo.connectionStatus === "connected");
+    void refreshRemoteRepoBranches(repo);
+  }, [remoteRepos, refreshRemoteRepoBranches, refreshRemoteRepoServerState, selectedRemoteRepoId]);
+
+  useEffect(() => {
+    if (!selectedRemoteRepo || selectedRemoteRepo.connectionStatus !== "connected" || !selectedRemoteRepoRef) return;
+    void refreshRemoteRepoGitNexusStatus(selectedRemoteRepo.id, selectedRemoteRepoRef);
+  }, [refreshRemoteRepoGitNexusStatus, selectedRemoteRepo?.connectionStatus, selectedRemoteRepo?.id, selectedRemoteRepoRef]);
+
+  function openRemoteRepo(repo: RemoteRepo) {
+    setSelectedRemoteRepoId(repo.id);
+    setRemoteRepoSelectedRefs((current) => ({ ...current, [repo.id]: current[repo.id] || repo.branch }));
+    setRemoteRepoResourceMode(null);
+    setActiveRemoteWorkspaceSession(null);
+    setRemoteRepoNotice("");
+    openRightPane("remoteRepos");
+    setRemoteRepos((current) => current.map((item) => item.id === repo.id ? { ...item, lastAccessedAt: Date.now() } : item));
+    void touchRemoteRepoAccess(repo.id)
+      .then(() => refreshRemoteRepos())
+      .catch((error) => setRemoteRepoLoadError(String(error)));
+  }
+
+  function openRemoteRepoInspector() {
+    setSelectedRemoteRepoId("");
+    setRemoteRepoResourceMode(null);
+    setActiveRemoteWorkspaceSession(null);
+    setRemoteRepoNotice("");
+    openRightPane("remoteRepos");
+  }
+
+  function handleRemoteRepoAction(action: RemoteRepoAction, workspaceId?: string) {
+    setRemoteRepoNotice("");
+    if (action === "browse_files") {
+      setRemoteRepoResourceMode("files");
+      return;
+    }
+    if (action === "view_branches") {
+      setRemoteRepoResourceMode("branches");
+      return;
+    }
+    if (action === "resume_workspace") {
+      if (!workspaceId) {
+        setRemoteRepoNotice("没有可恢复的服务端工作区。");
+        return;
+      }
+      void (async () => {
+        try {
+          setRemoteRepoNotice("正在从服务端恢复工作区…");
+          const session = await resumeRemoteWorkspace(workspaceId);
+          setActiveRemoteWorkspaceSession(session);
+          setRemoteRepoResourceMode("workspace");
+          await refreshRemoteRepoServerState(session.repoId, true);
+        } catch (error) {
+          setRemoteRepoNotice(`无法恢复远程工作区：${String(error)}`);
+        }
+      })();
+      return;
+    }
+    // Opening a workspace is deliberately a new-workspace flow. Existing
+    // server workspaces are resumed only via an explicit “继续工作” action.
+    setActiveRemoteWorkspaceSession(null);
+    setRemoteRepoResourceMode("workspace");
+  }
+
+  async function runRemoteRepoHeadGraph(repo: RemoteRepo, refOrCommit: string, analyze: boolean) {
+    const statusKey = remoteRepoGraphStatusKey(repo.id, refOrCommit);
+    setRemoteRepoGitNexusBusyKey(`${statusKey}:${analyze ? "analyze" : "status"}`);
+    setRemoteRepoNotice(analyze ? `正在分析 ${refOrCommit} 的仓库 HEAD…` : `正在检查 ${refOrCommit} 的仓库 HEAD 索引…`);
+    try {
+      const graph = await getRemoteWorkspaceGraph(repo.id, null, "repo_head", analyze, refOrCommit);
+      setRemoteRepoGitNexusStatuses((current) => ({
+        ...current,
+        [statusKey]: mapGraphStatusToRemoteRepoGitNexusStatus(graph.status),
+      }));
+      setRemoteRepoNotice(`${refOrCommit}：${describeRemoteWorkspaceGraphAction(analyze ? "analyze" : "status", graph)}`);
+    } catch (error) {
+      setRemoteRepoGitNexusStatuses((current) => ({ ...current, [statusKey]: "unavailable" }));
+      setRemoteRepoNotice(`GitNexus 操作失败：${String(error)}`);
+    } finally {
+      setRemoteRepoGitNexusBusyKey("");
+    }
+  }
+
+  async function syncRemoteRepo(repoId: string) {
+    const repo = remoteRepos.find((item) => item.id === repoId);
+    if (!repo || repo.connectionStatus === "syncing" || repo.connectionStatus === "auth_required") return;
+    setRemoteRepoNotice("正在刷新分支、提交与文件元数据…");
+    setRemoteRepos((current) => current.map((item) => item.id === repoId ? { ...item, connectionStatus: "syncing" } : item));
+    setRemoteRepoGitNexusStatuses((current) => ({
+      ...current,
+      [remoteRepoGraphStatusKey(repoId, remoteRepoSelectedRefs[repoId] || repo.branch)]: "unknown",
+    }));
+    setRemoteRepoFileTreeStatuses((current) => ({ ...current, [repoId]: "loading" }));
+    try {
+      await syncRemoteRepoConnection(repoId);
+      await refreshRemoteRepos();
+      await refreshRemoteRepoBranches({ ...repo, connectionStatus: "connected" });
+      await refreshRemoteRepoServerState(repoId, true);
+      setRemoteRepoNotice("同步完成：已刷新远程代码元数据，未创建工作区，也未修改远端。");
+    } catch (error) {
+      const message = String(error);
+      setRemoteRepos((current) => current.map((item) => item.id === repoId ? { ...item, connectionStatus: "failed", errorMessage: message } : item));
+      setRemoteRepoNotice(`同步失败：${message}`);
+    }
+  }
+
+  async function testConfiguredRemoteRepoService() {
+    setRemoteRepoServiceBusy(true);
+    setRemoteRepoServiceNotice("");
+    try {
+      const target = remoteRepoServiceDraft.trim() || remoteRepoServiceSetting.effectiveUrl;
+      const result = await testRemoteRepoServiceUrl(target, remoteRepoServiceApiKeyDraft);
+      setRemoteRepoServiceNotice(`连接成功：服务可用，读取到 ${result.repoCount} 个远程仓库连接。点击“保存并使用”后，App 才会切换到 ${result.serviceUrl}。`);
+    } catch (error) {
+      setRemoteRepoServiceNotice(`连接失败：${String(error)}`);
+    } finally {
+      setRemoteRepoServiceBusy(false);
+    }
+  }
+
+  async function saveConfiguredRemoteRepoService(value = remoteRepoServiceDraft, apiKey = remoteRepoServiceApiKeyDraft) {
+    setRemoteRepoServiceBusy(true);
+    setRemoteRepoServiceNotice("");
+    try {
+      const setting = await saveRemoteRepoServiceUrl(value, apiKey);
+      setRemoteRepoServiceSetting(setting);
+      setRemoteRepoServiceDraft(setting.configuredUrl);
+      setRemoteRepoServiceApiKeyDraft(setting.apiKey);
+      setRemoteRepoServiceNotice(setting.configuredUrl
+        ? `已保存并切换服务：检测到 ${setting.repoCount} 个远程仓库连接。`
+        : "已恢复默认服务地址。"
+      );
+      setSelectedRemoteRepoId("");
+      setRemoteRepoResourceMode(null);
+      await refreshRemoteRepos();
+    } catch (error) {
+      setRemoteRepoServiceNotice(`未保存：${String(error)}`);
+    } finally {
+      setRemoteRepoServiceBusy(false);
+    }
+  }
+
+  async function reloadRemoteRepoConnections() {
+    setRemoteRepoNotice("正在重新读取远程仓库服务配置…");
+    try {
+      await reloadRemoteRepoConfig();
+      await refreshRemoteRepos();
+      setRemoteRepoNotice("远程仓库配置已刷新。");
+    } catch (error) {
+      setRemoteRepoNotice(`刷新失败：${String(error)}`);
+    }
+  }
+
+  function openRemoteRepoImport() {
+    setRemoteRepoMutationError("");
+    setRemoteRepoFormTarget(null);
+  }
+
+  function openRemoteRepoEdit(repo: RemoteRepo) {
+    setRemoteRepoMutationError("");
+    setRemoteRepoFormTarget(repo);
+  }
+
+  async function submitRemoteRepoForm(values: RemoteRepoFormValues) {
+    const editing = remoteRepoFormTarget && remoteRepoFormTarget !== undefined;
+    setRemoteRepoMutationBusy(true);
+    setRemoteRepoMutationError("");
+    try {
+      if (editing) {
+        await updateRemoteRepo({
+          repoId: values.repoId,
+          name: values.name,
+          remoteUrl: values.remoteUrl.trim() || undefined,
+          defaultRef: values.defaultRef,
+          authMethod: values.authMethod || undefined,
+        });
+        setRemoteRepoNotice("连接已更新；若修改了来源或默认分支，请手动同步。未创建 workspace/session。");
+      } else {
+        await addRemoteRepo({
+          repoId: values.repoId.trim(),
+          name: values.name.trim(),
+          remoteUrl: values.remoteUrl.trim(),
+          defaultRef: values.defaultRef.trim(),
+          authMethod: values.authMethod || undefined,
+        });
+        setSelectedRemoteRepoId(values.repoId.trim());
+        setRemoteRepoNotice("仓库已引入，服务端正在排队镜像克隆；未创建 workspace/session。 ");
+      }
+      setRemoteRepoFormTarget(undefined);
+      await refreshRemoteRepos();
+    } catch (error) {
+      setRemoteRepoMutationError(String(error));
+    } finally {
+      setRemoteRepoMutationBusy(false);
+    }
+  }
+
+  async function confirmRemoteRepoRemoval() {
+    const repo = remoteRepoPendingRemoval;
+    if (!repo) return;
+    setRemoteRepoMutationBusy(true);
+    try {
+      await removeRemoteRepo(repo.id);
+      if (selectedRemoteRepoId === repo.id) {
+        setSelectedRemoteRepoId("");
+        setRemoteRepoResourceMode(null);
+      }
+      setRemoteRepoPendingRemoval(null);
+      setRemoteRepoNotice("远程仓库连接已移除；远端仓库与本地缓存未被删除。");
+      await refreshRemoteRepos();
+    } catch (error) {
+      setRemoteRepoMutationError(String(error));
+      setRemoteRepoNotice(`移除失败：${String(error)}`);
+    } finally {
+      setRemoteRepoMutationBusy(false);
+    }
+  }
+
+  async function toggleRemoteRepoPinned(repo: RemoteRepo) {
+    const nextPinned = !repo.pinned;
+    setRemoteRepos((current) => current.map((item) => item.id === repo.id ? { ...item, pinned: nextPinned } : item));
+    try {
+      await setRemoteRepoPinned(repo.id, nextPinned);
+      await refreshRemoteRepos();
+    } catch (error) {
+      setRemoteRepos((current) => current.map((item) => item.id === repo.id ? { ...item, pinned: repo.pinned } : item));
+      setRemoteRepoNotice(`更新固定状态失败：${String(error)}`);
+    }
+  }
 
   const sideBar = (
     <DesktopSidebar
@@ -6956,6 +7390,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         setSettingsInitialSection("general");
         setShowSettings(true);
       }}
+      remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
+      onOpenRemoteRepos={openRemoteRepoInspector}
     />
   );
 
@@ -7251,6 +7687,78 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           ? "terminal"
           : "default"}
     >
+      {rightPaneTab === "remoteRepos" ? (
+        selectedRemoteRepo ? (
+          remoteRepoResourceMode ? (
+            remoteRepoResourceMode === "workspace" ? (
+              <RemoteRepoWorkspacePanel
+                key={`${selectedRemoteRepo.id}:${selectedRemoteRepoRef}`}
+                repo={selectedRemoteRepoWithRef || selectedRemoteRepo}
+                onBack={() => {
+                  setRemoteRepoResourceMode(null);
+                  setActiveRemoteWorkspaceSession(null);
+                }}
+                initialSession={selectedRemoteWorkspaceSession}
+                onSessionChange={rememberRemoteWorkspaceSession}
+                onSessionUnavailable={() => {
+                  setActiveRemoteWorkspaceSession(null);
+                  void refreshRemoteRepoServerState(selectedRemoteRepo.id, true);
+                }}
+              />
+            ) : (
+              <RemoteRepoCodeResourcePanel
+                repo={selectedRemoteRepoWithRef || selectedRemoteRepo}
+                mode={remoteRepoResourceMode}
+                selectedRef={selectedRemoteRepoRef}
+                onSelectBranch={(branchName) => {
+                  setRemoteRepoSelectedRefs((current) => ({ ...current, [selectedRemoteRepo.id]: branchName }));
+                  setRemoteRepoResourceMode(null);
+                }}
+                onBack={() => setRemoteRepoResourceMode(null)}
+              />
+            )
+          ) : (
+            <RemoteRepoOverview
+              repo={selectedRemoteRepoWithRef || selectedRemoteRepo}
+              branches={selectedRemoteRepoBranches}
+              branchesBusy={selectedRemoteRepoBranchesBusy}
+              branchError={selectedRemoteRepoBranchError}
+              selectedRef={selectedRemoteRepoRef}
+              gitNexusBusy={Boolean(remoteRepoGitNexusBusyKey)}
+              currentProjectLinked={Boolean(currentProjectId) && selectedRemoteRepo.linkedProjectIds.includes(currentProjectId)}
+              notice={remoteRepoNotice}
+              onBack={() => {
+                setSelectedRemoteRepoId("");
+                setRemoteRepoResourceMode(null);
+                setActiveRemoteWorkspaceSession(null);
+                setRemoteRepoNotice("");
+              }}
+              onSelectBranch={(branchName) => setRemoteRepoSelectedRefs((current) => ({ ...current, [selectedRemoteRepo.id]: branchName }))}
+              onRepoHeadGraphStatus={() => void runRemoteRepoHeadGraph(selectedRemoteRepo, selectedRemoteRepoRef, false)}
+              onRepoHeadGraphAnalyze={() => void runRemoteRepoHeadGraph(selectedRemoteRepo, selectedRemoteRepoRef, true)}
+              onAction={handleRemoteRepoAction}
+              onSync={() => void syncRemoteRepo(selectedRemoteRepo.id)}
+            />
+          )
+        ) : (
+          <RemoteRepoCatalog
+            repos={remoteReposWithServerState}
+            currentProjectId={currentProjectId}
+            loading={remoteRepoLoading}
+            error={remoteRepoLoadError}
+            refreshing={remoteRepoLoading}
+            onBack={() => closeRightPaneTab("remoteRepos")}
+            onOpenRepo={openRemoteRepo}
+            onImport={openRemoteRepoImport}
+            onReload={() => void reloadRemoteRepoConnections()}
+            onEditRepo={openRemoteRepoEdit}
+            onSyncRepo={(repo) => void syncRemoteRepo(repo.id)}
+            onRemoveRepo={setRemoteRepoPendingRemoval}
+            onTogglePin={(repo) => void toggleRemoteRepoPinned(repo)}
+          />
+        )
+      ) : null}
+
       {rightPaneTab === "worktree" ? (
         <div className="flex h-full min-h-0 w-full overflow-hidden">
           <GitTreeTopologyPanel
@@ -7456,6 +7964,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onInput={sendTerminalData}
         />
       ) : null}
+
+      <RemoteRepoFormDialog
+        open={remoteRepoFormTarget !== undefined}
+        repo={remoteRepoFormTarget || null}
+        busy={remoteRepoMutationBusy}
+        error={remoteRepoMutationError}
+        onOpenChange={(open) => {
+          if (!open && !remoteRepoMutationBusy) {
+            setRemoteRepoFormTarget(undefined);
+            setRemoteRepoMutationError("");
+          }
+        }}
+        onSubmit={(values) => void submitRemoteRepoForm(values)}
+      />
+      <RemoteRepoRemoveDialog
+        repo={remoteRepoPendingRemoval}
+        busy={remoteRepoMutationBusy}
+        onOpenChange={(open) => {
+          if (!open && !remoteRepoMutationBusy) setRemoteRepoPendingRemoval(null);
+        }}
+        onConfirm={() => void confirmRemoteRepoRemoval()}
+      />
     </RightSidebarPanel>
   );
 
@@ -7467,6 +7997,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         changes: appText.changes,
         worktree: appText.worktree,
         terminal: appText.terminal,
+        remoteRepos: "远程仓库",
         skills: appText.skills,
         mcp: appText.mcp,
       }}
@@ -8143,6 +8674,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }}
             onMobileVisibilityChange={setSettingsMobileVisible}
             onToggleControlService={(enabled) => void toggleControlServiceEnabled(enabled)}
+            remoteRepoServiceUrl={remoteRepoServiceSetting.effectiveUrl}
+            remoteRepoServiceDraft={remoteRepoServiceDraft}
+            remoteRepoServiceApiKeyDraft={remoteRepoServiceApiKeyDraft}
+            remoteRepoServiceBusy={remoteRepoServiceBusy}
+            remoteRepoServiceNotice={remoteRepoServiceNotice}
+            onRemoteRepoServiceDraftChange={setRemoteRepoServiceDraft}
+            onRemoteRepoServiceApiKeyDraftChange={setRemoteRepoServiceApiKeyDraft}
+            onTestRemoteRepoService={() => void testConfiguredRemoteRepoService()}
+            onSaveRemoteRepoService={() => void saveConfiguredRemoteRepoService()}
+            onResetRemoteRepoService={() => {
+              setRemoteRepoServiceDraft("");
+              setRemoteRepoServiceApiKeyDraft("");
+              void saveConfiguredRemoteRepoService("", "");
+            }}
             runtimeChecking={runtimeChecking}
             checkingDeps={checkingDeps}
             installingDep={installingDep}

@@ -440,7 +440,7 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
         </div>
         <Input className="h-10 rounded-lg" placeholder="过滤已安装 skills" value={props.skillListQuery} onChange={(event) => props.onSkillListQueryChange(event.target.value)} />
       </div>
-      {props.skills.length === 0 ? <ModuleEmpty title="暂无 Skills" description="OpenCode 会扫描 .opencode/skills、.claude/skills 和全局 skills。" /> : null}
+      {props.skills.length === 0 ? <ModuleEmpty title="暂无 Skills" description="OpenCode 会扫描 .opencode/skills 和 ~/.config/opencode/skills。" /> : null}
       {props.skills.length > 0 && props.filteredSkills.length === 0 ? <ModuleEmpty title="没有匹配当前过滤条件的 Skill" /> : null}
       <div className="grid gap-2">
         {props.groupedSkills.map((group) => {

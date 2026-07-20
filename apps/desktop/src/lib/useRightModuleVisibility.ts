@@ -3,12 +3,13 @@ import type { RightPaneTab } from "../components/common/AppChromeIcons";
 import { loadLocalJson, saveLocalJson } from "./localPreferences";
 
 const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
-const RIGHT_PANE_TABS: RightPaneTab[] = ["changes", "worktree", "terminal", "skills", "mcp"];
+const RIGHT_PANE_TABS: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "mcp"];
 
 const DEFAULT_RIGHT_MODULE_VISIBILITY: Record<RightPaneTab, boolean> = {
   changes: true,
   worktree: true,
   terminal: true,
+  remoteRepos: true,
   skills: true,
   mcp: true
 };

@@ -1,4 +1,364 @@
 {
+  "remote_repo": {
+    "name": "remote_repo",
+    "display_name": "Remote Repo",
+    "description": "Use Giteam's Remote Repo Service through a local MCP launcher. The launcher reads service_url and api_key from Giteam desktop settings before starting the MCP server.",
+    "repository": {
+      "type": "git",
+      "url": "https://giteam.local/builtin/opencode-remote-repo"
+    },
+    "homepage": "https://giteam.local/builtin/opencode-remote-repo",
+    "author": {
+      "name": "Giteam"
+    },
+    "license": "MIT",
+    "categories": [
+      "Dev Tools"
+    ],
+    "tags": [
+      "remote-repo",
+      "git",
+      "opencode",
+      "giteam",
+      "workspace"
+    ],
+    "examples": [
+      {
+        "title": "List remote repositories",
+        "description": "Read the repositories configured in Giteam's Remote Repo Service.",
+        "prompt": "Use remote_repo list_repos"
+      },
+      {
+        "title": "Create a pinned workspace",
+        "description": "Sync a configured repository and create a commit-pinned session.",
+        "prompt": "Use remote_repo sync_repo, then create_session"
+      }
+    ],
+    "installations": {
+      "giteam_builtin": {
+        "type": "custom",
+        "command": "python3",
+        "args": [
+          "mcp/giteam_mcp_launcher.py"
+        ],
+        "description": "Installed automatically from the Giteam built-in opencode-remote-repo skill manifest",
+        "recommended": true
+      }
+    },
+    "tools": [
+      {
+        "name": "capabilities",
+        "description": "List the remote repository service capabilities.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "list_repos",
+        "description": "List repositories configured on the remote repository service.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "sync_repo",
+        "description": "Fetch a configured repository into the server mirror cache.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_id"
+          ]
+        }
+      },
+      {
+        "name": "create_session",
+        "description": "Create a commit-pinned remote workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo_id": {
+              "type": "string"
+            },
+            "ref_or_commit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_id",
+            "ref_or_commit"
+          ]
+        }
+      },
+      {
+        "name": "get_session_state",
+        "description": "Get the current state of a remote session workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ]
+        }
+      },
+      {
+        "name": "run_shell",
+        "description": "Run a bounded shell command in a remote session workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "command"
+          ]
+        }
+      },
+      {
+        "name": "read_file",
+        "description": "Read a bounded text slice from a remote workspace file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "list_files",
+        "description": "List files and directories under a remote workspace path.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ]
+        }
+      },
+      {
+        "name": "find_files",
+        "description": "Find remote workspace files by glob or case-insensitive substring.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "grep",
+        "description": "Search remote workspace text files with a regular expression.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "pattern"
+          ]
+        }
+      },
+      {
+        "name": "write_file",
+        "description": "Write complete file content in a remote workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "path",
+            "content"
+          ]
+        }
+      },
+      {
+        "name": "edit_file",
+        "description": "Replace exact text in a remote workspace file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "old_text": {
+              "type": "string"
+            },
+            "new_text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "path",
+            "old_text",
+            "new_text"
+          ]
+        }
+      },
+      {
+        "name": "apply_patch",
+        "description": "Apply a unified Git patch to a remote workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "patch": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "patch"
+          ]
+        }
+      },
+      {
+        "name": "add_repo",
+        "description": "Add a new repository to the remote service configuration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "remote_url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_id",
+            "name",
+            "remote_url"
+          ]
+        }
+      },
+      {
+        "name": "update_repo",
+        "description": "Update an existing repository configuration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_id"
+          ]
+        }
+      },
+      {
+        "name": "remove_repo",
+        "description": "Remove a repository from the remote service configuration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_id"
+          ]
+        }
+      },
+      {
+        "name": "reload_config",
+        "description": "Reload the service configuration from disk.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "graph_analyze",
+        "description": "Run GitNexus analysis for a repository head or session workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "graph_status",
+        "description": "Get GitNexus status for a repository head or session workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ],
+    "prompts": [],
+    "resources": [],
+    "is_official": true
+  },
   "firecrawl": {
     "name": "firecrawl",
     "display_name": "Firecrawl",

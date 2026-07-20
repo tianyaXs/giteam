@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Remote Repo"
+  short_description: "Operate remote repositories through MCP"
+  default_prompt: "Use $opencode-remote-repo to inspect a remote repository through the remote_repo MCP tools."

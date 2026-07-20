@@ -1,0 +1,16 @@
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+!.env.example
+.gitnexus/
+.remote-repo-service/
+deploy/data/
+service.local.json
+src/remote_repo_service.egg-info/
