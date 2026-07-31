@@ -40,7 +40,6 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { cn } from "../../lib/utils";
 import {
-  ArrowDownIcon,
   CheckIcon,
   CloseIcon,
   ImageIcon
@@ -73,8 +72,9 @@ type AgentComposerPanelProps = {
   showEmptyState: boolean;
   activeSessionStale?: boolean;
   selectedRepoName: string;
-  showJumpLatest: boolean;
-  onJumpLatest: () => void;
+  /** @deprecated 拉到最新已改由 AgentChatFrame 悬浮层渲染 */
+  showJumpLatest?: boolean;
+  onJumpLatest?: () => void;
   attachments: AgentAttachment[];
   mcpPromptRefs: string[];
   onRemoveAttachment: (id: string) => void;
@@ -566,13 +566,16 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
 function ComposerSubmitButton({
   activeSessionBusy,
   canSubmit,
+  hasModel,
   onPrimaryAction
 }: {
   activeSessionBusy: boolean;
   canSubmit: boolean;
+  hasModel: boolean;
   onPrimaryAction: () => void;
 }) {
   const disabled = !activeSessionBusy && !canSubmit;
+  const idleTitle = !hasModel ? "请先配置并选择模型" : canSubmit ? "发送" : "输入内容后发送";
   return (
     <Button
       className={cn(
@@ -582,7 +585,7 @@ function ComposerSubmitButton({
       disabled={disabled}
       onClick={onPrimaryAction}
       aria-label={activeSessionBusy ? "停止" : "发送"}
-      title={activeSessionBusy ? "停止生成" : "发送"}
+      title={activeSessionBusy ? "停止生成" : idleTitle}
       variant={disabled ? "secondary" : "contrast"}
       size="icon"
     >
@@ -605,8 +608,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     showEmptyState,
     activeSessionStale,
     selectedRepoName,
-    showJumpLatest,
-    onJumpLatest,
     attachments,
     mcpPromptRefs,
     onRemoveAttachment,
@@ -901,6 +902,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     <ComposerSubmitButton
                       activeSessionBusy={activeSessionBusy}
                       canSubmit={canSubmit}
+                      hasModel={Boolean((activeModel || "").trim())}
                       onPrimaryAction={onPrimaryAction}
                     />
                   </div>
@@ -910,24 +912,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           </div>
         ) : (
           // 旧会话：贴图只叠在输入行上方，底栏「继续跟进」行布局不变，整卡自然向上增高。
+          // 「拉到最新」由 AgentChatFrame 悬浮渲染，避免占行或被 footer overflow 裁切。
           <div
             className={cn(
               "relative flex w-full min-w-0 flex-col rounded-[28px] border border-border/70 bg-card px-2 py-2 text-card-foreground shadow-sm",
               hasComposerPreviews && "gap-2"
             )}
           >
-            {showJumpLatest ? (
-              <Button
-                className="absolute -top-11 left-1/2 size-9 -translate-x-1/2 rounded-full shadow-md"
-                onClick={onJumpLatest}
-                aria-label="拉到最新"
-                title="拉到最新"
-                variant="ghost"
-                size="icon"
-              >
-                <ArrowDownIcon />
-              </Button>
-            ) : null}
             {previewStrip}
             <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-2">
               <div className="flex items-end self-end pb-0.5">
@@ -946,6 +937,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                 <ComposerSubmitButton
                   activeSessionBusy={activeSessionBusy}
                   canSubmit={canSubmit}
+                  hasModel={Boolean((activeModel || "").trim())}
                   onPrimaryAction={onPrimaryAction}
                 />
               </div>

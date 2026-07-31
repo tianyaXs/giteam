@@ -47,8 +47,15 @@ pub struct AgentModelCost {
 #[serde(rename_all = "camelCase")]
 pub struct AgentProviderInfo {
     pub provider: String,
+    /// 显示名（来自 models.json `name`；缺省等于 provider id）。
+    #[serde(default)]
+    pub name: String,
     pub model_count: usize,
     pub has_credential: bool,
+    /// 是否可从 models.json 整项删除（自定义 openai-compatible.* / 纯自定义实例）。
+    /// 内置供应商仅有端点覆盖时为 false。
+    #[serde(default)]
+    pub removable: bool,
     pub models: Vec<AgentModelInfo>,
 }
 
@@ -115,6 +122,12 @@ impl ProviderCatalog {
 
     /// 按 provider 聚合的目录视图，供设置页与选择器使用。
     pub fn list_providers(&self) -> Result<Vec<AgentProviderInfo>, PiAgentError> {
+        // 修复历史错误配置：openai-codex 等 OAuth 原生 provider 被写成自定义
+        // baseUrl 后若仍保留 openai-codex-responses，会校验 chatgpt_account_id。
+        // 此处原地把非官方端点的 api 修正为 openai-completions，保持原 provider id。
+        let _ = self.repair_oauth_native_custom_endpoints();
+        let display_names = self.provider_display_names();
+        let models_json_ids = self.models_json_provider_ids();
         let mut providers: Vec<AgentProviderInfo> = Vec::new();
         for model in self.list_models()? {
             if let Some(existing) = providers
@@ -124,10 +137,20 @@ impl ProviderCatalog {
                 existing.has_credential |= model.has_credential;
                 existing.models.push(model);
             } else {
+                let name = display_names
+                    .get(&model.provider)
+                    .cloned()
+                    .unwrap_or_else(|| model.provider.clone());
+                let removable = is_removable_custom_provider_id(&model.provider)
+                    && models_json_ids
+                        .iter()
+                        .any(|id| id.eq_ignore_ascii_case(&model.provider));
                 providers.push(AgentProviderInfo {
                     provider: model.provider.clone(),
+                    name,
                     model_count: 0,
                     has_credential: model.has_credential,
+                    removable,
                     models: vec![model],
                 });
             }
@@ -139,6 +162,9 @@ impl ProviderCatalog {
                     .then_with(|| left.name.cmp(&right.name))
             });
             provider.model_count = provider.models.len();
+            if provider.name.trim().is_empty() {
+                provider.name = provider.provider.clone();
+            }
         }
         providers.sort_by(|left, right| left.provider.cmp(&right.provider));
         Ok(providers)
@@ -264,6 +290,462 @@ impl ProviderCatalog {
         Ok(())
     }
 
+    /// 删除自定义供应商：从 models.json 移除整项，并清除 vault 凭据。
+    /// 仅允许 `openai-compatible.*` 或非内置的纯自定义实例；内置供应商的端点覆盖不可由此删除。
+    pub fn remove_custom_provider(&self, provider: &str) -> Result<bool, PiAgentError> {
+        let provider = provider.trim();
+        if provider.is_empty() {
+            return Err(PiAgentError::Provider("provider is required".to_string()));
+        }
+        if provider == "openai-compatible" {
+            return Err(PiAgentError::Provider(
+                "openai-compatible is a template entry and cannot be deleted".to_string(),
+            ));
+        }
+        if !is_removable_custom_provider_id(provider) {
+            return Err(PiAgentError::Provider(format!(
+                "{provider} is not a removable custom provider"
+            )));
+        }
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let root_obj = root.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json root must be an object".to_string())
+        })?;
+        let Some(providers) = root_obj
+            .get_mut("providers")
+            .and_then(|value| value.as_object_mut())
+        else {
+            return Err(PiAgentError::Provider(format!(
+                "custom provider {provider} not found in models.json"
+            )));
+        };
+        let key = providers
+            .keys()
+            .find(|id| id.eq_ignore_ascii_case(provider))
+            .cloned()
+            .ok_or_else(|| {
+                PiAgentError::Provider(format!(
+                    "custom provider {provider} not found in models.json"
+                ))
+            })?;
+        providers.remove(&key);
+        write_models_json(&path, &root)?;
+        let _ = self.secrets.remove(&key)?;
+        if !key.eq_ignore_ascii_case(provider) {
+            let _ = self.secrets.remove(provider)?;
+        }
+        Ok(true)
+    }
+
+    /// 连接 OpenAI Completions 兼容端点：校验 baseUrl、拉 `/models`、写入
+    /// models.json 并保存 api key。
+    ///
+    /// - `provider` 为空或为模板 id `openai-compatible`：新建
+    ///   `openai-compatible.<slug>` 实例（名称必填，便于多端点区分）。
+    /// - `provider` 为已有 `openai-compatible.*`：更新该实例。
+    /// 返回 `(provider_id, model_ids)`。
+    pub fn connect_openai_compatible(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        name: &str,
+        provider: Option<&str>,
+    ) -> Result<(String, Vec<String>), PiAgentError> {
+        let base_url = base_url.trim().trim_end_matches('/');
+        let api_key = api_key.trim();
+        let display_name = name.trim();
+        if base_url.is_empty() || api_key.is_empty() {
+            return Err(PiAgentError::Provider(
+                "baseUrl and apiKey are required".to_string(),
+            ));
+        }
+        if display_name.is_empty() {
+            return Err(PiAgentError::Provider(
+                "provider name is required".to_string(),
+            ));
+        }
+        let Some(models_url) = openai_compat_models_url(base_url) else {
+            return Err(PiAgentError::Provider(
+                "baseUrl is not an OpenAI-compatible endpoint".to_string(),
+            ));
+        };
+        let mut ids = match fetch_openai_compat_model_ids(&models_url, api_key, true) {
+            Ok(ids) if !ids.is_empty() => ids,
+            _ => fetch_openai_compat_model_ids(&models_url, api_key, false)?,
+        };
+        ids.retain(|id| {
+            let lower = id.to_ascii_lowercase();
+            !["embedding", "embed", "rerank", "tts", "whisper", "speech"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+        });
+        if ids.is_empty() {
+            return Err(PiAgentError::Provider(
+                "endpoint returned no usable chat models".to_string(),
+            ));
+        }
+
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let root_obj = root.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json root must be an object".to_string())
+        })?;
+        let providers = root_obj
+            .entry("providers")
+            .or_insert_with(|| serde_json::json!({}));
+        let providers = providers.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json providers must be an object".to_string())
+        })?;
+
+        let requested = provider.map(str::trim).filter(|value| !value.is_empty());
+        let provider_id = match requested {
+            Some(id) if id != "openai-compatible" && id.starts_with("openai-compatible.") => {
+                id.to_string()
+            }
+            _ => allocate_openai_compatible_provider_id(display_name, providers),
+        };
+
+        let models = ids
+            .iter()
+            .map(|id| serde_json::json!({ "id": id, "name": id }))
+            .collect::<Vec<_>>();
+        providers.insert(
+            provider_id.clone(),
+            serde_json::json!({
+                "name": display_name,
+                "baseUrl": base_url,
+                "api": "openai-completions",
+                "models": models,
+            }),
+        );
+        write_models_json(&path, &root)?;
+        self.secrets.set_api_key(&provider_id, api_key)?;
+        Ok((provider_id, ids))
+    }
+
+    /// models.json 中各 provider 的显示名。
+    fn provider_display_names(&self) -> std::collections::HashMap<String, String> {
+        let mut names = std::collections::HashMap::new();
+        let Ok(path) = self.models_json_path() else {
+            return names;
+        };
+        let Ok(root) = read_models_json(&path) else {
+            return names;
+        };
+        let Some(providers) = root.get("providers").and_then(|value| value.as_object()) else {
+            return names;
+        };
+        for (provider_id, entry) in providers {
+            if let Some(name) = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                names.insert(provider_id.clone(), name.to_string());
+            }
+        }
+        names
+    }
+
+    /// models.json 中已登记的 provider id 集合。
+    fn models_json_provider_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        let Ok(path) = self.models_json_path() else {
+            return ids;
+        };
+        let Ok(root) = read_models_json(&path) else {
+            return ids;
+        };
+        let Some(providers) = root.get("providers").and_then(|value| value.as_object()) else {
+            return ids;
+        };
+        for provider_id in providers.keys() {
+            ids.insert(provider_id.clone());
+        }
+        ids
+    }
+
+    /// 更新已有 provider 的 baseUrl（及可选 api），保留 models 列表。
+    /// 用于内置供应商自定义端点（代理 / 自托管）；若 models.json 尚无该
+    /// provider 条目，则从当前 registry 拷贝模型 id 再写入。
+    ///
+    /// `openai-codex` 等 OAuth 原生供应商填写非官方 Base URL 时，必须同时把
+    /// api 写成 `openai-completions`（否则 pi 仍走 Codex OAuth Responses，
+    /// 校验 chatgpt_account_id）。官方地址则保持/恢复 `openai-codex-responses`。
+    /// 始终原地更新原 provider id，不另存为 openai-compatible.*。
+    pub fn update_provider_endpoint(
+        &self,
+        provider: &str,
+        base_url: &str,
+        api: Option<&str>,
+    ) -> Result<(), PiAgentError> {
+        let provider = provider.trim();
+        let base_url = base_url.trim();
+        if provider.is_empty() || base_url.is_empty() {
+            return Err(PiAgentError::Provider(
+                "provider and baseUrl are required".to_string(),
+            ));
+        }
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let root_obj = root.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json root must be an object".to_string())
+        })?;
+        let providers = root_obj
+            .entry("providers")
+            .or_insert_with(|| serde_json::json!({}));
+        let providers = providers.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json providers must be an object".to_string())
+        })?;
+
+        let registry = self.registry()?;
+        let catalog_models: Vec<(String, String)> = registry
+            .models()
+            .iter()
+            .filter(|entry| providers_equivalent(&entry.model.provider, provider))
+            .map(|entry| (entry.model.id.clone(), entry.model.name.clone()))
+            .collect();
+        let catalog_provider = catalog_models
+            .first()
+            .and_then(|_| {
+                registry
+                    .models()
+                    .iter()
+                    .find(|entry| providers_equivalent(&entry.model.provider, provider))
+                    .map(|entry| entry.model.provider.clone())
+            })
+            .unwrap_or_else(|| provider.to_string());
+        let default_api = registry
+            .models()
+            .iter()
+            .find(|entry| providers_equivalent(&entry.model.provider, provider))
+            .map(|entry| entry.model.api.clone())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                pi::provider_metadata::provider_routing_defaults(provider)
+                    .or_else(|| pi::provider_metadata::provider_routing_defaults(&catalog_provider))
+                    .map(|defaults| defaults.api.to_string())
+            })
+            .unwrap_or_else(|| "openai-completions".to_string());
+
+        // OAuth 原生供应商：非官方地址强制 Completions，避免仍走 Codex OAuth。
+        let effective_api = if is_oauth_native_api_locked_provider(provider) {
+            if is_official_openai_codex_base(base_url) {
+                api.map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("openai-codex-responses")
+                    .to_string()
+            } else {
+                "openai-completions".to_string()
+            }
+        } else {
+            api.map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(default_api.as_str())
+                .to_string()
+        };
+
+        let entry = providers
+            .entry(catalog_provider.clone())
+            .or_insert_with(|| serde_json::json!({}));
+        let entry = entry.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider(format!(
+                "models.json provider {catalog_provider} must be an object"
+            ))
+        })?;
+        let builtin_display = pi::provider_metadata::provider_metadata(&catalog_provider)
+            .and_then(|meta| meta.display_name)
+            .unwrap_or(catalog_provider.as_str());
+        entry.insert(
+            "name".to_string(),
+            serde_json::Value::String(
+                entry
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|name| {
+                        !name.is_empty()
+                            // 历史误迁移产生的「openai-codex · host」显示名，恢复成内置名。
+                            && !name.contains('·')
+                    })
+                    .unwrap_or(builtin_display)
+                    .to_string(),
+            ),
+        );
+        entry.insert(
+            "baseUrl".to_string(),
+            serde_json::Value::String(base_url.to_string()),
+        );
+        entry.insert(
+            "api".to_string(),
+            serde_json::Value::String(effective_api),
+        );
+        entry.remove("apiKey");
+        let models = entry
+            .entry("models")
+            .or_insert_with(|| serde_json::json!([]));
+        let models = models.as_array_mut().ok_or_else(|| {
+            PiAgentError::Provider(format!(
+                "models.json provider {catalog_provider} models must be an array"
+            ))
+        })?;
+        if models.is_empty() {
+            for (model_id, model_name) in catalog_models {
+                models.push(serde_json::json!({ "id": model_id, "name": model_name }));
+            }
+        }
+        if models.is_empty() {
+            return Err(PiAgentError::Provider(format!(
+                "provider {provider} has no models to attach endpoint override"
+            )));
+        }
+        write_models_json(&path, &root)?;
+        Ok(())
+    }
+
+    /// 修复 OAuth 原生供应商上的错误端点覆盖：
+    /// 1) 非官方 baseUrl 时原地把 api 写成 `openai-completions`，恢复内置显示名；
+    /// 2) 收回历史误迁移的 `openai-compatible.*`（名称/ id 来自 openai-codex）回到
+    ///    原 provider id，避免列表里出现「openai-codex · host」新条目。
+    pub fn repair_oauth_native_custom_endpoints(&self) -> Result<Vec<String>, PiAgentError> {
+        const NATIVE: &[&str] = &["openai-codex"];
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let Some(providers) = root
+            .as_object_mut()
+            .and_then(|root| root.get_mut("providers"))
+            .and_then(|value| value.as_object_mut())
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut repaired = Vec::new();
+
+        // 收回误迁移的 openai-compatible.* → 原 openai-codex。
+        let mut reclaim: Vec<(String, String, serde_json::Value)> = Vec::new();
+        for (provider_id, entry) in providers.iter() {
+            if !provider_id.starts_with("openai-compatible.") {
+                continue;
+            }
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let id_lower = provider_id.to_ascii_lowercase();
+            let looks_like_codex = id_lower.contains("openai-codex")
+                || name.starts_with("openai-codex")
+                || name.contains("openai-codex ·");
+            if !looks_like_codex {
+                continue;
+            }
+            reclaim.push((
+                provider_id.clone(),
+                "openai-codex".to_string(),
+                entry.clone(),
+            ));
+        }
+        for (from_id, to_id, entry) in reclaim {
+            let base_url = entry
+                .get("baseUrl")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("")
+                .to_string();
+            if base_url.is_empty() {
+                providers.remove(&from_id);
+                let _ = self.secrets.remove(&from_id);
+                repaired.push(from_id);
+                continue;
+            }
+            let models = entry
+                .get("models")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let builtin_display = pi::provider_metadata::provider_metadata(&to_id)
+                .and_then(|meta| meta.display_name)
+                .unwrap_or(to_id.as_str());
+            let key = self
+                .api_key_for_provider(&from_id)?
+                .or(self.api_key_for_provider(&to_id)?);
+            providers.insert(
+                to_id.clone(),
+                serde_json::json!({
+                    "name": builtin_display,
+                    "baseUrl": base_url,
+                    "api": "openai-completions",
+                    "models": models,
+                }),
+            );
+            providers.remove(&from_id);
+            if let Some(api_key) = key.as_deref() {
+                self.secrets.set_api_key(&to_id, api_key)?;
+            }
+            let _ = self.secrets.remove(&from_id);
+            repaired.push(to_id);
+        }
+
+        for provider_id in NATIVE {
+            let Some(entry) = providers.get_mut(*provider_id) else {
+                continue;
+            };
+            let Some(entry_obj) = entry.as_object_mut() else {
+                continue;
+            };
+            let base_url = entry_obj
+                .get("baseUrl")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("")
+                .to_string();
+            if base_url.is_empty() || is_official_openai_codex_base(&base_url) {
+                continue;
+            }
+            let current_api = entry_obj
+                .get("api")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let current_name = entry_obj
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let builtin_display = pi::provider_metadata::provider_metadata(provider_id)
+                .and_then(|meta| meta.display_name)
+                .unwrap_or(*provider_id);
+            let mut changed = false;
+            if current_api != "openai-completions" {
+                entry_obj.insert(
+                    "api".to_string(),
+                    serde_json::Value::String("openai-completions".to_string()),
+                );
+                changed = true;
+            }
+            if current_name.is_empty() || current_name.contains('·') {
+                entry_obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(builtin_display.to_string()),
+                );
+                changed = true;
+            }
+            if changed {
+                repaired.push((*provider_id).to_string());
+            }
+        }
+
+        if !repaired.is_empty() {
+            write_models_json(&path, &root)?;
+        }
+        Ok(repaired)
+    }
+
     /// 用 provider 的实时 `/v1/models` 接口刷新目录（pi gh #92 的 live
     /// discovery）：把静态目录中缺失的模型 id 通过 models.json override
     /// 机制合并进目录，返回新增的模型 id。
@@ -299,28 +781,37 @@ impl ProviderCatalog {
             .models()
             .iter()
             .find(|entry| providers_equivalent(&entry.model.provider, provider));
+        // 内置/已写入 models.json 的条目均可作路由模板；纯自定义在保存后也会进 registry。
         let Some(template_entry) = template_entry else {
-            // 静态目录中没有该 provider（纯自定义 provider 由用户显式维护）。
             return Ok(Vec::new());
         };
         let catalog_provider = template_entry.model.provider.clone();
         let routing = pi::provider_metadata::provider_routing_defaults(provider)
             .or_else(|| pi::provider_metadata::provider_routing_defaults(&catalog_provider));
-        let base_url = {
-            let from_model = template_entry.model.base_url.trim();
-            if !from_model.is_empty() {
-                from_model.to_string()
-            } else {
-                routing
-                    .as_ref()
-                    .map(|defaults| defaults.base_url.trim().to_string())
-                    .filter(|url| !url.is_empty())
-                    .unwrap_or_default()
-            }
-        };
-        if base_url.is_empty() {
-            return Ok(Vec::new());
+        // 候选 base_url：models.json / 静态条目优先；若无法推导 /models（如 legacy
+        // `https://api.kimi.com/coding` 无 /v1），再回退到 ProviderRoutingDefaults。
+        let mut base_candidates: Vec<String> = Vec::new();
+        let from_model = template_entry.model.base_url.trim();
+        if !from_model.is_empty() {
+            base_candidates.push(from_model.to_string());
         }
+        if let Some(defaults) = routing.as_ref() {
+            let from_routing = defaults.base_url.trim();
+            if !from_routing.is_empty()
+                && !base_candidates
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(from_routing))
+            {
+                base_candidates.push(from_routing.to_string());
+            }
+        }
+        let Some((base_url, models_url)) = base_candidates.into_iter().find_map(|candidate| {
+            openai_compat_models_url(&candidate).map(|url| (candidate, url))
+        }) else {
+            return Ok(Vec::new());
+        };
+        // kimi-for-coding：auth_header=false → x-api-key；其它默认 Bearer。
+        let use_auth_header = routing.as_ref().map(|defaults| defaults.auth_header).unwrap_or(true);
         let api = {
             let from_model = template_entry.model.api.trim();
             if !from_model.is_empty() {
@@ -335,7 +826,7 @@ impl ProviderCatalog {
         };
         let headers = template_entry.model.headers.clone();
 
-        let live = self.fetch_live_model_ids(provider, &base_url, &key)?;
+        let live = self.fetch_live_model_ids(provider, &base_url, &models_url, &key, use_auth_header)?;
         let existing: std::collections::HashSet<String> = registry
             .models()
             .iter()
@@ -375,14 +866,22 @@ impl ProviderCatalog {
     fn fetch_live_model_ids(
         &self,
         provider: &str,
-        base_url: &str,
+        _base_url: &str,
+        models_url: &str,
         api_key: &str,
+        use_auth_header: bool,
     ) -> Result<Vec<String>, PiAgentError> {
-        if let Some(url) = openai_compat_models_url(base_url) {
-            match fetch_openai_compat_model_ids(&url, api_key) {
-                Ok(ids) if !ids.is_empty() => return Ok(ids),
-                Ok(_) => {}
-                Err(_) => {}
+        match fetch_openai_compat_model_ids(models_url, api_key, use_auth_header) {
+            Ok(ids) if !ids.is_empty() => return Ok(ids),
+            Ok(_) | Err(_) => {
+                // kimi 等可能只接受 x-api-key；首选空列表或失败时再试另一种鉴权。
+                if let Ok(ids) =
+                    fetch_openai_compat_model_ids(models_url, api_key, !use_auth_header)
+                {
+                    if !ids.is_empty() {
+                        return Ok(ids);
+                    }
+                }
             }
         }
         futures::executor::block_on(pi::providers::model_fetch::refresh_provider_models(
@@ -481,11 +980,91 @@ fn providers_equivalent(left: &str, right: &str) -> bool {
     }
 }
 
+/// pi 按 provider id 硬编码走 OAuth Codex Responses 的供应商（不能原地改 baseUrl）。
+fn is_oauth_native_api_locked_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "openai-codex" | "github-copilot"
+    )
+}
+
+/// 是否允许整项删除的自定义供应商（非内置端点覆盖）。
+fn is_removable_custom_provider_id(provider: &str) -> bool {
+    let provider = provider.trim();
+    if provider.is_empty() || provider == "openai-compatible" {
+        return false;
+    }
+    if provider.starts_with("openai-compatible.") {
+        return true;
+    }
+    if is_oauth_native_api_locked_provider(provider) {
+        return false;
+    }
+    // 内置快照供应商有 routing / canonical 元数据；纯自定义实例没有。
+    if pi::provider_metadata::provider_routing_defaults(provider).is_some() {
+        return false;
+    }
+    if pi::provider_metadata::canonical_provider_id(provider).is_some() {
+        return false;
+    }
+    true
+}
+
+fn is_official_openai_codex_base(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.contains("chatgpt.com") || lower.contains("api.openai.com")
+}
+
+/// 从显示名生成 `openai-compatible.<slug>`，冲突时追加短后缀。
+fn allocate_openai_compatible_provider_id(
+    display_name: &str,
+    existing: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let mut slug = String::new();
+    for ch in display_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() {
+        format!(
+            "custom-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        )
+    } else {
+        slug.chars().take(32).collect::<String>()
+    };
+    let base = format!("openai-compatible.{slug}");
+    if !existing.contains_key(&base) {
+        return base;
+    }
+    for index in 2..1000 {
+        let candidate = format!("{base}-{index}");
+        if !existing.contains_key(&candidate) {
+            return candidate;
+        }
+    }
+    format!(
+        "{base}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
+}
+
 /// 从路由 base_url 推导 OpenAI 兼容的 `/models` 地址。
 ///
 /// 与 Pi `model_fetch::openai_compat_models_url` 不同：这里**允许**
 /// `…/v1/messages` —— 剥掉 `/messages` 后请求 `…/v1/models`。Kimi Coding
 /// 等 Anthropic-messages 路由 provider 实际仍暴露该列表端点。
+/// 也兼容 legacy `https://api.kimi.com/coding`（无 `/v1`）。
 fn openai_compat_models_url(base_url: &str) -> Option<String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
@@ -494,11 +1073,13 @@ fn openai_compat_models_url(base_url: &str) -> Option<String> {
     if base.contains("/v1beta") || base.contains("googleapis.com") {
         return None;
     }
-    let root = base.strip_suffix("/messages").unwrap_or(base);
-    if !root.contains("/v1") {
-        return None;
+    let root = base.strip_suffix("/messages").unwrap_or(base).trim_end_matches('/');
+    if root.contains("/v1") {
+        return Some(format!("{root}/models"));
     }
-    Some(format!("{}/models", root.trim_end_matches('/')))
+    // kimi-coding 静态快照常用 `https://api.kimi.com/coding`（无 /v1）；
+    // 其它 OpenAI 兼容端点（含自定义供应商）统一补 `/v1/models`。
+    Some(format!("{root}/v1/models"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -511,15 +1092,24 @@ struct OpenAiModelRow {
     id: String,
 }
 
-fn fetch_openai_compat_model_ids(url: &str, api_key: &str) -> Result<Vec<String>, PiAgentError> {
+fn fetch_openai_compat_model_ids(
+    url: &str,
+    api_key: &str,
+    use_auth_header: bool,
+) -> Result<Vec<String>, PiAgentError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| PiAgentError::Provider(error.to_string()))?;
-    let response = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", api_key.trim()))
-        .header("Accept", "application/json")
+    let key = api_key.trim();
+    let mut request = client.get(url).header("Accept", "application/json");
+    // Pi：auth_header=true → Authorization Bearer；false（kimi-for-coding）→ x-api-key。
+    request = if use_auth_header {
+        request.header("Authorization", format!("Bearer {key}"))
+    } else {
+        request.header("x-api-key", key)
+    };
+    let response = request
         .send()
         .map_err(|error| PiAgentError::Provider(error.to_string()))?;
     let status = response.status();
@@ -677,6 +1267,25 @@ mod tests {
         let acme_models: Vec<_> = models.iter().filter(|m| m.provider == "acme").collect();
         assert_eq!(acme_models.len(), 2);
 
+        let providers = catalog.list_providers().expect("list providers");
+        let acme = providers
+            .iter()
+            .find(|provider| provider.provider == "acme")
+            .expect("acme provider");
+        assert!(acme.removable);
+
+        assert!(catalog
+            .remove_custom_provider("acme")
+            .expect("remove custom"));
+        assert!(!catalog.has_credential("acme"));
+        let raw = std::fs::read_to_string(&models_path).expect("read models.json after remove");
+        assert!(!raw.contains("\"acme\""));
+        assert!(catalog
+            .list_models()
+            .expect("list models")
+            .iter()
+            .all(|model| model.provider != "acme"));
+
         let _ = std::fs::remove_file(&auth_path);
         let _ = std::fs::remove_file(&models_path);
     }
@@ -690,6 +1299,14 @@ mod tests {
         assert_eq!(
             openai_compat_models_url("https://api.openai.com/v1"),
             Some("https://api.openai.com/v1/models".to_string())
+        );
+        assert_eq!(
+            openai_compat_models_url("https://api.kimi.com/coding"),
+            Some("https://api.kimi.com/coding/v1/models".to_string())
+        );
+        assert_eq!(
+            openai_compat_models_url("http://127.0.0.1:8000"),
+            Some("http://127.0.0.1:8000/v1/models".to_string())
         );
         assert_eq!(
             openai_compat_models_url("https://generativelanguage.googleapis.com/v1beta"),

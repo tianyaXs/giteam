@@ -69,7 +69,6 @@ export function AgentProviderModelList(props: AgentProviderModelListProps) {
               <span className="flex min-w-0 flex-col gap-1.5">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate text-[16px] font-semibold leading-6">{modelDisplay}</span>
-                  {configured ? <Badge variant="secondary">默认</Badge> : null}
                   {!configured && locallyEnabled ? <Badge variant="outline">临时</Badge> : null}
                 </span>
                 {modelDisplay !== modelId ? <span className="truncate text-[14px] leading-5 text-muted-foreground">{modelId}</span> : null}

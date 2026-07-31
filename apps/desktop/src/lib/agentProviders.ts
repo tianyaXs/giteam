@@ -44,5 +44,13 @@ export function getProviderDisplayName(
   providerNames: Record<string, string>
 ): string {
   const normalizedProviderId = providerId.trim();
+  if (normalizedProviderId === "openai-compatible") {
+    return providerNames[normalizedProviderId] || "OpenAI Completions";
+  }
+  if (normalizedProviderId.startsWith("openai-compatible.")) {
+    return providerNames[normalizedProviderId]
+      || normalizedProviderId.slice("openai-compatible.".length)
+      || normalizedProviderId;
+  }
   return providerNames[normalizedProviderId] || PROVIDER_PRESET_NAME_BY_ID[normalizedProviderId] || normalizedProviderId;
 }

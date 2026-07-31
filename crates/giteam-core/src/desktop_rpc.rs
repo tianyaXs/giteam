@@ -1752,6 +1752,69 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 .map_err(|error| error.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
         }
+        "agent_remove_custom_provider" => {
+            let provider = get_str(&args, "provider")?;
+            let removed = PiAgentService::global()
+                .remove_custom_provider(provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "removed": removed }))
+        }
+        "agent_connect_openai_compatible" => {
+            let base_url = args
+                .get("baseUrl")
+                .or_else(|| args.get("base_url"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            let api_key = args
+                .get("apiKey")
+                .or_else(|| args.get("api_key"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            let name = args
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if base_url.is_empty() || api_key.is_empty() || name.is_empty() {
+                return Err("name, baseUrl and apiKey are required".to_string());
+            }
+            let provider = args
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let (provider_id, added) = PiAgentService::global()
+                .connect_openai_compatible(base_url, api_key, name, provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({
+                "provider": provider_id,
+                "name": name,
+                "added": added,
+            }))
+        }
+        "agent_update_provider_endpoint" => {
+            let provider = get_str(&args, "provider")?;
+            let base_url = args
+                .get("baseUrl")
+                .or_else(|| args.get("base_url"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if base_url.is_empty() {
+                return Err("baseUrl is required".to_string());
+            }
+            let api = args
+                .get("api")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            PiAgentService::global()
+                .update_provider_endpoint(provider, base_url, api)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
         "agent_refresh_provider_models" => {
             let provider = get_str(&args, "provider")?;
             let added = PiAgentService::global()

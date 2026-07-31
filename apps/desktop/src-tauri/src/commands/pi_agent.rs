@@ -293,13 +293,68 @@ pub fn agent_save_custom_provider(request: CustomProviderInput) -> Result<(), St
         .map_err(|error| error.to_string())
 }
 
+/// 删除自定义供应商（models.json 整项 + vault）。
+#[tauri::command]
+pub fn agent_remove_custom_provider(provider: String) -> Result<bool, String> {
+    service()
+        .remove_custom_provider(&provider)
+        .map_err(|error| error.to_string())
+}
+
+/// 连接 OpenAI Completions 兼容端点：拉 `/models` 并写入 openai-compatible 实例。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConnectOpenAICompatibleResponse {
+    pub provider: String,
+    pub name: String,
+    pub added: Vec<String>,
+}
+
+#[tauri::command]
+pub fn agent_connect_openai_compatible(
+    base_url: String,
+    api_key: String,
+    name: String,
+    provider: Option<String>,
+) -> Result<AgentConnectOpenAICompatibleResponse, String> {
+    let (provider_id, models) = service()
+        .connect_openai_compatible(&base_url, &api_key, &name, provider.as_deref())
+        .map_err(|error| error.to_string())?;
+    Ok(AgentConnectOpenAICompatibleResponse {
+        provider: provider_id,
+        name: name.trim().to_string(),
+        added: models,
+    })
+}
+
+/// 更新已有 provider 的 baseUrl（可选 api），用于内置供应商自定义端点。
+#[tauri::command]
+pub fn agent_update_provider_endpoint(
+    provider: String,
+    base_url: String,
+    api: Option<String>,
+) -> Result<(), String> {
+    service()
+        .update_provider_endpoint(&provider, &base_url, api.as_deref())
+        .map_err(|error| error.to_string())
+}
+
 /// 用 provider 实时 `/v1/models` 刷新目录，返回新增模型 id。
 /// 对抗内置快照过期（如 deepseek v4 上线后快照仍只有 chat/reasoner）。
+/// 与 HTTP `/api/v1/agent/provider/refresh` 对齐，统一 `{ added }` 形状，
+/// 避免前端误读 `Vec` 为 `.added` 得到 undefined。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRefreshModelsResponse {
+    pub added: Vec<String>,
+}
+
 #[tauri::command]
-pub fn agent_refresh_provider_models(provider: String) -> Result<Vec<String>, String> {
-    service()
+pub fn agent_refresh_provider_models(provider: String) -> Result<AgentRefreshModelsResponse, String> {
+    let added = service()
         .refresh_provider_models(&provider)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(AgentRefreshModelsResponse { added })
 }
 
 #[tauri::command]

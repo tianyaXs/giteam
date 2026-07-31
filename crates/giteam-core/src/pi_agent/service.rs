@@ -623,6 +623,9 @@ impl PiAgentService {
             // kimi-coding 等严格端点据此返回 HTTP 400 “text content is empty”。
             // pi 仓库只读无法改其 convert，这里用 pi 公开的 messages/replace_messages 在发送前剔除。
             strip_empty_text_blocks(&mut handle.session_mut().agent);
+            // OpenAI Responses / 部分兼容网关要求 call_id ≤ 64；历史里偶发把整段
+            // arguments 写进 id（可达数千字符），下一轮回放会 HTTP 400。
+            sanitize_oversized_tool_call_ids(&mut handle.session_mut().agent);
             match content_blocks {
                 None => {
                     handle
@@ -777,6 +780,35 @@ impl PiAgentService {
     /// 保存/更新自定义 provider（models.json），api key 只进 vault。
     pub fn save_custom_provider(&self, input: &CustomProviderInput) -> Result<(), PiAgentError> {
         self.provider_catalog()?.save_custom_provider(input)
+    }
+
+    /// 删除自定义供应商（models.json 整项 + vault 凭据）。
+    pub fn remove_custom_provider(&self, provider: &str) -> Result<bool, PiAgentError> {
+        self.provider_catalog()?.remove_custom_provider(provider)
+    }
+
+    /// 连接 OpenAI Completions 兼容自定义端点（拉模型 + 写 models.json + vault）。
+    /// 返回 `(provider_id, model_ids)`。
+    pub fn connect_openai_compatible(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        name: &str,
+        provider: Option<&str>,
+    ) -> Result<(String, Vec<String>), PiAgentError> {
+        self.provider_catalog()?
+            .connect_openai_compatible(base_url, api_key, name, provider)
+    }
+
+    /// 更新已有 provider 的 baseUrl（及可选 api），保留 models 列表。
+    pub fn update_provider_endpoint(
+        &self,
+        provider: &str,
+        base_url: &str,
+        api: Option<&str>,
+    ) -> Result<(), PiAgentError> {
+        self.provider_catalog()?
+            .update_provider_endpoint(provider, base_url, api)
     }
 
     /// 用 provider 实时 `/v1/models` 刷新目录，返回新合并进目录的模型 id。
@@ -1249,6 +1281,121 @@ fn strip_empty_text_blocks(agent: &mut pi::sdk::Agent) {
     agent.replace_messages(messages);
 }
 
+/// OpenAI Responses API：`call_id` 最大 64 字符（`string_above_max_length`）。
+const OPENAI_TOOL_CALL_ID_MAX_LEN: usize = 64;
+
+fn shorten_tool_call_id(id: &str) -> String {
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed.len() <= OPENAI_TOOL_CALL_ID_MAX_LEN {
+        return trimmed.to_string();
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    trimmed.hash(&mut hasher);
+    let hash = hasher.finish();
+    let prefix: String = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
+        .take(12)
+        .collect();
+    let prefix = if prefix.is_empty() {
+        "tc".to_string()
+    } else {
+        prefix
+    };
+    format!("{prefix}_{hash:016x}")
+}
+
+fn message_has_oversized_tool_call_id(message: &pi::sdk::Message) -> bool {
+    match message {
+        pi::sdk::Message::Assistant(assistant) => assistant.content.iter().any(|block| {
+            matches!(
+                block,
+                pi::sdk::ContentBlock::ToolCall(call) if call.id.trim().len() > OPENAI_TOOL_CALL_ID_MAX_LEN
+            )
+        }),
+        pi::sdk::Message::ToolResult(result) => {
+            result.tool_call_id.trim().len() > OPENAI_TOOL_CALL_ID_MAX_LEN
+        }
+        _ => false,
+    }
+}
+
+/// 原地缩短过长 tool call id，并保持 ToolCall ↔ ToolResult 配对一致。
+fn sanitize_oversized_tool_call_ids_in_place(messages: &mut [pi::sdk::Message]) -> bool {
+    use std::collections::HashMap;
+    let mut remap: HashMap<String, String> = HashMap::new();
+    for message in messages.iter() {
+        match message {
+            pi::sdk::Message::Assistant(assistant) => {
+                for block in &assistant.content {
+                    if let pi::sdk::ContentBlock::ToolCall(call) = block {
+                        if call.id.trim().len() > OPENAI_TOOL_CALL_ID_MAX_LEN {
+                            remap
+                                .entry(call.id.clone())
+                                .or_insert_with(|| shorten_tool_call_id(&call.id));
+                        }
+                    }
+                }
+            }
+            pi::sdk::Message::ToolResult(result) => {
+                if result.tool_call_id.trim().len() > OPENAI_TOOL_CALL_ID_MAX_LEN {
+                    remap
+                        .entry(result.tool_call_id.clone())
+                        .or_insert_with(|| shorten_tool_call_id(&result.tool_call_id));
+                }
+            }
+            _ => {}
+        }
+    }
+    if remap.is_empty() {
+        return false;
+    }
+    for message in messages.iter_mut() {
+        match message {
+            pi::sdk::Message::Assistant(arc) => {
+                let needs = arc.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        pi::sdk::ContentBlock::ToolCall(call) if remap.contains_key(&call.id)
+                    )
+                });
+                if !needs {
+                    continue;
+                }
+                let mut assistant = (**arc).clone();
+                for block in &mut assistant.content {
+                    if let pi::sdk::ContentBlock::ToolCall(call) = block {
+                        if let Some(next) = remap.get(&call.id) {
+                            call.id = next.clone();
+                        }
+                    }
+                }
+                *message = pi::sdk::Message::Assistant(Arc::new(assistant));
+            }
+            pi::sdk::Message::ToolResult(arc) => {
+                if let Some(next) = remap.get(&arc.tool_call_id) {
+                    let mut result = (**arc).clone();
+                    result.tool_call_id = next.clone();
+                    *message = pi::sdk::Message::ToolResult(Arc::new(result));
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn sanitize_oversized_tool_call_ids(agent: &mut pi::sdk::Agent) {
+    if !agent.messages().iter().any(message_has_oversized_tool_call_id) {
+        return;
+    }
+    let mut messages: Vec<pi::sdk::Message> = agent.messages().to_vec();
+    sanitize_oversized_tool_call_ids_in_place(&mut messages);
+    agent.replace_messages(messages);
+}
+
 /// 从 pi 原生消息列表派生会话标题：首条用户消息的首段文本，
 /// 压缩空白后截断。pi 本身不存标题，这是列表展示的唯一来源。
 fn derive_session_title(messages: &[pi::sdk::Message]) -> Option<String> {
@@ -1575,5 +1722,42 @@ mod tests {
         let changed = strip_empty_text_blocks_in_place(&mut messages);
         assert!(!changed, "无空文本块时不应改动");
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn sanitize_oversized_tool_call_ids_keeps_pairing_under_64() {
+        let long_id = "x".repeat(2204);
+        let assistant = pi::sdk::Message::Assistant(Arc::new(pi::sdk::AssistantMessage {
+            content: vec![pi::sdk::ContentBlock::ToolCall(pi::sdk::ToolCall {
+                id: long_id.clone(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+                thought_signature: None,
+            })],
+            ..pi::sdk::AssistantMessage::default()
+        }));
+        let tool_result = pi::sdk::Message::ToolResult(Arc::new(pi::sdk::ToolResultMessage {
+            tool_call_id: long_id,
+            tool_name: "bash".to_string(),
+            content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new("ok"))],
+            details: None,
+            is_error: false,
+            timestamp: 0,
+        }));
+        let mut messages = vec![assistant, tool_result];
+        assert!(sanitize_oversized_tool_call_ids_in_place(&mut messages));
+
+        let pi::sdk::Message::Assistant(assistant) = &messages[0] else {
+            panic!("expected assistant");
+        };
+        let pi::sdk::ContentBlock::ToolCall(call) = &assistant.content[0] else {
+            panic!("expected tool call");
+        };
+        let pi::sdk::Message::ToolResult(result) = &messages[1] else {
+            panic!("expected tool result");
+        };
+        assert!(call.id.len() <= OPENAI_TOOL_CALL_ID_MAX_LEN);
+        assert_eq!(call.id, result.tool_call_id);
+        assert_eq!(shorten_tool_call_id("short"), "short");
     }
 }

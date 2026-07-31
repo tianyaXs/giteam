@@ -148,6 +148,30 @@ fn tool_call_stream_recovers_identity_from_partial_message() {
 }
 
 #[test]
+fn tool_call_stream_skips_events_without_call_id() {
+    let translator = PiEventTranslator::new("/tmp/repo", "session-1", "run-1");
+    // 流式早期常只有 name、尚无 id；若下发会让前端造幽灵工具，过程/结束计数不一致。
+    let start = PiAgentEvent::MessageUpdate {
+        message: assistant_message(9),
+        assistant_message_event: AME::ToolCallStart {
+            content_index: 0,
+            partial: partial_with_tool_call("", "bash"),
+        },
+    };
+    let delta = PiAgentEvent::MessageUpdate {
+        message: assistant_message(9),
+        assistant_message_event: AME::ToolCallDelta {
+            content_index: 0,
+            delta: "{\"command\":".to_string(),
+            partial: partial_with_tool_call("", "bash"),
+        },
+    };
+
+    assert!(translator.translate(start).is_none());
+    assert!(translator.translate(delta).is_none());
+}
+
+#[test]
 fn stream_markers_without_user_payload_are_dropped() {
     let translator = PiEventTranslator::new("/tmp/repo", "session-1", "run-1");
     let message = || assistant_message(11);

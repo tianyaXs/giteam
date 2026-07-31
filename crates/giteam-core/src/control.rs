@@ -1559,6 +1559,110 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "DELETE" && req.path == "/api/v1/agent/provider" {
+        let provider = req
+            .query
+            .get("provider")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if provider.is_empty() {
+            return (400, serde_json::json!({ "error": "provider is required" }));
+        }
+        return match PiAgentService::global().remove_custom_provider(provider) {
+            Ok(removed) => (200, serde_json::json!({ "removed": removed })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/provider/openai-compatible" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let base_url = raw
+            .get("baseUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let api_key = raw
+            .get("apiKey")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let name = raw
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let provider = raw
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if base_url.is_empty() || api_key.is_empty() || name.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "name, baseUrl and apiKey are required" }),
+            );
+        }
+        return match PiAgentService::global().connect_openai_compatible(
+            &base_url,
+            &api_key,
+            &name,
+            provider.as_deref(),
+        ) {
+            Ok((provider_id, added)) => (
+                200,
+                serde_json::json!({ "provider": provider_id, "name": name, "added": added }),
+            ),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/provider/endpoint" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let provider = raw
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let base_url = raw
+            .get("baseUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let api = raw
+            .get("api")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if provider.is_empty() || base_url.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "provider and baseUrl are required" }),
+            );
+        }
+        return match PiAgentService::global().update_provider_endpoint(
+            &provider,
+            &base_url,
+            api.as_deref(),
+        ) {
+            Ok(()) => (200, serde_json::json!({ "ok": true })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
     if req.method == "POST" && req.path == "/api/v1/agent/provider/refresh" {
         let raw = match parse_body_json(&req) {
             Ok(value) => value,

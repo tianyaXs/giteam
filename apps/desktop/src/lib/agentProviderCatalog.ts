@@ -6,6 +6,40 @@ import {
 } from "./agentModels";
 import { isPresetProviderId } from "./agentProviders";
 
+/** 列表置顶的 OpenAI Completions 兼容入口（填 Base URL + API Key）。 */
+export const OPENAI_COMPATIBLE_PROVIDER_ID = "openai-compatible";
+export const OPENAI_COMPATIBLE_PROVIDER_NAME = "OpenAI Completions";
+
+export function isOpenAICompatibleProviderId(providerId: string): boolean {
+  const pid = (providerId || "").trim();
+  return pid === OPENAI_COMPATIBLE_PROVIDER_ID || pid.startsWith(`${OPENAI_COMPATIBLE_PROVIDER_ID}.`);
+}
+
+/** 已保存的自定义供应商实例（可从 models.json 整项删除；不含列表模板入口）。 */
+export function isRemovableCustomProviderId(providerId: string): boolean {
+  const pid = (providerId || "").trim();
+  if (!pid || pid === OPENAI_COMPATIBLE_PROVIDER_ID) return false;
+  return pid.startsWith(`${OPENAI_COMPATIBLE_PROVIDER_ID}.`);
+}
+
+/** openai-codex 等 OAuth 原生供应商：自定义 Base URL 时原地更新，并强制 Completions。 */
+export function isOAuthNativeApiLockedProvider(providerId: string): boolean {
+  const pid = (providerId || "").trim().toLowerCase();
+  return pid === "openai-codex" || pid === "github-copilot";
+}
+
+export function suggestCustomEndpointName(providerId: string, baseUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(baseUrl).hostname;
+    } catch {
+      return "";
+    }
+  })();
+  if (host) return `${providerId} · ${host}`;
+  return `${providerId} 自定义`;
+}
+
 export type AgentModelConfig = {
   configPath: string;
   configuredModel: string;
@@ -18,6 +52,8 @@ export type AgentProviderConfig = {
   name: string;
   baseUrl: string;
   apiKey: string;
+  /** Pi api 适配器 id，自定义供应商可选。 */
+  api?: string;
   headers?: Record<string, string>;
   endpoint: string;
   region: string;
@@ -230,20 +266,38 @@ export function buildAgentProviderPickerCandidates(input: {
   const configProviderIds = Object.keys(input.configProviderMap || {})
     .filter(Boolean)
     .filter((providerId) => !disabled.has(providerId) || isPresetProviderId(providerId));
-  const merged = Array.from(new Set([...input.presetProviderIds, ...input.providers, ...configProviderIds].filter(Boolean)));
+  const merged = Array.from(
+    new Set(
+      [
+        OPENAI_COMPATIBLE_PROVIDER_ID,
+        ...input.presetProviderIds,
+        ...input.providers,
+        ...configProviderIds
+      ].filter(Boolean)
+    )
+  );
   const connected = new Set(input.connectedProviders.filter(Boolean));
-  const sortByPriority = (rows: string[]) =>
-    [...rows].sort((a, b) => {
-      const connectedA = connected.has(a) ? 1 : 0;
-      const connectedB = connected.has(b) ? 1 : 0;
-      if (connectedA !== connectedB) return connectedB - connectedA;
-      return a.localeCompare(b);
-    });
+  const sortByPriority = (rows: string[]) => {
+    const rest = rows
+      .filter((id) => id !== OPENAI_COMPATIBLE_PROVIDER_ID)
+      .sort((a, b) => {
+        const connectedA = connected.has(a) ? 1 : 0;
+        const connectedB = connected.has(b) ? 1 : 0;
+        if (connectedA !== connectedB) return connectedB - connectedA;
+        return a.localeCompare(b);
+      });
+    // OpenAI Completions 始终置顶，方便填地址 + Key。
+    const includeVirtual = rows.includes(OPENAI_COMPATIBLE_PROVIDER_ID);
+    return includeVirtual ? [OPENAI_COMPATIBLE_PROVIDER_ID, ...rest] : rest;
+  };
 
   if (!query) return sortByPriority(merged);
   return sortByPriority(merged.filter((providerId) => {
-    const name = input.providerNames[providerId] || "";
-    return providerId.toLowerCase().includes(query) || name.toLowerCase().includes(query);
+    const name = input.providerNames[providerId]
+      || (providerId === OPENAI_COMPATIBLE_PROVIDER_ID ? OPENAI_COMPATIBLE_PROVIDER_NAME : "");
+    return providerId.toLowerCase().includes(query)
+      || name.toLowerCase().includes(query)
+      || (providerId === OPENAI_COMPATIBLE_PROVIDER_ID && "openai completions custom".includes(query));
   }));
 }
 
@@ -297,10 +351,22 @@ export function getAgentProviderTag(input: {
   providerSourceById: Record<string, string>;
   providerMap: Record<string, AgentServerConfigProvider>;
 }): string {
+  if (isOpenAICompatibleProviderId(input.providerId)) return "custom";
   const source = getAgentProviderSource(input.providerId, input.providerSourceById);
   if (source === "env") return "env";
+  if (source === "custom") return "custom";
   if (source === "api") return "api";
   if (source === "config") return isAgentConfigCustomProvider(input.providerId, input.providerMap) ? "custom" : "config";
-  if (source === "custom") return "custom";
   return isPresetProviderId(input.providerId) ? "preset" : "other";
+}
+
+/** 是否显示「删除供应商」（自定义实例；不含 OpenAI Completions 模板入口）。 */
+export function canRemoveAgentCustomProvider(
+  providerId: string,
+  providerSourceById: Record<string, string>
+): boolean {
+  const pid = (providerId || "").trim();
+  if (!pid || pid === OPENAI_COMPATIBLE_PROVIDER_ID) return false;
+  if (isRemovableCustomProviderId(pid)) return true;
+  return getAgentProviderSource(pid, providerSourceById) === "custom";
 }

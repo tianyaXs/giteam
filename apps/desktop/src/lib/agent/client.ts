@@ -66,8 +66,12 @@ export type AgentModelInfo = {
 
 export type AgentProviderInfo = {
   provider: string;
+  /** 显示名（自定义供应商来自 models.json name）。 */
+  name?: string;
   modelCount: number;
   hasCredential: boolean;
+  /** 是否可从 models.json 整项删除（自定义实例）。 */
+  removable?: boolean;
   models: AgentModelInfo[];
 };
 
@@ -240,6 +244,18 @@ export type AgentClient = {
   removeApiKey(provider: string): Promise<boolean>;
   hasCredential(provider: string): Promise<boolean>;
   saveCustomProvider(input: CustomProviderInput): Promise<void>;
+  /** 删除自定义供应商（models.json 整项 + vault）。 */
+  removeCustomProvider(provider: string): Promise<boolean>;
+  /** 连接 OpenAI Completions 兼容端点：拉 /models 并写入独立实例。 */
+  connectOpenAICompatible(input: {
+    baseUrl: string;
+    apiKey: string;
+    name: string;
+    /** 已有实例 id；缺省或模板 id 时新建。 */
+    provider?: string;
+  }): Promise<{ provider: string; name: string; added: string[] }>;
+  /** 更新已有 provider 的 baseUrl（可选 api），用于内置供应商自定义端点。 */
+  updateProviderEndpoint(provider: string, baseUrl: string, api?: string): Promise<void>;
   /** 用 provider 实时 /v1/models 刷新目录，返回新增模型 id（对抗内置快照过期）。 */
   refreshProviderModels(provider: string): Promise<string[]>;
   setModel(sessionId: string, provider: string, modelId: string): Promise<AgentSessionSummary>;
@@ -290,8 +306,33 @@ function createTauriAgentClient(): AgentClient {
     removeApiKey: (provider) => invoke<boolean>("agent_remove_api_key", { provider }),
     hasCredential: (provider) => invoke<boolean>("agent_has_credential", { provider }),
     saveCustomProvider: (input) => invoke<void>("agent_save_custom_provider", { request: input }),
-    refreshProviderModels: async (provider) =>
-      (await invoke<{ added: string[] }>("agent_refresh_provider_models", { provider })).added,
+    removeCustomProvider: (provider) => invoke<boolean>("agent_remove_custom_provider", { provider }),
+    connectOpenAICompatible: async (input) => {
+      const result = await invoke<{ provider?: string; name?: string; added?: string[] }>(
+        "agent_connect_openai_compatible",
+        {
+          baseUrl: input.baseUrl,
+          apiKey: input.apiKey,
+          name: input.name,
+          provider: input.provider ?? null,
+        }
+      );
+      return {
+        provider: (result?.provider || "").trim(),
+        name: (result?.name || input.name).trim(),
+        added: Array.isArray(result?.added) ? result.added : [],
+      };
+    },
+    updateProviderEndpoint: (provider, baseUrl, api) =>
+      invoke<void>("agent_update_provider_endpoint", { provider, baseUrl, api: api ?? null }),
+    refreshProviderModels: async (provider) => {
+      // Tauri 命令直接返回 Vec<string>；HTTP 控制面返回 { added }。两侧都兼容。
+      const result = await invoke<string[] | { added?: string[] }>("agent_refresh_provider_models", {
+        provider,
+      });
+      if (Array.isArray(result)) return result;
+      return Array.isArray(result?.added) ? result.added : [];
+    },
     setModel: (sessionId, provider, modelId) =>
       invoke<AgentSessionSummary>("agent_set_model", { sessionId, provider, modelId }),
     setThinking: (sessionId, level) => invoke<void>("agent_set_thinking", { sessionId, level }),
@@ -365,6 +406,30 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
+    }),
+    removeCustomProvider: async (provider) =>
+      (await request<{ removed: boolean }>(`/api/v1/agent/provider?provider=${encodeURIComponent(provider)}`, {
+        method: "DELETE",
+      })).removed,
+    connectOpenAICompatible: async (input) => {
+      const result = await request<{ provider?: string; name?: string; added?: string[] }>(
+        "/api/v1/agent/provider/openai-compatible",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        }
+      );
+      return {
+        provider: (result?.provider || "").trim(),
+        name: (result?.name || input.name).trim(),
+        added: Array.isArray(result?.added) ? result.added : [],
+      };
+    },
+    updateProviderEndpoint: (provider, baseUrl, api) => request<void>("/api/v1/agent/provider/endpoint", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, baseUrl, ...(api ? { api } : {}) }),
     }),
     refreshProviderModels: async (provider) => (await request<{ added: string[] }>("/api/v1/agent/provider/refresh", {
       method: "POST",

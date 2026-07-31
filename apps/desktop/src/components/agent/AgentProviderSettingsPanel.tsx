@@ -7,6 +7,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
+import { useEffect, useState } from "react";
 
 type AgentProviderSettingsPanelProps = {
   providerSearch: string;
@@ -26,17 +27,25 @@ type AgentProviderSettingsPanelProps = {
   connectBusy: boolean;
   connectProviderId: string;
   connectApiKey: string;
+  connectBaseUrl: string;
+  connectName: string;
   inlineAuthOpenFor: string;
   onProviderSearchChange: (value: string) => void;
   onModelSearchChange: (value: string) => void;
   onSelectProvider: (provider: string, connected: boolean) => void;
   onConnectApiKeyChange: (providerId: string, providerName: string, value: string) => void;
+  onConnectBaseUrlChange: (providerId: string, providerName: string, value: string) => void;
+  onConnectNameChange: (providerId: string, providerName: string, value: string) => void;
+  resolveProviderBaseUrlHint: (providerId: string) => string;
   onToggleInlineAuth: (providerId: string, providerName: string) => void;
   onConnectProvider: (providerId: string, connected: boolean) => void;
+  onRemoveCustomProvider: (providerId: string) => void;
+  removingProvider: string;
   onSelectModel: (modelRef: string) => void;
   onHideModel: (modelRef: string) => void;
   onEnableModel: (modelRef: string) => void;
   getProviderTag: (providerId: string) => string;
+  canRemoveCustomProvider: (providerId: string) => boolean;
   getProviderDisplayName: (providerId: string) => string;
 };
 
@@ -58,19 +67,28 @@ export function AgentProviderSettingsPanel({
   connectBusy,
   connectProviderId,
   connectApiKey,
+  connectBaseUrl,
+  connectName,
   inlineAuthOpenFor,
   onProviderSearchChange,
   onModelSearchChange,
   onSelectProvider,
   onConnectApiKeyChange,
+  onConnectBaseUrlChange,
+  onConnectNameChange,
+  resolveProviderBaseUrlHint,
   onToggleInlineAuth,
   onConnectProvider,
+  onRemoveCustomProvider,
+  removingProvider,
   onSelectModel,
   onHideModel,
   onEnableModel,
   getProviderTag,
+  canRemoveCustomProvider,
   getProviderDisplayName
 }: AgentProviderSettingsPanelProps) {
+  const [confirmRemoveFor, setConfirmRemoveFor] = useState("");
   const resolved = resolveProviderAliasWithNames(selectedProvider, modelsByProvider, providerNames);
   const cfgResolved = resolveProviderAliasWithNames(selectedProvider, configuredModelsByProvider, providerNames);
   const providerId = (resolved || selectedProvider.trim()) || "";
@@ -84,6 +102,11 @@ export function AgentProviderSettingsPanel({
   const authOpen = !connected || inlineAuthOpenFor === providerId;
   const panelHeight = "h-[clamp(380px,calc(100svh-210px),760px)]";
   const splitColumns = "xl:grid-cols-[minmax(300px,0.85fr)_minmax(0,1.55fr)]";
+  const confirmRemove = confirmRemoveFor === providerId;
+
+  useEffect(() => {
+    setConfirmRemoveFor("");
+  }, [providerId]);
 
   return (
     <div className="flex flex-col gap-[clamp(18px,2.4vh,28px)]">
@@ -143,33 +166,96 @@ export function AgentProviderSettingsPanel({
                     </div>
                     <p className="m-0 mt-1 truncate text-[14px] leading-6 text-muted-foreground">{providerId}</p>
                   </div>
-                  {connected ? (
-                    <Button className="h-9 shrink-0 px-4 text-[14px]" variant="outline" onClick={() => onToggleInlineAuth(providerId, providerName)}>
-                      {authOpen ? "收起密钥编辑" : "更新 API Key"}
-                    </Button>
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-2">
+                    {canRemoveCustomProvider(providerId) ? (
+                      confirmRemove ? (
+                        <>
+                          <Button
+                            className="h-9 px-4 text-[14px]"
+                            variant="outline"
+                            disabled={removingProvider === providerId}
+                            onClick={() => setConfirmRemoveFor("")}
+                          >
+                            取消
+                          </Button>
+                          <Button
+                            className="h-9 px-4 text-[14px]"
+                            variant="destructive"
+                            disabled={removingProvider === providerId}
+                            onClick={() => onRemoveCustomProvider(providerId)}
+                          >
+                            {removingProvider === providerId ? "删除中..." : "确认删除"}
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          className="h-9 px-4 text-[14px] text-destructive hover:text-destructive"
+                          variant="outline"
+                          disabled={removingProvider === providerId}
+                          onClick={() => setConfirmRemoveFor(providerId)}
+                        >
+                          删除
+                        </Button>
+                      )
+                    ) : null}
+                    {connected ? (
+                      <Button className="h-9 shrink-0 px-4 text-[14px]" variant="outline" onClick={() => onToggleInlineAuth(providerId, providerName)}>
+                        {authOpen ? "收起密钥编辑" : "更新 API Key"}
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
                 <p className="m-0 max-w-[640px] text-[15px] font-medium leading-7 text-muted-foreground">
-                  {connected
-                    ? `${providerName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
-                    : `${providerName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
+                  {providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")
+                    ? "OpenAI Completions 兼容端点。填写供应商名称、Base URL 与 API Key；名称会显示在已配置模型列表中以便区分。"
+                    : providerId === "openai-codex"
+                      ? "官方 openai-codex 默认走 ChatGPT OAuth。填写自定义 Base URL 时仍保留 openai-codex 名称，仅更新端点（自动改用 Completions 协议）。"
+                    : connected
+                      ? `${providerName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
+                      : `${providerName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
                 </p>
                 {authOpen ? (
                   <div className="flex flex-col gap-3 rounded-xl bg-secondary/45 p-3">
+                    {(providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")) ? (
+                      <Input
+                        className="h-10 border-transparent bg-background px-3 text-[15px] shadow-none focus-visible:border-border"
+                        placeholder="供应商名称（必填，例如 公司内网 vLLM）"
+                        value={connectProviderId === providerId ? connectName : ""}
+                        onChange={(event) => onConnectNameChange(providerId, providerName, event.target.value)}
+                      />
+                    ) : null}
                     <Input
                       className="h-10 border-transparent bg-background px-3 text-[15px] shadow-none focus-visible:border-border"
                       placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
                       value={keyValue}
                       onChange={(event) => onConnectApiKeyChange(providerId, providerName, event.target.value)}
                     />
+                    <Input
+                      className="h-10 border-transparent bg-background px-3 text-[15px] shadow-none focus-visible:border-border"
+                      placeholder={
+                        providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")
+                          ? "Base URL（必填，例如 http://127.0.0.1:8000/v1）"
+                          : providerId === "openai-codex"
+                            ? "Base URL（可选；自定义代理将另存为 OpenAI Completions）"
+                          : `Base URL（可选，默认 ${resolveProviderBaseUrlHint(providerId) || "供应商预设"}）`
+                      }
+                      value={connectProviderId === providerId ? connectBaseUrl : ""}
+                      onChange={(event) => onConnectBaseUrlChange(providerId, providerName, event.target.value)}
+                    />
                     <div className="flex justify-start">
                       <Button
                         className="h-9 px-4 text-[14px]"
                         variant="contrast"
-                        disabled={connectBusy || connectProviderId !== providerId || !connectApiKey.trim()}
+                        disabled={
+                          connectBusy
+                          || connectProviderId !== providerId
+                          || !connectApiKey.trim()
+                          || ((providerId === "openai-compatible" || providerId.startsWith("openai-compatible."))
+                            && (!connectBaseUrl.trim() || !connectName.trim()))
+                        }
                         onClick={() => onConnectProvider(providerId, connected)}
                       >
-                        {connectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
+                        {connectBusy ? "Saving..." : (connected ? "保存连接" : "连接")}
                       </Button>
                     </div>
                   </div>

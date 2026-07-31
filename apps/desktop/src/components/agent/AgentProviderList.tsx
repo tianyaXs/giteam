@@ -36,6 +36,7 @@ export function AgentProviderList(props: AgentProviderListProps) {
         const prevConnected = prev ? props.connectedProviders.includes(prev) : connected;
         const shouldSplit = idx > 0 && prevConnected && !connected;
         const modelCount = props.modelCountsByProvider[provider] || 0;
+        const isOpenAICompatible = provider === "openai-compatible";
         return (
           <Fragment key={`provider-pick-wrap-${provider}`}>
             {shouldSplit ? (
@@ -61,10 +62,14 @@ export function AgentProviderList(props: AgentProviderListProps) {
                 <span className="truncate text-[16px] font-semibold leading-6">{props.getProviderDisplayName(provider)}</span>
                 <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                   <span className="truncate text-[14px] leading-5 text-muted-foreground">{`${provider} · ${tag}`}</span>
-                  <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">{modelCount} 模型</Badge>
-                  <Badge variant={connected ? "success" : "secondary"} className="shrink-0">
-                    {connected ? "已连接" : "未连接"}
+                  <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">
+                    {isOpenAICompatible ? "新增自定义" : `${modelCount} 模型`}
                   </Badge>
+                  {isOpenAICompatible ? null : (
+                    <Badge variant={connected ? "success" : "secondary"} className="shrink-0">
+                      {connected ? "已连接" : "未连接"}
+                    </Badge>
+                  )}
                 </span>
               </span>
             </Button>

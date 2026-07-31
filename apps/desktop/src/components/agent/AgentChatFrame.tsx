@@ -18,6 +18,8 @@ type AgentChatFrameProps = {
   sideRail?: ReactNode | AgentSideRailRender;
   sideRailHidden?: boolean;
   composer: ReactNode;
+  /** 悬浮在输入区上方的「拉到最新」按钮，不占用消息列表行高。 */
+  jumpLatest?: ReactNode;
 };
 
 type SideRailMode = "expanded" | "collapsed" | "hidden";
@@ -42,7 +44,8 @@ export function AgentChatFrame({
   stream,
   sideRail,
   sideRailHidden = false,
-  composer
+  composer,
+  jumpLatest
 }: AgentChatFrameProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [sideRailMode, setSideRailMode] = useState<SideRailMode>("hidden");
@@ -131,18 +134,25 @@ export function AgentChatFrame({
           </>
         ) : null}
       </CardContent>
-      {/*
-        与消息流 Virtuoso 的 scrollbar-gutter:stable 对齐：footer 同样预留滚动条槽位，
-        使输入框内容区与消息流左右边界对齐——消息流 Virtuoso 因 stable 预留了右侧滚动条槽，
-        内容整体偏左、左侧压输入框左边线。footer 用 overflow-y-auto + stable：内容不溢出时
-        不显示滚动条，但仍预留 stable 槽位（若再用 scrollbar-width:none / ::-webkit-scrollbar
-        隐藏滚动条，WebKit 下 stable 会失效而不预留，导致再次错位）。
-      */}
-      <CardFooter className="w-full shrink-0 overflow-y-auto p-0 [scrollbar-gutter:stable]">
-        <div className="mx-auto w-full max-w-[860px] px-8 pb-4 pt-3">
-          {composer}
-        </div>
-      </CardFooter>
+      <div className="relative w-full shrink-0">
+        {jumpLatest ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex -translate-y-[calc(100%+8px)] justify-center">
+            <div className="pointer-events-auto">{jumpLatest}</div>
+          </div>
+        ) : null}
+        {/*
+          与消息流 Virtuoso 的 scrollbar-gutter:stable 对齐：footer 同样预留滚动条槽位，
+          使输入框内容区与消息流左右边界对齐——消息流 Virtuoso 因 stable 预留了右侧滚动条槽，
+          内容整体偏左、左侧压输入框左边线。footer 用 overflow-y-auto + stable：内容不溢出时
+          不显示滚动条，但仍预留 stable 槽位（若再用 scrollbar-width:none / ::-webkit-scrollbar
+          隐藏滚动条，WebKit 下 stable 会失效而不预留，导致再次错位）。
+        */}
+        <CardFooter className="w-full shrink-0 overflow-y-auto p-0 [scrollbar-gutter:stable]">
+          <div className="mx-auto w-full max-w-[860px] px-8 pb-4 pt-3">
+            {composer}
+          </div>
+        </CardFooter>
+      </div>
     </Card>
   );
 }

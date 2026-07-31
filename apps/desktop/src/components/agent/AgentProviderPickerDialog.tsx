@@ -42,6 +42,8 @@ type AgentProviderPickerDialogProps = {
   connectBusy: boolean;
   connectProviderId: string;
   connectApiKey: string;
+  connectBaseUrl: string;
+  connectName: string;
   providerActionMenuFor: string;
   disconnectingProvider: string;
   onClose: () => void;
@@ -50,15 +52,20 @@ type AgentProviderPickerDialogProps = {
   onModelSearchChange: (value: string) => void;
   onSelectProvider: (provider: string, connected: boolean) => void;
   onConnectApiKeyChange: (providerId: string, providerName: string, value: string) => void;
+  onConnectBaseUrlChange: (providerId: string, providerName: string, value: string) => void;
+  onConnectNameChange: (providerId: string, providerName: string, value: string) => void;
+  resolveProviderBaseUrlHint: (providerId: string) => string;
   onToggleProviderMenu: (providerId: string) => void;
   onOpenAuthDialog: (providerId: string, providerName: string) => void;
   onConnectProvider: (providerId: string, connected: boolean) => void;
   onDisconnectProvider: (providerId: string) => void;
+  onRemoveCustomProvider: (providerId: string) => void;
   onSelectModel: (modelRef: string) => void;
   onHideModel: (modelRef: string) => void;
   onEnableModel: (modelRef: string) => void;
   getProviderTag: (providerId: string) => string;
   getProviderSource: (providerId: string) => string;
+  canRemoveCustomProvider: (providerId: string) => boolean;
   getProviderDisplayName: (providerId: string) => string;
 };
 
@@ -81,6 +88,8 @@ export function AgentProviderPickerDialog({
   connectBusy,
   connectProviderId,
   connectApiKey,
+  connectBaseUrl,
+  connectName,
   providerActionMenuFor,
   disconnectingProvider,
   onClose,
@@ -89,15 +98,20 @@ export function AgentProviderPickerDialog({
   onModelSearchChange,
   onSelectProvider,
   onConnectApiKeyChange,
+  onConnectBaseUrlChange,
+  onConnectNameChange,
+  resolveProviderBaseUrlHint,
   onToggleProviderMenu,
   onOpenAuthDialog,
   onConnectProvider,
   onDisconnectProvider,
+  onRemoveCustomProvider,
   onSelectModel,
   onHideModel,
   onEnableModel,
   getProviderTag,
   getProviderSource,
+  canRemoveCustomProvider,
   getProviderDisplayName
 }: AgentProviderPickerDialogProps) {
   const resolved = resolveProviderAliasWithNames(selectedProvider, modelsByProvider, providerNames);
@@ -222,30 +236,69 @@ export function AgentProviderPickerDialog({
                               {disconnectingProvider === providerId ? "处理中..." : "断开连接"}
                             </DropdownMenuItem>
                           ) : null}
+                          {canRemoveCustomProvider(providerId) ? (
+                            <DropdownMenuItem
+                              className="text-destructive data-[highlighted]:text-destructive"
+                              disabled={disconnectingProvider === providerId}
+                              onClick={() => onRemoveCustomProvider(providerId)}
+                            >
+                              {disconnectingProvider === providerId ? "删除中..." : "删除供应商"}
+                            </DropdownMenuItem>
+                          ) : null}
                         </DropdownMenuGroup>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
 
                   <p className="m-0 max-w-[460px] text-[16px] font-medium leading-7 text-muted-foreground">
-                    {connected
-                      ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
-                      : `${displayName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
+                    {providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")
+                      ? "OpenAI Completions 兼容端点。填写供应商名称、Base URL 与 API Key；名称会显示在已配置模型列表中以便区分。"
+                      : providerId === "openai-codex"
+                        ? "官方 openai-codex 默认走 ChatGPT OAuth。填写自定义 Base URL 时仍保留 openai-codex 名称，仅更新端点（自动改用 Completions 协议）。"
+                      : connected
+                        ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
+                        : `${displayName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
                   </p>
+                  {(providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")) ? (
+                    <Input
+                      className="h-10 rounded-lg px-3 text-[15px]"
+                      placeholder="供应商名称（必填，例如 公司内网 vLLM）"
+                      value={connectProviderId === providerId ? connectName : ""}
+                      onChange={(event) => onConnectNameChange(providerId, displayName, event.target.value)}
+                    />
+                  ) : null}
                   <Input
                     className="h-10 rounded-lg px-3 text-[15px]"
                     placeholder={connected ? "输入新的 API 密钥" : "API 密钥"}
                     value={keyValue}
                     onChange={(event) => onConnectApiKeyChange(providerId, displayName, event.target.value)}
                   />
+                  <Input
+                    className="h-10 rounded-lg px-3 text-[15px]"
+                    placeholder={
+                      providerId === "openai-compatible" || providerId.startsWith("openai-compatible.")
+                        ? "Base URL（必填，例如 http://127.0.0.1:8000/v1）"
+                        : providerId === "openai-codex"
+                          ? "Base URL（可选；自定义代理将另存为 OpenAI Completions）"
+                        : `Base URL（可选，默认 ${resolveProviderBaseUrlHint(providerId) || "供应商预设"}）`
+                    }
+                    value={connectProviderId === providerId ? connectBaseUrl : ""}
+                    onChange={(event) => onConnectBaseUrlChange(providerId, displayName, event.target.value)}
+                  />
                   <div className="flex justify-start">
                     <Button
                       className="h-9 px-4 text-[14px]"
                       variant="contrast"
-                      disabled={connectBusy || connectProviderId !== providerId || !connectApiKey.trim()}
+                      disabled={
+                        connectBusy
+                        || connectProviderId !== providerId
+                        || !connectApiKey.trim()
+                        || ((providerId === "openai-compatible" || providerId.startsWith("openai-compatible."))
+                          && (!connectBaseUrl.trim() || !connectName.trim()))
+                      }
                       onClick={() => onConnectProvider(providerId, connected)}
                     >
-                      {connectBusy ? "Saving..." : (connected ? "更新密钥" : "连接")}
+                      {connectBusy ? "Saving..." : (connected ? "保存连接" : "连接")}
                     </Button>
                   </div>
                 </div>

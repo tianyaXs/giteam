@@ -15,11 +15,12 @@ import {
 import { GitChangesPanel } from "./components/git/GitChangesPanel";
 import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import {
-  CloseIcon
+  CloseIcon,
+  ArrowDownIcon
 } from "./components/icons";
 import { AgentApiDialog } from "./components/agent/AgentApiDialog";
 import { AgentAuthDialog } from "./components/agent/AgentAuthDialog";
-import { AgentCustomProviderDialog } from "./components/agent/AgentCustomProviderDialog";
+import { AgentCustomProviderDialog, normalizeOpenAICompatibleBaseUrl } from "./components/agent/AgentCustomProviderDialog";
 import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentModulePanel";
 import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPickerDialog";
 import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
@@ -258,7 +259,12 @@ import {
   getAgentModelDisplayInfo,
   getAgentProviderSource as getAgentProviderSourceFromCatalog,
   getAgentProviderTag as getAgentProviderTagFromCatalog,
+  canRemoveAgentCustomProvider,
+  isOpenAICompatibleProviderId,
+  isOAuthNativeApiLockedProvider,
+  isRemovableCustomProviderId,
   normalizeAgentServerProviderState,
+  OPENAI_COMPATIBLE_PROVIDER_ID,
   resolveActiveAgentModel,
   type AgentConfigProviderCatalog,
   type AgentModelConfig,
@@ -887,6 +893,8 @@ export function App() {
   const [agentConnectProviderId, setAgentConnectProviderId] = useState("");
   const [agentConnectProviderName, setAgentConnectProviderName] = useState("");
   const [agentConnectApiKey, setAgentConnectApiKey] = useState("");
+  const [agentConnectBaseUrl, setAgentConnectBaseUrl] = useState("");
+  const [agentConnectCustomName, setAgentConnectCustomName] = useState("");
   const [showAgentAuthDialogFor, setShowAgentAuthDialogFor] = useState("");
   const [agentProviderActionMenuFor, setAgentProviderActionMenuFor] = useState("");
   const [agentInlineAuthOpenFor, setAgentInlineAuthOpenFor] = useState("");
@@ -1007,6 +1015,7 @@ export function App() {
   const [agentDebugLogs, setAgentDebugLogs] = useState<string[]>([]);
   const [agentServerMessageIdByLocalId, setAgentServerMessageIdByLocalId] = useState<Record<string, string>>({});
   const [agentLivePartsByServerMessageId, setAgentLivePartsByServerMessageId] = useState<Record<string, AgentDetailedPart[]>>({});
+  const agentLivePartsByServerMessageIdRef = useRef<Record<string, AgentDetailedPart[]>>({});
   const [agentDetailsLoadingByMessageId, setAgentDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
   const [agentDetailsErrorByMessageId, setAgentDetailsErrorByMessageId] = useState<Record<string, string>>({});
   const [agentDetailsByMessageId, setAgentDetailsByMessageId] = useState<Record<string, AgentDetailedMessage | null>>({});
@@ -3168,13 +3177,23 @@ export function App() {
     }
   }
 
+  function commitAgentLiveParts(
+    updater: (prev: Record<string, AgentDetailedPart[]>) => Record<string, AgentDetailedPart[]>
+  ) {
+    setAgentLivePartsByServerMessageId((prev) => {
+      const next = updater(prev);
+      agentLivePartsByServerMessageIdRef.current = next;
+      return next;
+    });
+  }
+
   function upsertAgentLivePart(serverMessageId: string, incomingPart: unknown) {
     const mid = serverMessageId.trim();
     if (!mid || !incomingPart || typeof incomingPart !== "object") return;
     const part = incomingPart as AgentDetailedPart;
     const pid = String((part as any)?.id || "").trim();
     if (!pid) return;
-    setAgentLivePartsByServerMessageId((prev) => {
+    commitAgentLiveParts((prev) => {
       const current = prev[mid] || [];
       const next = [...current];
       const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
@@ -3247,7 +3266,7 @@ export function App() {
     const mid = serverMessageId.trim();
     const pid = partId.trim();
     if (!mid || !pid || !field || !delta) return;
-    setAgentLivePartsByServerMessageId((prev) => {
+    commitAgentLiveParts((prev) => {
       const current = prev[mid] || [];
       const next = [...current];
       const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
@@ -3278,7 +3297,7 @@ export function App() {
     const mid = serverMessageId.trim();
     const pid = partId.trim();
     if (!mid || !pid || !field) return;
-    setAgentLivePartsByServerMessageId((prev) => {
+    commitAgentLiveParts((prev) => {
       const current = prev[mid] || [];
       const next = [...current];
       const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
@@ -3308,7 +3327,7 @@ export function App() {
     const mid = serverMessageId.trim();
     const pid = partId.trim();
     if (!mid || !pid) return;
-    setAgentLivePartsByServerMessageId((prev) => {
+    commitAgentLiveParts((prev) => {
       const current = prev[mid] || [];
       const hit = current.find((p) => String((p as any)?.id || "").trim() === pid);
       const hitType = String((hit as any)?.type || "");
@@ -3436,10 +3455,16 @@ export function App() {
   }
 
   function applyAgentProviderSnapshot(snapshot: ReturnType<typeof normalizeAgentServerProviderState>) {
+    const catalogIds = new Set(snapshot.providers);
     setAgentProviderNames((prev) => {
-      const next = { ...prev };
+      const next: Record<string, string> = {};
+      for (const [providerId, displayName] of Object.entries(prev)) {
+        // 已删除的自定义实例不要靠旧 displayName 继续出现在搜索/列表里。
+        if (!catalogIds.has(providerId) && isRemovableCustomProviderId(providerId)) continue;
+        if (displayName) next[providerId] = displayName;
+      }
       for (const [providerId, displayName] of Object.entries(snapshot.providerNames)) {
-        if (displayName && !next[providerId]) next[providerId] = displayName;
+        if (displayName) next[providerId] = displayName;
       }
       return next;
     });
@@ -3448,6 +3473,57 @@ export function App() {
     setAgentModelsByProvider(snapshot.modelsByProvider);
     setAgentProviders(snapshot.providers);
     setAgentConnectedProviders(snapshot.connectedProviders);
+  }
+
+  /** 从本地 UI 状态剔除供应商（删除自定义实例后立刻生效，不依赖部分刷新路径）。 */
+  function pruneLocalAgentProvider(providerId: string) {
+    const pid = providerId.trim();
+    if (!pid) return;
+    setAgentProviders((prev) => prev.filter((id) => id !== pid));
+    setAgentConnectedProviders((prev) => prev.filter((id) => id !== pid));
+    setAgentConfiguredProviders((prev) => prev.filter((id) => id !== pid));
+    setAgentProviderNames((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentProviderSourceById((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentModelsByProvider((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentModelNamesByProvider((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentConfiguredModelsByProvider((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentConfiguredModelNamesByProvider((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentGlobalConfigProviderMap((prev) => {
+      const next = { ...prev };
+      delete next[pid];
+      return next;
+    });
+    setAgentModelInfoByRef((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        if (key === pid || key.startsWith(`${pid}/`)) delete next[key];
+      }
+      return next;
+    });
   }
 
   function ensureGitPaneSelected(): boolean {
@@ -3965,14 +4041,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   async function refreshAgentConnectedProvidersOnly() {
     // 凭据在全局 vault，与工作区无关；旧逻辑用 repo path 早退会导致「key 已写入但 UI 仍未连接」。
+    // 必须整表同步 providers/models：只改 connected 会在删除自定义供应商后留下僵尸条目。
     try {
-      const state = agentProvidersToServerState(await agentClient.listProviders());
+      const providers = await agentClient.listProviders();
+      setAgentModelInfoByRef(indexAgentModelInfoByRef(providers));
+      const state = agentProvidersToServerState(providers);
       const snapshot = normalizeAgentServerProviderState(state);
-      setAgentConnectedProviders(snapshot.connectedProviders);
-      if (!agentProviderCatalogLoadedRef.current && snapshot.providers.length > 0) {
-        applyAgentProviderSnapshot(snapshot);
+      applyAgentProviderSnapshot(snapshot);
+      if (snapshot.providers.length > 0) {
         agentProviderCatalogLoadedRef.current = true;
-        appendAgentDebugLog(`server.providers catalog loaded late providers=${snapshot.providers.length}`);
       }
     } catch (e) {
       appendAgentDebugLog(`server.connected error ${String(e)}`);
@@ -4441,7 +4518,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       let addedTotal = 0;
       for (const provider of stale) {
         refreshedProvidersRef.current.add(provider.provider);
-        const added = await agentClient.refreshProviderModels(provider.provider).catch(() => [] as string[]);
+        const added = (await agentClient.refreshProviderModels(provider.provider).catch(() => [] as string[])) ?? [];
         addedTotal += added.length;
         if (added.length) {
           appendAgentDebugLog(`实时模型目录已更新: ${provider.provider} +${added.length} (${added.join(", ")})`);
@@ -4498,6 +4575,59 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
+  async function removeAgentCustomProvider(providerId: string) {
+    const pid = providerId.trim();
+    if (!pid) return;
+    // 自定义供应商目录是全局的，不依赖当前工作区。
+    if (!canRemoveAgentCustomProvider(pid, agentProviderSourceById) && !isRemovableCustomProviderId(pid)) {
+      setError("只有自定义供应商可以删除");
+      setMessage("Only custom providers can be deleted");
+      return;
+    }
+    const label = resolveProviderDisplayName(pid) || pid;
+    setAgentDisconnectingProvider(pid);
+    setError("");
+    try {
+      await agentClient.removeCustomProvider(pid);
+      pruneLocalAgentProvider(pid);
+      if (showAgentAuthDialogFor === pid) {
+        setShowAgentAuthDialogFor("");
+      }
+      if (agentProviderActionMenuFor === pid) {
+        setAgentProviderActionMenuFor("");
+      }
+      if (agentProviderPickerProvider === pid) {
+        setAgentProviderPickerProvider("");
+      }
+      if (agentInlineAuthOpenFor === pid) {
+        setAgentInlineAuthOpenFor("");
+      }
+      if (agentConnectProviderId === pid) {
+        setAgentConnectProviderId("");
+        setAgentConnectApiKey("");
+        setAgentConnectBaseUrl("");
+        setAgentConnectCustomName("");
+      }
+      const active = parseModelRef(activeAgentModel);
+      if (active?.provider === pid) {
+        // 当前选中模型属于已删供应商时清空，避免继续发到失效端点。
+        selectAgentModel("", activeAgentSessionId.trim());
+        setAgentModelProvider("");
+        setAgentSelectedModel("");
+      }
+      await refreshAgentConnectedProvidersOnly();
+      if (selectedRepo) {
+        await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false });
+      }
+      setMessage(`已删除自定义供应商：${label}`);
+    } catch (e) {
+      setError(String(e));
+      setMessage("删除自定义供应商失败");
+    } finally {
+      setAgentDisconnectingProvider("");
+    }
+  }
+
   async function runAgentPrompt() {
     if (!ensureRepoSelected()) return;
     const typedPrompt = agentPromptInput.trim();
@@ -4505,6 +4635,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const prompt = [typedPrompt, ...mcpPromptHints].filter(Boolean).join("\n\n").trim();
     const attachments = agentImageAttachments;
     if (!prompt && attachments.length === 0) return;
+
+    const selectedModel = normalizeModelRef(activeAgentModel || "");
+    if (!selectedModel) {
+      setError("请先配置并选择模型后再发送。");
+      setMessage("请先选择模型");
+      setSettingsInitialSection("models");
+      setShowSettings(true);
+      return;
+    }
 
     const repoIdAtRun = selectedRepo?.id || newSessionTargetRepoId;
     let sessionId = ensureActiveAgentSession();
@@ -4671,6 +4810,72 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         messages: session.messages.map((item) => item.id === localId ? { ...mapped, id: localId } : item),
         updatedAt: Date.now()
       }));
+      // 按完成态消息的 block 顺序重建 live：与 session jsonl 一致（thinking → toolCall* → text），
+      // 丢掉流式期乱序/幽灵工具；status/output 仍从旧 live 按 toolCallId 继承。
+      const finalTools = message.parts.filter(
+        (part): part is Extract<AgentPart, { type: "toolCall" }> => part.type === "toolCall" && !!part.toolCallId
+      );
+      commitAgentLiveParts((prev) => {
+        const current = prev[message.id] || [];
+        const liveByToolId = new Map<string, AgentDetailedPart>();
+        for (const part of current) {
+          if (String((part as { type?: string }).type || "") !== "toolCall") continue;
+          const id = String((part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || "").trim();
+          if (id) liveByToolId.set(id, part);
+        }
+        const next: AgentDetailedPart[] = [];
+        message.parts.forEach((part, index) => {
+          if (part.type === "reasoning" || part.type === "redactedReasoning") {
+            const text = part.type === "reasoning" ? part.text : "";
+            if (part.type === "redactedReasoning" || text.trim()) {
+              next.push({
+                id: `reasoning:${index}`,
+                type: "reasoning",
+                text,
+                ...(part.type === "redactedReasoning" ? { redacted: true } : {})
+              } as AgentDetailedPart);
+            }
+            return;
+          }
+          if (part.type === "text") {
+            if (part.text.trim()) {
+              next.push({ id: `text:${index}`, type: "text", text: part.text } as AgentDetailedPart);
+            }
+            return;
+          }
+          if (part.type === "toolCall" && part.toolCallId) {
+            const existing = liveByToolId.get(part.toolCallId);
+            if (existing) {
+              next.push({
+                ...existing,
+                toolName: part.toolName || (existing as { toolName?: string }).toolName,
+                ...(part.input !== undefined ? { input: part.input } : {})
+              } as AgentDetailedPart);
+            } else {
+              next.push(buildToolPart({
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                status: "running",
+                input: part.input
+              }));
+            }
+          }
+        });
+        // 完成消息里没有 toolCall 时清掉该消息上残留的工具卡片
+        if (finalTools.length === 0 && current.some((part) => String((part as { type?: string }).type || "") === "toolCall")) {
+          return { ...prev, [message.id]: next };
+        }
+        const changed =
+          next.length !== current.length ||
+          next.some((part, index) => {
+            const prevPart = current[index] as { id?: string; type?: string; text?: string } | undefined;
+            if (!prevPart) return true;
+            if (String(prevPart.id || "") !== String((part as { id?: string }).id || "")) return true;
+            if (String(prevPart.type || "") !== String((part as { type?: string }).type || "")) return true;
+            return false;
+          });
+        return changed ? { ...prev, [message.id]: next } : prev;
+      });
       scrollToBottom();
     };
 
@@ -4757,7 +4962,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     };
 
     const updateToolPart = (messageId: string, part: AgentDetailedPart) => {
-      const id = messageId.trim() || "agent-tools-" + sessionId;
+      // 禁止回退到 session 级孤儿桶：空 messageId 时工具无处归属，硬塞会在过程中虚增
+      // 「已运行 N 条」，结束后 history 对账又对不上。等 message.started 建立 current 后再挂。
+      const id = messageId.trim();
+      if (!id) return;
       upsertAgentLivePart(id, part);
       scrollToBottom();
     };
@@ -4811,16 +5019,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           // 先冲刷未落盘的 reasoning/text，避免 24ms 合帧窗口内 tool 先入列、思考后到而乱序
           flushStreamUpdates();
           // LLM 流式生成 tool call 的开始；执行开始时 tool.started 会用完整 input 覆盖同 id part。
-          updateToolPart(currentServerAssistantId, buildToolPart({
-            toolCallId: event.toolCallId || "tool-" + makeId(),
-            toolName: event.toolName || "",
-            status: "running"
-          }));
+          // 禁止 makeId()：空 toolCallId 时跳过，否则过程中会累积幽灵工具，结束后 history 对账数量变少。
+          if ((event.toolCallId || "").trim()) {
+            updateToolPart(currentServerAssistantId, buildToolPart({
+              toolCallId: event.toolCallId.trim(),
+              toolName: event.toolName || "",
+              status: "running"
+            }));
+          }
           break;
         case "toolCall.delta":
           // 流式参数增量：累积到 inputRaw，tool.started 到达后被完整 input 取代。
-          if (event.toolCallId && event.delta && currentServerAssistantId) {
-            patchAgentLivePartDelta(currentServerAssistantId, event.toolCallId, "inputRaw", event.delta);
+          if ((event.toolCallId || "").trim() && event.delta && currentServerAssistantId) {
+            patchAgentLivePartDelta(currentServerAssistantId, event.toolCallId.trim(), "inputRaw", event.delta);
           }
           break;
         case "runtime.retry":
@@ -4868,31 +5079,40 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         }
         case "tool.started":
           flushStreamUpdates();
-          updateToolPart(currentServerAssistantId, buildToolPart({
-            toolCallId: event.toolCallId || "tool-" + makeId(),
-            toolName: event.toolName || "",
-            status: "running",
-            input: event.input
-          }));
+          if ((event.toolCallId || "").trim()) {
+            updateToolPart(currentServerAssistantId, buildToolPart({
+              toolCallId: event.toolCallId.trim(),
+              toolName: event.toolName || "",
+              status: "running",
+              input: event.input
+            }));
+          }
           break;
         case "tool.progress":
-          updateToolPart(currentServerAssistantId, buildToolPart({
-            toolCallId: event.toolCallId || "tool-" + makeId(),
-            toolName: event.toolName || "",
-            status: "running",
-            output: event.output
-          }));
+          if ((event.toolCallId || "").trim()) {
+            updateToolPart(currentServerAssistantId, buildToolPart({
+              toolCallId: event.toolCallId.trim(),
+              toolName: event.toolName || "",
+              status: "running",
+              output: event.output
+            }));
+          }
           break;
         case "tool.completed":
-          updateToolPart(currentServerAssistantId, buildToolPart({
-            toolCallId: event.toolCallId || "tool-" + makeId(),
-            toolName: event.toolName || "",
-            status: event.isError ? "error" : "completed",
-            output: event.output
-          }));
+          if ((event.toolCallId || "").trim()) {
+            updateToolPart(currentServerAssistantId, buildToolPart({
+              toolCallId: event.toolCallId.trim(),
+              toolName: event.toolName || "",
+              status: event.isError ? "error" : "completed",
+              output: event.output
+            }));
+          }
           break;
         case "run.failed":
           cancelStreamBatch();
+          // 先清 busy，再写 error，避免「运行失败」横幅与「运行中 N / 停止键」同框。
+          setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
+          setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
           updateAgentSessionById(sessionId, (session) => ({
             ...session,
             messages: session.messages.map((item) =>
@@ -4942,27 +5162,52 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         }
         if (currentServerAssistantId.trim()) liveMessageIds.add(currentServerAssistantId.trim());
         const settleStatus = failure ? "error" : "completed";
-        setAgentLivePartsByServerMessageId((prev) => {
-          let changed = false;
-          const next = { ...prev };
-          for (const mid of liveMessageIds) {
-            const parts = next[mid];
-            if (!Array.isArray(parts) || parts.length === 0) continue;
-            const settled = parts.map((part) => {
-              if (String((part as { type?: string }).type || "") !== "toolCall") return part;
-              const st = String((part as { status?: string }).status || "").trim().toLowerCase();
-              if (st !== "running" && st !== "pending" && st !== "deciding") return part;
-              changed = true;
-              return {
-                ...(part as object),
-                status: settleStatus,
-                isError: Boolean(failure)
-              } as AgentDetailedPart;
-            });
-            next[mid] = settled;
-          }
-          return changed ? next : prev;
-        });
+        // 用 ref 快照收口 live，避免 setState updater 副作用；先写入 details 再清 live，
+        // 防止结束瞬间过程态事件被空/残缺 history 替换而跳变。
+        const settledLiveByServerId: Record<string, AgentDetailedPart[]> = {};
+        const liveSnapshot = agentLivePartsByServerMessageIdRef.current;
+        for (const mid of liveMessageIds) {
+          const parts = liveSnapshot[mid];
+          if (!Array.isArray(parts) || parts.length === 0) continue;
+          settledLiveByServerId[mid] = parts.map((part) => {
+            if (String((part as { type?: string }).type || "") !== "toolCall") return part;
+            const st = String((part as { status?: string }).status || "").trim().toLowerCase();
+            if (st !== "running" && st !== "pending" && st !== "deciding") return part;
+            return {
+              ...(part as object),
+              status: settleStatus,
+              isError: Boolean(failure)
+            } as AgentDetailedPart;
+          });
+        }
+        if (Object.keys(settledLiveByServerId).length > 0) {
+          commitAgentLiveParts((prev) => {
+            const next = { ...prev };
+            for (const [mid, parts] of Object.entries(settledLiveByServerId)) {
+              next[mid] = parts;
+            }
+            return next;
+          });
+          setAgentDetailsByMessageId((prev) => {
+            const next = { ...prev };
+            for (const [serverId, parts] of Object.entries(settledLiveByServerId)) {
+              if (parts.length === 0) continue;
+              const detail = {
+                info: {
+                  id: serverId,
+                  role: "assistant" as const,
+                  time: { created: Date.now() }
+                },
+                parts
+              };
+              // 同时写入 local / server 键：对账前后 msg.id 可能是任一形态。
+              next[serverId] = detail;
+              const localId = localAssistantByMessageId.get(serverId);
+              if (localId) next[localId] = detail;
+            }
+            return next;
+          });
+        }
 
         try {
           await loadAgentSessionMessages(sessionId, repoPath);
@@ -4970,7 +5215,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           appendAgentDebugLog("agent.messages.reconcile.error " + String(error));
         }
         if (liveMessageIds.size > 0) {
-          setAgentLivePartsByServerMessageId((prev) => {
+          commitAgentLiveParts((prev) => {
             let changed = false;
             const next = { ...prev };
             for (const mid of liveMessageIds) {
@@ -7378,6 +7623,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       <div className={agentShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
         <AgentChatFrame
           empty={agentShowEmptyState}
+          jumpLatest={
+            !agentShowEmptyState && agentShowJumpLatest ? (
+              <Button
+                className="size-9 rounded-full border border-border/60 bg-card shadow-md"
+                onClick={jumpAgentToLatest}
+                aria-label="拉到最新"
+                title="拉到最新"
+                variant="ghost"
+                size="icon"
+              >
+                <ArrowDownIcon />
+              </Button>
+            ) : null
+          }
           stream={(
             <AgentMessageStream
               sessionLoading={agentSessionLoading}
@@ -7478,7 +7737,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               }}
               showEmptyState={agentShowEmptyState}
               selectedRepoName={selectedRepo?.name || "Giteam"}
-              showJumpLatest={agentShowJumpLatest}
+              showJumpLatest={false}
               onJumpLatest={jumpAgentToLatest}
               attachments={agentImageAttachments}
               mcpPromptRefs={agentMcpPromptRefs}
@@ -7543,6 +7802,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
+                  if (activeAgentSessionBusy) return;
+                  if (!(activeAgentModel || "").trim()) {
+                    setError("请先配置并选择模型后再发送。");
+                    setMessage("请先选择模型");
+                    setSettingsInitialSection("models");
+                    setShowSettings(true);
+                    return;
+                  }
                   void runAgentPrompt();
                 }
               }}
@@ -7632,7 +7899,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 emptyComposerHeadline: appText.emptyComposerHeadline
               }}
               activeSessionBusy={activeAgentSessionBusy}
-              canSubmit={Boolean(agentPromptInput.trim() || agentMcpPromptRefs.length > 0 || agentImageAttachments.length > 0)}
+              canSubmit={Boolean(
+                (activeAgentModel || "").trim()
+                && (agentPromptInput.trim() || agentMcpPromptRefs.length > 0 || agentImageAttachments.length > 0)
+              )}
               onPrimaryAction={() => {
                 if (activeAgentSessionBusy) {
                   void stopAgentPrompt();
@@ -8088,12 +8358,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const mid = agentSelectedModel.trim();
       const full = `${pid}/${mid}`;
       const key = agentProviderConfig.apiKey?.trim() || "";
+      const baseUrl = normalizeOpenAICompatibleBaseUrl(agentProviderConfig.baseUrl);
       // pi：自定义 provider 写入 models.json（原子写，按 model id 合并），
       // api key 只进 vault（auth.json），不落任何配置文件（迁移计划 §8.3）。
       await agentClient.saveCustomProvider({
         provider: pid,
         name: agentProviderConfig.name || pid,
-        baseUrl: agentProviderConfig.baseUrl,
+        baseUrl,
+        api: agentProviderConfig.api || "openai-completions",
         headers: agentProviderConfig.headers || {},
         modelId: mid,
         modelName: mid,
@@ -8103,12 +8375,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       selectAgentModel(full, "");
       // 自定义 provider 同样尽力拉实时模型列表，补全目录。
       if (key) {
-        await agentClient.refreshProviderModels(pid).catch(() => [] as string[]);
+        const added = (await agentClient.refreshProviderModels(pid).catch(() => [] as string[])) ?? [];
+        if (added.length) {
+          appendAgentDebugLog(`自定义供应商模型已更新: ${pid} +${added.length}`);
+        }
       }
       setAgentModelProvider(pid);
       setAgentSelectedModel(mid);
       await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false });
       await refreshAgentConfiguredModels();
+      await fetchAgentModels(pid).catch(() => [] as string[]);
       ensureProviderExists(pid);
       setShowAgentCustomProvider(false);
       setShowAgentModelPicker(true);
@@ -8123,6 +8399,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
+  function resolveProviderBaseUrlHint(providerId: string): string {
+    const pid = providerId.trim();
+    if (!pid) return "";
+    const modelId = (agentModelsByProvider[pid] || [])[0] || "";
+    const info = modelId
+      ? (agentModelInfoByRef[`${pid}/${modelId}`]
+        || Object.values(agentModelInfoByRef).find((row) => row.provider === pid && row.modelId === modelId))
+      : Object.values(agentModelInfoByRef).find((row) => row.provider === pid);
+    const saved = (info?.baseUrl || "").trim();
+    // 内置供应商：已保存的自定义端点可回填便于更新；OAuth 原生未配置时只提示官方地址。
+    if (isOAuthNativeApiLockedProvider(pid)) {
+      if (saved && !/chatgpt\.com|api\.openai\.com/i.test(saved)) return saved;
+      return pid === "openai-codex" ? "https://chatgpt.com/backend-api/codex" : "";
+    }
+    if (saved) return saved;
+    const preset = PROVIDER_PRESETS.find((row) => row.id === pid)?.defaultBaseUrl?.trim();
+    if (preset) return preset;
+    // 自定义 openai-compatible 实例：placeholder 不展示已保存地址（编辑时由输入框回填）。
+    if (isOpenAICompatibleProviderId(pid)) return "";
+    return "";
+  }
+
   async function submitAgentProviderAuthKey(
     providerId: string,
     connected: boolean,
@@ -8130,46 +8428,111 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   ) {
     const authPid = providerId.trim();
     const key = agentConnectApiKey.trim();
+    const endpoint = agentConnectBaseUrl.trim();
     if (!authPid || !key) return;
+    const isOpenAICompatible = isOpenAICompatibleProviderId(authPid);
+    const customName = agentConnectCustomName.trim();
+    if (isOpenAICompatible && !endpoint) {
+      setError("自定义端点需要填写 Base URL");
+      setMessage("请填写 Base URL");
+      return;
+    }
+    if (isOpenAICompatible && !customName) {
+      setError("请填写供应商名称，便于在已配置模型列表中区分");
+      setMessage("请填写供应商名称");
+      return;
+    }
     setAgentConnectBusy(true);
     setError("");
     try {
-      // api key 只写统一 vault（auth.json），与是否选中工作区无关。
+      if (isOpenAICompatible) {
+        const baseUrl = normalizeOpenAICompatibleBaseUrl(endpoint) || endpoint;
+        const result = await agentClient.connectOpenAICompatible({
+          baseUrl,
+          apiKey: key,
+          name: customName,
+          provider: authPid !== OPENAI_COMPATIBLE_PROVIDER_ID ? authPid : undefined
+        });
+        const instanceId = result.provider || authPid;
+        const instanceName = result.name || customName;
+        setAgentConnectedProviders((prev) => (
+          prev.includes(instanceId)
+            ? prev
+            : [...prev, instanceId].sort((a, b) => a.localeCompare(b))
+        ));
+        setAgentProviderNames((prev) => ({
+          ...prev,
+          [instanceId]: instanceName
+        }));
+        ensureProviderExists(instanceId);
+        setAgentConnectApiKey("");
+        setAgentConnectBaseUrl("");
+        setAgentConnectCustomName("");
+        if (options?.closeDialog) setShowAgentAuthDialogFor("");
+        if (options?.closeInlineAuth) setAgentInlineAuthOpenFor("");
+        setMessage(connected
+          ? `已更新 ${instanceName}（${result.added.length} 个模型）`
+          : `已连接 ${instanceName}（${result.added.length} 个模型）`);
+        appendAgentDebugLog(
+          `openai-compatible connected provider=${instanceId} models=${result.added.length}`
+        );
+        await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false }).catch(() => undefined);
+        await refreshAgentConnectedProvidersOnly();
+        await fetchAgentModels(instanceId).catch(() => [] as string[]);
+        setAgentProviderPickerProvider(instanceId);
+        return;
+      }
+
+      // 内置供应商（含 openai-codex）：原地保存 key / 更新端点，不另存为自定义供应商。
       await agentClient.saveApiKey(authPid, key);
+      if (endpoint) {
+        await agentClient.updateProviderEndpoint(
+          authPid,
+          normalizeOpenAICompatibleBaseUrl(endpoint) || endpoint
+        );
+      }
       // 先乐观更新「已连接」，避免后续 listProviders/refresh 慢或失败时 UI 仍停在未连接。
       setAgentConnectedProviders((prev) => (prev.includes(authPid) ? prev : [...prev, authPid].sort((a, b) => a.localeCompare(b))));
       ensureProviderExists(authPid);
       // 密钥一写入就收起编辑区/对话框并清空输入，不要等后面的模型刷新（最长约 8s）。
       setAgentConnectApiKey("");
+      setAgentConnectBaseUrl("");
+      setAgentConnectCustomName("");
       if (options?.closeDialog) {
         setShowAgentAuthDialogFor("");
       }
       if (options?.closeInlineAuth) {
         setAgentInlineAuthOpenFor("");
       }
-      setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
-      // 实时模型刷新不得阻塞连接成功：部分 provider（含 kimi-coding）拉 /v1/models 可能很慢或失败。
-      const addedModels = await Promise.race([
-        agentClient.refreshProviderModels(authPid).catch(() => [] as string[]),
-        new Promise<string[]>((resolve) => window.setTimeout(() => resolve([]), 8000))
-      ]);
-      if (addedModels.length) {
-        appendAgentDebugLog(`实时模型目录已更新: ${authPid} +${addedModels.length} (${addedModels.join(", ")})`);
-      }
-      await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false }).catch(() => undefined);
-      await refreshAgentConnectedProvidersOnly();
-      const confirmed = await agentClient.hasCredential(authPid).catch(() => true);
-      if (!confirmed) {
-        throw new Error("密钥写入后未能确认凭据，请重试或检查 Giteam auth.json 权限");
-      }
-      setAgentConnectedProviders((prev) => (prev.includes(authPid) ? prev : [...prev, authPid].sort((a, b) => a.localeCompare(b))));
-      if (!(agentModelsByProvider[authPid] ?? []).length) {
+      setMessage(connected ? `已更新连接: ${authPid}` : `已连接: ${authPid}`);
+      // 实时模型刷新不得阻塞/回滚连接成功：部分 provider（含 kimi-coding）拉 /v1/models 可能很慢或失败。
+      try {
+        const addedModels = (await Promise.race([
+          agentClient.refreshProviderModels(authPid).catch(() => [] as string[]),
+          new Promise<string[]>((resolve) => window.setTimeout(() => resolve([]), 12000))
+        ])) ?? [];
+        if (addedModels.length) {
+          appendAgentDebugLog(`实时模型目录已更新: ${authPid} +${addedModels.length} (${addedModels.join(", ")})`);
+        } else {
+          appendAgentDebugLog(`实时模型目录无新增: ${authPid}（可能已是最新，或端点暂不可用）`);
+        }
+        await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false }).catch(() => undefined);
+        await refreshAgentConnectedProvidersOnly();
+        const confirmed = await agentClient.hasCredential(authPid).catch(() => true);
+        if (!confirmed) {
+          throw new Error("密钥写入后未能确认凭据，请重试或检查 Giteam auth.json 权限");
+        }
+        setAgentConnectedProviders((prev) => (prev.includes(authPid) ? prev : [...prev, authPid].sort((a, b) => a.localeCompare(b))));
+        // 首次连接后无论静态目录是否已有条目，都强制刷新 UI 模型列表（否则会停在过期快照）。
         await fetchAgentModels(authPid).catch(() => [] as string[]);
+      } catch (refreshError) {
+        appendAgentDebugLog(`连接后模型刷新异常（连接已保留）: ${String(refreshError)}`);
+        setError(`已连接，但拉取最新模型失败：${String(refreshError)}`);
       }
       setAgentProviderPickerProvider(authPid);
     } catch (e) {
       setError(String(e));
-      setMessage(connected ? "更新密钥失败" : "连接失败");
+      setMessage(connected ? "更新连接失败" : "连接失败");
     } finally {
       setAgentConnectBusy(false);
     }
@@ -8740,6 +9103,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 connectBusy={agentConnectBusy}
                 connectProviderId={agentConnectProviderId}
                 connectApiKey={agentConnectApiKey}
+                connectBaseUrl={agentConnectBaseUrl}
+                connectName={agentConnectCustomName}
                 inlineAuthOpenFor={agentInlineAuthOpenFor}
                 onProviderSearchChange={setAgentProviderPickerSearch}
                 onModelSearchChange={setAgentProviderPickerModelSearch}
@@ -8753,18 +9118,47 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   // 否则上一个 provider（如 zai）输入的 key 会残留并显示到当前 provider
                   // （如 kimi-coding）的编辑框，点保存即把 key 错写到别的 provider。
                   setAgentConnectApiKey("");
+                  setAgentConnectBaseUrl(
+                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                      ? resolveProviderBaseUrlHint(provider)
+                      : ""
+                  );
+                  setAgentConnectCustomName(
+                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                      ? (agentProviderNames[provider] || pretty)
+                      : ""
+                  );
                 }}
                 onConnectApiKeyChange={(providerId, providerName, value) => {
                   setAgentConnectProviderId(providerId);
                   setAgentConnectProviderName(providerName);
                   setAgentConnectApiKey(value);
                 }}
+                onConnectBaseUrlChange={(providerId, providerName, value) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectBaseUrl(value);
+                }}
+                onConnectNameChange={(providerId, providerName, value) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectCustomName(value);
+                }}
+                resolveProviderBaseUrlHint={resolveProviderBaseUrlHint}
                 onToggleInlineAuth={(providerId, providerName) => {
                   setAgentConnectProviderId(providerId);
                   setAgentConnectProviderName(providerName);
                   setAgentInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
                   // 展开/收起密钥编辑时清空输入，杜绝上一个 provider 的 key 残留串到当前 provider。
                   setAgentConnectApiKey("");
+                  setAgentConnectBaseUrl(
+                    isOpenAICompatibleProviderId(providerId) ? resolveProviderBaseUrlHint(providerId) : ""
+                  );
+                  setAgentConnectCustomName(
+                    isOpenAICompatibleProviderId(providerId)
+                      ? (agentProviderNames[providerId] || providerName)
+                      : ""
+                  );
                 }}
                 onConnectProvider={(providerId, connected) =>
                   void submitAgentProviderAuthKey(providerId, connected, {
@@ -8772,10 +9166,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                     closeInlineAuth: true
                   })
                 }
+                onRemoveCustomProvider={(providerId) => {
+                  void removeAgentCustomProvider(providerId);
+                }}
+                removingProvider={agentDisconnectingProvider}
                 onSelectModel={(ref) => void applyAgentModel(ref)}
                 onHideModel={hideAgentModel}
                 onEnableModel={enableAgentModel}
                 getProviderTag={getAgentProviderTag}
+                canRemoveCustomProvider={(providerId) =>
+                  canRemoveAgentCustomProvider(providerId, agentProviderSourceById)
+                }
                 getProviderDisplayName={resolveProviderDisplayName}
               />
             )}
@@ -8892,6 +9293,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             connectBusy={agentConnectBusy}
             connectProviderId={agentConnectProviderId}
             connectApiKey={agentConnectApiKey}
+            connectBaseUrl={agentConnectBaseUrl}
+            connectName={agentConnectCustomName}
             providerActionMenuFor={agentProviderActionMenuFor}
             disconnectingProvider={agentDisconnectingProvider}
             onClose={() => setShowAgentProviderPicker(false)}
@@ -8903,24 +9306,51 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onModelSearchChange={setAgentProviderPickerModelSearch}
             onSelectProvider={(provider, connected) => {
               setAgentProviderPickerProvider(provider);
-              if (!connected) {
-                setAgentConnectProviderId(provider);
-                setAgentConnectProviderName(resolveProviderDisplayName(provider));
-                setAgentConnectApiKey("");
-                return;
-              }
-              setShowAgentAuthDialogFor("");
+              const pretty = resolveProviderDisplayName(provider);
+              setAgentConnectProviderId(provider);
+              setAgentConnectProviderName(pretty);
+              setAgentConnectApiKey("");
+              setAgentConnectBaseUrl(
+                isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                  ? resolveProviderBaseUrlHint(provider)
+                  : ""
+              );
+              setAgentConnectCustomName(
+                isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                  ? (agentProviderNames[provider] || pretty)
+                  : ""
+              );
+              if (connected) setShowAgentAuthDialogFor("");
             }}
             onConnectApiKeyChange={(providerId, providerName, value) => {
               setAgentConnectProviderId(providerId);
               setAgentConnectProviderName(providerName);
               setAgentConnectApiKey(value);
             }}
+            onConnectBaseUrlChange={(providerId, providerName, value) => {
+              setAgentConnectProviderId(providerId);
+              setAgentConnectProviderName(providerName);
+              setAgentConnectBaseUrl(value);
+            }}
+            onConnectNameChange={(providerId, providerName, value) => {
+              setAgentConnectProviderId(providerId);
+              setAgentConnectProviderName(providerName);
+              setAgentConnectCustomName(value);
+            }}
+            resolveProviderBaseUrlHint={resolveProviderBaseUrlHint}
             onToggleProviderMenu={(providerId) => setAgentProviderActionMenuFor((prev) => (prev === providerId ? "" : providerId))}
             onOpenAuthDialog={(providerId, providerName) => {
               setAgentConnectProviderId(providerId);
               setAgentConnectProviderName(providerName);
               setAgentConnectApiKey("");
+              setAgentConnectBaseUrl(
+                isOpenAICompatibleProviderId(providerId) ? resolveProviderBaseUrlHint(providerId) : ""
+              );
+              setAgentConnectCustomName(
+                isOpenAICompatibleProviderId(providerId)
+                  ? (agentProviderNames[providerId] || providerName)
+                  : ""
+              );
               setShowAgentAuthDialogFor(providerId);
               setAgentProviderActionMenuFor("");
             }}
@@ -8931,11 +9361,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               setAgentProviderActionMenuFor("");
               void disconnectAgentProvider(providerId);
             }}
+            onRemoveCustomProvider={(providerId) => {
+              setAgentProviderActionMenuFor("");
+              void removeAgentCustomProvider(providerId);
+            }}
             onSelectModel={(ref) => void applyAgentModel(ref)}
             onHideModel={hideAgentModel}
             onEnableModel={enableAgentModel}
             getProviderTag={getAgentProviderTag}
             getProviderSource={getAgentProviderSource}
+            canRemoveCustomProvider={(providerId) =>
+              canRemoveAgentCustomProvider(providerId, agentProviderSourceById)
+            }
             getProviderDisplayName={resolveProviderDisplayName}
           />
         ) : null}
@@ -8950,12 +9387,26 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               providerName={pretty}
               providerTag={getAgentProviderTag(pid)}
               apiKey={keyValue}
+              baseUrl={agentConnectProviderId === pid ? agentConnectBaseUrl : ""}
+              name={agentConnectProviderId === pid ? agentConnectCustomName : ""}
+              showNameField={isOpenAICompatibleProviderId(pid)}
+              defaultBaseUrl={resolveProviderBaseUrlHint(pid)}
               busy={agentConnectBusy}
               onClose={() => setShowAgentAuthDialogFor("")}
               onApiKeyChange={(value) => {
                 setAgentConnectProviderId(pid);
                 setAgentConnectProviderName(pretty);
                 setAgentConnectApiKey(value);
+              }}
+              onBaseUrlChange={(value) => {
+                setAgentConnectProviderId(pid);
+                setAgentConnectProviderName(pretty);
+                setAgentConnectBaseUrl(value);
+              }}
+              onNameChange={(value) => {
+                setAgentConnectProviderId(pid);
+                setAgentConnectProviderName(pretty);
+                setAgentConnectCustomName(value);
               }}
               onSave={() => void saveAgentAuthKey(pid)}
             />

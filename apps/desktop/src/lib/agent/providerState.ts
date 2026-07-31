@@ -6,13 +6,14 @@ import type {
 } from "../agentProviderCatalog";
 
 /**
- * Pi 对上游快照合并进来的 provider（如 deepseek）直接使用 model id 作为显示名。
- * 当 name 缺失或等于 id 时生成可读标签（deepseek-reasoner → Deepseek Reasoner），
- * 有正式目录名（如 GPT-4o）时原样保留。
+ * 列表/选择器显示名：优先用 catalog / models.json 的 `name`。
+ * 仅当 name 缺失时，才用 model id 生成可读回退（deepseek-reasoner → Deepseek Reasoner）。
+ * 注意：name 与 id 相同（如 live discovery 写入 `"name": id`）时仍应原样显示 name，
+ * 禁止再按 id 做 Title Case，否则会出现 gpt-5.6-sol →「Gpt 5 6 Sol」。
  */
 export function humanizeModelName(modelId: string, name: string): string {
   const trimmed = (name || "").trim();
-  if (trimmed && trimmed !== modelId) return trimmed;
+  if (trimmed) return trimmed;
   const humanized = modelId
     .split(/[-_./\s]+/)
     .filter(Boolean)
@@ -33,12 +34,12 @@ export function agentProvidersToServerState(providers: AgentProviderInfo[]): Age
   return {
     providers: providers.map((provider) => ({
       id: provider.provider,
-      name: provider.provider,
+      name: (provider.name || "").trim() || provider.provider,
       models: provider.models.map((model) => model.modelId).sort((a, b) => a.localeCompare(b)),
       modelNames: Object.fromEntries(
         provider.models.map((model) => [model.modelId, humanizeModelName(model.modelId, model.name)])
       ),
-      source: provider.hasCredential ? "api" : ""
+      source: provider.removable ? "custom" : provider.hasCredential ? "api" : ""
     })),
     connected: providers.filter((provider) => provider.hasCredential).map((provider) => provider.provider)
   };
@@ -53,7 +54,7 @@ export function agentProvidersToGlobalConfig(providers: AgentProviderInfo[]): Ag
         .map((provider) => [
           provider.provider,
           {
-            name: provider.provider,
+            name: (provider.name || "").trim() || provider.provider,
             models: Object.fromEntries(
               provider.models.map((model) => [model.modelId, { name: humanizeModelName(model.modelId, model.name) }])
             )
@@ -67,7 +68,7 @@ export function agentProvidersToGlobalConfig(providers: AgentProviderInfo[]): Ag
 export function agentProvidersToConfigCatalog(providers: AgentProviderInfo[]): AgentConfigProviderCatalog[] {
   return providers.map((provider) => ({
     id: provider.provider,
-    name: provider.provider,
+    name: (provider.name || "").trim() || provider.provider,
     npm: "",
     models: provider.models.map((model) => model.modelId)
   }));

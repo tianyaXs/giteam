@@ -130,32 +130,6 @@ function mergeAdjacentContextGroups(groups: AgentAssistantRenderGroup[]): AgentA
   return merged;
 }
 
-function mergeContextGroup(
-  previous: AgentAssistantRenderGroup | null,
-  next: AgentAssistantRenderGroup
-): AgentAssistantRenderGroup {
-  if (previous?.kind !== "context" || next.kind !== "context") return next;
-  return {
-    kind: "context",
-    key: previous.key,
-    parts: [...previous.parts, ...next.parts]
-  };
-}
-
-function mergeContextBoundary(
-  previousGroups: AgentAssistantRenderGroup[],
-  nextGroups: AgentAssistantRenderGroup[]
-): boolean {
-  const previousIndex = previousGroups.length - 1;
-  if (previousIndex < 0 || nextGroups.length <= 0) return false;
-  const previous = previousGroups[previousIndex];
-  const next = nextGroups[0];
-  if (previous.kind !== "context" || next.kind !== "context") return false;
-  previousGroups[previousIndex] = mergeContextGroup(previous, next);
-  nextGroups.shift();
-  return true;
-}
-
 function buildDisplayTimelineGroups(
   groups: AgentAssistantRenderGroup[],
   showReasoningSummaries: boolean
@@ -916,7 +890,7 @@ function AssistantMessage({
       {hasTimeline ? (
         <AssistantTimeline
           stableKey={stableKey}
-          isStreaming={isStreaming}
+          isStreaming={Boolean(isStreaming && !errorMessage)}
           timelineGroups={timelineGroups}
           timelineOpenState={timelineOpenState}
           setTimelineOpenState={setTimelineOpenState}
@@ -1111,10 +1085,15 @@ export function AgentMessageStream({
     const isAssistant = msg.role === "assistant";
     const isSystem = !isAssistant && msg.content.trimStart().startsWith("[runtime]");
     const isStreaming = isAssistant && msg.id === activeStreamingAssistantId && msg.id === latestAssistantId && activeSessionBusy;
-    const serverMid = (serverMessageIdByLocalId[msg.id] || "").trim();
-    const detail = isAssistant ? (detailsByMessageId[msg.id] || null) : null;
+    // local 乐观 id → 服务端 id；对账后 msg.id 本身就是服务端 id，需直接回查 live，
+    // 否则 remap 瞬间 live 还在却查不到，提前切到 history，过程态/结束态事件汇总跳变。
+    const mappedServerMid = (serverMessageIdByLocalId[msg.id] || "").trim();
+    const detail = isAssistant ? (detailsByMessageId[msg.id] || detailsByMessageId[mappedServerMid] || null) : null;
     const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as AgentDetailedPart[]) : [];
-    const liveParts = serverMid ? (livePartsByServerMessageId[serverMid] || []) : [];
+    const liveParts =
+      (mappedServerMid && livePartsByServerMessageId[mappedServerMid]) ||
+      livePartsByServerMessageId[msg.id] ||
+      [];
     const detailParts = (liveParts.length > 0 ? liveParts : fetchedParts).map((part) => {
       // 兼容旧 bug：reasoning 流曾被误标成 text，导致思考正文与「思考中」标签分离
       const id = String((part as { id?: string }).id || "").trim();
@@ -1152,7 +1131,7 @@ export function AgentMessageStream({
   });
   const mergedRenderRows = renderRows.reduce<AgentMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
-    if (row.isAssistant && last?.isAssistant) {
+    if (row.isAssistant && last?.isAssistant && !last.errorMessage && !row.errorMessage) {
       if (isEmptyAssistantPlaceholder(last)) {
         row.isStreaming = last.isStreaming || row.isStreaming;
         row.liveParts = [...last.liveParts, ...row.liveParts];
@@ -1164,15 +1143,6 @@ export function AgentMessageStream({
         out[out.length - 1] = row;
         return out;
       }
-      const lastTimelineOnly = last.hasTimeline && !last.fallbackReply;
-      const rowTimelineOnly = row.hasTimeline && !row.fallbackReply;
-      const mergedBoundary = mergeContextBoundary(last.timelineGroups, row.timelineGroups);
-      if (mergedBoundary) {
-        last.timelineGroups = mergeAdjacentContextGroups(last.timelineGroups);
-        row.timelineGroups = mergeAdjacentContextGroups(row.timelineGroups);
-        last.hasTimeline = last.timelineGroups.length > 0;
-        row.hasTimeline = row.timelineGroups.length > 0;
-      }
       if (isEmptyAssistantPlaceholder(row)) {
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = [...last.liveParts, ...row.liveParts];
@@ -1181,34 +1151,37 @@ export function AgentMessageStream({
         last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
         return out;
       }
-      if (lastTimelineOnly && rowTimelineOnly && !last.detailsError && !row.detailsError && !last.errorMessage && !row.errorMessage) {
-        last.timelineGroups = mergeAdjacentContextGroups([
-          ...last.timelineGroups,
-          ...row.timelineGroups
-        ]);
-        last.hasTimeline = last.timelineGroups.length > 0;
-        last.isStreaming = last.isStreaming || row.isStreaming;
-        last.liveParts = [...last.liveParts, ...row.liveParts];
-        last.renderParts = [...last.renderParts, ...row.renderParts];
-        last.detailsLoading = last.detailsLoading || row.detailsLoading;
-        if (row.todoItems.length > 0) last.todoItems = row.todoItems;
-        last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
-        return out;
-      }
-    }
-    if (row.contextOnly && last?.contextOnly) {
-      last.timelineGroups = mergeAdjacentContextGroups([
-        ...last.timelineGroups,
-        ...row.timelineGroups
-      ]);
-      last.hasTimeline = last.timelineGroups.length > 0;
-      last.isStreaming = last.isStreaming || row.isStreaming;
+      // 连续 assistant 回合按 parts 流拼接后重建时间线：同类型且中间无思考/正文/其它类型
+      // 时自然合并（如两轮纯 bash → 一个「已运行 N」）；中间有 thinking 则保持分开
+      // （原始 session：thinking+2bash / thinking+2bash → 「已运行 2」「已运行 2」）。
+      // 禁止只拼 timelineGroups：那会在隐藏 reasoning 后把多轮 shell 错收成一个大数，
+      // 或在禁止合并时过程中打出 2、1、2、结束后又变成 2、2。
       last.liveParts = [...last.liveParts, ...row.liveParts];
       last.renderParts = [...last.renderParts, ...row.renderParts];
+      last.timelineGroups = buildDisplayTimelineGroups(
+        buildAgentAssistantRenderGroups(last.renderParts),
+        showReasoningSummaries
+      );
+      last.hasTimeline = last.timelineGroups.length > 0;
+      last.fallbackReply = (
+        buildAgentReplyMarkdownFromParts(last.renderParts) ||
+        row.msg.content ||
+        last.msg.content ||
+        ""
+      ).trim();
+      last.contextOnly =
+        last.timelineGroups.length > 0 &&
+        last.timelineGroups.every((group) => group.kind === "context") &&
+        !last.fallbackReply;
+      last.isStreaming = last.isStreaming || row.isStreaming;
       last.detailsLoading = last.detailsLoading || row.detailsLoading;
       last.detailsError = last.detailsError || row.detailsError;
       if (row.todoItems.length > 0) last.todoItems = row.todoItems;
-      last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
+      last.msg = {
+        ...last.msg,
+        id: `${last.msg.id}:${row.msg.id}`,
+        content: row.msg.content || last.msg.content
+      };
       return out;
     }
     out.push(row);
