@@ -1,6 +1,6 @@
-import { resolveProviderAliasWithNames } from "../../lib/opencodeModels";
-import { OpenCodeProviderList } from "./OpenCodeProviderList";
-import { OpenCodeProviderModelList } from "./OpenCodeProviderModelList";
+import { resolveProviderAliasWithNames } from "../../lib/agentModels";
+import { AgentProviderList } from "./AgentProviderList";
+import { AgentProviderModelList } from "./AgentProviderModelList";
 import { PlusIcon } from "../icons";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
@@ -23,7 +23,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 
-type OpenCodeProviderPickerDialogProps = {
+type AgentProviderPickerDialogProps = {
   loading: boolean;
   providerSearch: string;
   modelSearch: string;
@@ -62,7 +62,7 @@ type OpenCodeProviderPickerDialogProps = {
   getProviderDisplayName: (providerId: string) => string;
 };
 
-export function OpenCodeProviderPickerDialog({
+export function AgentProviderPickerDialog({
   loading,
   providerSearch,
   modelSearch,
@@ -99,7 +99,7 @@ export function OpenCodeProviderPickerDialog({
   getProviderTag,
   getProviderSource,
   getProviderDisplayName
-}: OpenCodeProviderPickerDialogProps) {
+}: AgentProviderPickerDialogProps) {
   const resolved = resolveProviderAliasWithNames(selectedProvider, modelsByProvider, providerNames);
   const cfgResolved = resolveProviderAliasWithNames(selectedProvider, configuredModelsByProvider, providerNames);
   const providerId = (resolved || selectedProvider.trim()) || "";
@@ -162,7 +162,7 @@ export function OpenCodeProviderPickerDialog({
             <CardContent className="h-full p-0">
               <ScrollArea className="h-[560px]">
                 <div className="flex flex-col gap-1 p-3">
-                  <OpenCodeProviderList
+                  <AgentProviderList
                     providers={providers}
                     selectedProvider={selectedProvider}
                     connectedProviders={connectedProviders}
@@ -229,8 +229,8 @@ export function OpenCodeProviderPickerDialog({
 
                   <p className="m-0 max-w-[460px] text-[16px] font-medium leading-7 text-muted-foreground">
                     {connected
-                      ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
-                      : `${displayName} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`}
+                      ? `${displayName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
+                      : `${displayName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
                   </p>
                   <Input
                     className="h-10 rounded-lg px-3 text-[15px]"
@@ -253,7 +253,7 @@ export function OpenCodeProviderPickerDialog({
                 {connected ? (
                   <ScrollArea className="min-h-0 flex-1">
                     <div className="flex flex-col gap-3 p-5">
-                      <OpenCodeProviderModelList
+                      <AgentProviderModelList
                         models={filteredModels}
                         providerId={providerId}
                         configuredProviderId={configuredProviderId}

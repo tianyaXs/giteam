@@ -1,23 +1,25 @@
-export type OpencodeChatMessage = {
+export type AgentChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** 本地保留的运行失败信息；服务端历史不一定返回失败事件。 */
+  error?: string;
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
 };
 
-export type OpencodeChatSession = {
+export type AgentChatSession = {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
-  messages: OpencodeChatMessage[];
+  messages: AgentChatMessage[];
   turnStart: number;
   loaded: boolean;
   nextCursor?: string;
   hasMore?: boolean;
 };
 
-export type OpencodeSessionSummary = {
+export type ChatSessionSummary = {
   id: string;
   title: string;
   createdAt: number;
@@ -26,72 +28,72 @@ export type OpencodeSessionSummary = {
   archivedAt?: number;
 };
 
-export type OpencodeSessionMessage = {
+export type AgentSessionMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
 };
 
-export type OpencodeDetailedPart = Record<string, unknown> & { type?: string };
+export type AgentDetailedPart = Record<string, unknown> & { type?: string };
 
-export type OpencodeDetailedMessage = {
+export type AgentDetailedMessage = {
   info?: Record<string, unknown>;
-  parts?: OpencodeDetailedPart[];
+  parts?: AgentDetailedPart[];
 };
 
-export type OpencodeTodoItem = {
+export type AgentTodoItem = {
   id: string;
   content: string;
   status: "pending" | "in_progress" | "completed" | "cancelled";
   priority?: string;
 };
 
-export type OpencodeMessageWindowCacheEntry = {
+export type AgentMessageWindowCacheEntry = {
   limit: number;
-  mapped: OpencodeChatMessage[];
+  mapped: AgentChatMessage[];
   turnCount: number;
   nextCursor?: string;
   hasMore: boolean;
   fetchedAt: number;
 };
 
-export type OpencodeMessagePageCacheEntry = {
+export type AgentMessagePageCacheEntry = {
   before: string;
   limit: number;
-  items: OpencodeChatMessage[];
-  detailsById: Record<string, OpencodeDetailedMessage>;
+  items: AgentChatMessage[];
+  detailsById: Record<string, AgentDetailedMessage>;
   nextCursor?: string;
   hasMore: boolean;
   fetchedAt: number;
 };
 
-const OPENCODE_SESSION_TITLE_MAX = 42;
+const AGENT_SESSION_TITLE_MAX = 42;
 
 function compactSessionTitleText(input?: string): string {
   return String(input || "").replace(/\s+/g, " ").trim();
 }
 
-export function clipOpencodeSessionTitle(input?: string): string {
+export function clipAgentSessionTitle(input?: string): string {
   const trimmed = compactSessionTitleText(input);
   if (!trimmed) return "";
-  return trimmed.length > OPENCODE_SESSION_TITLE_MAX ? `${trimmed.slice(0, OPENCODE_SESSION_TITLE_MAX - 1)}…` : trimmed;
+  return trimmed.length > AGENT_SESSION_TITLE_MAX ? `${trimmed.slice(0, AGENT_SESSION_TITLE_MAX - 1)}…` : trimmed;
 }
 
 function makeSessionId(): string {
   return Math.random().toString(16).slice(2, 14);
 }
 
-export function toOpencodeSessionTitle(prompt?: string, indexHint?: number): string {
-  const clipped = clipOpencodeSessionTitle(prompt);
+export function toAgentSessionTitle(prompt?: string, indexHint?: number): string {
+  const clipped = clipAgentSessionTitle(prompt);
   if (!clipped) return `New Session ${indexHint ?? ""}`.trim();
   return clipped;
 }
 
-export function newOpencodeSession(seedPrompt?: string, indexHint?: number): OpencodeChatSession {
+export function newAgentSession(seedPrompt?: string, indexHint?: number): AgentChatSession {
   const now = Date.now();
   return {
     id: `sess-${makeSessionId()}`,
-    title: toOpencodeSessionTitle(seedPrompt, indexHint),
+    title: toAgentSessionTitle(seedPrompt, indexHint),
     createdAt: now,
     updatedAt: now,
     messages: [],
@@ -101,10 +103,10 @@ export function newOpencodeSession(seedPrompt?: string, indexHint?: number): Ope
   };
 }
 
-export function opencodeSessionFromSummary(summary: OpencodeSessionSummary, indexHint?: number): OpencodeChatSession {
+export function agentSessionFromSummary(summary: ChatSessionSummary, indexHint?: number): AgentChatSession {
   return {
     id: summary.id,
-    title: toOpencodeSessionTitle(summary.title || "", indexHint),
+    title: toAgentSessionTitle(summary.title || "", indexHint),
     createdAt: summary.createdAt || Date.now(),
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
     messages: [],
@@ -114,9 +116,9 @@ export function opencodeSessionFromSummary(summary: OpencodeSessionSummary, inde
   };
 }
 
-export function compareOpencodeSessionActivity(
-  a: Pick<OpencodeSessionSummary, "id" | "createdAt" | "updatedAt">,
-  b: Pick<OpencodeSessionSummary, "id" | "createdAt" | "updatedAt">
+export function compareAgentSessionActivity(
+  a: Pick<ChatSessionSummary, "id" | "createdAt" | "updatedAt">,
+  b: Pick<ChatSessionSummary, "id" | "createdAt" | "updatedAt">
 ): number {
   const byUpdated = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
   if (byUpdated !== 0) return byUpdated;
@@ -125,61 +127,26 @@ export function compareOpencodeSessionActivity(
   return String(a.id || "").localeCompare(String(b.id || ""));
 }
 
-export function buildOpencodeTurnRanges(messages: OpencodeChatMessage[]): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  let currentStart = 0;
-  for (let i = 0; i < messages.length; i += 1) {
-    const msg = messages[i];
-    if (msg?.role === "user") {
-      if (i > currentStart) out.push({ start: currentStart, end: i });
-      currentStart = i;
-    }
-  }
-  if (messages.length > currentStart) out.push({ start: currentStart, end: messages.length });
-  return out;
-}
-
-export function getInitialOpencodeTurnStart(totalTurns: number): number {
-  const recentVisible = 2;
-  return totalTurns > recentVisible ? totalTurns - recentVisible : 0;
-}
-
-export function sliceOpencodeMessagesByTurnStart(messages: OpencodeChatMessage[], turnStart: number): {
-  visible: OpencodeChatMessage[];
-  hidden: OpencodeChatMessage[];
-  totalTurns: number;
-} {
-  const turns = buildOpencodeTurnRanges(messages);
-  if (turns.length === 0) return { visible: [], hidden: [], totalTurns: turns.length };
-  const startTurnIndex = Math.max(0, Math.min(Math.floor(turnStart || 0), turns.length - 1));
-  const startMessageIndex = turns[startTurnIndex]?.start ?? 0;
-  return {
-    visible: messages.slice(startMessageIndex),
-    hidden: messages.slice(0, startMessageIndex),
-    totalTurns: turns.length
-  };
-}
-
-export function isArchivedOpencodeSessionSummary(
-  summary: Pick<OpencodeSessionSummary, "archivedAt">
+export function isArchivedChatSessionSummary(
+  summary: Pick<ChatSessionSummary, "archivedAt">
 ): boolean {
   return typeof summary.archivedAt === "number" && summary.archivedAt > 0;
 }
 
-export function isChildOpencodeSessionSummary(
-  summary: Pick<OpencodeSessionSummary, "parentId">
+export function isChildChatSessionSummary(
+  summary: Pick<ChatSessionSummary, "parentId">
 ): boolean {
   return Boolean(summary.parentId?.trim());
 }
 
-export function filterRootOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return rows.filter((row) => !isChildOpencodeSessionSummary(row));
+export function filterRootAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
+  return rows.filter((row) => !isChildChatSessionSummary(row));
 }
 
-export function filterActiveOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return filterRootOpencodeSessionSummaries(rows).filter((row) => !isArchivedOpencodeSessionSummary(row));
+export function filterActiveAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
+  return filterRootAgentSessionSummaries(rows).filter((row) => !isArchivedChatSessionSummary(row));
 }
 
-export function sortOpencodeSessionSummaries(rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
-  return [...rows].sort(compareOpencodeSessionActivity);
+export function sortAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
+  return [...rows].sort(compareAgentSessionActivity);
 }

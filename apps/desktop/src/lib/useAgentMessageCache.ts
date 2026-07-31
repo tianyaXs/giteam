@@ -1,8 +1,8 @@
 import { useRef } from "react";
 import type {
-  OpencodeMessagePageCacheEntry,
-  OpencodeMessageWindowCacheEntry
-} from "./opencodeSessions";
+  AgentMessagePageCacheEntry,
+  AgentMessageWindowCacheEntry
+} from "./agentSessions";
 
 function getMessageCacheKey(repoPathValue: string, sessionId: string) {
   return `${repoPathValue.trim()}\n${sessionId.trim()}`;
@@ -12,10 +12,10 @@ function getMessagePageCacheKey(repoPathValue: string, sessionId: string, before
   return `${getMessageCacheKey(repoPathValue, sessionId)}\n${before}\n${limit}`;
 }
 
-export function useOpencodeMessageCache() {
-  const windowCacheRef = useRef<Record<string, OpencodeMessageWindowCacheEntry[]>>({});
-  const pageCacheRef = useRef<Record<string, OpencodeMessagePageCacheEntry>>({});
-  const pageInflightRef = useRef<Record<string, Promise<OpencodeMessagePageCacheEntry> | undefined>>({});
+export function useAgentMessageCache() {
+  const windowCacheRef = useRef<Record<string, AgentMessageWindowCacheEntry[]>>({});
+  const pageCacheRef = useRef<Record<string, AgentMessagePageCacheEntry>>({});
+  const pageInflightRef = useRef<Record<string, Promise<AgentMessagePageCacheEntry> | undefined>>({});
 
   const getPageCacheKey = getMessagePageCacheKey;
 
@@ -25,7 +25,7 @@ export function useOpencodeMessageCache() {
 
   const getPageInflight = (cacheKey: string) => pageInflightRef.current[cacheKey];
 
-  const setPageInflight = (cacheKey: string, task: Promise<OpencodeMessagePageCacheEntry>) => {
+  const setPageInflight = (cacheKey: string, task: Promise<AgentMessagePageCacheEntry>) => {
     pageInflightRef.current = {
       ...pageInflightRef.current,
       [cacheKey]: task
@@ -58,7 +58,7 @@ export function useOpencodeMessageCache() {
     );
   };
 
-  const setWindowEntry = (repoPathValue: string, sessionId: string, entry: OpencodeMessageWindowCacheEntry) => {
+  const setWindowEntry = (repoPathValue: string, sessionId: string, entry: AgentMessageWindowCacheEntry) => {
     const cacheKey = getMessageCacheKey(repoPathValue, sessionId);
     const prev = windowCacheRef.current[cacheKey] || [];
     const next = [...prev.filter((item) => item.limit !== entry.limit), entry]
@@ -70,7 +70,7 @@ export function useOpencodeMessageCache() {
     };
   };
 
-  const setPageEntry = (repoPathValue: string, sessionId: string, entry: OpencodeMessagePageCacheEntry) => {
+  const setPageEntry = (repoPathValue: string, sessionId: string, entry: AgentMessagePageCacheEntry) => {
     const key = getMessagePageCacheKey(repoPathValue, sessionId, entry.before, entry.limit);
     pageCacheRef.current = {
       ...pageCacheRef.current,

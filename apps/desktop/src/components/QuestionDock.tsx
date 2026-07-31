@@ -17,6 +17,9 @@ import { Separator } from "./ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group";
 import { cn } from "../lib/utils";
 
+/** 多选答案的硬上限，与后端 question 工具 options≤4 校验对齐。 */
+const MAX_MULTI_SELECT = 4;
+
 interface QuestionDockProps {
   request: QuestionRequest;
   onReply: (requestId: string, answers: QuestionAnswer[]) => void;
@@ -90,6 +93,12 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
     const next = values.filter((value) => optionLabels.has(value));
     if (currentCustomValue && currentAnswers.includes(currentCustomValue)) {
       next.push(currentCustomValue);
+    }
+
+    // 多选上限：超过 MAX_MULTI_SELECT 时阻止本次新增（保留当前选择）；
+    // 取消选择会让 next 变短，不受此限制影响。
+    if (next.length > MAX_MULTI_SELECT) {
+      return;
     }
 
     updateAnswersForCurrent(next);
@@ -226,7 +235,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                     <CardDescription>{currentQuestion.header}</CardDescription>
                   ) : null}
                   <CardTitle className="text-base leading-6">{currentQuestion?.question}</CardTitle>
-                  <CardDescription>{isMultiSelect ? "选择多个答案" : "选择一个答案"}</CardDescription>
+                  <CardDescription>{isMultiSelect ? `选择多个答案（最多 ${MAX_MULTI_SELECT} 项）` : "选择一个答案"}</CardDescription>
                 </div>
 
                 {isMultiSelect ? (

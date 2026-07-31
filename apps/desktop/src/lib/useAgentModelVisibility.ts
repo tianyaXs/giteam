@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { loadModelRefSet, saveModelRefSet } from "./opencodeModels";
+import { loadModelRefSet, saveModelRefSet } from "./agentModels";
 
-type OpencodeModelVisibility = {
+type AgentModelVisibility = {
   hiddenModels: Set<string>;
   enabledModels: Set<string>;
   hideModel: (modelRef: string) => void;
   enableModel: (modelRef: string) => void;
 };
 
-export function useOpencodeModelVisibility(storageKeys: {
+export function useAgentModelVisibility(storageKeys: {
   hidden: string;
   enabled: string;
-}): OpencodeModelVisibility {
+}): AgentModelVisibility {
   const [hiddenModels, setHiddenModels] = useState<Set<string>>(() => new Set());
   const [enabledModels, setEnabledModels] = useState<Set<string>>(() => new Set());
   const loadedRef = useRef(false);

@@ -3,6 +3,7 @@ pub mod entire;
 pub mod env;
 pub mod git;
 pub mod giteam_cli;
+pub mod pi_agent;
 pub mod ui;
 pub mod watch;
 

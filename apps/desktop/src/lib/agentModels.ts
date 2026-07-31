@@ -163,23 +163,8 @@ export function buildConfiguredModelCandidates(ctx: ConfiguredModelCandidateCont
     out.add(full);
   };
 
-  for (const pid of ctx.configuredProviders) {
-    const resolvedProvider = resolveProviderAliasWithNames(pid, ctx.liveModelsByProvider, ctx.providerNames) || pid;
-    if (resolvedProvider && !connected.has(resolvedProvider)) continue;
-    const providerModels = ctx.liveModelsByProvider[resolvedProvider] ?? ctx.liveModelsByProvider[pid] ?? [];
-    for (const mid of ctx.configuredModelsByProvider[pid] ?? []) {
-      const full = normalizeModelRef(`${pid}/${mid}`);
-      if (!full) continue;
-      if (providerModels.length > 0 && !providerModels.includes(mid)) continue;
-      const provider = resolveProviderAliasWithNames(pid, ctx.liveModelsByProvider, ctx.providerNames) || pid;
-      const displayName =
-        ctx.configuredModelNamesByProvider?.[provider]?.[mid] ||
-        ctx.liveModelNamesByProvider?.[provider]?.[mid] ||
-        "";
-      includeRef(full, displayName);
-    }
-  }
-
+  // 选择器只显示用户在设置页显式打开的模型（"打开哪个才显示哪个"），
+  // 不再把已配置 provider 的全部模型默认注入候选。
   for (const full of ctx.enabledModels) {
     const parsed = parseModelRef(full);
     if (!parsed) continue;

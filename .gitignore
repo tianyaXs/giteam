@@ -16,3 +16,16 @@ apps/cli/.publish-release.json
 .obsidian
 opencode.jsonc
 skills-lock.json
+
+# Local / runtime artifacts (never commit)
+.giteam/
+.playwright-mcp/
+.serena/
+.expo/
+**/.expo/
+
+# Scratch / design drafts at repo root
+/新版应用图标.png
+/*.png
+!apps/**/icons/**
+!apps/mobile/assets/**

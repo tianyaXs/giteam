@@ -1,12 +1,12 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import {
-  buildOpencodeSkillCatalogCacheKey,
+  buildAgentSkillCatalogCacheKey,
   mergeMarketplaceCatalogRows,
-  OPENCODE_SKILL_DISPLAY_BATCH_SIZE,
-  type OpencodeSkillAudit,
-  type OpencodeSkillCatalogCacheEntry,
-  type OpencodeSkillDetail
-} from "./opencodeSkillData";
+  AGENT_SKILL_DISPLAY_BATCH_SIZE,
+  type AgentSkillAudit,
+  type AgentSkillCatalogCacheEntry,
+  type AgentSkillDetail
+} from "./agentSkillData";
 import {
   buildSkillsmpSearchEndpoint,
   dedupeMarketplaceResults,
@@ -15,22 +15,22 @@ import {
   fetchSkillsmpSearchViaBackend,
   getSkillsMarketplaceSeedQuery,
   isTrustedSkillSource,
-  OPENCODE_RECOMMENDED_SKILLS,
+  AGENT_RECOMMENDED_SKILLS,
   parseSkillInstallCount,
   skillsmpSkillToResult,
-  type OpencodeSkillSearchResult
-} from "./opencodeSkillMarketplace";
+  type AgentSkillSearchResult
+} from "./agentSkillMarketplace";
 import { invoke, IS_TAURI } from "./platform";
 
-export type OpencodeSkillSearchStrategy = "keyword" | "ai";
-export type OpencodeSkillCatalogView = "all-time" | "trending" | "hot" | "official";
-export type OpencodeSkillSearchMeta = {
+export type AgentSkillSearchStrategy = "keyword" | "ai";
+export type AgentSkillCatalogView = "all-time" | "trending" | "hot" | "official";
+export type AgentSkillSearchMeta = {
   count: number;
   searchType: string;
   durationMs: number;
 };
 
-type UseOpencodeSkillMarketplaceInput = {
+type UseAgentSkillMarketplaceInput = {
   repoPath: string;
   skillsVisible: boolean;
   skillsLoadedOnce: boolean;
@@ -66,14 +66,14 @@ function waitForPaint(): Promise<void> {
   });
 }
 
-function localBuiltinSkillSearchTerms(row: OpencodeSkillSearchResult): string[] {
+function localBuiltinSkillSearchTerms(row: AgentSkillSearchResult): string[] {
   if (String(row.installSpec || "") === "giteam-builtin:opencode-remote-repo") {
     return ["remote repo", "remote repository", "远程仓库", "远程代码仓库", "远程 repo", "mcp"];
   }
   return [];
 }
 
-export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceInput) {
+export function useAgentSkillMarketplace(input: UseAgentSkillMarketplaceInput) {
   const {
     repoPath,
     skillsVisible,
@@ -92,37 +92,37 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
   appendDebugLogRef.current = appendDebugLog;
   repoPathRef.current = repoPath;
 
-  const [opencodeSkillSearchQuery, setOpencodeSkillSearchQuery] = useState("");
-  const [opencodeSkillSearchStrategy, setOpencodeSkillSearchStrategy] = useState<OpencodeSkillSearchStrategy>("keyword");
-  const [opencodeSkillSearchResults, setOpencodeSkillSearchResults] = useState<OpencodeSkillSearchResult[]>([]);
-  const [opencodeSkillSearchLoading, setOpencodeSkillSearchLoading] = useState(false);
-  const [opencodeSkillSearchCache, setOpencodeSkillSearchCache] = useState<Record<string, OpencodeSkillSearchResult[]>>({});
-  const [opencodeSkillDisplayLimit, setOpencodeSkillDisplayLimit] = useState(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
-  const [opencodeSkillRevealLoading, setOpencodeSkillRevealLoading] = useState(false);
-  const [opencodeSkillCatalogView, setOpencodeSkillCatalogView] = useState<OpencodeSkillCatalogView>("all-time");
-  const [opencodeSkillCatalogRows, setOpencodeSkillCatalogRows] = useState<OpencodeSkillSearchResult[]>([]);
-  const [opencodeSkillCatalogLoading, setOpencodeSkillCatalogLoading] = useState(false);
-  const [opencodeSkillCatalogPage, setOpencodeSkillCatalogPage] = useState(0);
-  const [opencodeSkillCatalogTotal, setOpencodeSkillCatalogTotal] = useState(0);
-  const [opencodeSkillCatalogHasMore, setOpencodeSkillCatalogHasMore] = useState(false);
-  const [opencodeSkillCatalogCache, setOpencodeSkillCatalogCache] = useState<Record<string, OpencodeSkillCatalogCacheEntry>>({});
-  const [opencodeSkillCatalogAttempted, setOpencodeSkillCatalogAttempted] = useState<Record<string, boolean>>({});
-  const [opencodeSkillSearchMeta, setOpencodeSkillSearchMeta] = useState<OpencodeSkillSearchMeta | null>(null);
-  const [opencodeSkillAllowBackendCatalogFetch, setOpencodeSkillAllowBackendCatalogFetch] = useState(false);
-  const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<OpencodeSkillSearchResult | null>(null);
-  const [selectedSkillDetail, setSelectedSkillDetail] = useState<OpencodeSkillDetail | null>(null);
-  const [selectedSkillAudits, setSelectedSkillAudits] = useState<OpencodeSkillAudit[]>([]);
+  const [agentSkillSearchQuery, setAgentSkillSearchQuery] = useState("");
+  const [agentSkillSearchStrategy, setAgentSkillSearchStrategy] = useState<AgentSkillSearchStrategy>("keyword");
+  const [agentSkillSearchResults, setAgentSkillSearchResults] = useState<AgentSkillSearchResult[]>([]);
+  const [agentSkillSearchLoading, setAgentSkillSearchLoading] = useState(false);
+  const [agentSkillSearchCache, setAgentSkillSearchCache] = useState<Record<string, AgentSkillSearchResult[]>>({});
+  const [agentSkillDisplayLimit, setAgentSkillDisplayLimit] = useState(AGENT_SKILL_DISPLAY_BATCH_SIZE);
+  const [agentSkillRevealLoading, setAgentSkillRevealLoading] = useState(false);
+  const [agentSkillCatalogView, setAgentSkillCatalogView] = useState<AgentSkillCatalogView>("all-time");
+  const [agentSkillCatalogRows, setAgentSkillCatalogRows] = useState<AgentSkillSearchResult[]>([]);
+  const [agentSkillCatalogLoading, setAgentSkillCatalogLoading] = useState(false);
+  const [agentSkillCatalogPage, setAgentSkillCatalogPage] = useState(0);
+  const [agentSkillCatalogTotal, setAgentSkillCatalogTotal] = useState(0);
+  const [agentSkillCatalogHasMore, setAgentSkillCatalogHasMore] = useState(false);
+  const [agentSkillCatalogCache, setAgentSkillCatalogCache] = useState<Record<string, AgentSkillCatalogCacheEntry>>({});
+  const [agentSkillCatalogAttempted, setAgentSkillCatalogAttempted] = useState<Record<string, boolean>>({});
+  const [agentSkillSearchMeta, setAgentSkillSearchMeta] = useState<AgentSkillSearchMeta | null>(null);
+  const [agentSkillAllowBackendCatalogFetch, setAgentSkillAllowBackendCatalogFetch] = useState(false);
+  const [selectedMarketplaceSkill, setSelectedMarketplaceSkill] = useState<AgentSkillSearchResult | null>(null);
+  const [selectedSkillDetail, setSelectedSkillDetail] = useState<AgentSkillDetail | null>(null);
+  const [selectedSkillAudits, setSelectedSkillAudits] = useState<AgentSkillAudit[]>([]);
   const [selectedSkillLoading, setSelectedSkillLoading] = useState(false);
   const [showSkillInstallMenu, setShowSkillInstallMenu] = useState(false);
 
-  const opencodeSkillCatalogRequestRef = useRef(0);
-  const opencodeSkillCatalogInflightRef = useRef<Record<string, boolean>>({});
-  const opencodeSkillMarketListRef = useRef<HTMLDivElement | null>(null);
-  const opencodeSkillUserNearBottomRef = useRef(false);
+  const agentSkillCatalogRequestRef = useRef(0);
+  const agentSkillCatalogInflightRef = useRef<Record<string, boolean>>({});
+  const agentSkillMarketListRef = useRef<HTMLDivElement | null>(null);
+  const agentSkillUserNearBottomRef = useRef(false);
 
-  const opencodeFallbackMarketplaceRows = useMemo(() => {
+  const agentFallbackMarketplaceRows = useMemo(() => {
     if (!skillsVisible) return [];
-    return OPENCODE_RECOMMENDED_SKILLS.map((skill, index): OpencodeSkillSearchResult => ({
+    return AGENT_RECOMMENDED_SKILLS.map((skill, index): AgentSkillSearchResult => ({
       spec: skill.spec,
       package: skill.source,
       skill: skill.title,
@@ -136,58 +136,63 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     }));
   }, [skillsVisible]);
 
-  const opencodeBuiltinMarketplaceRows = useMemo(
-    () => opencodeFallbackMarketplaceRows.filter((row) => String(row.installSpec || "").startsWith("giteam-builtin:")),
-    [opencodeFallbackMarketplaceRows]
+  const agentBuiltinMarketplaceRows = useMemo(
+    () => agentFallbackMarketplaceRows.filter((row) => String(row.installSpec || "").startsWith("giteam-builtin:")),
+    [agentFallbackMarketplaceRows]
   );
 
-  const opencodeBuiltinSearchRows = useMemo(() => {
-    const query = opencodeSkillSearchQuery.trim().toLowerCase();
-    if (query.length < 2) return opencodeBuiltinMarketplaceRows;
-    return opencodeBuiltinMarketplaceRows.filter((row) => [
+  const agentBuiltinSearchRows = useMemo(() => {
+    const query = agentSkillSearchQuery.trim().toLowerCase();
+    if (query.length < 2) return agentBuiltinMarketplaceRows;
+    return agentBuiltinMarketplaceRows.filter((row) => [
       row.skill,
       row.package,
       row.spec,
       row.installSpec,
       ...localBuiltinSkillSearchTerms(row)
     ].some((value) => String(value || "").toLowerCase().includes(query)));
-  }, [opencodeBuiltinMarketplaceRows, opencodeSkillSearchQuery]);
+  }, [agentBuiltinMarketplaceRows, agentSkillSearchQuery]);
 
-  const opencodeMarketplaceRows = useMemo(() => {
+  const agentMarketplaceRows = useMemo(() => {
     if (!skillsVisible) return [];
-    if (opencodeSkillSearchQuery.trim().length >= 2 || opencodeSkillSearchResults.length > 0) {
-      return dedupeMarketplaceResults([...opencodeBuiltinSearchRows, ...opencodeSkillSearchResults]);
+    if (agentSkillSearchQuery.trim().length >= 2 || agentSkillSearchResults.length > 0) {
+      return dedupeMarketplaceResults([...agentBuiltinSearchRows, ...agentSkillSearchResults]);
     }
-    if (opencodeSkillCatalogRows.length > 0) {
-      return dedupeMarketplaceResults([...opencodeBuiltinMarketplaceRows, ...opencodeSkillCatalogRows]);
+    if (agentSkillCatalogRows.length > 0) {
+      // 「全部」保留本地推荐榜，再拼市场结果，避免远端结果偏少时列表只剩几条。
+      if (agentSkillCatalogView === "all-time") {
+        return dedupeMarketplaceResults([...agentFallbackMarketplaceRows, ...agentSkillCatalogRows]);
+      }
+      return dedupeMarketplaceResults([...agentBuiltinMarketplaceRows, ...agentSkillCatalogRows]);
     }
-    return opencodeFallbackMarketplaceRows;
+    return agentFallbackMarketplaceRows;
   }, [
     skillsVisible,
-    opencodeBuiltinMarketplaceRows,
-    opencodeBuiltinSearchRows,
-    opencodeFallbackMarketplaceRows,
-    opencodeSkillCatalogRows,
-    opencodeSkillSearchQuery,
-    opencodeSkillSearchResults
+    agentBuiltinMarketplaceRows,
+    agentBuiltinSearchRows,
+    agentFallbackMarketplaceRows,
+    agentSkillCatalogRows,
+    agentSkillCatalogView,
+    agentSkillSearchQuery,
+    agentSkillSearchResults
   ]);
 
-  const visibleOpencodeMarketplaceRows = useMemo(
-    () => opencodeMarketplaceRows.slice(0, opencodeSkillDisplayLimit),
-    [opencodeMarketplaceRows, opencodeSkillDisplayLimit]
+  const visibleAgentMarketplaceRows = useMemo(
+    () => agentMarketplaceRows.slice(0, agentSkillDisplayLimit),
+    [agentMarketplaceRows, agentSkillDisplayLimit]
   );
 
-  const opencodeCanRevealMoreSkills = visibleOpencodeMarketplaceRows.length < opencodeMarketplaceRows.length;
-  const opencodeCanFetchMoreCatalogSkills = opencodeSkillSearchResults.length === 0 && opencodeSkillCatalogRows.length > 0 && opencodeSkillCatalogHasMore;
-  const opencodeSkillsInitialLoading = opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length === 0 && opencodeSkillSearchResults.length === 0;
-  const opencodeSkillsSearching = opencodeSkillSearchLoading;
-  const opencodeSkillsPaging = (opencodeSkillCatalogLoading && opencodeSkillCatalogRows.length > 0 && opencodeSkillSearchResults.length === 0) || opencodeSkillRevealLoading;
-  const opencodeCanAutoLoadMore = opencodeCanRevealMoreSkills
-    || opencodeCanFetchMoreCatalogSkills
-    || (!opencodeSkillAllowBackendCatalogFetch
-      && opencodeMarketplaceRows.length < OPENCODE_SKILL_DISPLAY_BATCH_SIZE
-      && opencodeSkillCatalogRows.length === 0
-      && opencodeSkillSearchResults.length === 0);
+  const agentCanRevealMoreSkills = visibleAgentMarketplaceRows.length < agentMarketplaceRows.length;
+  const agentCanFetchMoreCatalogSkills = agentSkillSearchResults.length === 0 && agentSkillCatalogRows.length > 0 && agentSkillCatalogHasMore;
+  const agentSkillsInitialLoading = agentSkillCatalogLoading && agentSkillCatalogRows.length === 0 && agentSkillSearchResults.length === 0;
+  const agentSkillsSearching = agentSkillSearchLoading;
+  const agentSkillsPaging = (agentSkillCatalogLoading && agentSkillCatalogRows.length > 0 && agentSkillSearchResults.length === 0) || agentSkillRevealLoading;
+  const agentCanAutoLoadMore = agentCanRevealMoreSkills
+    || agentCanFetchMoreCatalogSkills
+    || (!agentSkillAllowBackendCatalogFetch
+      && agentMarketplaceRows.length < AGENT_SKILL_DISPLAY_BATCH_SIZE
+      && agentSkillCatalogRows.length === 0
+      && agentSkillSearchResults.length === 0);
 
   async function fetchSkillsmpSearchWithFallback(
     searchInput: FetchSkillsmpSearchInput,
@@ -237,44 +242,44 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     }
   }
 
-  async function searchOpencodeSkillRegistry(
-    queryArg = opencodeSkillSearchQuery,
-    strategyArg = opencodeSkillSearchStrategy
+  async function searchAgentSkillRegistry(
+    queryArg = agentSkillSearchQuery,
+    strategyArg: AgentSkillSearchStrategy = "keyword"
   ) {
     if (!ensureRepoSelectedRef.current()) return;
     const requestRepoPath = repoPathRef.current.trim();
     const query = queryArg.trim();
     if (query.length < 2) {
-      setOpencodeSkillSearchResults([]);
+      setAgentSkillSearchResults([]);
       return;
     }
     const cacheKey = `${strategyArg}:all:${query.toLowerCase()}`;
-    const cached = opencodeSkillSearchCache[cacheKey];
+    const cached = agentSkillSearchCache[cacheKey];
     if (cached) {
-      setOpencodeSkillSearchResults(cached);
-      setOpencodeSkillDisplayLimit(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
-      setOpencodeSkillSearchMeta({ count: cached.length, searchType: `${strategyArg}-cache`, durationMs: 0 });
+      setAgentSkillSearchResults(cached);
+      setAgentSkillDisplayLimit(AGENT_SKILL_DISPLAY_BATCH_SIZE);
+      setAgentSkillSearchMeta({ count: cached.length, searchType: `${strategyArg}-cache`, durationMs: 0 });
       return;
     }
-    setOpencodeSkillSearchLoading(true);
+    setAgentSkillSearchLoading(true);
     setSkillsError("");
     try {
       if (strategyArg === "ai") {
         if (!skillsmpApiKey.trim()) {
           setSkillsError("未配置 SKILLSMP_API_KEY，已自动切换到关键词搜索。可在 Settings 中配置后再用 AI 语义搜索。");
-          setOpencodeSkillSearchStrategy("keyword");
-          await searchOpencodeSkillRegistry(query, "keyword");
+          setAgentSkillSearchStrategy("keyword");
+          await searchAgentSkillRegistry(query, "keyword");
           return;
         }
         const raw = await fetchSkillsmpAiWithFallback(query);
         if (repoPathRef.current.trim() !== requestRepoPath) return;
         const rows = dedupeMarketplaceResults(normalizeArrayRows(raw?.data?.skills || raw?.data)
           .map(skillsmpSkillToResult)
-          .filter(Boolean) as OpencodeSkillSearchResult[]);
-        setOpencodeSkillSearchResults(rows);
-        setOpencodeSkillDisplayLimit(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
-        setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: rows }));
-        setOpencodeSkillSearchMeta({ count: rows.length, searchType: "skillsmp-ai", durationMs: Number(raw?.meta?.responseTimeMs || 0) });
+          .filter(Boolean) as AgentSkillSearchResult[]);
+        setAgentSkillSearchResults(rows);
+        setAgentSkillDisplayLimit(AGENT_SKILL_DISPLAY_BATCH_SIZE);
+        setAgentSkillSearchCache((prev) => ({ ...prev, [cacheKey]: rows }));
+        setAgentSkillSearchMeta({ count: rows.length, searchType: "skillsmp-ai", durationMs: Number(raw?.meta?.responseTimeMs || 0) });
         return;
       }
 
@@ -287,60 +292,68 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
       if (repoPathRef.current.trim() !== requestRepoPath) return;
       const rows = dedupeMarketplaceResults(normalizeArrayRows(raw?.data?.skills)
         .map(skillsmpSkillToResult)
-        .filter(Boolean) as OpencodeSkillSearchResult[]);
+        .filter(Boolean) as AgentSkillSearchResult[]);
       const sorted = rows.sort((a, b) => {
         const trustedDelta = Number(isTrustedSkillSource(b.source || b.package)) - Number(isTrustedSkillSource(a.source || a.package));
         if (trustedDelta !== 0) return trustedDelta;
         return parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs);
       });
-      setOpencodeSkillSearchResults(sorted);
-      setOpencodeSkillDisplayLimit(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
-      setOpencodeSkillSearchCache((prev) => ({ ...prev, [cacheKey]: sorted }));
-      setOpencodeSkillSearchMeta({ count: sorted.length, searchType: "skillsmp-keyword", durationMs: 0 });
+      setAgentSkillSearchResults(sorted);
+      setAgentSkillDisplayLimit(AGENT_SKILL_DISPLAY_BATCH_SIZE);
+      setAgentSkillSearchCache((prev) => ({ ...prev, [cacheKey]: sorted }));
+      setAgentSkillSearchMeta({ count: sorted.length, searchType: "skillsmp-keyword", durationMs: 0 });
     } catch (error) {
       setSkillsError("SkillsMP 搜索暂时不可用，已保留本地榜单。");
-      setOpencodeSkillSearchResults([]);
-      setOpencodeSkillSearchMeta(null);
+      setAgentSkillSearchResults([]);
+      setAgentSkillSearchMeta(null);
       appendDebugLogRef.current(`skill.search.error ${String(error)}`);
     } finally {
       if (repoPathRef.current.trim() === requestRepoPath) {
-        setOpencodeSkillSearchLoading(false);
+        setAgentSkillSearchLoading(false);
       }
     }
   }
 
-  async function fetchOpencodeSkillCatalog(
-    viewArg = opencodeSkillCatalogView,
+  async function fetchAgentSkillCatalog(
+    viewArg = agentSkillCatalogView,
     pageArg = 0,
     options: { allowBackendFallback?: boolean; force?: boolean } = {}
   ) {
     const requestRepoPath = repoPathRef.current.trim();
     if (!requestRepoPath) return;
-    const cacheKey = buildOpencodeSkillCatalogCacheKey(viewArg, "");
+    const cacheKey = buildAgentSkillCatalogCacheKey(viewArg, "");
     const requestKey = `${requestRepoPath}:${cacheKey}:${pageArg}`;
-    if (!options.force && opencodeSkillCatalogInflightRef.current[requestKey]) return;
-    if (!options.force && opencodeSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
-    opencodeSkillCatalogInflightRef.current[requestKey] = true;
-    const requestId = ++opencodeSkillCatalogRequestRef.current;
+    if (!options.force && agentSkillCatalogInflightRef.current[requestKey]) return;
+    if (!options.force && agentSkillCatalogAttempted[cacheKey] && pageArg <= 0) return;
+    agentSkillCatalogInflightRef.current[requestKey] = true;
+    const requestId = ++agentSkillCatalogRequestRef.current;
     startTransition(() => {
-      setOpencodeSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
-      setOpencodeSkillCatalogLoading(true);
+      setAgentSkillCatalogAttempted((prev) => ({ ...prev, [cacheKey]: true }));
+      setAgentSkillCatalogLoading(true);
       setSkillsError("");
     });
     await waitForPaint();
     try {
       const page = pageArg + 1;
       const sortBy = viewArg === "trending" || viewArg === "hot" ? "recent" : "stars";
-      const viewQuery = viewArg === "official" ? "official" : viewArg === "hot" ? "popular" : "agent";
+      // 「全部」用更宽的种子词；原先固定 "agent" 会把结果挤进少数同仓库 skill，列表看起来只有几条。
+      const viewQuery =
+        viewArg === "official"
+          ? "official"
+          : viewArg === "hot"
+            ? "popular"
+            : viewArg === "trending"
+              ? "trending"
+              : "skills";
       const query = getSkillsMarketplaceSeedQuery(viewQuery);
       const json = await fetchSkillsmpSearchWithFallback(
         { query, page, limit: 100, sortBy },
         { allowBackendFallback: options.allowBackendFallback ?? true }
       );
-      if (requestId !== opencodeSkillCatalogRequestRef.current || repoPathRef.current.trim() !== requestRepoPath) return;
+      if (requestId !== agentSkillCatalogRequestRef.current || repoPathRef.current.trim() !== requestRepoPath) return;
       let rows = normalizeArrayRows(json?.data?.skills)
         .map(skillsmpSkillToResult)
-        .filter(Boolean) as OpencodeSkillSearchResult[];
+        .filter(Boolean) as AgentSkillSearchResult[];
       const positiveStarRows = rows.filter((item) => parseSkillInstallCount(item.installs) > 0);
       if (positiveStarRows.length > 0) rows = positiveStarRows;
       rows = rows.slice().sort((a, b) => parseSkillInstallCount(b.installs) - parseSkillInstallCount(a.installs));
@@ -348,107 +361,107 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
       const nextTotal = Number(json?.data?.pagination?.total || rows.length);
       const nextHasMore = Boolean(json?.data?.pagination?.hasNext);
       startTransition(() => {
-        setOpencodeSkillCatalogRows((prev) => {
+        setAgentSkillCatalogRows((prev) => {
           const mergedRows = mergeMarketplaceCatalogRows(prev, rows, pageArg <= 0);
-          setOpencodeSkillCatalogCache((cache) => ({
+          setAgentSkillCatalogCache((cache) => ({
             ...cache,
             [cacheKey]: { rows: mergedRows, page: nextPage, total: nextTotal, hasMore: nextHasMore }
           }));
           return mergedRows;
         });
-        setOpencodeSkillDisplayLimit((limit) => Math.max(limit, OPENCODE_SKILL_DISPLAY_BATCH_SIZE));
-        setOpencodeSkillCatalogPage(nextPage);
-        setOpencodeSkillCatalogTotal(nextTotal);
-        setOpencodeSkillCatalogHasMore(nextHasMore);
+        setAgentSkillDisplayLimit((limit) => Math.max(limit, AGENT_SKILL_DISPLAY_BATCH_SIZE));
+        setAgentSkillCatalogPage(nextPage);
+        setAgentSkillCatalogTotal(nextTotal);
+        setAgentSkillCatalogHasMore(nextHasMore);
       });
     } catch (error) {
-      if (requestId !== opencodeSkillCatalogRequestRef.current || repoPathRef.current.trim() !== requestRepoPath) return;
+      if (requestId !== agentSkillCatalogRequestRef.current || repoPathRef.current.trim() !== requestRepoPath) return;
       startTransition(() => {
         setSkillsError("");
-        setOpencodeSkillCatalogRows([]);
-        setOpencodeSkillCatalogHasMore(false);
+        setAgentSkillCatalogRows([]);
+        setAgentSkillCatalogHasMore(false);
       });
       appendDebugLogRef.current(`skill.catalog.error ${String(error)}`);
     } finally {
-      delete opencodeSkillCatalogInflightRef.current[requestKey];
-      if (requestId === opencodeSkillCatalogRequestRef.current && repoPathRef.current.trim() === requestRepoPath) {
-        startTransition(() => setOpencodeSkillCatalogLoading(false));
+      delete agentSkillCatalogInflightRef.current[requestKey];
+      if (requestId === agentSkillCatalogRequestRef.current && repoPathRef.current.trim() === requestRepoPath) {
+        startTransition(() => setAgentSkillCatalogLoading(false));
       }
     }
   }
 
   async function loadInitialSkillsmpCatalog() {
-    if (!repoPathRef.current.trim() || opencodeSkillCatalogLoading || opencodeSkillCatalogRows.length > 0) return;
-    if (opencodeSkillCatalogAttempted[buildOpencodeSkillCatalogCacheKey(opencodeSkillCatalogView, "")]) return;
-    await fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0);
+    if (!repoPathRef.current.trim() || agentSkillCatalogLoading || agentSkillCatalogRows.length > 0) return;
+    if (agentSkillCatalogAttempted[buildAgentSkillCatalogCacheKey(agentSkillCatalogView, "")]) return;
+    await fetchAgentSkillCatalog(agentSkillCatalogView, 0);
   }
 
-  function switchOpencodeSkillCatalogView(view: OpencodeSkillCatalogView) {
-    if (opencodeSkillCatalogView === view && opencodeSkillSearchResults.length === 0) return;
-    setOpencodeSkillSearchResults([]);
-    setOpencodeSkillSearchMeta(null);
-    setOpencodeSkillCatalogView(view);
-    setOpencodeSkillDisplayLimit(OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
+  function switchAgentSkillCatalogView(view: AgentSkillCatalogView) {
+    if (agentSkillCatalogView === view && agentSkillSearchResults.length === 0) return;
+    setAgentSkillSearchResults([]);
+    setAgentSkillSearchMeta(null);
+    setAgentSkillCatalogView(view);
+    setAgentSkillDisplayLimit(AGENT_SKILL_DISPLAY_BATCH_SIZE);
     setSkillsError("");
-    const cached = opencodeSkillCatalogCache[buildOpencodeSkillCatalogCacheKey(view, "")];
+    const cached = agentSkillCatalogCache[buildAgentSkillCatalogCacheKey(view, "")];
     if (cached) {
-      setOpencodeSkillCatalogRows(cached.rows);
-      setOpencodeSkillCatalogPage(cached.page);
-      setOpencodeSkillCatalogTotal(cached.total);
-      setOpencodeSkillCatalogHasMore(cached.hasMore);
+      setAgentSkillCatalogRows(cached.rows);
+      setAgentSkillCatalogPage(cached.page);
+      setAgentSkillCatalogTotal(cached.total);
+      setAgentSkillCatalogHasMore(cached.hasMore);
       return;
     }
-    window.requestAnimationFrame(() => void fetchOpencodeSkillCatalog(view, 0));
+    window.requestAnimationFrame(() => void fetchAgentSkillCatalog(view, 0));
   }
 
   async function warmSkillsMarketplace() {
     if (!repoPathRef.current.trim()) return;
     if (
-      opencodeSkillCatalogLoading
-      || opencodeSkillCatalogRows.length > 0
-      || opencodeSkillSearchResults.length > 0
-      || opencodeSkillCatalogAttempted[buildOpencodeSkillCatalogCacheKey(opencodeSkillCatalogView, "")]
+      agentSkillCatalogLoading
+      || agentSkillCatalogRows.length > 0
+      || agentSkillSearchResults.length > 0
+      || agentSkillCatalogAttempted[buildAgentSkillCatalogCacheKey(agentSkillCatalogView, "")]
     ) {
       return;
     }
     await Promise.allSettled([loadInitialSkillsmpCatalog()]);
   }
 
-  function revealMoreOpencodeSkills() {
-    if (opencodeSkillRevealLoading) return;
-    setOpencodeSkillRevealLoading(true);
+  function revealMoreAgentSkills() {
+    if (agentSkillRevealLoading) return;
+    setAgentSkillRevealLoading(true);
     window.setTimeout(() => {
-      setOpencodeSkillDisplayLimit((limit) => limit + OPENCODE_SKILL_DISPLAY_BATCH_SIZE);
-      setOpencodeSkillRevealLoading(false);
+      setAgentSkillDisplayLimit((limit) => limit + AGENT_SKILL_DISPLAY_BATCH_SIZE);
+      setAgentSkillRevealLoading(false);
     }, 360);
   }
 
-  function handleOpencodeSkillMarketScroll() {
-    const element = opencodeSkillMarketListRef.current;
+  function handleAgentSkillMarketScroll() {
+    const element = agentSkillMarketListRef.current;
     if (!element) return;
     const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    opencodeSkillUserNearBottomRef.current = distanceToBottom <= 520;
-    if (!opencodeSkillUserNearBottomRef.current) return;
-    if (opencodeCanRevealMoreSkills && !opencodeSkillRevealLoading) {
-      revealMoreOpencodeSkills();
+    agentSkillUserNearBottomRef.current = distanceToBottom <= 520;
+    if (!agentSkillUserNearBottomRef.current) return;
+    if (agentCanRevealMoreSkills && !agentSkillRevealLoading) {
+      revealMoreAgentSkills();
       return;
     }
     if (
-      !opencodeSkillAllowBackendCatalogFetch
-      && opencodeMarketplaceRows.length < OPENCODE_SKILL_DISPLAY_BATCH_SIZE
-      && opencodeSkillCatalogRows.length === 0
-      && opencodeSkillSearchResults.length === 0
+      !agentSkillAllowBackendCatalogFetch
+      && agentMarketplaceRows.length < AGENT_SKILL_DISPLAY_BATCH_SIZE
+      && agentSkillCatalogRows.length === 0
+      && agentSkillSearchResults.length === 0
     ) {
-      setOpencodeSkillAllowBackendCatalogFetch(true);
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, 0, { allowBackendFallback: true, force: true });
+      setAgentSkillAllowBackendCatalogFetch(true);
+      void fetchAgentSkillCatalog(agentSkillCatalogView, 0, { allowBackendFallback: true, force: true });
       return;
     }
-    if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
+    if (agentCanFetchMoreCatalogSkills && !agentSkillCatalogLoading) {
+      void fetchAgentSkillCatalog(agentSkillCatalogView, agentSkillCatalogPage + 1);
     }
   }
 
-  async function selectMarketplaceSkill(skill: OpencodeSkillSearchResult) {
+  async function selectMarketplaceSkill(skill: AgentSkillSearchResult) {
     setSelectedMarketplaceSkill(skill);
     setSelectedSkillDetail(null);
     setSelectedSkillAudits([]);
@@ -463,8 +476,8 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     setSelectedSkillLoading(true);
     try {
       const [detailRaw, auditRaw] = await Promise.all([
-        invoke<any>("fetch_opencode_skill_detail_api", { repoPath: requestRepoPath, id }).catch(() => null),
-        invoke<any>("fetch_opencode_skill_audit_api", { repoPath: requestRepoPath, id }).catch(() => null)
+        invoke<any>("fetch_agent_skill_detail_api", { repoPath: requestRepoPath, id }).catch(() => null),
+        invoke<any>("fetch_agent_skill_audit_api", { repoPath: requestRepoPath, id }).catch(() => null)
       ]);
       if (repoPathRef.current.trim() !== requestRepoPath) return;
       if (detailRaw && typeof detailRaw === "object") {
@@ -508,17 +521,17 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
 
   useEffect(() => {
     if (!skillsVisible) return;
-    if (opencodeSkillSearchResults.length > 0) return;
-    if (opencodeSkillCatalogRows.length > 0) return;
-    if (opencodeSkillCatalogAttempted[buildOpencodeSkillCatalogCacheKey(opencodeSkillCatalogView, "")]) return;
+    if (agentSkillSearchResults.length > 0) return;
+    if (agentSkillCatalogRows.length > 0) return;
+    if (agentSkillCatalogAttempted[buildAgentSkillCatalogCacheKey(agentSkillCatalogView, "")]) return;
     const timer = scheduleAfterInteraction(() => void loadInitialSkillsmpCatalog(), 320);
     return () => window.clearTimeout(timer);
   }, [
     skillsVisible,
-    opencodeSkillCatalogAttempted,
-    opencodeSkillCatalogRows.length,
-    opencodeSkillCatalogView,
-    opencodeSkillSearchResults.length
+    agentSkillCatalogAttempted,
+    agentSkillCatalogRows.length,
+    agentSkillCatalogView,
+    agentSkillSearchResults.length
   ]);
 
   useEffect(() => {
@@ -527,8 +540,8 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     if (
       skillsLoadedOnce
       && (
-        opencodeSkillCatalogRows.length > 0
-        || opencodeSkillCatalogAttempted[buildOpencodeSkillCatalogCacheKey(opencodeSkillCatalogView, "")]
+        agentSkillCatalogRows.length > 0
+        || agentSkillCatalogAttempted[buildAgentSkillCatalogCacheKey(agentSkillCatalogView, "")]
       )
     ) {
       return;
@@ -542,94 +555,94 @@ export function useOpencodeSkillMarketplace(input: UseOpencodeSkillMarketplaceIn
     repoPath,
     skillsLoadedOnce,
     skillsLoading,
-    opencodeSkillCatalogAttempted,
-    opencodeSkillCatalogLoading,
-    opencodeSkillCatalogRows.length,
-    opencodeSkillCatalogView,
-    opencodeSkillSearchResults.length
+    agentSkillCatalogAttempted,
+    agentSkillCatalogLoading,
+    agentSkillCatalogRows.length,
+    agentSkillCatalogView,
+    agentSkillSearchResults.length
   ]);
 
   useEffect(() => {
     if (!skillsVisible) return;
-    if (opencodeMarketplaceRows.length === 0) return;
+    if (agentMarketplaceRows.length === 0) return;
     setSelectedMarketplaceSkill((prev) => {
-      if (prev && opencodeMarketplaceRows.some((row) => row.spec === prev.spec)) return prev;
-      return opencodeMarketplaceRows[0];
+      if (prev && agentMarketplaceRows.some((row) => row.spec === prev.spec)) return prev;
+      return agentMarketplaceRows[0];
     });
-  }, [skillsVisible, opencodeMarketplaceRows]);
+  }, [skillsVisible, agentMarketplaceRows]);
 
   useEffect(() => {
     if (!skillsVisible) return;
-    const element = opencodeSkillMarketListRef.current;
-    if (!element || opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
+    const element = agentSkillMarketListRef.current;
+    if (!element || agentSkillsInitialLoading || agentSkillsPaging) return;
     if (element.scrollHeight - element.clientHeight > 520) return;
-    if (opencodeCanRevealMoreSkills) {
-      revealMoreOpencodeSkills();
+    if (agentCanRevealMoreSkills) {
+      revealMoreAgentSkills();
       return;
     }
   }, [
     skillsVisible,
-    visibleOpencodeMarketplaceRows.length,
-    opencodeCanFetchMoreCatalogSkills,
-    opencodeCanRevealMoreSkills,
-    opencodeSkillCatalogPage,
-    opencodeSkillCatalogView,
-    opencodeSkillsInitialLoading,
-    opencodeSkillsPaging
+    visibleAgentMarketplaceRows.length,
+    agentCanFetchMoreCatalogSkills,
+    agentCanRevealMoreSkills,
+    agentSkillCatalogPage,
+    agentSkillCatalogView,
+    agentSkillsInitialLoading,
+    agentSkillsPaging
   ]);
 
   useEffect(() => {
-    if (!skillsVisible || !opencodeSkillUserNearBottomRef.current) return;
-    if (opencodeSkillsInitialLoading || opencodeSkillsPaging) return;
-    if (opencodeCanRevealMoreSkills) return;
-    if (opencodeCanFetchMoreCatalogSkills && !opencodeSkillCatalogLoading) {
-      void fetchOpencodeSkillCatalog(opencodeSkillCatalogView, opencodeSkillCatalogPage + 1);
+    if (!skillsVisible || !agentSkillUserNearBottomRef.current) return;
+    if (agentSkillsInitialLoading || agentSkillsPaging) return;
+    if (agentCanRevealMoreSkills) return;
+    if (agentCanFetchMoreCatalogSkills && !agentSkillCatalogLoading) {
+      void fetchAgentSkillCatalog(agentSkillCatalogView, agentSkillCatalogPage + 1);
     }
   }, [
     skillsVisible,
-    visibleOpencodeMarketplaceRows.length,
-    opencodeMarketplaceRows.length,
-    opencodeCanFetchMoreCatalogSkills,
-    opencodeCanRevealMoreSkills,
-    opencodeSkillCatalogLoading,
-    opencodeSkillCatalogPage,
-    opencodeSkillCatalogView,
-    opencodeSkillsInitialLoading,
-    opencodeSkillsPaging
+    visibleAgentMarketplaceRows.length,
+    agentMarketplaceRows.length,
+    agentCanFetchMoreCatalogSkills,
+    agentCanRevealMoreSkills,
+    agentSkillCatalogLoading,
+    agentSkillCatalogPage,
+    agentSkillCatalogView,
+    agentSkillsInitialLoading,
+    agentSkillsPaging
   ]);
 
   return {
-    opencodeSkillMarketListRef,
-    opencodeSkillSearchQuery,
-    setOpencodeSkillSearchQuery,
-    opencodeSkillSearchStrategy,
-    setOpencodeSkillSearchStrategy,
-    opencodeSkillSearchResults,
-    opencodeSkillSearchLoading,
-    opencodeSkillCatalogView,
-    opencodeSkillCatalogRows,
-    opencodeSkillCatalogPage,
-    opencodeSkillCatalogTotal,
-    opencodeSkillSearchMeta,
-    opencodeSkillAllowBackendCatalogFetch,
+    agentSkillMarketListRef,
+    agentSkillSearchQuery,
+    setAgentSkillSearchQuery,
+    agentSkillSearchStrategy,
+    setAgentSkillSearchStrategy,
+    agentSkillSearchResults,
+    agentSkillSearchLoading,
+    agentSkillCatalogView,
+    agentSkillCatalogRows,
+    agentSkillCatalogPage,
+    agentSkillCatalogTotal,
+    agentSkillSearchMeta,
+    agentSkillAllowBackendCatalogFetch,
     selectedMarketplaceSkill,
     selectedSkillDetail,
     selectedSkillAudits,
     selectedSkillLoading,
     showSkillInstallMenu,
     setShowSkillInstallMenu,
-    opencodeMarketplaceRows,
-    visibleOpencodeMarketplaceRows,
-    opencodeCanRevealMoreSkills,
-    opencodeCanFetchMoreCatalogSkills,
-    opencodeSkillsInitialLoading,
-    opencodeSkillsSearching,
-    opencodeSkillsPaging,
-    opencodeCanAutoLoadMore,
+    agentMarketplaceRows,
+    visibleAgentMarketplaceRows,
+    agentCanRevealMoreSkills,
+    agentCanFetchMoreCatalogSkills,
+    agentSkillsInitialLoading,
+    agentSkillsSearching,
+    agentSkillsPaging,
+    agentCanAutoLoadMore,
     warmSkillsMarketplace,
-    searchOpencodeSkillRegistry,
-    switchOpencodeSkillCatalogView,
-    handleOpencodeSkillMarketScroll,
+    searchAgentSkillRegistry,
+    switchAgentSkillCatalogView,
+    handleAgentSkillMarketScroll,
     selectMarketplaceSkill,
     loadSelectedMarketplaceSkillDetails
   };

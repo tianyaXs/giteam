@@ -4,7 +4,7 @@ function questionDirectoryQuery(repoPath: string): string {
   return `directory=${encodeURIComponent(repoPath)}`;
 }
 
-export async function postOpencodeQuestionReply(input: {
+export async function postAgentQuestionReply(input: {
   baseUrl: string;
   repoPath: string;
   requestId: string;
@@ -19,7 +19,7 @@ export async function postOpencodeQuestionReply(input: {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export async function postOpencodeQuestionReject(input: {
+export async function postAgentQuestionReject(input: {
   baseUrl: string;
   repoPath: string;
   requestId: string;
@@ -32,7 +32,7 @@ export async function postOpencodeQuestionReject(input: {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export async function fetchOpencodeQuestions(input: {
+export async function fetchAgentQuestions(input: {
   baseUrl: string;
   repoPath: string;
   sessionId: string;

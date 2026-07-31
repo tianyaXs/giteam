@@ -1,32 +1,28 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { isOpencodeContextTool, parseOpencodeTaskSessionId, toDisplayJson } from "../../lib/opencodeParts";
-import type { OpencodeDetailedPart } from "../../lib/opencodeSessions";
-import { parseReadToolOutput, withLineNumbers } from "../../lib/textFormatting";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { toDisplayJson } from "../../lib/agentParts";
+import type { AgentDetailedPart } from "../../lib/agentSessions";
+import {
+  compactPath,
+  getToolResultPreview,
+  isContextTool,
+  parseUnifiedDiff,
+  redactSecrets,
+  toolDisplayName,
+  toolHeadlineTarget,
+  toolMode,
+  truncateRichText,
+  type ToolResultPreview,
+  type UnifiedDiffDisplayLine,
+} from "../../lib/agent/toolPresentation";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Card } from "../ui/card";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
+import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
+import { FilePen, Folder, MessageCircleQuestionMark, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
 
-type NormalizedEditFileDiff = {
-  file: string;
-  patch?: string;
-  before?: string;
-  after?: string;
-  additions: number;
-  deletions: number;
-  status: "modified" | "added" | "deleted";
-};
-
-type NormalizedPatchFile = {
-  filePath: string;
-  relativePath: string;
-  type: "add" | "update" | "delete" | "move";
-  patch?: string;
-  additions: number;
-  deletions: number;
-  movePath?: string;
-};
-
-export type OpencodeToolFileTarget = {
+export type AgentToolFileTarget = {
   filePath: string;
   line?: number;
   focusText?: string;
@@ -36,612 +32,504 @@ export type OpencodeToolFileTarget = {
   preferDiff?: boolean;
 };
 
-type OpencodeExecutionPartViewProps = {
-  part: OpencodeDetailedPart;
+type AgentExecutionPartViewProps = {
+  part: AgentDetailedPart;
   shellToolPartsExpanded: boolean;
   editToolPartsExpanded: boolean;
+  /** 位于「已运行 / 已探索」批组列表内：只显示一行摘要，点击后才展开详情 */
+  listItem?: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
-  onOpenToolFile: (target: OpencodeToolFileTarget) => void;
+  onOpenToolFile: (target: AgentToolFileTarget) => void;
 };
+
+const INLINE_PREVIEW_MAX_LINES = 28;
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function readableSearchPattern(pattern: unknown): string {
-  return normalizeText(pattern)
-    .replace(/\\\./g, ".")
-    .replace(/\\\//g, "/")
-    .replace(/\\-/g, "-");
+function toolKindIcon(tool: string): LucideIcon {
+  if (tool === "bash") return Terminal;
+  if (tool === "read" || tool === "grep" || tool === "find") return Search;
+  if (tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch") return FilePen;
+  if (tool === "ls") return Folder;
+  if (tool === "question") return MessageCircleQuestionMark;
+  return Wrench;
 }
 
-function isWildcardOnly(value: string): boolean {
-  const text = normalizeText(value).replace(/\s+/g, "");
-  return text === "*" || text === "**/*" || text === "./*" || text === ".";
-}
-
-function meaningfulSearchToken(value: unknown, compact = false): string {
-  const text = compact ? compactPath(normalizeText(value)) : readableSearchPattern(value);
-  if (!text || isWildcardOnly(text)) return "";
-  return text;
-}
-
-function compactPath(input: string): string {
-  const path = normalizeText(input).replace(/\\/g, "/");
-  if (!path) return "";
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] || path;
-}
-
-function diffCountFromText(text: string) {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of text.split(/\r?\n/)) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) additions += 1;
-    if (line.startsWith("-")) deletions += 1;
-  }
-  return { additions, deletions };
-}
-
-function toNumber(value: unknown): number {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : 0;
-}
-
-function toolDisplayName(tool: string): string {
-  if (tool === "read") return "读取";
-  if (tool === "list") return "列出";
-  if (tool === "glob" || tool === "grep" || tool === "search") return "搜索";
-  if (tool === "write") return "写入";
-  if (tool === "edit") return "编辑";
-  if (tool === "apply_patch") return "补丁";
-  if (tool === "task") return "任务";
-  if (tool === "question") return "提问";
-  if (tool === "bash") return "bash";
-  return tool || "tool";
-}
-
-function toolMode(tool: string): string {
-  if (tool === "read" || tool === "list" || tool === "glob" || tool === "grep") return "读取";
-  if (tool === "write" || tool === "edit" || tool === "apply_patch") return "写入";
-  if (tool === "bash") return "命令";
-  if (tool === "search") return "搜索";
-  return "";
-}
-
-function searchToolDetail(input: any, state: any): string {
-  const title = meaningfulSearchToken(state?.title);
-  const description = meaningfulSearchToken(input?.description);
-  const query =
-    meaningfulSearchToken(input?.query) ||
-    meaningfulSearchToken(input?.search) ||
-    meaningfulSearchToken(input?.keyword) ||
-    meaningfulSearchToken(input?.text) ||
-    meaningfulSearchToken(input?.regex) ||
-    meaningfulSearchToken(input?.regexp) ||
-    meaningfulSearchToken(input?.pattern);
-  const include =
-    meaningfulSearchToken(input?.include) ||
-    meaningfulSearchToken(input?.glob) ||
-    meaningfulSearchToken(input?.filePattern) ||
-    meaningfulSearchToken(input?.files);
-  const path =
-    meaningfulSearchToken(input?.filePath, true) ||
-    meaningfulSearchToken(input?.path, true) ||
-    meaningfulSearchToken(input?.cwd, true);
-  const parts = [description || title, query, include, path]
-    .filter(Boolean)
-    .filter((item, index, rows) => rows.indexOf(item) === index);
-  return parts.join(" · ");
-}
-
-function toolDetail(tool: string, input: any, state: any): string {
-  if (tool === "glob" || tool === "grep" || tool === "search") {
-    return searchToolDetail(input, state);
-  }
-  return (
-    normalizeText(input?.description) ||
-    normalizeText(state?.title) ||
-    compactPath(normalizeText(input?.filePath)) ||
-    meaningfulSearchToken(input?.pattern) ||
-    normalizeText(input?.query) ||
-    normalizeText(input?.url) ||
-    compactPath(normalizeText(input?.path))
-  );
-}
-
-function toolOutputText(state: any): string {
-  const output = state?.output;
-  if (typeof output === "string") return output.trim();
-  if (output && typeof output === "object") {
-    try {
-      return JSON.stringify(output, null, 2).trim();
-    } catch {
-      return "";
-    }
-  }
-  return "";
-}
-
-function normalizeEditFileDiff(tool: string, state: any, metadata: any): NormalizedEditFileDiff | undefined {
-  if (tool !== "edit") return undefined;
-  const fromMeta = metadata?.filediff;
-  const file = normalizeText(fromMeta?.file) || normalizeText(state?.input?.filePath);
-  const patch = normalizeText(fromMeta?.patch) || "";
-  const before = typeof state?.input?.oldString === "string"
-      ? state.input.oldString
-      : typeof state?.input?.old_string === "string"
-        ? state.input.old_string
-        : typeof fromMeta?.before === "string"
-          ? fromMeta.before
-          : "";
-  const after = typeof state?.input?.newString === "string"
-      ? state.input.newString
-      : typeof state?.input?.new_string === "string"
-        ? state.input.new_string
-        : typeof fromMeta?.after === "string"
-          ? fromMeta.after
-          : "";
-  const counts = patch ? diffCountFromText(patch) : { additions: 0, deletions: 0 };
-  const additions = toNumber(fromMeta?.additions) || counts.additions;
-  const deletions = toNumber(fromMeta?.deletions) || counts.deletions;
-  if (!file && !patch && !before && !after) return undefined;
-  return {
-    file,
-    patch: patch || undefined,
-    before: before || undefined,
-    after: after || undefined,
-    additions,
-    deletions,
-    status: typeof fromMeta?.status === "string" ? fromMeta.status : "modified"
-  };
-}
-
-function normalizePatchFiles(metadata: any): NormalizedPatchFile[] | undefined {
-  if (!Array.isArray(metadata?.files)) return undefined;
-  const files = metadata.files
-    .map((file: any) => {
-      const patch = normalizeText(file?.patch) || normalizeText(file?.diff) || undefined;
-      const counts = patch ? diffCountFromText(patch) : { additions: 0, deletions: 0 };
-      const type = normalizeText(file?.type) as NormalizedPatchFile["type"];
-      const relativePath = normalizeText(file?.relativePath) || normalizeText(file?.filePath);
-      const filePath = normalizeText(file?.filePath) || relativePath;
-      if (!relativePath && !filePath) return null;
-      return {
-        filePath,
-        relativePath,
-        type: type || "update",
-        patch,
-        additions: toNumber(file?.additions) || counts.additions,
-        deletions: toNumber(file?.deletions) || counts.deletions,
-        movePath: normalizeText(file?.movePath) || undefined
-      };
-    })
-    .filter(Boolean) as NormalizedPatchFile[];
-  return files.length > 0 ? files : undefined;
-}
-
-function summarizePatchText(patchText: string): string {
-  const rows = new Map<string, { action: string; add: number; del: number }>();
-  let current = "";
-  for (const line of patchText.split(/\r?\n/)) {
-    const header = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
-    if (header) {
-      current = normalizeText(header[2]);
-      rows.set(current, { action: header[1], add: 0, del: 0 });
-      continue;
-    }
-    if (!current) continue;
-    const row = rows.get(current);
-    if (!row) continue;
-    if (line.startsWith("+") && !line.startsWith("+++")) row.add += 1;
-    if (line.startsWith("-") && !line.startsWith("---")) row.del += 1;
-  }
-  const summaries = [...rows.entries()].map(([path, row]) => {
-    const action = row.action === "Add" ? "新增" : row.action === "Delete" ? "删除" : "修改";
-    return `${action} ${compactPath(path)} +${row.add} -${row.del}`;
-  });
-  if (summaries.length <= 2) return summaries.join("；");
-  return `${summaries.slice(0, 2).join("；")}；等 ${summaries.length} 个文件`;
-}
-
-function summarizePatchOutput(outputText: string): string {
-  const rows: string[] = [];
-  for (const line of outputText.split(/\r?\n/)) {
-    const match = line.match(/^\s*([MAD])\s+(.+)$/);
-    if (!match) continue;
-    const action = match[1] === "A" ? "新增" : match[1] === "D" ? "删除" : "修改";
-    rows.push(`${action} ${compactPath(match[2])}`);
-  }
-  if (rows.length <= 2) return rows.join("；");
-  return `${rows.slice(0, 2).join("；")}；等 ${rows.length} 个文件`;
-}
-
-function summarizeWriteTool(tool: string, input: any): string {
-  if (tool === "apply_patch") {
-    const patchText = normalizeText(input?.patchText) || normalizeText(input?.patch);
-    return summarizePatchText(patchText);
-  }
-  const filePath = compactPath(normalizeText(input?.filePath) || normalizeText(input?.path));
-  if (tool === "write") {
-    const content = typeof input?.content === "string" ? input.content : "";
-    const lineCount = content ? content.split(/\r?\n/).length : 0;
-    return [filePath, lineCount ? `${lineCount} 行` : ""].filter(Boolean).join(" · ");
-  }
-  if (tool === "edit") {
-    const oldText = typeof input?.oldString === "string" ? input.oldString : typeof input?.old_string === "string" ? input.old_string : "";
-    const newText = typeof input?.newString === "string" ? input.newString : typeof input?.new_string === "string" ? input.new_string : "";
-    const oldLines = oldText ? oldText.split(/\r?\n/).length : 0;
-    const newLines = newText ? newText.split(/\r?\n/).length : 0;
-    const delta = oldLines || newLines ? `+${newLines} -${oldLines}` : "";
-    return [filePath, delta].filter(Boolean).join(" · ");
-  }
-  return "";
-}
-
-function cleanDetailLabel(tool: string, label: string): string {
-  const text = normalizeText(label);
-  if (!text) return "";
-  if ((tool === "write" || tool === "edit" || tool === "apply_patch") && text === "写入") return "";
-  if ((tool === "read" || tool === "list" || tool === "glob" || tool === "grep") && text === "读取") return "";
-  return text;
-}
-
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function ToolCodeBlock({ children }: { children: ReactNode }) {
-  return (
-    <pre className="max-h-[340px] max-w-full overflow-auto rounded-md bg-muted/20 p-3 font-mono text-xs leading-relaxed text-foreground/85 whitespace-pre-wrap break-words">
-      {children}
-    </pre>
-  );
-}
-
-function ToolCommandBlock({ command }: { command: string }) {
-  if (!command) return null;
-  return (
-    <div className="max-w-full rounded-md bg-muted/20 px-3 py-2 font-mono text-xs text-foreground/85">
-      <code className="break-words">{command}</code>
-    </div>
-  );
-}
-
-function ToolSection({
-  title,
-  meta,
+/** 详情内容框：独立态用 Card；嵌在事件卡片内时用轻量边框块。 */
+function ToolEditorFrame({
+  filePath,
+  additions,
+  deletions,
+  embedded = false,
+  tone = "default",
   children
 }: {
-  title?: string;
-  meta?: string;
+  filePath?: string;
+  additions?: number;
+  deletions?: number;
+  embedded?: boolean;
+  tone?: "default" | "error";
   children: ReactNode;
 }) {
-  return (
-    <section className="grid min-w-0 gap-2 py-2">
-      {title || meta ? (
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          {title ? <strong className="min-w-0 truncate text-xs font-semibold text-foreground">{title}</strong> : <span />}
-          {meta ? <span className="shrink-0 text-xs text-muted-foreground">{meta}</span> : null}
+  const hasHeader = Boolean(filePath || additions !== undefined || deletions !== undefined);
+  const body = (
+    <>
+      {hasHeader ? (
+        <div className="flex h-9 min-w-0 items-center gap-2 border-b border-border px-4">
+          {filePath ? (
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-medium text-foreground" title={filePath}>
+              {filePath}
+            </span>
+          ) : <span className="min-w-0 flex-1" />}
+          {additions !== undefined || deletions !== undefined ? (
+            <span className="shrink-0 font-mono text-[11px]">
+              {additions !== undefined ? <span className="font-semibold text-emerald-600 dark:text-emerald-400">+{additions}</span> : null}
+              {additions !== undefined && deletions !== undefined ? <span className="text-muted-foreground"> </span> : null}
+              {deletions !== undefined ? <span className="font-semibold text-rose-600 dark:text-rose-400">-{deletions}</span> : null}
+            </span>
+          ) : null}
         </div>
       ) : null}
       {children}
-    </section>
+    </>
+  );
+
+  if (embedded) {
+    // 嵌入外层事件卡片时不做二次底色/圆角，避免标题与内容相接处出现内圆角空隙
+    return <div className="w-full min-w-0 overflow-hidden">{body}</div>;
+  }
+
+  return (
+    <Card
+      className={cn(
+        "w-full min-w-0 overflow-hidden shadow-none",
+        tone === "error" && "border-destructive/30 bg-destructive/5"
+      )}
+    >
+      {body}
+    </Card>
   );
 }
 
-function ToolSubsection({ title, children }: { title: string; children: ReactNode }) {
+function ToolScrollBody({ children, className }: { children: ReactNode; className?: string }) {
+  // 不用 ScrollArea：其 viewport 会 inherit 外层圆角，在标题下方顶角留出空隙
   return (
-    <div className="grid min-w-0 gap-1.5">
-      <div className="text-xs font-medium text-muted-foreground">{title}</div>
+    <div className={cn("max-h-[360px] overflow-auto", className)}>
       {children}
     </div>
   );
 }
 
-function ToolHeader({
-  running,
-  tool,
-  contextTool,
-  ioLabel,
-  detailFileLabel,
-  detailFilePath,
-  detailMeta,
-  taskSessionId,
-  taskSubagent,
-  taskTitleHint,
-  onOpenTaskSession
+function ToolSourceBlock({
+  value,
+  filePath,
+  embedded = false,
+  languageHint
 }: {
-  running: boolean;
-  tool: string;
-  contextTool: boolean;
-  ioLabel: string;
-  detailFileLabel: string;
-  detailFilePath: string;
-  detailMeta: string;
-  taskSessionId: string;
-  taskSubagent: string;
-  taskTitleHint: string;
-  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  value: string;
+  filePath?: string;
+  embedded?: boolean;
+  languageHint?: string;
 }) {
-  const displayName = toolDisplayName(tool);
+  const [showAll, setShowAll] = useState(false);
+  if (!value.trim()) return null;
+  const allLines = value.split(/\r?\n/);
+  const lines = showAll ? allLines : allLines.slice(0, INLINE_PREVIEW_MAX_LINES);
+  const remaining = allLines.length - lines.length;
+
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-left">
-      <strong className="text-sm font-semibold text-foreground">{displayName}</strong>
-      {!contextTool && tool !== "edit" && tool !== "write" && tool !== "apply_patch" && tool && displayName !== tool ? (
-        <span className="text-xs font-medium text-muted-foreground">{tool}</span>
-      ) : null}
-      {ioLabel ? <span className="text-xs font-medium text-muted-foreground">{ioLabel}</span> : null}
-      {detailFileLabel ? (
-        <span className="max-w-[180px] truncate text-xs font-medium text-muted-foreground" title={detailFilePath || detailFileLabel}>{detailFileLabel}</span>
-      ) : null}
-      {detailMeta ? <span className="min-w-0 truncate text-xs text-muted-foreground">{detailMeta}</span> : null}
-      {taskSessionId ? (
-        <Button
-          className="ml-auto h-7 px-2 text-xs"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenTaskSession(taskSessionId, taskTitleHint);
-          }}
-          title={taskSubagent ? `Open @${taskSubagent} sub-session` : "Open sub-session"}
-          variant="ghost"
-          size="sm"
+    <ToolEditorFrame filePath={filePath} embedded={embedded}>
+      <ToolScrollBody>
+        <pre
+          className="px-3 pb-2.5 pt-0 font-mono text-[11.5px] leading-[18px] text-foreground/90"
+          data-language={languageHint || undefined}
         >
-          {taskSubagent ? `Open @${taskSubagent}` : "Open task"}
+          {lines.map((line, index) => (
+            <div key={index} className="flex min-w-0">
+              <span className="w-11 shrink-0 select-none border-r border-border/60 pr-2 text-right text-[10px] leading-[18px] text-muted-foreground">
+                {index + 1}
+              </span>
+              <span className="min-w-0 whitespace-pre-wrap break-words px-3">{line || " "}</span>
+            </div>
+          ))}
+        </pre>
+      </ToolScrollBody>
+      {remaining > 0 ? (
+        <Button
+          className="h-8 w-full justify-start rounded-none border-t border-border/60 px-4 text-[11px] text-muted-foreground"
+          onClick={() => setShowAll(true)}
+          variant="ghost"
+        >
+          查看其余 {remaining} 行
         </Button>
       ) : null}
+    </ToolEditorFrame>
+  );
+}
+
+function ToolDiffLine({ line }: { line: UnifiedDiffDisplayLine }) {
+  const added = line.kind === "added";
+  const removed = line.kind === "removed";
+  const meta = line.kind === "meta";
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 border-l-[3px]",
+        added && "border-emerald-600 bg-emerald-500/10 dark:border-emerald-500 dark:bg-emerald-950/30",
+        removed && "border-rose-600 bg-rose-500/10 dark:border-rose-500 dark:bg-rose-950/30",
+        !added && !removed && "border-transparent"
+      )}
+    >
+      <span
+        className={cn(
+          "w-11 shrink-0 select-none border-r border-border/60 pr-2 text-right font-mono text-[10px] leading-[18px] text-muted-foreground",
+          added && "text-emerald-700 dark:text-emerald-400",
+          removed && "text-rose-700 dark:text-rose-400"
+        )}
+      >
+        {meta ? "" : line.lineNumber ?? ""}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 whitespace-pre-wrap break-words px-3 font-mono text-[11.5px] leading-[18px] text-foreground",
+          meta && "text-muted-foreground"
+        )}
+      >
+        {meta
+          ? line.content
+          : `${added ? "+" : removed ? "-" : " "}${line.content}`}
+      </span>
     </div>
   );
 }
 
-export function OpencodeExecutionPartView({
+function ToolDiffBlock({
+  patch,
+  filePath,
+  additions,
+  deletions,
+  embedded = false
+}: {
+  patch: string;
+  filePath?: string;
+  additions?: number;
+  deletions?: number;
+  embedded?: boolean;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const allLines = useMemo(() => {
+    const parsed = parseUnifiedDiff(patch);
+    // 外层事件头已有文件名 / +/-，嵌入态再藏掉 ---/+++ 文件头，避免重复
+    if (!embedded) return parsed;
+    return parsed.filter((line) => !(line.kind === "meta" && (/^---\s/.test(line.content) || /^\+\+\+\s/.test(line.content))));
+  }, [embedded, patch]);
+  const lines = showAll ? allLines : allLines.slice(0, INLINE_PREVIEW_MAX_LINES);
+  const remaining = allLines.length - lines.length;
+
+  return (
+    <ToolEditorFrame
+      // 嵌入事件卡片时不重复文件名与 +/- 统计（外层 headline 已展示）
+      filePath={embedded ? undefined : filePath}
+      additions={embedded ? undefined : additions}
+      deletions={embedded ? undefined : deletions}
+      embedded={embedded}
+    >
+      <ToolScrollBody>
+        <pre className="pb-2 pt-0">
+          {lines.map((line, index) => (
+            <ToolDiffLine key={`${line.kind}:${line.lineNumber ?? "m"}:${index}`} line={line} />
+          ))}
+        </pre>
+      </ToolScrollBody>
+      {remaining > 0 ? (
+        <Button
+          className="h-8 w-full justify-start rounded-none border-t border-border/60 px-4 text-[11px] text-muted-foreground"
+          onClick={() => setShowAll(true)}
+          variant="ghost"
+        >
+          查看其余 {remaining} 行
+        </Button>
+      ) : null}
+    </ToolEditorFrame>
+  );
+}
+
+function ToolTerminalBlock({
+  command,
+  output,
+  embedded = false,
+  isError = false
+}: {
+  command: string;
+  output: string;
+  embedded?: boolean;
+  isError?: boolean;
+}) {
+  const body = [
+    command ? `$ ${command}` : "",
+    output
+  ].filter(Boolean).join("\n");
+  if (!body.trim()) return null;
+  return (
+    <ToolEditorFrame embedded={embedded} tone={isError ? "error" : "default"}>
+      <ToolScrollBody>
+        <pre
+          className={cn(
+            "px-3 pb-2.5 pt-0 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-words",
+            isError ? "text-destructive" : "text-foreground/90"
+          )}
+        >
+          {body}
+        </pre>
+      </ToolScrollBody>
+    </ToolEditorFrame>
+  );
+}
+
+function ToolErrorBlock({ value, embedded = false }: { value: string; embedded?: boolean }) {
+  if (!value.trim()) return null;
+  return (
+    <ToolEditorFrame embedded={embedded} tone="error">
+      <ToolScrollBody>
+        <pre className="px-3 pb-2.5 pt-0 font-mono text-xs leading-relaxed text-destructive whitespace-pre-wrap break-words">
+          {value}
+        </pre>
+      </ToolScrollBody>
+    </ToolEditorFrame>
+  );
+}
+
+/**
+ * pi 原生工具 part 渲染：对齐 Moirai 列表事件模式——
+ * 折叠时无卡片 chrome；展开后才出现边框容器；edit 优先 diff，bash 走终端块。
+ */
+export function AgentExecutionPartView({
   part,
   shellToolPartsExpanded,
   editToolPartsExpanded,
-  onOpenTaskSession,
+  listItem = false,
   onOpenToolFile
-}: OpencodeExecutionPartViewProps) {
+}: AgentExecutionPartViewProps) {
   const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
   const type = String(part?.type || "");
   if (type === "step-start" || type === "step-finish") {
     return null;
   }
-  if (type !== "tool") return null;
+  if (type !== "toolCall") return null;
 
-  const tool = String((part as any).tool || "tool");
+  const tool = String((part as any).toolName || "tool");
   if (tool === "todowrite") return null;
 
-  const state = (part as any).state || {};
-  const metadata = state?.metadata || (part as any)?.metadata || {};
-  const status = String(state.status || "").trim();
-  const running = status.toLowerCase() === "running" || status.toLowerCase() === "pending";
-  const input = state.input;
-  const subtitle = toolDetail(tool, input, state);
-  const taskSessionId = tool === "task" ? parseOpencodeTaskSessionId(part) : "";
-  const taskSubagent = tool === "task" ? String(input?.subagent_type || "").trim() : "";
-  const taskTitleHint =
-    (tool === "task" ? String(input?.description || "").trim() : "") ||
-    (taskSubagent ? `@${taskSubagent}` : "") ||
-    "";
-  const contextTool = isOpencodeContextTool(tool);
-  const outputText = toolOutputText(state) || toDisplayJson(state?.output, 2200);
-  const parsedRead = tool === "read" ? parseReadToolOutput(outputText) : null;
-  const rawLines = outputText ? outputText.split(/\r?\n/) : [];
-  const previewLines = rawLines.slice(0, 12);
-  const outputPreview = previewLines.join("\n") + (rawLines.length > 12 ? "\n..." : "");
+  const status = String((part as any).status || "").trim().toLowerCase();
+  const running = status === "running" || status === "pending" || status === "deciding";
+  const isError = status === "error" || Boolean((part as any).isError);
+  const input = ((part as any).input || {}) as Record<string, unknown>;
+  const details = (part as any).details as Record<string, unknown> | undefined;
+  const outputText = redactSecrets(truncateRichText(normalizeText((part as any).output))) || toDisplayJson((part as any).output, 2200);
+  const subtitle = toolHeadlineTarget(tool, input);
+  const contextTool = isContextTool(tool);
+  const preview = getToolResultPreview(tool, input, outputText, details);
   const shellTool = tool === "bash";
-  const editTool = tool === "write" || tool === "edit" || tool === "apply_patch";
-  const ioLabel = running && !editTool ? toolMode(tool) : "";
-  const writeSummary = normalizeText(metadata?.writeSummary);
-  const fileDiff = normalizeEditFileDiff(tool, state, metadata);
-  const patchFiles = tool === "apply_patch" ? normalizePatchFiles(metadata) : undefined;
-  const bashCommand = normalizeText(input?.command);
+  const editTool = tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch";
+  const bashCommand = normalizeText(input.command);
+  const editOldText = tool === "edit" && typeof input.oldText === "string" ? input.oldText : "";
+  const editNewText = tool === "edit" && typeof input.newText === "string" ? input.newText : "";
+  const Icon = toolKindIcon(tool);
+
   const detailFilePath =
-    (tool === "read"
-      ? normalizeText(parsedRead?.path) || normalizeText(input?.filePath) || normalizeText(input?.path)
-      : tool === "edit"
-        ? normalizeText(fileDiff?.file)
-        : tool === "write"
-          ? normalizeText(input?.filePath) || normalizeText(input?.path)
-          : tool === "apply_patch"
-            ? normalizeText(patchFiles?.[0]?.relativePath || "") || normalizeText(patchFiles?.[0]?.filePath || "")
-            : "") || "";
+    preview?.kind === "diff"
+      ? preview.file
+      : preview?.kind === "file"
+        ? preview.path
+        : normalizeText(input.path);
   const detailFileLabel = compactPath(detailFilePath);
-  const detailLabel =
-    cleanDetailLabel(
-      tool,
-      writeSummary ||
-        (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : "") ||
-        (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || "")} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : "") ||
-        summarizeWriteTool(tool, input) ||
-        (tool === "apply_patch" ? summarizePatchOutput(outputText) : "") ||
-        compactPath(subtitle) ||
-        subtitle
-    );
-  const detailMeta = (() => {
-    if (!detailLabel) return "";
-    if (!detailFileLabel) return detailLabel;
-    let next = detailLabel.replace(new RegExp(`^${escapeRegExp(detailFileLabel)}\\s*·\\s*`), "").trim();
-    if (next === detailLabel) {
-      next = detailLabel.replace(new RegExp(`^(新增|修改|删除)\\s+${escapeRegExp(detailFileLabel)}\\s*`), "").trim();
-    }
-    return next === detailFileLabel ? "" : next;
-  })();
+  const targetLabel = detailFileLabel || compactPath(subtitle) || subtitle;
+  const changeStats = preview?.kind === "diff"
+    ? { added: preview.additions, removed: preview.deletions }
+    : null;
+
   const toolFileTarget = (() => {
-    if (tool === "read" && parsedRead?.content) {
-      const filePath = normalizeText(parsedRead.path) || normalizeText(input?.filePath) || normalizeText(input?.path);
+    if (tool === "read") {
+      const filePath = normalizeText(input.path);
+      if (!filePath) return null;
+      // 不把 pi 带 "N→" 行号前缀的 output 塞进右侧编辑器；直接打开工作区真实文件。
+      return {
+        filePath,
+        line: 1,
+        preferDiff: false
+      } satisfies AgentToolFileTarget;
+    }
+    if (tool === "edit") {
+      const filePath = normalizeText(input.path);
       if (!filePath) return null;
       return {
         filePath,
-        line: 1,
-        modified: parsedRead.content,
-        preferDiff: false
-      } satisfies OpencodeToolFileTarget;
-    }
-    if (tool === "edit" && fileDiff?.file) {
-      return {
-        filePath: fileDiff.file,
-        line: undefined,
-        original: fileDiff.before,
-        modified: fileDiff.after,
-        patch: fileDiff.patch,
+        line: typeof details?.firstChangedLine === "number" ? details.firstChangedLine : undefined,
+        original: editOldText || undefined,
+        modified: editNewText || undefined,
+        patch: preview?.kind === "diff" ? preview.patch : undefined,
         preferDiff: true
-      } satisfies OpencodeToolFileTarget;
+      } satisfies AgentToolFileTarget;
     }
     if (tool === "write") {
-      const filePath = normalizeText(input?.filePath) || normalizeText(input?.path);
-      const modified = typeof input?.content === "string" ? input.content : "";
-      if (!filePath || !modified.trim()) return null;
+      const filePath = normalizeText(input.path);
+      const writeContent = typeof input.content === "string" ? input.content : "";
+      if (!filePath || !writeContent.trim()) return null;
       return {
         filePath,
         line: 1,
-        focusText: modified,
-        modified,
+        focusText: writeContent,
+        modified: writeContent,
+        patch: preview?.kind === "diff" ? preview.patch : undefined,
         preferDiff: true
-      } satisfies OpencodeToolFileTarget;
+      } satisfies AgentToolFileTarget;
     }
-    if (tool === "apply_patch") {
-      const file = patchFiles?.[0];
-      if (!file) return null;
+    if (tool === "hashline_edit" || tool === "apply_patch") {
+      const filePath = normalizeText(input.path);
+      if (!filePath) return null;
       return {
-        filePath: file.filePath || file.relativePath,
-        line: undefined,
-        patch: file.patch,
+        filePath,
+        patch: preview?.kind === "diff" ? preview.patch : undefined,
         preferDiff: true
-      } satisfies OpencodeToolFileTarget;
+      } satisfies AgentToolFileTarget;
     }
     return null;
   })();
+
+  const detailKind = resolveDetailKind({
+    tool,
+    isError,
+    running,
+    preview,
+    bashCommand,
+    outputText,
+    contextTool
+  });
+  const hasDetails = detailKind !== "none";
   const suppressRunningEditDetails = running && editTool;
-  const showPreview = !toolFileTarget && !contextTool && !!outputPreview && (status === "error" || (!shellTool && !editTool));
-  const detailDefaultOpen =
-    status === "error" ||
-    (running && !editTool) ||
-    (shellTool && shellToolPartsExpanded) ||
-    (editTool && !running && editToolPartsExpanded);
-  const hasInlineDetails = (
-    (shellTool && (!!bashCommand || !!outputText)) ||
-    !!parsedRead?.content ||
-    !!outputText ||
-    !!fileDiff ||
-    !!patchFiles?.length ||
-    (tool === "write" && typeof input?.content === "string" && !!input.content.trim())
-  );
-  const hasExpandedContent =
-    !!parsedRead?.content ||
-    !!bashCommand ||
-    !!outputText ||
-    !!fileDiff ||
-    !!patchFiles?.length ||
-    (tool === "write" && typeof input?.content === "string" && !!input.content.trim());
+  // 批组列表内默认折叠，由用户二次点击展开详情；独立事件仍尊重设置/错误/运行中
+  const detailDefaultOpen = listItem
+    ? false
+    : tool === "question"
+      ? false
+      : isError ||
+        (running && !editTool && shellTool) ||
+        (shellTool && shellToolPartsExpanded) ||
+        (editTool && !running && editToolPartsExpanded);
+  const open = detailsOpen ?? detailDefaultOpen;
+  const integratedCard = hasDetails && open && !suppressRunningEditDetails;
 
   useEffect(() => {
-    if (!hasInlineDetails || !hasExpandedContent || contextTool) return;
+    if (listItem || !hasDetails || contextTool || suppressRunningEditDetails) return;
     if (detailsOpen !== null) return;
     if (detailDefaultOpen) setDetailsOpen(true);
-  }, [contextTool, detailDefaultOpen, detailsOpen, hasExpandedContent, hasInlineDetails]);
+  }, [contextTool, detailDefaultOpen, detailsOpen, hasDetails, listItem, suppressRunningEditDetails]);
 
-  const renderToolHead = () => (
-    <ToolHeader
-      running={running}
-      tool={tool}
-      contextTool={contextTool}
-      ioLabel={ioLabel}
-      detailFileLabel={detailFileLabel}
-      detailFilePath={detailFilePath}
-      detailMeta={detailMeta}
-      taskSessionId={taskSessionId}
-      taskSubagent={taskSubagent}
-      taskTitleHint={taskTitleHint}
-      onOpenTaskSession={onOpenTaskSession}
-    />
-  );
-
-  const renderDetailsBody = () => (
-    <div className="grid min-w-0 gap-3 pt-2">
-      {shellTool ? (
-        <ToolSection>
-          <ToolCommandBlock command={bashCommand} />
-          {outputText ? <ToolCodeBlock>{outputText}</ToolCodeBlock> : null}
-        </ToolSection>
+  const headline = (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left">
+      <span
+        className={cn(
+          "inline-flex shrink-0 items-center justify-center",
+          listItem ? "size-3" : "size-3.5"
+        )}
+        aria-hidden
+      >
+        <Icon
+          className={cn(
+            "size-full",
+            isError ? "text-destructive" : running ? "animate-pulse text-foreground" : "text-muted-foreground"
+          )}
+          strokeWidth={listItem ? 2 : 1.75}
+        />
+      </span>
+      <strong
+        className={cn(
+          "shrink-0 font-medium",
+          listItem ? "text-xs" : "text-sm",
+          isError ? "text-destructive" : "text-muted-foreground"
+        )}
+      >
+        {toolDisplayName(tool)}
+      </strong>
+      {!listItem && !editTool ? (
+        <span
+          className={cn(
+            "shrink-0 text-xs",
+            running ? "text-muted-foreground/70" : "invisible"
+          )}
+          aria-hidden={!running}
+        >
+          {toolMode(tool)}
+        </span>
       ) : null}
-
-      {parsedRead?.content ? (
-        <ToolSection title={compactPath(parsedRead.path || subtitle) || "文件内容"} meta={parsedRead.type || ""}>
-          <ToolCodeBlock>{withLineNumbers(parsedRead.content, 120)}</ToolCodeBlock>
-        </ToolSection>
-      ) : null}
-
-      {tool === "write" && typeof input?.content === "string" && input.content.trim() ? (
-        <ToolSection title={compactPath(input?.filePath || input?.path) || "写入内容"} meta={`${input.content.split(/\r?\n/).length} 行`}>
-          <ToolCodeBlock>{withLineNumbers(input.content, 180)}</ToolCodeBlock>
-        </ToolSection>
-      ) : null}
-
-      {fileDiff ? (
-        <ToolSection title={compactPath(fileDiff.file) || "编辑内容"} meta={`+${fileDiff.additions} -${fileDiff.deletions}`}>
-          {fileDiff.patch ? <ToolCodeBlock>{withLineNumbers(fileDiff.patch, 220)}</ToolCodeBlock> : null}
-          {fileDiff.before ? (
-            <ToolSubsection title="修改前">
-              <ToolCodeBlock>{withLineNumbers(fileDiff.before, 160)}</ToolCodeBlock>
-            </ToolSubsection>
+      {targetLabel ? (
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            listItem ? "text-xs" : "text-sm",
+            isError ? "text-destructive" : "text-muted-foreground"
+          )}
+          title={detailFilePath || targetLabel}
+        >
+          {targetLabel}
+        </span>
+      ) : <span className="min-w-0 flex-1" />}
+      {editTool ? (
+        <span className="inline-grid shrink-0 grid-cols-1 grid-rows-1 font-mono text-[11px]">
+          <span className="invisible col-start-1 row-start-1 tabular-nums" aria-hidden>
+            +999 -999
+          </span>
+          {changeStats ? (
+            <span className="col-start-1 row-start-1 tabular-nums">
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">+{changeStats.added}</span>
+              {" "}
+              <span className="font-semibold text-rose-600 dark:text-rose-400">-{changeStats.removed}</span>
+            </span>
           ) : null}
-          {fileDiff.after ? (
-            <ToolSubsection title="修改后">
-              <ToolCodeBlock>{withLineNumbers(fileDiff.after, 160)}</ToolCodeBlock>
-            </ToolSubsection>
-          ) : null}
-        </ToolSection>
-      ) : null}
-
-      {patchFiles?.length ? (
-        <ToolSection title="补丁文件" meta={`${patchFiles.length} 个文件`}>
-          <div className="grid min-w-0 gap-2">
-            {patchFiles.map((file, index) => (
-              <div key={`${file.filePath}:${index}`} className="grid min-w-0 gap-2 py-1.5">
-                <div className="flex min-w-0 items-center justify-between gap-3">
-                  <strong className="min-w-0 truncate text-xs font-semibold">{compactPath(file.relativePath || file.filePath) || file.filePath}</strong>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {file.type} · +{file.additions} -{file.deletions}
-                  </span>
-                </div>
-                {file.movePath ? <div className="text-xs text-muted-foreground">move to {file.movePath}</div> : null}
-                {file.patch ? <ToolCodeBlock>{withLineNumbers(file.patch, 220)}</ToolCodeBlock> : null}
-              </div>
-            ))}
-          </div>
-        </ToolSection>
-      ) : null}
-
-      {!parsedRead && !shellTool && !fileDiff && !patchFiles?.length && outputText ? (
-        <ToolSection title="输出">
-          <ToolCodeBlock>{outputText}</ToolCodeBlock>
-        </ToolSection>
+        </span>
       ) : null}
     </div>
   );
 
-  if (hasInlineDetails && hasExpandedContent && !contextTool && !suppressRunningEditDetails) {
+  const detailsBody = suppressRunningEditDetails ? null : (
+    <ToolEventDetails
+      detailKind={detailKind}
+      preview={preview}
+      bashCommand={bashCommand}
+      outputText={outputText}
+      filePath={detailFilePath}
+      isError={isError}
+    />
+  );
+
+  if (hasDetails && !contextTool && !suppressRunningEditDetails) {
     return (
       <Collapsible
         className={cn(
-          "grid min-w-0 gap-1 py-1.5",
-          toolFileTarget && "hover:text-foreground"
+          "min-w-0 max-w-full overflow-hidden rounded-xl border transition-[border-color,background-color] duration-200",
+          integratedCard
+            ? isError
+              ? "border-destructive/30 bg-card"
+              : "border-border bg-card"
+            : "border-transparent bg-transparent"
         )}
-        open={detailsOpen ?? detailDefaultOpen}
+        open={open}
         onOpenChange={setDetailsOpen}
       >
         <CollapsibleTrigger asChild>
-          <Button className="h-auto w-full justify-start rounded-md px-0 py-1.5 hover:bg-transparent hover:text-foreground" variant="ghost">
-            {renderToolHead()}
+          <Button
+            className="h-auto w-full justify-start rounded-none px-3 py-2 hover:bg-transparent hover:text-foreground"
+            variant="ghost"
+          >
+            {headline}
           </Button>
         </CollapsibleTrigger>
-        {showPreview ? <ToolCodeBlock>{outputPreview}</ToolCodeBlock> : null}
-        <CollapsibleContent>
-          {renderDetailsBody()}
-        </CollapsibleContent>
+        <AnimatedCollapsibleContent open={open}>
+          <Separator />
+          {detailsBody}
+        </AnimatedCollapsibleContent>
       </Collapsible>
     );
   }
@@ -649,25 +537,99 @@ export function OpencodeExecutionPartView({
   return (
     <div
       className={cn(
-        "grid min-w-0 gap-1 py-1.5",
-        toolFileTarget && "hover:text-foreground",
+        "grid min-w-0 gap-1 py-0.5",
         suppressRunningEditDetails && "text-muted-foreground"
       )}
     >
       {toolFileTarget ? (
         <Button
-          className="h-auto w-full justify-start rounded-md px-0 py-1.5 hover:bg-transparent hover:text-foreground"
+          className={cn(
+            "h-auto w-full justify-start rounded-md px-0 hover:bg-transparent hover:text-foreground",
+            listItem ? "py-1" : "py-1.5"
+          )}
           onClick={() => onOpenToolFile(toolFileTarget)}
           title="在右侧打开文件"
           variant="ghost"
         >
-          {renderToolHead()}
+          {headline}
         </Button>
       ) : (
-        renderToolHead()
+        <div className={cn("flex min-w-0 items-center px-0", listItem ? "py-1" : "py-1.5")}>{headline}</div>
       )}
-
-      {showPreview ? <ToolCodeBlock>{outputPreview}</ToolCodeBlock> : null}
     </div>
   );
+}
+
+type DetailKind = "none" | "error" | "diff" | "file" | "terminal" | "code";
+
+function resolveDetailKind(options: {
+  tool: string;
+  isError: boolean;
+  running: boolean;
+  preview: ToolResultPreview | null;
+  bashCommand: string;
+  outputText: string;
+  contextTool: boolean;
+}): DetailKind {
+  const { tool, isError, preview, bashCommand, outputText, contextTool } = options;
+  // bash 失败也走终端块，避免整段挤在 error 红框里
+  if (tool === "bash") return bashCommand || outputText ? "terminal" : "none";
+  if (isError) return outputText ? "error" : "none";
+  if (preview?.kind === "diff") return "diff";
+  if (preview?.kind === "file") return "file";
+  if (contextTool) return "none";
+  if (!outputText) return "none";
+  const trimmed = outputText.trim();
+  return trimmed.includes("\n") || trimmed.length > 160 ? "code" : "none";
+}
+
+function ToolEventDetails({
+  detailKind,
+  preview,
+  bashCommand,
+  outputText,
+  filePath,
+  isError = false
+}: {
+  detailKind: DetailKind;
+  preview: ToolResultPreview | null;
+  bashCommand: string;
+  outputText: string;
+  filePath: string;
+  isError?: boolean;
+}) {
+  if (detailKind === "none") return null;
+  if (detailKind === "error") {
+    return <ToolErrorBlock value={outputText} embedded />;
+  }
+  if (detailKind === "diff" && preview?.kind === "diff") {
+    return (
+      <ToolDiffBlock
+        patch={preview.patch}
+        filePath={compactPath(preview.file) || compactPath(filePath) || undefined}
+        additions={preview.additions}
+        deletions={preview.deletions}
+        embedded
+      />
+    );
+  }
+  if (detailKind === "file" && preview?.kind === "file") {
+    return (
+      <ToolSourceBlock
+        value={preview.content}
+        embedded
+      />
+    );
+  }
+  if (detailKind === "terminal") {
+    return (
+      <ToolTerminalBlock
+        command={bashCommand}
+        output={outputText}
+        embedded
+        isError={isError}
+      />
+    );
+  }
+  return <ToolSourceBlock value={outputText} embedded languageHint="text" />;
 }

@@ -1,4 +1,4 @@
-import type { OpencodeTodoItem } from "../../lib/opencodeSessions";
+import type { AgentTodoItem } from "../../lib/agentSessions";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
@@ -6,12 +6,12 @@ import { ScrollArea } from "../ui/scroll-area";
 import { CheckIcon, CloseIcon } from "../icons";
 import { cn } from "../../lib/utils";
 
-type OpencodeTodoProgressCardProps = {
-  todos: OpencodeTodoItem[];
+type AgentTodoProgressCardProps = {
+  todos: AgentTodoItem[];
   progress: {
     total: number;
     done: number;
-    active: OpencodeTodoItem | null;
+    active: AgentTodoItem | null;
   };
   activeSessionBusy: boolean;
   collapsed?: boolean;
@@ -21,7 +21,7 @@ function TodoStatusMark({
   status,
   activeSessionBusy
 }: {
-  status: OpencodeTodoItem["status"];
+  status: AgentTodoItem["status"];
   activeSessionBusy: boolean;
 }) {
   const running = status === "in_progress";
@@ -50,12 +50,12 @@ function TodoStatusMark({
   );
 }
 
-export function OpencodeTodoProgressCard({
+export function AgentTodoProgressCard({
   todos,
   progress,
   activeSessionBusy,
   collapsed = false
-}: OpencodeTodoProgressCardProps) {
+}: AgentTodoProgressCardProps) {
   if (todos.length <= 0) return null;
 
   return (

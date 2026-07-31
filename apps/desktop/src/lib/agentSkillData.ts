@@ -1,9 +1,9 @@
-import { dedupeMarketplaceResults, isInstalledOpencodeSkill, type OpencodeSkillSearchResult } from "./opencodeSkillMarketplace";
+import { dedupeMarketplaceResults, isInstalledAgentSkill, type AgentSkillSearchResult } from "./agentSkillMarketplace";
 
 export const INSTALLED_VIA_SKILLS_DESCRIPTION = "Installed via skills.sh";
-export const OPENCODE_SKILL_DISPLAY_BATCH_SIZE = 50;
+export const AGENT_SKILL_DISPLAY_BATCH_SIZE = 50;
 
-export type OpencodeSkillInfo = {
+export type AgentSkillInfo = {
   name: string;
   description?: string;
   location?: string;
@@ -16,14 +16,14 @@ export type OpencodeSkillInfo = {
   sourceGroup?: string;
 };
 
-export type OpencodeInstalledSkillGroup = {
+export type AgentInstalledSkillGroup = {
   name: string;
-  items: OpencodeSkillInfo[];
-  removableItems: OpencodeSkillInfo[];
+  items: AgentSkillInfo[];
+  removableItems: AgentSkillInfo[];
   description: string;
 };
 
-export type OpencodeSkillDetail = {
+export type AgentSkillDetail = {
   id: string;
   source: string;
   slug: string;
@@ -32,7 +32,7 @@ export type OpencodeSkillDetail = {
   files?: Array<{ path: string; contents: string }> | null;
 };
 
-export type OpencodeSkillAudit = {
+export type AgentSkillAudit = {
   provider: string;
   slug?: string;
   status: "pass" | "warn" | "fail" | string;
@@ -48,35 +48,43 @@ export type PendingSkillInstallGroup = {
   beforePaths: string[];
 };
 
-export type InstalledOpencodeSkillRecord = {
+export type InstalledAgentSkillRecord = {
   name: string;
   path: string;
   scope: "project" | "global";
   agents: string[];
   sourceGroup: string;
+  description?: string;
+  filePath?: string;
+  source?: string;
+  disableModelInvocation?: boolean;
 };
 
-export type OpencodeSkillCatalogCacheEntry = {
-  rows: OpencodeSkillSearchResult[];
+export type AgentSkillCatalogCacheEntry = {
+  rows: AgentSkillSearchResult[];
   page: number;
   total: number;
   hasMore: boolean;
 };
 
-export function normalizeInstalledOpencodeSkills(raw: unknown): InstalledOpencodeSkillRecord[] {
+export function normalizeInstalledAgentSkills(raw: unknown): InstalledAgentSkillRecord[] {
   return (Array.isArray(raw) ? raw : [])
     .map((item: any) => ({
       name: String(item?.name || "").trim(),
       path: String(item?.path || ""),
       scope: (item?.scope === "global" ? "global" : "project") as "global" | "project",
       agents: Array.isArray(item?.agents) ? item.agents.map((value: unknown) => String(value || "")).filter(Boolean) : [],
-      sourceGroup: String(item?.sourceGroup || "").trim()
+      sourceGroup: String(item?.sourceGroup || "").trim(),
+      description: typeof item?.description === "string" ? item.description : "",
+      filePath: typeof item?.filePath === "string" ? item.filePath : "",
+      source: typeof item?.source === "string" ? item.source : "",
+      disableModelInvocation: Boolean(item?.disableModelInvocation)
     }))
-    .filter((item) => item.name && isInstalledOpencodeSkill(item));
+    .filter((item) => item.name && isInstalledAgentSkill(item));
 }
 
 export function reconcilePendingSkillInstallGroups(input: {
-  installedRows: InstalledOpencodeSkillRecord[];
+  installedRows: InstalledAgentSkillRecord[];
   pending: PendingSkillInstallGroup[];
   sourceGroupMap: Record<string, string>;
 }): {
@@ -109,12 +117,12 @@ export function reconcilePendingSkillInstallGroups(input: {
 }
 
 export function buildInstalledSkillInfoRows(
-  installedRows: InstalledOpencodeSkillRecord[],
+  installedRows: InstalledAgentSkillRecord[],
   sourceGroupMap: Record<string, string>
-): OpencodeSkillInfo[] {
+): AgentSkillInfo[] {
   return installedRows.map((installed) => ({
     name: installed.name,
-    description: INSTALLED_VIA_SKILLS_DESCRIPTION,
+    description: installed.description || INSTALLED_VIA_SKILLS_DESCRIPTION,
     location: installed.path,
     license: "",
     compatibility: "",
@@ -125,15 +133,15 @@ export function buildInstalledSkillInfoRows(
   }));
 }
 
-export function buildOpencodeSkillCatalogCacheKey(view: string, category: string): string {
+export function buildAgentSkillCatalogCacheKey(view: string, category: string): string {
   return `${view}:${category || "all"}`;
 }
 
 export function mergeMarketplaceCatalogRows(
-  previousRows: OpencodeSkillSearchResult[],
-  incomingRows: OpencodeSkillSearchResult[],
+  previousRows: AgentSkillSearchResult[],
+  incomingRows: AgentSkillSearchResult[],
   reset: boolean
-): OpencodeSkillSearchResult[] {
+): AgentSkillSearchResult[] {
   const nextRows = dedupeMarketplaceResults(incomingRows);
   if (reset) return nextRows;
   return dedupeMarketplaceResults([...previousRows, ...nextRows]);

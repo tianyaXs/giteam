@@ -2,8 +2,10 @@ import { motion, useReducedMotion } from "motion/react";
 import QRCode from "qrcode";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { VirtuosoHandle } from "react-virtuoso";
 import { flushSync } from "react-dom";
 import rawMcpServers from "../servers.json";
+import { MCP_MODULE_ENABLED, REMOTE_REPO_MODULE_ENABLED } from "./lib/featureFlags";
 import {
   PINNED_RIGHT_PANE_TAB,
   ShellPanelToggle,
@@ -15,26 +17,28 @@ import { GitTreeTopologyPanel } from "./components/git/GitTreeTopologyPanel";
 import {
   CloseIcon
 } from "./components/icons";
-import { OpenCodeApiDialog } from "./components/opencode/OpenCodeApiDialog";
-import { OpenCodeAuthDialog } from "./components/opencode/OpenCodeAuthDialog";
-import { OpenCodeCustomProviderDialog } from "./components/opencode/OpenCodeCustomProviderDialog";
-import { OpenCodeModulePanel, type OpencodeModuleTab } from "./components/opencode/OpenCodeModulePanel";
-import { OpenCodeProviderPickerDialog } from "./components/opencode/OpenCodeProviderPickerDialog";
-import { OpenCodeProviderSettingsPanel } from "./components/opencode/OpenCodeProviderSettingsPanel";
-import { EditorSessionHeader } from "./components/opencode/EditorSessionHeader";
-import { OpencodeChatFrame } from "./components/opencode/OpencodeChatFrame";
-import { OpencodeComposerPanel } from "./components/opencode/OpencodeComposerPanel";
+import { AgentApiDialog } from "./components/agent/AgentApiDialog";
+import { AgentAuthDialog } from "./components/agent/AgentAuthDialog";
+import { AgentCustomProviderDialog } from "./components/agent/AgentCustomProviderDialog";
+import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentModulePanel";
+import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPickerDialog";
+import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
+import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
+import { AgentChatFrame } from "./components/agent/AgentChatFrame";
+import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import {
-  OpencodeMcpDialogs,
-  OpencodeMcpMarketPanel,
-  OpencodeSettingsMcpGrid
-} from "./components/opencode/OpencodeMcpPanels";
-import { OpencodeMessageStream } from "./components/opencode/OpencodeMessageStream";
-import { OpencodeTodoProgressCard } from "./components/opencode/OpencodeTodoProgressCard";
+  AgentMcpDialogs,
+  AgentMcpMarketPanel,
+  AgentSettingsMcpGrid
+} from "./components/agent/AgentMcpPanels";
+import { AgentMessageStream } from "./components/agent/AgentMessageStream";
+import { SearchPanel } from "./components/search/SearchPanel";
+import type { SearchHit, SearchScope } from "./lib/sessionSearch";
+import { AgentTodoProgressCard } from "./components/agent/AgentTodoProgressCard";
 import {
-  OpencodeSettingsSkillsGrid,
-  OpencodeSkillsMarketPanel
-} from "./components/opencode/OpencodeSkillsPanels";
+  AgentSettingsSkillsGrid,
+  AgentSkillsMarketPanel
+} from "./components/agent/AgentSkillsPanels";
 import { MobileControlDialog } from "./components/settings/MobileControlDialog";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
@@ -162,13 +166,14 @@ import {
   getGitWorktreeFileContent,
   getGitWorktreeFilePatch,
   readRepoTerminalOutput,
+  resizeRepoTerminalSession,
   sendRepoTerminalInput,
   startGitWorktreeWatcher,
   startRepoTerminalSession,
   stopGitWorktreeWatcher
 } from "./lib/gitAdapter";
 import {
-  OPENCODE_ATTACHMENT_INPUT_ACCEPT,
+  AGENT_ATTACHMENT_INPUT_ACCEPT,
   attachmentsFromLocalPaths,
   encodeFilePathForUrl,
   extractClipboardFilePaths,
@@ -178,36 +183,44 @@ import {
   hasClipboardFileReference,
   hasPlainClipboardText,
   isOfficeAttachment,
-  isOpencodeSupportedAttachmentMedia,
+  isAgentSupportedAttachmentMedia,
   mergeUniqueAttachments,
+  isImageAttachment,
   pickDesktopAttachments,
   readBrowserClipboardAttachments,
   readDesktopClipboardFilePaths,
   readDesktopClipboardImageAttachment,
   readFileAsAttachment,
   readLocalAttachmentPreview,
-  type OpencodeAttachment
+  resolveAgentPromptImages,
+  type AgentAttachment
 } from "./lib/imageAttachments";
 import {
   loadLocalBool,
   loadLocalString,
+  migrateLocalStoragePrefix,
   saveLocalBool,
   saveLocalString
 } from "./lib/localPreferences";
 import { normalizeMcpMarketData } from "./lib/mcpMarket";
-import { parseOpencodeAgents, type OpencodeAgentInfo } from "./lib/opencodeAgents";
+import { type AgentDefinition } from "./lib/agentDefinitions";
 import {
-  OPENCODE_THINKING_LEVELS,
-  allowAllPermissionRules,
+  AGENT_COMPOSER_AGENT_OPTIONS,
+  clampThinkingLevelToModel,
+  composerAgentPromptPrefix,
+  composerAgentSessionOptions,
   isComposerAgentName,
   normalizeComposerAgentName,
   normalizeThinkingLevel,
-  type OpencodeComposerAgentName,
-  type OpencodeThinkingLevel
-} from "./lib/opencodeComposerSettings";
+  thinkingLevelMeta,
+  thinkingLevelsForModel,
+  toPiThinkingLevel,
+  type ComposerAgentName,
+  type AgentThinkingLevel
+} from "./lib/agentComposerSettings";
 import {
-  buildOpencodeMcpPanelRows,
-  buildOpencodeMcpRows,
+  buildAgentMcpPanelRows,
+  buildAgentMcpRows,
   buildUpdatedMcpParamConfig,
   getCustomMcpParamSpecs,
   getEditableMcpParamValues,
@@ -216,7 +229,7 @@ import {
   getMissingMcpRequiredParams,
   normalizeCustomMcpJson,
   replaceMcpConfigPlaceholders
-} from "./lib/opencodeMcpConfig";
+} from "./lib/agentMcpConfig";
 import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
@@ -224,68 +237,73 @@ import {
   normalizeProviderId,
   parseModelRef,
   resolveProviderAliasWithNames,
-} from "./lib/opencodeModels";
+} from "./lib/agentModels";
 import {
-  buildOpencodeImageAttachmentsFromParts,
-  buildOpencodeMainLineMarkdownFromParts,
-  mergeOpencodeMessageAttachments,
-  mergeOpencodeStreamText,
-  readOpencodeTodosFromPart,
+  buildAgentImageAttachmentsFromParts,
+  buildAgentMainLineMarkdownFromParts,
+  mergeAgentMessageAttachments,
+  mergeAgentMessageErrors,
+  mergeAgentStreamText,
+  readAgentTodosFromPart,
   toDisplayJson
-} from "./lib/opencodeParts";
+} from "./lib/agentParts";
 import {
-  filterPermissionsBySession,
-  parseOpencodePermissionRequests,
-  removePermissionsById,
-  replaceSessionPermissions,
-  upsertPermissionRequest,
-  type OpencodePermissionReply,
-  type OpencodePermissionRequest
-} from "./lib/opencodePermissions";
+  type AgentPermissionReply,
+  type PermissionInteraction
+} from "./lib/agentPermissions";
 import {
-  applyOpencodeCatalog,
-  buildOpencodeConfiguredProviderSnapshot,
-  buildOpencodeProviderPickerCandidates,
-  getOpencodeModelDisplayInfo,
-  getOpencodeProviderSource as getOpencodeProviderSourceFromCatalog,
-  getOpencodeProviderTag as getOpencodeProviderTagFromCatalog,
-  normalizeOpencodeServerProviderState,
-  resolveActiveOpencodeModel,
-  type OpencodeConfigProviderCatalog,
-  type OpencodeModelConfig,
-  type OpencodeProviderAuthMethod,
-  type OpencodeProviderConfig,
-  type OpencodeServerConfig,
-  type OpencodeServerConfigProvider,
-  type OpencodeServerProviderState,
-  type OpencodeServiceSettings
-} from "./lib/opencodeProviderCatalog";
-import { PROVIDER_PRESETS, getProviderDisplayName } from "./lib/opencodeProviders";
+  applyAgentCatalog,
+  buildAgentConfiguredProviderSnapshot,
+  buildAgentProviderPickerCandidates,
+  getAgentModelDisplayInfo,
+  getAgentProviderSource as getAgentProviderSourceFromCatalog,
+  getAgentProviderTag as getAgentProviderTagFromCatalog,
+  normalizeAgentServerProviderState,
+  resolveActiveAgentModel,
+  type AgentConfigProviderCatalog,
+  type AgentModelConfig,
+  type AgentProviderAuthMethod,
+  type AgentProviderConfig,
+  type AgentServerConfig,
+  type AgentServerConfigProvider,
+  type AgentServerProviderState,
+  type AgentServiceSettings
+} from "./lib/agentProviderCatalog";
+import { PROVIDER_PRESETS, getProviderDisplayName } from "./lib/agentProviders";
 import {
-  fetchOpencodeQuestions,
-  postOpencodeQuestionReject,
-  postOpencodeQuestionReply
-} from "./lib/opencodeQuestions";
+  clipAgentSessionTitle,
+  compareAgentSessionActivity,
+  filterActiveAgentSessionSummaries,
+  agentSessionFromSummary,
+  sortAgentSessionSummaries,
+  type AgentChatMessage,
+  type AgentChatSession,
+  type AgentDetailedMessage,
+  type AgentDetailedPart,
+  type AgentMessagePageCacheEntry,
+  type ChatSessionSummary,
+  type AgentTodoItem
+} from "./lib/agentSessions";
 import {
-  buildOpencodeTurnRanges,
-  clipOpencodeSessionTitle,
-  compareOpencodeSessionActivity,
-  filterActiveOpencodeSessionSummaries,
-  getInitialOpencodeTurnStart,
-  opencodeSessionFromSummary,
-  sliceOpencodeMessagesByTurnStart,
-  sortOpencodeSessionSummaries,
-  type OpencodeChatMessage,
-  type OpencodeChatSession,
-  type OpencodeDetailedMessage,
-  type OpencodeDetailedPart,
-  type OpencodeMessagePageCacheEntry,
-  type OpencodeSessionSummary,
-  type OpencodeTodoItem
-} from "./lib/opencodeSessions";
+  type AgentSkillInfo,
+} from "./lib/agentSkillData";
 import {
-  type OpencodeSkillInfo,
-} from "./lib/opencodeSkillData";
+  createAgentClient,
+  type AgentInteraction,
+  type AgentInteractionReply,
+  type AgentMessage,
+  type AgentModelInfo,
+  type AgentPart,
+  type AgentProviderInfo,
+  type AgentSessionSummary,
+  type AgentEvent
+} from "./lib/agent/client";
+import {
+  agentProvidersToConfigCatalog,
+  agentProvidersToGlobalConfig,
+  agentProvidersToServerState
+} from "./lib/agent/providerState";
+import { extractToolDetails, extractToolOutputText } from "./lib/agent/toolPresentation";
 import { IS_TAURI, invoke, listen } from "./lib/platform";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
@@ -320,16 +338,18 @@ import type {
   ReviewActionType,
   ReviewRecord
 } from "./lib/types";
+
+const agentClient = createAgentClient();
 import { useAppearanceFontSize } from "./lib/useAppearanceFontSize";
 import { useDesktopTheme } from "./lib/useDesktopTheme";
 import { useGitWorkspaceController } from "./lib/useGitWorkspaceController";
-import { useOpencodeInstalledSkills } from "./lib/useOpencodeInstalledSkills";
-import { useOpencodeMcpAddForm } from "./lib/useOpencodeMcpAddForm";
-import { useOpencodeMessageCache } from "./lib/useOpencodeMessageCache";
-import { useOpencodeModelSelection } from "./lib/useOpencodeModelSelection";
-import { useOpencodeModelVisibility } from "./lib/useOpencodeModelVisibility";
-import { shouldUsePromptHistoryKey, useOpencodePromptHistory } from "./lib/useOpencodePromptHistory";
-import { useOpencodeSkillMarketplace } from "./lib/useOpencodeSkillMarketplace";
+import { useAgentInstalledSkills } from "./lib/useAgentInstalledSkills";
+import { useAgentMcpAddForm } from "./lib/useAgentMcpAddForm";
+import { useAgentMessageCache } from "./lib/useAgentMessageCache";
+import { useAgentModelSelection } from "./lib/useAgentModelSelection";
+import { useAgentModelVisibility } from "./lib/useAgentModelVisibility";
+import { shouldUsePromptHistoryKey, useAgentPromptHistory } from "./lib/useAgentPromptHistory";
+import { useAgentSkillMarketplace } from "./lib/useAgentSkillMarketplace";
 import { usePinnedRepoIds } from "./lib/usePinnedRepoIds";
 import { useRightModuleVisibility } from "./lib/useRightModuleVisibility";
 import { useTerminalTabs } from "./lib/useTerminalTabs";
@@ -360,14 +380,14 @@ import {
 const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
 
 type DetailTab = "diff" | "context" | "findings";
-type OpencodeSlashCommand = {
+type AgentSlashCommand = {
   id: string;
   trigger: string;
   title: string;
   description?: string;
   source: "builtin" | "command" | "skill" | "mcp";
 };
-type OpencodeMcpStatusMap = Record<string, Record<string, unknown>>;
+type AgentMcpStatusMap = Record<string, Record<string, unknown>>;
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -391,7 +411,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
     return this.props.children;
   }
 }
-type OpencodeAuthPayload = { type: "api"; key: string };
+type AgentAuthPayload = { type: "api"; key: string };
 
 function remoteRepoGraphStatusKey(repoId: string, refOrCommit: string): string {
   return `${repoId}::${refOrCommit.trim() || "HEAD"}`;
@@ -433,17 +453,14 @@ const WORKTREE_DIFF_STREAM_INITIAL_LOAD = WORKTREE_DIFF_STREAM_BATCH_SIZE + WORK
 
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
 const MACOS_RUNTIME_BOOTSTRAP_NAME = "runtime";
-const OPENCODE_MODEL_VIS_KEY = "giteam.opencode.model-visibility.v1";
-const OPENCODE_MODEL_ENABLE_KEY = "giteam.opencode.model-enabled.v1";
-const OPENCODE_MODEL_SELECTION_KEY = "giteam.opencode.model-selection.v1";
-const OPENCODE_PAGE_SIZE = 2;
-const OPENCODE_SESSION_PAGE_SIZE = 3;
-const OPENCODE_SIDEBAR_SESSION_POLL_MS = 45000;
-const OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
-const OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT = 80;
-const OPENCODE_OLDER_MESSAGE_FETCH_LIMIT = 8;
-const OPENCODE_TOP_LOAD_RATIO = 0.3;
-const OPENCODE_TOP_PREFETCH_RATIO = 0.45;
+const AGENT_MODEL_VIS_KEY = "giteam.agent.model-visibility.v1";
+const AGENT_MODEL_ENABLE_KEY = "giteam.agent.model-enabled.v1";
+const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v1";
+const AGENT_SESSION_PAGE_SIZE = 3;
+const AGENT_SIDEBAR_SESSION_POLL_MS = 45000;
+const AGENT_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
+const AGENT_INITIAL_MESSAGE_FETCH_LIMIT = 80;
+const AGENT_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const TITLEBAR_LEFT_TOGGLE_X = 80;
 const TITLEBAR_COLLAPSED_TITLE_INSET = 220;
 const DRAG_REGION_INTERACTIVE_SELECTOR = [
@@ -465,11 +482,143 @@ const DRAG_REGION_INTERACTIVE_SELECTOR = [
   "[role='switch']",
   "[role='tab']"
 ].join(",");
-const OPENCODE_AGENT_SELECTION_KEY = "giteam.opencode.agent-selection.v1";
-const OPENCODE_THINKING_SELECTION_KEY = "giteam.opencode.thinking-selection.v1";
-const OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.opencode.auto-accept-permissions.v1";
+const AGENT_COMPOSER_SELECTION_KEY = "giteam.agent.composer-agent.v1";
+const AGENT_THINKING_SELECTION_KEY = "giteam.agent.thinking-selection.v1";
+const AGENT_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.agent.auto-accept-permissions.v1";
+
+// One-time migration from pre-Pi localStorage keys.
+migrateLocalStoragePrefix("giteam.opencode.model-visibility.v1", AGENT_MODEL_VIS_KEY);
+migrateLocalStoragePrefix("giteam.opencode.model-enabled.v1", AGENT_MODEL_ENABLE_KEY);
+migrateLocalStoragePrefix("giteam.opencode.model-selection.v1", AGENT_MODEL_SELECTION_KEY);
+migrateLocalStoragePrefix("giteam.opencode.agent-selection.v1", AGENT_COMPOSER_SELECTION_KEY);
+migrateLocalStoragePrefix("giteam.opencode.thinking-selection.v1", AGENT_THINKING_SELECTION_KEY);
+migrateLocalStoragePrefix("giteam.opencode.auto-accept-permissions.v1", AGENT_AUTO_ACCEPT_PERMISSIONS_KEY);
 const GENERAL_SETTINGS_KEY = "giteam.settings.general.v1";
 const SKILLSMP_API_KEY_STORAGE_KEY = "giteam.skillsmp.api-key.v1";
+
+function agentPartText(part: AgentPart): string {
+  if (part.type === "text") {
+    // 与渲染层 detailParts 重分类（见 AgentMessageStream）同源：reasoning 流曾被误标成 text
+    // （运行时 id 为 reasoning/reasoning:xxx），渲染时改回 reasoning 并剥离出正文。
+    // content 也必须排除它，否则搜索/ fallback 会把思考过程当成可命中文本，
+    // 与消息流里实际看到的可见正文不一致（表现为「搜索定位到了思考内容里」）。
+    const id = String((part as { id?: unknown }).id || "").trim();
+    if (id === "reasoning" || id.startsWith("reasoning:")) return "";
+    return part.text;
+  }
+  // reasoning/toolCall 都不拼入正文：它们走时间线（ReasoningGroup/工具卡片）渲染，
+  // 拼进 content 会在详情 parts 缺失时把过程信息当成回答文本显示。
+  if (part.type === "toolResult") return part.isError ? `\n\n工具失败：${part.toolName}` : "";
+  return "";
+}
+
+/** 构造 pi 原生形状的工具 part（参考 super_agent_mobile：不套 opencode 模型，
+ * input 保留 pi 原始参数名（path/oldText/newText/pattern/command），
+ * output 提取为文本、details 保留 pi 原始结构，渲染层用 toolPresentation
+ * 纯函数直接解析）。 */
+function buildToolPart(options: {
+  toolCallId: string;
+  toolName: string;
+  status: "running" | "completed" | "error";
+  input?: unknown;
+  output?: unknown;
+}): AgentDetailedPart {
+  const part: AgentDetailedPart = {
+    id: options.toolCallId,
+    type: "toolCall",
+    toolCallId: options.toolCallId,
+    toolName: options.toolName,
+    status: options.status
+  };
+  // 缺省字段不写 key：upsert 浅合并时保留先前事件写入的值
+  // （tool.completed 不带 input，不能覆盖 tool.started 的 input）。
+  if (options.input !== undefined) part.input = options.input;
+  if (options.output !== undefined) {
+    part.output = extractToolOutputText(options.output);
+    const details = extractToolDetails(options.output);
+    if (details) part.details = details;
+  }
+  if (options.status === "error") part.isError = true;
+  return part;
+}
+
+function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | null {
+  if (message.role !== "user" && message.role !== "assistant") return null;
+  const content = message.parts.map(agentPartText).join("");
+  const images = message.parts
+    .filter((part): part is Extract<AgentPart, { type: "image" }> => part.type === "image")
+    .map((part, index) => ({
+      id: `${message.id}-image-${index}`,
+      kind: "image" as const,
+      uri: `data:${part.mimeType};base64,${part.data}`,
+      mime: part.mimeType,
+      filename: undefined
+    }));
+  return {
+    id: message.id,
+    role: message.role,
+    content,
+    attachments: images.length > 0 ? images : undefined
+  };
+}
+
+function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSummary {
+  const updatedAt = summary.updatedAtMs > 0 ? summary.updatedAtMs : Date.now();
+  return {
+    id: summary.sessionId,
+    // 标题来自后端派生的首条用户消息摘要；空会话回退 id 前缀。
+    title: String(summary.title || "").trim() || `Session ${summary.sessionId.slice(0, 8)}`,
+    createdAt: updatedAt,
+    updatedAt
+  };
+}
+
+/** 收集会话内全部 ToolResult（pi 中它是独立的 tool 角色消息），按 toolCallId 索引，
+ * 供 assistant 消息的 toolCall part 合并 output/error。 */
+function agentToolResultsByCallId(agentMessages: AgentMessage[]): Map<string, Extract<AgentPart, { type: "toolResult" }>> {
+  const map = new Map<string, Extract<AgentPart, { type: "toolResult" }>>();
+  for (const message of agentMessages) {
+    for (const part of message.parts) {
+      if (part.type === "toolResult" && part.toolCallId) map.set(part.toolCallId, part);
+    }
+  }
+  return map;
+}
+
+/** AgentMessage → 渲染层详情模型（AgentDetailedMessage），pi 数据唯一适配点。 */
+function agentMessageToDetailedMessage(
+  message: AgentMessage,
+  toolResults?: Map<string, Extract<AgentPart, { type: "toolResult" }>>
+): AgentDetailedMessage {
+  const detailParts: AgentDetailedPart[] = [];
+  message.parts.forEach((part, index) => {
+    if (part.type === "text") detailParts.push({ id: message.id + "-text-" + index, type: "text", text: part.text });
+    else if (part.type === "reasoning") detailParts.push({ id: message.id + "-reasoning-" + index, type: "reasoning", text: part.text });
+    else if (part.type === "redactedReasoning") detailParts.push({ id: message.id + "-reasoning-" + index, type: "reasoning", redacted: true });
+    else if (part.type === "image") detailParts.push({ id: message.id + "-image-" + index, type: "file", mime: part.mimeType, url: "data:" + part.mimeType + ";base64," + part.data });
+    else if (part.type === "toolCall") {
+      // toolResult 在 pi 中是另一条消息，这里按 toolCallId 合并回工具卡片。
+      const result = toolResults?.get(part.toolCallId);
+      detailParts.push(buildToolPart({
+        toolCallId: part.toolCallId,
+        toolName: part.toolName,
+        status: result ? (result.isError ? "error" : "completed") : "completed",
+        input: part.input,
+        output: result?.output
+      }));
+    }
+    // toolResult 不单独渲染（已合并进对应 toolCall 卡片）。
+    else if (part.type === "custom") detailParts.push({ id: message.id + "-custom-" + index, type: "custom", customType: part.customType, content: part.content, details: part.details });
+  });
+  return {
+    info: {
+      id: message.id,
+      role: message.role,
+      time: { created: message.createdAtMs }
+    },
+    parts: detailParts
+  };
+}
 
 type TauriDragWindow = {
   startDragging?: () => Promise<void> | void;
@@ -550,16 +699,16 @@ export function App() {
   const [theme, toggleTheme] = useDesktopTheme();
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
   const { uiFontSize, codeFontSize, setUiFontSize, setCodeFontSize } = useAppearanceFontSize();
-  const [opencodePreviewImage, setOpencodePreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
+  const [agentPreviewImage, setAgentPreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "opencode" | "models" | "skillsmp" | "mcp">("general");
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "models" | "skillsmp" | "mcp">("general");
   const [settingsMobileVisible, setSettingsMobileVisible] = useState(false);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => (
-    loadGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY)
+    loadGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY)
   ));
   const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
-  const [showOpencodeApiDialog, setShowOpencodeApiDialog] = useState(false);
+  const [showAgentApiDialog, setShowAgentApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [runtimeStartupChecking, setRuntimeStartupChecking] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 304, 292, 340));
@@ -576,7 +725,7 @@ export function App() {
     startWidth: number;
   }>(null);
   const [repoContextMenu, setRepoContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry } | null>(null);
-  const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry; session: OpencodeChatSession } | null>(null);
+  const [sessionContextMenu, setSessionContextMenu] = useState<{ x: number; y: number; repo: RepositoryEntry; session: AgentChatSession } | null>(null);
   const [composerContextMenu, setComposerContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [commitContextMenu, setCommitContextMenu] = useState<{ x: number; y: number; sha: string; branch?: string; subject?: string } | null>(null);
   const [commitHoverCard, setCommitHoverCard] = useState<{ x: number; y: number; sha: string; subject?: string; author?: string; date?: string; branch?: string } | null>(null);
@@ -698,7 +847,6 @@ export function App() {
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
-    opencode: false,
     giteam: false
   });
   const [installingDep, setInstallingDep] = useState("");
@@ -707,59 +855,60 @@ export function App() {
   const [runtimeJob, setRuntimeJob] = useState<RuntimeActionJobStatus | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeRequirementsStatus>(() => loadCachedRuntimeStatus());
   const [runtimeInstallLog, setRuntimeInstallLog] = useState("");
-  const [opencodeProviders, setOpencodeProviders] = useState<string[]>([]);
-  const [opencodeConnectedProviders, setOpencodeConnectedProviders] = useState<string[]>([]);
-  const [opencodeConfiguredProviders, setOpencodeConfiguredProviders] = useState<string[]>([]);
-  const [opencodeProviderNames, setOpencodeProviderNames] = useState<Record<string, string>>({});
-  const [opencodeProviderSourceById, setOpencodeProviderSourceById] = useState<Record<string, string>>({});
-  const [opencodeModelsByProvider, setOpencodeModelsByProvider] = useState<Record<string, string[]>>({});
-  const [opencodeModelNamesByProvider, setOpencodeModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
-  const [opencodeConfiguredModelsByProvider, setOpencodeConfiguredModelsByProvider] = useState<Record<string, string[]>>({});
-  const [opencodeConfiguredModelNamesByProvider, setOpencodeConfiguredModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
-  const [opencodeGlobalConfigProviderMap, setOpencodeGlobalConfigProviderMap] = useState<Record<string, OpencodeServerConfigProvider>>({});
-  const [opencodeDisabledProviders, setOpencodeDisabledProviders] = useState<string[]>([]);
-  const [opencodeCatalogLoading, setOpencodeCatalogLoading] = useState(false);
-  const [opencodeModelProvider, setOpencodeModelProvider] = useState("");
-  const [opencodeSelectedModel, setOpencodeSelectedModel] = useState("");
+  const [agentProviders, setAgentProviders] = useState<string[]>([]);
+  const [agentConnectedProviders, setAgentConnectedProviders] = useState<string[]>([]);
+  const [agentConfiguredProviders, setAgentConfiguredProviders] = useState<string[]>([]);
+  const [agentProviderNames, setAgentProviderNames] = useState<Record<string, string>>({});
+  const [agentProviderSourceById, setAgentProviderSourceById] = useState<Record<string, string>>({});
+  const [agentModelsByProvider, setAgentModelsByProvider] = useState<Record<string, string[]>>({});
+  const [agentModelInfoByRef, setAgentModelInfoByRef] = useState<Record<string, AgentModelInfo>>({});
+  const [agentModelNamesByProvider, setAgentModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
+  const [agentConfiguredModelsByProvider, setAgentConfiguredModelsByProvider] = useState<Record<string, string[]>>({});
+  const [agentConfiguredModelNamesByProvider, setAgentConfiguredModelNamesByProvider] = useState<Record<string, Record<string, string>>>({});
+  const [agentGlobalConfigProviderMap, setAgentGlobalConfigProviderMap] = useState<Record<string, AgentServerConfigProvider>>({});
+  const [agentDisabledProviders, setAgentDisabledProviders] = useState<string[]>([]);
+  const [agentCatalogLoading, setAgentCatalogLoading] = useState(false);
+  const [agentModelProvider, setAgentModelProvider] = useState("");
+  const [agentSelectedModel, setAgentSelectedModel] = useState("");
   const {
-    savedModels: opencodeSavedModels,
-    draftModel: opencodeDraftModel,
-    sessionModel: opencodeSessionModel,
-    rememberSavedModel: rememberOpencodeSavedModel,
-    selectModel: selectOpencodeModel
-  } = useOpencodeModelSelection(`${OPENCODE_MODEL_SELECTION_KEY}:global`);
-  const [showOpencodeModelPicker, setShowOpencodeModelPicker] = useState(false);
-  const [opencodeModelPickerSearch, setOpencodeModelPickerSearch] = useState("");
-  const [showOpencodeProviderPicker, setShowOpencodeProviderPicker] = useState(false);
-  const [opencodeProviderPickerSearch, setOpencodeProviderPickerSearch] = useState("");
-  const [opencodeProviderPickerProvider, setOpencodeProviderPickerProvider] = useState("");
-  const [opencodeProviderPickerModelSearch, setOpencodeProviderPickerModelSearch] = useState("");
-  const [showOpencodeCustomProvider, setShowOpencodeCustomProvider] = useState(false);
-  const [opencodeConnectProviderId, setOpencodeConnectProviderId] = useState("");
-  const [opencodeConnectProviderName, setOpencodeConnectProviderName] = useState("");
-  const [opencodeConnectApiKey, setOpencodeConnectApiKey] = useState("");
-  const [showOpencodeAuthDialogFor, setShowOpencodeAuthDialogFor] = useState("");
-  const [opencodeProviderActionMenuFor, setOpencodeProviderActionMenuFor] = useState("");
-  const [opencodeInlineAuthOpenFor, setOpencodeInlineAuthOpenFor] = useState("");
-  const [opencodeConnectBusy, setOpencodeConnectBusy] = useState(false);
-  const [opencodeDisconnectingProvider, setOpencodeDisconnectingProvider] = useState("");
-  const [opencodeProviderAuthCache, setOpencodeProviderAuthCache] = useState<Record<string, OpencodeProviderAuthMethod[]>>({});
+    savedModels: agentSavedModels,
+    draftModel: agentDraftModel,
+    sessionModel: agentSessionModel,
+    rememberSavedModel: rememberAgentSavedModel,
+    selectModel: selectAgentModel
+  } = useAgentModelSelection(`${AGENT_MODEL_SELECTION_KEY}:global`);
+  const [showAgentModelPicker, setShowAgentModelPicker] = useState(false);
+  const [agentModelPickerSearch, setAgentModelPickerSearch] = useState("");
+  const [showAgentProviderPicker, setShowAgentProviderPicker] = useState(false);
+  const [agentProviderPickerSearch, setAgentProviderPickerSearch] = useState("");
+  const [agentProviderPickerProvider, setAgentProviderPickerProvider] = useState("");
+  const [agentProviderPickerModelSearch, setAgentProviderPickerModelSearch] = useState("");
+  const [showAgentCustomProvider, setShowAgentCustomProvider] = useState(false);
+  const [agentConnectProviderId, setAgentConnectProviderId] = useState("");
+  const [agentConnectProviderName, setAgentConnectProviderName] = useState("");
+  const [agentConnectApiKey, setAgentConnectApiKey] = useState("");
+  const [showAgentAuthDialogFor, setShowAgentAuthDialogFor] = useState("");
+  const [agentProviderActionMenuFor, setAgentProviderActionMenuFor] = useState("");
+  const [agentInlineAuthOpenFor, setAgentInlineAuthOpenFor] = useState("");
+  const [agentConnectBusy, setAgentConnectBusy] = useState(false);
+  const [agentDisconnectingProvider, setAgentDisconnectingProvider] = useState("");
+  const [agentProviderAuthCache, setAgentProviderAuthCache] = useState<Record<string, AgentProviderAuthMethod[]>>({});
   const {
-    hiddenModels: opencodeHiddenModels,
-    enabledModels: opencodeEnabledModels,
-    hideModel: hideOpencodeModel,
-    enableModel: enableOpencodeModel
-  } = useOpencodeModelVisibility({
-    hidden: `${OPENCODE_MODEL_VIS_KEY}:global`,
-    enabled: `${OPENCODE_MODEL_ENABLE_KEY}:global`
+    hiddenModels: agentHiddenModels,
+    enabledModels: agentEnabledModels,
+    hideModel: hideAgentModel,
+    enableModel: enableAgentModel
+  } = useAgentModelVisibility({
+    hidden: `${AGENT_MODEL_VIS_KEY}:global`,
+    enabled: `${AGENT_MODEL_ENABLE_KEY}:global`
   });
-  const [opencodeConfig, setOpencodeConfig] = useState<OpencodeModelConfig | null>(null);
-  const [opencodeConfigBusy, setOpencodeConfigBusy] = useState(false);
-  const [opencodeServiceSettings, setOpencodeServiceSettings] = useState<OpencodeServiceSettings>({
+  const [agentConfig, setAgentConfig] = useState<AgentModelConfig | null>(null);
+  const [agentConfigBusy, setAgentConfigBusy] = useState(false);
+  const [agentServiceSettings, setAgentServiceSettings] = useState<AgentServiceSettings>({
     port: 4098
   });
-  const [opencodeServiceSettingsSavedPort, setOpencodeServiceSettingsSavedPort] = useState(4098);
-  const [opencodeServiceSettingsBusy, setOpencodeServiceSettingsBusy] = useState(false);
+  const [agentServiceSettingsSavedPort, setAgentServiceSettingsSavedPort] = useState(4098);
+  const [agentServiceSettingsBusy, setAgentServiceSettingsBusy] = useState(false);
   const [controlServerSettings, setControlServerSettings] = useState<ControlServerSettings>(DEFAULT_CONTROL_SERVER_SETTINGS);
   const [controlServerSettingsSaved, setControlServerSettingsSaved] = useState<ControlServerSettings>(DEFAULT_CONTROL_SERVER_SETTINGS);
   const [controlServerSettingsBusy, setControlServerSettingsBusy] = useState(false);
@@ -771,35 +920,34 @@ export function App() {
   const [mobileServiceStatus, setMobileServiceStatus] = useState<GiteamMobileServiceStatus | null>(null);
   const [mobileServiceStatusError, setMobileServiceStatusError] = useState("");
 
-  const [opencodeProviderConfigBusy, setOpencodeProviderConfigBusy] = useState(false);
-  const [opencodePromptInput, setOpencodePromptInput] = useState("");
-  const [opencodeMcpPromptRefs, setOpencodeMcpPromptRefs] = useState<string[]>([]);
-  const [opencodeImageAttachments, setOpencodeImageAttachments] = useState<OpencodeAttachment[]>([]);
-  const [opencodeAttachmentMenuOpen, setOpencodeAttachmentMenuOpen] = useState(false);
-  const [opencodeAgents, setOpencodeAgents] = useState<OpencodeAgentInfo[]>([]);
-  const [opencodeAgentsLoading, setOpencodeAgentsLoading] = useState(false);
-  const [opencodeAgentsError, setOpencodeAgentsError] = useState("");
-  const [opencodeAgentSearch, setOpencodeAgentSearch] = useState("");
-  const [opencodeDraftAgent, setOpencodeDraftAgent] = useState<OpencodeComposerAgentName>(() => normalizeComposerAgentName(loadLocalString(OPENCODE_AGENT_SELECTION_KEY, "build")));
-  const [opencodeSessionAgent, setOpencodeSessionAgent] = useState<Record<string, string>>({});
-  const [showOpencodeThinkingPicker, setShowOpencodeThinkingPicker] = useState(false);
-  const [opencodeDraftThinkingLevel, setOpencodeDraftThinkingLevel] = useState<OpencodeThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(OPENCODE_THINKING_SELECTION_KEY, "auto")));
-  const [opencodeSessionThinkingLevel, setOpencodeSessionThinkingLevel] = useState<Record<string, OpencodeThinkingLevel>>({});
-  const [opencodeAutoAcceptPermissions, setOpencodeAutoAcceptPermissions] = useState(() => loadLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, false));
-  const [opencodePermissionRequests, setOpencodePermissionRequests] = useState<OpencodePermissionRequest[]>([]);
-  const [opencodePermissionLoading, setOpencodePermissionLoading] = useState(false);
-  const [showOpencodeModulePanel, setShowOpencodeModulePanel] = useState(false);
-  const [opencodeModuleTab, setOpencodeModuleTab] = useState<OpencodeModuleTab>("permissions");
-  const opencodeSkillsVisible = rightPaneTab === "skills" || (showOpencodeModulePanel && opencodeModuleTab === "skills");
-  const opencodeMcpVisible = rightPaneTab === "mcp" || (showOpencodeModulePanel && opencodeModuleTab === "mcp");
-  const [opencodeMcpStatus, setOpencodeMcpStatus] = useState<OpencodeMcpStatusMap>({});
-  const [opencodeMcpLoading, setOpencodeMcpLoading] = useState(false);
-  const opencodeMcpLoadingRef = useRef(false);
-  const opencodeMcpLoadedRef = useRef(false);
-  const [opencodeMcpError, setOpencodeMcpError] = useState("");
-  const [opencodeMcpBusyName, setOpencodeMcpBusyName] = useState("");
+  const [agentProviderConfigBusy, setAgentProviderConfigBusy] = useState(false);
+  const [agentPromptInput, setAgentPromptInput] = useState("");
+  const [agentMcpPromptRefs, setAgentMcpPromptRefs] = useState<string[]>([]);
+  const [agentImageAttachments, setAgentImageAttachments] = useState<AgentAttachment[]>([]);
+  const [agentAttachmentMenuOpen, setAgentAttachmentMenuOpen] = useState(false);
+  const [agentDefinitions, setAgentDefinitions] = useState<AgentDefinition[]>([]);
+  const [agentDefinitionsLoading, setAgentDefinitionsLoading] = useState(false);
+  const [agentDefinitionsError, setAgentDefinitionsError] = useState("");
+  const [agentAgentSearch, setAgentAgentSearch] = useState("");
+  const [agentDraftAgent, setAgentDraftAgent] = useState<ComposerAgentName>(() => normalizeComposerAgentName(loadLocalString(AGENT_COMPOSER_SELECTION_KEY, "build")));
+  const [agentSessionAgent, setAgentSessionAgent] = useState<Record<string, string>>({});
+  const [showAgentThinkingPicker, setShowAgentThinkingPicker] = useState(false);
+  const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "auto")));
+  const [agentSessionThinkingLevel, setAgentSessionThinkingLevel] = useState<Record<string, AgentThinkingLevel>>({});
+  const [agentAutoAcceptPermissions, setAgentAutoAcceptPermissions] = useState(() => loadLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, false));
+  const [agentPermissionLoading, setAgentPermissionLoading] = useState(false);
+  const [showAgentModulePanel, setShowAgentModulePanel] = useState(false);
+  const [agentModuleTab, setAgentModuleTab] = useState<AgentModuleTab>("permissions");
+  const agentSkillsVisible = rightPaneTab === "skills" || (showAgentModulePanel && agentModuleTab === "skills");
+  const agentMcpVisible = rightPaneTab === "mcp" || (showAgentModulePanel && agentModuleTab === "mcp");
+  const [agentMcpStatus, setAgentMcpStatus] = useState<AgentMcpStatusMap>({});
+  const [agentMcpLoading, setAgentMcpLoading] = useState(false);
+  const agentMcpLoadingRef = useRef(false);
+  const agentMcpLoadedRef = useRef(false);
+  const [agentMcpError, setAgentMcpError] = useState("");
+  const [agentMcpBusyName, setAgentMcpBusyName] = useState("");
   const [showMcpAddForm, setShowMcpAddForm] = useState(false);
-  const opencodeMcpAddForm = useOpencodeMcpAddForm(showMcpAddForm);
+  const agentMcpAddForm = useAgentMcpAddForm(showMcpAddForm);
   const [mcpInstalledOpen, setMcpInstalledOpen] = useState(false);
   const [editingMcpName, setEditingMcpName] = useState("");
   const [editingMcpParamValues, setEditingMcpParamValues] = useState<Record<string, string>>({});
@@ -809,91 +957,110 @@ export function App() {
 
   useEffect(() => {
     setGeneralSettings((prev) => {
-      if (prev.autoAcceptPermissions === opencodeAutoAcceptPermissions) return prev;
-      const next = { ...prev, autoAcceptPermissions: opencodeAutoAcceptPermissions };
-      saveGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+      if (prev.autoAcceptPermissions === agentAutoAcceptPermissions) return prev;
+      const next = { ...prev, autoAcceptPermissions: agentAutoAcceptPermissions };
+      saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
       return next;
     });
-  }, [opencodeAutoAcceptPermissions]);
+  }, [agentAutoAcceptPermissions]);
 
   useEffect(() => {
     const lang = generalSettings.language === "system" ? navigator.language || "zh-CN" : generalSettings.language;
     document.documentElement.lang = lang;
   }, [generalSettings.language]);
-  const opencodeSkillsRepoPathRef = useRef("");
-  const [opencodeSlashCommands, setOpencodeSlashCommands] = useState<OpencodeSlashCommand[]>([]);
-  const [opencodeSlashOpen, setOpencodeSlashOpen] = useState(false);
-  const [opencodeSlashActiveIndex, setOpencodeSlashActiveIndex] = useState(0);
-  const [opencodeAutoFollowLatest, setOpencodeAutoFollowLatest] = useState(true);
-  const [opencodeShowJumpLatest, setOpencodeShowJumpLatest] = useState(false);
-  const [opencodeSessionFetchLimit, setOpencodeSessionFetchLimit] = useState(OPENCODE_SESSION_PAGE_SIZE);
-  const [draftOpencodeSession, setDraftOpencodeSession] = useState(false);
-  const [opencodeRunBusyBySession, setOpencodeRunBusyBySession] = useState<Record<string, boolean>>({});
-  const [opencodeStreamingAssistantIdBySession, setOpencodeStreamingAssistantIdBySession] = useState<Record<string, string>>({});
-  const [opencodeSessions, setOpencodeSessions] = useState<OpencodeChatSession[]>([]);
-  const [sidebarOpencodeSessionsByRepo, setSidebarOpencodeSessionsByRepo] = useState<Record<string, OpencodeChatSession[]>>({});
-  const [sidebarOpencodeSessionFetchLimitByRepo, setSidebarOpencodeSessionFetchLimitByRepo] = useState<Record<string, number>>({});
-  const [sidebarOpencodeSessionLoadingByRepo, setSidebarOpencodeSessionLoadingByRepo] = useState<Record<string, boolean>>({});
-  const [sidebarOpencodeSessionPagingByRepo, setSidebarOpencodeSessionPagingByRepo] = useState<Record<string, boolean>>({});
-  const [sidebarOpencodeSessionHasMoreByRepo, setSidebarOpencodeSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
-  const [activeOpencodeSessionId, setActiveOpencodeSessionId] = useState("");
-  const [opencodeHydratingSessionId, setOpencodeHydratingSessionId] = useState("");
+  const agentSkillsRepoPathRef = useRef("");
+  const [agentSlashCommands, setAgentSlashCommands] = useState<AgentSlashCommand[]>([]);
+  const [agentSlashOpen, setAgentSlashOpen] = useState(false);
+  const [agentSlashActiveIndex, setAgentSlashActiveIndex] = useState(0);
+  const [agentAutoFollowLatest, setAgentAutoFollowLatest] = useState(true);
+  const [agentShowJumpLatest, setAgentShowJumpLatest] = useState(false);
+  const [agentSessionFetchLimit, setAgentSessionFetchLimit] = useState(AGENT_SESSION_PAGE_SIZE);
+  const [draftAgentSession, setDraftAgentSession] = useState(false);
+  const [agentRunBusyBySession, setAgentRunBusyBySession] = useState<Record<string, boolean>>({});
+  const [agentStreamingAssistantIdBySession, setAgentStreamingAssistantIdBySession] = useState<Record<string, string>>({});
+  const [agentSessions, setAgentSessions] = useState<AgentChatSession[]>([]);
+  const [sidebarAgentSessionsByRepo, setSidebarAgentSessionsByRepo] = useState<Record<string, AgentChatSession[]>>({});
+  const [sidebarAgentSessionFetchLimitByRepo, setSidebarAgentSessionFetchLimitByRepo] = useState<Record<string, number>>({});
+  const [sidebarAgentSessionLoadingByRepo, setSidebarAgentSessionLoadingByRepo] = useState<Record<string, boolean>>({});
+  const [sidebarAgentSessionPagingByRepo, setSidebarAgentSessionPagingByRepo] = useState<Record<string, boolean>>({});
+  const [sidebarAgentSessionHasMoreByRepo, setSidebarAgentSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
+  // 会话选择的单一意图入口（selectAgentSession）所用类型。reason 仅用于对账日志，不驱动分支副作用。
+  type AgentSelectionReason =
+    | "click" | "new" | "restore" | "bootstrap" | "neighbor"
+    | "delete-empty" | "child" | "draft-clear" | "unbind" | "rollback";
+  type AgentSelectionIntent = {
+    seq: number;
+    sessionId: string;
+    reason: AgentSelectionReason;
+    at: number;
+  };
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState("");
+  // 后台数据通道（refresh/被动同步/对齐 effect）无权改写 active；当它发现 active 对应会话不在列表时，
+  // 仅置此标记提示用户，绝不替用户切换。仅 selectAgentSession 会清除此标记。
+  const [agentActiveSessionStale, setAgentActiveSessionStale] = useState(false);
+  const [agentHydratingSessionId, setAgentHydratingSessionId] = useState("");
   const [workspaceAgentBindings, setWorkspaceAgentBindings] = useState<Record<string, WorkspaceAgentBinding>>(() => readWorkspaceAgentBindings());
   const [branchParentMap, setBranchParentMap] = useState<Record<string, string>>(() => readBranchParentMap());
   const [worktreeParentMap, setWorktreeParentMap] = useState<Record<string, string>>(() => readWorktreeParentMap());
-  const [showOpencodeSessionRail, setShowOpencodeSessionRail] = useState(true);
-  const [showOpencodeDebugLog, setShowOpencodeDebugLog] = useState(false);
-  const [opencodeDebugLogs, setOpencodeDebugLogs] = useState<string[]>([]);
-  const [opencodeServerMessageIdByLocalId, setOpencodeServerMessageIdByLocalId] = useState<Record<string, string>>({});
-  const [opencodeLivePartsByServerMessageId, setOpencodeLivePartsByServerMessageId] = useState<Record<string, OpencodeDetailedPart[]>>({});
-  const [opencodeDetailsLoadingByMessageId, setOpencodeDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
-  const [opencodeDetailsErrorByMessageId, setOpencodeDetailsErrorByMessageId] = useState<Record<string, string>>({});
-  const [opencodeDetailsByMessageId, setOpencodeDetailsByMessageId] = useState<Record<string, OpencodeDetailedMessage | null>>({});
-  const [opencodeViewportTodos, setOpencodeViewportTodos] = useState<OpencodeTodoItem[]>([]);
-  const [opencodeQuestionRequests, setOpencodeQuestionRequests] = useState<QuestionRequest[]>([]);
-  const [opencodeQuestionLoading, setOpencodeQuestionLoading] = useState(false);
-  const [opencodeDismissedQuestionsBySession, setOpencodeDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
-  const opencodeThreadRef = useRef<HTMLDivElement | null>(null);
-  const opencodeInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const opencodeInputComposingRef = useRef(false);
-  const opencodeImageInputRef = useRef<HTMLInputElement | null>(null);
-  const opencodeViewportTodosSigRef = useRef("");
+  const [showAgentSessionRail, setShowAgentSessionRail] = useState(true);
+  const [showAgentDebugLog, setShowAgentDebugLog] = useState(false);
+  const [agentDebugLogs, setAgentDebugLogs] = useState<string[]>([]);
+  const [agentServerMessageIdByLocalId, setAgentServerMessageIdByLocalId] = useState<Record<string, string>>({});
+  const [agentLivePartsByServerMessageId, setAgentLivePartsByServerMessageId] = useState<Record<string, AgentDetailedPart[]>>({});
+  const [agentDetailsLoadingByMessageId, setAgentDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
+  const [agentDetailsErrorByMessageId, setAgentDetailsErrorByMessageId] = useState<Record<string, string>>({});
+  const [agentDetailsByMessageId, setAgentDetailsByMessageId] = useState<Record<string, AgentDetailedMessage | null>>({});
+  const [agentViewportTodos, setAgentViewportTodos] = useState<AgentTodoItem[]>([]);
+  const [agentQuestionLoading, setAgentQuestionLoading] = useState(false);
+  const [agentDismissedQuestionsBySession, setAgentDismissedQuestionsBySession] = useState<Record<string, string[]>>({});
+  // PR6：审批/提问交互的单一真相源（事件驱动 + listInteractions 兜底）。
+  const [agentInteractions, setAgentInteractions] = useState<AgentInteraction[]>([]);
+  const agentThreadRef = useRef<HTMLDivElement | null>(null);
+  const agentVirtuosoRef = useRef<VirtuosoHandle>(null);
+  // 会话搜索面板：open/范围/定位请求。定位用两段式——pendingScrollMessageId 触发消息流滚动，
+  // pendingScrollTarget 在跨会话切换时等待目标会话加载完成后再下发给消息流。
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [searchScope, setSearchScope] = useState<SearchScope>("current-session");
+  const [pendingScrollMessageId, setPendingScrollMessageId] = useState("");
+  const [pendingScrollTarget, setPendingScrollTarget] = useState<{ sessionId: string; messageId: string } | null>(null);
+  /** 搜索定位进行中（含跨会话加载等待）。任何滚 LAST / 追底路径都应避开，直到定位结束或用户显式「跳到最新」。 */
+  const locateInFlightRef = useRef(false);
+  /** 每次点击搜索结果递增，驱动消息列表 remount（initialTopMostItemIndex 仅 mount 生效）。 */
+  const [locateNonce, setLocateNonce] = useState(0);
+  // 定位关键词：定位时写入，随消息选中态（AgentMessageStream 内 highlightMessageId）生效/失效——
+  // 切会话时 highlightMessageId 被清、highlight 变 false 即停止高亮，故无需在此随会话切换清除，
+  // 否则会把「跨会话定位」带过去的关键词一起清掉。
+  const [highlightKeyword, setHighlightKeyword] = useState("");
+  const agentInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentInputComposingRef = useRef(false);
+  const agentImageInputRef = useRef<HTMLInputElement | null>(null);
+  const agentViewportTodosSigRef = useRef("");
   const commitMessageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const worktreePatchStreamSeqRef = useRef(0);
   const worktreePatchStreamKeyRef = useRef("");
   const worktreePatchByPathRef = useRef<Record<string, string>>({});
-  const sidebarOpencodeSessionsByRepoRef = useRef<Record<string, OpencodeChatSession[]>>({});
-  const sidebarOpencodeSessionFetchLimitByRepoRef = useRef<Record<string, number>>({});
-  const sidebarOpencodeSessionLoadedByRepoRef = useRef<Record<string, boolean>>({});
-  const archivedOpencodeSessionIdsByRepoRef = useRef<Record<string, Set<string>>>({});
-  const opencodeRightPaneRef = useRef<HTMLDivElement | null>(null);
+  const sidebarAgentSessionsByRepoRef = useRef<Record<string, AgentChatSession[]>>({});
+  const sidebarAgentSessionFetchLimitByRepoRef = useRef<Record<string, number>>({});
+  const sidebarAgentSessionLoadedByRepoRef = useRef<Record<string, boolean>>({});
+  const archivedAgentSessionIdsByRepoRef = useRef<Record<string, Set<string>>>({});
+  const agentRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
-  const opencodeModelPickerRef = useRef<HTMLDivElement | null>(null);
-  const opencodeLoadingOlderRef = useRef(false);
-  const opencodePrevScrollHeightRef = useRef(0);
-  const opencodePrevActiveSessionIdRef = useRef("");
-  const opencodePendingAnchorSessionIdRef = useRef("");
-  const opencodeStickToBottomSessionRef = useRef("");
-  const opencodeSessionsRepoIdRef = useRef("");
-  const opencodeMessageCache = useOpencodeMessageCache();
-  const opencodePassiveSyncSeqRef = useRef(0);
-  const opencodePrevScrollTopRef = useRef(0);
-  const opencodeAutoFollowLatestRef = useRef(true);
-  const opencodeAutoScrollTokenRef = useRef(0);
-  const opencodeScrollModeRef = useRef<"follow" | "paused">("follow");
-  const opencodeUserScrollPauseUntilRef = useRef(0);
-  const opencodeUserScrollUpUntilRef = useRef(0);
-  const opencodeUserScrollDownUntilRef = useRef(0);
-  const opencodePausedScrollSnapshotRef = useRef<{ top: number; height: number } | null>(null);
-  const opencodeForceScrollLatestSessionRef = useRef("");
-  const opencodeProgrammaticScrollUntilRef = useRef(0);
+  const agentModelPickerRef = useRef<HTMLDivElement | null>(null);
+  const agentLoadingOlderRef = useRef(false);
+  const agentSessionsRepoIdRef = useRef("");
+  const agentMessageCache = useAgentMessageCache();
+  const agentPassiveSyncSeqRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
-  const opencodeHydratingSessionIdRef = useRef("");
-  const sidebarOpencodeSessionRequestSeqRef = useRef<Record<string, number>>({});
-  const opencodeRunAbortBySessionRef = useRef<Record<string, AbortController>>({});
+  const agentHydratingSessionIdRef = useRef("");
+  // 用户选中会话的意图 token：seq 单调递增，供后台数据通道异步对账（只读，不由此修改 active）。
+  const agentSelectionIntentRef = useRef<AgentSelectionIntent | null>(null);
+  // agentSessions 列表镜像，供 refresh 锚定排序与 bootstrap 首选读取，避免闭包读到旧列表。
+  const agentSessionsRef = useRef<AgentChatSession[]>([]);
+  const sidebarAgentSessionRequestSeqRef = useRef<Record<string, number>>({});
+  const agentRunIdBySessionRef = useRef<Record<string, string>>({});
   const controlMobilePollTokenRef = useRef(0);
-  const [opencodeProviderConfig, setOpencodeProviderConfig] = useState<OpencodeProviderConfig>({
+  const [agentProviderConfig, setAgentProviderConfig] = useState<AgentProviderConfig>({
     provider: "",
     npm: "",
     name: "",
@@ -915,12 +1082,18 @@ export function App() {
   const previousSessionBusyRef = useRef(false);
   const previousPermissionCountRef = useRef(0);
 
-  function appendOpencodeAttachments(next: OpencodeAttachment[]) {
+  function appendAgentAttachments(next: AgentAttachment[]) {
     if (next.length === 0) return;
-    setOpencodeImageAttachments((prev) => mergeUniqueAttachments(prev, next));
+    setAgentImageAttachments((prev) => mergeUniqueAttachments(prev, next));
+    // 粘贴/拖入附件后布局可能切换，异步读盘也会让焦点丢失；等 React 提交后再抢回输入态。
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        agentInputRef.current?.focus({ preventScroll: true });
+      });
+    });
   }
 
-  async function readTransferAttachments(transfer: DataTransfer | null | undefined): Promise<OpencodeAttachment[]> {
+  async function readTransferAttachments(transfer: DataTransfer | null | undefined): Promise<AgentAttachment[]> {
     const clipboardPaths = extractClipboardFilePaths(transfer);
     if (clipboardPaths.length > 0) {
       return attachmentsFromLocalPaths(clipboardPaths);
@@ -932,12 +1105,12 @@ export function App() {
     const files = extractTransferFiles(transfer);
     if (files.length > 0) {
       const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
-      return attachments.filter(Boolean) as OpencodeAttachment[];
+      return attachments.filter(Boolean) as AgentAttachment[];
     }
     return [];
   }
 
-  async function readOpencodeClipboardAttachments(transfer?: DataTransfer | null): Promise<OpencodeAttachment[]> {
+  async function readAgentClipboardAttachments(transfer?: DataTransfer | null): Promise<AgentAttachment[]> {
     let attachments = transfer && hasClipboardFileReference(transfer) ? await readTransferAttachments(transfer) : [];
     if (attachments.length === 0) {
       attachments = await readBrowserClipboardAttachments();
@@ -952,14 +1125,14 @@ export function App() {
     return attachments;
   }
 
-  async function openOpencodeAttachmentPicker() {
-    setOpencodeAttachmentMenuOpen(false);
+  async function openAgentAttachmentPicker() {
+    setAgentAttachmentMenuOpen(false);
     if (IS_TAURI) {
       const attachments = await pickDesktopAttachments();
-      appendOpencodeAttachments(attachments);
+      appendAgentAttachments(attachments);
       return;
     }
-    opencodeImageInputRef.current?.click();
+    agentImageInputRef.current?.click();
   }
   const previousErrorRef = useRef("");
 
@@ -974,44 +1147,46 @@ export function App() {
     terminalSeqRef
   } = useTerminalTabs();
   const terminalRepoResetReadyRef = useRef(false);
-  const opencodeModelConfigLoadedRef = useRef(false);
-  const opencodeConfiguredModelsLoadedRef = useRef(false);
-  const opencodeProviderCatalogLoadedRef = useRef(false);
-  const opencodeCatalogLoadInFlightRef = useRef(false);
-  const opencodeCatalogRefreshInFlightRef = useRef(false);
-  const opencodeBootstrapTokenRef = useRef(0);
-  const opencodeBootstrapDoneForRepoRef = useRef("");
-  const opencodeBootstrapInFlightRef = useRef(false);
-  const builtinOpencodeSlashCommands = useMemo<OpencodeSlashCommand[]>(() => [
+  const agentModelConfigLoadedRef = useRef(false);
+  const agentConfiguredModelsLoadedRef = useRef(false);
+  const agentProviderCatalogLoadedRef = useRef(false);
+  const agentCatalogLoadInFlightRef = useRef(false);
+  const agentCatalogRefreshInFlightRef = useRef(false);
+  const agentBootstrapTokenRef = useRef(0);
+  const agentBootstrapDoneForRepoRef = useRef("");
+  const agentBootstrapInFlightRef = useRef(false);
+  const builtinAgentSlashCommands = useMemo<AgentSlashCommand[]>(() => [
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
     { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
     { id: "builtin-model", trigger: "model", title: "Model", description: "切换当前模型", source: "builtin" },
     { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" },
     { id: "builtin-open", trigger: "open", title: "Open", description: "搜索文件、命令和会话", source: "builtin" },
     { id: "builtin-terminal", trigger: "terminal", title: "Terminal", description: "打开或聚焦终端", source: "builtin" },
-    { id: "builtin-mcp", trigger: "mcp", title: "MCP", description: "切换 MCPs", source: "builtin" },
+    ...(MCP_MODULE_ENABLED
+      ? [{ id: "builtin-mcp", trigger: "mcp", title: "MCP", description: "切换 MCPs", source: "builtin" as const }]
+      : []),
     { id: "builtin-workspace", trigger: "workspace", title: "Workspace", description: "在侧边栏启用或禁用多个工作区", source: "builtin" },
     { id: "builtin-init", trigger: "init", title: "Init", description: "create/update AGENTS.md", source: "builtin" },
     { id: "builtin-review", trigger: "review", title: "Review", description: "review changes [commit|branch|pr]", source: "builtin" }
   ], []);
 
-  const opencodeSlashQuery = useMemo(() => {
-    const match = opencodePromptInput.match(/^\/(\S*)$/);
+  const agentSlashQuery = useMemo(() => {
+    const match = agentPromptInput.match(/^\/(\S*)$/);
     return match ? match[1].toLowerCase() : "";
-  }, [opencodePromptInput]);
+  }, [agentPromptInput]);
 
-  const opencodeSlashSuggestions = useMemo(() => {
-    if (!opencodeSlashOpen) return [];
-    const all = [...builtinOpencodeSlashCommands, ...opencodeSlashCommands];
+  const agentSlashSuggestions = useMemo(() => {
+    if (!agentSlashOpen) return [];
+    const all = [...builtinAgentSlashCommands, ...agentSlashCommands];
     const seen = new Set<string>();
     return all
       .filter((cmd) => {
         const key = cmd.trigger.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);
-        return !opencodeSlashQuery || key.includes(opencodeSlashQuery) || cmd.title.toLowerCase().includes(opencodeSlashQuery);
+        return !agentSlashQuery || key.includes(agentSlashQuery) || cmd.title.toLowerCase().includes(agentSlashQuery);
       });
-  }, [builtinOpencodeSlashCommands, opencodeSlashCommands, opencodeSlashOpen, opencodeSlashQuery]);
+  }, [builtinAgentSlashCommands, agentSlashCommands, agentSlashOpen, agentSlashQuery]);
 
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -1038,141 +1213,118 @@ export function App() {
   const gitAutoRefreshBlockedRef = useRef(false);
   const gitAutoRefreshTimerRef = useRef<number | null>(null);
   const workspacePath = normalizeWorkspacePath(repoPath);
-  const resolveProviderDisplayName = (providerId: string) => getProviderDisplayName(providerId, opencodeProviderNames);
+  const resolveProviderDisplayName = (providerId: string) => getProviderDisplayName(providerId, agentProviderNames);
   const {
-    opencodeSkills,
-    opencodeSkillsLoading,
-    opencodeSkillsLoadedOnce,
-    opencodeSkillsError,
-    opencodeSkillInstallSpec,
-    setOpencodeSkillInstallSpec,
-    opencodeSkillInstallScope,
-    setOpencodeSkillInstallScope,
-    opencodeSkillInstallingSpec,
-    opencodeSkillInstallNotice,
-    opencodeSkillInstallLog,
-    opencodeSkillListFilter,
-    setOpencodeSkillListFilter,
-    opencodeSkillListQuery,
-    setOpencodeSkillListQuery,
-    opencodeSkillSourceInput,
-    setOpencodeSkillSourceInput,
-    opencodeSkillSourceKind,
-    setOpencodeSkillSourceKind,
-    opencodeSkillBusy,
-    opencodeSkillRemovingKey,
-    groupedOpencodeSkills,
-    filteredOpencodeSkills,
-    skillsByRepoRef: opencodeSkillsByRepoRef,
-    setOpencodeSkillsError,
+    agentSkills,
+    agentSkillsLoading,
+    agentSkillsLoadedOnce,
+    agentSkillsError,
+    agentSkillInstallSpec,
+    setAgentSkillInstallSpec,
+    agentSkillInstallScope,
+    setAgentSkillInstallScope,
+    agentSkillInstallingSpec,
+    agentSkillInstallNotice,
+    agentSkillInstallLog,
+    agentSkillListFilter,
+    setAgentSkillListFilter,
+    agentSkillListQuery,
+    setAgentSkillListQuery,
+    agentSkillSourceInput,
+    setAgentSkillSourceInput,
+    agentSkillSourceKind,
+    setAgentSkillSourceKind,
+    agentSkillBusy,
+    agentSkillRemovingKey,
+    groupedAgentSkills,
+    filteredAgentSkills,
+    skillsByRepoRef: agentSkillsByRepoRef,
+    setAgentSkillsError,
     restoreCachedSkillsForRepo,
-    refreshOpencodeSkills,
-    installOpencodeSkillFromRegistry,
-    removeOpencodeSkill,
-    removeOpencodeSkillGroup,
-    addOpencodeSkillSource
-  } = useOpencodeInstalledSkills({
+    refreshAgentSkills,
+    installAgentSkillFromRegistry,
+    removeAgentSkill,
+    removeAgentSkillGroup,
+    addAgentSkillSource
+  } = useAgentInstalledSkills({
     repoPath,
-    skillsVisible: opencodeSkillsVisible,
+    skillsVisible: agentSkillsVisible,
     ensureRepoSelected,
-    appendDebugLog: appendOpencodeDebugLog,
+    appendDebugLog: appendAgentDebugLog,
     setMessage,
     setError,
     runCommandInTerminalModule
   });
   const {
-    opencodeSkillMarketListRef,
-    opencodeSkillSearchQuery,
-    setOpencodeSkillSearchQuery,
-    opencodeSkillSearchStrategy,
-    setOpencodeSkillSearchStrategy,
-    opencodeSkillSearchResults,
-    opencodeSkillSearchLoading,
-    opencodeSkillCatalogView,
-    opencodeSkillSearchMeta,
+    agentSkillMarketListRef,
+    agentSkillSearchQuery,
+    setAgentSkillSearchQuery,
+    agentSkillSearchResults,
+    agentSkillSearchLoading,
+    agentSkillCatalogView,
+    agentSkillSearchMeta,
     selectedMarketplaceSkill,
     setShowSkillInstallMenu,
-    opencodeMarketplaceRows,
-    visibleOpencodeMarketplaceRows,
-    opencodeSkillsInitialLoading,
-    opencodeSkillsSearching,
-    opencodeSkillsPaging,
+    agentMarketplaceRows,
+    visibleAgentMarketplaceRows,
+    agentSkillsInitialLoading,
+    agentSkillsSearching,
+    agentSkillsPaging,
     warmSkillsMarketplace,
-    searchOpencodeSkillRegistry,
-    switchOpencodeSkillCatalogView,
-    handleOpencodeSkillMarketScroll,
+    searchAgentSkillRegistry,
+    switchAgentSkillCatalogView,
+    handleAgentSkillMarketScroll,
     selectMarketplaceSkill
-  } = useOpencodeSkillMarketplace({
+  } = useAgentSkillMarketplace({
     repoPath,
-    skillsVisible: opencodeSkillsVisible,
-    skillsLoadedOnce: opencodeSkillsLoadedOnce,
-    skillsLoading: opencodeSkillsLoading,
+    skillsVisible: agentSkillsVisible,
+    skillsLoadedOnce: agentSkillsLoadedOnce,
+    skillsLoading: agentSkillsLoading,
     skillsmpApiKey,
     ensureRepoSelected,
-    appendDebugLog: appendOpencodeDebugLog,
-    setSkillsError: setOpencodeSkillsError
+    appendDebugLog: appendAgentDebugLog,
+    setSkillsError: setAgentSkillsError
   });
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !repoPath.trim()) return;
+    if (!repoPath.trim()) return;
     const timer = scheduleAfterInteraction(() => {
-      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) void refreshOpencodeSkills();
+      if (!agentSkillsLoadedOnce && !agentSkillsLoading) void refreshAgentSkills();
       void warmSkillsMarketplace();
     }, 900);
     return () => window.clearTimeout(timer);
   }, [
-    runtimeStatus.opencode.installed,
     repoPath,
-    opencodeSkillsLoadedOnce,
-    opencodeSkillsLoading
+    agentSkillsLoadedOnce,
+    agentSkillsLoading
   ]);
 
   useEffect(() => {
+    // pi 无 opencode HTTP /command 端点；slash 建议由内置命令 + 已安装 skills 组成。
     if (!repoPath.trim()) {
-      setOpencodeSlashCommands([]);
+      setAgentSlashCommands([]);
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        const resp = await fetch(`${base}/command?directory=${encodeURIComponent(repoPath)}`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const rows = await resp.json();
-        if (cancelled) return;
-        const commands: OpencodeSlashCommand[] = (Array.isArray(rows) ? rows : [])
-          .map((item: any): OpencodeSlashCommand | null => {
-            const name = String(item?.name || item?.command || item?.id || "").replace(/^\//, "").trim();
-            if (!name) return null;
-            const sourceRaw = String(item?.source || item?.type || "command").toLowerCase();
-            const source: OpencodeSlashCommand["source"] = sourceRaw.includes("skill")
-              ? "skill"
-              : sourceRaw.includes("mcp")
-                ? "mcp"
-                : "command";
-            return {
-              id: `opencode-${source}-${name}`,
-              trigger: name,
-              title: String(item?.title || item?.description || name),
-              description: String(item?.description || ""),
-              source
-            };
-          })
-          .filter(Boolean) as OpencodeSlashCommand[];
-        setOpencodeSlashCommands(commands);
-      } catch (e) {
-        appendOpencodeDebugLog(`command.list.warn ${String(e)}`);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [repoPath]);
+    const skillCommands: AgentSlashCommand[] = agentSkills
+      .map((skill): AgentSlashCommand | null => {
+        const name = String(skill.name || "").trim().replace(/^\//, "");
+        if (!name) return null;
+        return {
+          id: `skill-${skill.scope || "project"}-${name}`,
+          trigger: name,
+          title: name,
+          description: String(skill.description || "Installed skill"),
+          source: "skill"
+        };
+      })
+      .filter(Boolean) as AgentSlashCommand[];
+    setAgentSlashCommands(skillCommands);
+  }, [repoPath, agentSkills]);
 
   useEffect(() => {
-    if (!repoPath.trim() || !runtimeStatus.opencode.installed) return;
-    void refreshOpencodeAgents();
-  }, [repoPath, runtimeStatus.opencode.installed]);
+    if (!repoPath.trim()) return;
+    void refreshAgentDefinitions();
+  }, [repoPath]);
 
   const activeWorkspaceAgentBinding = workspacePath ? workspaceAgentBindings[workspacePath] || null : null;
   const activeTerminalTab = useMemo(
@@ -1193,15 +1345,15 @@ export function App() {
     });
     return Array.from(dirs);
   }, [worktreeOverview.entries]);
-  const opencodeWorkspaceRoot = repoPath || gitPanePath;
-  const opencodeUsesGitPaneWorkspace = normalizeWorkspacePath(opencodeWorkspaceRoot) === normalizeWorkspacePath(gitPanePath);
-  const opencodeWorkspaceFileCandidates = useMemo(
-    () => opencodeUsesGitPaneWorkspace ? workspaceFileCandidates : [],
-    [opencodeUsesGitPaneWorkspace, workspaceFileCandidates]
+  const agentWorkspaceRoot = repoPath || gitPanePath;
+  const agentUsesGitPaneWorkspace = normalizeWorkspacePath(agentWorkspaceRoot) === normalizeWorkspacePath(gitPanePath);
+  const agentWorkspaceFileCandidates = useMemo(
+    () => agentUsesGitPaneWorkspace ? workspaceFileCandidates : [],
+    [agentUsesGitPaneWorkspace, workspaceFileCandidates]
   );
-  const opencodeWorkspaceDirectoryCandidates = useMemo(
-    () => opencodeUsesGitPaneWorkspace ? workspaceDirectoryCandidates : [],
-    [opencodeUsesGitPaneWorkspace, workspaceDirectoryCandidates]
+  const agentWorkspaceDirectoryCandidates = useMemo(
+    () => agentUsesGitPaneWorkspace ? workspaceDirectoryCandidates : [],
+    [agentUsesGitPaneWorkspace, workspaceDirectoryCandidates]
   );
   const selectedWorktreeEntry = useMemo(
     () => worktreeOverview.entries.find((entry) => entry.path === selectedWorktreeFile) ?? null,
@@ -1251,12 +1403,12 @@ export function App() {
   }, [worktreePatchByPath]);
 
   useEffect(() => {
-    sidebarOpencodeSessionsByRepoRef.current = sidebarOpencodeSessionsByRepo;
-  }, [sidebarOpencodeSessionsByRepo]);
+    sidebarAgentSessionsByRepoRef.current = sidebarAgentSessionsByRepo;
+  }, [sidebarAgentSessionsByRepo]);
 
   useEffect(() => {
-    sidebarOpencodeSessionFetchLimitByRepoRef.current = sidebarOpencodeSessionFetchLimitByRepo;
-  }, [sidebarOpencodeSessionFetchLimitByRepo]);
+    sidebarAgentSessionFetchLimitByRepoRef.current = sidebarAgentSessionFetchLimitByRepo;
+  }, [sidebarAgentSessionFetchLimitByRepo]);
 
   const handleWorktreePatchWindowChange = useCallback((count: number) => {
     setWorktreePatchLoadLimit((limit) => Math.max(limit, count));
@@ -1328,17 +1480,17 @@ export function App() {
   }, [repoPath, gitPanePath, selectedWorktreeFile, selectedAttachmentPreviewPath, rightPaneTab, busy, committing, pushing, discardingAll, discardingFile, stagingFile, unstagingFile]);
 
   useEffect(() => {
-    if (!opencodeSkillsVisible) return;
-    if (opencodeSkillsRepoPathRef.current === repoPath) return;
-    opencodeSkillsRepoPathRef.current = repoPath;
+    if (!agentSkillsVisible) return;
+    if (agentSkillsRepoPathRef.current === repoPath) return;
+    agentSkillsRepoPathRef.current = repoPath;
     const timer = scheduleAfterInteraction(() => {
       const cached = restoreCachedSkillsForRepo(repoPath, { resetFilter: true });
       if (!cached) {
-        scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
+        scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
       }
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [opencodeSkillsVisible, repoPath]);
+  }, [agentSkillsVisible, repoPath]);
 
   const topologyModel = useMemo(
     () => buildTopologyModel({
@@ -1366,63 +1518,64 @@ export function App() {
   const diffRows = useMemo(() => toDiffRows(selectedFilePatch), [selectedFilePatch]);
   const runtimeLogTail = useMemo(() => getRuntimeLogTail(runtimeInstallLog), [runtimeInstallLog]);
 
-  const activeOpencodeSession = useMemo(() => {
-    if (!activeOpencodeSessionId) return null;
-    return opencodeSessions.find((s) => s.id === activeOpencodeSessionId) ?? null;
-  }, [opencodeSessions, activeOpencodeSessionId]);
+  const activeAgentSession = useMemo(() => {
+    if (!activeAgentSessionId) return null;
+    return agentSessions.find((s) => s.id === activeAgentSessionId) ?? null;
+  }, [agentSessions, activeAgentSessionId]);
   const pendingSidebarSessionSelection = pendingSidebarSessionSelectionRef.current;
   const pendingSidebarSessionId = pendingSidebarSessionSelection?.sessionId || "";
-  const hydratingActiveOpencodeSession = Boolean(
-    activeOpencodeSessionId
-    && opencodeHydratingSessionId
-    && activeOpencodeSessionId === opencodeHydratingSessionId
+  const hydratingActiveAgentSession = Boolean(
+    activeAgentSessionId
+    && agentHydratingSessionId
+    && activeAgentSessionId === agentHydratingSessionId
   );
   const pendingSidebarSessionSwitch = Boolean(
     pendingSidebarSessionSelection?.repoId === (selectedRepo?.id || "")
     && pendingSidebarSessionId
     && (
-      pendingSidebarSessionId === opencodeHydratingSessionId
-      || hydratingActiveOpencodeSession
+      pendingSidebarSessionId === agentHydratingSessionId
+      || hydratingActiveAgentSession
       ||
-      pendingSidebarSessionId !== activeOpencodeSessionId
-      || !activeOpencodeSession
-      || !activeOpencodeSession.loaded
+      pendingSidebarSessionId !== activeAgentSessionId
+      || !activeAgentSession
+      || !activeAgentSession.loaded
     )
   );
-  const activeOpencodeModel = useMemo(() => {
-    return resolveActiveOpencodeModel({
-      activeSessionId: activeOpencodeSessionId,
-      sessionModel: opencodeSessionModel,
-      draftModel: opencodeDraftModel,
-      configuredModel: opencodeConfig?.configuredModel || "",
-      savedModels: opencodeSavedModels,
-      connectedProviders: opencodeConnectedProviders,
-      modelsByProvider: opencodeModelsByProvider,
-      providerNames: opencodeProviderNames
+  const activeAgentModel = useMemo(() => {
+    return resolveActiveAgentModel({
+      activeSessionId: activeAgentSessionId,
+      sessionModel: agentSessionModel,
+      draftModel: agentDraftModel,
+      configuredModel: agentConfig?.configuredModel || "",
+      savedModels: agentSavedModels,
+      connectedProviders: agentConnectedProviders,
+      modelsByProvider: agentModelsByProvider,
+      providerNames: agentProviderNames,
+      enabledModels: agentEnabledModels
     });
   }, [
-    activeOpencodeSessionId,
-    opencodeSessionModel,
-    opencodeDraftModel,
-    opencodeConfig?.configuredModel,
-    opencodeSavedModels,
-    opencodeConnectedProviders,
-    opencodeModelsByProvider,
-    opencodeProviderNames
+    activeAgentSessionId,
+    agentSessionModel,
+    agentDraftModel,
+    agentConfig?.configuredModel,
+    agentSavedModels,
+    agentConnectedProviders,
+    agentModelsByProvider,
+    agentEnabledModels,
+    agentProviderNames
   ]);
-  const opencodeMessages = activeOpencodeSession?.messages ?? [];
-  const opencodeTurnStart = activeOpencodeSession?.turnStart ?? 0;
-  const opencodeSessionLoading = Boolean(
-    hydratingActiveOpencodeSession
+  const agentMessages = activeAgentSession?.messages ?? [];
+  const agentSessionLoading = Boolean(
+    hydratingActiveAgentSession
     || pendingSidebarSessionSwitch
-    || (activeOpencodeSessionId && (!activeOpencodeSession || !activeOpencodeSession.loaded))
+    || (activeAgentSessionId && (!activeAgentSession || !activeAgentSession.loaded))
   );
-  const opencodeShowEmptyState = !hydratingActiveOpencodeSession && !pendingSidebarSessionSwitch && !opencodeSessionLoading && opencodeMessages.length === 0;
-  const activeOpencodeSessionBusy = Boolean(activeOpencodeSessionId && opencodeRunBusyBySession[activeOpencodeSessionId]);
-  const activeOpencodeStreamingAssistantId = activeOpencodeSessionId ? (opencodeStreamingAssistantIdBySession[activeOpencodeSessionId] || "") : "";
-  const visibleOpencodeAgents = useMemo(() => {
-    const q = opencodeAgentSearch.trim().toLowerCase();
-    const rows = opencodeAgents.filter((agent) => !agent.hidden && agent.mode !== "subagent");
+  const agentShowEmptyState = !hydratingActiveAgentSession && !pendingSidebarSessionSwitch && !agentSessionLoading && agentMessages.length === 0;
+  const activeAgentSessionBusy = Boolean(activeAgentSessionId && agentRunBusyBySession[activeAgentSessionId]);
+  const activeAgentStreamingAssistantId = activeAgentSessionId ? (agentStreamingAssistantIdBySession[activeAgentSessionId] || "") : "";
+  const visibleAgentDefinitions = useMemo(() => {
+    const q = agentAgentSearch.trim().toLowerCase();
+    const rows = agentDefinitions.filter((agent) => !agent.hidden && agent.mode !== "subagent");
     const filtered = q
       ? rows.filter((agent) => agent.name.toLowerCase().includes(q) || String(agent.description || "").toLowerCase().includes(q))
       : rows;
@@ -1432,40 +1585,57 @@ export function App() {
       if (aPrimary !== bPrimary) return bPrimary - aPrimary;
       return a.name.localeCompare(b.name);
     });
-  }, [opencodeAgents, opencodeAgentSearch]);
-  const activeOpencodeAgent = useMemo(() => {
-    const sessionId = activeOpencodeSessionId.trim();
-    const fromSession = sessionId ? (opencodeSessionAgent[sessionId] || "") : "";
+  }, [agentDefinitions, agentAgentSearch]);
+  const activeAgentAgent = useMemo(() => {
+    const sessionId = activeAgentSessionId.trim();
+    const fromSession = sessionId ? (agentSessionAgent[sessionId] || "") : "";
     const normalizedFromSession = fromSession.trim().toLowerCase();
     if (isComposerAgentName(normalizedFromSession)) return normalizedFromSession;
-    return normalizeComposerAgentName(opencodeDraftAgent);
-  }, [activeOpencodeSessionId, opencodeSessionAgent, opencodeDraftAgent]);
-  const activeOpencodeThinkingLevel = useMemo(() => {
-    const sessionId = activeOpencodeSessionId.trim();
-    return normalizeThinkingLevel(sessionId ? (opencodeSessionThinkingLevel[sessionId] || opencodeDraftThinkingLevel) : opencodeDraftThinkingLevel);
-  }, [activeOpencodeSessionId, opencodeSessionThinkingLevel, opencodeDraftThinkingLevel]);
-  const activeOpencodeThinkingLabel = OPENCODE_THINKING_LEVELS.find((item) => item.value === activeOpencodeThinkingLevel)?.label || "Auto";
-  const opencodeActivePermissions = useMemo(() => {
-    const sid = activeOpencodeSessionId.trim();
-    return opencodePermissionRequests.filter((req) => !sid || req.sessionID === sid);
-  }, [opencodePermissionRequests, activeOpencodeSessionId]);
+    return normalizeComposerAgentName(agentDraftAgent);
+  }, [activeAgentSessionId, agentSessionAgent, agentDraftAgent]);
+  const activeAgentThinkingLevel = useMemo(() => {
+    const sessionId = activeAgentSessionId.trim();
+    const raw = normalizeThinkingLevel(
+      sessionId ? (agentSessionThinkingLevel[sessionId] || agentDraftThinkingLevel) : agentDraftThinkingLevel
+    );
+    const modelInfo = agentModelInfoByRef[activeAgentModel] || null;
+    return clampThinkingLevelToModel(raw, modelInfo);
+  }, [
+    activeAgentSessionId,
+    agentSessionThinkingLevel,
+    agentDraftThinkingLevel,
+    activeAgentModel,
+    agentModelInfoByRef
+  ]);
+  const activeAgentThinkingOptions = useMemo(
+    () => thinkingLevelsForModel(agentModelInfoByRef[activeAgentModel] || null),
+    [agentModelInfoByRef, activeAgentModel]
+  );
+  const agentActivePermissions = useMemo<PermissionInteraction[]>(() => {
+    const sid = activeAgentSessionId.trim();
+    // 审批卡片直接消费 pi 原生 permission 交互（tool/risk/input），不再套用旧模型。
+    return agentInteractions.filter(
+      (item): item is PermissionInteraction =>
+        item.kind === "permission" && (!sid || item.sessionId === sid)
+    );
+  }, [agentInteractions, activeAgentSessionId]);
 
   useEffect(() => {
     const wasBusy = previousSessionBusyRef.current;
-    previousSessionBusyRef.current = activeOpencodeSessionBusy;
-    if (!wasBusy || activeOpencodeSessionBusy) return;
+    previousSessionBusyRef.current = activeAgentSessionBusy;
+    if (!wasBusy || activeAgentSessionBusy) return;
     if (generalSettings.soundsAgent) playSettingsTone("agent");
-    if (generalSettings.notificationsAgent) void showSettingsNotification("Agent finished", activeOpencodeSession?.title || "OpenCode session is idle");
-  }, [activeOpencodeSessionBusy, activeOpencodeSession?.title, generalSettings.soundsAgent, generalSettings.notificationsAgent]);
+    if (generalSettings.notificationsAgent) void showSettingsNotification("Agent finished", activeAgentSession?.title || "Giteam session is idle");
+  }, [activeAgentSessionBusy, activeAgentSession?.title, generalSettings.soundsAgent, generalSettings.notificationsAgent]);
 
   useEffect(() => {
     const previous = previousPermissionCountRef.current;
-    previousPermissionCountRef.current = opencodeActivePermissions.length;
-    if (opencodeActivePermissions.length <= previous) return;
-    const latest = opencodeActivePermissions[opencodeActivePermissions.length - 1];
+    previousPermissionCountRef.current = agentActivePermissions.length;
+    if (agentActivePermissions.length <= previous) return;
+    const latest = agentActivePermissions[agentActivePermissions.length - 1];
     if (generalSettings.soundsPermissions) playSettingsTone("permission");
-    if (generalSettings.notificationsPermissions) void showSettingsNotification("Permission required", latest?.permission || "OpenCode is waiting for approval");
-  }, [opencodeActivePermissions, generalSettings.soundsPermissions, generalSettings.notificationsPermissions]);
+    if (generalSettings.notificationsPermissions) void showSettingsNotification("Permission required", latest?.tool ? `${latest.tool} 需要授权` : "Giteam 正在等待授权");
+  }, [agentActivePermissions, generalSettings.soundsPermissions, generalSettings.notificationsPermissions]);
 
   useEffect(() => {
     const nextError = String(error || "").trim();
@@ -1475,79 +1645,78 @@ export function App() {
     if (generalSettings.soundsErrors) playSettingsTone("error");
     if (generalSettings.notificationsErrors) void showSettingsNotification("Giteam error", nextError.slice(0, 120));
   }, [error, generalSettings.soundsErrors, generalSettings.notificationsErrors]);
-  const getInstalledMcpParamSpecs = (name: string, status: OpencodeMcpStatusMap[string]) => getInstalledMcpParamSpecsFromMarket(MCP_MARKET_SERVERS, name, status);
+  const getInstalledMcpParamSpecs = (name: string, status: AgentMcpStatusMap[string]) => getInstalledMcpParamSpecsFromMarket(MCP_MARKET_SERVERS, name, status);
   const getInstalledMcpTools = (name: string) => getInstalledMcpToolsFromMarket(MCP_MARKET_SERVERS, name);
-  const opencodeMcpRows = useMemo(() => buildOpencodeMcpRows(opencodeMcpStatus, opencodeMcpVisible), [opencodeMcpVisible, opencodeMcpStatus]);
-  const opencodeMcpPanelRows = useMemo(() => buildOpencodeMcpPanelRows(opencodeMcpRows, getInstalledMcpTools), [opencodeMcpRows]);
+  const agentMcpRows = useMemo(() => buildAgentMcpRows(agentMcpStatus, agentMcpVisible), [agentMcpVisible, agentMcpStatus]);
+  const agentMcpPanelRows = useMemo(() => buildAgentMcpPanelRows(agentMcpRows, getInstalledMcpTools), [agentMcpRows]);
   const settingsSkillsContent = (
-    <OpencodeSettingsSkillsGrid
-      error={opencodeSkillsError}
-      groups={groupedOpencodeSkills}
-      removingKey={opencodeSkillRemovingKey}
-      onRemoveSkillGroup={removeOpencodeSkillGroup}
+    <AgentSettingsSkillsGrid
+      error={agentSkillsError}
+      groups={groupedAgentSkills}
+      removingKey={agentSkillRemovingKey}
+      onRemoveSkillGroup={removeAgentSkillGroup}
     />
   );
 
   const settingsMcpContent = (
-    <OpencodeSettingsMcpGrid
-      rows={opencodeMcpPanelRows}
-      error={opencodeMcpError}
-      busyName={opencodeMcpBusyName}
-      onEditMcp={(name) => startEditMcpParams(name, opencodeMcpStatus[name])}
-      onRemoveMcp={removeOpencodeMcpServer}
+    <AgentSettingsMcpGrid
+      rows={agentMcpPanelRows}
+      error={agentMcpError}
+      busyName={agentMcpBusyName}
+      onEditMcp={(name) => startEditMcpParams(name, agentMcpStatus[name])}
+      onRemoveMcp={removeAgentMcpServer}
     />
   );
 
   useEffect(() => {
-    opencodeMcpLoadedRef.current = false;
-    opencodeMcpLoadingRef.current = false;
+    agentMcpLoadedRef.current = false;
+    agentMcpLoadingRef.current = false;
   }, [repoPath]);
 
   useEffect(() => {
-    if (!repoPath.trim() || !activeOpencodeSessionId.trim()) return;
-    void refreshPendingPermissions(activeOpencodeSessionId);
-    const shouldPollPermissions = activeOpencodeSessionBusy || opencodeAutoAcceptPermissions || (showOpencodeModulePanel && opencodeModuleTab === "permissions");
+    if (!repoPath.trim() || !activeAgentSessionId.trim()) return;
+    void refreshPendingPermissions(activeAgentSessionId);
+    const shouldPollPermissions = activeAgentSessionBusy || agentAutoAcceptPermissions || (showAgentModulePanel && agentModuleTab === "permissions");
     if (!shouldPollPermissions) return;
     const timer = window.setInterval(() => {
-      void refreshPendingPermissions(activeOpencodeSessionId);
+      void refreshPendingPermissions(activeAgentSessionId);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy, showOpencodeModulePanel, opencodeModuleTab, opencodeAutoAcceptPermissions]);
+  }, [repoPath, activeAgentSessionId, activeAgentSessionBusy, showAgentModulePanel, agentModuleTab, agentAutoAcceptPermissions]);
+
+  // UI 偏好是全局的，但 backend auto_approve 挂在每个 session 的 hub 上；
+  // 恢复/切换会话会新建 hub（默认 false），必须把偏好重新推到当前 session。
+  useEffect(() => {
+    const sid = activeAgentSessionId.trim();
+    if (!repoPath.trim() || !sid) return;
+    void ensureSessionAutoAcceptPermissions(sid, agentAutoAcceptPermissions);
+  }, [repoPath, activeAgentSessionId, agentAutoAcceptPermissions]);
 
   useEffect(() => {
-    if (!showOpencodeModulePanel) return;
-    if (opencodeModuleTab === "agents") void refreshOpencodeAgents();
-    if (opencodeModuleTab === "permissions") void refreshPendingPermissions();
-    if (opencodeModuleTab === "mcp" && !opencodeMcpLoadedRef.current) void refreshOpencodeMcpStatus();
-    if (opencodeModuleTab === "skills") {
-      const timer = scheduleAfterInteraction(() => void refreshOpencodeSkills(), 280);
+    if (!showAgentModulePanel) return;
+    if (agentModuleTab === "agents") void refreshAgentDefinitions();
+    if (agentModuleTab === "permissions") void refreshPendingPermissions();
+    if (agentModuleTab === "mcp" && !agentMcpLoadedRef.current) void refreshAgentMcpStatus();
+    if (agentModuleTab === "skills") {
+      const timer = scheduleAfterInteraction(() => void refreshAgentSkills(), 280);
       return () => window.clearTimeout(timer);
     }
-  }, [showOpencodeModulePanel, opencodeModuleTab, repoPath]);
+  }, [showAgentModulePanel, agentModuleTab, repoPath]);
 
   useEffect(() => {
-    if (opencodeSkillsVisible) {
-      if (!opencodeSkillsLoadedOnce && !opencodeSkillsLoading) {
-        const timer = scheduleAfterInteraction(() => void refreshOpencodeSkills(), 280);
+    if (agentSkillsVisible) {
+      if (!agentSkillsLoadedOnce && !agentSkillsLoading) {
+        const timer = scheduleAfterInteraction(() => void refreshAgentSkills(), 280);
         return () => window.clearTimeout(timer);
       }
     }
-    if (opencodeMcpVisible && !opencodeMcpLoadedRef.current) {
-      const timer = scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 280);
+    if (agentMcpVisible && !agentMcpLoadedRef.current) {
+      const timer = scheduleAfterInteraction(() => void refreshAgentMcpStatus(), 280);
       return () => window.clearTimeout(timer);
     }
-  }, [opencodeSkillsVisible, opencodeMcpVisible, repoPath, opencodeSkillsLoadedOnce, opencodeSkillsLoading]);
+  }, [agentSkillsVisible, agentMcpVisible, repoPath, agentSkillsLoadedOnce, agentSkillsLoading]);
 
-  useEffect(() => {
-    if (!showSettings || !runtimeStatus.opencode.installed) return;
-    if (Number(opencodeServiceSettings.port) === Number(opencodeServiceSettingsSavedPort)) return;
-    const timer = window.setTimeout(() => {
-      void saveOpencodeServiceSettingsIfNeeded();
-    }, 650);
-    return () => window.clearTimeout(timer);
-  }, [showSettings, runtimeStatus.opencode.installed, opencodeServiceSettings.port, opencodeServiceSettingsSavedPort]);
-
-  function bindOpencodeSessionToWorkspace(sessionId: string, workspacePathInput = repoPath, branchInput = worktreeOverview.branch || selectedBranch) {
+  function bindAgentSessionToWorkspace(sessionId: string, workspacePathInput = repoPath, branchInput = worktreeOverview.branch || selectedBranch) {
     const workspace = normalizeWorkspacePath(workspacePathInput);
     const sid = sessionId.trim();
     if (!workspace || !sid) return;
@@ -1626,21 +1795,30 @@ export function App() {
         await activateLinkedWorktree(target);
       }
       const title = `Agent · ${branchInput || pathLeaf(target)}`;
-      const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
+      const parsedModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
+      const modelRef = parsedModel ? parseModelRef(parsedModel) : null;
+      const mode = composerAgentSessionOptions(activeAgentAgent);
+      const modelInfo = agentModelInfoByRef[parsedModel || ""] || null;
+      const createdAgent = await agentClient.createSession({
         repoPath: target,
-        title,
-        agent: activeOpencodeAgent || null,
-        permission: opencodeAutoAcceptPermissions ? allowAllPermissionRules() : null
+        provider: modelRef?.provider,
+        model: modelRef?.model,
+        maxToolIterations: generalSettings.maxToolIterations > 0 ? generalSettings.maxToolIterations : undefined,
+        appendSystemPrompt: mode.appendSystemPrompt,
+        ...(mode.enabledTools ? { enabledTools: mode.enabledTools } : {}),
+        thinking: toPiThinkingLevel(activeAgentThinkingLevel, modelInfo)
       });
-      const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
+      const created = agentSummaryToChatSummary(createdAgent);
+      created.title = title;
+      const next = agentSessionFromSummary(created, agentSessions.length + 1);
       next.loaded = true;
-      setOpencodeSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
+      setAgentSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
       const targetRepoId = repos.find((repo) => normalizeWorkspacePath(repo.path) === normalizeWorkspacePath(target))?.id || selectedRepo?.id || "";
-      upsertSidebarOpencodeSession(targetRepoId, next);
-      setActiveOpencodeSessionId(created.id);
-      if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [created.id]: activeOpencodeAgent }));
-      setDraftOpencodeSession(false);
-      bindOpencodeSessionToWorkspace(created.id, target, branchInput);
+      upsertSidebarAgentSession(targetRepoId, next);
+      selectAgentSession(created.id, "new");
+      if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
+      if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
+      bindAgentSessionToWorkspace(created.id, target, branchInput);
       setMessage(`已绑定 Agent: ${pathLeaf(target)}`);
     } catch (e) {
       setError(String(e));
@@ -1654,105 +1832,104 @@ export function App() {
     setTopologyContextMenu(null);
     unbindWorkspaceAgent(target);
     if (target === workspacePath) {
-      clearOpencodeSessionHydration();
-      setActiveOpencodeSessionId("");
-      setDraftOpencodeSession(true);
+      clearAgentSessionHydration();
+      selectAgentSession("", "unbind", { draft: true });
     }
     setMessage(`已解除 Agent 绑定: ${pathLeaf(target)}`);
   }
 
   function getRepoSessionFetchLimit(repoId: string): number {
     const id = repoId.trim();
-    if (!id) return OPENCODE_SESSION_PAGE_SIZE;
-    return sidebarOpencodeSessionFetchLimitByRepoRef.current[id] ?? sidebarOpencodeSessionFetchLimitByRepo[id] ?? OPENCODE_SESSION_PAGE_SIZE;
+    if (!id) return AGENT_SESSION_PAGE_SIZE;
+    return sidebarAgentSessionFetchLimitByRepoRef.current[id] ?? sidebarAgentSessionFetchLimitByRepo[id] ?? AGENT_SESSION_PAGE_SIZE;
   }
 
-  function getRepoSessionsForSidebar(repoId: string): OpencodeChatSession[] {
+  function getRepoSessionsForSidebar(repoId: string): AgentChatSession[] {
     const id = repoId.trim();
     if (!id) return [];
-    return sidebarOpencodeSessionsByRepo[id] ?? [];
+    return sidebarAgentSessionsByRepo[id] ?? [];
   }
 
   function hasLoadedSidebarRepoSessions(repoId: string): boolean {
     const id = repoId.trim();
-    return Boolean(id && sidebarOpencodeSessionLoadedByRepoRef.current[id]);
+    return Boolean(id && sidebarAgentSessionLoadedByRepoRef.current[id]);
   }
 
-  function markOpencodeSessionArchived(repoId: string, sessionId: string) {
+  function markAgentSessionArchived(repoId: string, sessionId: string) {
     const id = repoId.trim();
     const sid = sessionId.trim();
     if (!id || !sid) return;
-    const prev = archivedOpencodeSessionIdsByRepoRef.current[id] || new Set<string>();
-    archivedOpencodeSessionIdsByRepoRef.current = {
-      ...archivedOpencodeSessionIdsByRepoRef.current,
+    const prev = archivedAgentSessionIdsByRepoRef.current[id] || new Set<string>();
+    archivedAgentSessionIdsByRepoRef.current = {
+      ...archivedAgentSessionIdsByRepoRef.current,
       [id]: new Set([...prev, sid])
     };
   }
 
-  function isLocallyArchivedOpencodeSession(repoId: string, sessionId: string): boolean {
+  function isLocallyArchivedAgentSession(repoId: string, sessionId: string): boolean {
     const id = repoId.trim();
     const sid = sessionId.trim();
     if (!id || !sid) return false;
-    return archivedOpencodeSessionIdsByRepoRef.current[id]?.has(sid) ?? false;
+    return archivedAgentSessionIdsByRepoRef.current[id]?.has(sid) ?? false;
   }
 
-  function filterVisibleOpencodeSessionsForRepo(repoId: string, rows: OpencodeSessionSummary[]): OpencodeSessionSummary[] {
+  function filterVisibleAgentSessionsForRepo(repoId: string, rows: ChatSessionSummary[]): ChatSessionSummary[] {
     const id = repoId.trim();
-    return filterActiveOpencodeSessionSummaries(rows).filter((row) => !isLocallyArchivedOpencodeSession(id, row.id));
+    return filterActiveAgentSessionSummaries(rows).filter((row) => !isLocallyArchivedAgentSession(id, row.id));
   }
 
-  function upsertSidebarOpencodeSession(repoId: string, session: OpencodeChatSession) {
+  function upsertSidebarAgentSession(repoId: string, session: AgentChatSession) {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
-    setSidebarOpencodeSessionsByRepo((prev) => {
-      const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, getRepoSessionFetchLimit(id));
+    setSidebarAgentSessionsByRepo((prev) => {
+      const limit = Math.max(AGENT_SESSION_PAGE_SIZE, getRepoSessionFetchLimit(id));
       const existing = prev[id] || [];
       const merged = [session, ...existing.filter((item) => item.id !== session.id)]
-        .sort(compareOpencodeSessionActivity)
+        .sort(compareAgentSessionActivity)
         .slice(0, limit);
       return { ...prev, [id]: merged };
     });
-    setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({
+    setSidebarAgentSessionFetchLimitByRepo((prev) => ({
       ...prev,
-      [id]: Math.max(OPENCODE_SESSION_PAGE_SIZE, prev[id] ?? OPENCODE_SESSION_PAGE_SIZE)
+      [id]: Math.max(AGENT_SESSION_PAGE_SIZE, prev[id] ?? AGENT_SESSION_PAGE_SIZE)
     }));
-    sidebarOpencodeSessionFetchLimitByRepoRef.current = {
-      ...sidebarOpencodeSessionFetchLimitByRepoRef.current,
-      [id]: Math.max(OPENCODE_SESSION_PAGE_SIZE, sidebarOpencodeSessionFetchLimitByRepoRef.current[id] ?? OPENCODE_SESSION_PAGE_SIZE)
+    sidebarAgentSessionFetchLimitByRepoRef.current = {
+      ...sidebarAgentSessionFetchLimitByRepoRef.current,
+      [id]: Math.max(AGENT_SESSION_PAGE_SIZE, sidebarAgentSessionFetchLimitByRepoRef.current[id] ?? AGENT_SESSION_PAGE_SIZE)
     };
   }
 
-  function updateSidebarOpencodeSession(repoId: string, sessionId: string, updater: (session: OpencodeChatSession) => OpencodeChatSession) {
+  function updateSidebarAgentSession(repoId: string, sessionId: string, updater: (session: AgentChatSession) => AgentChatSession) {
     const id = repoId.trim();
     const sid = sessionId.trim();
     if (!id || !sid) return;
-    setSidebarOpencodeSessionsByRepo((prev) => {
+    setSidebarAgentSessionsByRepo((prev) => {
       const sessions = prev[id] || [];
       if (!sessions.some((session) => session.id === sid)) return prev;
       const next = sessions
         .map((session) => (session.id === sid ? updater(session) : session))
-        .sort(compareOpencodeSessionActivity);
+        .sort(compareAgentSessionActivity);
       return { ...prev, [id]: next };
     });
   }
 
-  function getVisibleRepoSessions(repoId: string): OpencodeChatSession[] {
+  function getVisibleRepoSessions(repoId: string): AgentChatSession[] {
     const sessions = getRepoSessionsForSidebar(repoId);
     const limit = getRepoSessionFetchLimit(repoId);
-    const visibleLimit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limit);
+    const visibleLimit = Math.max(AGENT_SESSION_PAGE_SIZE, limit);
     return sessions.length > visibleLimit ? sessions.slice(0, visibleLimit) : sessions;
   }
 
   function hasMoreRepoSessions(repoId: string): boolean {
-    return Boolean(sidebarOpencodeSessionHasMoreByRepo[repoId.trim()]);
+    return Boolean(sidebarAgentSessionHasMoreByRepo[repoId.trim()]);
   }
 
   function isRepoSessionsLoading(repoId: string): boolean {
-    return Boolean(sidebarOpencodeSessionLoadingByRepo[repoId.trim()]);
+    return Boolean(sidebarAgentSessionLoadingByRepo[repoId.trim()]);
   }
 
   function isRepoSessionsPaging(repoId: string): boolean {
-    return Boolean(sidebarOpencodeSessionPagingByRepo[repoId.trim()]);
+    return Boolean(sidebarAgentSessionPagingByRepo[repoId.trim()]);
   }
 
   function expandProjectSessions(repoId: string) {
@@ -1776,7 +1953,7 @@ export function App() {
     }
 
     const sessionsLoaded = hasLoadedSidebarRepoSessions(repo.id);
-    if (!expanded && runtimeStatus.opencode.installed && !sessionsLoaded) {
+    if (!expanded && !sessionsLoaded) {
       if (isRepoSessionsLoading(repo.id)) return;
       void refreshSidebarRepoSessions(repo)
         .then(() => {
@@ -1792,112 +1969,111 @@ export function App() {
   function startDraftSessionForRepo(repo: RepositoryEntry) {
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
-    opencodeSessionsRepoIdRef.current = repo.id;
+    agentSessionsRepoIdRef.current = repo.id;
     if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
     if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    setAgentSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
     clearPendingSidebarSessionSelection();
-    clearOpencodeSessionHydration();
-    setDraftOpencodeSession(true);
-    setActiveOpencodeSessionId("");
-    setOpencodePromptInput("");
-    requestAnimationFrame(() => opencodeInputRef.current?.focus());
+    clearAgentSessionHydration();
+    selectAgentSession("", "draft-clear", { draft: true });
+    setAgentPromptInput("");
+    requestAnimationFrame(() => agentInputRef.current?.focus());
   }
-  const opencodeSavedModelCandidates = useMemo(() => {
-    const q = opencodeModelPickerSearch.trim().toLowerCase();
-    if (!q) return opencodeSavedModels;
-    return opencodeSavedModels.filter((m) => m.toLowerCase().includes(q));
-  }, [opencodeSavedModels, opencodeModelPickerSearch]);
+  const agentSavedModelCandidates = useMemo(() => {
+    const q = agentModelPickerSearch.trim().toLowerCase();
+    if (!q) return agentSavedModels;
+    return agentSavedModels.filter((m) => m.toLowerCase().includes(q));
+  }, [agentSavedModels, agentModelPickerSearch]);
 
-  const opencodeConfiguredModelCandidates = useMemo(() => {
+  const agentConfiguredModelCandidates = useMemo(() => {
     // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
     return buildConfiguredModelCandidates({
-      configuredProviders: opencodeConfiguredProviders,
-      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
-      configuredModelNamesByProvider: opencodeConfiguredModelNamesByProvider,
-      liveModelNamesByProvider: opencodeModelNamesByProvider,
-      enabledModels: opencodeEnabledModels,
-      hiddenModels: opencodeHiddenModels,
-      connectedProviders: opencodeConnectedProviders,
-      liveModelsByProvider: opencodeModelsByProvider,
-      providerNames: opencodeProviderNames,
-      search: opencodeModelPickerSearch
+      configuredProviders: agentConfiguredProviders,
+      configuredModelsByProvider: agentConfiguredModelsByProvider,
+      configuredModelNamesByProvider: agentConfiguredModelNamesByProvider,
+      liveModelNamesByProvider: agentModelNamesByProvider,
+      enabledModels: agentEnabledModels,
+      hiddenModels: agentHiddenModels,
+      connectedProviders: agentConnectedProviders,
+      liveModelsByProvider: agentModelsByProvider,
+      providerNames: agentProviderNames,
+      search: agentModelPickerSearch
     });
   }, [
-    opencodeConfiguredProviders,
-    opencodeConfiguredModelsByProvider,
-    opencodeModelPickerSearch,
-    opencodeHiddenModels,
-    opencodeEnabledModels,
-    opencodeConnectedProviders,
-    opencodeConfiguredModelNamesByProvider,
-    opencodeModelsByProvider,
-    opencodeModelNamesByProvider,
-    opencodeProviderNames
+    agentConfiguredProviders,
+    agentConfiguredModelsByProvider,
+    agentModelPickerSearch,
+    agentHiddenModels,
+    agentEnabledModels,
+    agentConnectedProviders,
+    agentConfiguredModelNamesByProvider,
+    agentModelsByProvider,
+    agentModelNamesByProvider,
+    agentProviderNames
   ]);
 
-  const opencodeSyncModelRefs = useMemo(() => {
+  const agentSyncModelRefs = useMemo(() => {
     return buildSyncModelRefs({
-      configuredProviders: opencodeConfiguredProviders,
-      configuredModelsByProvider: opencodeConfiguredModelsByProvider,
-      enabledModels: opencodeEnabledModels,
-      hiddenModels: opencodeHiddenModels,
-      connectedProviders: opencodeConnectedProviders,
-      liveModelsByProvider: opencodeModelsByProvider,
-      providerNames: opencodeProviderNames,
-      activeModel: activeOpencodeModel,
-      configuredModel: opencodeConfig?.configuredModel || ""
+      configuredProviders: agentConfiguredProviders,
+      configuredModelsByProvider: agentConfiguredModelsByProvider,
+      enabledModels: agentEnabledModels,
+      hiddenModels: agentHiddenModels,
+      connectedProviders: agentConnectedProviders,
+      liveModelsByProvider: agentModelsByProvider,
+      providerNames: agentProviderNames,
+      activeModel: activeAgentModel,
+      configuredModel: agentConfig?.configuredModel || ""
     });
   }, [
-    activeOpencodeModel,
-    opencodeConfig?.configuredModel,
-    opencodeConfiguredModelsByProvider,
-    opencodeConfiguredProviders,
-    opencodeConnectedProviders,
-    opencodeEnabledModels,
-    opencodeHiddenModels,
-    opencodeModelsByProvider,
-    opencodeProviderNames
+    activeAgentModel,
+    agentConfig?.configuredModel,
+    agentConfiguredModelsByProvider,
+    agentConfiguredProviders,
+    agentConnectedProviders,
+    agentEnabledModels,
+    agentHiddenModels,
+    agentModelsByProvider,
+    agentProviderNames
   ]);
 
-  const opencodeProviderPickerCandidates = useMemo(() => {
-    return buildOpencodeProviderPickerCandidates({
-      search: opencodeProviderPickerSearch,
+  const agentProviderPickerCandidates = useMemo(() => {
+    return buildAgentProviderPickerCandidates({
+      search: agentProviderPickerSearch,
       presetProviderIds: PROVIDER_PRESETS.map((p) => p.id).filter(Boolean),
-      providers: opencodeProviders,
-      connectedProviders: opencodeConnectedProviders,
-      providerNames: opencodeProviderNames,
-      configProviderMap: opencodeGlobalConfigProviderMap,
-      disabledProviders: opencodeDisabledProviders
+      providers: agentProviders,
+      connectedProviders: agentConnectedProviders,
+      providerNames: agentProviderNames,
+      configProviderMap: agentGlobalConfigProviderMap,
+      disabledProviders: agentDisabledProviders
     });
   }, [
-    opencodeProviders,
-    opencodeProviderNames,
-    opencodeProviderPickerSearch,
-    opencodeConnectedProviders,
-    opencodeGlobalConfigProviderMap,
-    opencodeDisabledProviders
+    agentProviders,
+    agentProviderNames,
+    agentProviderPickerSearch,
+    agentConnectedProviders,
+    agentGlobalConfigProviderMap,
+    agentDisabledProviders
   ]);
 
-  function getOpencodeModelDisplay(modelRef: string) {
-    return getOpencodeModelDisplayInfo({
+  function getAgentModelDisplay(modelRef: string) {
+    return getAgentModelDisplayInfo({
       modelRef,
-      modelsByProvider: opencodeModelsByProvider,
-      providerNames: opencodeProviderNames,
-      modelNamesByProvider: opencodeModelNamesByProvider,
-      configuredModelNamesByProvider: opencodeConfiguredModelNamesByProvider
+      modelsByProvider: agentModelsByProvider,
+      providerNames: agentProviderNames,
+      modelNamesByProvider: agentModelNamesByProvider,
+      configuredModelNamesByProvider: agentConfiguredModelNamesByProvider
     });
   }
 
-  function getOpencodeProviderSource(providerId: string): string {
-    return getOpencodeProviderSourceFromCatalog(providerId, opencodeProviderSourceById);
+  function getAgentProviderSource(providerId: string): string {
+    return getAgentProviderSourceFromCatalog(providerId, agentProviderSourceById);
   }
 
-  function getOpencodeProviderTag(providerId: string): string {
-    return getOpencodeProviderTagFromCatalog({
+  function getAgentProviderTag(providerId: string): string {
+    return getAgentProviderTagFromCatalog({
       providerId,
-      providerSourceById: opencodeProviderSourceById,
-      providerMap: opencodeGlobalConfigProviderMap
+      providerSourceById: agentProviderSourceById,
+      providerMap: agentGlobalConfigProviderMap
     });
   }
   function beginSplitDrag(kind: "sidebar" | "right", clientX: number) {
@@ -1908,235 +2084,302 @@ export function App() {
     });
   }
 
-  function appendOpencodeDebugLog(text: string) {
+  function appendAgentDebugLog(text: string) {
     const stamp = new Date().toLocaleTimeString();
-    setOpencodeDebugLogs((prev) => {
+    setAgentDebugLogs((prev) => {
       const next = [...prev, `[${stamp}] ${text}`];
       if (next.length > 400) return next.slice(next.length - 400);
       return next;
     });
   }
 
-  async function applyOpencodeModel(model: string) {
+  function indexAgentModelInfoByRef(providers: AgentProviderInfo[]): Record<string, AgentModelInfo> {
+    const next: Record<string, AgentModelInfo> = {};
+    for (const provider of providers) {
+      for (const model of provider.models || []) {
+        const ref = normalizeModelRef(`${provider.provider}/${model.modelId}`);
+        if (ref) next[ref] = model;
+      }
+    }
+    return next;
+  }
+
+  async function applyAgentModel(model: string) {
     if (!ensureRepoSelected()) return;
     const normalized = normalizeModelRef(model);
     if (!normalized) {
       setMessage("Invalid model format, expected provider/model");
       return;
     }
-    setOpencodeConfigBusy(true);
+    setAgentConfigBusy(true);
     try {
       const parsed = parseModelRef(normalized);
       // OpenCode-like: selecting a model updates local selection (session/draft) and recent list.
       // It does NOT write server /config.model unless explicitly requested elsewhere.
-      const sid = activeOpencodeSessionId.trim();
-      selectOpencodeModel(normalized, sid);
+      const sid = activeAgentSessionId.trim();
+      selectAgentModel(normalized, sid);
       if (parsed) {
         ensureProviderExists(parsed.provider);
-        setOpencodeModelProvider(parsed.provider);
-        setOpencodeSelectedModel(parsed.model);
+        // 备份当前选择：setModel 失败时回滚，避免 UI 显示新模型而 session 仍是旧 provider。
+        const prevProvider = agentModelProvider;
+        const prevModel = agentSelectedModel;
+        setAgentModelProvider(parsed.provider);
+        setAgentSelectedModel(parsed.model);
+        if (sid) {
+          try {
+            await agentClient.setModel(sid, parsed.provider, parsed.model);
+            const piLevel = toPiThinkingLevel(
+              clampThinkingLevelToModel(
+                sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
+                agentModelInfoByRef[normalized] || null
+              ),
+              agentModelInfoByRef[normalized] || null
+            );
+            if (piLevel) await agentClient.setThinking(sid, piLevel);
+          } catch (error) {
+            // setModel 失败（如目标模型不在 pi 运行时 registry）：必须回滚 UI 并明确报错。
+            // 否则 UI 显示新模型而 session 仍用旧 provider，发送时才穿帮（如发图报旧 provider）。
+            appendAgentDebugLog(`session.setModel.error ${sid} ${String(error)}`);
+            setAgentModelProvider(prevProvider);
+            setAgentSelectedModel(prevModel);
+            throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
+          }
+        }
       }
+      // 切换模型后钳制推理档到新模型能力。
+      const clamped = clampThinkingLevelToModel(
+        sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
+        agentModelInfoByRef[normalized] || null
+      );
+      if (sid) setAgentSessionThinkingLevel((prev) => ({ ...prev, [sid]: clamped }));
+      else setAgentDraftThinkingLevel(clamped);
+      saveLocalString(AGENT_THINKING_SELECTION_KEY, clamped);
       setMessage(`Switched model: ${normalized}`);
     } catch (e) {
       setError(String(e));
       setMessage("Switch model failed");
     } finally {
-      setOpencodeConfigBusy(false);
+      setAgentConfigBusy(false);
     }
   }
 
-  function applyOpencodeAgent(agentName: string) {
+  function applyAgentAgent(agentName: string) {
     const name = normalizeComposerAgentName(agentName);
-    const sid = activeOpencodeSessionId.trim();
+    const sid = activeAgentSessionId.trim();
     if (sid) {
-      setOpencodeSessionAgent((prev) => ({ ...prev, [sid]: name }));
+      setAgentSessionAgent((prev) => ({ ...prev, [sid]: name }));
     } else {
-      setOpencodeDraftAgent(name);
+      setAgentDraftAgent(name);
     }
-    saveLocalString(OPENCODE_AGENT_SELECTION_KEY, name);
-    setMessage(`Switched agent: ${name}`);
+    saveLocalString(AGENT_COMPOSER_SELECTION_KEY, name);
+    setMessage(
+      name === "plan"
+        ? "已切换到 Plan：新建会话将只读规划；当前会话将以提示约束软生效"
+        : "已切换到 Build：新建会话可完整改代码与执行命令"
+    );
   }
 
-  function applyOpencodeThinkingLevel(level: OpencodeThinkingLevel) {
-    const next = normalizeThinkingLevel(level);
-    const sid = activeOpencodeSessionId.trim();
+  async function applyAgentThinkingLevel(level: AgentThinkingLevel) {
+    const modelInfo = agentModelInfoByRef[activeAgentModel] || null;
+    const next = clampThinkingLevelToModel(level, modelInfo);
+    const sid = activeAgentSessionId.trim();
     if (sid) {
-      setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [sid]: next }));
+      setAgentSessionThinkingLevel((prev) => ({ ...prev, [sid]: next }));
     } else {
-      setOpencodeDraftThinkingLevel(next);
+      setAgentDraftThinkingLevel(next);
     }
-    saveLocalString(OPENCODE_THINKING_SELECTION_KEY, next);
-    setShowOpencodeThinkingPicker(false);
-    setMessage(`Thinking: ${OPENCODE_THINKING_LEVELS.find((item) => item.value === next)?.label || next}`);
+    saveLocalString(AGENT_THINKING_SELECTION_KEY, next);
+    setShowAgentThinkingPicker(false);
+    const piLevel = toPiThinkingLevel(next, modelInfo);
+    if (sid && piLevel) {
+      try {
+        await agentClient.setThinking(sid, piLevel);
+      } catch (error) {
+        appendAgentDebugLog(`session.setThinking.error ${sid} ${String(error)}`);
+        setError(String(error));
+        return;
+      }
+    }
+    setMessage(`推理强度: ${thinkingLevelMeta(next).label}`);
   }
 
-  async function refreshOpencodeAgents() {
-    if (!repoPath.trim()) return;
-    setOpencodeAgentsLoading(true);
-    setOpencodeAgentsError("");
+  async function refreshAgentDefinitions() {
+    // pi 桌面端固定 build/plan 两种 composer agent，不再查询 opencode agent 列表。
+    setAgentDefinitionsLoading(true);
+    setAgentDefinitionsError("");
     try {
-      const raw = await invoke<unknown>("list_opencode_agents", { repoPath });
-      const rows = parseOpencodeAgents(raw);
-      setOpencodeAgents(rows);
-    } catch (e) {
-      const msg = String(e);
-      setOpencodeAgentsError(msg);
-      appendOpencodeDebugLog(`agent.list.error ${msg}`);
+      const rows = AGENT_COMPOSER_AGENT_OPTIONS.map((agent): AgentDefinition => ({
+        name: agent.name,
+        description: agent.title,
+        mode: "primary",
+        native: true
+      }));
+      setAgentDefinitions(rows);
     } finally {
-      setOpencodeAgentsLoading(false);
+      setAgentDefinitionsLoading(false);
     }
   }
 
-  async function refreshOpencodeMcpStatus() {
+  async function refreshAgentMcpStatus() {
+    // MCP 模块下线：断掉所有自动/手动后端 invoke（list_opencode_mcp_status 等），
+    // 配合各 UI 入口隐藏，确保 pi 运行时不触发未实现的 MCP 链路。PR8 恢复时移除此守卫。
+    if (!MCP_MODULE_ENABLED) return;
     if (!repoPath.trim()) return;
-    if (opencodeMcpLoadingRef.current) return;
-    opencodeMcpLoadingRef.current = true;
-    const hasCachedRows = Object.keys(opencodeMcpStatus).length > 0;
+    if (agentMcpLoadingRef.current) return;
+    agentMcpLoadingRef.current = true;
+    const hasCachedRows = Object.keys(agentMcpStatus).length > 0;
     startTransition(() => {
-      if (!hasCachedRows) setOpencodeMcpLoading(true);
-      setOpencodeMcpError("");
+      if (!hasCachedRows) setAgentMcpLoading(true);
+      setAgentMcpError("");
     });
     await waitForPaint();
     try {
       const raw = await invoke<unknown>("list_opencode_mcp_status", { repoPath });
-      startTransition(() => setOpencodeMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as OpencodeMcpStatusMap : {}));
-      opencodeMcpLoadedRef.current = true;
+      startTransition(() => setAgentMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AgentMcpStatusMap : {}));
+      agentMcpLoadedRef.current = true;
     } catch (e) {
       const msg = String(e);
-      startTransition(() => setOpencodeMcpError(msg));
-      appendOpencodeDebugLog(`mcp.status.error ${msg}`);
+      startTransition(() => setAgentMcpError(msg));
+      appendAgentDebugLog(`mcp.status.error ${msg}`);
     } finally {
-      opencodeMcpLoadingRef.current = false;
-      startTransition(() => setOpencodeMcpLoading(false));
+      agentMcpLoadingRef.current = false;
+      startTransition(() => setAgentMcpLoading(false));
     }
   }
 
-  async function refreshPendingPermissions(sessionIdArg = activeOpencodeSessionId) {
-    if (!repoPath.trim()) return;
-    setOpencodePermissionLoading(true);
+  // PR6：从后端拉取当前 session 的全部待裁决交互（permission+question），同步单一真相源。
+  // 事件已实时驱动，此函数仅作会话切换/重连后的兜底对账。
+  async function syncAgentInteractions(sessionIdArg: string) {
+    const sid = sessionIdArg.trim();
+    if (!sid) return;
+    setAgentPermissionLoading(true);
+    setAgentQuestionLoading(true);
     try {
-      const raw = await invoke<unknown>("list_opencode_permissions", { repoPath });
-      const sid = sessionIdArg.trim();
-      const nextRows = filterPermissionsBySession(parseOpencodePermissionRequests(raw), sid);
-      if (opencodeAutoAcceptPermissions) {
-        await Promise.all(nextRows.map((req) => sendPermissionReply(req.id, "always", { silent: true })));
-        setOpencodePermissionRequests((prev) => removePermissionsById(prev, new Set(nextRows.map((row) => row.id))));
-      } else {
-        setOpencodePermissionRequests((prev) => replaceSessionPermissions(prev, nextRows, sid));
+      const items = await agentClient.listInteractions(sid);
+      const mine = items.filter((item) => item.sessionId === sid);
+      setAgentInteractions((prev) => {
+        // 替换本 session 的交互，保留其它 session 的（多窗口场景）。
+        const rest = prev.filter((item) => item.sessionId !== sid);
+        return [...rest, ...mine];
+      });
+    } catch (e) {
+      appendAgentDebugLog(`interaction.list.error ${String(e)}`);
+    } finally {
+      setAgentPermissionLoading(false);
+      setAgentQuestionLoading(false);
+    }
+  }
+
+  async function refreshPendingPermissions(sessionIdArg = activeAgentSessionId) {
+    if (!repoPath.trim()) return;
+    await syncAgentInteractions(sessionIdArg);
+  }
+
+  async function ensureSessionAutoAcceptPermissions(sessionId: string, enabled: boolean) {
+    // 显式接收 enabled：调用方在 setAgentAutoAcceptPermissions(next) 之后同步调用本函数，
+    // 此时 state 尚未更新，闭包里的 agentAutoAcceptPermissions 仍是旧值（false），
+    // 若误用闭包旧值会触发提前 return、setAutoApprove 永不调用 → 开了 auto 仍弹审批。
+    // 关闭时也必须同步到后端，否则 session hub 会一直保持 auto_approve=true。
+    if (!repoPath.trim() || !sessionId.trim()) return;
+    try {
+      await agentClient.setAutoApprove(sessionId, enabled);
+      appendAgentDebugLog(`permission.session.autoApprove ${sessionId} enabled=${enabled ? 1 : 0}`);
+      if (enabled) {
+        // 开关打开时清掉已弹出的待审批，避免「开了 auto 还要点一遍」。
+        const pending = (await agentClient.listInteractions(sessionId)).filter(
+          (item) => item.kind === "permission"
+        );
+        for (const item of pending) {
+          await sendPermissionReply(item.id, "once", { silent: true });
+        }
       }
     } catch (e) {
-      appendOpencodeDebugLog(`permission.list.error ${String(e)}`);
-    } finally {
-      setOpencodePermissionLoading(false);
+      appendAgentDebugLog(`permission.session.autoApprove.error ${sessionId} ${String(e)}`);
     }
   }
 
-  async function ensureSessionAutoAcceptPermissions(sessionId: string) {
-    if (!opencodeAutoAcceptPermissions || !repoPath.trim() || !sessionId.trim()) return;
-    try {
-      await invoke<unknown>("set_opencode_session_permission", {
-        repoPath,
-        sessionId,
-        permission: allowAllPermissionRules()
-      });
-      appendOpencodeDebugLog(`permission.session.allowAll ${sessionId}`);
-    } catch (e) {
-      appendOpencodeDebugLog(`permission.session.allowAll.error ${String(e)}`);
-    }
-  }
-
-  async function sendPermissionReply(requestId: string, reply: OpencodePermissionReply, opts?: { message?: string; silent?: boolean }) {
+  async function sendPermissionReply(requestId: string, reply: AgentPermissionReply, opts?: { message?: string; silent?: boolean }) {
     if (!repoPath.trim() || !requestId.trim()) return false;
     try {
-      await invoke<boolean>("post_opencode_permission_reply", {
-        repoPath,
-        requestId,
-        reply,
-        message: opts?.message || null
-      });
-      setOpencodePermissionRequests((prev) => prev.filter((req) => req.id !== requestId));
-      appendOpencodeDebugLog(`permission.reply ${requestId} ${reply}`);
+      const decisionReply: AgentInteractionReply =
+        reply === "once" ? { decision: "once" }
+        : reply === "always" ? { decision: "always" }
+        : { decision: "reject" };
+      await agentClient.replyInteraction(requestId, decisionReply);
+      setAgentInteractions((prev) => prev.filter((item) => item.id !== requestId));
+      appendAgentDebugLog(`permission.reply ${requestId} ${reply}`);
       if (!opts?.silent) setMessage(reply === "reject" ? "Permission rejected" : "Permission accepted");
       return true;
     } catch (e) {
-      appendOpencodeDebugLog(`permission.reply.error ${requestId} ${String(e)}`);
+      appendAgentDebugLog(`permission.reply.error ${requestId} ${String(e)}`);
       if (!opts?.silent) setError(String(e));
       return false;
     }
   }
 
-  function handleIncomingPermission(request: OpencodePermissionRequest) {
-    if (!request?.id) return;
-    if (opencodeAutoAcceptPermissions) {
-      void sendPermissionReply(request.id, "always", { silent: true });
-      return;
-    }
-    setOpencodePermissionRequests((prev) => upsertPermissionRequest(prev, request));
-  }
-
-  function openOpencodeModulePanel(tab: OpencodeModuleTab) {
-    setOpencodeModuleTab(tab);
-    setShowOpencodeModulePanel(true);
-    if (tab === "agents") void refreshOpencodeAgents();
+  function openAgentModulePanel(tab: AgentModuleTab) {
+    setAgentModuleTab(tab);
+    setShowAgentModulePanel(true);
+    if (tab === "agents") void refreshAgentDefinitions();
     if (tab === "permissions") void refreshPendingPermissions();
-    if (tab === "mcp") void refreshOpencodeMcpStatus();
-    if (tab === "skills") void refreshOpencodeSkills();
+    if (tab === "mcp") void refreshAgentMcpStatus();
+    if (tab === "skills") void refreshAgentSkills();
   }
 
-  async function addOpencodeMcpServer() {
+  async function addAgentMcpServer() {
     if (!ensureRepoSelected()) return;
     let normalized: { name: string; config: Record<string, unknown> };
     try {
-      normalized = normalizeCustomMcpJson(opencodeMcpAddForm.json, opencodeMcpAddForm.name);
+      normalized = normalizeCustomMcpJson(agentMcpAddForm.json, agentMcpAddForm.name);
     } catch (e) {
       setError(`MCP JSON 配置无效：${String(e instanceof Error ? e.message : e)}`);
       return;
     }
     const { name, config } = normalized;
-    const paramSpecs = getCustomMcpParamSpecs(opencodeMcpAddForm.json, name);
-    const missing = paramSpecs.filter((spec) => spec.required && !String(opencodeMcpAddForm.paramValues[spec.key] || "").trim());
+    const paramSpecs = getCustomMcpParamSpecs(agentMcpAddForm.json, name);
+    const missing = paramSpecs.filter((spec) => spec.required && !String(agentMcpAddForm.paramValues[spec.key] || "").trim());
     if (missing.length > 0) {
       setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
       return;
     }
-    const resolvedConfig = replaceMcpConfigPlaceholders(config, opencodeMcpAddForm.paramValues) as Record<string, unknown>;
-    setOpencodeMcpBusyName(name);
-    setOpencodeMcpError("");
+    const resolvedConfig = replaceMcpConfigPlaceholders(config, agentMcpAddForm.paramValues) as Record<string, unknown>;
+    setAgentMcpBusyName(name);
+    setAgentMcpError("");
     try {
       await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config: resolvedConfig });
-      setOpencodeMcpStatus((prev) => ({ ...prev, [name]: { ...(resolvedConfig as any), status: "configured" } }));
-      opencodeMcpAddForm.reset();
+      setAgentMcpStatus((prev) => ({ ...prev, [name]: { ...(resolvedConfig as any), status: "configured" } }));
+      agentMcpAddForm.reset();
       setShowMcpAddForm(false);
       setMcpInstalledOpen(true);
-      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
       setMessage(`MCP added: ${name}`);
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpError(msg);
+      setAgentMcpError(msg);
       setError(msg);
     } finally {
-      setOpencodeMcpBusyName("");
+      setAgentMcpBusyName("");
     }
   }
 
-  async function addOpencodeMcpServerFromMarket(name: string, config: Record<string, unknown>) {
+  async function addAgentMcpServerFromMarket(name: string, config: Record<string, unknown>) {
     if (!ensureRepoSelected()) return;
     const normalizedName = name.trim();
     if (!normalizedName) return;
-    setOpencodeMcpBusyName(normalizedName);
-    setOpencodeMcpError("");
+    setAgentMcpBusyName(normalizedName);
+    setAgentMcpError("");
     try {
       await invoke<unknown>("add_opencode_mcp_server", { repoPath, name: normalizedName, config });
-      setOpencodeMcpStatus((prev) => ({ ...prev, [normalizedName]: { ...(config as any), status: "configured" } }));
-      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      setAgentMcpStatus((prev) => ({ ...prev, [normalizedName]: { ...(config as any), status: "configured" } }));
+      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
       setMessage(`MCP added: ${normalizedName}`);
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpError(msg);
+      setAgentMcpError(msg);
       setError(msg);
       throw e;
     } finally {
-      setOpencodeMcpBusyName("");
+      setAgentMcpBusyName("");
     }
   }
 
@@ -2144,31 +2387,31 @@ export function App() {
     if (!ensureRepoSelected()) return;
     const n = name.trim();
     if (!n) return;
-    setOpencodeMcpBusyName(`${n}:${action}`);
-    setOpencodeMcpError("");
+    setAgentMcpBusyName(`${n}:${action}`);
+    setAgentMcpError("");
     try {
       if (action === "connect") await invoke<boolean>("connect_opencode_mcp_server", { repoPath, name: n });
       if (action === "disconnect") await invoke<boolean>("disconnect_opencode_mcp_server", { repoPath, name: n });
       if (action === "auth") await invoke<unknown>("authenticate_opencode_mcp_server", { repoPath, name: n });
       if (action === "logout") await invoke<boolean>("remove_opencode_mcp_auth", { repoPath, name: n });
-      await refreshOpencodeMcpStatus();
+      await refreshAgentMcpStatus();
       setMessage(`MCP ${action}: ${n}`);
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpError(msg);
+      setAgentMcpError(msg);
       setError(msg);
     } finally {
-      setOpencodeMcpBusyName("");
+      setAgentMcpBusyName("");
     }
   }
 
-  function startEditMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
+  function startEditMcpParams(name: string, status: AgentMcpStatusMap[string]) {
     const specs = getInstalledMcpParamSpecs(name, status);
     setEditingMcpName(name);
     setEditingMcpParamValues(getEditableMcpParamValues(status, specs));
   }
 
-  async function saveMcpParams(name: string, status: OpencodeMcpStatusMap[string]) {
+  async function saveMcpParams(name: string, status: AgentMcpStatusMap[string]) {
     if (!ensureRepoSelected()) return;
     const specs = getInstalledMcpParamSpecs(name, status);
     const missing = getMissingMcpRequiredParams(specs, editingMcpParamValues);
@@ -2177,32 +2420,32 @@ export function App() {
       return;
     }
     const config = buildUpdatedMcpParamConfig(status, editingMcpParamValues);
-    setOpencodeMcpBusyName(`${name}:update`);
-    setOpencodeMcpError("");
+    setAgentMcpBusyName(`${name}:update`);
+    setAgentMcpError("");
     try {
       await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config });
-      setOpencodeMcpStatus((prev) => ({ ...prev, [name]: { ...(config as any), status: "configured" } }));
+      setAgentMcpStatus((prev) => ({ ...prev, [name]: { ...(config as any), status: "configured" } }));
       setEditingMcpName("");
       setEditingMcpParamValues({});
-      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
       setMessage(`MCP params updated: ${name}`);
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpError(msg);
+      setAgentMcpError(msg);
       setError(msg);
     } finally {
-      setOpencodeMcpBusyName("");
+      setAgentMcpBusyName("");
     }
   }
 
-  async function removeOpencodeMcpServer(name: string) {
+  async function removeAgentMcpServer(name: string) {
     if (!ensureRepoSelected()) return;
     const n = name.trim();
     if (!n) return;
-    setOpencodeMcpBusyName(`${n}:remove`);
-    setOpencodeMcpError("");
-    const previousStatus = opencodeMcpStatus;
-    setOpencodeMcpStatus((prev) => {
+    setAgentMcpBusyName(`${n}:remove`);
+    setAgentMcpError("");
+    const previousStatus = agentMcpStatus;
+    setAgentMcpStatus((prev) => {
       const next = { ...prev };
       delete next[n];
       return next;
@@ -2211,73 +2454,102 @@ export function App() {
       const result = await invoke<any>("delete_opencode_mcp_server", { repoPath, name: n });
       if (result && typeof result === "object" && result.ok === false) {
         const checked = Array.isArray(result.checked) ? result.checked.join("\n") : "";
-        throw new Error(`未在 OpenCode 配置文件中找到 ${n}${checked ? `\n已检查:\n${checked}` : ""}`);
+        throw new Error(`未在 Giteam 配置文件中找到 ${n}${checked ? `\n已检查:\n${checked}` : ""}`);
       }
-      window.setTimeout(() => void refreshOpencodeMcpStatus(), 250);
+      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
       const detail = result && typeof result === "object"
         ? [`project:${result.projectDeleted || result.projectFileDeleted ? "yes" : "no"}`, `global:${result.globalDeleted || result.globalFileDeleted ? "yes" : "no"}`, `runtime:${result.apiDeleted ? "yes" : "no"}`].join(" · ")
         : "removed";
       setMessage(`MCP removed: ${n} (${detail})`);
     } catch (e) {
       const msg = String(e);
-      setOpencodeMcpStatus(previousStatus);
-      setOpencodeMcpError(msg);
+      setAgentMcpStatus(previousStatus);
+      setAgentMcpError(msg);
       setError(msg);
     } finally {
-      setOpencodeMcpBusyName("");
+      setAgentMcpBusyName("");
     }
   }
 
-  function ensureActiveOpencodeSession(): string {
-    if (draftOpencodeSession) return "";
-    const current = activeOpencodeSessionId;
-    if (opencodeSessions.some((s) => s.id === current)) return current;
-    const first = opencodeSessions[0];
+  /**
+   * 会话选择的单一意图入口（用户意图通道）。全文件唯一调用 setActiveAgentSessionId 的地方。
+   * 仅写：意图 token（seq）、active、draft、清除 stale 标记。不切仓库/不 bind/不 load/不动 hydration
+   * ——这些副作用由各调用入口自行叠加。后台数据通道（refresh/被动同步/对齐 effect）无权调用本函数。
+   */
+  function selectAgentSession(
+    id: string,
+    reason: AgentSelectionReason,
+    options?: { draft?: boolean }
+  ) {
+    const sid = id.trim();
+    // seq 即时从 ref 读取（不依赖闭包），防止多入口并发写入导致序号回退。
+    agentSelectionIntentRef.current = {
+      seq: (agentSelectionIntentRef.current?.seq ?? 0) + 1,
+      sessionId: sid,
+      reason,
+      at: Date.now(),
+    };
+    // 任何新的用户显式意图都表明选中是新鲜的，清除后台对账置起的 stale 提示。
+    setAgentActiveSessionStale(false);
+    setActiveAgentSessionId(sid);
+    if (options?.draft === undefined) {
+      // 选中具体会话时默认关闭草稿态；清空选中（sid=""）时不擅自动 draft，由调用方决定。
+      if (sid) setDraftAgentSession(false);
+    } else {
+      setDraftAgentSession(options.draft);
+    }
+  }
+
+  function ensureActiveAgentSession(): string {
+    if (draftAgentSession) return "";
+    const current = activeAgentSessionId;
+    if (agentSessions.some((s) => s.id === current)) return current;
+    const first = agentSessions[0];
     if (first) return first.id;
     return "";
   }
 
-  function updateActiveOpencodeSession(
-    updater: (session: OpencodeChatSession) => OpencodeChatSession
+  function updateActiveAgentSession(
+    updater: (session: AgentChatSession) => AgentChatSession
   ) {
-    const id = ensureActiveOpencodeSession();
-    setOpencodeSessions((prev) => prev.map((s) => (s.id === id ? updater(s) : s)));
+    const id = ensureActiveAgentSession();
+    setAgentSessions((prev) => prev.map((s) => (s.id === id ? updater(s) : s)));
   }
 
-  function updateOpencodeSessionById(sessionId: string, updater: (session: OpencodeChatSession) => OpencodeChatSession) {
-    setOpencodeSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
+  function updateAgentSessionById(sessionId: string, updater: (session: AgentChatSession) => AgentChatSession) {
+    setAgentSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
   }
 
-  function beginOpencodeSessionHydration(sessionId: string) {
+  function beginAgentSessionHydration(sessionId: string) {
     const id = sessionId.trim();
     if (!id) return;
-    opencodeHydratingSessionIdRef.current = id;
-    setOpencodeHydratingSessionId(id);
+    agentHydratingSessionIdRef.current = id;
+    setAgentHydratingSessionId(id);
   }
 
-  function endOpencodeSessionHydration(sessionId: string) {
+  function endAgentSessionHydration(sessionId: string) {
     const id = sessionId.trim();
-    if (!id || opencodeHydratingSessionIdRef.current !== id) return;
-    opencodeHydratingSessionIdRef.current = "";
-    setOpencodeHydratingSessionId("");
+    if (!id || agentHydratingSessionIdRef.current !== id) return;
+    agentHydratingSessionIdRef.current = "";
+    setAgentHydratingSessionId("");
   }
 
-  function clearOpencodeSessionHydration() {
-    opencodeHydratingSessionIdRef.current = "";
-    setOpencodeHydratingSessionId("");
+  function clearAgentSessionHydration() {
+    agentHydratingSessionIdRef.current = "";
+    setAgentHydratingSessionId("");
   }
 
   function clearPendingSidebarSessionSelection() {
     pendingSidebarSessionSelectionRef.current = null;
   }
 
-  function openSidebarOpencodeSession(repo: RepositoryEntry, session: OpencodeSessionSummary) {
+  function openSidebarAgentSession(repo: RepositoryEntry, session: ChatSessionSummary) {
     pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
-    const cachedSession = opencodeSessions.find((item) => item.id === session.id) ?? null;
+    const cachedSession = agentSessions.find((item) => item.id === session.id) ?? null;
     const shouldHydrate = selectedRepo?.id !== repo.id || !cachedSession?.loaded;
-    if (shouldHydrate) beginOpencodeSessionHydration(session.id);
-    else endOpencodeSessionHydration(session.id);
-    setOpencodeSessions((prev) => {
+    if (shouldHydrate) beginAgentSessionHydration(session.id);
+    else endAgentSessionHydration(session.id);
+    setAgentSessions((prev) => {
       const hit = prev.findIndex((s) => s.id === session.id);
       if (hit >= 0) {
         return prev.map((s) =>
@@ -2294,125 +2566,134 @@ export function App() {
       }
       return [
         {
-          ...opencodeSessionFromSummary(session),
+          ...agentSessionFromSummary(session),
           loaded: false
         },
         ...prev
       ];
     });
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
+    setAgentSessionFetchLimit(getRepoSessionFetchLimit(repo.id));
     setNewSessionTargetRepoId(repo.id);
-    opencodeSessionsRepoIdRef.current = repo.id;
+    agentSessionsRepoIdRef.current = repo.id;
     if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
     if ((rightPaneTabRef.current === "changes" || rightPaneTabRef.current === "worktree") && gitPaneRepo?.id !== repo.id) setGitPaneRepo(repo);
-    setDraftOpencodeSession(false);
-    setActiveOpencodeSessionId(session.id);
-    bindOpencodeSessionToWorkspace(session.id, repo.path, repo.name);
-    void loadOpencodeSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
+    setDraftAgentSession(false);
+    selectAgentSession(session.id, "click");
+    bindAgentSessionToWorkspace(session.id, repo.path, repo.name);
+    void loadAgentSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
   }
 
-  async function fetchOpencodeDetailedMessagePage(sessionId: string, before: string, limit: number, minFetchedAt = 0, repoPathArg = repoPath) {
+  // ⌘F / Ctrl+F 全局打开搜索面板。Tauri webview 无原生 find 占用，安全拦截默认行为。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.key === "f" || event.key === "F")) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSearchPanelOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // 跨会话命中：目标会话 active 后即下发 messageId（不必等 loading 结束）。
+  // 若等 loaded 才下发，loading→就绪首帧 pending 为空，wake/scrollToIndex(LAST) 会抢跑到底。
+  const locateScrollMessageId = useMemo(() => {
+    const direct = pendingScrollMessageId.trim();
+    if (direct) return direct;
+    if (!pendingScrollTarget) return "";
+    if (activeAgentSessionId !== pendingScrollTarget.sessionId) return "";
+    return pendingScrollTarget.messageId.trim();
+  }, [pendingScrollMessageId, pendingScrollTarget, activeAgentSessionId]);
+
+  function clearLocateRequest() {
+    locateInFlightRef.current = false;
+    setPendingScrollMessageId("");
+    setPendingScrollTarget(null);
+  }
+
+  function handleSearchLocate(hit: SearchHit, query: string) {
+    setSearchPanelOpen(false);
+    setHighlightKeyword(query.trim());
+    setLocateNonce((n) => n + 1);
+    locateInFlightRef.current = true;
+    // 定位后不应自动追底，否则 followOutput / 其它滚 LAST 会把视口再次拽走。
+    setAgentAutoFollowLatest(false);
+    setAgentShowJumpLatest(true);
+    // 当前会话且已加载：直接定位。
+    if (hit.sessionId === activeAgentSessionId && activeAgentSession?.loaded && !agentSessionLoading) {
+      setPendingScrollTarget(null);
+      setPendingScrollMessageId(hit.messageId);
+      return;
+    }
+    // 先写入 pending，再切会话，确保切会话 effect 能看到定位意图。
+    setPendingScrollMessageId("");
+    setPendingScrollTarget({ sessionId: hit.sessionId, messageId: hit.messageId });
+    const repo = repos.find((r) => normalizeWorkspacePath(r.path) === normalizeWorkspacePath(hit.repoPath)) ?? null;
+    if (repo) {
+      // 复用侧栏打开会话的完整范式：确保 agentSessions 占位、repo 切换、bind 一应俱全，
+      // 否则 loadAgentSessionMessages 的 update 找不到目标会话、messages 写不进去。
+      openSidebarAgentSession(repo, {
+        id: hit.sessionId,
+        title: hit.sessionTitle,
+        createdAt: hit.updatedAtMs,
+        updatedAt: hit.updatedAtMs
+      });
+    } else {
+      // 命中仓库已不在列表（少见）：最小努力切换 + 绑定 + 加载。
+      selectAgentSession(hit.sessionId, "click");
+      bindAgentSessionToWorkspace(hit.sessionId, hit.repoPath, hit.repoName);
+      void loadAgentSessionMessages(hit.sessionId, hit.repoPath).catch((e) => setError(String(e)));
+    }
+  }
+
+  async function fetchAgentDetailedMessagePage(
+    sessionId: string,
+    before: string,
+    limit: number,
+    minFetchedAt = 0,
+    repoPathArg = repoPath
+  ) {
     const id = sessionId.trim();
     const targetRepoPath = repoPathArg.trim();
     const safeBefore = before.trim();
     const safeLimit = Math.max(2, limit);
-    const cacheKey = opencodeMessageCache.getPageCacheKey(targetRepoPath, id, safeBefore, safeLimit);
-    const cached = opencodeMessageCache.getPageCacheEntry(targetRepoPath, id, safeBefore, safeLimit);
+    const cacheKey = agentMessageCache.getPageCacheKey(targetRepoPath, id, safeBefore, safeLimit);
+    const cached = agentMessageCache.getPageCacheEntry(targetRepoPath, id, safeBefore, safeLimit);
     if (cached && cached.fetchedAt >= minFetchedAt) {
-      appendOpencodeDebugLog(`session.messages page cache hit ${id} before=${safeBefore || "root"} limit=${safeLimit}`);
+      appendAgentDebugLog("agent.messages page cache hit " + id);
       return cached;
     }
-    const inflight = opencodeMessageCache.getPageInflight(cacheKey);
+    const inflight = agentMessageCache.getPageInflight(cacheKey);
     if (inflight) return inflight;
+
     const task = (async () => {
-      let raw: unknown[] = [];
-      let nextCursorFromRpc = "";
-      const base = await invoke<string>("get_opencode_service_base", { repoPath: targetRepoPath });
-      const qs = new URLSearchParams();
-      qs.set("limit", String(safeLimit));
-      qs.set("directory", targetRepoPath);
-      if (safeBefore) qs.set("before", safeBefore);
-      const res = await fetch(`${base}/session/${encodeURIComponent(id)}/message?${qs.toString()}`);
-      if (!res.ok) throw new Error(`fetch message page failed: ${res.status}`);
-      const body = await res.json();
-      raw = Array.isArray(body) ? body : [];
-      nextCursorFromRpc = res.headers.get("x-next-cursor")?.trim() || "";
-      const items = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
-      const detailsById: Record<string, OpencodeDetailedMessage> = {};
-      const mapped: OpencodeChatMessage[] = [];
-      for (const item of items) {
-        const info = item?.info as Record<string, unknown> | undefined;
-        const parts = item?.parts as OpencodeDetailedPart[] | undefined;
-        if (!info) continue;
-        const msgId = String(info.id || "").trim();
-        if (!msgId) continue;
-        const role = String(info.role || "").trim();
-        if (role !== "user" && role !== "assistant") continue;
-        detailsById[msgId] = item;
-        mapped.push({
-          id: msgId,
-          role: role as "user" | "assistant",
-          content: buildOpencodeMainLineMarkdownFromParts(parts),
-          attachments: role === "user" ? buildOpencodeImageAttachmentsFromParts(parts) : undefined,
-        });
+      const agentMessages = await agentClient.getMessages(id);
+      const toolResults = agentToolResultsByCallId(agentMessages);
+      const detailsById: Record<string, AgentDetailedMessage> = {};
+      const mapped: AgentChatMessage[] = [];
+      for (const message of agentMessages) {
+        detailsById[message.id] = agentMessageToDetailedMessage(message, toolResults);
+        if (message.role !== "user" && message.role !== "assistant") continue;
+        const mappedMessage = agentMessageToChatMessage(message);
+        if (mappedMessage) mapped.push(mappedMessage);
       }
-      const nextCursor = nextCursorFromRpc || undefined;
-      const entry: OpencodeMessagePageCacheEntry = {
+      const entry: AgentMessagePageCacheEntry = {
         before: safeBefore,
         limit: safeLimit,
         items: mapped,
         detailsById,
-        nextCursor,
-        hasMore: Boolean(nextCursor),
+        nextCursor: undefined,
+        hasMore: false,
         fetchedAt: Date.now()
       };
-      opencodeMessageCache.setPageEntry(targetRepoPath, id, entry);
+      agentMessageCache.setPageEntry(targetRepoPath, id, entry);
       return entry;
     })().finally(() => {
-      opencodeMessageCache.clearPageInflight(cacheKey);
+      agentMessageCache.clearPageInflight(cacheKey);
     });
-    opencodeMessageCache.setPageInflight(cacheKey, task);
+    agentMessageCache.setPageInflight(cacheKey, task);
     return task;
-  }
-
-  async function fetchOpencodeCompactMessagesWindow(sessionId: string, initialLimit: number, repoPathArg = repoPath) {
-    const id = sessionId.trim();
-    const targetRepoPath = repoPathArg.trim();
-    const limit = Math.max(2, initialLimit);
-    const sessionUpdatedAt = opencodeSessions.find((session) => session.id === id)?.updatedAt || 0;
-    const cached = opencodeMessageCache.getBestWindowEntry(targetRepoPath, id, limit, sessionUpdatedAt);
-    if (cached) {
-      appendOpencodeDebugLog(`session.messages cache hit ${id} limit=${cached.limit}`);
-      return {
-        mapped: cached.mapped,
-        turnCount: cached.turnCount,
-        requestedLimit: cached.limit,
-        nextCursor: cached.nextCursor,
-        hasMore: cached.hasMore
-      };
-    }
-    const page = await fetchOpencodeDetailedMessagePage(id, "", limit, sessionUpdatedAt, targetRepoPath);
-    const existingSession = opencodeSessions.find((session) => session.id === id);
-    const mapped = mergeOpencodeMessageAttachments(existingSession?.messages, page.items);
-    const turnCount = buildOpencodeTurnRanges(mapped).length;
-    opencodeMessageCache.setWindowEntry(targetRepoPath, id, {
-      limit,
-      mapped,
-      turnCount,
-      nextCursor: page.nextCursor,
-      hasMore: page.hasMore,
-      fetchedAt: Date.now()
-    });
-    if (Object.keys(page.detailsById).length > 0) {
-      setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
-    }
-    return {
-      mapped,
-      turnCount,
-      requestedLimit: limit,
-      nextCursor: page.nextCursor,
-      hasMore: page.hasMore
-    };
   }
 
   async function refreshSidebarRepoSessions(
@@ -2423,35 +2704,37 @@ export function App() {
       paging?: boolean;
     }
   ) {
-    if (!runtimeStatus.opencode.installed) return;
     const repoId = repo.id.trim();
     const repoPathArg = repo.path.trim();
     if (!repoId || !repoPathArg) return;
-    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, options?.limit ?? getRepoSessionFetchLimit(repoId));
+    const limit = Math.max(AGENT_SESSION_PAGE_SIZE, options?.limit ?? getRepoSessionFetchLimit(repoId));
     const silent = options?.silent === true;
     const paging = options?.paging === true;
-    const requestSeq = (sidebarOpencodeSessionRequestSeqRef.current[repoId] || 0) + 1;
-    sidebarOpencodeSessionRequestSeqRef.current[repoId] = requestSeq;
+    const requestSeq = (sidebarAgentSessionRequestSeqRef.current[repoId] || 0) + 1;
+    sidebarAgentSessionRequestSeqRef.current[repoId] = requestSeq;
     if (paging) {
-      setSidebarOpencodeSessionPagingByRepo((prev) => ({ ...prev, [repoId]: true }));
+      setSidebarAgentSessionPagingByRepo((prev) => ({ ...prev, [repoId]: true }));
     } else if (!silent) {
-      setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
+      setSidebarAgentSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
     }
     try {
-      const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath: repoPathArg, limit: limit + 1 });
-      if (sidebarOpencodeSessionRequestSeqRef.current[repoId] !== requestSeq) return;
-      const sorted = sortOpencodeSessionSummaries(filterVisibleOpencodeSessionsForRepo(repoId, rows || []));
+      const rows = (await agentClient.listSessions())
+        .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg))
+        .slice(0, limit + 1)
+        .map(agentSummaryToChatSummary);
+      if (sidebarAgentSessionRequestSeqRef.current[repoId] !== requestSeq) return;
+      const sorted = sortAgentSessionSummaries(filterVisibleAgentSessionsForRepo(repoId, rows || []));
       const hasMore = sorted.length > limit;
-      sidebarOpencodeSessionLoadedByRepoRef.current = {
-        ...sidebarOpencodeSessionLoadedByRepoRef.current,
+      sidebarAgentSessionLoadedByRepoRef.current = {
+        ...sidebarAgentSessionLoadedByRepoRef.current,
         [repoId]: true
       };
-      setSidebarOpencodeSessionsByRepo((prev) => {
-        const cachedSessions = (prev[repoId] || []).filter((session) => !isLocallyArchivedOpencodeSession(repoId, session.id));
+      setSidebarAgentSessionsByRepo((prev) => {
+        const cachedSessions = (prev[repoId] || []).filter((session) => !isLocallyArchivedAgentSession(repoId, session.id));
         const cachedById = new Map(cachedSessions.map((item) => [item.id, item]));
-        const activeById = new Map(opencodeSessions.map((item) => [item.id, item]));
+        const activeById = new Map(agentSessions.map((item) => [item.id, item]));
         const mapped = sorted.slice(0, limit).map((s, i) => {
-          const base = opencodeSessionFromSummary(s, i + 1);
+          const base = agentSessionFromSummary(s, i + 1);
           const cached = cachedById.get(base.id) || activeById.get(base.id);
           return cached && cached.title.trim() ? { ...base, title: cached.title } : base;
         });
@@ -2460,22 +2743,22 @@ export function App() {
         const mappedById = new Map(mapped.map((item) => [item.id, item]));
         const kept = cachedSessions
           .map((session) => mappedById.get(session.id))
-          .filter((session): session is OpencodeChatSession => Boolean(session));
+          .filter((session): session is AgentChatSession => Boolean(session));
         const keptIds = new Set(kept.map((session) => session.id));
         const appended = mapped.filter((session) => !keptIds.has(session.id));
         return { ...prev, [repoId]: [...kept, ...appended] };
       });
-      sidebarOpencodeSessionFetchLimitByRepoRef.current = {
-        ...sidebarOpencodeSessionFetchLimitByRepoRef.current,
+      sidebarAgentSessionFetchLimitByRepoRef.current = {
+        ...sidebarAgentSessionFetchLimitByRepoRef.current,
         [repoId]: limit
       };
-      setSidebarOpencodeSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
-      setSidebarOpencodeSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
+      setSidebarAgentSessionFetchLimitByRepo((prev) => ({ ...prev, [repoId]: limit }));
+      setSidebarAgentSessionHasMoreByRepo((prev) => ({ ...prev, [repoId]: hasMore }));
     } finally {
-      if (paging && sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
-        setSidebarOpencodeSessionPagingByRepo((prev) => ({ ...prev, [repoId]: false }));
-      } else if (!silent && sidebarOpencodeSessionRequestSeqRef.current[repoId] === requestSeq) {
-        setSidebarOpencodeSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: false }));
+      if (paging && sidebarAgentSessionRequestSeqRef.current[repoId] === requestSeq) {
+        setSidebarAgentSessionPagingByRepo((prev) => ({ ...prev, [repoId]: false }));
+      } else if (!silent && sidebarAgentSessionRequestSeqRef.current[repoId] === requestSeq) {
+        setSidebarAgentSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: false }));
       }
     }
   }
@@ -2483,76 +2766,96 @@ export function App() {
   async function loadMoreSidebarRepoSessions(repo: RepositoryEntry) {
     const repoId = repo.id.trim();
     if (!repoId) return;
-    if (sidebarOpencodeSessionLoadingByRepo[repoId] || sidebarOpencodeSessionPagingByRepo[repoId]) return;
-    const nextLimit = getRepoSessionFetchLimit(repoId) + OPENCODE_SESSION_PAGE_SIZE;
+    if (sidebarAgentSessionLoadingByRepo[repoId] || sidebarAgentSessionPagingByRepo[repoId]) return;
+    const nextLimit = getRepoSessionFetchLimit(repoId) + AGENT_SESSION_PAGE_SIZE;
     await refreshSidebarRepoSessions(repo, { limit: nextLimit, paging: true });
     if (repoId === selectedRepo?.id) {
-      setOpencodeSessionFetchLimit(nextLimit);
-      await refreshOpencodeSessions(nextLimit);
+      setAgentSessionFetchLimit(nextLimit);
+      await refreshAgentSessions(nextLimit);
     }
   }
 
-  async function refreshOpencodeSessions(
-    limitArg?: number,
-    opts?: { allowEmptyDraft?: boolean }
-  ) {
-    if (!ensureRepoSelected()) return;
+  async function refreshAgentSessions(
+    limitArg?: number
+  ): Promise<{ mapped: AgentChatSession[]; empty: boolean }> {
+    if (!ensureRepoSelected()) return { mapped: [], empty: true };
     const repoIdAtRequest = selectedRepo?.id || "";
     const pendingAtRequest = pendingSidebarSessionSelectionRef.current;
-    const currentWorkspace = normalizeWorkspacePath(repoPath);
-    const limit = Math.max(OPENCODE_SESSION_PAGE_SIZE, limitArg ?? opencodeSessionFetchLimit);
-    appendOpencodeDebugLog("session.list requested");
-    const rows = await invoke<OpencodeSessionSummary[]>("list_opencode_sessions", { repoPath, limit });
-    const visibleRows = filterVisibleOpencodeSessionsForRepo(repoIdAtRequest, rows || []);
+    const limit = Math.max(AGENT_SESSION_PAGE_SIZE, limitArg ?? agentSessionFetchLimit);
+    appendAgentDebugLog("session.list requested");
+    const rows = (await agentClient.listSessions())
+      .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath))
+      .slice(0, limit)
+      .map(agentSummaryToChatSummary);
+    const visibleRows = filterVisibleAgentSessionsForRepo(repoIdAtRequest, rows || []);
     if (!visibleRows || visibleRows.length === 0) {
-      appendOpencodeDebugLog("session.list empty");
-      opencodeSessionsRepoIdRef.current = selectedRepo?.id || "";
+      appendAgentDebugLog("session.list empty");
+      agentSessionsRepoIdRef.current = selectedRepo?.id || "";
+      // 空列表：后台数据通道无权清空用户选中或擅自进入草稿态。仅按 pending 补入列表数据；
+      // 是否进入草稿交由 bootstrap（仅末轮）决定。
       const pendingForEmptyRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
       if (pendingForEmptyRepo) {
-        const sidebarHit = (sidebarOpencodeSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForEmptyRepo.sessionId);
-        const cachedHit = opencodeSessions.find((session) => session.id === pendingForEmptyRepo.sessionId);
+        const sidebarHit = (sidebarAgentSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForEmptyRepo.sessionId);
+        const cachedHit = agentSessions.find((session) => session.id === pendingForEmptyRepo.sessionId);
         const pendingSession = sidebarHit || cachedHit;
         if (pendingSession) {
-          setOpencodeSessions([{ ...opencodeSessionFromSummary(pendingSession), loaded: false }]);
-          setActiveOpencodeSessionId(pendingForEmptyRepo.sessionId);
-          setDraftOpencodeSession(false);
+          const rescued = [{ ...agentSessionFromSummary(pendingSession), loaded: false }];
+          setAgentSessions(rescued);
           pendingSidebarSessionSelectionRef.current = null;
-          return;
+          return { mapped: rescued, empty: false };
         }
       }
-      setOpencodeSessions([]);
-      setActiveOpencodeSessionId("");
-      if (opts?.allowEmptyDraft !== false) {
-        setDraftOpencodeSession(true);
-      }
-      return;
+      setAgentSessions([]);
+      return { mapped: [], empty: true };
     }
-    appendOpencodeDebugLog(`session.list loaded ${visibleRows.length}`);
-    let mappedBase = sortOpencodeSessionSummaries(visibleRows).map((s, i) => opencodeSessionFromSummary(s, i + 1));
+    appendAgentDebugLog(`session.list loaded ${visibleRows.length}`);
+    // 列表锚定：保留已有会话的相对顺序仅合并元数据；新会话按活动时间降序头部追加。
+    // 避免 passive-sync 每轮全排序重排导致用户失位，也消除「自动跳会话」的排序温床。
+    const prevList = agentSessionsRef.current;
+    const incomingById = new Map(visibleRows.map((s) => [s.id, s] as const));
+    const preserved = prevList
+      .filter((s) => incomingById.has(s.id))
+      .map((s) => {
+        const freshRow = incomingById.get(s.id)!;
+        return {
+          ...s,
+          title: s.title.trim() || freshRow.title,
+          createdAt: freshRow.createdAt,
+          updatedAt: freshRow.updatedAt,
+        };
+      });
+    const freshRows = sortAgentSessionSummaries(visibleRows.filter((s) => !prevList.some((p) => p.id === s.id))).map((s, i) => agentSessionFromSummary(s, i + 1));
+    let mappedBase = [...freshRows, ...preserved];
     const pendingForRepo = pendingAtRequest && pendingAtRequest.repoId === repoIdAtRequest ? pendingAtRequest : null;
     if (pendingForRepo && !mappedBase.some((session) => session.id === pendingForRepo.sessionId)) {
-      const sidebarHit = (sidebarOpencodeSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForRepo.sessionId);
-      const cachedHit = opencodeSessions.find((session) => session.id === pendingForRepo.sessionId);
+      const sidebarHit = (sidebarAgentSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === pendingForRepo.sessionId);
+      const cachedHit = agentSessions.find((session) => session.id === pendingForRepo.sessionId);
       const pendingSession = sidebarHit || cachedHit;
       if (pendingSession) {
         mappedBase = [pendingSession, ...mappedBase];
       }
     }
-    opencodeSessionsRepoIdRef.current = repoIdAtRequest;
-    setOpencodeSessions((prev) =>
-      mappedBase.map((session) => {
-        const cached = prev.find((item) => item.id === session.id);
-        if (!cached) return session;
-        return {
-          ...cached,
-          title: cached.title.trim() || session.title,
-          createdAt: session.createdAt,
-          updatedAt: session.updatedAt,
-        };
-      })
-    );
+    // 用户当前手选的会话即使不在本次 list 结果里（后端分页/延迟/排序差异），
+    // 只要上一轮缓存或 sidebar 持久记录仍认得它，就补进列表——否则被动刷新
+    // （passive-sync 每 1.5s/5s 触发一次）会让重选回退到 workspace 绑定会话或
+    // 列表首个，表现为「点会话一、几秒后自动跳到会话二」。
+    const activeIdForRescue = activeAgentSessionId;
+    if (activeIdForRescue && !mappedBase.some((session) => session.id === activeIdForRescue)) {
+      const cachedHit = agentSessions.find((session) => session.id === activeIdForRescue);
+      if (cachedHit) {
+        mappedBase = [cachedHit, ...mappedBase];
+      } else {
+        const sidebarHit = (sidebarAgentSessionsByRepo[repoIdAtRequest] || []).find((session) => session.id === activeIdForRescue);
+        if (sidebarHit) {
+          mappedBase = [agentSessionFromSummary(sidebarHit), ...mappedBase];
+        }
+      }
+    }
+    agentSessionsRepoIdRef.current = repoIdAtRequest;
+    // 缓存来源统一用 agentSessionsRef.current（同步镜像），避免闭包读到旧列表。
+    const cacheById = new Map(prevList.map((s) => [s.id, s] as const));
     const mapped = mappedBase.map((session) => {
-      const cached = opencodeSessions.find((item) => item.id === session.id);
+      const cached = cacheById.get(session.id);
       return cached
         ? {
           ...cached,
@@ -2562,182 +2865,172 @@ export function App() {
         }
         : session;
     });
-    const boundSessionId = currentWorkspace ? workspaceAgentBindings[currentWorkspace]?.activeSessionId || "" : "";
-    const bindingMatches = boundSessionId && mapped.some((x) => x.id === boundSessionId);
-    const pending = pendingSidebarSessionSelectionRef.current;
-    const pendingMatches = pending && pending.repoId === repoIdAtRequest ? mapped.some((x) => x.id === pending.sessionId) : false;
-    if (pendingMatches && pending) {
-      setActiveOpencodeSessionId(pending.sessionId);
+    setAgentSessions(mapped);
+    // pending 命中后消费一次（active 已由 selectAgentSession 在点击入口同步设好，无需这里再写）。
+    if (pendingSidebarSessionSelectionRef.current?.repoId === repoIdAtRequest) {
       pendingSidebarSessionSelectionRef.current = null;
-    } else if (bindingMatches) {
-      setActiveOpencodeSessionId(boundSessionId);
-    } else {
-      setActiveOpencodeSessionId((prev) => (prev && mapped.some((x) => x.id === prev) ? prev : mapped[0].id));
     }
-    setDraftOpencodeSession(false);
+    setDraftAgentSession(false);
+
+    // 数据通道对账：只观察意图 token 对应会话是否仍在列表，绝不改写 active。
+    // 不在列表时置 stale 提示用户手动切换，是「点会话一、几秒后跳会话二」的最终防线。
+    const intent = agentSelectionIntentRef.current;
+    if (intent?.sessionId && !mapped.some((s) => s.id === intent.sessionId)) {
+      appendAgentDebugLog(`session.reconcile.stale seq=${intent.seq} id=${intent.sessionId} reason=${intent.reason}`);
+      setAgentActiveSessionStale(true);
+    } else if (agentActiveSessionStale) {
+      setAgentActiveSessionStale(false);
+    }
+    return { mapped, empty: false };
   }
 
-  async function loadMoreOpencodeSessions() {
-    const nextLimit = opencodeSessionFetchLimit + OPENCODE_SESSION_PAGE_SIZE;
-    setOpencodeSessionFetchLimit(nextLimit);
-    await refreshOpencodeSessions(nextLimit);
+  async function loadMoreAgentSessions() {
+    const nextLimit = agentSessionFetchLimit + AGENT_SESSION_PAGE_SIZE;
+    setAgentSessionFetchLimit(nextLimit);
+    await refreshAgentSessions(nextLimit);
   }
 
-  async function loadOpencodeSessionMessages(sessionId: string, repoPathArg = repoPath) {
+  async function loadAgentSessionMessages(sessionId: string, repoPathArg = repoPath) {
     if (!repoPathArg.trim() && !ensureRepoSelected()) return;
     const id = sessionId.trim();
     if (!id) return;
-    appendOpencodeDebugLog(`session.messages load ${id}`);
+    appendAgentDebugLog(`session.messages load ${id}`);
     try {
-      const result = await fetchOpencodeCompactMessagesWindow(id, OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT, repoPathArg);
-      const mapped = result.mapped;
-      const turnStart = getInitialOpencodeTurnStart(result.turnCount);
-      const currentSession = opencodeSessions.find((s) => s.id === id);
+      const agentMessages = await agentClient.getMessages(id);
+      // 历史是完成态的唯一事实来源：同步构建详情 parts（reasoning/工具卡片），
+      // 否则渲染回退 content，过程时间线在完成后消失（且占位文案泄漏进正文）。
+      const toolResults = agentToolResultsByCallId(agentMessages);
+      const detailsById: Record<string, AgentDetailedMessage> = {};
+      for (const message of agentMessages) {
+        detailsById[message.id] = agentMessageToDetailedMessage(message, toolResults);
+      }
+      setAgentDetailsByMessageId((prev) => ({ ...prev, ...detailsById }));
+      const currentSession = agentSessions.find((s) => s.id === id);
+      const baseMapped = agentMessages
+        .map(agentMessageToChatMessage)
+        .filter((message): message is AgentChatMessage => Boolean(message));
+      // 纯文本模型能力分流会丢弃 image block（避免 provider HTTP 400），pi 历史 user message 因此无 image part。
+      // 复用 mergeAgentMessageAttachments：按 id/content 把重载前 optimistic 消息里的用户图片补回，
+      // 否则回复完成后用户发的图会从气泡消失。
+      const mapped = mergeAgentMessageErrors(
+        currentSession?.messages,
+        mergeAgentMessageAttachments(currentSession?.messages, baseMapped)
+      );
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
       if (currentSession && currentSession.loaded && currentSession.messages.length > 0) {
         const current = currentSession.messages;
         if (current.length === mapped.length) {
           const isSame = current.every((msg, idx) => {
             const next = mapped[idx];
-            return msg.id === next.id && msg.role === next.role && msg.content === next.content;
+            if (!next || msg.id !== next.id || msg.role !== next.role || msg.content !== next.content) {
+              return false;
+            }
+            const currentAttachments = msg.attachments || [];
+            const nextAttachments = next.attachments || [];
+            if (currentAttachments.length !== nextAttachments.length) return false;
+            return currentAttachments.every((item, attachmentIndex) => {
+              const other = nextAttachments[attachmentIndex];
+              return Boolean(other) && item.uri === other.uri && item.mime === other.mime;
+            });
           });
           if (isSame) {
-            appendOpencodeDebugLog(`session.messages load ${id} skipped (unchanged)`);
+            appendAgentDebugLog(`session.messages load ${id} skipped (unchanged)`);
             return;
           }
         }
       }
-      updateOpencodeSessionById(id, (session) => ({
+      updateAgentSessionById(id, (session) => ({
         ...session,
         messages: mapped,
-        turnStart,
         loaded: true,
-        nextCursor: result.nextCursor,
-        hasMore: result.hasMore,
+        nextCursor: undefined,
+        hasMore: false,
         updatedAt: Date.now()
       }));
-      appendOpencodeDebugLog(`session.messages loaded ${id} count=${mapped.length} turns=${result.turnCount} start=${turnStart} hasMore=${result.hasMore}`);
-      prefetchNextOpencodeHistoryPage({
-        id,
-        title: "",
-        createdAt: 0,
-        updatedAt: 0,
-        messages: [],
-        turnStart: 0,
-        loaded: true,
-        nextCursor: result.nextCursor,
-        hasMore: result.hasMore
-      });
+      appendAgentDebugLog(`agent.messages loaded ${id} count=${mapped.length}`);
     } catch (e) {
-      appendOpencodeDebugLog(`session.messages load ${id} failed: ${e}`);
-      updateOpencodeSessionById(id, (session) => ({
-        ...session,
-        messages: [],
-        turnStart: 0,
-        loaded: true,
-        updatedAt: Date.now()
-      }));
+      appendAgentDebugLog(`session.messages load ${id} failed: ${e}`);
+      updateAgentSessionById(id, (session) => {
+        return {
+          ...session,
+          // 保留现有乐观消息（尤其是失败卡片），避免一次网络抖动清空整个列表。
+          messages: session.messages,
+          turnStart: 0,
+          loaded: true,
+          updatedAt: Date.now()
+        };
+      });
     } finally {
-      endOpencodeSessionHydration(id);
+      endAgentSessionHydration(id);
     }
   }
 
-  async function loadMoreOpencodeSessionMessages(sessionId: string) {
+  async function loadMoreAgentSessionMessages(sessionId: string) {
     if (!ensureRepoSelected()) return;
     const id = sessionId.trim();
     if (!id) return;
-    const session = opencodeSessions.find((s) => s.id === id);
+    const session = agentSessions.find((s) => s.id === id);
     if (!session) return;
-    appendOpencodeDebugLog(`session.messages load more ${id}`);
+    appendAgentDebugLog(`session.messages load more ${id}`);
     const before = (session.nextCursor || "").trim();
     if (!before) {
-      opencodeLoadingOlderRef.current = false;
-      opencodePrevScrollHeightRef.current = 0;
+      agentLoadingOlderRef.current = false;
       return;
     }
     try {
-      const prevTurnCount = buildOpencodeTurnRanges(session.messages).length;
-      const page = await fetchOpencodeDetailedMessagePage(id, before, OPENCODE_OLDER_MESSAGE_FETCH_LIMIT);
+      const page = await fetchAgentDetailedMessagePage(id, before, AGENT_OLDER_MESSAGE_FETCH_LIMIT);
       const merged = [...page.items, ...session.messages].filter((msg, index, arr) => arr.findIndex((item) => item.id === msg.id) === index);
-      const mapped = merged;
-      const growth = Math.max(0, buildOpencodeTurnRanges(mapped).length - prevTurnCount);
-      if (growth <= 0) {
-        if (mapped.length > session.messages.length) {
-          if (Object.keys(page.detailsById).length > 0) {
-            setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
-          }
-          updateOpencodeSessionById(id, (s) => ({
-            ...s,
-            messages: mapped,
-            nextCursor: page.nextCursor,
-            hasMore: page.hasMore,
-            updatedAt: Date.now()
-          }));
-          appendOpencodeDebugLog(`session.messages load more ${id} mergedWithoutTurnGrowth count=${mapped.length} hasMore=${page.hasMore}`);
-        }
-        updateOpencodeSessionById(id, (s) => ({
-          ...s,
-          nextCursor: page.nextCursor,
-          hasMore: page.hasMore,
-          updatedAt: Date.now()
-        }));
-        opencodeLoadingOlderRef.current = false;
-        opencodePrevScrollHeightRef.current = 0;
-        return;
-      }
       if (Object.keys(page.detailsById).length > 0) {
-        setOpencodeDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+        setAgentDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
       }
-      updateOpencodeSessionById(id, (s) => ({
+      updateAgentSessionById(id, (s) => ({
         ...s,
-        messages: mapped,
-        turnStart: Math.max(0, s.turnStart + growth),
+        messages: merged,
         nextCursor: page.nextCursor,
         hasMore: page.hasMore,
         updatedAt: Date.now()
       }));
-      appendOpencodeDebugLog(`session.messages prefetch older ${id} count=${mapped.length} growth=${growth} hasMore=${page.hasMore}`);
-      prefetchNextOpencodeHistoryPage({
+      appendAgentDebugLog(`session.messages load more ${id} count=${merged.length} hasMore=${page.hasMore}`);
+      prefetchNextAgentHistoryPage({
         ...session,
+        messages: merged,
         nextCursor: page.nextCursor,
         hasMore: page.hasMore
       });
     } catch (e) {
-      opencodeLoadingOlderRef.current = false;
-      opencodePrevScrollHeightRef.current = 0;
-      appendOpencodeDebugLog(`session.messages load more ${id} failed: ${e}`);
+      appendAgentDebugLog(`session.messages load more ${id} failed: ${e}`);
+    } finally {
+      // virtuoso 在 data 前部插入时自动保持视觉锚点，无需手动 scrollTop 调整。
+      agentLoadingOlderRef.current = false;
     }
   }
 
-  function prefetchNextOpencodeHistoryPage(session: OpencodeChatSession | null) {
+  function prefetchNextAgentHistoryPage(session: AgentChatSession | null) {
     if (!session?.hasMore) return;
     const before = (session.nextCursor || "").trim();
     if (!before) return;
-    void fetchOpencodeDetailedMessagePage(session.id, before, OPENCODE_OLDER_MESSAGE_FETCH_LIMIT).catch(() => {
+    void fetchAgentDetailedMessagePage(session.id, before, AGENT_OLDER_MESSAGE_FETCH_LIMIT).catch(() => {
       /* keep prefetch silent */
     });
   }
 
-  async function loadOpencodeMessageDetails(sessionId: string, messageId: string, limit = 80) {
+  async function loadAgentMessageDetails(sessionId: string, messageId: string, limit = 80) {
     if (!ensureRepoSelected()) return;
     const id = sessionId.trim();
     if (!id) return;
     const mid = messageId.trim();
     if (!mid) return;
-    const serverMid = (opencodeServerMessageIdByLocalId[mid] || "").trim() || mid;
-    setOpencodeDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: "" }));
-    setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: true }));
-    appendOpencodeDebugLog(`session.messages detailed load ${id} message=${serverMid}`);
+    const serverMid = (agentServerMessageIdByLocalId[mid] || "").trim() || mid;
+    setAgentDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: "" }));
+    setAgentDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: true }));
+    appendAgentDebugLog(`session.messages detailed load ${id} message=${serverMid}`);
     try {
-      const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
-        repoPath,
-        sessionId: id,
-        directory: repoPath,
-        limit
-      });
-      const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
-      const hit = rows.find((m) => String((m as any)?.info?.id || "") === serverMid) ?? null;
-      setOpencodeDetailsByMessageId((prev) => {
+      const agentMessages = await agentClient.getMessages(id);
+      const toolResults = agentToolResultsByCallId(agentMessages);
+      const hit = agentMessages
+        .map((message) => agentMessageToDetailedMessage(message, toolResults))
+        .find((m) => String(m?.info?.id || "") === serverMid) ?? null;
+      setAgentDetailsByMessageId((prev) => {
         const cur = prev[mid];
         try {
           if (cur && hit && JSON.stringify(cur) === JSON.stringify(hit)) return prev;
@@ -2746,89 +3039,104 @@ export function App() {
         }
         return { ...prev, [mid]: hit };
       });
-      appendOpencodeDebugLog(`session.messages detailed loaded ${id} message=${serverMid} hit=${hit ? 1 : 0} total=${rows.length}`);
+      appendAgentDebugLog(`session.messages detailed loaded ${id} message=${serverMid} hit=${hit ? 1 : 0} total=${agentMessages.length}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e ?? "unknown error");
-      setOpencodeDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: msg }));
-      appendOpencodeDebugLog(`session.messages detailed failed ${id} message=${serverMid} ${msg}`);
+      setAgentDetailsErrorByMessageId((prev) => ({ ...prev, [mid]: msg }));
+      appendAgentDebugLog(`session.messages detailed failed ${id} message=${serverMid} ${msg}`);
     } finally {
-      setOpencodeDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: false }));
+      setAgentDetailsLoadingByMessageId((prev) => ({ ...prev, [mid]: false }));
     }
   }
 
-  async function createPersistedOpencodeSession(seedPrompt?: string): Promise<string> {
+  async function createPersistedAgentSession(seedPrompt?: string): Promise<string> {
     if (!ensureRepoSelected()) return "";
-    appendOpencodeDebugLog("session.create requested");
-    const created = await invoke<OpencodeSessionSummary>("create_opencode_session", {
-      repoPath,
-      title: clipOpencodeSessionTitle(seedPrompt) || undefined,
-      agent: activeOpencodeAgent || null,
-      permission: opencodeAutoAcceptPermissions ? allowAllPermissionRules() : null
-    });
-    const next = opencodeSessionFromSummary(created, opencodeSessions.length + 1);
+    appendAgentDebugLog("session.create requested");
+    const parsedModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
+    const modelRef = parsedModel ? parseModelRef(parsedModel) : null;
+    let createdAgent: AgentSessionSummary;
+    try {
+      const mode = composerAgentSessionOptions(activeAgentAgent);
+      const modelInfo = agentModelInfoByRef[parsedModel || ""] || null;
+      createdAgent = await agentClient.createSession({
+        repoPath,
+        provider: modelRef?.provider,
+        model: modelRef?.model,
+        maxToolIterations: generalSettings.maxToolIterations > 0 ? generalSettings.maxToolIterations : undefined,
+        appendSystemPrompt: mode.appendSystemPrompt,
+        ...(mode.enabledTools ? { enabledTools: mode.enabledTools } : {}),
+        thinking: toPiThinkingLevel(activeAgentThinkingLevel, modelInfo)
+      });
+    } catch (error) {
+      // 创建失败必须可见（如凭据缺失/模型未选），否则表现为"发不出消息"。
+      appendAgentDebugLog(`session.create.error ${String(error)}`);
+      setError(String(error));
+      setMessage("创建会话失败，请检查模型与密钥配置");
+      return "";
+    }
+    const created = agentSummaryToChatSummary(createdAgent);
+    created.title = clipAgentSessionTitle(seedPrompt) || created.title;
+    const next = agentSessionFromSummary(created, agentSessions.length + 1);
     next.loaded = true;
-    setOpencodeSessions((prev) => {
+    setAgentSessions((prev) => {
       const exists = prev.some((session) => session.id === created.id);
       return exists ? prev : [next, ...prev];
     });
     const repoIdAtCreate = selectedRepo?.id || newSessionTargetRepoId;
-    upsertSidebarOpencodeSession(repoIdAtCreate, next);
+    upsertSidebarAgentSession(repoIdAtCreate, next);
     if (repoIdAtCreate) setExpandedProjectIds((prev) => (prev.includes(repoIdAtCreate) ? prev : [...prev, repoIdAtCreate]));
-    setActiveOpencodeSessionId(created.id);
-    if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [created.id]: activeOpencodeAgent }));
-    setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [created.id]: activeOpencodeThinkingLevel }));
-    bindOpencodeSessionToWorkspace(created.id, repoPath, worktreeOverview.branch || selectedBranch);
-    setDraftOpencodeSession(false);
-    setOpencodePromptInput("");
-    appendOpencodeDebugLog(`session.created ${created.id}`);
-    resumeOpencodeFollowFromUserAction(created.id);
+    selectAgentSession(created.id, "new");
+    if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
+    setAgentSessionThinkingLevel((prev) => ({ ...prev, [created.id]: activeAgentThinkingLevel }));
+    bindAgentSessionToWorkspace(created.id, repoPath, worktreeOverview.branch || selectedBranch);
+    setAgentPromptInput("");
+    appendAgentDebugLog(`session.created ${created.id}`);
+    if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
     return created.id;
   }
 
-  async function createAndSwitchOpencodeSession(seedPrompt?: string) {
+  async function createAndSwitchAgentSession(seedPrompt?: string) {
     if (!ensureRepoSelected()) return;
     clearPendingSidebarSessionSelection();
-    clearOpencodeSessionHydration();
-    setDraftOpencodeSession(true);
-    setActiveOpencodeSessionId("");
-    setOpencodePromptInput(seedPrompt?.trim() || "");
+    clearAgentSessionHydration();
+    selectAgentSession("", "draft-clear", { draft: true });
+    setAgentPromptInput(seedPrompt?.trim() || "");
     requestAnimationFrame(() => {
-      opencodeInputRef.current?.focus();
+      agentInputRef.current?.focus();
     });
   }
 
-  async function createAndSwitchOpencodeSessionForSidebar(seedPrompt?: string) {
+  async function createAndSwitchAgentSessionForSidebar(seedPrompt?: string) {
     const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
     if (!targetRepo) {
       setError("请先导入并选择一个工作区。");
       return;
     }
-    opencodeSessionsRepoIdRef.current = targetRepo.id;
+    agentSessionsRepoIdRef.current = targetRepo.id;
     if (selectedRepo?.id !== targetRepo.id) setSelectedRepo(targetRepo);
     if (gitPaneRepo?.id !== targetRepo.id) setGitPaneRepo(targetRepo);
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(targetRepo.id));
+    setAgentSessionFetchLimit(getRepoSessionFetchLimit(targetRepo.id));
     setExpandedProjectIds((prev) => (prev.includes(targetRepo.id) ? prev : [...prev, targetRepo.id]));
     clearPendingSidebarSessionSelection();
-    clearOpencodeSessionHydration();
-    setDraftOpencodeSession(true);
-    setActiveOpencodeSessionId("");
-    setOpencodePromptInput(seedPrompt?.trim() || "");
+    clearAgentSessionHydration();
+    selectAgentSession("", "draft-clear", { draft: true });
+    setAgentPromptInput(seedPrompt?.trim() || "");
     requestAnimationFrame(() => {
-      opencodeInputRef.current?.focus();
+      agentInputRef.current?.focus();
     });
   }
 
-  async function openOpencodeChildSession(childSessionId: string, titleHint?: string) {
+  async function openAgentChildSession(childSessionId: string, titleHint?: string) {
     const id = childSessionId.trim();
     if (!id) return;
     if (!ensureRepoSelected()) return;
-    let summary: OpencodeSessionSummary | null = null;
+    let summary: ChatSessionSummary | null = null;
     try {
-      summary = await invoke<OpencodeSessionSummary>("get_opencode_session", { repoPath, sessionId: id });
+      summary = agentSummaryToChatSummary(await agentClient.getSession(id));
     } catch {
       // fallback to optimistic local shell below
     }
-    setOpencodeSessions((prev) => {
+    setAgentSessions((prev) => {
       const idx = prev.findIndex((s) => s.id === id);
       if (idx >= 0) {
         const next = [...prev];
@@ -2841,39 +3149,57 @@ export function App() {
         };
         return next;
       }
-      const shell: OpencodeSessionSummary = summary || {
+      const shell: ChatSessionSummary = summary || {
         id,
         title: titleHint?.trim() || `Task ${id.slice(0, 8)}`,
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      const added = opencodeSessionFromSummary(shell, prev.length + 1);
+      const added = agentSessionFromSummary(shell, prev.length + 1);
       return [added, ...prev];
     });
-    beginOpencodeSessionHydration(id);
-    setActiveOpencodeSessionId(id);
-    setDraftOpencodeSession(false);
+    beginAgentSessionHydration(id);
+    selectAgentSession(id, "child");
     try {
-      await loadOpencodeSessionMessages(id);
-      appendOpencodeDebugLog(`session.child.opened ${id}`);
+      await loadAgentSessionMessages(id);
+      appendAgentDebugLog(`session.child.opened ${id}`);
     } catch (e) {
-      appendOpencodeDebugLog(`session.child.open.error ${id} ${String(e)}`);
+      appendAgentDebugLog(`session.child.open.error ${id} ${String(e)}`);
     }
   }
 
-  function upsertOpencodeLivePart(serverMessageId: string, incomingPart: unknown) {
+  function upsertAgentLivePart(serverMessageId: string, incomingPart: unknown) {
     const mid = serverMessageId.trim();
     if (!mid || !incomingPart || typeof incomingPart !== "object") return;
-    const part = incomingPart as OpencodeDetailedPart;
+    const part = incomingPart as AgentDetailedPart;
     const pid = String((part as any)?.id || "").trim();
     if (!pid) return;
-    setOpencodeLivePartsByServerMessageId((prev) => {
+    setAgentLivePartsByServerMessageId((prev) => {
       const current = prev[mid] || [];
       const next = [...current];
       const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
       if (hit >= 0) {
         const previous = next[hit] as any;
+        // pi 原生 part 缺省字段不写 key，浅合并即保留先前事件的值。
         const base = { ...previous, ...(part as any) };
+        // 空 toolName 不覆盖已有的非空：buildToolPart 对 toolName 总是写值（type 必填），后续事件
+        // （tool.progress / completed 等不带 toolName）会写成空串；若让空串盖掉已补全的 "ls"/"read"，
+        // 该工具会被 isAgentRenderablePart 滤掉 → context 组工具数 3→2→3 抖动、整组短暂消失 =
+        // 「数量更新就显隐」闪动（用户原话）。与 input/output「缺省不写 key」同理：缺省值不覆盖已写入值。
+        const incomingToolName = String((part as any)?.toolName || "").trim();
+        if (!incomingToolName && typeof previous?.toolName === "string" && previous.toolName.trim()) {
+          base.toolName = previous.toolName;
+        }
+        // 工具身份锁定 type=toolCall：part 自带 toolName 或 previous 已有 toolName 即视为工具，强制
+        // type=toolCall。type 抖动的真正源头是 patchAgentLivePartDelta/setAgentLivePartField（工具
+        // inputRaw delta 的 field 不在 reasoning 判定内、被 resolveAgentLivePartType 当成 text，覆盖已
+        // 确认的 toolCall）——那里已同样锁定 toolCall 不降级；此处为本函数（incoming 来自 buildToolPart、
+        // 恒 toolCall）的同源兜底防御。一旦确认为工具即锁死、context 组恒存在，探索标签不再显隐闪。与空
+        // toolName 守卫互补：空 toolName 时 isAgentRenderablePart 仍滤掉（等 toolName 到达），有
+        // toolName 时 type 锁死。
+        const hasToolName =
+          !!incomingToolName || (typeof previous?.toolName === "string" && !!previous.toolName.trim());
+        if (hasToolName) base.type = "toolCall";
         const ptype = String((part as any)?.type || (next[hit] as any)?.type || "");
         let rewrote = false;
         if (ptype === "text" || ptype === "reasoning") {
@@ -2890,50 +3216,99 @@ export function App() {
               ...previous,
               id: `${pid}:snap:${Date.now().toString(36)}`,
               _snapshot: true
-            } as OpencodeDetailedPart;
+            } as AgentDetailedPart;
             next.splice(hit, 0, snapshot);
           }
-          base.text = mergeOpencodeStreamText(prevText, incomingText);
+          base.text = mergeAgentStreamText(prevText, incomingText);
         }
-        next[rewrote ? hit + 1 : hit] = base as OpencodeDetailedPart;
+        next[rewrote ? hit + 1 : hit] = base as AgentDetailedPart;
       } else {
-        const at = next.findIndex((p) => String((p as any)?.id || "").trim().localeCompare(pid) > 0);
-        if (at >= 0) next.splice(at, 0, part);
-        else next.push(part);
+        // 按到达顺序追加，禁止按 id 字典序插入——否则后出现的 tool/question
+        // 会插到已有的 reasoning:* / text:* 前面，造成「探索/提问跑到思考上面」。
+        next.push(part);
       }
       return { ...prev, [mid]: next };
     });
   }
 
-  function patchOpencodeLivePartDelta(serverMessageId: string, partId: string, field: string, delta: string) {
+  function resolveAgentLivePartType(partId: string, field: string): "reasoning" | "text" | "toolCall" {
+    const pid = partId.trim();
+    // partId 才是类型来源：reasoning 流写入字段名是 text（ReasoningGroup 读 part.text），
+    // 不能用 field === "reasoning" 判断，否则会把思考误标成普通 text，导致「正文在上、思考中标签在下」。
+    if (pid === "reasoning" || pid.startsWith("reasoning:")) return "reasoning";
+    if (field === "reasoning") return "reasoning";
+    // 工具输入参数流式 delta（onAgentEvent 用 event.toolCallId 作 pid、field="inputRaw"）：若判成 text
+    // 会把已确认的 toolCall 工具降级 → context 组整组消失、下个 toolCall 事件又修正 → 探索标签显隐闪。
+    if (field === "inputRaw") return "toolCall";
+    return "text";
+  }
+
+  function patchAgentLivePartDelta(serverMessageId: string, partId: string, field: string, delta: string) {
     const mid = serverMessageId.trim();
     const pid = partId.trim();
     if (!mid || !pid || !field || !delta) return;
-    setOpencodeLivePartsByServerMessageId((prev) => {
+    setAgentLivePartsByServerMessageId((prev) => {
       const current = prev[mid] || [];
       const next = [...current];
       const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
+      const prevPart = hit >= 0 ? ((next[hit] as any) ?? null) : null;
+      // 已确认的工具调用（toolCall）不被降级：本函数按 pid+field 推断 type，但工具的 inputRaw delta
+      // （event.toolCallId 为 pid、field="inputRaw"）会被 resolveAgentLivePartType 判成 text，强制覆盖
+      // 已写入的 toolCall → 该工具被 isAgentRenderablePart 滤掉 → context 组整组消失、下个 toolCall 事件
+      // 又修正回来 → 探索标签「显示→隐藏→显示」显隐闪（用户原话「数量更新就显隐」「我要求标签一定是稳定的」）。
+      // previous 是 toolCall 即锁死，与 upsertAgentLivePart 的工具身份锁同源。
+      const partType = prevPart?.type === "toolCall" ? "toolCall" : resolveAgentLivePartType(pid, field);
       const base =
         hit >= 0
-          ? { ...(next[hit] as any) }
+          ? { ...(next[hit] as any), type: partType }
           : {
             id: pid,
             messageID: mid,
-            type: field === "reasoning" ? "reasoning" : "text"
+            type: partType
           };
       const old = String((base as any)[field] || "");
-      (base as any)[field] = mergeOpencodeStreamText(old, old + delta);
-      if (hit >= 0) next[hit] = base as OpencodeDetailedPart;
-      else next.push(base as OpencodeDetailedPart);
+      (base as any)[field] = mergeAgentStreamText(old, old + delta);
+      if (hit >= 0) next[hit] = base as AgentDetailedPart;
+      else next.push(base as AgentDetailedPart);
       return { ...prev, [mid]: next };
     });
   }
 
-  function removeOpencodeLivePart(serverMessageId: string, partId: string) {
+  function setAgentLivePartField(serverMessageId: string, partId: string, field: string, value: string) {
+    const mid = serverMessageId.trim();
+    const pid = partId.trim();
+    if (!mid || !pid || !field) return;
+    setAgentLivePartsByServerMessageId((prev) => {
+      const current = prev[mid] || [];
+      const next = [...current];
+      const hit = next.findIndex((p) => String((p as any)?.id || "").trim() === pid);
+      const prevPart = hit >= 0 ? ((next[hit] as any) ?? null) : null;
+      // 已确认的工具调用（toolCall）不被降级：本函数按 pid+field 推断 type，但工具的 inputRaw delta
+      // （event.toolCallId 为 pid、field="inputRaw"）会被 resolveAgentLivePartType 判成 text，强制覆盖
+      // 已写入的 toolCall → 该工具被 isAgentRenderablePart 滤掉 → context 组整组消失、下个 toolCall 事件
+      // 又修正回来 → 探索标签「显示→隐藏→显示」显隐闪（用户原话「数量更新就显隐」「我要求标签一定是稳定的」）。
+      // previous 是 toolCall 即锁死，与 upsertAgentLivePart 的工具身份锁同源。
+      const partType = prevPart?.type === "toolCall" ? "toolCall" : resolveAgentLivePartType(pid, field);
+      const base =
+        hit >= 0
+          ? { ...(next[hit] as any), type: partType }
+          : {
+            id: pid,
+            messageID: mid,
+            type: partType
+          };
+      (base as any)[field] = value;
+      if (hit >= 0) next[hit] = base as AgentDetailedPart;
+      else next.push(base as AgentDetailedPart);
+      return { ...prev, [mid]: next };
+    });
+  }
+
+  function removeAgentLivePart(serverMessageId: string, partId: string) {
     const mid = serverMessageId.trim();
     const pid = partId.trim();
     if (!mid || !pid) return;
-    setOpencodeLivePartsByServerMessageId((prev) => {
+    setAgentLivePartsByServerMessageId((prev) => {
       const current = prev[mid] || [];
       const hit = current.find((p) => String((p as any)?.id || "").trim() === pid);
       const hitType = String((hit as any)?.type || "");
@@ -2944,91 +3319,81 @@ export function App() {
     });
   }
 
-  async function archiveOpencodeSession(repo: RepositoryEntry, sessionId: string) {
+  async function archiveAgentSession(repo: RepositoryEntry, sessionId: string) {
     const id = sessionId.trim();
-    if (!id || !runtimeStatus.opencode.installed) return;
+    if (!id) return;
     const repoId = repo.id.trim();
     const repoPathArg = repo.path.trim();
     if (!repoId || !repoPathArg) return;
-    appendOpencodeDebugLog(`session.archive requested ${id}`);
-    const sidebarSnapshot = sidebarOpencodeSessionsByRepo;
-    const sessionSnapshot = opencodeSessions;
-    const repoSessions = sidebarOpencodeSessionsByRepo[repoId] || [];
+    appendAgentDebugLog(`session.archive requested ${id}`);
+    const sidebarSnapshot = sidebarAgentSessionsByRepo;
+    const sessionSnapshot = agentSessions;
+    const repoSessions = sidebarAgentSessionsByRepo[repoId] || [];
     const nextRepoSessions = repoSessions.filter((session) => session.id !== id);
     const idx = repoSessions.findIndex((session) => session.id === id);
     const fallback = nextRepoSessions[Math.max(0, idx - 1)] ?? nextRepoSessions[0] ?? null;
-    setSidebarOpencodeSessionsByRepo((prev) => ({ ...prev, [repoId]: nextRepoSessions }));
-    setOpencodeSessions((prev) => prev.filter((session) => session.id !== id));
-    markOpencodeSessionArchived(repoId, id);
-    if (activeOpencodeSessionId === id) {
+    setSidebarAgentSessionsByRepo((prev) => ({ ...prev, [repoId]: nextRepoSessions }));
+    setAgentSessions((prev) => prev.filter((session) => session.id !== id));
+    markAgentSessionArchived(repoId, id);
+    if (activeAgentSessionId === id) {
       if (fallback) {
         pendingSidebarSessionSelectionRef.current = { repoId, sessionId: fallback.id };
-        beginOpencodeSessionHydration(fallback.id);
-        setOpencodeSessions((prev) => [{ ...opencodeSessionFromSummary(fallback), loaded: false }, ...prev.filter((session) => session.id !== fallback.id)]);
-        setActiveOpencodeSessionId(fallback.id);
-        setDraftOpencodeSession(false);
+        beginAgentSessionHydration(fallback.id);
+        setAgentSessions((prev) => [{ ...agentSessionFromSummary(fallback), loaded: false }, ...prev.filter((session) => session.id !== fallback.id)]);
+        selectAgentSession(fallback.id, "neighbor");
       } else {
-        clearOpencodeSessionHydration();
-        setActiveOpencodeSessionId("");
-        setDraftOpencodeSession(true);
+        clearAgentSessionHydration();
+        selectAgentSession("", "delete-empty", { draft: true });
       }
     }
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath: repoPathArg });
-      const resp = await fetch(`${base}/session/${encodeURIComponent(id)}?directory=${encodeURIComponent(repoPathArg)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ time: { archived: Date.now() } })
-      });
-      if (!resp.ok) throw new Error(`archive failed: HTTP ${resp.status} ${await resp.text().catch(() => "")}`);
-      appendOpencodeDebugLog(`session.archived ${id}`);
+      await agentClient.deleteSession(id);
+      appendAgentDebugLog(`agent.session.deleted ${id}`);
       setMessage("会话已归档");
     } catch (e) {
-      appendOpencodeDebugLog(`session.archive.error ${id} ${String(e)}`);
-      const archivedIds = archivedOpencodeSessionIdsByRepoRef.current[repoId];
+      appendAgentDebugLog(`session.archive.error ${id} ${String(e)}`);
+      const archivedIds = archivedAgentSessionIdsByRepoRef.current[repoId];
       if (archivedIds) {
         const next = new Set(archivedIds);
         next.delete(id);
-        archivedOpencodeSessionIdsByRepoRef.current = {
-          ...archivedOpencodeSessionIdsByRepoRef.current,
+        archivedAgentSessionIdsByRepoRef.current = {
+          ...archivedAgentSessionIdsByRepoRef.current,
           [repoId]: next
         };
       }
-      setSidebarOpencodeSessionsByRepo(sidebarSnapshot);
-      setOpencodeSessions(sessionSnapshot);
-      if (activeOpencodeSessionId === id) setActiveOpencodeSessionId(id);
+      setSidebarAgentSessionsByRepo(sidebarSnapshot);
+      setAgentSessions(sessionSnapshot);
+      if (activeAgentSessionId === id) selectAgentSession(id, "rollback");
       setError(String(e));
     }
   }
 
-  async function removeOpencodeSession(sessionId: string) {
+  async function removeAgentSession(sessionId: string) {
     const id = sessionId.trim();
-    if (!id || opencodeSessions.length <= 1) return;
+    if (!id || agentSessions.length <= 1) return;
     if (!ensureRepoSelected()) return;
-    appendOpencodeDebugLog(`session.delete requested ${id}`);
-    const snapshot = opencodeSessions;
+    appendAgentDebugLog(`session.delete requested ${id}`);
+    const snapshot = agentSessions;
     const idx = snapshot.findIndex((s) => s.id === id);
     if (idx < 0) return;
     const next = snapshot.filter((s) => s.id !== id);
     const fallback = next[Math.max(0, idx - 1)] ?? next[0] ?? null;
-    setOpencodeSessions(next);
-    if (activeOpencodeSessionId === id && fallback) {
-      beginOpencodeSessionHydration(fallback.id);
-      setActiveOpencodeSessionId(fallback.id);
-      setDraftOpencodeSession(false);
+    setAgentSessions(next);
+    if (activeAgentSessionId === id && fallback) {
+      beginAgentSessionHydration(fallback.id);
+      selectAgentSession(fallback.id, "neighbor");
     } else if (next.length === 0) {
-      clearOpencodeSessionHydration();
-      setActiveOpencodeSessionId("");
-      setDraftOpencodeSession(true);
+      clearAgentSessionHydration();
+      selectAgentSession("", "delete-empty", { draft: true });
     }
     try {
-      await invoke<boolean>("delete_opencode_session", { repoPath, sessionId: id });
-      appendOpencodeDebugLog(`session.deleted ${id}`);
+      await agentClient.deleteSession(id);
+      appendAgentDebugLog(`session.deleted ${id}`);
     } catch (e) {
-      appendOpencodeDebugLog(`session.delete.error ${id} ${String(e)}`);
-      setOpencodeSessions(snapshot);
-      if (activeOpencodeSessionId === id) {
-        setActiveOpencodeSessionId(id);
+      appendAgentDebugLog(`session.delete.error ${id} ${String(e)}`);
+      setAgentSessions(snapshot);
+      if (activeAgentSessionId === id) {
+        selectAgentSession(id, "rollback");
       }
       throw e;
     }
@@ -3066,23 +3431,23 @@ export function App() {
     return true;
   }
 
-  function getOpencodeInvokeRepoPath(): string {
+  function getAgentInvokeRepoPath(): string {
     return (selectedRepo?.path || repos[0]?.path || "").trim();
   }
 
-  function applyOpencodeProviderSnapshot(snapshot: ReturnType<typeof normalizeOpencodeServerProviderState>) {
-    setOpencodeProviderNames((prev) => {
+  function applyAgentProviderSnapshot(snapshot: ReturnType<typeof normalizeAgentServerProviderState>) {
+    setAgentProviderNames((prev) => {
       const next = { ...prev };
       for (const [providerId, displayName] of Object.entries(snapshot.providerNames)) {
         if (displayName && !next[providerId]) next[providerId] = displayName;
       }
       return next;
     });
-    setOpencodeProviderSourceById(snapshot.providerSources);
-    setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
-    setOpencodeModelsByProvider(snapshot.modelsByProvider);
-    setOpencodeProviders(snapshot.providers);
-    setOpencodeConnectedProviders(snapshot.connectedProviders);
+    setAgentProviderSourceById(snapshot.providerSources);
+    setAgentModelNamesByProvider(snapshot.modelNamesByProvider);
+    setAgentModelsByProvider(snapshot.modelsByProvider);
+    setAgentProviders(snapshot.providers);
+    setAgentConnectedProviders(snapshot.connectedProviders);
   }
 
   function ensureGitPaneSelected(): boolean {
@@ -3192,7 +3557,7 @@ export function App() {
     forgetBranchParent,
     rememberWorktreeParent,
     unbindWorkspaceAgent,
-    appendOpencodeDebugLog,
+    appendAgentDebugLog,
     setSelectedRepo,
     setMessage,
     setError,
@@ -3346,9 +3711,9 @@ export function App() {
 
   async function refreshRuntimeRequirements(): Promise<RuntimeRequirementsStatus> {
     setRuntimeChecking(true);
-    setCheckingDeps({ git: true, entire: true, opencode: true, giteam: true });
+    setCheckingDeps({ git: true, entire: true, giteam: true });
     try {
-      const deps: Array<"git" | "entire" | "opencode" | "giteam"> = ["git", "entire", "opencode", "giteam"];
+      const deps: Array<"git" | "entire" | "giteam"> = ["git", "entire", "giteam"];
       await Promise.all(
         deps.map(async (dep) => {
           try {
@@ -3399,8 +3764,9 @@ function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
   return runtimeJobFailureMessage(job);
 }
 
+/** 桌面端必装依赖：git + entire。giteam CLI 仅供手机端连接，不阻塞首启。 */
 function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepName[] {
-  return (["git", "entire", "opencode", "giteam"] as RuntimeDepName[]).filter((name) => !status[name].installed);
+  return (["git", "entire"] as RuntimeDepName[]).filter((name) => !status[name].installed);
 }
 
   async function runDependencyAction(
@@ -3484,78 +3850,80 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     setShowEnvSetup(options?.showRuntimePanel ?? true);
   }
 
-  async function fetchOpencodeProviders(): Promise<string[]> {
-    const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath });
-    const snapshot = normalizeOpencodeServerProviderState(state);
+  async function fetchAgentProviders(): Promise<string[]> {
+    const providers = await agentClient.listProviders();
+    setAgentModelInfoByRef(indexAgentModelInfoByRef(providers));
+    const state = agentProvidersToServerState(providers);
+    const snapshot = normalizeAgentServerProviderState(state);
     const connectedSet = new Set(snapshot.connectedProviders);
     const stickyProviders = new Set<string>();
-    if (opencodeModelProvider.trim()) stickyProviders.add(opencodeModelProvider.trim());
-    const configured = parseModelRef(opencodeConfig?.configuredModel || "");
+    if (agentModelProvider.trim()) stickyProviders.add(agentModelProvider.trim());
+    const configured = parseModelRef(agentConfig?.configuredModel || "");
     if (configured?.provider) stickyProviders.add(configured.provider);
     const selectionCatalog = Object.fromEntries(
       Object.entries(snapshot.modelsByProvider).filter(([providerId]) => connectedSet.has(providerId) || stickyProviders.has(providerId))
     );
-    const next = applyOpencodeCatalog(
+    const next = applyAgentCatalog(
       Object.keys(selectionCatalog).length > 0 ? selectionCatalog : snapshot.modelsByProvider,
-      opencodeModelProvider,
-      opencodeSelectedModel
+      agentModelProvider,
+      agentSelectedModel
     );
-    setOpencodeProviderNames((prev) => ({ ...prev, ...snapshot.providerNames }));
-    setOpencodeProviderSourceById((prev) => ({ ...prev, ...snapshot.providerSources }));
-    setOpencodeModelsByProvider(snapshot.modelsByProvider);
-    setOpencodeModelNamesByProvider(snapshot.modelNamesByProvider);
-    setOpencodeProviders(snapshot.providers);
-    setOpencodeConnectedProviders(snapshot.connectedProviders);
-    setOpencodeModelProvider(next.provider);
-    setOpencodeSelectedModel(next.model);
+    setAgentProviderNames((prev) => ({ ...prev, ...snapshot.providerNames }));
+    setAgentProviderSourceById((prev) => ({ ...prev, ...snapshot.providerSources }));
+    setAgentModelsByProvider(snapshot.modelsByProvider);
+    setAgentModelNamesByProvider(snapshot.modelNamesByProvider);
+    setAgentProviders(snapshot.providers);
+    setAgentConnectedProviders(snapshot.connectedProviders);
+    setAgentModelProvider(next.provider);
+    setAgentSelectedModel(next.model);
     return next.providers;
   }
 
-  async function fetchOpencodeModels(provider: string): Promise<string[]> {
-    const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath });
+  async function fetchAgentModels(provider: string): Promise<string[]> {
+    const state = agentProvidersToServerState(await agentClient.listProviders());
     const rows = state?.providers || [];
     const entry = rows.find((p) => p.id === provider) || rows.find((p) => normalizeProviderId(p.id) === normalizeProviderId(provider));
     const models = (entry?.models || []).filter(Boolean).sort((a, b) => a.localeCompare(b));
     if (entry?.id) {
-      setOpencodeModelsByProvider((prev) => ({ ...prev, [entry.id]: models }));
-      setOpencodeModelNamesByProvider((prev) => ({ ...prev, [entry.id]: entry.modelNames || {} }));
-      setOpencodeProviderNames((prev) => ({ ...prev, [entry.id]: prev[entry.id] || entry.name || entry.id }));
+      setAgentModelsByProvider((prev) => ({ ...prev, [entry.id]: models }));
+      setAgentModelNamesByProvider((prev) => ({ ...prev, [entry.id]: entry.modelNames || {} }));
+      setAgentProviderNames((prev) => ({ ...prev, [entry.id]: prev[entry.id] || entry.name || entry.id }));
       if (entry.source) {
-        setOpencodeProviderSourceById((prev) => ({ ...prev, [entry.id]: entry.source || "" }));
+        setAgentProviderSourceById((prev) => ({ ...prev, [entry.id]: entry.source || "" }));
       }
       ensureProviderExists(entry.id);
     }
     return models;
   }
 
-  async function refreshOpencodeCatalog(opts?: {
+  async function refreshAgentCatalog(opts?: {
     syncSelection?: boolean;
     includeCurrentModel?: boolean;
     reloadProviders?: boolean;
   }) {
     if (!ensureRepoSelected()) return;
-    if (opencodeCatalogRefreshInFlightRef.current) return;
-    opencodeCatalogRefreshInFlightRef.current = true;
-    setOpencodeCatalogLoading(true);
+    if (agentCatalogRefreshInFlightRef.current) return;
+    agentCatalogRefreshInFlightRef.current = true;
+    setAgentCatalogLoading(true);
     try {
-      await refreshOpencodeServerConfig(opts);
-      if (opts?.reloadProviders || !opencodeProviderCatalogLoadedRef.current) {
-        await loadOpencodeProviderCatalogOnce();
+      await refreshAgentServerConfig(opts);
+      if (opts?.reloadProviders || !agentProviderCatalogLoadedRef.current) {
+        await loadAgentProviderCatalogOnce();
       } else {
-        await refreshOpencodeConnectedProvidersOnly();
+        await refreshAgentConnectedProvidersOnly();
       }
-      await refreshOpencodeConfiguredModels();
+      await refreshAgentConfiguredModels();
     } finally {
-      opencodeCatalogRefreshInFlightRef.current = false;
-      setOpencodeCatalogLoading(false);
+      agentCatalogRefreshInFlightRef.current = false;
+      setAgentCatalogLoading(false);
     }
   }
 
-  async function waitForOpencodeCatalogLoad(): Promise<void> {
-    if (!opencodeCatalogLoadInFlightRef.current) return;
+  async function waitForAgentCatalogLoad(): Promise<void> {
+    if (!agentCatalogLoadInFlightRef.current) return;
     await new Promise<void>((resolve) => {
       const check = () => {
-        if (!opencodeCatalogLoadInFlightRef.current) {
+        if (!agentCatalogLoadInFlightRef.current) {
           resolve();
           return;
         }
@@ -3565,81 +3933,80 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     });
   }
 
-  async function loadOpencodeProviderCatalogOnce(): Promise<boolean> {
-    const path = getOpencodeInvokeRepoPath();
+  async function loadAgentProviderCatalogOnce(): Promise<boolean> {
+    const path = getAgentInvokeRepoPath();
     if (!path) return false;
-    if (opencodeProviderCatalogLoadedRef.current) return true;
-    if (opencodeCatalogLoadInFlightRef.current) {
-      await waitForOpencodeCatalogLoad();
-      return opencodeProviderCatalogLoadedRef.current;
+    if (agentProviderCatalogLoadedRef.current) return true;
+    if (agentCatalogLoadInFlightRef.current) {
+      await waitForAgentCatalogLoad();
+      return agentProviderCatalogLoadedRef.current;
     }
-    opencodeCatalogLoadInFlightRef.current = true;
+    agentCatalogLoadInFlightRef.current = true;
     try {
-      const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath: path });
-      const snapshot = normalizeOpencodeServerProviderState(state);
+      const state = agentProvidersToServerState(await agentClient.listProviders());
+      const snapshot = normalizeAgentServerProviderState(state);
       if (snapshot.providers.length === 0) {
-        appendOpencodeDebugLog("server.providers catalog empty on first load");
+        appendAgentDebugLog("server.providers catalog empty on first load");
         return false;
       }
-      applyOpencodeProviderSnapshot(snapshot);
-      opencodeProviderCatalogLoadedRef.current = true;
-      appendOpencodeDebugLog(
+      applyAgentProviderSnapshot(snapshot);
+      agentProviderCatalogLoadedRef.current = true;
+      appendAgentDebugLog(
         `server.providers catalog loaded once providers=${snapshot.providers.length} connected=${snapshot.connectedProviders.length}`
       );
       return true;
     } catch (e) {
-      appendOpencodeDebugLog(`server.providers catalog error ${String(e)}`);
+      appendAgentDebugLog(`server.providers catalog error ${String(e)}`);
       return false;
     } finally {
-      opencodeCatalogLoadInFlightRef.current = false;
+      agentCatalogLoadInFlightRef.current = false;
     }
   }
 
-  async function refreshOpencodeConnectedProvidersOnly() {
-    const path = getOpencodeInvokeRepoPath();
-    if (!path) return;
+  async function refreshAgentConnectedProvidersOnly() {
+    // 凭据在全局 vault，与工作区无关；旧逻辑用 repo path 早退会导致「key 已写入但 UI 仍未连接」。
     try {
-      const state = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath: path });
-      const snapshot = normalizeOpencodeServerProviderState(state);
-      setOpencodeConnectedProviders(snapshot.connectedProviders);
-      if (!opencodeProviderCatalogLoadedRef.current && snapshot.providers.length > 0) {
-        applyOpencodeProviderSnapshot(snapshot);
-        opencodeProviderCatalogLoadedRef.current = true;
-        appendOpencodeDebugLog(`server.providers catalog loaded late providers=${snapshot.providers.length}`);
+      const state = agentProvidersToServerState(await agentClient.listProviders());
+      const snapshot = normalizeAgentServerProviderState(state);
+      setAgentConnectedProviders(snapshot.connectedProviders);
+      if (!agentProviderCatalogLoadedRef.current && snapshot.providers.length > 0) {
+        applyAgentProviderSnapshot(snapshot);
+        agentProviderCatalogLoadedRef.current = true;
+        appendAgentDebugLog(`server.providers catalog loaded late providers=${snapshot.providers.length}`);
       }
     } catch (e) {
-      appendOpencodeDebugLog(`server.connected error ${String(e)}`);
+      appendAgentDebugLog(`server.connected error ${String(e)}`);
     }
   }
 
   useEffect(() => {
-    if (!showOpencodeProviderPicker) return;
+    if (!showAgentProviderPicker) return;
     // Reset filters so the modal shows the full provider list by default.
-    setOpencodeProviderPickerSearch("");
-    setOpencodeProviderPickerModelSearch("");
-    setOpencodeProviderActionMenuFor("");
-    setShowOpencodeAuthDialogFor("");
-    appendOpencodeDebugLog(
-      `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${opencodeProviders.length} configuredProviders=${opencodeConfiguredProviders.length} connectedProviders=${opencodeConnectedProviders.length}`
+    setAgentProviderPickerSearch("");
+    setAgentProviderPickerModelSearch("");
+    setAgentProviderActionMenuFor("");
+    setShowAgentAuthDialogFor("");
+    appendAgentDebugLog(
+      `providerPicker.open presets=${PROVIDER_PRESETS.length} serverProviders=${agentProviders.length} configuredProviders=${agentConfiguredProviders.length} connectedProviders=${agentConnectedProviders.length}`
     );
-  }, [showOpencodeProviderPicker]);
+  }, [showAgentProviderPicker]);
 
   useEffect(() => {
-    setOpencodeProviderActionMenuFor("");
-  }, [opencodeProviderPickerProvider]);
+    setAgentProviderActionMenuFor("");
+  }, [agentProviderPickerProvider]);
 
-  async function loadOpencodeModelConfig(opts?: { silent?: boolean }) {
+  async function loadAgentModelConfig(opts?: { silent?: boolean }) {
     if (!ensureRepoSelected()) return false;
     try {
-      const cfg = await invoke<OpencodeModelConfig>("get_opencode_model_config", { repoPath });
-      // Do NOT let local opencode.json override server /config.model (service truth) or /global/config providers.
-      // Keep only file metadata (path/exists), and still record the local configuredModel into history.
-      setOpencodeConfig((prev) => ({
-        configPath: cfg.configPath || prev?.configPath || "",
-        configuredModel: prev?.configuredModel || "",
-        exists: Boolean(cfg.exists)
+      // pi 没有 per-repo 模型配置文件：当前模型是客户端选择状态，
+      // 这里只保留状态形状并记录已保存模型到历史。
+      const configuredModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
+      setAgentConfig((prev) => ({
+        configPath: prev?.configPath || "",
+        configuredModel: prev?.configuredModel || configuredModel || "",
+        exists: false
       }));
-      if (cfg.configuredModel) rememberOpencodeSavedModel(cfg.configuredModel);
+      if (configuredModel) rememberAgentSavedModel(configuredModel);
       return true;
     } catch (e) {
       if (!opts?.silent) {
@@ -3650,86 +4017,86 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
-  function resetOpencodeWorkspaceBootstrapState(nextRepoId?: string) {
-    const prev = opencodeBootstrapDoneForRepoRef.current;
+  function resetAgentWorkspaceBootstrapState(nextRepoId?: string) {
+    const prev = agentBootstrapDoneForRepoRef.current;
     if (prev && nextRepoId && prev === nextRepoId) return;
-    opencodeProviderCatalogLoadedRef.current = false;
-    opencodeModelConfigLoadedRef.current = false;
-    opencodeConfiguredModelsLoadedRef.current = false;
-    opencodeBootstrapDoneForRepoRef.current = "";
+    agentProviderCatalogLoadedRef.current = false;
+    agentModelConfigLoadedRef.current = false;
+    agentConfiguredModelsLoadedRef.current = false;
+    agentBootstrapDoneForRepoRef.current = "";
   }
 
-  async function ensureOpencodeServiceReady(repoPathArg: string): Promise<boolean> {
+  async function ensureAgentServiceReady(repoPathArg: string): Promise<boolean> {
     const path = repoPathArg.trim();
     if (!path) return false;
     try {
-      await invoke<string>("get_opencode_service_base", { repoPath: path });
-      appendOpencodeDebugLog("service.ready");
+      // pi 是进程内 SDK，无需等待外部服务端口；runtimeInfo 探测后端可用性即可。
+      await agentClient.runtimeInfo();
+      appendAgentDebugLog("service.ready (pi in-process)");
       return true;
     } catch (e) {
-      appendOpencodeDebugLog(`service.ready error ${String(e)}`);
+      appendAgentDebugLog(`service.ready error ${String(e)}`);
       return false;
     }
   }
 
-  async function bootstrapOpencodeWorkspace(targetRepoId: string) {
-    if (!runtimeStatus.opencode.installed) return;
+  async function bootstrapAgentWorkspace(targetRepoId: string) {
     const repo = repos.find((item) => item.id === targetRepoId) || selectedRepo;
     if (!repo?.id?.trim() || !repo.path?.trim()) return;
     const repoId = repo.id.trim();
 
-    const token = ++opencodeBootstrapTokenRef.current;
-    opencodeBootstrapInFlightRef.current = true;
-    appendOpencodeDebugLog(`bootstrap.start repo=${repoId}`);
+    const token = ++agentBootstrapTokenRef.current;
+    agentBootstrapInFlightRef.current = true;
+    appendAgentDebugLog(`bootstrap.start repo=${repoId}`);
 
-    let providersOk = opencodeProviderCatalogLoadedRef.current;
+    let providersOk = agentProviderCatalogLoadedRef.current;
     let serviceOk = false;
     let configOk = false;
-    let modelConfigOk = opencodeModelConfigLoadedRef.current;
-    let configuredModelsOk = opencodeConfiguredModelsLoadedRef.current;
+    let modelConfigOk = agentModelConfigLoadedRef.current;
+    let configuredModelsOk = agentConfiguredModelsLoadedRef.current;
     let sessionsOk = hasLoadedSidebarRepoSessions(repoId);
     await waitForPaint();
     const bootstrapStartedAt = Date.now();
-    const isCancelled = () => opencodeBootstrapTokenRef.current !== token;
+    const isCancelled = () => agentBootstrapTokenRef.current !== token;
 
     try {
-      await loadOpencodeServiceSettings();
+      // pi 进程内运行，无需加载 opencode 服务端口设置。
       if (isCancelled()) return;
 
-      for (let attempt = 0; attempt < OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt++) {
+      for (let attempt = 0; attempt < AGENT_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt++) {
         if (isCancelled()) return;
 
-        const targetDelay = OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
+        const targetDelay = AGENT_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
         const waitMs = targetDelay - (Date.now() - bootstrapStartedAt);
         if (waitMs > 0) {
           await new Promise<void>((resolve) => window.setTimeout(resolve, waitMs));
         }
         if (isCancelled()) return;
 
-        const isLastAttempt = attempt === OPENCODE_BOOTSTRAP_RETRY_DELAYS_MS.length - 1;
+        const isLastAttempt = attempt === AGENT_BOOTSTRAP_RETRY_DELAYS_MS.length - 1;
 
         if (!serviceOk) {
-          serviceOk = await ensureOpencodeServiceReady(repo.path);
+          serviceOk = await ensureAgentServiceReady(repo.path);
         }
 
         if (!providersOk) {
-          providersOk = await loadOpencodeProviderCatalogOnce();
+          providersOk = await loadAgentProviderCatalogOnce();
         }
 
         if (!configOk && selectedRepo?.id === repoId) {
-          await refreshOpencodeServerConfig({ syncSelection: true, includeCurrentModel: true });
+          await refreshAgentServerConfig({ syncSelection: true, includeCurrentModel: true });
           configOk = true;
         }
 
         if (!modelConfigOk && selectedRepo?.id === repoId) {
-          modelConfigOk = await loadOpencodeModelConfig({ silent: !isLastAttempt });
-          if (modelConfigOk) opencodeModelConfigLoadedRef.current = true;
+          modelConfigOk = await loadAgentModelConfig({ silent: !isLastAttempt });
+          if (modelConfigOk) agentModelConfigLoadedRef.current = true;
         }
 
         if (!configuredModelsOk && selectedRepo?.id === repoId) {
-          await refreshOpencodeConfiguredModels();
+          await refreshAgentConfiguredModels();
           configuredModelsOk = true;
-          opencodeConfiguredModelsLoadedRef.current = true;
+          agentConfiguredModelsLoadedRef.current = true;
         }
 
         if (!sessionsOk) {
@@ -3737,13 +4104,30 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             await refreshSidebarRepoSessions(repo);
             sessionsOk = hasLoadedSidebarRepoSessions(repoId);
             if (selectedRepo?.id === repoId) {
-              await refreshOpencodeSessions(getRepoSessionFetchLimit(repoId), {
-                allowEmptyDraft: isLastAttempt
-              });
+              // repoSwitched 必须在 refresh 之前读：refresh 内会把 agentSessionsRepoIdRef 置为新 repoId，
+              // 之后再读就掩盖了仓库切换，导致切仓库后 active 仍停在旧仓库会话上。
+              const repoSwitched = agentSessionsRepoIdRef.current !== repoId;
+              const res = await refreshAgentSessions(getRepoSessionFetchLimit(repoId));
+              if (isCancelled()) return;
+              // 首次选中由 bootstrap 显式负责（用户意图：切仓库/启动恢复），不再依赖对齐 effect 越权写。
+              // 幂等守卫 alreadyPicked：上一轮/用户已选则不覆盖；切仓库则允许重选。
+              const intent = agentSelectionIntentRef.current;
+              const alreadyPicked = !!intent?.sessionId && intent.sessionId === activeAgentSessionId;
+              if ((!alreadyPicked || repoSwitched) && !draftAgentSession) {
+                const bound = workspaceAgentBindings[normalizeWorkspacePath(repo.path)]?.activeSessionId || "";
+                const list = res.mapped;
+                const target = bound && list.some((s) => s.id === bound) ? bound : (list[0]?.id ?? "");
+                if (target) {
+                  selectAgentSession(target, bound === target ? "restore" : "bootstrap");
+                } else if (res.empty && isLastAttempt) {
+                  // 列表确实为空：进入草稿态，不写 active（保留空选中）。
+                  setDraftAgentSession(true);
+                }
+              }
             }
             if (sessionsOk) expandProjectSessions(repoId);
           } catch (e) {
-            appendOpencodeDebugLog(`bootstrap.sessions attempt=${attempt} error=${String(e)}`);
+            appendAgentDebugLog(`bootstrap.sessions attempt=${attempt} error=${String(e)}`);
           }
         }
 
@@ -3754,26 +4138,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
       if (isCancelled()) return;
 
-      opencodeBootstrapDoneForRepoRef.current = serviceOk && providersOk ? repoId : "";
-      appendOpencodeDebugLog(
+      agentBootstrapDoneForRepoRef.current = serviceOk && providersOk ? repoId : "";
+      appendAgentDebugLog(
         `bootstrap.done repo=${repoId} service=${serviceOk} providers=${providersOk} config=${configOk} modelConfig=${modelConfigOk} configuredModels=${configuredModelsOk} sessions=${sessionsOk}`
       );
     } finally {
-      if (opencodeBootstrapTokenRef.current === token) {
-        opencodeBootstrapInFlightRef.current = false;
+      if (agentBootstrapTokenRef.current === token) {
+        agentBootstrapInFlightRef.current = false;
       }
     }
   }
 
-  async function loadOpencodeServiceSettings() {
-    try {
-      const cfg = await invoke<OpencodeServiceSettings>("get_opencode_service_settings");
-      const port = Number(cfg.port) > 0 ? Number(cfg.port) : 4098;
-      setOpencodeServiceSettings({ port });
-      setOpencodeServiceSettingsSavedPort(port);
-    } catch (e) {
-      appendOpencodeDebugLog(`service.settings.load error ${String(e)}`);
-    }
+  async function loadAgentServiceSettings() {
+    // pi 嵌入式运行时无需独立服务端口；保留空实现以免设置页旧入口崩溃。
   }
 
   async function loadControlServerSettings() {
@@ -3878,35 +4255,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
-  async function saveOpencodeServiceSettingsIfNeeded() {
-    const port = Number(opencodeServiceSettings.port);
-    if (port === opencodeServiceSettingsSavedPort) return true;
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      setError("Service port must be between 1 and 65535");
-      return false;
-    }
-    setOpencodeServiceSettingsBusy(true);
-    try {
-      const next = await invoke<OpencodeServiceSettings>("set_opencode_service_settings", {
-        settings: { port },
-        repoPath: repoPath || null
-      });
-      const savedPort = Number(next.port) > 0 ? Number(next.port) : port;
-      setOpencodeServiceSettings({ port: savedPort });
-      setOpencodeServiceSettingsSavedPort(savedPort);
-      appendOpencodeDebugLog(`service.settings saved port=${savedPort}`);
-      setMessage("OpenCode service restarted");
-      if (selectedRepo) {
-        resetOpencodeWorkspaceBootstrapState(selectedRepo.id);
-        void bootstrapOpencodeWorkspace(selectedRepo.id);
-      }
-      return true;
-    } catch (e) {
-      setError(String(e));
-      return false;
-    } finally {
-      setOpencodeServiceSettingsBusy(false);
-    }
+  async function saveAgentServiceSettingsIfNeeded() {
+    // pi 进程内运行，忽略旧的 4098 端口保存入口。
+    return true;
   }
 
   async function saveControlServerSettingsIfNeeded() {
@@ -3968,7 +4319,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       void saveControlServerSettingsIfNeeded();
     }
     setShowMobileControlDialog(false);
-    setShowOpencodeApiDialog(false);
+    setShowAgentApiDialog(false);
     setSettingsMobileVisible(false);
     setShowSettings(false);
   }
@@ -3978,17 +4329,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     if (ok) setShowMobileControlDialog(false);
   }
 
-  async function closeOpencodeApiDialog() {
-    const ok = await saveOpencodeServiceSettingsIfNeeded();
-    if (ok) setShowOpencodeApiDialog(false);
+  async function closeAgentApiDialog() {
+    const ok = await saveAgentServiceSettingsIfNeeded();
+    if (ok) setShowAgentApiDialog(false);
   }
 
-  async function refreshOpencodeConfiguredModels() {
+  async function refreshAgentConfiguredModels() {
     if (!ensureRepoSelected()) return;
     try {
-      const configured = await invoke<OpencodeConfigProviderCatalog[]>("get_opencode_config_provider_catalog", { repoPath });
+      const configured = agentProvidersToConfigCatalog(await agentClient.listProviders());
       if (!configured || configured.length === 0) return;
-      setOpencodeProviderNames((prev) => {
+      setAgentProviderNames((prev) => {
         const next = { ...prev };
         for (const p of configured) {
           if (!p?.id) continue;
@@ -3996,50 +4347,49 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         }
         return next;
       });
-      appendOpencodeDebugLog(`config.catalog names synced providers=${configured.length}`);
+      appendAgentDebugLog(`config.catalog names synced providers=${configured.length}`);
     } catch (e) {
-      appendOpencodeDebugLog(`config.catalog error ${String(e)}`);
+      appendAgentDebugLog(`config.catalog error ${String(e)}`);
     }
   }
 
-  async function refreshOpencodeServerProviders() {
-    await loadOpencodeProviderCatalogOnce();
+  async function refreshAgentServerProviders() {
+    await loadAgentProviderCatalogOnce();
   }
 
   async function openConnectProvider(providerId: string) {
     if (!ensureRepoSelected()) return;
     const pid = providerId.trim();
     if (!pid) return;
-    setOpencodeConnectProviderId(pid);
-    setOpencodeConnectProviderName(resolveProviderDisplayName(pid));
-    setOpencodeConnectApiKey("");
+    setAgentConnectProviderId(pid);
+    setAgentConnectProviderName(resolveProviderDisplayName(pid));
+    setAgentConnectApiKey("");
     try {
-      if (!opencodeProviderAuthCache[pid]) {
-        const raw = await invoke<Record<string, OpencodeProviderAuthMethod[]>>("get_opencode_server_provider_auth", { repoPath });
-        const methods = raw?.[pid] ?? [{ type: "api", label: "API key" }];
-        setOpencodeProviderAuthCache((prev) => ({ ...prev, [pid]: methods }));
+      if (!agentProviderAuthCache[pid]) {
+        // pi 当前统一使用 api key 凭据（OAuth 类型 vault 已兼容，授权流程后续接入）。
+        setAgentProviderAuthCache((prev) => ({ ...prev, [pid]: [{ type: "api", label: "API key" }] }));
       }
     } catch {
       // fallback: show API key input even if auth list fails
-      setOpencodeProviderAuthCache((prev) => ({ ...prev, [pid]: prev[pid] ?? [{ type: "api", label: "API key" }] }));
+      setAgentProviderAuthCache((prev) => ({ ...prev, [pid]: prev[pid] ?? [{ type: "api", label: "API key" }] }));
     }
   }
 
-  async function refreshOpencodeServerConfig(opts?: { syncSelection?: boolean; includeCurrentModel?: boolean }) {
+  async function refreshAgentServerConfig(opts?: { syncSelection?: boolean; includeCurrentModel?: boolean }) {
     if (!ensureRepoSelected()) return;
     const syncSelection = opts?.syncSelection !== false;
     const includeCurrentModel = opts?.includeCurrentModel !== false;
     try {
-      // /config may include provider catalogs (e.g. 302ai) that the user didn't configure.
-      // Use /global/config for "configured providers/models", but keep /config.model as the current model source of truth.
-      const globalCfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath });
-      const snapshot = buildOpencodeConfiguredProviderSnapshot(globalCfg);
-      setOpencodeGlobalConfigProviderMap(snapshot.providerMap);
-      setOpencodeDisabledProviders(snapshot.disabledProviders);
+      // pi 数据源：统一 catalog 的 hasCredential 即"已配置"语义。
+      const agentProviders = await agentClient.listProviders();
+      setAgentModelInfoByRef(indexAgentModelInfoByRef(agentProviders));
+      const snapshot = buildAgentConfiguredProviderSnapshot(agentProvidersToGlobalConfig(agentProviders));
+      setAgentGlobalConfigProviderMap(snapshot.providerMap);
+      setAgentDisabledProviders(snapshot.disabledProviders);
 
       // Prefer /provider-derived display names when available.
       // /config is often "power-user" config and may use terse ids (e.g. k2p5) even when /provider has a nicer name (e.g. kimi2.5).
-      setOpencodeProviderNames((prev) => {
+      setAgentProviderNames((prev) => {
         const next = { ...prev };
         for (const [pid, display] of Object.entries(snapshot.providerNames)) {
           if (!pid) continue;
@@ -4047,768 +4397,718 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         }
         return next;
       });
-      setOpencodeConfiguredModelsByProvider(snapshot.modelsByProvider);
-      setOpencodeConfiguredModelNamesByProvider(snapshot.modelNamesByProvider);
-      setOpencodeConfiguredProviders(snapshot.configuredProviders);
+      setAgentConfiguredModelsByProvider(snapshot.modelsByProvider);
+      setAgentConfiguredModelNamesByProvider(snapshot.modelNamesByProvider);
+      setAgentConfiguredProviders(snapshot.configuredProviders);
 
       if (includeCurrentModel) {
-        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-        const currentModel = normalizeModelRef(effective?.model || "");
+        // pi 没有服务端"当前模型"：选择是客户端状态，session 创建时生效，
+        // 活动 session 通过 agentClient.setModel 切换。
+        const currentModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
           if (parsed) {
-            const configuredSet = new Set(snapshot.configuredProviders);
-            // When server model is configured, force UI selection to match it.
-            if (syncSelection && configuredSet.has(parsed.provider)) {
-              ensureProviderExists(parsed.provider);
-              setOpencodeModelProvider(parsed.provider);
-              setOpencodeSelectedModel(parsed.model);
+            ensureProviderExists(parsed.provider);
+            if (syncSelection) {
+              setAgentModelProvider(parsed.provider);
+              setAgentSelectedModel(parsed.model);
             }
           }
-          setOpencodeConfig((prev) => ({
-            configPath: prev?.configPath || (opencodeConfig?.configPath || ""),
+          setAgentConfig((prev) => ({
+            configPath: prev?.configPath || (agentConfig?.configPath || ""),
             configuredModel: currentModel,
             exists: true
           }));
         }
       }
-      appendOpencodeDebugLog(`server.config synced providers=${Object.keys(snapshot.providerMap).length} configured=${snapshot.configuredProviders.length}`);
+      appendAgentDebugLog(`server.config synced providers=${Object.keys(snapshot.providerMap).length} configured=${snapshot.configuredProviders.length}`);
     } catch (e) {
-      appendOpencodeDebugLog(`server.config error ${String(e)}`);
+      appendAgentDebugLog(`server.config error ${String(e)}`);
     }
   }
 
+
+  // 已连接 provider 的实时模型刷新：内置快照可能过期（如 deepseek v4 上线后
+  // 快照仍只有退役的 chat/reasoner），对已配置 key 的 provider 静默拉一次
+  // /v1/models 合并新模型；pi 侧有 5 分钟 TTL 缓存，重复调用代价低。
+  const refreshedProvidersRef = useRef<Set<string>>(new Set());
+  async function refreshConnectedProviderModels() {
+    if (!selectedRepo?.path) return;
+    try {
+      const providers = await agentClient.listProviders();
+      const stale = providers.filter((provider) => provider.hasCredential && !refreshedProvidersRef.current.has(provider.provider));
+      if (!stale.length) return;
+      let addedTotal = 0;
+      for (const provider of stale) {
+        refreshedProvidersRef.current.add(provider.provider);
+        const added = await agentClient.refreshProviderModels(provider.provider).catch(() => [] as string[]);
+        addedTotal += added.length;
+        if (added.length) {
+          appendAgentDebugLog(`实时模型目录已更新: ${provider.provider} +${added.length} (${added.join(", ")})`);
+        }
+      }
+      if (addedTotal > 0) {
+        await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false });
+        await refreshAgentConnectedProvidersOnly();
+      }
+    } catch {
+      // 静默：模型刷新失败不影响主流程
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedRepo?.path) return;
+    void refreshConnectedProviderModels();
+  }, [selectedRepo?.path]);
 
   function ensureProviderExists(provider: string) {
     if (!provider) return;
-    setOpencodeProviders((prev) => (prev.includes(provider) ? prev : [...prev, provider].sort((a, b) => a.localeCompare(b))));
+    setAgentProviders((prev) => (prev.includes(provider) ? prev : [...prev, provider].sort((a, b) => a.localeCompare(b))));
   }
 
-  async function disconnectOpencodeProvider(providerId: string) {
+  async function disconnectAgentProvider(providerId: string) {
     const pid = providerId.trim();
     if (!pid) return;
     if (!ensureRepoSelected()) return;
-    if (getOpencodeProviderSource(pid) === "env") {
+    if (getAgentProviderSource(pid) === "env") {
       setMessage("Environment provider cannot be disconnected");
       return;
     }
-    setOpencodeDisconnectingProvider(pid);
+    setAgentDisconnectingProvider(pid);
     setError("");
     try {
-      await invoke<boolean>("disconnect_opencode_server_provider", { repoPath, providerId: pid });
+      // pi：断开 = 从 vault 移除该 provider 的凭据；env 注入的凭据由 hasCredential
+      // 继续识别（adapter 中 source 不会标为 env 的凭据不受影响）。
+      await agentClient.removeApiKey(pid);
 
-      // Verify on server immediately after command; if still connected, do an explicit fallback sequence.
-      const afterState = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath }).catch(() => null);
-      const afterCfg = await invoke<OpencodeServerConfig>("get_opencode_server_global_config", { repoPath }).catch(() => null);
-      const stillConnected = !!afterState?.connected?.includes(pid);
-
-      if (stillConnected) {
-        await invoke<boolean>("delete_opencode_server_auth", { repoPath, providerId: pid }).catch(() => false);
-        const disabled = Array.isArray(afterCfg?.disabled_providers)
-          ? afterCfg!.disabled_providers!.filter((x) => String(x || "").trim())
-          : [];
-        const nextDisabled = Array.from(new Set([...disabled, pid]));
-        await invoke<OpencodeServerConfig>("patch_opencode_server_config", {
-          repoPath,
-          patch: {
-            disabled_providers: nextDisabled
-          }
-        });
-
-        const finalState = await invoke<OpencodeServerProviderState>("get_opencode_server_provider_state", { repoPath }).catch(() => null);
-        const finalConnected = !!finalState?.connected?.includes(pid);
-        if (finalConnected) {
-          throw new Error(`Provider still connected after fallback: ${pid}`);
-        }
+      if (showAgentAuthDialogFor === pid) {
+        setShowAgentAuthDialogFor("");
       }
-
-      if (showOpencodeAuthDialogFor === pid) {
-        setShowOpencodeAuthDialogFor("");
+      if (agentProviderActionMenuFor === pid) {
+        setAgentProviderActionMenuFor("");
       }
-      if (opencodeProviderActionMenuFor === pid) {
-        setOpencodeProviderActionMenuFor("");
-      }
-      await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-      await refreshOpencodeConnectedProvidersOnly();
+      await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false });
+      await refreshAgentConnectedProvidersOnly();
       setMessage(`Disconnected provider: ${pid}`);
     } catch (e) {
       setError(String(e));
       setMessage("Disconnect provider failed");
     } finally {
-      setOpencodeDisconnectingProvider("");
+      setAgentDisconnectingProvider("");
     }
   }
 
-  async function runOpencodePrompt() {
+  async function runAgentPrompt() {
     if (!ensureRepoSelected()) return;
-    const typedPrompt = opencodePromptInput.trim();
-    const mcpPromptHints = opencodeMcpPromptRefs.map((name) => `use the ${name} mcp server`);
+    const typedPrompt = agentPromptInput.trim();
+    const mcpPromptHints = agentMcpPromptRefs.map((name) => "use the " + name + " mcp server");
     const prompt = [typedPrompt, ...mcpPromptHints].filter(Boolean).join("\n\n").trim();
-    const attachments = opencodeImageAttachments;
+    const attachments = agentImageAttachments;
     if (!prompt && attachments.length === 0) return;
+
     const repoIdAtRun = selectedRepo?.id || newSessionTargetRepoId;
-    let sessionId = ensureActiveOpencodeSession();
-    if (!sessionId || draftOpencodeSession) {
-      sessionId = await createPersistedOpencodeSession(prompt || "(attachment)");
+    let sessionId = ensureActiveAgentSession();
+    if (!sessionId || draftAgentSession) {
+      sessionId = await createPersistedAgentSession(prompt || "(attachment)");
     }
     if (!sessionId) return;
-    bindOpencodeSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
-    if (activeOpencodeAgent) setOpencodeSessionAgent((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeOpencodeAgent }));
-    setOpencodeSessionThinkingLevel((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeOpencodeThinkingLevel }));
-    await ensureSessionAutoAcceptPermissions(sessionId);
-    if (opencodeRunBusyBySession[sessionId]) return;
-    opencodeMessageCache.invalidate(repoPath, sessionId);
-    const assistantId = `assistant-${makeId()}`;
-    const requestId = `req-${makeId()}`;
-    setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
-    const scrollToBottom = (options?: { force?: boolean }) => {
-      if (activeOpencodeSessionId !== sessionId) return;
-      if (options?.force) {
-        resumeOpencodeFollowFromUserAction(sessionId);
-        return;
+
+    // 发消息前确保当前 session hub 已同步 auto 偏好（覆盖：新建竞态、冷启动恢复会话）。
+    await ensureSessionAutoAcceptPermissions(sessionId, agentAutoAcceptPermissions);
+    const modelInfo = agentModelInfoByRef[activeAgentModel] || null;
+    const piThinking = toPiThinkingLevel(activeAgentThinkingLevel, modelInfo);
+    if (piThinking) {
+      try {
+        await agentClient.setThinking(sessionId, piThinking);
+      } catch (error) {
+        appendAgentDebugLog(`session.setThinking.error ${sessionId} ${String(error)}`);
       }
-      scheduleOpencodeScrollToBottom({ source: "system" });
+    }
+
+    bindAgentSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
+    if (activeAgentAgent) {
+      setAgentSessionAgent((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeAgentAgent }));
+    }
+    setAgentSessionThinkingLevel((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeAgentThinkingLevel }));
+    if (agentRunBusyBySession[sessionId]) return;
+
+    const assistantId = "assistant-" + makeId();
+    const runId = "run-" + makeId();
+    const userId = "user-" + makeId();
+    const modePrefix = composerAgentPromptPrefix(normalizeComposerAgentName(activeAgentAgent));
+    // 图片落到仓库 .giteam/prompt-attachments/，始终随消息透传给后端（对齐 opencode：直传、不降级）。
+    // 后端按当前模型 input 能力分流：支持图片 → multimodal；不支持 → 不发 image block（避免
+    //   provider HTTP 400），让模型基于文字回复。前端不再判断 imageInput，图片照常预览展示。
+    let promptImages: Array<{ mimeType: string; path: string; relativePath: string }> = [];
+    try {
+      promptImages = await resolveAgentPromptImages(attachments, repoPath);
+    } catch (error) {
+      appendAgentDebugLog(`agent.prompt.images.stage.error ${String(error)}`);
+      setError("无法准备图片附件，请重试。");
+      setMessage("Image attachment failed");
+      return;
+    }
+    const multimodalImages = promptImages;
+    const fileHints = attachments.flatMap((attachment) => {
+      if (isImageAttachment(attachment)) return [];
+      const filename = attachment.filename || "unnamed attachment";
+      if (attachment.sourcePath) {
+        return [[
+          "The user attached a local file named \"" + filename + "\".",
+          "Local path: " + attachment.sourcePath,
+          "Use the appropriate Pi tool to inspect it when needed."
+        ].join("\n")];
+      }
+      return [[
+        "The user attached a file named \"" + filename + "\" (" + (attachment.mime || "unknown MIME type") + ").",
+        "The attachment was selected in the desktop UI but is not available as a filesystem path to the embedded agent."
+      ].join("\n")];
+    });
+    const sessionPrompt = [modePrefix + prompt, ...fileHints]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+    if (!sessionPrompt && multimodalImages.length === 0) {
+      if (attachments.some((attachment) => isImageAttachment(attachment))) {
+        setError("无法读取图片附件，请重试或改用文件选择器添加图片。");
+        setMessage("Image attachment failed");
+      }
+      return;
+    }
+    const displayAttachments = attachments.map((attachment) => ({
+      id: attachment.id,
+      kind: attachment.kind,
+      // 预览优先 dataUrl；file:// 临时路径在 WebView 里经常加载失败
+      uri: attachment.dataUrl || (attachment.sourcePath ? "file://" + encodeFilePathForUrl(attachment.sourcePath) : ""),
+      mime: attachment.mime,
+      filename: attachment.filename
+    }));
+
+    agentMessageCache.invalidate(repoPath, sessionId);
+    setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
+
+    const scrollToBottom = (options?: { force?: boolean }) => {
+      if (activeAgentSessionId !== sessionId) return;
+      // 流式增量交给 virtuoso followOutput 自动追底；仅在 force（用户发送/跳最新）时显式滚到底并恢复跟随。
+      if (!options?.force) return;
+      setAgentAutoFollowLatest(true);
+      window.requestAnimationFrame(() => {
+        agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
+      });
     };
-    updateOpencodeSessionById(sessionId, (session) => {
-      const nextMessages: OpencodeChatMessage[] = [
+
+    updateAgentSessionById(sessionId, (session) => {
+      const nextMessages: AgentChatMessage[] = [
         ...session.messages,
         {
-          id: `user-${makeId()}`,
+          id: userId,
           role: "user",
           content: prompt,
-          attachments: attachments.map((attachment) => ({
-            id: attachment.id,
-            kind: attachment.kind,
-            uri: attachment.sourcePath ? `file://${encodeFilePathForUrl(attachment.sourcePath)}` : (attachment.dataUrl || ""),
-            mime: attachment.mime,
-            filename: attachment.filename
-          })),
+          attachments: displayAttachments
         },
         { id: assistantId, role: "assistant", content: "" }
       ];
-      const nextTurnCount = buildOpencodeTurnRanges(nextMessages).length;
-      const nextTurnStart = getInitialOpencodeTurnStart(nextTurnCount);
       return {
         ...session,
         messages: nextMessages,
-        turnStart: nextTurnStart,
         updatedAt: Date.now()
       };
     });
-    updateSidebarOpencodeSession(repoIdAtRun, sessionId, (session) => ({
-      ...session,
-      updatedAt: Date.now()
-    }));
+    updateSidebarAgentSession(repoIdAtRun, sessionId, (session) => ({ ...session, updatedAt: Date.now() }));
     scrollToBottom({ force: true });
-    recordOpencodePromptHistoryEntry(sessionId, prompt);
-    setOpencodePromptInput("");
-    setOpencodeMcpPromptRefs([]);
-    setOpencodeImageAttachments([]);
-    setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
-    const sessionModel = normalizeModelRef(opencodeSessionModel[sessionId] || "");
-    const activeModel = normalizeModelRef(activeOpencodeModel || "");
-    const draftModel = normalizeModelRef(opencodeDraftModel || "");
-    const configuredModel = normalizeModelRef(opencodeConfig?.configuredModel || "");
-    const uiModel = normalizeModelRef(
-      (opencodeModelProvider && opencodeSelectedModel) ? `${opencodeModelProvider}/${opencodeSelectedModel}` : ""
-    );
-    const rawModel = sessionModel || activeModel || draftModel || uiModel || configuredModel || "";
-    const modelSource = sessionModel
-      ? "session.selection"
-      : activeModel
-        ? "active.selection"
-        : draftModel
-          ? "draft.selection"
-          : uiModel
-            ? "ui.picker"
-            : configuredModel
-              ? "config.model"
-              : "none";
-    const parsed = rawModel ? parseModelRef(rawModel) : null;
-    const resolvedProvider = parsed
-      ? (resolveProviderAliasWithNames(parsed.provider, opencodeModelsByProvider, opencodeProviderNames) || parsed.provider)
-      : "";
-    const modelHint = parsed ? `${resolvedProvider}/${parsed.model}` : rawModel;
-    appendOpencodeDebugLog(
-      [
-        `prompt.send session=${sessionId} request=${requestId}`,
-        `chars=${prompt.length}`,
-        `model.raw=${rawModel || "(empty)"}`,
-        `model.hint=${modelHint || "(empty)"}`,
-        `source=${modelSource}`,
-        `agent=${activeOpencodeAgent || "(default)"}`,
-        `thinking=${activeOpencodeThinkingLevel}`,
-        `autoAccept=${opencodeAutoAcceptPermissions ? 1 : 0}`
-      ].join(" ")
-    );
-    let done = false;
-    /** Track run-local assistant cards by upstream server message id. */
-    let currentStreamingLocalAssistantId = assistantId;
-    const localAssistantIds: string[] = [assistantId];
-    const localAssistantByServerMessageId = new Map<string, string>();
-    const serverMessageByLocalAssistantId = new Map<string, string>();
-    let streamAbort: AbortController | null = null;
-    let fallbackTimer: number | null = null;
-    let textFlushTimer: number | null = null;
-    const bufferedAssistantDeltaByLocalId = new Map<string, string>();
-    const hydrateFinalAssistantText = async (localId: string, serverMessageId: string) => {
-      try {
-        const raw = await invoke<unknown>("get_opencode_session_messages_detailed", {
-          repoPath,
-          sessionId,
-          directory: repoPath,
-          limit: 200
-        });
-        const rows = (Array.isArray(raw) ? raw : []).filter(Boolean) as OpencodeDetailedMessage[];
-        const targetId = serverMessageId.trim();
-        let hit: OpencodeDetailedMessage | null = null;
-        if (targetId) {
-          hit = rows.find((m) => String((m as any)?.info?.id || "") === targetId) ?? null;
-        }
-        if (!hit) {
-          hit =
-            [...rows]
-              .reverse()
-              .find((m) => {
-                const role = String((m as any)?.info?.role ?? (m as any)?.role ?? "").trim().toLowerCase();
-                return role === "assistant";
-              }) ?? null;
-        }
-        const mainMd = buildOpencodeMainLineMarkdownFromParts((hit as any)?.parts);
-        appendOpencodeDebugLog(
-          `prompt.hydrateFinal rows=${rows.length} id=${targetId || "(fallback)"} assistantHit=${mainMd.trim() ? 1 : 0}`
-        );
-        if (!mainMd.trim()) return;
-        updateOpencodeSessionById(sessionId, (session) => ({
+    recordAgentPromptHistoryEntry(sessionId, prompt);
+    setAgentPromptInput("");
+    setAgentMcpPromptRefs([]);
+    setAgentImageAttachments([]);
+    setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
+    agentRunIdBySessionRef.current[sessionId] = runId;
+
+    const localAssistantByMessageId = new Map<string, string>();
+    const localAssistantIds = [assistantId];
+    let currentLocalAssistantId = assistantId;
+    // 工具事件（tool.started/completed 等）自身不带 messageId，需要跟踪
+    // 当前 assistant 服务端消息 id 作为 live parts 的归组键；否则工具时间线
+    // 无处挂载，永远渲染不出来（只能退化为 content 里的纯文本行）。
+    let currentServerAssistantId = "";
+    let eventSubscription: { close: () => void } | null = null;
+    let finalized = false;
+    let finalizePromise: Promise<void> | null = null;
+
+    const ensureLocalAssistant = (messageId: string): string => {
+      const id = messageId.trim();
+      if (!id) return currentLocalAssistantId;
+      const existing = localAssistantByMessageId.get(id);
+      if (existing) return existing;
+      if (localAssistantByMessageId.size === 0) {
+        localAssistantByMessageId.set(id, assistantId);
+        setAgentServerMessageIdByLocalId((prev) => ({ ...prev, [assistantId]: id }));
+        return assistantId;
+      }
+      const localId = "assistant-" + makeId();
+      localAssistantByMessageId.set(id, localId);
+      localAssistantIds.push(localId);
+      currentLocalAssistantId = localId;
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: localId }));
+      setAgentServerMessageIdByLocalId((prev) => ({ ...prev, [localId]: id }));
+      updateAgentSessionById(sessionId, (session) => {
+        if (session.messages.some((message) => message.id === localId)) return session;
+        return {
           ...session,
-          messages: session.messages.map((msg) => (msg.id === localId ? { ...msg, content: mainMd } : msg)),
+          messages: [...session.messages, { id: localId, role: "assistant", content: "" }],
           updatedAt: Date.now()
-        }));
-      } catch (e) {
-        appendOpencodeDebugLog(`prompt.hydrateFinal.warn ${String(e)}`);
-      }
-    };
-    const finalize = () => {
-      if (done) return;
-      if (textFlushTimer) {
-        window.clearTimeout(textFlushTimer);
-        textFlushTimer = null;
-      }
-      done = true;
-      for (const [localId, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
-        if (!chunk) continue;
-        updateOpencodeSessionById(sessionId, (session) => ({
-          ...session,
-          messages: session.messages.map((msg) =>
-            msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
-          ),
-          updatedAt: Date.now()
-        }));
-      }
-      bufferedAssistantDeltaByLocalId.clear();
-      if (fallbackTimer) {
-        window.clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
-      if (streamAbort) {
-        streamAbort.abort();
-        streamAbort = null;
-      }
-      setOpencodeRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
-      setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
-      delete opencodeRunAbortBySessionRef.current[sessionId];
-      appendOpencodeDebugLog(`prompt.finalize session=${sessionId}`);
-      void (async () => {
-        for (const localId of localAssistantIds) {
-          const sid = (serverMessageByLocalAssistantId.get(localId) || "").trim();
-          if (sid) {
-            await hydrateFinalAssistantText(localId, sid);
-          }
-          await loadOpencodeMessageDetails(sessionId, localId, 80);
-        }
-        updateOpencodeSessionById(sessionId, (session) => ({
-          ...session,
-          messages: session.messages.map((msg) =>
-            localAssistantIds.includes(msg.id) && !(msg.content || "").trim() ? { ...msg, content: "(empty response)" } : msg
-          ),
-          updatedAt: Date.now()
-        }));
-        scrollToBottom();
-      })();
-    };
-    try {
-      // Always re-read the service /config model before sending so the request
-      // matches the OpenCode server truth (not local files).
-      let serverModel = "";
-      try {
-        const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-        serverModel = normalizeModelRef(effective?.model || "");
-        if (serverModel) {
-          setOpencodeConfig((prev) => ({
-            configPath: prev?.configPath || (opencodeConfig?.configPath || ""),
-            configuredModel: serverModel,
-            exists: true
-          }));
-        }
-      } catch (e) {
-        appendOpencodeDebugLog(`prompt.serverModel.refresh.warn ${String(e)}`);
-      }
-      const model =
-        sessionModel ||
-        activeModel ||
-        draftModel ||
-        uiModel ||
-        serverModel ||
-        "";
-      if (serverModel && model && serverModel !== model) {
-        appendOpencodeDebugLog(`prompt.model.override local=${model} server=${serverModel} (kept local)`);
-      }
-      const roleByMessageId = new Map<string, string>();
-      let seenAssistantActivity = false;
-      let promptPosted = false;
-      streamAbort = new AbortController();
-      opencodeRunAbortBySessionRef.current[sessionId] = streamAbort;
-      const streamSignal = streamAbort.signal;
-      const bindServerToLocalAssistant = (messageID: string, localId: string) => {
-        const mid = messageID.trim();
-        const lid = localId.trim();
-        if (!mid || !lid) return;
-        localAssistantByServerMessageId.set(mid, lid);
-        serverMessageByLocalAssistantId.set(lid, mid);
-        setOpencodeServerMessageIdByLocalId((prev) => ({ ...prev, [lid]: mid }));
-        setOpencodeLivePartsByServerMessageId((prev) => (prev[mid] ? prev : { ...prev, [mid]: [] }));
-      };
-      const ensureLocalAssistantForServerMessage = (messageID: string): string => {
-        const mid = messageID.trim();
-        if (!mid) return "";
-        const cached = localAssistantByServerMessageId.get(mid);
-        if (cached) return cached;
-        if (localAssistantByServerMessageId.size === 0) {
-          bindServerToLocalAssistant(mid, assistantId);
-          currentStreamingLocalAssistantId = assistantId;
-          return assistantId;
-        }
-        const localId = `assistant-${makeId()}`;
-        localAssistantIds.push(localId);
-        bindServerToLocalAssistant(mid, localId);
-        currentStreamingLocalAssistantId = localId;
-        setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: localId }));
-        updateOpencodeSessionById(sessionId, (session) => {
-          if (session.messages.some((m) => m.id === localId)) return session;
-          const nextMessages = [...session.messages, { id: localId, role: "assistant" as const, content: "" }];
-          return {
-            ...session,
-            messages: nextMessages,
-            turnStart: session.turnStart,
-            updatedAt: Date.now()
-          };
-        });
-        scrollToBottom();
-        return localId;
-      };
-      const resolveLocalAssistantFromEvent = (messageID: string): string => {
-        const mid = messageID.trim();
-        if (!mid) return "";
-        const role = roleByMessageId.get(mid) || "";
-        if (role && role !== "assistant") return "";
-        return ensureLocalAssistantForServerMessage(mid);
-      };
-      const flushAssistantTextDelta = (targetLocalId?: string) => {
-        if (done) return;
-        const localId = (targetLocalId || "").trim();
-        if (!localId) {
-          for (const [lid, chunk] of bufferedAssistantDeltaByLocalId.entries()) {
-            if (!chunk) continue;
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) =>
-                msg.id === lid ? { ...msg, content: (msg.content || "") + chunk } : msg
-              ),
-              updatedAt: Date.now()
-            }));
-          }
-          bufferedAssistantDeltaByLocalId.clear();
-          scrollToBottom();
-          return;
-        }
-        const chunk = bufferedAssistantDeltaByLocalId.get(localId) || "";
-        if (!chunk) return;
-        bufferedAssistantDeltaByLocalId.set(localId, "");
-        updateOpencodeSessionById(sessionId, (session) => ({
-          ...session,
-          messages: session.messages.map((msg) =>
-            msg.id === localId ? { ...msg, content: (msg.content || "") + chunk } : msg
-          ),
-          updatedAt: Date.now()
-        }));
-        scrollToBottom();
-      };
-      const scheduleAssistantTextFlush = () => {
-        if (textFlushTimer || done) return;
-        textFlushTimer = window.setTimeout(() => {
-          textFlushTimer = null;
-          flushAssistantTextDelta();
-        }, 16);
-      };
-
-      const onRawEvent = (raw: string) => {
-        let evtObj: any;
-        try {
-          evtObj = JSON.parse(raw);
-        } catch {
-          return;
-        }
-        const wrapped = evtObj?.payload ? evtObj.payload : evtObj;
-        const typ = String(wrapped?.type || "");
-        const props = wrapped?.properties || {};
-
-        if (typ === "message.updated") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const info = props?.info || {};
-          const role = String(info?.role || "");
-          const mid = String(info?.id || "");
-          if (mid) roleByMessageId.set(mid, role);
-          if (role === "assistant" && mid) {
-            seenAssistantActivity = true;
-            const localId = ensureLocalAssistantForServerMessage(mid);
-            currentStreamingLocalAssistantId = localId || currentStreamingLocalAssistantId;
-          }
-          if (role === "assistant" && info?.error) {
-            const localId = mid ? ensureLocalAssistantForServerMessage(mid) : currentStreamingLocalAssistantId;
-            updateOpencodeSessionById(sessionId, (session) => ({
-              ...session,
-              messages: session.messages.map((msg) =>
-                msg.id === localId ? { ...msg, content: `Run failed\n${toDisplayJson(info.error, 1200)}` } : msg
-              ),
-              updatedAt: Date.now()
-            }));
-            scrollToBottom();
-          }
-          return;
-        }
-
-        if (typ === "message.part.delta") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const messageID = String(props?.messageID || "");
-          const localId = resolveLocalAssistantFromEvent(messageID);
-          if (!localId) return;
-          seenAssistantActivity = true;
-          const field = String(props?.field || "");
-          const delta = String(props?.delta || "");
-          const partID = String(props?.partID || "");
-          if (!delta) return;
-          if (field === "reasoning" || field === "text") {
-            patchOpencodeLivePartDelta(messageID, partID, field, delta);
-          }
-          if (field === "text") {
-            const cur = bufferedAssistantDeltaByLocalId.get(localId) || "";
-            bufferedAssistantDeltaByLocalId.set(localId, cur + delta);
-            scheduleAssistantTextFlush();
-          }
-          return;
-        }
-
-        if (typ === "message.part.updated") {
-          const part = props?.part || {};
-          const sid = String(part?.sessionID || props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const messageID = String(part?.messageID || "");
-          const localId = resolveLocalAssistantFromEvent(messageID);
-          if (!localId) return;
-          seenAssistantActivity = true;
-          upsertOpencodeLivePart(messageID, part);
-          const ptype = String(part?.type || "");
-          if (ptype === "text") flushAssistantTextDelta(localId);
-          return;
-        }
-
-        if (typ === "message.part.removed") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const messageID = String(props?.messageID || "");
-          const localId = resolveLocalAssistantFromEvent(messageID);
-          if (!localId) return;
-          const partID = String(props?.partID || "");
-          removeOpencodeLivePart(messageID, partID);
-          return;
-        }
-
-        if (typ === "question.asked") {
-          const request = props as QuestionRequest;
-          if (String(request?.sessionID || "") !== sessionId) return;
-          setOpencodeQuestionRequests((prev) => {
-            const next = prev.filter((item) => item.id !== request.id);
-            return [...next, request];
-          });
-          return;
-        }
-
-        if (typ === "question.replied" || typ === "question.rejected") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const requestID = String(props?.requestID || "");
-          if (!requestID) return;
-          setOpencodeQuestionRequests((prev) => prev.filter((item) => item.id !== requestID));
-          return;
-        }
-
-        if (typ === "permission.asked") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          handleIncomingPermission({
-            id: String(props?.id || ""),
-            sessionID: sid,
-            permission: String(props?.permission || ""),
-            patterns: Array.isArray(props?.patterns) ? props.patterns.map((x: unknown) => String(x || "")).filter(Boolean) : [],
-            always: Array.isArray(props?.always) ? props.always.map((x: unknown) => String(x || "")).filter(Boolean) : [],
-            metadata: props?.metadata || undefined,
-            tool: props?.tool || undefined
-          });
-          return;
-        }
-
-        if (typ === "permission.replied") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const requestID = String(props?.requestID || "");
-          if (!requestID) return;
-          setOpencodePermissionRequests((prev) => prev.filter((item) => item.id !== requestID));
-          return;
-        }
-
-        if (typ === "session.error") {
-          const sid = String(props?.sessionID || "");
-          if (sid !== sessionId) return;
-          const err = toDisplayJson(props?.error, 1200);
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: session.messages.map((msg) =>
-              msg.id === currentStreamingLocalAssistantId ? { ...msg, content: `Run failed\n${err}` } : msg
-            ),
-            updatedAt: Date.now()
-          }));
-          scrollToBottom();
-          finalize();
-          return;
-        }
-
-        if (typ === "session.status") {
-          const sid = String(props?.sessionID || "");
-          const statusType = String(props?.status?.type || "");
-          if (sid === sessionId && statusType === "idle" && (seenAssistantActivity || promptPosted)) {
-            finalize();
-          }
-          return;
-        }
-
-        if (typ === "session.idle") {
-          const sid = String(props?.sessionID || "");
-          if (sid === sessionId && (seenAssistantActivity || promptPosted)) {
-            finalize();
-          }
-          return;
-        }
-      };
-
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      const eventUrl = `${base}/global/event?directory=${qdir}`;
-      const promptUrl = `${base}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${qdir}`;
-      appendOpencodeDebugLog(`prompt.stream.connect ${eventUrl}`);
-      void (async () => {
-        try {
-          const resp = await fetch(eventUrl, {
-            method: "GET",
-            headers: { Accept: "text/event-stream" },
-            signal: streamSignal
-          });
-          if (!resp.ok || !resp.body) {
-            throw new Error(`SSE connect failed: HTTP ${resp.status}`);
-          }
-          const reader = resp.body.getReader();
-          const decoder = new TextDecoder();
-          let buf = "";
-          const processFrame = (frame: string) => {
-            if (!frame.trim()) return;
-            const dataLines: string[] = [];
-            for (const rawLine of frame.split(/\r?\n/)) {
-              if (!rawLine || rawLine.startsWith(":")) continue;
-              if (!rawLine.startsWith("data:")) continue;
-              const payload = rawLine.slice(5).replace(/^\s/, "");
-              dataLines.push(payload);
-            }
-            if (dataLines.length <= 0) return;
-            onRawEvent(dataLines.join("\n"));
-          };
-          while (!done) {
-            const { value, done: rdDone } = await reader.read();
-            if (rdDone) break;
-            buf += decoder.decode(value, { stream: true });
-            while (true) {
-              const m = buf.match(/\r?\n\r?\n/);
-              if (!m || m.index == null) break;
-              const frame = buf.slice(0, m.index);
-              buf = buf.slice(m.index + m[0].length);
-              processFrame(frame);
-            }
-          }
-          processFrame(buf);
-        } catch (streamErr) {
-          if (done) return;
-          appendOpencodeDebugLog(`prompt.sse.error ${String(streamErr)}`);
-          updateOpencodeSessionById(sessionId, (session) => ({
-            ...session,
-            messages: session.messages.map((msg) =>
-              msg.id === assistantId ? { ...msg, content: `Run failed\n${String(streamErr)}` } : msg
-            ),
-            updatedAt: Date.now()
-          }));
-          scrollToBottom();
-          finalize();
-        }
-      })();
-
-      fallbackTimer = window.setTimeout(() => {
-        if (done) return;
-        appendOpencodeDebugLog("prompt.safetyFinalize 600s without done");
-        finalize();
-      }, 600_000);
-
-      const promptParts: Record<string, unknown>[] = [{ id: `prt_${makeId()}`, type: "text", text: prompt }];
-      for (const attachment of attachments) {
-        if (attachment.sourcePath) {
-          if (isOfficeAttachment(attachment)) {
-            promptParts.push({
-              id: `prt_${makeId()}`,
-              type: "text",
-              text: [
-                `The user attached a local Office document named "${attachment.filename}".`,
-                `Local path: ${attachment.sourcePath}`,
-                "Do not read this file with the plain text Read tool because Office documents are binary containers. If the document content is needed, inspect or convert it with an appropriate command such as macOS textutil, unzip-based extraction, or another available converter."
-              ].join("\n"),
-              synthetic: true,
-              metadata: { giteamHiddenAttachmentPath: true, filename: attachment.filename, sourcePath: attachment.sourcePath }
-            });
-            continue;
-          }
-          promptParts.push({
-            id: `prt_${makeId()}`,
-            type: "file",
-            mime: "text/plain",
-            url: `file://${encodeFilePathForUrl(attachment.sourcePath)}`,
-            filename: attachment.filename
-          });
-          continue;
-        }
-        const dataUrlMime = getAttachmentDataUrlMime(attachment.dataUrl);
-        const requestMime = dataUrlMime || attachment.mime;
-        if (!isOpencodeSupportedAttachmentMedia(requestMime)) {
-          promptParts.push({
-            id: `prt_${makeId()}`,
-            type: "text",
-            text: isOfficeAttachment(attachment)
-              ? `Attached file "${attachment.filename}" was added, but this Office document could not be converted to text from this upload source. OpenCode only accepts images, PDFs, and text attachments directly. Please upload the document from the desktop file picker, export it as PDF/text, or paste the document text.`
-              : `Attached file "${attachment.filename}" was added, but this file type is not supported by OpenCode preview/send. Please convert it to text or PDF and try again.`
-          });
-          continue;
-        }
-        promptParts.push({
-          id: `prt_${makeId()}`,
-          type: "file",
-          mime: requestMime,
-          url: attachment.dataUrl,
-          filename: attachment.filename
-        });
-      }
-      const promptBody: Record<string, unknown> = {
-        parts: promptParts
-      };
-      const mr = parseModelRef(model);
-      if (mr) {
-        promptBody.model = {
-          providerID: mr.provider,
-          modelID: mr.model
         };
-      }
-      if (activeOpencodeAgent) {
-        promptBody.agent = activeOpencodeAgent;
-      }
-      if (activeOpencodeThinkingLevel !== "auto") {
-        promptBody.variant = activeOpencodeThinkingLevel;
-      }
-      const postResp = await fetch(promptUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(promptBody)
       });
-      if (!(postResp.status === 204 || postResp.ok)) {
-        const bodyText = await postResp.text().catch(() => "");
-        throw new Error(`prompt_async failed: HTTP ${postResp.status} ${bodyText}`);
-      }
-      promptPosted = true;
-      appendOpencodeDebugLog(`prompt.invoke.ok request=${requestId} directSSE`);
-    } catch (e) {
-      appendOpencodeDebugLog(`prompt.invoke.error ${String(e)}`);
-      updateOpencodeSessionById(sessionId, (session) => ({
+      return localId;
+    };
+
+    const replaceAssistantMessage = (message: AgentMessage) => {
+      if (message.role !== "assistant") return;
+      const localId = ensureLocalAssistant(message.id);
+      const mapped = agentMessageToChatMessage(message);
+      if (!mapped) return;
+      updateAgentSessionById(sessionId, (session) => ({
         ...session,
-        messages: session.messages.map((msg) =>
-          msg.id === assistantId ? { ...msg, content: `Run failed\n${String(e)}` } : msg
-        ),
+        messages: session.messages.map((item) => item.id === localId ? { ...mapped, id: localId } : item),
         updatedAt: Date.now()
       }));
       scrollToBottom();
-      finalize();
-    }
-  }
+    };
 
-  async function stopOpencodePrompt(sessionIdInput?: string) {
-    const sid = (sessionIdInput || activeOpencodeSessionId || "").trim();
-    if (!sid) return;
-    const ctl = opencodeRunAbortBySessionRef.current[sid];
-    if (ctl) {
-      try {
-        ctl.abort();
-      } catch {
-        // ignore
+    // 流式渲染批处理（对齐 super_agent_mobile STREAM_UPDATE_BATCH_MS 的双层合帧思路）：
+    // delta 先入账到缓冲，24ms 窗口内合并成一次 setState；partial 快照优先于 delta 拼接。
+    const STREAM_UPDATE_BATCH_MS = 24;
+    type PendingStreamEntry = { delta: string; snapshot: string; contentIndex: number };
+    const pendingTextStream = new Map<string, PendingStreamEntry>();
+    const pendingReasoningStream = new Map<string, PendingStreamEntry>();
+    let streamFlushTimer: number | null = null;
+
+    const streamPartKey = (messageId: string, contentIndex: number) => `${messageId}::${contentIndex}`;
+
+    const applyTextStreamEntry = (messageId: string, entry: PendingStreamEntry) => {
+      const localId = ensureLocalAssistant(messageId);
+      updateAgentSessionById(sessionId, (session) => ({
+        ...session,
+        messages: session.messages.map((item) => {
+          if (item.id !== localId) return item;
+          const content = entry.snapshot || (item.content || "") + entry.delta;
+          return content === item.content ? item : { ...item, content };
+        }),
+        updatedAt: Date.now()
+      }));
+      // 同步写入 live text part，否则有 tool/reasoning 时 timeline 优先 liveParts，正文会消失
+      const textPartId = `text:${entry.contentIndex}`;
+      if (entry.snapshot) setAgentLivePartField(messageId, textPartId, "text", entry.snapshot);
+      else if (entry.delta) patchAgentLivePartDelta(messageId, textPartId, "text", entry.delta);
+    };
+
+    const flushStreamUpdates = () => {
+      if (streamFlushTimer !== null) {
+        window.clearTimeout(streamFlushTimer);
+        streamFlushTimer = null;
       }
-      delete opencodeRunAbortBySessionRef.current[sid];
-    }
-    setOpencodeRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
-    setOpencodeStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
-    try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      const qdir = encodeURIComponent(repoPath);
-      await fetch(`${base}/session/${encodeURIComponent(sid)}/abort?directory=${qdir}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
+      // 先落盘 reasoning 再落盘 text：reasoning 模型思考先于正文（pi 流式 ThinkingDelta→TextDelta，
+      // events.rs 发 reasoning.delta 先于 message.delta）。24ms 合帧窗口内若二者首帧同到，必须先创建
+      // reasoning part、再创建 text part——否则 text 先 push 进 liveParts 会排在思考之前，渲染成
+      // 「正文在上、思考跑到正文下面」（用户反馈 kimi 思考错位）。后续 flush 均命中已存在 part 原地
+      // 更新、顺序由首帧锁定，故只需保证首帧 reasoning 在前即可。
+      pendingReasoningStream.forEach((entry, key) => {
+        const messageId = key.split("::")[0] || key;
+        // 按 content block index 区分多段思考；字段名必须是 text（ReasoningGroup 读 part.text）
+        const reasoningPartId = `reasoning:${entry.contentIndex}`;
+        if (entry.snapshot) setAgentLivePartField(messageId, reasoningPartId, "text", entry.snapshot);
+        else if (entry.delta) patchAgentLivePartDelta(messageId, reasoningPartId, "text", entry.delta);
       });
-      appendOpencodeDebugLog(`prompt.abort session=${sid}`);
-    } catch (e) {
-      appendOpencodeDebugLog(`prompt.abort.error session=${sid} ${String(e)}`);
+      pendingReasoningStream.clear();
+      pendingTextStream.forEach((entry, key) => {
+        const messageId = key.split("::")[0] || key;
+        applyTextStreamEntry(messageId, entry);
+      });
+      pendingTextStream.clear();
+      scrollToBottom();
+    };
+
+    const scheduleStreamFlush = () => {
+      if (streamFlushTimer !== null) return;
+      streamFlushTimer = window.setTimeout(flushStreamUpdates, STREAM_UPDATE_BATCH_MS);
+    };
+
+    const queueStreamDelta = (
+      queue: Map<string, PendingStreamEntry>,
+      messageId: string,
+      contentIndex: number,
+      delta: string,
+      snapshot: string
+    ) => {
+      if (!messageId || (!delta && !snapshot)) return;
+      const key = streamPartKey(messageId, contentIndex);
+      const prev = queue.get(key) || { delta: "", snapshot: "", contentIndex };
+      prev.delta += delta;
+      if (snapshot) prev.snapshot = snapshot;
+      prev.contentIndex = contentIndex;
+      queue.set(key, prev);
+      scheduleStreamFlush();
+    };
+
+    const cancelStreamBatch = () => {
+      if (streamFlushTimer !== null) window.clearTimeout(streamFlushTimer);
+      streamFlushTimer = null;
+      pendingTextStream.clear();
+      pendingReasoningStream.clear();
+    };
+
+    const updateToolPart = (messageId: string, part: AgentDetailedPart) => {
+      const id = messageId.trim() || "agent-tools-" + sessionId;
+      upsertAgentLivePart(id, part);
+      scrollToBottom();
+    };
+
+    const onAgentEvent = (envelope: AgentEvent) => {
+      if (envelope.sessionId !== sessionId || envelope.runId !== runId) return;
+      const event = envelope.event;
+      switch (event.type) {
+        case "message.delta":
+          if (event.messageId) currentServerAssistantId = event.messageId;
+          queueStreamDelta(
+            pendingTextStream,
+            event.messageId || "",
+            Number(event.index) || 0,
+            event.delta || "",
+            event.partial || ""
+          );
+          break;
+        case "reasoning.delta":
+          if (event.messageId) {
+            currentServerAssistantId = event.messageId;
+            queueStreamDelta(
+              pendingReasoningStream,
+              event.messageId,
+              Number(event.index) || 0,
+              event.delta || "",
+              event.partial || ""
+            );
+          }
+          break;
+        case "message.completed":
+          // 完成消息是最终内容：丢弃该消息未冲刷的缓冲，避免之后追加过期 delta。
+          if (event.message && typeof event.message !== "string") {
+            const completedId = event.message.id;
+            for (const key of [...pendingTextStream.keys()]) {
+              if (key === completedId || key.startsWith(`${completedId}::`)) pendingTextStream.delete(key);
+            }
+            for (const key of [...pendingReasoningStream.keys()]) {
+              if (key === completedId || key.startsWith(`${completedId}::`)) pendingReasoningStream.delete(key);
+            }
+            replaceAssistantMessage(event.message);
+          }
+          break;
+        case "message.started":
+          if (event.messageId) {
+            currentServerAssistantId = event.messageId;
+            ensureLocalAssistant(event.messageId);
+          }
+          break;
+        case "toolCall.started":
+          // 先冲刷未落盘的 reasoning/text，避免 24ms 合帧窗口内 tool 先入列、思考后到而乱序
+          flushStreamUpdates();
+          // LLM 流式生成 tool call 的开始；执行开始时 tool.started 会用完整 input 覆盖同 id part。
+          updateToolPart(currentServerAssistantId, buildToolPart({
+            toolCallId: event.toolCallId || "tool-" + makeId(),
+            toolName: event.toolName || "",
+            status: "running"
+          }));
+          break;
+        case "toolCall.delta":
+          // 流式参数增量：累积到 inputRaw，tool.started 到达后被完整 input 取代。
+          if (event.toolCallId && event.delta && currentServerAssistantId) {
+            patchAgentLivePartDelta(currentServerAssistantId, event.toolCallId, "inputRaw", event.delta);
+          }
+          break;
+        case "runtime.retry":
+          setMessage(
+            event.phase === "completed"
+              ? event.success
+                ? "请求重试成功"
+                : `请求重试失败${event.error ? `: ${event.error}` : ""}`
+              : `请求失败，正在自动重试 (第 ${event.attempt ?? "?"} 次)${event.error ? `: ${event.error}` : ""}`
+          );
+          break;
+        case "runtime.compaction":
+          setMessage(
+            event.phase === "started"
+              ? "上下文过长，正在自动压缩…"
+              : event.error
+                ? `上下文压缩失败: ${event.error}`
+                : "上下文压缩完成"
+          );
+          break;
+        case "runtime.warning":
+          if (typeof event.message === "string" && event.message) {
+            appendAgentDebugLog(`runtime.warning ${event.message}`);
+          }
+          break;
+        case "interaction.requested": {
+          // PR6：工具执行前/提问发起的裁决请求。auto（自动接受）只发 requested+resolved 成对事件，
+          // 这里 upsert 后 resolved case 会立即移除，因此 UI 不会闪烁。
+          const interaction = event.interaction;
+          if (interaction && interaction.sessionId === sessionId) {
+            setAgentInteractions((prev) => {
+              const next = prev.filter((item) => item.id !== interaction.id);
+              return [...next, interaction];
+            });
+          }
+          break;
+        }
+        case "interaction.resolved": {
+          // resolved（用户回复/超时/中止/自动）一律移除卡片。
+          const resolvedId = String(event.id || "").trim();
+          if (resolvedId) {
+            setAgentInteractions((prev) => prev.filter((item) => item.id !== resolvedId));
+          }
+          break;
+        }
+        case "tool.started":
+          flushStreamUpdates();
+          updateToolPart(currentServerAssistantId, buildToolPart({
+            toolCallId: event.toolCallId || "tool-" + makeId(),
+            toolName: event.toolName || "",
+            status: "running",
+            input: event.input
+          }));
+          break;
+        case "tool.progress":
+          updateToolPart(currentServerAssistantId, buildToolPart({
+            toolCallId: event.toolCallId || "tool-" + makeId(),
+            toolName: event.toolName || "",
+            status: "running",
+            output: event.output
+          }));
+          break;
+        case "tool.completed":
+          updateToolPart(currentServerAssistantId, buildToolPart({
+            toolCallId: event.toolCallId || "tool-" + makeId(),
+            toolName: event.toolName || "",
+            status: event.isError ? "error" : "completed",
+            output: event.output
+          }));
+          break;
+        case "run.failed":
+          cancelStreamBatch();
+          updateAgentSessionById(sessionId, (session) => ({
+            ...session,
+            messages: session.messages.map((item) =>
+              item.id === currentLocalAssistantId
+                ? { ...item, content: "", error: event.error || "unknown error" }
+                : item
+            ),
+            updatedAt: Date.now()
+          }));
+          void finalize(event.error || "agent run failed");
+          break;
+        case "session.status":
+          if (event.status === "idle" || event.status === "aborted" || event.status === "failed") {
+            cancelStreamBatch();
+            void finalize(event.error || (event.status === "aborted" ? "Run aborted" : undefined));
+          }
+          break;
+        case "run.completed":
+          cancelStreamBatch();
+          void finalize();
+          break;
+        default:
+          break;
+      }
+    };
+
+    const finalize = (failure?: string): Promise<void> => {
+      if (finalizePromise) return finalizePromise;
+      finalized = true;
+      cancelStreamBatch();
+      finalizePromise = (async () => {
+        if (eventSubscription) {
+          eventSubscription.close();
+          eventSubscription = null;
+        }
+        if (agentRunIdBySessionRef.current[sessionId] === runId) {
+          delete agentRunIdBySessionRef.current[sessionId];
+        }
+        setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
+        setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
+
+        // 中止/结束时先把仍 running 的 live 工具收口，避免卡在「探索中 / 运行中」；
+        // 随后以 history 为准清掉本轮 live parts，防止 stale live 盖住已拉取的详情。
+        const liveMessageIds = new Set<string>();
+        for (const serverId of localAssistantByMessageId.keys()) {
+          if (serverId.trim()) liveMessageIds.add(serverId.trim());
+        }
+        if (currentServerAssistantId.trim()) liveMessageIds.add(currentServerAssistantId.trim());
+        const settleStatus = failure ? "error" : "completed";
+        setAgentLivePartsByServerMessageId((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const mid of liveMessageIds) {
+            const parts = next[mid];
+            if (!Array.isArray(parts) || parts.length === 0) continue;
+            const settled = parts.map((part) => {
+              if (String((part as { type?: string }).type || "") !== "toolCall") return part;
+              const st = String((part as { status?: string }).status || "").trim().toLowerCase();
+              if (st !== "running" && st !== "pending" && st !== "deciding") return part;
+              changed = true;
+              return {
+                ...(part as object),
+                status: settleStatus,
+                isError: Boolean(failure)
+              } as AgentDetailedPart;
+            });
+            next[mid] = settled;
+          }
+          return changed ? next : prev;
+        });
+
+        try {
+          await loadAgentSessionMessages(sessionId, repoPath);
+        } catch (error) {
+          appendAgentDebugLog("agent.messages.reconcile.error " + String(error));
+        }
+        if (liveMessageIds.size > 0) {
+          setAgentLivePartsByServerMessageId((prev) => {
+            let changed = false;
+            const next = { ...prev };
+            for (const mid of liveMessageIds) {
+              if (!(mid in next)) continue;
+              delete next[mid];
+              changed = true;
+            }
+            return changed ? next : prev;
+          });
+        }
+        // 对账后：用户气泡恢复为「可见文案 + 本地预览附件」，不要展示内部 path hint。
+        updateAgentSessionById(sessionId, (session) => {
+          const messages = [...session.messages];
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            if (messages[index]?.role !== "user") continue;
+            const existingAttachments = messages[index].attachments || [];
+            messages[index] = {
+              ...messages[index],
+              content: prompt,
+              attachments: displayAttachments.length > 0
+                ? displayAttachments
+                : existingAttachments
+            };
+            break;
+          }
+          if (failure) {
+            const lastAssistantIndex = [...messages]
+              .map((item, index) => ({ item, index }))
+              .reverse()
+              .find(({ item }) => item.role === "assistant")
+              ?.index;
+            if (lastAssistantIndex != null && !(messages[lastAssistantIndex]?.content || "").trim()) {
+              messages[lastAssistantIndex] = {
+                ...messages[lastAssistantIndex],
+                content: "",
+                error: failure
+              };
+            } else if (
+              !messages.some(
+                (item) => item.role === "assistant" && Boolean(item.error?.trim())
+              )
+            ) {
+              messages.push({
+                id: currentLocalAssistantId,
+                role: "assistant",
+                content: "",
+                error: failure
+              });
+            }
+          } else {
+            for (const localId of localAssistantIds) {
+              const idx = messages.findIndex((item) => item.id === localId);
+              if (idx >= 0 && !(messages[idx].content || "").trim()) {
+                messages[idx] = { ...messages[idx], content: "(empty response)" };
+              }
+            }
+          }
+          return { ...session, messages, updatedAt: Date.now() };
+        });
+        if (failure) {
+          setError(failure);
+          setMessage("Agent run failed");
+        }
+        scrollToBottom();
+        appendAgentDebugLog("agent.prompt.finalize session=" + sessionId + " run=" + runId);
+      })();
+      return finalizePromise;
+    };
+
+    try {
+      appendAgentDebugLog("agent.prompt.subscribe session=" + sessionId + " run=" + runId);
+      eventSubscription = await agentClient.subscribeEvents(sessionId, runId, onAgentEvent);
+      appendAgentDebugLog("agent.prompt.send session=" + sessionId + " run=" + runId);
+      const result = await agentClient.prompt({
+        sessionId,
+        runId,
+        prompt: sessionPrompt || (multimodalImages.length > 0 ? "Please inspect the attached image(s)." : ""),
+        images: multimodalImages.map((image) => ({
+          mimeType: image.mimeType,
+          path: image.path
+        }))
+      });
+      for (const event of result.events || []) onAgentEvent(event);
+      replaceAssistantMessage(result.message);
+      await finalize();
+    } catch (error) {
+      const messageText = String(error);
+      appendAgentDebugLog("agent.prompt.error " + messageText);
+      await finalize(messageText);
+    } finally {
+      if (!finalized) await finalize();
     }
   }
 
-  function resizeOpencodeInput() {
-    const el = opencodeInputRef.current;
+  async function stopAgentPrompt(sessionIdInput?: string) {
+    const sid = (sessionIdInput || activeAgentSessionId || "").trim();
+    if (!sid) return;
+    const runId = agentRunIdBySessionRef.current[sid];
+    if (!runId) return;
+    try {
+      const aborted = await agentClient.abort(runId);
+      appendAgentDebugLog("agent.prompt.abort session=" + sid + " run=" + runId + " ok=" + (aborted ? 1 : 0));
+    } catch (e) {
+      appendAgentDebugLog("agent.prompt.abort.error session=" + sid + " " + String(e));
+    }
+  }
+
+  function resizeAgentInput() {
+    const el = agentInputRef.current;
     if (!el) return;
+    const minHeight = agentShowEmptyState ? 24 : 28;
+    // 与 ComposerEditor 的 max-h-40(160px) 对齐；空状态原先 64px 大约只能再长两行。
+    const maxHeight = 160;
+    const prev = el.offsetHeight || minHeight;
+    const reduceMotion = typeof window !== "undefined"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    // 先关掉过渡再测真实 scrollHeight，再从 prev 动画到 next，避免 height:auto 打断过渡。
+    el.style.transition = "none";
     el.style.height = "auto";
-    const minHeight = opencodeShowEmptyState ? 24 : 28;
-    const maxHeight = opencodeShowEmptyState ? 64 : 96;
     const next = Math.min(maxHeight, Math.max(minHeight, el.scrollHeight));
+    el.style.height = `${prev}px`;
+    void el.offsetHeight;
+    if (!reduceMotion && prev !== next) {
+      el.style.transition = "height 180ms cubic-bezier(0.22, 1, 0.36, 1)";
+    } else {
+      el.style.transition = "";
+    }
     el.style.height = `${next}px`;
     el.scrollTop = 0;
   }
 
-  function setOpencodePromptInputFromHistory(value: string) {
-    setOpencodePromptInput(value);
-    setOpencodeSlashOpen(false);
+  function setAgentPromptInputFromHistory(value: string) {
+    setAgentPromptInput(value);
+    setAgentSlashOpen(false);
     requestAnimationFrame(() => {
-      resizeOpencodeInput();
-      const el = opencodeInputRef.current;
+      resizeAgentInput();
+      const el = agentInputRef.current;
       if (!el) return;
       const end = el.value.length;
       el.setSelectionRange(end, end);
@@ -4816,33 +5116,33 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   const {
-    recordHistoryEntry: recordOpencodePromptHistoryEntry,
-    captureDraft: captureOpencodePromptHistoryDraft,
-    browseHistory: browseOpencodePromptHistory
-  } = useOpencodePromptHistory({
-    activeSessionId: activeOpencodeSessionId,
-    currentInput: opencodePromptInput,
-    onApplyHistory: setOpencodePromptInputFromHistory
+    recordHistoryEntry: recordAgentPromptHistoryEntry,
+    captureDraft: captureAgentPromptHistoryDraft,
+    browseHistory: browseAgentPromptHistory
+  } = useAgentPromptHistory({
+    activeSessionId: activeAgentSessionId,
+    currentInput: agentPromptInput,
+    onApplyHistory: setAgentPromptInputFromHistory
   });
 
-  function activateOpencodeSlashCommand(cmd: OpencodeSlashCommand) {
+  function activateAgentSlashCommand(cmd: AgentSlashCommand) {
     const trigger = cmd.trigger.trim().toLowerCase();
-    setOpencodeSlashOpen(false);
+    setAgentSlashOpen(false);
     if (cmd.source === "builtin") {
       if (trigger === "new") {
-        void createAndSwitchOpencodeSession();
+        void createAndSwitchAgentSession();
         return;
       }
       if (trigger === "model") {
-        setShowOpencodeModelPicker(true);
+        setShowAgentModelPicker(true);
         return;
       }
       if (trigger === "agent") {
-        applyOpencodeAgent(activeOpencodeAgent === "build" ? "plan" : "build");
+        applyAgentAgent(activeAgentAgent === "build" ? "plan" : "build");
         return;
       }
-      if (trigger === "mcp") {
-        openOpencodeModulePanel("mcp");
+      if (MCP_MODULE_ENABLED && trigger === "mcp") {
+        openAgentModulePanel("mcp");
         return;
       }
       if (trigger === "workspace") {
@@ -4854,23 +5154,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         return;
       }
     }
-    setOpencodePromptInput(`/${cmd.trigger} `);
-    requestAnimationFrame(() => opencodeInputRef.current?.focus());
+    setAgentPromptInput(`/${cmd.trigger} `);
+    requestAnimationFrame(() => agentInputRef.current?.focus());
   }
 
-  function referenceOpencodeSkill(skill: OpencodeSkillInfo) {
+  function referenceAgentSkill(skill: AgentSkillInfo) {
     const fallback = skill.name.replace(/[^a-zA-Z0-9_-]/g, "").replace(/-/g, "");
-    const matched = opencodeSlashCommands.find((cmd) => {
+    const matched = agentSlashCommands.find((cmd) => {
       const trigger = cmd.trigger.toLowerCase();
       const name = skill.name.toLowerCase();
       return cmd.source === "skill" && (trigger === name || trigger.replace(/-/g, "") === name.replace(/-/g, ""));
     });
     const trigger = (matched?.trigger || fallback || skill.name).replace(/^\//, "");
-    setOpencodePromptInput(`/${trigger} `);
-    setOpencodeSlashOpen(false);
+    setAgentPromptInput(`/${trigger} `);
+    setAgentSlashOpen(false);
     requestAnimationFrame(() => {
-      resizeOpencodeInput();
-      const el = opencodeInputRef.current;
+      resizeAgentInput();
+      const el = agentInputRef.current;
       if (!el) return;
       el.focus();
       const end = el.value.length;
@@ -4878,14 +5178,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     });
   }
 
-  function referenceOpencodeMcp(name: string) {
+  function referenceAgentMcp(name: string) {
     const mcpName = name.trim();
     if (!mcpName) return;
-    setOpencodeMcpPromptRefs((prev) => prev.includes(mcpName) ? prev : [...prev, mcpName]);
-    setOpencodeSlashOpen(false);
+    setAgentMcpPromptRefs((prev) => prev.includes(mcpName) ? prev : [...prev, mcpName]);
+    setAgentSlashOpen(false);
     requestAnimationFrame(() => {
-      resizeOpencodeInput();
-      const el = opencodeInputRef.current;
+      resizeAgentInput();
+      const el = agentInputRef.current;
       if (!el) return;
       el.focus();
       const end = el.value.length;
@@ -4893,41 +5193,41 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     });
   }
 
-  function insertOpencodePromptTextAtSelection(text: string) {
+  function insertAgentPromptTextAtSelection(text: string) {
     if (!text) return;
-    const el = opencodeInputRef.current;
-    const base = el?.value ?? opencodePromptInput;
+    const el = agentInputRef.current;
+    const base = el?.value ?? agentPromptInput;
     const start = el?.selectionStart ?? base.length;
     const end = el?.selectionEnd ?? start;
     const next = `${base.slice(0, start)}${text}${base.slice(end)}`;
     const cursor = start + text.length;
-    captureOpencodePromptHistoryDraft(next);
-    setOpencodePromptInput(next);
+    captureAgentPromptHistoryDraft(next);
+    setAgentPromptInput(next);
     const isSlash = /^\//.test(next) && !next.includes(" ");
-    setOpencodeSlashOpen(isSlash);
-    setOpencodeSlashActiveIndex(0);
+    setAgentSlashOpen(isSlash);
+    setAgentSlashActiveIndex(0);
     requestAnimationFrame(() => {
-      resizeOpencodeInput();
-      const current = opencodeInputRef.current;
+      resizeAgentInput();
+      const current = agentInputRef.current;
       if (!current) return;
       current.focus();
       current.setSelectionRange(cursor, cursor);
     });
   }
 
-  async function pasteIntoOpencodePromptFromContextMenu() {
+  async function pasteIntoAgentPromptFromContextMenu() {
     setComposerContextMenu(null);
-    const el = opencodeInputRef.current;
+    const el = agentInputRef.current;
     el?.focus();
-    const attachments = await readOpencodeClipboardAttachments();
+    const attachments = await readAgentClipboardAttachments();
     if (attachments.length > 0) {
-      appendOpencodeAttachments(attachments);
+      appendAgentAttachments(attachments);
       return;
     }
     try {
       const text = await navigator.clipboard?.readText?.();
       if (text) {
-        insertOpencodePromptTextAtSelection(text);
+        insertAgentPromptTextAtSelection(text);
         return;
       }
     } catch {
@@ -4938,44 +5238,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   async function sendQuestionReply(requestId: string, answers: QuestionAnswer[]) {
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      await postOpencodeQuestionReply({ baseUrl: base, repoPath, requestId, answers });
-      appendOpencodeDebugLog(`question.reply ${requestId}`);
-      await refreshPendingQuestions();
+      await agentClient.replyInteraction(requestId, { decision: "answers", answers });
+      setAgentInteractions((prev) => prev.filter((item) => item.id !== requestId));
+      appendAgentDebugLog(`question.reply ${requestId}`);
       return true;
     } catch (e) {
-      appendOpencodeDebugLog(`question.reply.error ${requestId} ${String(e)}`);
+      appendAgentDebugLog(`question.reply.error ${requestId} ${String(e)}`);
       return false;
     }
   }
 
-  async function refreshPendingQuestions(sessionIdArg = activeOpencodeSessionId) {
-    const sid = sessionIdArg.trim();
-    if (!sid || !repoPath.trim()) {
-      setOpencodeQuestionRequests([]);
-      setOpencodeQuestionLoading(false);
-      return;
-    }
-    setOpencodeQuestionLoading(true);
-    try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      setOpencodeQuestionRequests(await fetchOpencodeQuestions({ baseUrl: base, repoPath, sessionId: sid }));
-    } catch (e) {
-      appendOpencodeDebugLog(`question.list.error ${String(e)}`);
-    } finally {
-      setOpencodeQuestionLoading(false);
-    }
+  async function refreshPendingQuestions(sessionIdArg = activeAgentSessionId) {
+    await syncAgentInteractions(sessionIdArg);
   }
 
   async function sendQuestionReject(requestId: string) {
     try {
-      const base = await invoke<string>("get_opencode_service_base", { repoPath });
-      await postOpencodeQuestionReject({ baseUrl: base, repoPath, requestId });
-      appendOpencodeDebugLog(`question.reject ${requestId}`);
-      await refreshPendingQuestions();
+      await agentClient.replyInteraction(requestId, { decision: "cancel" });
+      setAgentInteractions((prev) => prev.filter((item) => item.id !== requestId));
+      appendAgentDebugLog(`question.reject ${requestId}`);
       return true;
     } catch (e) {
-      appendOpencodeDebugLog(`question.reject.error ${requestId} ${String(e)}`);
+      appendAgentDebugLog(`question.reject.error ${requestId} ${String(e)}`);
       return false;
     }
   }
@@ -5145,6 +5429,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     openRightPane("terminal");
     setActiveTerminalTabId(tab.id);
     try {
+      // 等面板露出并完成 fit，再同步 PTY 尺寸，避免安装 CLI 在 0 列宽度下逐字换行。
+      await waitForPaint();
+      await resizeRepoTerminalSession(repoPath, 120, 40, tab.id).catch(() => undefined);
       await sendRepoTerminalInput(repoPath, `${command}\r`, tab.id);
       updateTerminalTabById(tab.id, (prev) => recordTerminalCommand(prev, command));
     } catch (e) {
@@ -5412,8 +5699,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   async function openWorkspacePathInRightPane(path: string, line?: number) {
     const target = resolveToolFileTarget(path, {
-      preferredRepoRoot: opencodeWorkspaceRoot,
-      workspaceFileCandidates: opencodeWorkspaceFileCandidates
+      preferredRepoRoot: agentWorkspaceRoot,
+      workspaceFileCandidates: agentWorkspaceFileCandidates
     });
     if (!target) {
       setMessage("该路径不在当前仓库中，暂时无法在右侧打开。");
@@ -5446,8 +5733,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function openWorkspaceDirectory(path: string) {
-    const repoRoot = normalizeFsPath((opencodeWorkspaceRoot || "").trim());
-    const relativePath = resolveWorkspaceCandidatePath(path, opencodeWorkspaceDirectoryCandidates) || normalizeRelativeFsPath(path);
+    const repoRoot = normalizeFsPath((agentWorkspaceRoot || "").trim());
+    const relativePath = resolveWorkspaceCandidatePath(path, agentWorkspaceDirectoryCandidates) || normalizeRelativeFsPath(path);
     if (!repoRoot || !relativePath) return;
     try {
       await invoke("open_local_path", { path: `${repoRoot}/${relativePath}` });
@@ -5551,8 +5838,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     preferDiff?: boolean;
   }) {
     const target = resolveToolFileTarget(input.filePath, {
-      preferredRepoRoot: opencodeWorkspaceRoot,
-      workspaceFileCandidates: opencodeWorkspaceFileCandidates
+      preferredRepoRoot: agentWorkspaceRoot,
+      workspaceFileCandidates: agentWorkspaceFileCandidates
     });
     if (!target) {
       setMessage("该文件暂时无法在右侧打开。");
@@ -5671,12 +5958,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           setInstallingElapsed(0);
           setRuntimeJobId("");
           void refreshRuntimeRequirements().then((final) => {
-            const allInstalled = [final.git, final.entire, final.opencode, final.giteam].every((d) => d.installed);
-            if (job.status === "succeeded" || allInstalled) {
+            const coreInstalled = final.git.installed && final.entire.installed;
+            if (job.status === "succeeded" || coreInstalled) {
               setRuntimeJob(null);
               setError("");
               setMessage("运行环境已准备完成");
-              if (allInstalled) setShowEnvSetup(false);
+              if (coreInstalled) setShowEnvSetup(false);
             } else {
               setRuntimeJob(null);
               setRuntimeInstallLog(job.log || "");
@@ -5726,11 +6013,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   useEffect(() => {
     const collapseIfNarrow = () => {
-      const paneWidth = opencodeRightPaneRef.current?.clientWidth || 0;
-      if (window.innerWidth <= 900 || paneWidth <= 620) setShowOpencodeSessionRail(false);
+      const paneWidth = agentRightPaneRef.current?.clientWidth || 0;
+      if (window.innerWidth <= 900 || paneWidth <= 620) setShowAgentSessionRail(false);
     };
     const observer = new ResizeObserver(() => collapseIfNarrow());
-    if (opencodeRightPaneRef.current) observer.observe(opencodeRightPaneRef.current);
+    if (agentRightPaneRef.current) observer.observe(agentRightPaneRef.current);
     window.addEventListener("resize", collapseIfNarrow);
     collapseIfNarrow();
     return () => {
@@ -5797,7 +6084,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   useEffect(() => {
     if (!selectedRepo) return;
     setNewSessionTargetRepoId((prev) => prev || selectedRepo.id);
-    setOpencodeSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
+    setAgentSessionFetchLimit(getRepoSessionFetchLimit(selectedRepo.id));
   }, [selectedRepo?.id]);
 
   useEffect(() => {
@@ -5856,16 +6143,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     if (!selectedRepo?.id) return;
     const repoId = selectedRepo.id.trim();
     if (!repoId) return;
-    if (runtimeStatus.opencode.installed && !hasLoadedSidebarRepoSessions(repoId)) return;
+    if (!hasLoadedSidebarRepoSessions(repoId)) return;
     expandProjectSessions(repoId);
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [selectedRepo?.id]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed || repos.length === 0) return;
+    if (repos.length === 0) return;
     let cancelled = false;
     let timer: number | null = null;
 
-    const schedule = (delay = OPENCODE_SIDEBAR_SESSION_POLL_MS) => {
+    const schedule = (delay = AGENT_SIDEBAR_SESSION_POLL_MS) => {
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = null;
@@ -5918,7 +6205,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       }
     };
   }, [
-    runtimeStatus.opencode.installed,
     repos,
     expandedProjectIds,
     selectedRepo?.id
@@ -5980,58 +6266,66 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     };
   }, []);
 
+  // agentSessions 镜像同步：供 refresh 锚定排序（Step B）与 bootstrap 首选读取，避免闭包读到旧列表。
   useEffect(() => {
-    if (draftOpencodeSession) return;
-    if (opencodeSessions.length === 0) return;
-    if (!opencodeSessions.some((s) => s.id === activeOpencodeSessionId)) {
-      setActiveOpencodeSessionId(opencodeSessions[0].id);
-    }
-  }, [opencodeSessions, activeOpencodeSessionId, draftOpencodeSession]);
+    agentSessionsRef.current = agentSessions;
+  }, [agentSessions]);
+
+  // 对齐 effect：后台数据通道。只派生 stale 提示信号，绝不替用户改写 active。
+  // 首次选中交由 bootstrap 显式 selectAgentSession；列表瞬空时保留 active 不抖；
+  // active 真失效（既不在列表也不在任何 sidebar）时置 stale 提示用户手动切换。
+  useEffect(() => {
+    if (draftAgentSession) { setAgentActiveSessionStale(false); return; }
+    const active = activeAgentSessionId;
+    if (!active) return;                                  // 首次选中已交 bootstrap 显式负责
+    if (agentSessions.length === 0) { setAgentActiveSessionStale(false); return; } // 列表瞬空，保留 active
+    const stillKnown = agentSessions.some((s) => s.id === active)
+      || Object.values(sidebarAgentSessionsByRepo).some((repoSessions) => repoSessions.some((s) => s.id === active));
+    setAgentActiveSessionStale(!stillKnown);
+  }, [agentSessions, activeAgentSessionId, draftAgentSession, sidebarAgentSessionsByRepo]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed) return;
     const repoId = selectedRepo?.id?.trim();
     if (!repoId) return;
 
-    if (opencodeBootstrapDoneForRepoRef.current && opencodeBootstrapDoneForRepoRef.current !== repoId) {
-      resetOpencodeWorkspaceBootstrapState(repoId);
+    if (agentBootstrapDoneForRepoRef.current && agentBootstrapDoneForRepoRef.current !== repoId) {
+      resetAgentWorkspaceBootstrapState(repoId);
     }
 
     let cancelled = false;
     const timer = scheduleAfterInteraction(() => {
       if (cancelled) return;
-      void bootstrapOpencodeWorkspace(repoId);
+      void bootstrapAgentWorkspace(repoId);
     }, 200);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      opencodeBootstrapTokenRef.current += 1;
+      agentBootstrapTokenRef.current += 1;
     };
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id, repos.length]);
+  }, [selectedRepo?.id, repos.length]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed) return;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       const repoId = selectedRepo?.id?.trim();
       if (!repoId) return;
-      if (opencodeProviderCatalogLoadedRef.current && opencodeBootstrapDoneForRepoRef.current === repoId) return;
-      void bootstrapOpencodeWorkspace(repoId);
+      if (agentProviderCatalogLoadedRef.current && agentBootstrapDoneForRepoRef.current === repoId) return;
+      void bootstrapAgentWorkspace(repoId);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [selectedRepo?.id]);
 
   useEffect(() => {
     if (!selectedRepo?.id && !repoPath) return;
-    const availableModels = opencodeSyncModelRefs;
+    const availableModels = agentSyncModelRefs;
     const modelLabels: Record<string, string> = {};
     for (const full of availableModels) {
       const parsed = parseModelRef(full);
       if (!parsed) continue;
-      modelLabels[full] = opencodeConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model]
-        || opencodeModelNamesByProvider[parsed.provider]?.[parsed.model]
+      modelLabels[full] = agentConfiguredModelNamesByProvider[parsed.provider]?.[parsed.model]
+        || agentModelNamesByProvider[parsed.provider]?.[parsed.model]
         || parsed.model;
     }
     const payload = {
@@ -6039,9 +6333,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       repoPath,
       availableModels,
       modelLabels,
-      enabledModels: Array.from(opencodeEnabledModels),
-      hiddenModels: Array.from(opencodeHiddenModels),
-      activeModel: activeOpencodeModel || opencodeConfig?.configuredModel || "",
+      enabledModels: Array.from(agentEnabledModels),
+      hiddenModels: Array.from(agentHiddenModels),
+      activeModel: activeAgentModel || agentConfig?.configuredModel || "",
       updatedAt: Date.now(),
     };
     const url = controlAccessInfo?.port ? `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state` : "";
@@ -6057,13 +6351,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }, 150);
     return () => window.clearTimeout(timer);
   }, [
-    activeOpencodeModel,
+    activeAgentModel,
     controlAccessInfo?.port,
-    opencodeConfig?.configuredModel,
-    opencodeConfiguredModelNamesByProvider,
-    opencodeHiddenModels,
-    opencodeModelNamesByProvider,
-    opencodeSyncModelRefs,
+    agentConfig?.configuredModel,
+    agentConfiguredModelNamesByProvider,
+    agentHiddenModels,
+    agentModelNamesByProvider,
+    agentSyncModelRefs,
     repoPath,
   ]);
 
@@ -6175,15 +6469,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [overlayBusy]);
 
   useEffect(() => {
-    if (!activeOpencodeModel) return;
-    rememberOpencodeSavedModel(activeOpencodeModel);
-  }, [activeOpencodeModel]);
+    if (!activeAgentModel) return;
+    rememberAgentSavedModel(activeAgentModel);
+  }, [activeAgentModel]);
 
   useEffect(() => {
-    if (!showOpencodeModelPicker) return;
+    if (!showAgentModelPicker) return;
     // Keep previous list until refresh resolves to avoid open-time flicker.
-    void refreshOpencodeServerConfig();
-  }, [showOpencodeModelPicker]);
+    void refreshAgentServerConfig();
+  }, [showAgentModelPicker]);
 
   useEffect(() => {
     if (rightPaneTab !== "terminal") return;
@@ -6252,169 +6546,59 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [selectedRepo?.id]);
 
   useLayoutEffect(() => {
-    const shouldKeepLatest = opencodeScrollModeRef.current === "follow" && opencodeAutoFollowLatestRef.current;
-    if (shouldKeepLatest) {
-      opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
-    }
-    resizeOpencodeInput();
-    if (!shouldKeepLatest) return;
-    if (activeOpencodeSessionId) {
-      opencodeForceScrollLatestSessionRef.current = activeOpencodeSessionId;
-    }
-    scrollOpencodeThreadToBottomNow();
-    requestAnimationFrame(() => {
-      if (opencodeScrollModeRef.current !== "follow") return;
-      scrollOpencodeThreadToBottomNow();
-    });
-  }, [activeOpencodeSessionId, opencodePromptInput, opencodeImageAttachments.length]);
+    resizeAgentInput();
+  }, [agentPromptInput, agentImageAttachments.length]);
 
   useEffect(() => {
-    const sid = activeOpencodeSessionId;
-    const sessionChanged = opencodePrevActiveSessionIdRef.current !== sid;
-    if (sessionChanged) {
-      opencodePrevActiveSessionIdRef.current = sid;
-      opencodeLoadingOlderRef.current = false;
-      opencodePrevScrollHeightRef.current = 0;
-      opencodePendingAnchorSessionIdRef.current = sid;
-      opencodeStickToBottomSessionRef.current = sid;
-      opencodeForceScrollLatestSessionRef.current = sid;
-      opencodePausedScrollSnapshotRef.current = null;
-      opencodeUserScrollPauseUntilRef.current = 0;
-      opencodeUserScrollUpUntilRef.current = 0;
-      opencodeUserScrollDownUntilRef.current = 0;
-      setOpencodeAutoFollow(true);
-      setOpencodeShowJumpLatest(false);
+    const sid = activeAgentSessionId;
+    const session = agentSessions.find((s) => s.id === sid);
+    if (session && !session.loaded && selectedRepo) {
+      void loadAgentSessionMessages(sid).catch((e) => setError(String(e)));
     }
-    const session = opencodeSessions.find((s) => s.id === sid);
-    if (session && !session.loaded && runtimeStatus.opencode.installed && selectedRepo) {
-      void loadOpencodeSessionMessages(sid).catch((e) => setError(String(e)));
-    }
-    if (!sessionChanged) return;
-    requestAnimationFrame(() => {
-      if (opencodePrevActiveSessionIdRef.current !== sid) return;
-      const el = opencodeThreadRef.current;
-      if (!el) return;
-      scrollOpencodeThreadToBottomNow();
-      requestAnimationFrame(updateOpencodeViewportTodos);
-    });
-  }, [activeOpencodeSessionId, opencodeSessions, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [activeAgentSessionId, agentSessions, selectedRepo?.id]);
 
   useEffect(() => {
-    if (!runtimeStatus.opencode.installed || !selectedRepo || !repoPath || !activeOpencodeSessionId) return;
-    if (activeOpencodeSessionBusy) return;
-    const sessionId = activeOpencodeSessionId.trim();
+    if (!selectedRepo || !repoPath || !activeAgentSessionId) return;
+    const sessionId = activeAgentSessionId.trim();
     if (!sessionId) return;
-    const seq = opencodePassiveSyncSeqRef.current + 1;
-    opencodePassiveSyncSeqRef.current = seq;
-    const abort = new AbortController();
-    let refreshTimer: number | null = null;
-    let connectTimer: number | null = null;
+    const seq = agentPassiveSyncSeqRef.current + 1;
+    agentPassiveSyncSeqRef.current = seq;
     let stopped = false;
-    const scheduleRefresh = (delay = 700) => {
-      if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        if (stopped || opencodePassiveSyncSeqRef.current !== seq) return;
-        opencodeMessageCache.invalidate(repoPath, sessionId);
-        void loadOpencodeSessionMessages(sessionId).catch((e) => setError(String(e)));
-        void refreshOpencodeSessions(getRepoSessionFetchLimit(selectedRepo.id)).catch(() => { });
-      }, delay);
-    };
-    const handleRawEvent = (raw: string) => {
-      let event: any;
+    let refreshTimer: number | null = null;
+    const refresh = async () => {
+      if (stopped || agentPassiveSyncSeqRef.current !== seq) return;
       try {
-        event = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      const wrapped = event?.payload ? event.payload : event;
-      const typ = String(wrapped?.type || "");
-      const props = wrapped?.properties || {};
-      const sid = String(props?.sessionID || props?.part?.sessionID || "");
-      if (sid !== sessionId) return;
-      if (typ === "message.updated" || typ === "message.part.updated" || typ === "message.part.removed") {
-        scheduleRefresh(350);
-        return;
-      }
-      if (typ === "message.part.delta") return;
-      if (typ === "session.idle") {
-        const session = opencodeSessions.find((s) => s.id === sessionId);
-        const hasContent = session && session.loaded && session.messages.length > 0;
-        scheduleRefresh(hasContent ? 1500 : 80);
-        return;
-      }
-      if (typ === "session.status" && String(props?.status?.type || "") === "idle") {
-        const session = opencodeSessions.find((s) => s.id === sessionId);
-        const hasContent = session && session.loaded && session.messages.length > 0;
-        scheduleRefresh(hasContent ? 1500 : 80);
-      }
-    };
-    const connect = async () => {
-      try {
-        const base = await invoke<string>("get_opencode_service_base", { repoPath });
-        if (stopped || abort.signal.aborted) return;
-        const url = `${base}/global/event?directory=${encodeURIComponent(repoPath)}`;
-        appendOpencodeDebugLog(`session.passiveSync.connect ${sessionId}`);
-        const resp = await fetch(url, {
-          method: "GET",
-          headers: { Accept: "text/event-stream" },
-          signal: abort.signal
-        });
-        if (!resp.ok || !resp.body) throw new Error(`SSE connect failed: HTTP ${resp.status}`);
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        const processFrame = (frame: string) => {
-          if (!frame.trim()) return;
-          const dataLines: string[] = [];
-          for (const rawLine of frame.split(/\r?\n/)) {
-            if (!rawLine || rawLine.startsWith(":")) continue;
-            if (!rawLine.startsWith("data:")) continue;
-            dataLines.push(rawLine.slice(5).replace(/^\s/, ""));
-          }
-          if (dataLines.length > 0) handleRawEvent(dataLines.join("\n"));
-        };
-        while (!stopped && !abort.signal.aborted) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          while (true) {
-            const m = buf.match(/\r?\n\r?\n/);
-            if (!m || m.index == null) break;
-            const frame = buf.slice(0, m.index);
-            buf = buf.slice(m.index + m[0].length);
-            processFrame(frame);
-          }
+        agentMessageCache.invalidate(repoPath, sessionId);
+        await loadAgentSessionMessages(sessionId);
+        if (!stopped && selectedRepo) {
+          await refreshAgentSessions(getRepoSessionFetchLimit(selectedRepo.id));
         }
-        processFrame(buf);
-      } catch (e) {
-        if (!abort.signal.aborted && !stopped) appendOpencodeDebugLog(`session.passiveSync.warn ${String(e)}`);
+      } catch (error) {
+        if (!stopped) appendAgentDebugLog("session.passiveSync.warn " + String(error));
       }
     };
-    connectTimer = window.setTimeout(() => {
-      connectTimer = null;
-      if (!stopped && opencodePassiveSyncSeqRef.current === seq) void connect();
-    }, 600);
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = null;
+      void refresh();
+    }, activeAgentSessionBusy ? 1200 : 600);
+    const interval = window.setInterval(() => void refresh(), activeAgentSessionBusy ? 1500 : 5000);
     return () => {
       stopped = true;
-      abort.abort();
-      if (connectTimer !== null) window.clearTimeout(connectTimer);
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
     };
-  }, [runtimeStatus.opencode.installed, repoPath, activeOpencodeSessionId, activeOpencodeSessionBusy]);
+  }, [repoPath, activeAgentSessionId, activeAgentSessionBusy, selectedRepo?.id]);
 
-  const opencodeVisibleWindow = useMemo(() => sliceOpencodeMessagesByTurnStart(opencodeMessages, opencodeTurnStart), [opencodeMessages, opencodeTurnStart]);
-
-  const opencodeRenderedMessages = useMemo(() => {
-    const visible = opencodeVisibleWindow.visible;
-    const streamingId = activeOpencodeStreamingAssistantId;
-    const running = activeOpencodeSessionBusy;
+  const agentRenderedMessages = useMemo(() => {
+    const visible = agentMessages;
+    const streamingId = activeAgentStreamingAssistantId;
+    const running = activeAgentSessionBusy;
     return visible.filter((msg) => {
       if (msg.role !== "assistant") return true;
+      if (msg.error?.trim() || /^Run failed\s*\n/i.test(msg.content || "")) return true;
       if ((msg.content || "").trim()) return true;
-      const detail = opencodeDetailsByMessageId[msg.id];
-      const loading = opencodeDetailsLoadingByMessageId[msg.id];
+      const detail = agentDetailsByMessageId[msg.id];
+      const loading = agentDetailsLoadingByMessageId[msg.id];
       if (detail === undefined || loading) return true;
       // 保留：当前正在流式输出的消息，或已经有内容的非流式消息
       if (msg.id === streamingId && running) return true;
@@ -6422,62 +6606,81 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (detail && Array.isArray(detail.parts) && detail.parts.length > 0) return true;
       return false;
     });
-  }, [opencodeVisibleWindow.visible, activeOpencodeStreamingAssistantId, activeOpencodeSessionBusy, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+  }, [agentMessages, activeAgentStreamingAssistantId, activeAgentSessionBusy, agentDetailsByMessageId, agentDetailsLoadingByMessageId]);
 
-  const opencodeActiveTodos = useMemo(() => {
-    const visible = opencodeVisibleWindow.visible;
+  const agentActiveTodos = useMemo(() => {
+    const visible = agentMessages;
     for (let i = visible.length - 1; i >= 0; i -= 1) {
       const msg = visible[i];
       if (msg.role !== "assistant") continue;
-      const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-      const detail = opencodeDetailsByMessageId[msg.id] || null;
-      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
-      const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+      const serverMid = (agentServerMessageIdByLocalId[msg.id] || "").trim();
+      const detail = agentDetailsByMessageId[msg.id] || null;
+      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as AgentDetailedPart[]) : [];
+      const liveParts = serverMid ? (agentLivePartsByServerMessageId[serverMid] || []) : [];
       const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
       for (let j = detailParts.length - 1; j >= 0; j -= 1) {
-        const todos = readOpencodeTodosFromPart(detailParts[j]);
+        const todos = readAgentTodosFromPart(detailParts[j]);
         if (todos.length > 0) return todos;
       }
     }
-    return [] as OpencodeTodoItem[];
-  }, [opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId]);
+    return [] as AgentTodoItem[];
+  }, [agentMessages, agentServerMessageIdByLocalId, agentDetailsByMessageId, agentLivePartsByServerMessageId]);
 
-  const opencodeActiveQuestions = useMemo(() => {
-    const dismissed = new Set(opencodeDismissedQuestionsBySession[activeOpencodeSessionId] || []);
-    return opencodeQuestionRequests.filter(
-      (req) => req.sessionID === activeOpencodeSessionId && !dismissed.has(req.id)
-    );
-  }, [opencodeQuestionRequests, activeOpencodeSessionId, opencodeDismissedQuestionsBySession]);
+  const agentActiveQuestions = useMemo(() => {
+    const dismissed = new Set(agentDismissedQuestionsBySession[activeAgentSessionId] || []);
+    const sid = activeAgentSessionId.trim();
+    // PR6：从 agentInteractions 的 question kind 派生提问卡片数据。
+    return agentInteractions
+      .filter((item) => item.kind === "question" && (!sid || item.sessionId === sid))
+      .filter((item) => !dismissed.has(item.id))
+      .map((item): QuestionRequest => {
+        if (item.kind !== "question") return null as unknown as QuestionRequest;
+        return {
+          id: item.id,
+          sessionID: item.sessionId,
+          questions: item.questions.map((q) => ({
+            question: q.question,
+            header: q.header,
+            options: (q.options || []).map((opt) => ({ label: opt.label, description: opt.description })),
+            multiple: q.multiple === true,
+            custom: q.custom !== false,
+          })),
+          tool: { messageID: "", callID: item.toolCallId },
+        };
+      })
+      .filter(Boolean) as QuestionRequest[];
+  }, [agentInteractions, activeAgentSessionId, agentDismissedQuestionsBySession]);
 
-  const opencodeStaleQuestions = useMemo(() => {
-    if (opencodeActiveQuestions.length > 0) return [] as QuestionRequest[];
-    const visible = opencodeVisibleWindow.visible;
+  const agentStaleQuestions = useMemo(() => {
+    if (agentActiveQuestions.length > 0) return [] as QuestionRequest[];
+    const visible = agentMessages;
     const requests: QuestionRequest[] = [];
     const seenIds = new Set<string>();
-    const dismissed = new Set(opencodeDismissedQuestionsBySession[activeOpencodeSessionId] || []);
+    const dismissed = new Set(agentDismissedQuestionsBySession[activeAgentSessionId] || []);
     for (let i = visible.length - 1; i >= 0; i -= 1) {
       const msg = visible[i];
       if (msg.role !== "assistant") continue;
-      const serverMid = (opencodeServerMessageIdByLocalId[msg.id] || "").trim();
-      const detail = opencodeDetailsByMessageId[msg.id] || null;
-      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as OpencodeDetailedPart[]) : [];
-      const liveParts = serverMid ? (opencodeLivePartsByServerMessageId[serverMid] || []) : [];
+      const serverMid = (agentServerMessageIdByLocalId[msg.id] || "").trim();
+      const detail = agentDetailsByMessageId[msg.id] || null;
+      const fetchedParts = Array.isArray(detail?.parts) ? (detail.parts as AgentDetailedPart[]) : [];
+      const liveParts = serverMid ? (agentLivePartsByServerMessageId[serverMid] || []) : [];
       const detailParts = liveParts.length > 0 ? liveParts : fetchedParts;
       for (let j = detailParts.length - 1; j >= 0; j -= 1) {
         const part = detailParts[j] as any;
-        if (String(part?.type || "").trim() !== "tool") continue;
-        if (String(part?.tool || "").trim() !== "question") continue;
-        const state = part?.state || {};
-        const status = String(state?.status || "").trim().toLowerCase();
-        if (status !== "pending" && status !== "running") continue;
-        const questions = state?.input?.questions;
+        // PR6：question 是 pi 原生工具，part 形状为 {type:"toolCall", toolName:"question", status, input:{questions}}。
+        if (String(part?.type || "").trim() !== "toolCall") continue;
+        if (String(part?.toolName || "").trim() !== "question") continue;
+        const status = String(part?.status || "").trim().toLowerCase();
+        // question 等待回答时 part 处于 running（未收到 completed）。
+        if (status !== "running" && status !== "pending" && status !== "deciding") continue;
+        const questions = part?.input?.questions;
         if (!Array.isArray(questions) || questions.length === 0) continue;
         const id = `stale-question-${msg.id}-${String(part?.id || j)}`;
         if (seenIds.has(id) || dismissed.has(id)) continue;
         seenIds.add(id);
         requests.push({
           id,
-          sessionID: activeOpencodeSessionId,
+          sessionID: activeAgentSessionId,
           questions: questions.map((q: any) => ({
             question: String(q?.question || "").trim(),
             header: String(q?.header || "").trim() || undefined,
@@ -6496,48 +6699,48 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       }
     }
     return requests;
-  }, [opencodeActiveQuestions.length, opencodeVisibleWindow.visible, opencodeServerMessageIdByLocalId, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId, activeOpencodeSessionId, opencodeDismissedQuestionsBySession]);
+  }, [agentActiveQuestions.length, agentMessages, agentServerMessageIdByLocalId, agentDetailsByMessageId, agentLivePartsByServerMessageId, activeAgentSessionId, agentDismissedQuestionsBySession]);
 
-  const opencodeSideRailTodos = opencodeViewportTodos.length > 0 ? opencodeViewportTodos : opencodeActiveTodos;
-  const opencodeSideRailTodoProgress = useMemo(() => {
-    const total = opencodeSideRailTodos.length;
-    const done = opencodeSideRailTodos.filter((todo) => todo.status === "completed").length;
+  const agentSideRailTodos = agentViewportTodos.length > 0 ? agentViewportTodos : agentActiveTodos;
+  const agentSideRailTodoProgress = useMemo(() => {
+    const total = agentSideRailTodos.length;
+    const done = agentSideRailTodos.filter((todo) => todo.status === "completed").length;
     const active =
-      opencodeSideRailTodos.find((todo) => todo.status === "in_progress") ||
-      opencodeSideRailTodos.find((todo) => todo.status === "pending") ||
-      opencodeSideRailTodos[opencodeSideRailTodos.length - 1] ||
+      agentSideRailTodos.find((todo) => todo.status === "in_progress") ||
+      agentSideRailTodos.find((todo) => todo.status === "pending") ||
+      agentSideRailTodos[agentSideRailTodos.length - 1] ||
       null;
     return { total, done, active };
-  }, [opencodeSideRailTodos]);
+  }, [agentSideRailTodos]);
 
-  function setOpencodeViewportTodosFromDom(nextTodos: OpencodeTodoItem[]) {
+  function setAgentViewportTodosFromDom(nextTodos: AgentTodoItem[]) {
     const signature = nextTodos.map((todo) => `${todo.id}:${todo.status}:${todo.content}`).join("|");
-    if (signature === opencodeViewportTodosSigRef.current) return;
-    opencodeViewportTodosSigRef.current = signature;
-    setOpencodeViewportTodos(nextTodos);
+    if (signature === agentViewportTodosSigRef.current) return;
+    agentViewportTodosSigRef.current = signature;
+    setAgentViewportTodos(nextTodos);
   }
 
-  function updateOpencodeViewportTodos() {
-    const el = opencodeThreadRef.current;
+  function updateAgentViewportTodos() {
+    const el = agentThreadRef.current;
     if (!el) return;
-    const nodes = Array.from(el.querySelectorAll<HTMLElement>("[data-opencode-todos]"));
+    const nodes = Array.from(el.querySelectorAll<HTMLElement>("[data-agent-todos]"));
     if (nodes.length === 0) {
-      setOpencodeViewportTodosFromDom([]);
+      setAgentViewportTodosFromDom([]);
       return;
     }
     const viewportRect = el.getBoundingClientRect();
     const anchorY = viewportRect.top + Math.min(180, Math.max(96, el.clientHeight * 0.22));
     let bestScore = Number.POSITIVE_INFINITY;
-    let bestTodos: OpencodeTodoItem[] = [];
+    let bestTodos: AgentTodoItem[] = [];
 
     nodes.forEach((node) => {
       const rect = node.getBoundingClientRect();
       if (rect.bottom < viewportRect.top + 24 || rect.top > viewportRect.bottom - 80) return;
-      const raw = node.dataset.opencodeTodos || "";
+      const raw = node.dataset.agentTodos || "";
       if (!raw) return;
-      let todos: OpencodeTodoItem[] = [];
+      let todos: AgentTodoItem[] = [];
       try {
-        todos = JSON.parse(decodeURIComponent(raw)) as OpencodeTodoItem[];
+        todos = JSON.parse(decodeURIComponent(raw)) as AgentTodoItem[];
       } catch {
         todos = [];
       }
@@ -6549,24 +6752,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       }
     });
 
-    setOpencodeViewportTodosFromDom(bestTodos);
+    setAgentViewportTodosFromDom(bestTodos);
   }
 
   useEffect(() => {
-    setOpencodeQuestionRequests([]);
-    setOpencodeQuestionLoading(true);
-    setOpencodeViewportTodosFromDom([]);
-  }, [activeOpencodeSessionId]);
+    // 会话切换：清空旧 session 的交互卡片，questionLoading 重置（派生按 sessionId 过滤，新交互由 sync 拉取）。
+    setAgentQuestionLoading(true);
+    setAgentViewportTodosFromDom([]);
+  }, [activeAgentSessionId]);
 
   useEffect(() => {
-    if (!activeOpencodeSessionId || !runtimeStatus.opencode.installed || !selectedRepo) return;
-    void refreshPendingQuestions(activeOpencodeSessionId);
-    if (!activeOpencodeSessionBusy) return;
+    // PR6：事件实时驱动，轮询仅作会话切换/重连的兜底对账（不再依赖 opencode 运行时检测）。
+    if (!activeAgentSessionId || !selectedRepo) return;
+    void syncAgentInteractions(activeAgentSessionId);
+    if (!activeAgentSessionBusy) return;
     const timer = window.setInterval(() => {
-      void refreshPendingQuestions(activeOpencodeSessionId);
-    }, 1200);
+      void syncAgentInteractions(activeAgentSessionId);
+    }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeOpencodeSessionId, activeOpencodeSessionBusy, runtimeStatus.opencode.installed, selectedRepo?.id]);
+  }, [activeAgentSessionId, activeAgentSessionBusy, selectedRepo?.id]);
 
   useEffect(() => {
     const dirPaths = collectWorktreeDirPaths(worktreeTree);
@@ -6581,34 +6785,34 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [worktreeTree]);
 
   useEffect(() => {
-    const sid = activeOpencodeSessionId.trim();
+    const sid = activeAgentSessionId.trim();
     if (!sid) return;
-    const missing = opencodeVisibleWindow.visible
+    const missing = agentMessages
       .filter((msg) => msg.role === "assistant")
-      .filter((msg) => opencodeDetailsByMessageId[msg.id] === undefined && !opencodeDetailsLoadingByMessageId[msg.id])
+      .filter((msg) => agentDetailsByMessageId[msg.id] === undefined && !agentDetailsLoadingByMessageId[msg.id])
       .slice(-8);
     if (missing.length === 0) return;
     const missingIds = missing.map((msg) => msg.id);
-    setOpencodeDetailsLoadingByMessageId((prev) => {
+    setAgentDetailsLoadingByMessageId((prev) => {
       const next = { ...prev };
       for (const id of missingIds) next[id] = true;
       return next;
     });
     const timer = window.setTimeout(() => {
-      void fetchOpencodeDetailedMessagePage(sid, "", OPENCODE_INITIAL_MESSAGE_FETCH_LIMIT)
+      void fetchAgentDetailedMessagePage(sid, "", AGENT_INITIAL_MESSAGE_FETCH_LIMIT)
         .then((page) => {
-          if (activeOpencodeSessionId.trim() !== sid) return;
-          setOpencodeDetailsByMessageId((prev) => {
+          if (activeAgentSessionId.trim() !== sid) return;
+          setAgentDetailsByMessageId((prev) => {
             const next = { ...prev };
             for (const id of missingIds) {
-              const serverId = (opencodeServerMessageIdByLocalId[id] || "").trim() || id;
+              const serverId = (agentServerMessageIdByLocalId[id] || "").trim() || id;
               next[id] = page.detailsById[serverId] || null;
             }
             return next;
           });
         })
         .finally(() => {
-          setOpencodeDetailsLoadingByMessageId((prev) => {
+          setAgentDetailsLoadingByMessageId((prev) => {
             const next = { ...prev };
             for (const id of missingIds) next[id] = false;
             return next;
@@ -6616,305 +6820,74 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         });
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [activeOpencodeSessionId, opencodeVisibleWindow.visible, opencodeDetailsByMessageId, opencodeDetailsLoadingByMessageId]);
+  }, [activeAgentSessionId, agentMessages, agentDetailsByMessageId, agentDetailsLoadingByMessageId]);
 
-  const opencodeHasHiddenHistory = opencodeTurnStart > 0;
+  const agentHasHiddenHistory = Boolean(activeAgentSession?.hasMore);
 
-  function opencodeIsNearBottom(el: HTMLDivElement, threshold = 24) {
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    return maxScroll - el.scrollTop <= threshold;
-  }
-
-  function setOpencodeAutoFollow(enabled: boolean) {
-    opencodeScrollModeRef.current = enabled ? "follow" : "paused";
-    opencodeAutoFollowLatestRef.current = enabled;
-    setOpencodeAutoFollowLatest(enabled);
-    if (enabled) {
-      opencodePausedScrollSnapshotRef.current = null;
-    } else {
-      const el = opencodeThreadRef.current;
-      opencodePausedScrollSnapshotRef.current = el ? { top: el.scrollTop, height: el.scrollHeight } : null;
+  // virtuoso 通过 atBottomStateChange 驱动跟随/暂停：贴底时跟随流式，离开底部则暂停并显示"跳到最新"。
+  const handleAgentAtBottomChange = useCallback((atBottom: boolean) => {
+    // 空会话/草稿态没有可滚动内容，忽略 virtuoso 卸载时的 atBottom=false，避免把旧会话的「拉到最新」带过来
+    if (agentShowEmptyState || draftAgentSession || !activeAgentSessionId) {
+      if (!locateInFlightRef.current) {
+        setAgentAutoFollowLatest(true);
+        setAgentShowJumpLatest(false);
+      }
+      return;
     }
-  }
-
-  function cancelPendingOpencodeAutoScroll() {
-    opencodeAutoScrollTokenRef.current += 1;
-  }
-
-  function scrollOpencodeThreadToBottomNow(options?: { hideJump?: boolean }) {
-    const current = opencodeThreadRef.current;
-    if (!current) return;
-    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
-    current.scrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
-    opencodePrevScrollTopRef.current = current.scrollTop;
-    if (options?.hideJump !== false) {
-      setOpencodeShowJumpLatest(false);
+    // 搜索定位中：忽略 atBottom 抖动，禁止重新打开追底。
+    if (locateInFlightRef.current) {
+      setAgentAutoFollowLatest(false);
+      setAgentShowJumpLatest(true);
+      return;
     }
-  }
+    setAgentAutoFollowLatest(atBottom);
+    setAgentShowJumpLatest(!atBottom);
+  }, [activeAgentSessionId, agentShowEmptyState, draftAgentSession]);
 
-  function scheduleOpencodeScrollToBottom(options?: { force?: boolean; hideJump?: boolean; source?: "system" | "user" }) {
-    const token = opencodeAutoScrollTokenRef.current + 1;
-    opencodeAutoScrollTokenRef.current = token;
-    requestAnimationFrame(() => {
-      if (opencodeAutoScrollTokenRef.current !== token) return;
-      const current = opencodeThreadRef.current;
-      if (!current) return;
-      const source = options?.source || "system";
-      const forceLatest = opencodeForceScrollLatestSessionRef.current === activeOpencodeSessionId;
-      if (opencodeScrollModeRef.current === "paused" && source !== "user" && !forceLatest) return;
-      if (source !== "user" && Date.now() < opencodeUserScrollPauseUntilRef.current && !forceLatest) return;
-      if (!options?.force && !opencodeAutoFollowLatestRef.current && !forceLatest) return;
-      scrollOpencodeThreadToBottomNow({ hideJump: options?.hideJump });
+  // 会话切换（含切到草稿空会话）：清掉「拉到最新」；有真实会话时再滚到底。
+  // pending/locate 故意不进 deps：定位结束清空 pending 时不得再滚 LAST。
+  useEffect(() => {
+    agentLoadingOlderRef.current = false;
+    if (!activeAgentSessionId || draftAgentSession) {
+      if (!locateInFlightRef.current) {
+        setAgentAutoFollowLatest(true);
+        setAgentShowJumpLatest(false);
+      }
+      return;
+    }
+    // 搜索定位（含跨会话加载中）：保持不追底，绝不 scrollToIndex(LAST)。
+    if (locateInFlightRef.current || pendingScrollTarget || pendingScrollMessageId.trim() || locateScrollMessageId) {
+      setAgentAutoFollowLatest(false);
+      setAgentShowJumpLatest(true);
+      return;
+    }
+    setAgentAutoFollowLatest(true);
+    setAgentShowJumpLatest(false);
+    const frame = window.requestAnimationFrame(() => {
+      if (locateInFlightRef.current) return;
+      agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
     });
+    return () => window.cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgentSessionId, draftAgentSession]);
+
+  function loadOlderAgentHistory() {
+    if (agentLoadingOlderRef.current) return;
+    const session = activeAgentSession;
+    if (!session?.hasMore) return;
+    agentLoadingOlderRef.current = true;
+    void loadMoreAgentSessionMessages(session.id);
   }
 
-  function preserveOpencodePausedViewport() {
-    if (opencodeScrollModeRef.current !== "paused") return;
-    if (opencodeLoadingOlderRef.current) return;
-    const el = opencodeThreadRef.current;
-    const snapshot = opencodePausedScrollSnapshotRef.current;
-    if (!el || !snapshot) return;
-    const nextTop = Math.min(snapshot.top, Math.max(0, el.scrollHeight - el.clientHeight));
-    opencodeAutoScrollTokenRef.current += 1;
-    opencodeProgrammaticScrollUntilRef.current = Date.now() + 300;
-    el.scrollTop = nextTop;
-    opencodePrevScrollTopRef.current = el.scrollTop;
-    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-  }
-
-  function resumeOpencodeFollowFromUserAction(sessionId: string) {
-    opencodeUserScrollPauseUntilRef.current = 0;
-    opencodeStickToBottomSessionRef.current = sessionId;
-    opencodeForceScrollLatestSessionRef.current = sessionId;
-    setOpencodeAutoFollow(true);
-    setOpencodeShowJumpLatest(false);
-    scheduleOpencodeScrollToBottom({ force: true, source: "user" });
+  function jumpAgentToLatest() {
+    locateInFlightRef.current = false;
+    setAgentAutoFollowLatest(true);
+    agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth" });
   }
 
   useEffect(() => {
-    const sid = activeOpencodeSessionId.trim();
-    if (!sid) return;
-    if (opencodePendingAnchorSessionIdRef.current !== sid) return;
-    if (!activeOpencodeSession?.loaded || opencodeMessages.length <= 0) return;
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    if (opencodeScrollModeRef.current === "paused") {
-      opencodePendingAnchorSessionIdRef.current = "";
-      return;
-    }
-    if (opencodeScrollModeRef.current !== "follow") return;
-    scheduleOpencodeScrollToBottom({ force: true, source: "system" });
-    requestAnimationFrame(() => {
-      opencodePendingAnchorSessionIdRef.current = "";
-    });
-  }, [activeOpencodeSessionId, activeOpencodeSession?.loaded, opencodeMessages.length]);
-
-  useEffect(() => {
-    const sid = activeOpencodeSessionId.trim();
-    if (!sid) return;
-    if (opencodeStickToBottomSessionRef.current !== sid) return;
-    if (!opencodeAutoFollowLatestRef.current) return;
-    if (opencodeSessionLoading) return;
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    if (opencodeScrollModeRef.current !== "follow") return;
-    // 如果当前不在底部附近，不自动滚动（避免流式结束后闪动）
-    if (!opencodeIsNearBottom(el, 120)) return;
-    scheduleOpencodeScrollToBottom();
-  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeRenderedMessages.length]);
-
-  useLayoutEffect(() => {
-    const sid = activeOpencodeSessionId.trim();
-    if (
-      sid &&
-      opencodeForceScrollLatestSessionRef.current === sid &&
-      opencodeScrollModeRef.current === "follow" &&
-      !opencodeSessionLoading
-    ) {
-      scrollOpencodeThreadToBottomNow();
-      return;
-    }
-    if (opencodeLoadingOlderRef.current) {
-      preserveOpencodePausedViewport();
-    }
-  }, [activeOpencodeSessionId, opencodeSessionLoading, opencodeMessages.length, opencodeRenderedMessages.length]);
-
-  useEffect(() => {
-    cancelPendingOpencodeAutoScroll();
-    setOpencodeAutoFollow(true);
-    setOpencodeShowJumpLatest(false);
-    opencodePrevScrollTopRef.current = 0;
-    opencodePausedScrollSnapshotRef.current = null;
-    opencodeUserScrollPauseUntilRef.current = 0;
-    opencodeUserScrollUpUntilRef.current = 0;
-    opencodeUserScrollDownUntilRef.current = 0;
-    opencodeForceScrollLatestSessionRef.current = activeOpencodeSessionId;
-    opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-  }, [activeOpencodeSessionId]);
-
-  function loadOlderOpencodeHistory() {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    if (opencodeLoadingOlderRef.current) return;
-    cancelPendingOpencodeAutoScroll();
-    opencodeStickToBottomSessionRef.current = "";
-    setOpencodeAutoFollow(false);
-    setOpencodeShowJumpLatest(true);
-    opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-    opencodeLoadingOlderRef.current = true;
-    opencodePrevScrollHeightRef.current = el.scrollHeight;
-    if (opencodeHasHiddenHistory) {
-      updateActiveOpencodeSession((s) => ({
-        ...s,
-        turnStart: Math.max(0, s.turnStart - OPENCODE_PAGE_SIZE)
-      }));
-      return;
-    }
-    const session = activeOpencodeSession;
-    if (session?.hasMore) {
-      void loadMoreOpencodeSessionMessages(session.id);
-    } else {
-      opencodeLoadingOlderRef.current = false;
-      opencodePrevScrollHeightRef.current = 0;
-    }
-  }
-
-  function onOpencodeThreadScroll() {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    updateOpencodeViewportTodos();
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    const nearBottom = opencodeIsNearBottom(el, 24);
-    const now = Date.now();
-    if (now < opencodeProgrammaticScrollUntilRef.current) {
-      opencodePrevScrollTopRef.current = el.scrollTop;
-      if (nearBottom && opencodeScrollModeRef.current === "follow") {
-        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-        setOpencodeShowJumpLatest(false);
-      }
-      return;
-    }
-    const prevTop = opencodePrevScrollTopRef.current;
-    const movedUp = el.scrollTop < prevTop - 2;
-    const movedDown = el.scrollTop > prevTop + 2;
-    opencodePrevScrollTopRef.current = el.scrollTop;
-    const userScrollingUp = now < opencodeUserScrollUpUntilRef.current;
-    const userScrollingDown = now < opencodeUserScrollDownUntilRef.current;
-    if (movedUp && userScrollingUp) {
-      cancelPendingOpencodeAutoScroll();
-      opencodeStickToBottomSessionRef.current = "";
-      setOpencodeAutoFollow(false);
-      setOpencodeShowJumpLatest(true);
-      opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-    } else if (opencodeScrollModeRef.current === "paused") {
-      if (userScrollingDown && movedDown) {
-        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-      }
-      if (nearBottom && userScrollingDown) {
-        opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-        setOpencodeAutoFollow(true);
-        setOpencodeShowJumpLatest(false);
-      } else {
-        setOpencodeShowJumpLatest(true);
-      }
-    } else if (nearBottom) {
-      opencodeStickToBottomSessionRef.current = activeOpencodeSessionId;
-      setOpencodeAutoFollow(true);
-      setOpencodeShowJumpLatest(false);
-    }
-    if (maxScroll <= 0) return;
-    const topProgress = el.scrollTop / maxScroll;
-    const shouldPrefetch = topProgress <= OPENCODE_TOP_PREFETCH_RATIO;
-    if (shouldPrefetch && !opencodeHasHiddenHistory) {
-      prefetchNextOpencodeHistoryPage(activeOpencodeSession);
-    }
-    const shouldLoadNow = topProgress <= OPENCODE_TOP_LOAD_RATIO;
-    if (!shouldLoadNow) return;
-    if (opencodeHasHiddenHistory) {
-      loadOlderOpencodeHistory();
-    } else if (activeOpencodeSession?.hasMore) {
-      loadOlderOpencodeHistory();
-    }
-  }
-
-  function jumpOpencodeToLatest() {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    resumeOpencodeFollowFromUserAction(activeOpencodeSessionId);
-  }
-
-  function onOpencodeThreadWheel(event: React.WheelEvent<HTMLDivElement>) {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    if (event.deltaY !== 0) {
-      opencodeUserScrollPauseUntilRef.current = Date.now() + 800;
-    }
-    if (event.deltaY < 0) {
-      opencodeUserScrollUpUntilRef.current = Date.now() + 800;
-    }
-    if (event.deltaY < 0 && opencodeScrollModeRef.current === "follow") {
-      opencodeForceScrollLatestSessionRef.current = "";
-      cancelPendingOpencodeAutoScroll();
-      opencodeStickToBottomSessionRef.current = "";
-      setOpencodeAutoFollow(false);
-      setOpencodeShowJumpLatest(true);
-    }
-    if (event.deltaY > 0) {
-      opencodeUserScrollDownUntilRef.current = Date.now() + 800;
-    }
-    if (event.deltaY >= 0) return;
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    if (maxScroll <= 0) return;
-    const topProgress = el.scrollTop / maxScroll;
-    if (topProgress <= OPENCODE_TOP_PREFETCH_RATIO && !opencodeHasHiddenHistory) {
-      prefetchNextOpencodeHistoryPage(activeOpencodeSession);
-    }
-    if (topProgress <= OPENCODE_TOP_LOAD_RATIO && (opencodeHasHiddenHistory || activeOpencodeSession?.hasMore)) {
-      loadOlderOpencodeHistory();
-    }
-  }
-
-  useEffect(() => {
-    requestAnimationFrame(updateOpencodeViewportTodos);
-  }, [opencodeRenderedMessages.length, opencodeDetailsByMessageId, opencodeLivePartsByServerMessageId, activeOpencodeSessionId]);
-
-  useEffect(() => {
-    if (!opencodeLoadingOlderRef.current) return;
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    const prevHeight = opencodePrevScrollHeightRef.current;
-    requestAnimationFrame(() => {
-      const delta = el.scrollHeight - prevHeight;
-      if (delta > 0) {
-        el.scrollTop += delta;
-      }
-      opencodePrevScrollTopRef.current = el.scrollTop;
-      if (opencodeScrollModeRef.current === "paused") {
-        opencodePausedScrollSnapshotRef.current = { top: el.scrollTop, height: el.scrollHeight };
-      }
-      opencodeLoadingOlderRef.current = false;
-      opencodePrevScrollHeightRef.current = 0;
-      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-      if (maxScroll <= 0) return;
-      const topProgress = el.scrollTop / maxScroll;
-      if (topProgress <= OPENCODE_TOP_LOAD_RATIO && (opencodeHasHiddenHistory || activeOpencodeSession?.hasMore)) {
-        loadOlderOpencodeHistory();
-      }
-    });
-  }, [opencodeTurnStart, opencodeMessages.length, opencodeHasHiddenHistory, activeOpencodeSession?.hasMore]);
-
-  useEffect(() => {
-    const el = opencodeThreadRef.current;
-    if (!el) return;
-    if (opencodeSessionLoading) return;
-    if (opencodeLoadingOlderRef.current) return;
-    if (!opencodeHasHiddenHistory) return;
-    if (el.scrollHeight > el.clientHeight + 1) return;
-    updateActiveOpencodeSession((s) => ({
-      ...s,
-      turnStart: Math.max(0, s.turnStart - OPENCODE_PAGE_SIZE)
-    }));
-  }, [opencodeSessionLoading, opencodeHasHiddenHistory, opencodeTurnStart, opencodeMessages.length, opencodeRenderedMessages.length]);
+    requestAnimationFrame(updateAgentViewportTodos);
+  }, [agentRenderedMessages.length, agentDetailsByMessageId, agentLivePartsByServerMessageId, activeAgentSessionId]);
 
   useEffect(() => {
     if (!repoContextMenu && !sessionContextMenu && !composerContextMenu && !commitContextMenu && !topologyContextMenu) return;
@@ -6932,14 +6905,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [repoContextMenu, sessionContextMenu, composerContextMenu, commitContextMenu, topologyContextMenu]);
 
   useEffect(() => {
-    if (!opencodePreviewImage) return;
+    if (!agentPreviewImage) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setOpencodePreviewImage(null);
+        setAgentPreviewImage(null);
         return;
       }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      setOpencodePreviewImage((prev) => {
+      setAgentPreviewImage((prev) => {
         if (!prev || prev.images.length <= 1) return prev;
         const delta = e.key === "ArrowRight" ? 1 : -1;
         return { ...prev, index: (prev.index + delta + prev.images.length) % prev.images.length };
@@ -6947,7 +6920,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [opencodePreviewImage]);
+  }, [agentPreviewImage]);
 
   useEffect(() => {
     if (!showTopologyCreateDialog) return;
@@ -6976,8 +6949,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     return () => window.removeEventListener("contextmenu", onNativeContextMenu, { capture: true });
   }, [repos]);
 
-  const runtimeDeps = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam];
-  const runtimeDepsMissing = runtimeDeps.some((dep) => !dep.installed);
+  const runtimeDepsMissing = !runtimeStatus.git.installed || !runtimeStatus.entire.installed;
   const runtimeInstallActive = Boolean(installingDep || runtimeJobId);
   const runtimeSetupVisible =
     showEnvSetup && (runtimeStartupChecking || runtimeDepsMissing || runtimeInstallActive);
@@ -7087,6 +7059,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   const currentProjectId = selectedRepo?.id || "";
 
   const refreshRemoteRepos = useCallback(async () => {
+    // 远程仓库模块下线：断掉 list_repos 自动加载链路，配合侧边栏/右侧面板/设置
+    // 三入口隐藏，确保启动时不触发未完成的 remote_repo 后端。模块完整后移除此守卫。
+    if (!REMOTE_REPO_MODULE_ENABLED) return;
     setRemoteRepoLoading(true);
     try {
       const rows = await listRemoteRepos();
@@ -7105,6 +7080,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [refreshRemoteRepos]);
 
   useEffect(() => {
+    // 远程仓库模块下线：跳过 get_service_url 自动读取，避免触发未完成的后端。
+    if (!REMOTE_REPO_MODULE_ENABLED) return;
     let cancelled = false;
     void loadRemoteRepoServiceSetting()
       .then((setting) => {
@@ -7359,27 +7336,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       text={appText}
       noRepos={noRepos}
       busy={busy}
-      opencodeInstalled={runtimeStatus.opencode.installed}
+      agentInstalled={true}
       repos={repos}
       pinnedRepoIds={pinnedRepoIds}
       expandedProjectIds={expandedProjectIds}
       selectedRepoId={selectedRepo?.id || ""}
-      activeSessionId={activeOpencodeSessionId}
-      draftRepoId={draftOpencodeSession ? (selectedRepo?.id || "") : ""}
-      sessionBusyById={opencodeRunBusyBySession}
+      activeSessionId={activeAgentSessionId}
+      draftRepoId={draftAgentSession ? (selectedRepo?.id || "") : ""}
+      sessionBusyById={agentRunBusyBySession}
       gitUserIdentity={gitUserIdentity}
       getVisibleRepoSessions={getVisibleRepoSessions}
       hasMoreRepoSessions={hasMoreRepoSessions}
       isRepoSessionsLoading={isRepoSessionsLoading}
       isRepoSessionsPaging={isRepoSessionsPaging}
       onImportRepository={() => void pickAndImportRepository()}
-      onCreateSession={() => void createAndSwitchOpencodeSessionForSidebar()}
+      onCreateSession={() => void createAndSwitchAgentSessionForSidebar()}
+      onOpenSearch={() => setSearchPanelOpen(true)}
       onToggleRepoSessions={toggleRepoSessions}
       onOpenRepoContextMenu={openRepoContextMenu}
       onTogglePinnedRepo={togglePinnedRepo}
-      onFocusDraftSession={() => opencodeInputRef.current?.focus()}
-      onOpenSession={openSidebarOpencodeSession}
-      onArchiveSession={(repo, sessionId) => archiveOpencodeSession(repo, sessionId)}
+      onFocusDraftSession={() => agentInputRef.current?.focus()}
+      onOpenSession={openSidebarAgentSession}
+      onArchiveSession={(repo, sessionId) => archiveAgentSession(repo, sessionId)}
       onLoadMoreSessions={(repo) => void loadMoreSidebarRepoSessions(repo)}
       rightDrawerOpen={rightDrawerOpen}
       rightPaneTab={rightPaneTab}
@@ -7395,34 +7373,43 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     />
   );
 
-  const centerPane = runtimeStatus.opencode.installed ? (
+  const centerPane = (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
-      <div className={opencodeShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
-        <OpencodeChatFrame
-          empty={opencodeShowEmptyState}
-          threadRef={opencodeThreadRef}
-          onThreadScroll={onOpencodeThreadScroll}
-          onThreadWheel={onOpencodeThreadWheel}
+      <div className={agentShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
+        <AgentChatFrame
+          empty={agentShowEmptyState}
           stream={(
-            <OpencodeMessageStream
-              sessionLoading={opencodeSessionLoading}
-              messages={opencodeMessages}
-              renderedMessages={opencodeRenderedMessages}
-              activeStreamingAssistantId={activeOpencodeStreamingAssistantId}
-              activeSessionBusy={activeOpencodeSessionBusy}
-              serverMessageIdByLocalId={opencodeServerMessageIdByLocalId}
-              detailsByMessageId={opencodeDetailsByMessageId}
-              livePartsByServerMessageId={opencodeLivePartsByServerMessageId}
-              detailsLoadingByMessageId={opencodeDetailsLoadingByMessageId}
-              detailsErrorByMessageId={opencodeDetailsErrorByMessageId}
+            <AgentMessageStream
+              sessionLoading={agentSessionLoading}
+              activeSessionId={activeAgentSessionId}
+              virtuosoRef={agentVirtuosoRef}
+              scrollerRef={(node) => { agentThreadRef.current = node instanceof HTMLDivElement ? node : null; }}
+              onStartReached={loadOlderAgentHistory}
+              onAtBottomChange={handleAgentAtBottomChange}
+              onRangeChanged={() => requestAnimationFrame(updateAgentViewportTodos)}
+              pendingScrollMessageId={locateScrollMessageId}
+              locateNonce={locateNonce}
+              onPendingScrollDone={() => {
+                clearLocateRequest();
+              }}
+              highlightKeyword={highlightKeyword}
+              messages={agentMessages}
+              renderedMessages={agentRenderedMessages}
+              activeStreamingAssistantId={activeAgentStreamingAssistantId}
+              activeSessionBusy={activeAgentSessionBusy}
+              serverMessageIdByLocalId={agentServerMessageIdByLocalId}
+              detailsByMessageId={agentDetailsByMessageId}
+              livePartsByServerMessageId={agentLivePartsByServerMessageId}
+              detailsLoadingByMessageId={agentDetailsLoadingByMessageId}
+              detailsErrorByMessageId={agentDetailsErrorByMessageId}
               showReasoningSummaries={generalSettings.showReasoningSummaries}
               shellToolPartsExpanded={generalSettings.shellToolPartsExpanded}
               editToolPartsExpanded={generalSettings.editToolPartsExpanded}
-              workspaceRoot={opencodeWorkspaceRoot}
-              workspaceFileCandidates={opencodeWorkspaceFileCandidates}
-              workspaceDirectoryCandidates={opencodeWorkspaceDirectoryCandidates}
+              workspaceRoot={agentWorkspaceRoot}
+              workspaceFileCandidates={agentWorkspaceFileCandidates}
+              workspaceDirectoryCandidates={agentWorkspaceDirectoryCandidates}
               onOpenTaskSession={(sessionId, titleHint) => {
-                void openOpencodeChildSession(sessionId, titleHint);
+                void openAgentChildSession(sessionId, titleHint);
               }}
               onOpenWorkspacePath={(path, line) => {
                 void openWorkspacePathInRightPane(path, line);
@@ -7437,7 +7424,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 void openToolFileInRightPane(target);
               }}
               onPreviewImageGroup={(images, index) => {
-                setOpencodePreviewImage({ images, index });
+                setAgentPreviewImage({ images, index });
               }}
               onCopyAttachmentUri={(uri) => {
                 void copyText(uri);
@@ -7447,115 +7434,116 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               }}
             />
           )}
-          sideRail={generalSettings.showSessionProgressBar && opencodeSideRailTodos.length > 0 ? ({ collapsed }) => (
-            <OpencodeTodoProgressCard
-              todos={opencodeSideRailTodos}
-              progress={opencodeSideRailTodoProgress}
-              activeSessionBusy={activeOpencodeSessionBusy}
+          sideRail={generalSettings.showSessionProgressBar && agentSideRailTodos.length > 0 ? ({ collapsed }) => (
+            <AgentTodoProgressCard
+              todos={agentSideRailTodos}
+              progress={agentSideRailTodoProgress}
+              activeSessionBusy={activeAgentSessionBusy}
               collapsed={collapsed}
             />
           ) : null}
           sideRailHidden={rightDrawerOpen}
           composer={(
-            <OpencodeComposerPanel
-              permissions={opencodeActivePermissions}
-              onOpenPermissionsPanel={() => openOpencodeModulePanel("permissions")}
+            <AgentComposerPanel
+              permissions={agentActivePermissions}
+              activeSessionStale={agentActiveSessionStale}
+              onOpenPermissionsPanel={() => openAgentModulePanel("permissions")}
               onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
-              questionLoading={opencodeQuestionLoading}
-              activeQuestions={opencodeActiveQuestions}
-              staleQuestions={opencodeStaleQuestions}
+              questionLoading={agentQuestionLoading}
+              activeQuestions={agentActiveQuestions}
+              staleQuestions={agentStaleQuestions}
               onReplyQuestion={(requestId, answers) => {
                 void sendQuestionReply(requestId, answers).then((ok) => {
                   if (!ok) return;
-                  setOpencodeDismissedQuestionsBySession((prev) => ({
+                  setAgentDismissedQuestionsBySession((prev) => ({
                     ...prev,
-                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                    [activeAgentSessionId]: Array.from(new Set([...(prev[activeAgentSessionId] || []), requestId])),
                   }));
                 });
               }}
               onDismissQuestion={(requestId) => {
                 void sendQuestionReject(requestId).then((ok) => {
                   if (!ok) return;
-                  setOpencodeDismissedQuestionsBySession((prev) => ({
+                  setAgentDismissedQuestionsBySession((prev) => ({
                     ...prev,
-                    [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                    [activeAgentSessionId]: Array.from(new Set([...(prev[activeAgentSessionId] || []), requestId])),
                   }));
                 });
               }}
               onDismissStaleQuestion={(requestId) => {
-                setOpencodeDismissedQuestionsBySession((prev) => ({
+                setAgentDismissedQuestionsBySession((prev) => ({
                   ...prev,
-                  [activeOpencodeSessionId]: Array.from(new Set([...(prev[activeOpencodeSessionId] || []), requestId])),
+                  [activeAgentSessionId]: Array.from(new Set([...(prev[activeAgentSessionId] || []), requestId])),
                 }));
               }}
-              showEmptyState={opencodeShowEmptyState}
+              showEmptyState={agentShowEmptyState}
               selectedRepoName={selectedRepo?.name || "Giteam"}
-              showJumpLatest={opencodeShowJumpLatest}
-              onJumpLatest={jumpOpencodeToLatest}
-              attachments={opencodeImageAttachments}
-              mcpPromptRefs={opencodeMcpPromptRefs}
-              onRemoveAttachment={(id) => setOpencodeImageAttachments((prev) => prev.filter((item) => item.id !== id))}
-              onRemoveMcpPromptRef={(name) => setOpencodeMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
-              slashOpen={opencodeSlashOpen}
-              slashSuggestions={opencodeSlashSuggestions}
-              slashActiveIndex={opencodeSlashActiveIndex}
-              onHoverSlashSuggestion={setOpencodeSlashActiveIndex}
-              onActivateSlashCommand={activateOpencodeSlashCommand}
-              promptInputRef={opencodeInputRef}
-              promptInput={opencodePromptInput}
+              showJumpLatest={agentShowJumpLatest}
+              onJumpLatest={jumpAgentToLatest}
+              attachments={agentImageAttachments}
+              mcpPromptRefs={agentMcpPromptRefs}
+              onRemoveAttachment={(id) => setAgentImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+              onRemoveMcpPromptRef={(name) => setAgentMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
+              slashOpen={agentSlashOpen}
+              slashSuggestions={agentSlashSuggestions}
+              slashActiveIndex={agentSlashActiveIndex}
+              onHoverSlashSuggestion={setAgentSlashActiveIndex}
+              onActivateSlashCommand={activateAgentSlashCommand}
+              promptInputRef={agentInputRef}
+              promptInput={agentPromptInput}
               onPromptCompositionStart={() => {
-                opencodeInputComposingRef.current = true;
+                agentInputComposingRef.current = true;
               }}
               onPromptCompositionEnd={() => {
-                opencodeInputComposingRef.current = false;
+                agentInputComposingRef.current = false;
               }}
               onPromptChange={(event) => {
                 const value = event.target.value;
-                captureOpencodePromptHistoryDraft(value);
-                setOpencodePromptInput(value);
+                captureAgentPromptHistoryDraft(value);
+                setAgentPromptInput(value);
                 const isSlash = /^\//.test(value) && !value.includes(" ");
-                setOpencodeSlashOpen(isSlash);
-                setOpencodeSlashActiveIndex(0);
+                setAgentSlashOpen(isSlash);
+                setAgentSlashActiveIndex(0);
               }}
               onPromptKeyDown={(event) => {
-                if (activeOpencodeSessionBusy) return;
+                if (activeAgentSessionBusy) return;
                 const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-                if (nativeEvent.isComposing || opencodeInputComposingRef.current || nativeEvent.keyCode === 229) return;
-                if (opencodeSlashOpen && opencodeSlashSuggestions.length > 0) {
+                if (nativeEvent.isComposing || agentInputComposingRef.current || nativeEvent.keyCode === 229) return;
+                if (agentSlashOpen && agentSlashSuggestions.length > 0) {
                   if (event.key === "ArrowDown") {
                     event.preventDefault();
-                    setOpencodeSlashActiveIndex((index) => (index + 1) % opencodeSlashSuggestions.length);
+                    setAgentSlashActiveIndex((index) => (index + 1) % agentSlashSuggestions.length);
                     return;
                   }
                   if (event.key === "ArrowUp") {
                     event.preventDefault();
-                    setOpencodeSlashActiveIndex((index) => (index - 1 + opencodeSlashSuggestions.length) % opencodeSlashSuggestions.length);
+                    setAgentSlashActiveIndex((index) => (index - 1 + agentSlashSuggestions.length) % agentSlashSuggestions.length);
                     return;
                   }
                   if (event.key === "Enter" || event.key === "Tab") {
                     event.preventDefault();
-                    const command = opencodeSlashSuggestions[opencodeSlashActiveIndex];
-                    if (command) activateOpencodeSlashCommand(command);
+                    const command = agentSlashSuggestions[agentSlashActiveIndex];
+                    if (command) activateAgentSlashCommand(command);
                     return;
                   }
                   if (event.key === "Escape") {
-                    setOpencodeSlashOpen(false);
+                    setAgentSlashOpen(false);
                     return;
                   }
                 }
                 if (event.key === "ArrowUp" && shouldUsePromptHistoryKey(event, "older")) {
                   event.preventDefault();
-                  browseOpencodePromptHistory("older");
+                  browseAgentPromptHistory("older");
                   return;
                 }
                 if (event.key === "ArrowDown" && shouldUsePromptHistoryKey(event, "newer")) {
                   event.preventDefault();
-                  browseOpencodePromptHistory("newer");
+                  browseAgentPromptHistory("newer");
                   return;
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  void runOpencodePrompt();
+                  void runAgentPrompt();
                 }
               }}
               onPromptPaste={async (event) => {
@@ -7563,11 +7551,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   return;
                 }
                 event.preventDefault();
-                const attachments = await readOpencodeClipboardAttachments(event.clipboardData);
+                const attachments = await readAgentClipboardAttachments(event.clipboardData);
                 if (attachments.length === 0) {
+                  // preventDefault 后即便没有附件也要保住输入焦点。
+                  requestAnimationFrame(() => agentInputRef.current?.focus({ preventScroll: true }));
                   return;
                 }
-                appendOpencodeAttachments(attachments);
+                appendAgentAttachments(attachments);
               }}
               onPromptContextMenu={(event) => {
                 event.preventDefault();
@@ -7587,100 +7577,90 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 event.preventDefault();
                 const attachments = await readTransferAttachments(event.dataTransfer);
                 if (attachments.length === 0) return;
-                appendOpencodeAttachments(attachments);
+                appendAgentAttachments(attachments);
               }}
-              attachmentMenuOpen={opencodeAttachmentMenuOpen}
-              onToggleAttachmentMenu={() => setOpencodeAttachmentMenuOpen((prev) => !prev)}
-              attachmentInputRef={opencodeImageInputRef}
-              attachmentInputAccept={OPENCODE_ATTACHMENT_INPUT_ACCEPT}
+              attachmentMenuOpen={agentAttachmentMenuOpen}
+              onToggleAttachmentMenu={() => setAgentAttachmentMenuOpen((prev) => !prev)}
+              attachmentInputRef={agentImageInputRef}
+              attachmentInputAccept={AGENT_ATTACHMENT_INPUT_ACCEPT}
               onOpenAttachmentPicker={() => {
-                void openOpencodeAttachmentPicker();
+                void openAgentAttachmentPicker();
               }}
               onAttachmentInputChange={async (event) => {
                 const files = Array.from(event.target.files || []);
                 if (files.length === 0) return;
                 const attachments = await Promise.all(files.map((file) => readFileAsAttachment(file)));
-                appendOpencodeAttachments(attachments.filter(Boolean) as OpencodeAttachment[]);
+                appendAgentAttachments(attachments.filter(Boolean) as AgentAttachment[]);
                 event.currentTarget.value = "";
               }}
-              modelPickerRef={opencodeModelPickerRef}
-              showModelPicker={showOpencodeModelPicker}
-              onToggleModelPicker={() => setShowOpencodeModelPicker((prev) => !prev)}
-              modelPickerSearch={opencodeModelPickerSearch}
-              onModelPickerSearchChange={setOpencodeModelPickerSearch}
-              activeAgent={activeOpencodeAgent}
-              onApplyAgent={applyOpencodeAgent}
-              autoAcceptPermissions={opencodeAutoAcceptPermissions}
+              modelPickerRef={agentModelPickerRef}
+              showModelPicker={showAgentModelPicker}
+              onToggleModelPicker={() => setShowAgentModelPicker((prev) => !prev)}
+              modelPickerSearch={agentModelPickerSearch}
+              onModelPickerSearchChange={setAgentModelPickerSearch}
+              activeAgent={activeAgentAgent}
+              onApplyAgent={applyAgentAgent}
+              activeThinkingLevel={activeAgentThinkingLevel}
+              thinkingLevelOptions={activeAgentThinkingOptions}
+              onApplyThinkingLevel={(level) => void applyAgentThinkingLevel(level)}
+              autoAcceptPermissions={agentAutoAcceptPermissions}
               onToggleAutoAcceptPermissions={() => {
-                const next = !opencodeAutoAcceptPermissions;
-                setOpencodeAutoAcceptPermissions(next);
-                saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-                if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+                const next = !agentAutoAcceptPermissions;
+                setAgentAutoAcceptPermissions(next);
+                saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+                if (activeAgentSessionId) void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next);
               }}
-              configuredModelCandidates={opencodeConfiguredModelCandidates}
-              activeModel={activeOpencodeModel}
-              getModelDisplay={getOpencodeModelDisplay}
+              configuredModelCandidates={agentConfiguredModelCandidates}
+              activeModel={activeAgentModel}
+              getModelDisplay={getAgentModelDisplay}
               onApplyModel={(modelRef) => {
-                void applyOpencodeModel(modelRef);
-                setShowOpencodeModelPicker(false);
+                void applyAgentModel(modelRef);
+                setShowAgentModelPicker(false);
               }}
               onOpenModelSettings={() => {
                 setSettingsInitialSection("models");
                 setShowSettings(true);
-                setOpencodeProviderPickerSearch("");
-                setOpencodeProviderPickerProvider(opencodeModelProvider);
-                setOpencodeProviderPickerModelSearch("");
-                setShowOpencodeModelPicker(false);
+                setAgentProviderPickerSearch("");
+                setAgentProviderPickerProvider(agentModelProvider);
+                setAgentProviderPickerModelSearch("");
+                setShowAgentModelPicker(false);
               }}
-              activeSessionBusy={activeOpencodeSessionBusy}
-              canSubmit={Boolean(opencodePromptInput.trim() || opencodeMcpPromptRefs.length > 0 || opencodeImageAttachments.length > 0)}
+              labels={{
+                model: appText.model,
+                configureModels: appText.configureModels,
+                configureModelsAction: appText.configureModelsAction,
+                emptyComposerHeadline: appText.emptyComposerHeadline
+              }}
+              activeSessionBusy={activeAgentSessionBusy}
+              canSubmit={Boolean(agentPromptInput.trim() || agentMcpPromptRefs.length > 0 || agentImageAttachments.length > 0)}
               onPrimaryAction={() => {
-                if (activeOpencodeSessionBusy) {
-                  void stopOpencodePrompt();
+                if (activeAgentSessionBusy) {
+                  void stopAgentPrompt();
                 } else {
-                  void runOpencodePrompt();
+                  void runAgentPrompt();
                 }
               }}
             />
           )}
         />
       </div>
-      {showOpencodeDebugLog ? (
+      {showAgentDebugLog ? (
         <Card className="mx-2.5 mb-2.5 overflow-hidden rounded-lg">
           <CardHeader className="flex min-h-8 flex-row items-center justify-between gap-2 border-b border-border/60 px-2 py-1.5">
-            <CardTitle className="text-xs font-medium">OpenCode Debug Log</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setOpencodeDebugLogs([])}>Clear</Button>
+            <CardTitle className="text-xs font-medium">Giteam Debug Log</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => setAgentDebugLogs([])}>Clear</Button>
           </CardHeader>
           <CardContent className="p-0">
-            <pre className="max-h-44 overflow-auto bg-muted/35 p-2 font-mono text-xs leading-relaxed text-foreground">{opencodeDebugLogs.length === 0 ? "No logs yet." : opencodeDebugLogs.join("\n")}</pre>
+            <pre className="max-h-44 overflow-auto bg-muted/35 p-2 font-mono text-xs leading-relaxed text-foreground">{agentDebugLogs.length === 0 ? "No logs yet." : agentDebugLogs.join("\n")}</pre>
           </CardContent>
         </Card>
       ) : null}
     </div>
-  ) : (
-    <Card className="flex h-full min-h-0 items-center justify-center rounded-none border-0 bg-background shadow-none">
-      <CardContent className="flex max-w-md flex-col items-center gap-4 text-center">
-        <div className="text-lg font-semibold tracking-[-0.01em] text-foreground">OpenCode Agent</div>
-        <p className="text-sm text-muted-foreground">
-          安装 OpenCode 后即可使用对话与 Agent 能力。也可在设置 → 依赖 中管理安装。
-        </p>
-        <Button
-          variant="secondary"
-          disabled={runtimeInstallActive}
-          onClick={() => void runDependencyAction("opencode", "install", { showRuntimePanel: false })}
-        >
-          {installingDep === "opencode" ? "安装中…" : "安装 OpenCode"}
-        </Button>
-        {error && installingDep === "opencode" ? (
-          <p className="text-sm text-destructive">{error}</p>
-        ) : null}
-      </CardContent>
-    </Card>
   );
 
   const rightPane = (
     <RightSidebarPanel
-      ref={opencodeRightPaneRef}
+      ref={agentRightPaneRef}
       variant={rightPaneTab === "changes" || rightPaneTab === "worktree"
         ? "workspace"
         : rightPaneTab === "terminal"
@@ -7863,85 +7843,83 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       ) : null}
 
       {rightPaneTab === "skills" ? (
-        <OpencodeSkillsMarketPanel
-          groups={groupedOpencodeSkills}
-          skills={opencodeSkills}
-          skillsLoading={opencodeSkillsLoading}
-          skillsError={opencodeSkillsError}
-          removingKey={opencodeSkillRemovingKey}
-          skillBusy={opencodeSkillBusy}
-          skillInstallingSpec={opencodeSkillInstallingSpec}
-          skillInstallNotice={opencodeSkillInstallNotice}
-          skillInstallLog={opencodeSkillInstallLog}
-          marketListRef={opencodeSkillMarketListRef}
-          searchQuery={opencodeSkillSearchQuery}
-          searchStrategy={opencodeSkillSearchStrategy}
-          searchResults={opencodeSkillSearchResults}
-          catalogView={opencodeSkillCatalogView}
-          searchMeta={opencodeSkillSearchMeta}
+        <AgentSkillsMarketPanel
+          groups={groupedAgentSkills}
+          skills={agentSkills}
+          skillsLoading={agentSkillsLoading}
+          skillsError={agentSkillsError}
+          removingKey={agentSkillRemovingKey}
+          skillBusy={agentSkillBusy}
+          skillInstallingSpec={agentSkillInstallingSpec}
+          skillInstallNotice={agentSkillInstallNotice}
+          skillInstallLog={agentSkillInstallLog}
+          marketListRef={agentSkillMarketListRef}
+          searchQuery={agentSkillSearchQuery}
+          searchResults={agentSkillSearchResults}
+          catalogView={agentSkillCatalogView}
+          searchMeta={agentSkillSearchMeta}
           selectedMarketplaceSkill={selectedMarketplaceSkill}
-          marketplaceRows={opencodeMarketplaceRows}
-          visibleMarketplaceRows={visibleOpencodeMarketplaceRows}
-          initialLoading={opencodeSkillsInitialLoading}
-          searching={opencodeSkillsSearching}
-          paging={opencodeSkillsPaging}
-          onSearchQueryChange={setOpencodeSkillSearchQuery}
-          onSearch={() => void searchOpencodeSkillRegistry()}
-          onSearchStrategyChange={setOpencodeSkillSearchStrategy}
-          onSwitchCatalogView={switchOpencodeSkillCatalogView}
-          onRefreshSkills={() => void refreshOpencodeSkills()}
-          onScrollMarket={handleOpencodeSkillMarketScroll}
+          marketplaceRows={agentMarketplaceRows}
+          visibleMarketplaceRows={visibleAgentMarketplaceRows}
+          initialLoading={agentSkillsInitialLoading}
+          searching={agentSkillsSearching}
+          paging={agentSkillsPaging}
+          onSearchQueryChange={setAgentSkillSearchQuery}
+          onSearch={() => void searchAgentSkillRegistry()}
+          onSwitchCatalogView={switchAgentSkillCatalogView}
+          onRefreshSkills={() => void refreshAgentSkills()}
+          onScrollMarket={handleAgentSkillMarketScroll}
           onSelectMarketplaceSkill={selectMarketplaceSkill}
-          onInstallMarketplaceSkill={(spec) => void installOpencodeSkillFromRegistry(spec, "project")}
+          onInstallMarketplaceSkill={(spec) => void installAgentSkillFromRegistry(spec, "project")}
           onInstallSelectedMarketplaceSkill={(scope) => {
             if (!selectedMarketplaceSkill) return;
             setShowSkillInstallMenu(false);
-            void installOpencodeSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
+            void installAgentSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
           }}
-          onReferenceSkill={referenceOpencodeSkill}
-          onRemoveSkill={removeOpencodeSkill}
-          onRemoveSkillGroup={removeOpencodeSkillGroup}
+          onReferenceSkill={referenceAgentSkill}
+          onRemoveSkill={removeAgentSkill}
+          onRemoveSkillGroup={removeAgentSkillGroup}
         />
       ) : null}
 
       {rightPaneTab === "mcp" ? (
-        <OpencodeMcpMarketPanel
-          rows={opencodeMcpPanelRows}
-          loading={opencodeMcpLoading}
-          error={opencodeMcpError}
+        <AgentMcpMarketPanel
+          rows={agentMcpPanelRows}
+          loading={agentMcpLoading}
+          error={agentMcpError}
           installedOpen={mcpInstalledOpen}
           servers={MCP_MARKET_SERVERS}
-          configuredMcpNames={opencodeMcpRows.map(([name]) => name)}
+          configuredMcpNames={agentMcpRows.map(([name]) => name)}
           onInstalledOpenChange={setMcpInstalledOpen}
           onShowCustomAdd={() => setShowMcpAddForm(true)}
-          onRefresh={() => void refreshOpencodeMcpStatus()}
-          onReferenceMcp={referenceOpencodeMcp}
-          onAddMcpFromMarket={addOpencodeMcpServerFromMarket}
+          onRefresh={() => void refreshAgentMcpStatus()}
+          onReferenceMcp={referenceAgentMcp}
+          onAddMcpFromMarket={addAgentMcpServerFromMarket}
         />
       ) : null}
 
-      <OpencodeMcpDialogs
+      <AgentMcpDialogs
         showCustomAdd={showMcpAddForm}
-        customName={opencodeMcpAddForm.name}
-        customJson={opencodeMcpAddForm.json}
-        customParamValues={opencodeMcpAddForm.paramValues}
-        busyName={opencodeMcpBusyName}
-        customParamSpecs={getCustomMcpParamSpecs(opencodeMcpAddForm.json, opencodeMcpAddForm.name)}
+        customName={agentMcpAddForm.name}
+        customJson={agentMcpAddForm.json}
+        customParamValues={agentMcpAddForm.paramValues}
+        busyName={agentMcpBusyName}
+        customParamSpecs={getCustomMcpParamSpecs(agentMcpAddForm.json, agentMcpAddForm.name)}
         normalizeConfig={normalizeCustomMcpJson}
         onCloseCustomAdd={() => setShowMcpAddForm(false)}
-        onCustomNameChange={opencodeMcpAddForm.setName}
-        onCustomJsonChange={opencodeMcpAddForm.setJson}
-        onCustomParamChange={opencodeMcpAddForm.setParamValue}
-        onAddCustomMcp={addOpencodeMcpServer}
+        onCustomNameChange={agentMcpAddForm.setName}
+        onCustomJsonChange={agentMcpAddForm.setJson}
+        onCustomParamChange={agentMcpAddForm.setParamValue}
+        onAddCustomMcp={addAgentMcpServer}
         editingName={editingMcpName}
-        editingStatus={opencodeMcpStatus[editingMcpName]}
-        editingSpecs={getInstalledMcpParamSpecs(editingMcpName, opencodeMcpStatus[editingMcpName])}
+        editingStatus={agentMcpStatus[editingMcpName]}
+        editingSpecs={getInstalledMcpParamSpecs(editingMcpName, agentMcpStatus[editingMcpName])}
         editingTools={getInstalledMcpTools(editingMcpName)}
         editingParamValues={editingMcpParamValues}
         onCloseEditing={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}
         onEditingParamChange={(key, value) => setEditingMcpParamValues((prev) => ({ ...prev, [key]: value }))}
-        onRemoveEditingMcp={() => removeOpencodeMcpServer(editingMcpName)}
-        onSaveEditingMcp={() => saveMcpParams(editingMcpName, opencodeMcpStatus[editingMcpName])}
+        onRemoveEditingMcp={() => removeAgentMcpServer(editingMcpName)}
+        onSaveEditingMcp={() => saveMcpParams(editingMcpName, agentMcpStatus[editingMcpName])}
       />
 
       {rightPaneTab === "terminal" ? (
@@ -7962,6 +7940,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             updateTerminalTabById(activeTerminalTab.id, { seq: 0, output: "" });
           }}
           onInput={sendTerminalData}
+          onResize={async (tabId, cols, rows) => {
+            if (!selectedRepo) return;
+            try {
+              await resizeRepoTerminalSession(selectedRepo.path, cols, rows, tabId);
+            } catch {
+              // 面板隐藏或 tty 未就绪时忽略
+            }
+          }}
         />
       ) : null}
 
@@ -8013,12 +7999,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   );
 
   const centerColClass = cn(
-    "wb-col wb-col-center min-h-0 min-w-0 flex-1 overflow-hidden",
-    !runtimeStatus.opencode.installed && "px-3 sm:px-4 lg:px-6"
+    "wb-col wb-col-center min-h-0 min-w-0 flex-1 overflow-hidden"
   );
   const editorShellClass = cn(
-    "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden",
-    !runtimeStatus.opencode.installed && "p-3"
+    "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden"
   );
 
   const editorHeaderTransition = reduceMotion
@@ -8034,7 +8018,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         transition={editorHeaderTransition}
       >
         <EditorSessionHeader
-          title={activeOpencodeSession?.title || (draftOpencodeSession ? appText.newSession : "会话摘要")}
+          title={activeAgentSession?.title || (draftAgentSession ? appText.newSession : "会话摘要")}
         />
       </motion.div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -8088,106 +8072,111 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       cancelled = true;
     };
   }, [controlPairPayload]);
-  const opencodeProviderPickerModelCounts = useMemo(() => {
+  const agentProviderPickerModelCounts = useMemo(() => {
     const out: Record<string, number> = {};
-    for (const provider of opencodeProviderPickerCandidates) {
-      out[provider] = (opencodeModelsByProvider[provider] || []).length;
+    for (const provider of agentProviderPickerCandidates) {
+      out[provider] = (agentModelsByProvider[provider] || []).length;
     }
     return out;
-  }, [opencodeProviderPickerCandidates, opencodeModelsByProvider]);
+  }, [agentProviderPickerCandidates, agentModelsByProvider]);
 
-  async function saveOpencodeCustomProvider() {
+  async function saveAgentCustomProvider() {
     try {
-      setOpencodeProviderConfigBusy(true);
-      setOpencodeConfigBusy(true);
-      const pid = opencodeProviderConfig.provider.trim();
-      const mid = opencodeSelectedModel.trim();
+      setAgentProviderConfigBusy(true);
+      setAgentConfigBusy(true);
+      const pid = agentProviderConfig.provider.trim();
+      const mid = agentSelectedModel.trim();
       const full = `${pid}/${mid}`;
-      const key = opencodeProviderConfig.apiKey?.trim() || "";
-      await invoke<OpencodeProviderConfig>("set_opencode_provider_config", {
-        repoPath,
+      const key = agentProviderConfig.apiKey?.trim() || "";
+      // pi：自定义 provider 写入 models.json（原子写，按 model id 合并），
+      // api key 只进 vault（auth.json），不落任何配置文件（迁移计划 §8.3）。
+      await agentClient.saveCustomProvider({
         provider: pid,
-        npm: opencodeProviderConfig.npm || "@ai-sdk/openai-compatible",
-        name: opencodeProviderConfig.name || pid,
-        baseUrl: opencodeProviderConfig.baseUrl,
-        apiKey: key,
-        headers: opencodeProviderConfig.headers || {},
-        endpoint: opencodeProviderConfig.endpoint || "",
-        region: opencodeProviderConfig.region || "",
-        profile: opencodeProviderConfig.profile || "",
-        project: opencodeProviderConfig.project || "",
-        location: opencodeProviderConfig.location || "",
-        resourceName: opencodeProviderConfig.resourceName || "",
-        enterpriseUrl: opencodeProviderConfig.enterpriseUrl || "",
-        timeout: opencodeProviderConfig.timeout || "",
-        chunkTimeout: opencodeProviderConfig.chunkTimeout || "",
+        name: agentProviderConfig.name || pid,
+        baseUrl: agentProviderConfig.baseUrl,
+        headers: agentProviderConfig.headers || {},
         modelId: mid,
-        modelName: mid
+        modelName: mid,
+        apiKey: key || undefined
       });
-      await invoke<OpencodeServerConfig>("set_opencode_server_current_model", { repoPath, model: full });
-      const effective = await invoke<OpencodeServerConfig>("get_opencode_server_config", { repoPath });
-      const hasProvider = Boolean(effective?.provider && effective.provider[pid]);
-      const hasModel = Boolean(effective?.provider?.[pid]?.models && effective.provider[pid].models[mid]);
-      if (!hasProvider || !hasModel) {
-        appendOpencodeDebugLog(
-          `custom.save.verify failed pid=${pid} mid=${mid} hasProvider=${String(hasProvider)} hasModel=${String(hasModel)}`
-        );
-        appendOpencodeDebugLog(`custom.save.config=${JSON.stringify(effective).slice(0, 1200)}`);
-        throw new Error("保存后未在 /config 中找到该 provider/model（请打开 Debug Log 查看详情）");
+      // 保存即选中：当前模型是客户端选择状态（draft 选择 + 记忆列表）。
+      selectAgentModel(full, "");
+      // 自定义 provider 同样尽力拉实时模型列表，补全目录。
+      if (key) {
+        await agentClient.refreshProviderModels(pid).catch(() => [] as string[]);
       }
-      await refreshOpencodeServerConfig();
-      await refreshOpencodeConfiguredModels();
+      setAgentModelProvider(pid);
+      setAgentSelectedModel(mid);
+      await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false });
+      await refreshAgentConfiguredModels();
       ensureProviderExists(pid);
-      setShowOpencodeCustomProvider(false);
-      setShowOpencodeModelPicker(true);
-      setOpencodeModelPickerSearch("");
+      setShowAgentCustomProvider(false);
+      setShowAgentModelPicker(true);
+      setAgentModelPickerSearch("");
       setMessage(`Saved configuration: ${full}`);
     } catch (e) {
       setError(String(e));
       setMessage("Save configuration failed");
     } finally {
-      setOpencodeConfigBusy(false);
-      setOpencodeProviderConfigBusy(false);
+      setAgentConfigBusy(false);
+      setAgentProviderConfigBusy(false);
     }
   }
 
-  async function submitOpencodeProviderAuthKey(
+  async function submitAgentProviderAuthKey(
     providerId: string,
     connected: boolean,
     options?: { closeDialog?: boolean; closeInlineAuth?: boolean }
   ) {
-    if (!ensureRepoSelected()) return;
     const authPid = providerId.trim();
-    const key = opencodeConnectApiKey.trim();
+    const key = agentConnectApiKey.trim();
     if (!authPid || !key) return;
-    setOpencodeConnectBusy(true);
+    setAgentConnectBusy(true);
     setError("");
     try {
-      await invoke<boolean>("put_opencode_server_auth", { repoPath, providerId: authPid, key });
-      await refreshOpencodeServerConfig({ syncSelection: false, includeCurrentModel: false });
-      await refreshOpencodeConnectedProvidersOnly();
-      if (!(opencodeModelsByProvider[authPid] ?? []).length) {
-        await fetchOpencodeModels(authPid);
-      }
-      setOpencodeProviderPickerProvider(authPid);
-      setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
-      setOpencodeConnectApiKey("");
+      // api key 只写统一 vault（auth.json），与是否选中工作区无关。
+      await agentClient.saveApiKey(authPid, key);
+      // 先乐观更新「已连接」，避免后续 listProviders/refresh 慢或失败时 UI 仍停在未连接。
+      setAgentConnectedProviders((prev) => (prev.includes(authPid) ? prev : [...prev, authPid].sort((a, b) => a.localeCompare(b))));
+      ensureProviderExists(authPid);
+      // 密钥一写入就收起编辑区/对话框并清空输入，不要等后面的模型刷新（最长约 8s）。
+      setAgentConnectApiKey("");
       if (options?.closeDialog) {
-        setShowOpencodeAuthDialogFor("");
+        setShowAgentAuthDialogFor("");
       }
       if (options?.closeInlineAuth) {
-        setOpencodeInlineAuthOpenFor("");
+        setAgentInlineAuthOpenFor("");
       }
+      setMessage(connected ? `已更新密钥: ${authPid}` : `已连接: ${authPid}`);
+      // 实时模型刷新不得阻塞连接成功：部分 provider（含 kimi-coding）拉 /v1/models 可能很慢或失败。
+      const addedModels = await Promise.race([
+        agentClient.refreshProviderModels(authPid).catch(() => [] as string[]),
+        new Promise<string[]>((resolve) => window.setTimeout(() => resolve([]), 8000))
+      ]);
+      if (addedModels.length) {
+        appendAgentDebugLog(`实时模型目录已更新: ${authPid} +${addedModels.length} (${addedModels.join(", ")})`);
+      }
+      await refreshAgentServerConfig({ syncSelection: false, includeCurrentModel: false }).catch(() => undefined);
+      await refreshAgentConnectedProvidersOnly();
+      const confirmed = await agentClient.hasCredential(authPid).catch(() => true);
+      if (!confirmed) {
+        throw new Error("密钥写入后未能确认凭据，请重试或检查 Giteam auth.json 权限");
+      }
+      setAgentConnectedProviders((prev) => (prev.includes(authPid) ? prev : [...prev, authPid].sort((a, b) => a.localeCompare(b))));
+      if (!(agentModelsByProvider[authPid] ?? []).length) {
+        await fetchAgentModels(authPid).catch(() => [] as string[]);
+      }
+      setAgentProviderPickerProvider(authPid);
     } catch (e) {
       setError(String(e));
       setMessage(connected ? "更新密钥失败" : "连接失败");
     } finally {
-      setOpencodeConnectBusy(false);
+      setAgentConnectBusy(false);
     }
   }
 
-  async function saveOpencodeAuthKey(providerId: string) {
-    await submitOpencodeProviderAuthKey(providerId, true, { closeDialog: true });
+  async function saveAgentAuthKey(providerId: string) {
+    await submitAgentProviderAuthKey(providerId, true, { closeDialog: true });
   }
 
   const panel = rightSidebarPanel;
@@ -8595,6 +8584,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           </AlertDialogContent>
         </AlertDialog>
 
+        <SearchPanel
+          open={searchPanelOpen}
+          onClose={() => setSearchPanelOpen(false)}
+          text={appText}
+          scope={searchScope}
+          onScopeChange={setSearchScope}
+          agentClient={agentClient}
+          listSessions={() => agentClient.listSessions()}
+          currentSessionId={activeAgentSessionId}
+          currentSessionTitle={activeAgentSession?.title ?? ""}
+          currentSessionUpdatedAt={activeAgentSession?.updatedAt ?? 0}
+          currentMessages={agentMessages}
+          currentRepoPath={repoPath}
+          repos={repos}
+          onSelect={handleSearchLocate}
+        />
+
         {showSettings ? (
           <SettingsDialog
             theme={theme}
@@ -8604,16 +8610,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onToggleTheme={toggleTheme}
             onOpenRuntimeSetup={() => {
               setShowEnvSetup(true);
-              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.opencode, runtimeStatus.giteam].some(
+              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.giteam].some(
                 (d) => !d.checked
               );
               if (unchecked) void refreshRuntimeRequirements();
             }}
             onOpenMobileControl={openMobileControlDialog}
-            onOpenOpenCodeApi={() => setShowOpencodeApiDialog(true)}
+            onOpenAgentApi={() => setShowAgentApiDialog(true)}
             onOpenModelManager={() => {
-              setOpencodeProviderPickerProvider(
-                parseModelRef(activeOpencodeModel || "")?.provider || opencodeModelProvider || ""
+              setAgentProviderPickerProvider(
+                parseModelRef(activeAgentModel || "")?.provider || agentModelProvider || ""
               );
               setSettingsInitialSection("models");
               setShowSettings(true);
@@ -8624,18 +8630,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             generalSettings={generalSettings}
             onGeneralSettingsChange={(next) => {
               setGeneralSettings(next);
-              saveGeneralSettings(GENERAL_SETTINGS_KEY, OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-              if (next.autoAcceptPermissions !== opencodeAutoAcceptPermissions) {
-                setOpencodeAutoAcceptPermissions(next.autoAcceptPermissions);
-                saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next.autoAcceptPermissions);
-                if (next.autoAcceptPermissions && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+              saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+              if (next.autoAcceptPermissions !== agentAutoAcceptPermissions) {
+                setAgentAutoAcceptPermissions(next.autoAcceptPermissions);
+                saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next.autoAcceptPermissions);
+                if (activeAgentSessionId) {
+                  void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next.autoAcceptPermissions);
+                }
               }
             }}
             onCheckUpdates={() => void refreshRuntimeRequirements()}
-            opencodePort={opencodeServiceSettings.port}
-            opencodeBusy={opencodeServiceSettingsBusy}
-            onOpencodePortChange={(port) => setOpencodeServiceSettings((prev) => ({ ...prev, port }))}
-            onSaveOpenCodeApi={() => void saveOpencodeServiceSettingsIfNeeded()}
+            agentPort={agentServiceSettings.port}
+            agentBusy={agentServiceSettingsBusy}
+            onAgentPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}
+            onSaveAgentApi={() => void saveAgentServiceSettingsIfNeeded()}
             skillsmpApiKey={skillsmpApiKey}
             skillsmpApiKeyDraft={skillsmpApiKeyDraft}
             onSkillsmpApiKeyDraftChange={setSkillsmpApiKeyDraft}
@@ -8696,68 +8704,78 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
             onRefreshRuntime={() => void refreshRuntimeRequirements()}
             skillsContent={settingsSkillsContent}
-            skillsLoading={opencodeSkillsLoading}
-            onRefreshSkills={() => void refreshOpencodeSkills()}
+            skillsLoading={agentSkillsLoading}
+            onRefreshSkills={() => void refreshAgentSkills()}
             mcpContent={settingsMcpContent}
-            mcpLoading={opencodeMcpLoading}
-            onRefreshMcp={() => void refreshOpencodeMcpStatus()}
+            mcpLoading={agentMcpLoading}
+            onRefreshMcp={() => void refreshAgentMcpStatus()}
             onMcpVisible={() => {
-              if (!opencodeMcpLoading && !opencodeMcpLoadedRef.current) scheduleAfterInteraction(() => void refreshOpencodeMcpStatus(), 120);
+              if (!agentMcpLoading && !agentMcpLoadedRef.current) scheduleAfterInteraction(() => void refreshAgentMcpStatus(), 120);
             }}
             onSkillsVisible={() => {
-              if (opencodeSkillsRepoPathRef.current !== repoPath) {
-                opencodeSkillsRepoPathRef.current = repoPath;
+              if (agentSkillsRepoPathRef.current !== repoPath) {
+                agentSkillsRepoPathRef.current = repoPath;
                 const cached = restoreCachedSkillsForRepo(repoPath);
-                if (!cached) scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
+                if (!cached) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
                 return;
               }
-              if (!opencodeSkillsLoading && !opencodeSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshOpencodeSkills(), 220);
+              if (!agentSkillsLoading && !agentSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
             }}
             modelsContent={(
-              <OpenCodeProviderSettingsPanel
-                providerSearch={opencodeProviderPickerSearch}
-                modelSearch={opencodeProviderPickerModelSearch}
-                providers={opencodeProviderPickerCandidates}
-                selectedProvider={opencodeProviderPickerProvider}
-                connectedProviders={opencodeConnectedProviders}
-                providerNames={opencodeProviderNames}
-                modelCountsByProvider={opencodeProviderPickerModelCounts}
-                modelsByProvider={opencodeModelsByProvider}
-                configuredModelsByProvider={opencodeConfiguredModelsByProvider}
-                configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
-                modelNamesByProvider={opencodeModelNamesByProvider}
-                activeModel={activeOpencodeModel}
-                hiddenModels={opencodeHiddenModels}
-                enabledModels={opencodeEnabledModels}
-                connectBusy={opencodeConnectBusy}
-                connectProviderId={opencodeConnectProviderId}
-                connectApiKey={opencodeConnectApiKey}
-                inlineAuthOpenFor={opencodeInlineAuthOpenFor}
-                onProviderSearchChange={setOpencodeProviderPickerSearch}
-                onModelSearchChange={setOpencodeProviderPickerModelSearch}
+              <AgentProviderSettingsPanel
+                providerSearch={agentProviderPickerSearch}
+                modelSearch={agentProviderPickerModelSearch}
+                providers={agentProviderPickerCandidates}
+                selectedProvider={agentProviderPickerProvider}
+                connectedProviders={agentConnectedProviders}
+                providerNames={agentProviderNames}
+                modelCountsByProvider={agentProviderPickerModelCounts}
+                modelsByProvider={agentModelsByProvider}
+                configuredModelsByProvider={agentConfiguredModelsByProvider}
+                configuredModelNamesByProvider={agentConfiguredModelNamesByProvider}
+                modelNamesByProvider={agentModelNamesByProvider}
+                activeModel={activeAgentModel}
+                hiddenModels={agentHiddenModels}
+                enabledModels={agentEnabledModels}
+                connectBusy={agentConnectBusy}
+                connectProviderId={agentConnectProviderId}
+                connectApiKey={agentConnectApiKey}
+                inlineAuthOpenFor={agentInlineAuthOpenFor}
+                onProviderSearchChange={setAgentProviderPickerSearch}
+                onModelSearchChange={setAgentProviderPickerModelSearch}
                 onSelectProvider={(provider, connected) => {
-                  setOpencodeProviderPickerProvider(provider);
+                  setAgentProviderPickerProvider(provider);
                   const pretty = resolveProviderDisplayName(provider);
-                  setOpencodeConnectProviderId(provider);
-                  setOpencodeConnectProviderName(pretty);
-                  setOpencodeInlineAuthOpenFor(connected ? "" : provider);
-                  if (!connected) setOpencodeConnectApiKey("");
+                  setAgentConnectProviderId(provider);
+                  setAgentConnectProviderName(pretty);
+                  setAgentInlineAuthOpenFor(connected ? "" : provider);
+                  // agentConnectApiKey 是全局单一 state：切换查看的 provider 时必须清空，
+                  // 否则上一个 provider（如 zai）输入的 key 会残留并显示到当前 provider
+                  // （如 kimi-coding）的编辑框，点保存即把 key 错写到别的 provider。
+                  setAgentConnectApiKey("");
                 }}
                 onConnectApiKeyChange={(providerId, providerName, value) => {
-                  setOpencodeConnectProviderId(providerId);
-                  setOpencodeConnectProviderName(providerName);
-                  setOpencodeConnectApiKey(value);
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectApiKey(value);
                 }}
                 onToggleInlineAuth={(providerId, providerName) => {
-                  setOpencodeConnectProviderId(providerId);
-                  setOpencodeConnectProviderName(providerName);
-                  setOpencodeInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
+                  // 展开/收起密钥编辑时清空输入，杜绝上一个 provider 的 key 残留串到当前 provider。
+                  setAgentConnectApiKey("");
                 }}
-                onConnectProvider={(providerId, connected) => void submitOpencodeProviderAuthKey(providerId, connected, { closeInlineAuth: connected })}
-                onSelectModel={(ref) => void applyOpencodeModel(ref)}
-                onHideModel={hideOpencodeModel}
-                onEnableModel={enableOpencodeModel}
-                getProviderTag={getOpencodeProviderTag}
+                onConnectProvider={(providerId, connected) =>
+                  void submitAgentProviderAuthKey(providerId, connected, {
+                    // 首次连接成功后收起密钥区，露出模型列表；更新密钥时同样收起。
+                    closeInlineAuth: true
+                  })
+                }
+                onSelectModel={(ref) => void applyAgentModel(ref)}
+                onHideModel={hideAgentModel}
+                onEnableModel={enableAgentModel}
+                getProviderTag={getAgentProviderTag}
                 getProviderDisplayName={resolveProviderDisplayName}
               />
             )}
@@ -8846,111 +8864,113 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           </Dialog>
         ) : null}
 
-        {showOpencodeApiDialog ? (
-          <OpenCodeApiDialog
-            port={opencodeServiceSettings.port}
-            onClose={() => void closeOpencodeApiDialog()}
-            onPortChange={(port) => setOpencodeServiceSettings((prev) => ({ ...prev, port }))}
+        {showAgentApiDialog ? (
+          <AgentApiDialog
+            port={agentServiceSettings.port}
+            onClose={() => void closeAgentApiDialog()}
+            onPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}
           />
         ) : null}
 
-        {showOpencodeProviderPicker ? (
-          <OpenCodeProviderPickerDialog
-            loading={opencodeCatalogLoading}
-            providerSearch={opencodeProviderPickerSearch}
-            modelSearch={opencodeProviderPickerModelSearch}
-            providers={opencodeProviderPickerCandidates}
-            selectedProvider={opencodeProviderPickerProvider}
-            connectedProviders={opencodeConnectedProviders}
-            providerNames={opencodeProviderNames}
-            modelCountsByProvider={opencodeProviderPickerModelCounts}
-            modelsByProvider={opencodeModelsByProvider}
-            configuredModelsByProvider={opencodeConfiguredModelsByProvider}
-            configuredModelNamesByProvider={opencodeConfiguredModelNamesByProvider}
-            modelNamesByProvider={opencodeModelNamesByProvider}
-            activeModel={activeOpencodeModel}
-            hiddenModels={opencodeHiddenModels}
-            enabledModels={opencodeEnabledModels}
-            connectBusy={opencodeConnectBusy}
-            connectProviderId={opencodeConnectProviderId}
-            connectApiKey={opencodeConnectApiKey}
-            providerActionMenuFor={opencodeProviderActionMenuFor}
-            disconnectingProvider={opencodeDisconnectingProvider}
-            onClose={() => setShowOpencodeProviderPicker(false)}
+        {showAgentProviderPicker ? (
+          <AgentProviderPickerDialog
+            loading={agentCatalogLoading}
+            providerSearch={agentProviderPickerSearch}
+            modelSearch={agentProviderPickerModelSearch}
+            providers={agentProviderPickerCandidates}
+            selectedProvider={agentProviderPickerProvider}
+            connectedProviders={agentConnectedProviders}
+            providerNames={agentProviderNames}
+            modelCountsByProvider={agentProviderPickerModelCounts}
+            modelsByProvider={agentModelsByProvider}
+            configuredModelsByProvider={agentConfiguredModelsByProvider}
+            configuredModelNamesByProvider={agentConfiguredModelNamesByProvider}
+            modelNamesByProvider={agentModelNamesByProvider}
+            activeModel={activeAgentModel}
+            hiddenModels={agentHiddenModels}
+            enabledModels={agentEnabledModels}
+            connectBusy={agentConnectBusy}
+            connectProviderId={agentConnectProviderId}
+            connectApiKey={agentConnectApiKey}
+            providerActionMenuFor={agentProviderActionMenuFor}
+            disconnectingProvider={agentDisconnectingProvider}
+            onClose={() => setShowAgentProviderPicker(false)}
             onOpenCustomProvider={() => {
-              setShowOpencodeProviderPicker(false);
-              setShowOpencodeCustomProvider(true);
+              setShowAgentProviderPicker(false);
+              setShowAgentCustomProvider(true);
             }}
-            onProviderSearchChange={setOpencodeProviderPickerSearch}
-            onModelSearchChange={setOpencodeProviderPickerModelSearch}
+            onProviderSearchChange={setAgentProviderPickerSearch}
+            onModelSearchChange={setAgentProviderPickerModelSearch}
             onSelectProvider={(provider, connected) => {
-              setOpencodeProviderPickerProvider(provider);
+              setAgentProviderPickerProvider(provider);
               if (!connected) {
-                setOpencodeConnectProviderId(provider);
-                setOpencodeConnectProviderName(resolveProviderDisplayName(provider));
-                setOpencodeConnectApiKey("");
+                setAgentConnectProviderId(provider);
+                setAgentConnectProviderName(resolveProviderDisplayName(provider));
+                setAgentConnectApiKey("");
                 return;
               }
-              setShowOpencodeAuthDialogFor("");
+              setShowAgentAuthDialogFor("");
             }}
             onConnectApiKeyChange={(providerId, providerName, value) => {
-              setOpencodeConnectProviderId(providerId);
-              setOpencodeConnectProviderName(providerName);
-              setOpencodeConnectApiKey(value);
+              setAgentConnectProviderId(providerId);
+              setAgentConnectProviderName(providerName);
+              setAgentConnectApiKey(value);
             }}
-            onToggleProviderMenu={(providerId) => setOpencodeProviderActionMenuFor((prev) => (prev === providerId ? "" : providerId))}
+            onToggleProviderMenu={(providerId) => setAgentProviderActionMenuFor((prev) => (prev === providerId ? "" : providerId))}
             onOpenAuthDialog={(providerId, providerName) => {
-              setOpencodeConnectProviderId(providerId);
-              setOpencodeConnectProviderName(providerName);
-              setOpencodeConnectApiKey("");
-              setShowOpencodeAuthDialogFor(providerId);
-              setOpencodeProviderActionMenuFor("");
+              setAgentConnectProviderId(providerId);
+              setAgentConnectProviderName(providerName);
+              setAgentConnectApiKey("");
+              setShowAgentAuthDialogFor(providerId);
+              setAgentProviderActionMenuFor("");
             }}
-            onConnectProvider={(providerId, connected) => void submitOpencodeProviderAuthKey(providerId, connected)}
+            onConnectProvider={(providerId, connected) =>
+              void submitAgentProviderAuthKey(providerId, connected, { closeInlineAuth: true })
+            }
             onDisconnectProvider={(providerId) => {
-              setOpencodeProviderActionMenuFor("");
-              void disconnectOpencodeProvider(providerId);
+              setAgentProviderActionMenuFor("");
+              void disconnectAgentProvider(providerId);
             }}
-            onSelectModel={(ref) => void applyOpencodeModel(ref)}
-            onHideModel={hideOpencodeModel}
-            onEnableModel={enableOpencodeModel}
-            getProviderTag={getOpencodeProviderTag}
-            getProviderSource={getOpencodeProviderSource}
+            onSelectModel={(ref) => void applyAgentModel(ref)}
+            onHideModel={hideAgentModel}
+            onEnableModel={enableAgentModel}
+            getProviderTag={getAgentProviderTag}
+            getProviderSource={getAgentProviderSource}
             getProviderDisplayName={resolveProviderDisplayName}
           />
         ) : null}
 
-        {showOpencodeAuthDialogFor ? (() => {
-          const pid = showOpencodeAuthDialogFor.trim();
+        {showAgentAuthDialogFor ? (() => {
+          const pid = showAgentAuthDialogFor.trim();
           const pretty = resolveProviderDisplayName(pid);
-          const keyValue = opencodeConnectProviderId === pid ? opencodeConnectApiKey : "";
+          const keyValue = agentConnectProviderId === pid ? agentConnectApiKey : "";
           return (
-            <OpenCodeAuthDialog
-              providerId={opencodeConnectProviderId === pid ? pid : ""}
+            <AgentAuthDialog
+              providerId={agentConnectProviderId === pid ? pid : ""}
               providerName={pretty}
-              providerTag={getOpencodeProviderTag(pid)}
+              providerTag={getAgentProviderTag(pid)}
               apiKey={keyValue}
-              busy={opencodeConnectBusy}
-              onClose={() => setShowOpencodeAuthDialogFor("")}
+              busy={agentConnectBusy}
+              onClose={() => setShowAgentAuthDialogFor("")}
               onApiKeyChange={(value) => {
-                setOpencodeConnectProviderId(pid);
-                setOpencodeConnectProviderName(pretty);
-                setOpencodeConnectApiKey(value);
+                setAgentConnectProviderId(pid);
+                setAgentConnectProviderName(pretty);
+                setAgentConnectApiKey(value);
               }}
-              onSave={() => void saveOpencodeAuthKey(pid)}
+              onSave={() => void saveAgentAuthKey(pid)}
             />
           );
         })() : null}
 
-        {showOpencodeCustomProvider ? (
-          <OpenCodeCustomProviderDialog
-            config={opencodeProviderConfig}
-            modelId={opencodeSelectedModel}
-            busy={opencodeProviderConfigBusy || opencodeConfigBusy}
-            onClose={() => setShowOpencodeCustomProvider(false)}
-            onConfigChange={(patch) => setOpencodeProviderConfig((prev) => ({ ...prev, ...patch }))}
-            onModelChange={setOpencodeSelectedModel}
-            onSave={() => void saveOpencodeCustomProvider()}
+        {showAgentCustomProvider ? (
+          <AgentCustomProviderDialog
+            config={agentProviderConfig}
+            modelId={agentSelectedModel}
+            busy={agentProviderConfigBusy || agentConfigBusy}
+            onClose={() => setShowAgentCustomProvider(false)}
+            onConfigChange={(patch) => setAgentProviderConfig((prev) => ({ ...prev, ...patch }))}
+            onModelChange={setAgentSelectedModel}
+            onSave={() => void saveAgentCustomProvider()}
           />
         ) : null}
 
@@ -8988,13 +9008,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         ) : null}
 
         <Dialog
-          open={Boolean(opencodePreviewImage)}
+          open={Boolean(agentPreviewImage)}
           onOpenChange={(open) => {
-            if (!open) setOpencodePreviewImage(null);
+            if (!open) setAgentPreviewImage(null);
           }}
         >
-          {opencodePreviewImage ? (() => {
-            const image = opencodePreviewImage.images[opencodePreviewImage.index] || opencodePreviewImage.images[0];
+          {agentPreviewImage ? (() => {
+            const image = agentPreviewImage.images[agentPreviewImage.index] || agentPreviewImage.images[0];
             if (!image) return null;
             return (
               <DialogContent className="!border-0 !bg-transparent !p-0 !shadow-none max-w-[calc(100vw-32px)]">
@@ -9007,10 +9027,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   src={image.uri}
                   alt={image.filename || "preview"}
                   onClick={(e) => {
-                    if (opencodePreviewImage.images.length <= 1) return;
+                    if (agentPreviewImage.images.length <= 1) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const next = e.clientX >= rect.left + rect.width / 2 ? 1 : -1;
-                    setOpencodePreviewImage((prev) => prev ? { ...prev, index: (prev.index + next + prev.images.length) % prev.images.length } : prev);
+                    setAgentPreviewImage((prev) => prev ? { ...prev, index: (prev.index + next + prev.images.length) % prev.images.length } : prev);
                   }}
                 />
               </DialogContent>
@@ -9018,69 +9038,69 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           })() : null}
         </Dialog>
 
-        <OpenCodeModulePanel
-          open={showOpencodeModulePanel}
-          activeTab={opencodeModuleTab}
-          agentSearch={opencodeAgentSearch}
-          agentsLoading={opencodeAgentsLoading}
-          agentsError={opencodeAgentsError}
-          visibleAgents={visibleOpencodeAgents}
-          activeAgent={activeOpencodeAgent}
-          autoAcceptPermissions={opencodeAutoAcceptPermissions}
-          permissionLoading={opencodePermissionLoading}
-          activePermissions={opencodeActivePermissions}
-          mcpLoading={opencodeMcpLoading}
-          mcpError={opencodeMcpError}
-          mcpBusyName={opencodeMcpBusyName}
-          mcpRows={opencodeMcpRows as Array<[string, Record<string, any>]>}
-          mcpAddForm={opencodeMcpAddForm}
-          skillsLoading={opencodeSkillsLoading}
-          skillsError={opencodeSkillsError}
-          skills={opencodeSkills}
-          filteredSkills={filteredOpencodeSkills}
-          groupedSkills={groupedOpencodeSkills}
-          skillSearchResults={opencodeSkillSearchResults}
-          skillInstallScope={opencodeSkillInstallScope}
-          skillBusy={opencodeSkillBusy}
-          skillInstallingSpec={opencodeSkillInstallingSpec}
-          skillInstallLog={opencodeSkillInstallLog}
-          skillInstallSpec={opencodeSkillInstallSpec}
-          skillSearchQuery={opencodeSkillSearchQuery}
-          skillSourceKind={opencodeSkillSourceKind}
-          skillSourceInput={opencodeSkillSourceInput}
-          skillListFilter={opencodeSkillListFilter}
-          skillListQuery={opencodeSkillListQuery}
-          skillRemovingKey={opencodeSkillRemovingKey}
-          onClose={() => setShowOpencodeModulePanel(false)}
-          onTabChange={setOpencodeModuleTab}
-          onAgentSearchChange={setOpencodeAgentSearch}
-          onRefreshAgents={() => void refreshOpencodeAgents()}
-          onApplyAgent={applyOpencodeAgent}
+        <AgentModulePanel
+          open={showAgentModulePanel}
+          activeTab={agentModuleTab}
+          agentSearch={agentAgentSearch}
+          agentsLoading={agentDefinitionsLoading}
+          agentsError={agentDefinitionsError}
+          visibleAgents={visibleAgentDefinitions}
+          activeAgent={activeAgentAgent}
+          autoAcceptPermissions={agentAutoAcceptPermissions}
+          permissionLoading={agentPermissionLoading}
+          activePermissions={agentActivePermissions}
+          mcpLoading={agentMcpLoading}
+          mcpError={agentMcpError}
+          mcpBusyName={agentMcpBusyName}
+          mcpRows={agentMcpRows as Array<[string, Record<string, any>]>}
+          mcpAddForm={agentMcpAddForm}
+          skillsLoading={agentSkillsLoading}
+          skillsError={agentSkillsError}
+          skills={agentSkills}
+          filteredSkills={filteredAgentSkills}
+          groupedSkills={groupedAgentSkills}
+          skillSearchResults={agentSkillSearchResults}
+          skillInstallScope={agentSkillInstallScope}
+          skillBusy={agentSkillBusy}
+          skillInstallingSpec={agentSkillInstallingSpec}
+          skillInstallLog={agentSkillInstallLog}
+          skillInstallSpec={agentSkillInstallSpec}
+          skillSearchQuery={agentSkillSearchQuery}
+          skillSourceKind={agentSkillSourceKind}
+          skillSourceInput={agentSkillSourceInput}
+          skillListFilter={agentSkillListFilter}
+          skillListQuery={agentSkillListQuery}
+          skillRemovingKey={agentSkillRemovingKey}
+          onClose={() => setShowAgentModulePanel(false)}
+          onTabChange={setAgentModuleTab}
+          onAgentSearchChange={setAgentAgentSearch}
+          onRefreshAgents={() => void refreshAgentDefinitions()}
+          onApplyAgent={applyAgentAgent}
           onToggleAutoAccept={() => {
-            const next = !opencodeAutoAcceptPermissions;
-            setOpencodeAutoAcceptPermissions(next);
-            saveLocalBool(OPENCODE_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-            if (next && activeOpencodeSessionId) void ensureSessionAutoAcceptPermissions(activeOpencodeSessionId);
+            const next = !agentAutoAcceptPermissions;
+            setAgentAutoAcceptPermissions(next);
+            saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
+            if (activeAgentSessionId) void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next);
           }}
           onRefreshPermissions={() => void refreshPendingPermissions()}
           onSendPermissionReply={(requestId, reply) => void sendPermissionReply(requestId, reply)}
-          onRefreshMcp={() => void refreshOpencodeMcpStatus()}
-          onRefreshSkills={() => void refreshOpencodeSkills()}
-          onAddMcp={() => void addOpencodeMcpServer()}
+          onRefreshMcp={() => void refreshAgentMcpStatus()}
+          onRefreshSkills={() => void refreshAgentSkills()}
+          onAddMcp={() => void addAgentMcpServer()}
           onRunMcpAction={(name, action) => void runMcpAction(name, action)}
-          onSkillInstallScopeChange={setOpencodeSkillInstallScope}
-          onSkillInstallSpecChange={setOpencodeSkillInstallSpec}
-          onSkillSearchQueryChange={setOpencodeSkillSearchQuery}
-          onSearchSkillRegistry={() => void searchOpencodeSkillRegistry()}
-          onInstallSkill={(spec, scope) => void installOpencodeSkillFromRegistry(spec, scope)}
-          onSkillSourceKindChange={setOpencodeSkillSourceKind}
-          onSkillSourceInputChange={setOpencodeSkillSourceInput}
-          onAddSkillSource={() => void addOpencodeSkillSource()}
-          onSkillListFilterChange={setOpencodeSkillListFilter}
-          onSkillListQueryChange={setOpencodeSkillListQuery}
-          onReferenceSkill={referenceOpencodeSkill}
-          onRemoveSkill={(skill) => void removeOpencodeSkill(skill)}
-          onRemoveSkillGroup={(group) => void removeOpencodeSkillGroup(group)}
+          onSkillInstallScopeChange={setAgentSkillInstallScope}
+          onSkillInstallSpecChange={setAgentSkillInstallSpec}
+          onSkillSearchQueryChange={setAgentSkillSearchQuery}
+          onSearchSkillRegistry={() => void searchAgentSkillRegistry()}
+          onInstallSkill={(spec, scope) => void installAgentSkillFromRegistry(spec, scope)}
+          onSkillSourceKindChange={setAgentSkillSourceKind}
+          onSkillSourceInputChange={setAgentSkillSourceInput}
+          onAddSkillSource={() => void addAgentSkillSource()}
+          onSkillListFilterChange={setAgentSkillListFilter}
+          onSkillListQueryChange={setAgentSkillListQuery}
+          onReferenceSkill={referenceAgentSkill}
+          onRemoveSkill={(skill) => void removeAgentSkill(skill)}
+          onRemoveSkillGroup={(group) => void removeAgentSkillGroup(group)}
         />
 
         {repoContextMenu ? (
@@ -9114,9 +9134,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onSelect={() => {
                 const menu = sessionContextMenu;
                 setSessionContextMenu(null);
-                void archiveOpencodeSession(menu.repo, menu.session.id);
+                void archiveAgentSession(menu.repo, menu.session.id);
               }}
-              disabled={busy || !runtimeStatus.opencode.installed}
+              disabled={busy}
             >
               {appText.archiveSession}
             </DropdownMenuItem>
@@ -9134,7 +9154,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           >
             <DropdownMenuItem onSelect={(event) => {
               event.preventDefault();
-              void pasteIntoOpencodePromptFromContextMenu();
+              void pasteIntoAgentPromptFromContextMenu();
             }}>
               粘贴
             </DropdownMenuItem>

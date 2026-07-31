@@ -174,7 +174,7 @@ export function normalizeMcpMarketData(raw: unknown): McpServerMarketData {
 /**
  * 将 MCP Server 定义转换为 OpenCode 配置格式
  */
-export interface OpencodeMcpConfig {
+export interface AgentMcpConfig {
   type: "local" | "remote";
   command?: string[];
   url?: string;
@@ -187,16 +187,16 @@ export interface OpencodeMcpConfig {
 /**
  * 转换 servers.json 中的安装配置为 OpenCode MCP 配置
  */
-export function convertToOpencodeMcpConfig(
+export function convertToAgentMcpConfig(
   serverDef: McpServerDefinition,
   installationKey: string = "npm"
-): OpencodeMcpConfig | null {
+): AgentMcpConfig | null {
   const installation = serverDef.installations[installationKey];
   if (!installation) {
     // 尝试找到第一个可用的安装方式
     const firstKey = Object.keys(serverDef.installations)[0];
     if (!firstKey) return null;
-    return convertToOpencodeMcpConfig(serverDef, firstKey);
+    return convertToAgentMcpConfig(serverDef, firstKey);
   }
 
   if (installation.type === "npm" || installation.type === "npx") {

@@ -28,4 +28,11 @@ cpSync(
   { recursive: true }
 );
 
+const resourcesSrc = join(repoRoot, 'crates', 'giteam-core', 'resources');
+if (existsSync(resourcesSrc)) {
+  cpSync(resourcesSrc, join(outputRoot, 'crates', 'giteam-core', 'resources'), {
+    recursive: true
+  });
+}
+
 console.log(`[giteam] synced Rust fallback sources -> ${outputRoot}`);

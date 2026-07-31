@@ -1,7 +1,8 @@
 mod doctor;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use giteam_core::{control, opencode};
+use giteam_core::pi_agent::PiAgentService;
+use giteam_core::control;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
@@ -95,7 +96,7 @@ enum Commands {
             long = "with",
             value_enum,
             value_delimiter = ',',
-            help = "Only process selected plugins, e.g. --with git,opencode"
+            help = "Only process selected plugins, e.g. --with git,entire,giteam"
         )]
         with: Vec<PluginName>,
         #[arg(long)]
@@ -235,7 +236,6 @@ enum PluginCommands {
 enum PluginName {
     Git,
     Entire,
-    Opencode,
     Giteam,
 }
 
@@ -244,7 +244,6 @@ impl PluginName {
         match self {
             Self::Git => "git",
             Self::Entire => "entire",
-            Self::Opencode => "opencode",
             Self::Giteam => "giteam",
         }
     }
@@ -262,9 +261,7 @@ struct ConfigSetArgs {
     public_base_url: Option<String>,
     #[arg(long)]
     pair_code_ttl_mode: Option<String>,
-    #[arg(long)]
-    opencode_port: Option<u16>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     repo_path: Option<String>,
     #[arg(long)]
     json: bool,
@@ -272,9 +269,15 @@ struct ConfigSetArgs {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ConfigAgentView {
+    runtime: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ConfigView {
     control: control::ControlServerSettings,
-    opencode: opencode::OpencodeServiceSettings,
+    agent: ConfigAgentView,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -358,29 +361,6 @@ struct InitWizardOutcome {
     model_step_note: Option<String>,
 }
 
-struct TerminalModeGuard {
-    active: bool,
-}
-
-impl TerminalModeGuard {
-    fn enter_raw() -> Self {
-        let active = Command::new("stty")
-            .args(["-icanon", "-echo", "min", "1", "time", "0"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        Self { active }
-    }
-}
-
-impl Drop for TerminalModeGuard {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = Command::new("stty").arg("sane").status();
-            let _ = Command::new("stty").arg("echo").status();
-        }
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1348,11 +1328,6 @@ fn plugin_status(name: PluginName) -> PluginStatus {
             &["--version"],
             "brew tap entireio/tap && brew install entireio/tap/entire",
         ),
-        PluginName::Opencode => check_dep(
-            "opencode",
-            &["--version"],
-            "npm i -g opencode-ai",
-        ),
         PluginName::Giteam => check_giteam_npm_global(),
     }
 }
@@ -1361,7 +1336,6 @@ fn plugin_status_list() -> Vec<PluginStatus> {
     [
         PluginName::Git,
         PluginName::Entire,
-        PluginName::Opencode,
         PluginName::Giteam,
     ]
     .into_iter()
@@ -1374,7 +1348,6 @@ fn selected_plugins(selected: &[PluginName]) -> Vec<PluginName> {
         vec![
             PluginName::Git,
             PluginName::Entire,
-            PluginName::Opencode,
             PluginName::Giteam,
         ]
     } else {
@@ -1535,248 +1508,6 @@ fn detect_default_repo() -> Option<String> {
     }
 }
 
-fn prompt_secret_line(prompt: &str) -> Result<String, String> {
-    print!("{prompt}");
-    io::stdout()
-        .flush()
-        .map_err(|e| format!("flush stdout failed: {e}"))?;
-    let _ = Command::new("stty").arg("-echo").status();
-    let mut line = String::new();
-    let read_res = io::stdin().read_line(&mut line);
-    let _ = Command::new("stty").arg("echo").status();
-    println!();
-    read_res.map_err(|e| format!("read input failed: {e}"))?;
-    Ok(line.trim().to_string())
-}
-
-fn read_key_byte() -> Result<u8, String> {
-    let mut buf = [0u8; 1];
-    io::stdin()
-        .read_exact(&mut buf)
-        .map_err(|e| format!("read key failed: {e}"))?;
-    Ok(buf[0])
-}
-
-fn terminal_columns() -> usize {
-    if let Ok(cols) = std::env::var("COLUMNS") {
-        if let Ok(v) = cols.trim().parse::<usize>() {
-            if v > 20 {
-                return v;
-            }
-        }
-    }
-    Command::new("tput")
-        .arg("cols")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .and_then(|out| {
-            if !out.status.success() {
-                return None;
-            }
-            String::from_utf8(out.stdout).ok()
-        })
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .filter(|v| *v > 20)
-        .unwrap_or(100)
-}
-
-fn truncate_for_terminal(input: &str, max_chars: usize) -> String {
-    if input.chars().count() <= max_chars {
-        return input.to_string();
-    }
-    if max_chars <= 3 {
-        return "...".chars().take(max_chars).collect();
-    }
-    let mut out = String::new();
-    for ch in input.chars().take(max_chars - 3) {
-        out.push(ch);
-    }
-    out.push_str("...");
-    out
-}
-
-fn interactive_select(
-    title: &str,
-    hint: &str,
-    items: &[String],
-    initial_index: Option<usize>,
-) -> Result<Option<usize>, String> {
-    if items.is_empty() {
-        return Ok(None);
-    }
-    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
-        for (idx, item) in items.iter().enumerate() {
-            println!("  {}. {}", idx + 1, item);
-        }
-        let answer = prompt_line("Select an item (or s to skip): ")?;
-        if answer.eq_ignore_ascii_case("s") || answer.is_empty() {
-            return Ok(None);
-        }
-        let idx = answer
-            .parse::<usize>()
-            .map_err(|_| "invalid selection".to_string())?;
-        return Ok(Some(idx.saturating_sub(1)));
-    }
-
-    let _guard = TerminalModeGuard::enter_raw();
-    let mut selected = initial_index
-        .unwrap_or(0)
-        .min(items.len().saturating_sub(1));
-    let mut offset = 0usize;
-    let page_size = 10usize;
-    let mut query = String::new();
-    loop {
-        let filtered: Vec<usize> = if query.trim().is_empty() {
-            (0..items.len()).collect()
-        } else {
-            let q = query.to_ascii_lowercase();
-            items
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, item)| item.to_ascii_lowercase().contains(&q).then_some(idx))
-                .collect()
-        };
-        if filtered.is_empty() {
-            selected = 0;
-            offset = 0;
-        } else if !filtered.contains(&selected) {
-            selected = filtered[0];
-            offset = 0;
-        }
-        wizard_clear_screen();
-        let cols = terminal_columns();
-        let info_width = cols.saturating_sub(2).max(20);
-        let list_width = cols.saturating_sub(4).max(18);
-        println!("{}", mobile_banner());
-        println!("{}", truncate_for_terminal(title, info_width));
-        println!("{}", truncate_for_terminal(hint, info_width));
-        println!();
-        println!(
-            "{}",
-            truncate_for_terminal(
-                &format!(
-                    "Search: {}",
-                    if query.is_empty() {
-                        "(none)"
-                    } else {
-                        query.as_str()
-                    }
-                ),
-                info_width,
-            )
-        );
-        println!();
-        let end = (offset + page_size).min(filtered.len());
-        for filtered_idx in offset..end {
-            let absolute = filtered[filtered_idx];
-            let cursor = if absolute == selected { ">" } else { " " };
-            println!(
-                "{} {}",
-                cursor,
-                truncate_for_terminal(&items[absolute], list_width)
-            );
-        }
-        println!();
-        if !filtered.is_empty() {
-            let current_pos = filtered
-                .iter()
-                .position(|idx| *idx == selected)
-                .map(|v| v + 1)
-                .unwrap_or(1);
-            let page = (offset / page_size) + 1;
-            let total_pages = filtered.len().div_ceil(page_size);
-            println!(
-                "{}",
-                truncate_for_terminal(
-                    &format!(
-                        "Showing {} items · current {}/{} · page {}/{}",
-                        filtered.len(),
-                        current_pos,
-                        filtered.len(),
-                        page,
-                        total_pages.max(1)
-                    ),
-                    info_width,
-                )
-            );
-        } else {
-            println!(
-                "{}",
-                truncate_for_terminal("No matches for current search.", info_width)
-            );
-        }
-        println!(
-            "{}",
-            truncate_for_terminal(
-                "Use ↑/↓ or j/k to move, type to search, Backspace to clear, Enter to confirm, q to skip",
-                info_width,
-            )
-        );
-
-        match read_key_byte()? {
-            b'q' | b'Q' => return Ok(None),
-            127 | 8 => {
-                query.pop();
-            }
-            b'k' => {
-                if let Some(pos) = filtered.iter().position(|idx| *idx == selected) {
-                    if pos > 0 {
-                        selected = filtered[pos - 1];
-                    }
-                }
-            }
-            b'j' => {
-                if let Some(pos) = filtered.iter().position(|idx| *idx == selected) {
-                    if pos + 1 < filtered.len() {
-                        selected = filtered[pos + 1];
-                    }
-                }
-            }
-            b'\r' | b'\n' => {
-                if !filtered.is_empty() {
-                    return Ok(Some(selected));
-                }
-            }
-            27 => {
-                let b1 = read_key_byte().unwrap_or_default();
-                let b2 = read_key_byte().unwrap_or_default();
-                if b1 == b'[' {
-                    match b2 {
-                        b'A' => {
-                            if let Some(pos) = filtered.iter().position(|idx| *idx == selected) {
-                                if pos > 0 {
-                                    selected = filtered[pos - 1];
-                                }
-                            }
-                        }
-                        b'B' => {
-                            if let Some(pos) = filtered.iter().position(|idx| *idx == selected) {
-                                if pos + 1 < filtered.len() {
-                                    selected = filtered[pos + 1];
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            byte if byte.is_ascii_graphic() || byte == b' ' => {
-                query.push(byte as char);
-            }
-            _ => {}
-        }
-        if let Some(pos) = filtered.iter().position(|idx| *idx == selected) {
-            if pos < offset {
-                offset = pos;
-            } else if pos >= offset + page_size {
-                offset = pos + 1 - page_size;
-            }
-        }
-    }
-}
-
 fn prompt_line(prompt: &str) -> Result<String, String> {
     print!("{prompt}");
     io::stdout()
@@ -1811,7 +1542,6 @@ fn prompt_missing_plugins(plugins: &[PluginStatus]) -> Result<Vec<PluginName>, S
         .filter_map(|p| match p.name.as_str() {
             "git" => Some(PluginName::Git),
             "entire" => Some(PluginName::Entire),
-            "opencode" => Some(PluginName::Opencode),
             "giteam" => Some(PluginName::Giteam),
             _ => None,
         })
@@ -1949,147 +1679,17 @@ fn choose_project_for_setup() -> Result<Option<String>, String> {
     }
 }
 
-fn choose_provider_index(
-    rows: &[giteam_core::opencode::OpencodeServerProviderCatalog],
-    connected: &[String],
-) -> Result<Option<usize>, String> {
-    if rows.is_empty() {
-        return Ok(None);
-    }
-    let items = rows
-        .iter()
-        .map(|row| {
-            let is_connected = connected.iter().any(|id| id == &row.id);
-            let status = if is_connected {
-                "connected"
-            } else {
-                "needs auth"
-            };
-            format!("{} [{}]", row.name, status)
-        })
-        .collect::<Vec<_>>();
-    interactive_select(
-        "Provider Selection",
-        "Choose an OpenCode provider. Connected providers can still be reconfigured.",
-        &items,
-        None,
-    )
-}
-
-fn choose_model_for_provider(
-    provider: &giteam_core::opencode::OpencodeServerProviderCatalog,
-    current_model: Option<&str>,
-) -> Result<Option<String>, String> {
-    let mut items = provider
-        .models
-        .iter()
-        .map(|model| {
-            let display = provider
-                .model_names
-                .get(model)
-                .cloned()
-                .unwrap_or_else(|| model.clone());
-            format!("{} ({})", display, model)
-        })
-        .collect::<Vec<_>>();
-    items.push("Enter a custom model id".to_string());
-    let initial_index =
-        current_model.and_then(|current| provider.models.iter().position(|model| model == current));
-    let selected = interactive_select(
-        &format!("Model Selection · {}", provider.name),
-        "Use ↑/↓ or j/k to move, Enter to confirm, q to skip.",
-        &items,
-        initial_index,
-    )?;
-    let Some(selected) = selected else {
-        return Ok(None);
-    };
-    if selected == items.len() - 1 {
-        let custom = prompt_line("Enter model id (without provider prefix): ")?;
-        if custom.trim().is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(custom));
-    }
-    let model = provider
-        .models
-        .get(selected)
-        .cloned()
-        .ok_or_else(|| "model selection out of range".to_string())?;
-    Ok(Some(model))
-}
-
-fn maybe_configure_opencode_model(repo_path: &str) -> Result<Option<String>, String> {
+fn maybe_configure_agent_model(repo_path: &str) -> Result<Option<String>, String> {
     print_wizard_header(
-        "Step 4/5 · OpenCode Model Setup",
-        "Optionally connect a provider, choose a model, and persist it for this machine and project.",
+        "Step 4/5 · Agent Model Setup",
+        "Desktop agent uses the in-process Pi SDK. Configure providers and models in the Giteam desktop app.",
         &["Runtime Check", "Dependency Install", "Project Import"],
     );
     println!("Project: {repo_path}");
     println!();
-    if !prompt_yes_no("Would you like to configure an OpenCode model now?", true)? {
-        println!("Skipped model configuration.");
-        return Ok(None);
-    }
-
-    println!("Starting OpenCode service and fetching provider catalog...");
-    opencode::warmup_managed_opencode_service();
-    let current_model_cfg = opencode::get_opencode_model_config(repo_path).ok();
-    if let Some(cfg) = &current_model_cfg {
-        if !cfg.configured_model.trim().is_empty() {
-            println!("Current configured model: {}", cfg.configured_model);
-        }
-    }
-    let mut state = opencode::get_opencode_server_provider_state(repo_path)?;
-    let provider_index = match choose_provider_index(&state.providers, &state.connected)? {
-        Some(idx) => idx,
-        None => return Ok(None),
-    };
-    let provider = state
-        .providers
-        .get(provider_index)
-        .cloned()
-        .ok_or_else(|| "provider selection out of range".to_string())?;
-    let is_connected = state.connected.iter().any(|id| id == &provider.id);
-    println!();
-    if is_connected {
-        println!("Provider '{}' is already connected.", provider.name);
-        if prompt_yes_no("Would you like to update its API key?", false)? {
-            let key = prompt_secret_line(&format!("New API key for {}: ", provider.id))?;
-            if !key.trim().is_empty() {
-                opencode::put_opencode_server_auth(repo_path, &provider.id, &key)?;
-                state = opencode::get_opencode_server_provider_state(repo_path)?;
-            }
-        }
-    } else {
-        println!("Provider '{}' is not connected yet.", provider.name);
-        if prompt_yes_no("Enter an API key now?", true)? {
-            let key = prompt_secret_line(&format!("API key for {}: ", provider.id))?;
-            if !key.trim().is_empty() {
-                opencode::put_opencode_server_auth(repo_path, &provider.id, &key)?;
-                state = opencode::get_opencode_server_provider_state(repo_path)?;
-            }
-        }
-    }
-    let refreshed = state
-        .providers
-        .iter()
-        .find(|p| p.id == provider.id)
-        .cloned()
-        .unwrap_or(provider);
-    let current_model_id = current_model_cfg
-        .as_ref()
-        .and_then(|cfg| cfg.configured_model.split_once('/'))
-        .and_then(|(provider_id, model_id)| (provider_id == refreshed.id).then_some(model_id));
-    let Some(model_id) = choose_model_for_provider(&refreshed, current_model_id)? else {
-        return Ok(None);
-    };
-    let full_model = format!("{}/{}", refreshed.id, model_id.trim());
-    opencode::set_opencode_server_current_model(repo_path, &full_model)?;
-    let saved = opencode::set_opencode_model_config(repo_path, &full_model)?;
-    println!();
-    println!("Configured OpenCode model: {}", saved.configured_model);
-    Ok(Some(saved.configured_model))
+    println!("Skipped CLI model configuration.");
+    println!("Open Desktop → Settings → Agent / Providers to connect models.");
+    Ok(None)
 }
 
 fn run_init_interactive(selected: Vec<PluginName>) -> Result<(), String> {
@@ -2145,7 +1745,7 @@ fn run_init_interactive(selected: Vec<PluginName>) -> Result<(), String> {
         outcome.imported_repo = choose_project_for_setup()?;
         outcome.project_step_done = outcome.imported_repo.is_some();
         if let Some(repo_path) = outcome.imported_repo.as_deref() {
-            outcome.configured_model = maybe_configure_opencode_model(repo_path)?;
+            outcome.configured_model = maybe_configure_agent_model(repo_path)?;
             outcome.model_step_done = true;
             if outcome.configured_model.is_none() {
                 outcome.model_step_note =
@@ -2247,22 +1847,6 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished.""##),
-        (PluginName::Opencode, "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
-  npm install -g opencode-ai
-else
-  echo "npm is required to install OpenCode (not found in PATH)."
-  exit 2
-fi"##),
-        (PluginName::Opencode, "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
-  opencode uninstall --force || true
-fi
-if command -v brew >/dev/null 2>&1; then
-  brew uninstall anomalyco/tap/opencode || true
-fi
-if command -v npm >/dev/null 2>&1; then
-  npm uninstall -g opencode-ai || true
-fi
-echo "OpenCode uninstall finished.""##),
         (PluginName::Giteam, "install") | (PluginName::Giteam, "update") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
@@ -2711,7 +2295,9 @@ fn print_pair_code(refresh: bool, json: bool) -> Result<(), String> {
 fn print_config(json: bool) -> Result<(), String> {
     let view = ConfigView {
         control: control::get_control_server_settings()?,
-        opencode: opencode::get_opencode_service_settings()?,
+        agent: ConfigAgentView {
+            runtime: "pi-sdk".to_string(),
+        },
     };
     if json {
         return print_json(&view);
@@ -2729,8 +2315,8 @@ fn print_config(json: bool) -> Result<(), String> {
         }
     );
     println!("  pair_code_ttl_mode: {}", view.control.pair_code_ttl_mode);
-    println!("opencode:");
-    println!("  port: {}", view.opencode.port);
+    println!("agent:");
+    println!("  runtime: {}", view.agent.runtime);
     Ok(())
 }
 
@@ -2740,8 +2326,8 @@ fn update_config(args: ConfigSetArgs) -> Result<(), String> {
         || args.port.is_some()
         || args.public_base_url.is_some()
         || args.pair_code_ttl_mode.is_some();
-    let has_opencode_change = args.opencode_port.is_some();
-    if !has_control_change && !has_opencode_change {
+    let _ = args.repo_path;
+    if !has_control_change {
         return Err("config set requires at least one field to update".to_string());
     }
 
@@ -2761,25 +2347,10 @@ fn update_config(args: ConfigSetArgs) -> Result<(), String> {
     if let Some(pair_code_ttl_mode) = args.pair_code_ttl_mode {
         control_settings.pair_code_ttl_mode = pair_code_ttl_mode;
     }
-    if has_control_change {
-        control_settings = control::set_control_server_settings(control_settings)?;
-    }
+    let _ = control::set_control_server_settings(control_settings)?;
 
-    let mut opencode_settings = opencode::get_opencode_service_settings()?;
-    if let Some(port) = args.opencode_port {
-        opencode_settings.port = port;
-        opencode_settings = opencode::set_opencode_service_settings(
-            opencode_settings,
-            normalize_repo_path(args.repo_path)?,
-        )?;
-    }
-
-    let view = ConfigView {
-        control: control_settings,
-        opencode: opencode_settings,
-    };
     if args.json {
-        return print_json(&view);
+        return print_config(true);
     }
     print_config(false)
 }
@@ -2793,18 +2364,6 @@ fn run_doctor(repo_path: Option<String>, warmup: bool, json: bool) -> Result<(),
     Ok(())
 }
 
-fn normalize_repo_path(repo_path: Option<String>) -> Result<Option<String>, String> {
-    let Some(repo_path) = repo_path else {
-        return Ok(None);
-    };
-    let trimmed = repo_path.trim().to_string();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    giteam_core::command_runner::validate_repo_path(&trimmed)?;
-    Ok(Some(trimmed))
-}
-
 fn ensure_enabled() -> Result<control::ControlServerSettings, String> {
     let mut settings = control::get_control_server_settings()?;
     if !settings.enabled {
@@ -2812,6 +2371,16 @@ fn ensure_enabled() -> Result<control::ControlServerSettings, String> {
         settings = control::persist_control_server_settings(settings)?;
     }
     Ok(settings)
+}
+
+/// The CLI control server embeds the same Pi service as Desktop. This is a
+/// cheap health touch, not a child-process warmup and not a network runtime.
+fn warmup_agent_runtime() {
+    let _ = PiAgentService::global().runtime_info();
+}
+
+fn shutdown_agent_runtime() {
+    PiAgentService::global().shutdown();
 }
 
 fn print_start_stop(view: &StartStopView, json: bool) -> Result<(), String> {
@@ -3061,7 +2630,7 @@ fn serve(warmup: bool, json: bool, no_banner: bool) -> Result<(), String> {
 
     if warmup {
         thread::spawn(|| {
-            opencode::warmup_managed_opencode_service();
+            warmup_agent_runtime();
         });
     }
     control::start_control_server()?;
@@ -3083,7 +2652,7 @@ fn serve(warmup: bool, json: bool, no_banner: bool) -> Result<(), String> {
     }
 
     control::stop_control_server();
-    opencode::shutdown_managed_opencode_service();
+    shutdown_agent_runtime();
     Ok(())
 }
 
@@ -3137,9 +2706,9 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
     // Set static web directory
     control::set_web_static_dir(Some(std::fs::canonicalize(&dist_dir).unwrap_or(dist_dir)));
 
-    // Start opencode warmup in background
+    // Touch the in-process Pi runtime in background; no child agent process is started.
     thread::spawn(|| {
-        opencode::warmup_managed_opencode_service();
+        warmup_agent_runtime();
     });
 
     control::start_control_server_with_settings(settings)?;
@@ -3164,7 +2733,7 @@ fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String>
 
     control::stop_control_server();
     control::set_web_static_dir(None);
-    opencode::shutdown_managed_opencode_service();
+    shutdown_agent_runtime();
     Ok(())
 }
 

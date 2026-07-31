@@ -65,7 +65,6 @@ fn build_path_env() -> String {
         .map(ToString::to_string)
         .collect();
     let home_dirs = [
-        format!("{home}/.opencode/bin"),
         format!("{home}/.npm-global/bin"),
         format!("{home}/.local/bin"),
         format!("{home}/.cargo/bin"),

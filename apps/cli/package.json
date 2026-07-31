@@ -16,7 +16,7 @@
     "giteam",
     "cli",
     "tauri",
-    "opencode",
+    "agent",
     "lan"
   ],
   "publishConfig": {

@@ -1,4 +1,4 @@
-export type RuntimeDepName = "git" | "entire" | "opencode" | "giteam";
+export type RuntimeDepName = "git" | "entire" | "giteam";
 
 export type RuntimeDependencyStatus = {
   name: string;
@@ -16,7 +16,6 @@ export type RuntimeRequirementsStatus = {
   homebrewInstalled: boolean;
   git: RuntimeDependencyStatus;
   entire: RuntimeDependencyStatus;
-  opencode: RuntimeDependencyStatus;
   giteam: RuntimeDependencyStatus;
 };
 
@@ -61,14 +60,12 @@ function getInstallHints(platform: string): Record<RuntimeDepName, string> {
     return {
       git: "下载并安装 Git for Windows: https://git-scm.com/download/win",
       entire: "npm install -g @entire/cli",
-      opencode: "npm install -g @anomalyco/opencode",
       giteam: "npm install -g giteam"
     };
   }
   return {
     git: "brew install git",
     entire: "brew tap entireio/tap && brew install entireio/tap/entire",
-    opencode: "npm install -g opencode-ai",
     giteam: "npm install -g giteam"
   };
 }
@@ -78,7 +75,6 @@ export const DEFAULT_RUNTIME_STATUS: RuntimeRequirementsStatus = {
   homebrewInstalled: false,
   git: EMPTY_DEP("git", getInstallHints(getDefaultPlatform()).git),
   entire: EMPTY_DEP("entire", getInstallHints(getDefaultPlatform()).entire),
-  opencode: EMPTY_DEP("opencode", getInstallHints(getDefaultPlatform()).opencode),
   giteam: EMPTY_DEP("giteam", getInstallHints(getDefaultPlatform()).giteam)
 };
 
@@ -92,7 +88,6 @@ export function loadCachedRuntimeStatus(): RuntimeRequirementsStatus {
       homebrewInstalled: Boolean(parsed.homebrewInstalled),
       git: parsed.git ? { ...DEFAULT_RUNTIME_STATUS.git, ...parsed.git } : DEFAULT_RUNTIME_STATUS.git,
       entire: parsed.entire ? { ...DEFAULT_RUNTIME_STATUS.entire, ...parsed.entire } : DEFAULT_RUNTIME_STATUS.entire,
-      opencode: parsed.opencode ? { ...DEFAULT_RUNTIME_STATUS.opencode, ...parsed.opencode } : DEFAULT_RUNTIME_STATUS.opencode,
       giteam: parsed.giteam ? { ...DEFAULT_RUNTIME_STATUS.giteam, ...parsed.giteam } : DEFAULT_RUNTIME_STATUS.giteam
     };
   } catch {

@@ -9,7 +9,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 
-type OpenCodeAuthDialogProps = {
+type AgentAuthDialogProps = {
   providerId: string;
   providerName: string;
   providerTag: string;
@@ -20,7 +20,7 @@ type OpenCodeAuthDialogProps = {
   onSave: () => void;
 };
 
-export function OpenCodeAuthDialog(props: OpenCodeAuthDialogProps) {
+export function AgentAuthDialog(props: AgentAuthDialogProps) {
   return (
     <Dialog open onOpenChange={(open) => { if (!open) props.onClose(); }}>
       <DialogContent className="w-[min(560px,calc(100vw-32px))]">

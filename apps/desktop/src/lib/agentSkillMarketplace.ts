@@ -1,6 +1,7 @@
 import { invoke } from "./platform";
+import { REMOTE_REPO_MODULE_ENABLED } from "./featureFlags";
 
-export type OpencodeSkillSearchResult = {
+export type AgentSkillSearchResult = {
   spec: string;
   package: string;
   skill: string;
@@ -34,7 +35,7 @@ export type SkillsMarketplaceCategory = {
   count: string;
 };
 
-export const OPENCODE_RECOMMENDED_SKILLS: RecommendedSkill[] = [
+const ALL_RECOMMENDED_SKILLS: RecommendedSkill[] = [
   {
     spec: "giteam/opencode-remote-repo@opencode-remote-repo",
     installSpec: "giteam-builtin:opencode-remote-repo",
@@ -50,7 +51,7 @@ export const OPENCODE_RECOMMENDED_SKILLS: RecommendedSkill[] = [
     source: "anthropics/skills",
     installs: "385K+",
     tone: "生产级界面",
-    description: "让 OpenCode 先确定明确美学方向，再处理字体、色彩、动效和空间构图，避免通用 AI UI。"
+    description: "让 Giteam 先确定明确美学方向，再处理字体、色彩、动效和空间构图，避免通用 AI UI。"
   },
   {
     spec: "vercel-labs/agent-skills@web-design-guidelines",
@@ -90,6 +91,13 @@ export const OPENCODE_RECOMMENDED_SKILLS: RecommendedSkill[] = [
   { spec: "vercel-labs/agent-skills@docker", title: "Docker", source: "vercel-labs/agent-skills", installs: "58K+", tone: "DevOps", description: "容器化、镜像构建和本地开发环境。" },
   { spec: "vercel-labs/agent-skills@code-review", title: "Code Review", source: "vercel-labs/agent-skills", installs: "52K+", tone: "Review", description: "代码审查、风险识别和回归检查。" }
 ];
+
+export const AGENT_RECOMMENDED_SKILLS = ALL_RECOMMENDED_SKILLS.filter(
+  // 远程仓库模块下线：隐藏依赖该模块的内置 Remote Repo 推荐 skill
+  // （服务未就绪时装了也不可用）。REMOTE_REPO_MODULE_ENABLED 置 true 时自动恢复。
+  (skill) => REMOTE_REPO_MODULE_ENABLED
+    || skill.spec !== "giteam/opencode-remote-repo@opencode-remote-repo"
+);
 
 export const SKILLSMP_CATEGORIES: SkillsMarketplaceCategory[] = [
   { group: "Development", slug: "frontend", label: "Frontend", count: "26K" },
@@ -144,7 +152,7 @@ export function isTrustedSkillSource(source: unknown): boolean {
 }
 
 export function skillQualityLabel(
-  skill: Pick<OpencodeSkillSearchResult, "source" | "package" | "installs">
+  skill: Pick<AgentSkillSearchResult, "source" | "package" | "installs">
 ): "trusted" | "popular" | "review" {
   if (isTrustedSkillSource(skill.source || skill.package)) return "trusted";
   if (parseSkillInstallCount(skill.installs) >= 1000) return "popular";
@@ -169,7 +177,7 @@ export function expandSkillSearchQueries(query: string): string[] {
   return Array.from(terms).filter(Boolean).slice(0, 3);
 }
 
-export function opencodeSkillApiToResult(item: any): OpencodeSkillSearchResult | null {
+export function agentSkillApiToResult(item: any): AgentSkillSearchResult | null {
   const id = String(item?.id || "").trim();
   const source = String(item?.source || (id ? id.split("/").slice(0, -1).join("/") : "")).trim();
   const slug = String(item?.slug || (id ? id.split("/").pop() : "")).trim();
@@ -192,7 +200,7 @@ export function opencodeSkillApiToResult(item: any): OpencodeSkillSearchResult |
   };
 }
 
-export function skillsmpSkillToResult(item: any): OpencodeSkillSearchResult | null {
+export function skillsmpSkillToResult(item: any): AgentSkillSearchResult | null {
   const name = String(item?.name || "").trim();
   const githubUrl = String(item?.githubUrl || "").trim();
   const skillUrl = String(item?.skillUrl || "").trim();
@@ -216,18 +224,21 @@ export function skillsmpSkillToResult(item: any): OpencodeSkillSearchResult | nu
     url: skillUrl,
     source: source || author,
     sourceType: "skillsmp",
-    installSpec: source || null,
+    installSpec: source ? `${source}@${name}` : name,
     installUrl: githubUrl || null,
     githubUrl: githubUrl || null
   };
 }
 
-function skillsmpResultDedupeKey(item: Pick<OpencodeSkillSearchResult, "sourceType" | "installSpec" | "spec" | "id">): string {
-  if (item.sourceType === "skillsmp") return (item.installSpec || item.spec || item.id || "").trim().toLowerCase();
+function skillsmpResultDedupeKey(item: Pick<AgentSkillSearchResult, "sourceType" | "installSpec" | "spec" | "id">): string {
+  // 优先用 id / source@skill，避免同一 GitHub 仓库下多个 skill 被 installSpec(仅 owner/repo) 压成一条。
+  if (item.sourceType === "skillsmp") {
+    return (item.id || item.spec || item.installSpec || "").trim().toLowerCase();
+  }
   return (item.spec || item.id || "").trim().toLowerCase();
 }
 
-function skillsmpResultPathScore(item: Pick<OpencodeSkillSearchResult, "githubUrl" | "installSpec" | "sourceType">): number {
+function skillsmpResultPathScore(item: Pick<AgentSkillSearchResult, "githubUrl" | "installSpec" | "sourceType">): number {
   if (item.sourceType !== "skillsmp") return 0;
   const url = String(item.githubUrl || "").toLowerCase();
   let score = 0;
@@ -242,17 +253,17 @@ function skillsmpResultPathScore(item: Pick<OpencodeSkillSearchResult, "githubUr
 }
 
 function pickPreferredMarketplaceResult(
-  current: OpencodeSkillSearchResult,
-  candidate: OpencodeSkillSearchResult
-): OpencodeSkillSearchResult {
+  current: AgentSkillSearchResult,
+  candidate: AgentSkillSearchResult
+): AgentSkillSearchResult {
   const candidateScore = skillsmpResultPathScore(candidate);
   const currentScore = skillsmpResultPathScore(current);
   if (candidateScore !== currentScore) return candidateScore > currentScore ? candidate : current;
   return parseSkillInstallCount(candidate.installs) > parseSkillInstallCount(current.installs) ? candidate : current;
 }
 
-export function dedupeMarketplaceResults(rows: OpencodeSkillSearchResult[]): OpencodeSkillSearchResult[] {
-  const grouped = new Map<string, OpencodeSkillSearchResult>();
+export function dedupeMarketplaceResults(rows: AgentSkillSearchResult[]): AgentSkillSearchResult[] {
+  const grouped = new Map<string, AgentSkillSearchResult>();
   for (const item of rows) {
     if (item.isDuplicate) continue;
     const key = skillsmpResultDedupeKey(item);
@@ -313,14 +324,23 @@ export function getSkillAvatarLabel(skillName: string): string {
   return `${parts[0][0] || "S"}${parts[1][0] || "K"}`.toUpperCase();
 }
 
-export function isInstalledOpencodeSkill(item: { path?: string; agents?: string[] }): boolean {
+export function isInstalledAgentSkill(item: { path?: string; agents?: string[] }): boolean {
   const normalizedPath = String(item.path || "").replace(/\\/g, "/");
-  const isInstalledDir = normalizedPath.includes("/.opencode/skills/")
-    || normalizedPath.includes("/.config/opencode/skills/")
+  // pi 运行时只认 .pi/skills（项目）与全局 pi-agent/skills；旧 .opencode 目录仅作兼容显示。
+  const isInstalledDir = normalizedPath.includes("/.pi/skills/")
+    || normalizedPath.includes("/.pi/agent/skills/")
+    || normalizedPath.includes("/pi-agent/skills/")
+    || normalizedPath.includes("/.opencode/skills/")
+    || normalizedPath.includes("/.config/agent/skills/")
     || normalizedPath.includes("/.agents/skills/");
   const agents = Array.isArray(item.agents) ? item.agents : [];
-  const targetsOpencode = agents.length === 0 || agents.some((agent) => agent.toLowerCase() === "opencode");
-  return isInstalledDir && targetsOpencode;
+  const matchesAgent =
+    agents.length === 0
+    || agents.some((agent) => {
+      const lower = agent.toLowerCase();
+      return lower === "pi" || lower === "opencode";
+    });
+  return isInstalledDir && matchesAgent;
 }
 
 export function skillSourceGroupFromSpec(spec: string): string {

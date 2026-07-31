@@ -1,3 +1,34 @@
+/**
+ * Copy legacy localStorage entries to new keys once.
+ * Migrates exact key and any key that continues with `:` / `.` after the prefix
+ * (e.g. `...v1:global`).
+ */
+export function migrateLocalStoragePrefix(legacyPrefix: string, newPrefix: string): void {
+  if (!legacyPrefix || legacyPrefix === newPrefix) return;
+  try {
+    const legacyKeys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (!key) continue;
+      if (key === legacyPrefix) {
+        legacyKeys.push(key);
+        continue;
+      }
+      if (!key.startsWith(legacyPrefix)) continue;
+      const rest = key.slice(legacyPrefix.length);
+      if (rest.startsWith(":") || rest.startsWith(".")) legacyKeys.push(key);
+    }
+    for (const legacyKey of legacyKeys) {
+      const newKey = `${newPrefix}${legacyKey.slice(legacyPrefix.length)}`;
+      if (window.localStorage.getItem(newKey) != null) continue;
+      const value = window.localStorage.getItem(legacyKey);
+      if (value != null) window.localStorage.setItem(newKey, value);
+    }
+  } catch {
+    // ignore unavailable storage
+  }
+}
+
 export function loadLocalString(key: string, fallback = ""): string {
   try {
     return window.localStorage.getItem(key) || fallback;

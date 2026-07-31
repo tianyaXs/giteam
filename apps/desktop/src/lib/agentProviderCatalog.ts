@@ -3,16 +3,16 @@ import {
   normalizeModelRef,
   parseModelRef,
   resolveProviderAliasWithNames
-} from "./opencodeModels";
-import { isPresetProviderId } from "./opencodeProviders";
+} from "./agentModels";
+import { isPresetProviderId } from "./agentProviders";
 
-export type OpencodeModelConfig = {
+export type AgentModelConfig = {
   configPath: string;
   configuredModel: string;
   exists: boolean;
 };
 
-export type OpencodeProviderConfig = {
+export type AgentProviderConfig = {
   provider: string;
   npm: string;
   name: string;
@@ -30,20 +30,20 @@ export type OpencodeProviderConfig = {
   chunkTimeout: string;
 };
 
-export type OpencodeCatalogProvider = {
+export type AgentCatalogProvider = {
   id: string;
   name: string;
   models: string[];
 };
 
-export type OpencodeConfigProviderCatalog = {
+export type AgentConfigProviderCatalog = {
   id: string;
   name: string;
   npm: string;
   models: string[];
 };
 
-export type OpencodeServerProviderCatalog = {
+export type AgentServerProviderCatalog = {
   id: string;
   name: string;
   models: string[];
@@ -51,12 +51,12 @@ export type OpencodeServerProviderCatalog = {
   source?: string;
 };
 
-export type OpencodeServerProviderState = {
-  providers: OpencodeServerProviderCatalog[];
+export type AgentServerProviderState = {
+  providers: AgentServerProviderCatalog[];
   connected: string[];
 };
 
-export type OpencodeServerConfigProvider = {
+export type AgentServerConfigProvider = {
   name?: string;
   npm?: string;
   models?: Record<string, { name?: string }>;
@@ -68,19 +68,19 @@ export type OpencodeServerConfigProvider = {
   env?: string[];
 };
 
-export type OpencodeServerConfig = {
-  provider?: Record<string, OpencodeServerConfigProvider>;
+export type AgentServerConfig = {
+  provider?: Record<string, AgentServerConfigProvider>;
   disabled_providers?: string[];
   model?: string;
 } & Record<string, unknown>;
 
-export type OpencodeServiceSettings = {
+export type AgentServiceSettings = {
   port: number;
 };
 
-export type OpencodeProviderAuthMethod = { type: string; label?: string };
+export type AgentProviderAuthMethod = { type: string; label?: string };
 
-export type OpencodeProviderCatalogSnapshot = {
+export type AgentProviderCatalogSnapshot = {
   providers: string[];
   connectedProviders: string[];
   providerNames: Record<string, string>;
@@ -89,8 +89,8 @@ export type OpencodeProviderCatalogSnapshot = {
   modelNamesByProvider: Record<string, Record<string, string>>;
 };
 
-export type OpencodeConfiguredProviderSnapshot = {
-  providerMap: Record<string, OpencodeServerConfigProvider>;
+export type AgentConfiguredProviderSnapshot = {
+  providerMap: Record<string, AgentServerConfigProvider>;
   disabledProviders: string[];
   configuredProviders: string[];
   providerNames: Record<string, string>;
@@ -98,7 +98,7 @@ export type OpencodeConfiguredProviderSnapshot = {
   modelNamesByProvider: Record<string, Record<string, string>>;
 };
 
-export function applyOpencodeCatalog(
+export function applyAgentCatalog(
   catalog: Record<string, string[]>,
   currentProvider: string,
   currentModel: string
@@ -115,9 +115,9 @@ export function applyOpencodeCatalog(
   return { providers, provider, models, model };
 }
 
-export function normalizeOpencodeServerProviderState(
-  state: OpencodeServerProviderState | null | undefined
-): OpencodeProviderCatalogSnapshot {
+export function normalizeAgentServerProviderState(
+  state: AgentServerProviderState | null | undefined
+): AgentProviderCatalogSnapshot {
   const rows = state?.providers || [];
   const providerNames: Record<string, string> = {};
   const providerSources: Record<string, string> = {};
@@ -142,9 +142,9 @@ export function normalizeOpencodeServerProviderState(
   };
 }
 
-export function buildOpencodeConfiguredProviderSnapshot(
-  config: OpencodeServerConfig | null | undefined
-): OpencodeConfiguredProviderSnapshot {
+export function buildAgentConfiguredProviderSnapshot(
+  config: AgentServerConfig | null | undefined
+): AgentConfiguredProviderSnapshot {
   const providerMap = config?.provider || {};
   const disabled = new Set((config?.disabled_providers || []).filter(Boolean));
   const providerNames: Record<string, string> = {};
@@ -178,7 +178,7 @@ export function buildOpencodeConfiguredProviderSnapshot(
   };
 }
 
-export function resolveActiveOpencodeModel(input: {
+export function resolveActiveAgentModel(input: {
   activeSessionId: string;
   sessionModel: Record<string, string>;
   draftModel: string;
@@ -187,6 +187,9 @@ export function resolveActiveOpencodeModel(input: {
   connectedProviders: string[];
   modelsByProvider: Record<string, string[]>;
   providerNames: Record<string, string>;
+  /** 用户在设置页显式打开的模型；非空时兜底只从其中选择，不再自动落到
+   *  已连接 provider 的任意第一个模型（避免"配了 deepseek 却自动选中 glm"）。 */
+  enabledModels?: Set<string>;
 }): string {
   const isAvailableModel = (modelRef: string) => isModelRefAvailable(modelRef, {
     connectedProviders: input.connectedProviders,
@@ -202,21 +205,24 @@ export function resolveActiveOpencodeModel(input: {
   if (configured && isAvailableModel(configured)) return configured;
   const recent = normalizeModelRef(input.savedModels[0] || "");
   if (recent && isAvailableModel(recent)) return recent;
-  for (const providerId of input.connectedProviders) {
-    const modelId = input.modelsByProvider[providerId]?.[0] || "";
-    const full = normalizeModelRef(`${providerId}/${modelId}`);
-    if (full) return full;
+  if (input.enabledModels && input.enabledModels.size > 0) {
+    for (const full of input.enabledModels) {
+      const normalized = normalizeModelRef(full);
+      if (normalized && isAvailableModel(normalized)) return normalized;
+    }
   }
+  // 没有会话/草稿/最近/启用模型时不自动挑已连接 provider 的第一个模型
+  //（否则未配置也会显示 deepseek 等目录默认项）。
   return "";
 }
 
-export function buildOpencodeProviderPickerCandidates(input: {
+export function buildAgentProviderPickerCandidates(input: {
   search: string;
   presetProviderIds: string[];
   providers: string[];
   connectedProviders: string[];
   providerNames: Record<string, string>;
-  configProviderMap: Record<string, OpencodeServerConfigProvider>;
+  configProviderMap: Record<string, AgentServerConfigProvider>;
   disabledProviders: string[];
 }): string[] {
   const query = input.search.trim().toLowerCase();
@@ -241,7 +247,7 @@ export function buildOpencodeProviderPickerCandidates(input: {
   }));
 }
 
-export function getOpencodeModelDisplayInfo(input: {
+export function getAgentModelDisplayInfo(input: {
   modelRef: string;
   modelsByProvider: Record<string, string[]>;
   providerNames: Record<string, string>;
@@ -265,7 +271,7 @@ export function getOpencodeModelDisplayInfo(input: {
   };
 }
 
-export function getOpencodeProviderSource(
+export function getAgentProviderSource(
   providerId: string,
   providerSourceById: Record<string, string>
 ): string {
@@ -274,9 +280,9 @@ export function getOpencodeProviderSource(
   return (providerSourceById[pid] || "").trim().toLowerCase();
 }
 
-export function isOpencodeConfigCustomProvider(
+export function isAgentConfigCustomProvider(
   providerId: string,
-  providerMap: Record<string, OpencodeServerConfigProvider>
+  providerMap: Record<string, AgentServerConfigProvider>
 ): boolean {
   const pid = (providerId || "").trim();
   if (!pid) return false;
@@ -286,15 +292,15 @@ export function isOpencodeConfigCustomProvider(
   return Object.keys(provider.models || {}).filter(Boolean).length > 0;
 }
 
-export function getOpencodeProviderTag(input: {
+export function getAgentProviderTag(input: {
   providerId: string;
   providerSourceById: Record<string, string>;
-  providerMap: Record<string, OpencodeServerConfigProvider>;
+  providerMap: Record<string, AgentServerConfigProvider>;
 }): string {
-  const source = getOpencodeProviderSource(input.providerId, input.providerSourceById);
+  const source = getAgentProviderSource(input.providerId, input.providerSourceById);
   if (source === "env") return "env";
   if (source === "api") return "api";
-  if (source === "config") return isOpencodeConfigCustomProvider(input.providerId, input.providerMap) ? "custom" : "config";
+  if (source === "config") return isAgentConfigCustomProvider(input.providerId, input.providerMap) ? "custom" : "config";
   if (source === "custom") return "custom";
   return isPresetProviderId(input.providerId) ? "preset" : "other";
 }

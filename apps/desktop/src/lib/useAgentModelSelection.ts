@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { normalizeModelRef } from "./opencodeModels";
+import { normalizeModelRef } from "./agentModels";
 
 type StoredModelSelection = {
   draft?: string;
   session?: Record<string, string>;
 };
 
-export function useOpencodeModelSelection(storageKey: string) {
+export function useAgentModelSelection(storageKey: string) {
   const [savedModels, setSavedModels] = useState<string[]>([]);
   const [draftModel, setDraftModel] = useState("");
   const [sessionModel, setSessionModel] = useState<Record<string, string>>({});

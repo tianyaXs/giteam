@@ -1,4 +1,4 @@
-export type OpencodeAgentInfo = {
+export type AgentDefinition = {
   name: string;
   description?: string;
   mode?: "primary" | "subagent" | "all";
@@ -9,10 +9,10 @@ export type OpencodeAgentInfo = {
   model?: { providerID?: string; modelID?: string };
 };
 
-export function parseOpencodeAgents(raw: unknown): OpencodeAgentInfo[] {
+export function parseAgentDefinitions(raw: unknown): AgentDefinition[] {
   const rows = Array.isArray(raw) ? raw : [];
   return rows
-    .map((item: any): OpencodeAgentInfo | null => {
+    .map((item: any): AgentDefinition | null => {
       const name = String(item?.name || "").trim();
       if (!name) return null;
       return {
@@ -26,5 +26,5 @@ export function parseOpencodeAgents(raw: unknown): OpencodeAgentInfo[] {
         model: item?.model || undefined
       };
     })
-    .filter(Boolean) as OpencodeAgentInfo[];
+    .filter(Boolean) as AgentDefinition[];
 }

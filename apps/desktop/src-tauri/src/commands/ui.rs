@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -11,14 +11,17 @@ const ATTACHMENT_SAMPLE_BYTES: usize = 4096;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UiOpencodeAttachment {
+pub struct UiAgentAttachment {
     pub id: String,
     pub kind: String,
     pub filename: String,
     pub mime: String,
     pub data_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
+/// 兼容旧前端类型名。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAttachmentPreview {
@@ -146,7 +149,7 @@ fn guess_attachment_mime(path: &Path, bytes: &[u8]) -> Option<String> {
     None
 }
 
-fn attachment_from_path(path: &Path) -> Result<Option<UiOpencodeAttachment>, String> {
+fn attachment_from_path(path: &Path) -> Result<Option<UiAgentAttachment>, String> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -191,18 +194,19 @@ fn attachment_from_path(path: &Path) -> Result<Option<UiOpencodeAttachment>, Str
     } else {
         "file"
     };
-    Ok(Some(UiOpencodeAttachment {
+    Ok(Some(UiAgentAttachment {
         id: format!("{kind}-{}", fastrand::u64(..)),
         kind: kind.to_string(),
         filename,
         mime,
         data_url,
+        source_path: Some(path.to_string_lossy().to_string()),
     }))
 }
 
 fn attachments_from_paths(
     paths: impl IntoIterator<Item = PathBuf>,
-) -> Result<Vec<UiOpencodeAttachment>, String> {
+) -> Result<Vec<UiAgentAttachment>, String> {
     let mut out = Vec::new();
     for path in paths {
         if let Some(attachment) = attachment_from_path(&path)? {
@@ -223,20 +227,16 @@ fn parse_theme(theme: &str) -> Result<Option<Theme>, String> {
 }
 
 fn persist_theme(app: &AppHandle, theme: &str) {
-    let Ok(config_dir) = app.path().app_config_dir() else {
+    let _ = app;
+    let Some(config_dir) = giteam_core::pi_agent::ensure_data_dir() else {
         return;
     };
-    if fs::create_dir_all(&config_dir).is_err() {
-        return;
-    }
     let _ = fs::write(config_dir.join("theme"), theme.trim().to_ascii_lowercase());
 }
 
 pub fn apply_saved_window_theme(app: &AppHandle) {
-    let theme = app
-        .path()
-        .app_config_dir()
-        .ok()
+    giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
+    let theme = giteam_core::pi_agent::default_data_dir()
         .and_then(|dir| fs::read_to_string(dir.join("theme")).ok())
         .and_then(|value| parse_theme(&value).ok())
         .unwrap_or(Some(Theme::Dark));
@@ -286,7 +286,7 @@ pub fn open_external_url(url: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn pick_opencode_attachments() -> Result<Vec<UiOpencodeAttachment>, String> {
+pub fn pick_agent_attachments() -> Result<Vec<UiAgentAttachment>, String> {
     let picked = rfd::FileDialog::new()
         .set_title("选择附件")
         .pick_files()
@@ -295,9 +295,9 @@ pub fn pick_opencode_attachments() -> Result<Vec<UiOpencodeAttachment>, String> 
 }
 
 #[tauri::command]
-pub fn read_opencode_attachments_from_paths(
+pub fn read_agent_attachments_from_paths(
     paths: Vec<String>,
-) -> Result<Vec<UiOpencodeAttachment>, String> {
+) -> Result<Vec<UiAgentAttachment>, String> {
     let normalized = paths
         .into_iter()
         .map(|value| value.trim().to_string())
@@ -398,13 +398,147 @@ fn macos_clipboard_image_path() -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn read_clipboard_image_attachment() -> Result<Vec<UiOpencodeAttachment>, String> {
+pub fn read_clipboard_image_attachment() -> Result<Vec<UiAgentAttachment>, String> {
     let Some(path) = macos_clipboard_image_path() else {
         return Ok(Vec::new());
     };
-    let attachments = attachments_from_paths([path.clone()]);
-    let _ = fs::remove_file(path);
-    attachments
+    // 保留临时文件：prompt 侧用 sourcePath 读盘，避免只靠巨大 dataUrl 走 IPC。
+    attachments_from_paths([path])
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageAgentPromptImageInput {
+    pub mime: Option<String>,
+    pub data_base64: Option<String>,
+    pub path: Option<String>,
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedAgentPromptImage {
+    pub mime_type: String,
+    pub path: String,
+    /// 相对仓库根的路径，供无视觉模型用 read 工具（Pi 禁止读 cwd 外路径）。
+    pub relative_path: String,
+}
+
+fn prompt_attachment_dir(repo_path: &str) -> Result<PathBuf, String> {
+    let root = PathBuf::from(repo_path.trim());
+    if root.as_os_str().is_empty() {
+        return Err("repoPath is required to stage prompt images".to_string());
+    }
+    giteam_core::pi_agent::ensure_workspace_giteam_gitignore(&root);
+    let dir = root.join(".giteam").join("prompt-attachments");
+    fs::create_dir_all(&dir).map_err(|error| format!("failed to create attachment dir: {error}"))?;
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        let _ = fs::write(ignore, "*\n!.gitignore\n");
+    }
+    Ok(dir)
+}
+
+fn relative_to_repo(repo_path: &str, absolute: &Path) -> String {
+    let root = PathBuf::from(repo_path.trim());
+    absolute
+        .strip_prefix(&root)
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| absolute.to_string_lossy().replace('\\', "/"))
+}
+
+/// 将图片落到仓库 `.giteam/prompt-attachments/`，供 multimodal / read 工具使用。
+#[tauri::command]
+pub fn stage_agent_prompt_images(
+    repo_path: String,
+    images: Vec<StageAgentPromptImageInput>,
+) -> Result<Vec<StagedAgentPromptImage>, String> {
+    let dir = prompt_attachment_dir(&repo_path)?;
+    let mut out = Vec::new();
+    for (index, image) in images.into_iter().enumerate() {
+        let mime = image
+            .mime
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("image/png")
+            .to_string();
+        let ext = match mime.as_str() {
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "png",
+        };
+        let stem = image
+            .filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("attachment");
+        let safe_stem = stem
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let target = dir.join(format!(
+            "{}-{}-{}.{}",
+            safe_stem,
+            std::process::id(),
+            fastrand::u64(..),
+            ext
+        ));
+
+        if let Some(path) = image
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let source = PathBuf::from(path);
+            if !source.is_file() {
+                return Err(format!("staged image path not found: {path}"));
+            }
+            // 已在仓库内可直接用；否则复制进附件目录（/tmp、剪贴板临时文件都不在 cwd）。
+            let final_path = if source.starts_with(PathBuf::from(repo_path.trim())) {
+                source
+            } else {
+                fs::copy(&source, &target)
+                    .map_err(|error| format!("failed to copy staged image: {error}"))?;
+                target.clone()
+            };
+            out.push(StagedAgentPromptImage {
+                mime_type: mime,
+                relative_path: relative_to_repo(&repo_path, &final_path),
+                path: final_path.to_string_lossy().to_string(),
+            });
+            continue;
+        }
+
+        let raw = image
+            .data_base64
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("staged image #{index} missing dataBase64 or path"))?;
+        let bytes = BASE64_STANDARD
+            .decode(raw)
+            .map_err(|error| format!("invalid image base64: {error}"))?;
+        if bytes.is_empty() {
+            return Err(format!("staged image #{index} is empty"));
+        }
+        fs::write(&target, bytes).map_err(|error| format!("failed to stage image: {error}"))?;
+        out.push(StagedAgentPromptImage {
+            mime_type: mime,
+            relative_path: relative_to_repo(&repo_path, &target),
+            path: target.to_string_lossy().to_string(),
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

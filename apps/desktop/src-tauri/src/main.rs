@@ -84,14 +84,14 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(commands::watch::GitWorktreeWatcherState::default())
         .setup(|app| {
+            // 统一权威数据根，并迁入旧 Tauri bundle 目录残留。
+            giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
+            let _ = giteam_core::pi_agent::ensure_pi_agent_dir_env();
             commands::ui::apply_saved_window_theme(app.handle());
 
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
-            std::thread::spawn(|| {
-                commands::opencode::warmup_managed_opencode_service();
-            });
             std::thread::spawn(|| {
                 commands::giteam_cli::start_managed_mobile_service();
             });
@@ -107,10 +107,11 @@ fn main() {
             commands::env::check_runtime_dependency,
             commands::env::start_runtime_dependency_action,
             commands::env::get_runtime_dependency_action,
-            commands::ui::pick_opencode_attachments,
-            commands::ui::read_opencode_attachments_from_paths,
+            commands::ui::pick_agent_attachments,
+            commands::ui::read_agent_attachments_from_paths,
             commands::ui::read_clipboard_file_paths,
             commands::ui::read_clipboard_image_attachment,
+            commands::ui::stage_agent_prompt_images,
             commands::ui::read_local_attachment_preview,
             commands::ui::open_local_path,
             commands::git::run_git_head_commit,
@@ -143,49 +144,43 @@ fn main() {
             commands::git::run_repo_terminal_command,
             commands::git::start_repo_terminal_session,
             commands::git::send_repo_terminal_input,
+            commands::git::resize_repo_terminal_session,
             commands::git::read_repo_terminal_output,
             commands::git::complete_repo_terminal_input,
             commands::git::list_repo_terminal_completions,
             commands::git::clear_repo_terminal_session,
             commands::git::close_repo_terminal_session,
             commands::git::run_git_user_identity,
-            commands::opencode::run_opencode_version,
-            commands::opencode::run_opencode_providers,
-            commands::opencode::run_opencode_models,
-            commands::opencode::get_opencode_models_dev_catalog,
-            commands::opencode::run_opencode_agent,
-            commands::opencode::run_opencode_mcp,
-            commands::opencode::run_opencode_stats,
-            commands::opencode::test_opencode_model,
-            commands::opencode::run_opencode_prompt,
-            commands::opencode::run_opencode_prompt_stream,
-            commands::opencode::post_opencode_session_prompt_async,
-            commands::opencode::abort_opencode_session,
-            commands::opencode::list_opencode_sessions,
-            commands::opencode::get_opencode_session,
-            commands::opencode::create_opencode_session,
-            commands::opencode::delete_opencode_session,
-            commands::opencode::get_opencode_session_messages,
-            commands::opencode::get_opencode_session_messages_detailed,
-            commands::opencode::get_opencode_model_config,
-            commands::opencode::get_opencode_config_provider_catalog,
-            commands::opencode::get_opencode_server_provider_catalog,
-            commands::opencode::get_opencode_server_provider_state,
-            commands::opencode::get_opencode_server_provider_auth,
-            commands::opencode::get_opencode_server_config,
-            commands::opencode::list_opencode_agents,
-            commands::opencode::list_opencode_skills,
-            commands::opencode::list_installed_opencode_skills,
-            commands::opencode::install_builtin_opencode_skill,
-            commands::opencode::sync_opencode_skill_mcp_manifests,
-            commands::opencode::search_opencode_skill_registry,
-            commands::opencode::fetch_opencode_skill_catalog,
-            commands::opencode::fetch_opencode_skill_search_api,
-            commands::opencode::fetch_opencode_skill_curated,
-            commands::opencode::fetch_opencode_skill_detail_api,
-            commands::opencode::fetch_opencode_skill_audit_api,
-            commands::opencode::fetch_skillsmp_skill_search,
-            commands::opencode::fetch_skillsmp_ai_search,
+            commands::pi_agent::agent_runtime_info,
+            commands::pi_agent::agent_create_session,
+            commands::pi_agent::agent_list_sessions,
+            commands::pi_agent::agent_get_session,
+            commands::pi_agent::agent_get_session_messages,
+            commands::pi_agent::agent_prompt,
+            commands::pi_agent::agent_abort,
+            commands::pi_agent::agent_delete_session,
+            commands::pi_agent::agent_list_providers,
+            commands::pi_agent::agent_list_models,
+            commands::pi_agent::agent_find_model,
+            commands::pi_agent::agent_save_api_key,
+            commands::pi_agent::agent_remove_api_key,
+            commands::pi_agent::agent_has_credential,
+            commands::pi_agent::agent_save_custom_provider,
+            commands::pi_agent::agent_refresh_provider_models,
+            commands::pi_agent::agent_set_model,
+            commands::pi_agent::agent_set_thinking,
+            commands::pi_agent::agent_list_interactions,
+            commands::pi_agent::agent_reply_interaction,
+            commands::pi_agent::agent_set_auto_approve,
+            commands::pi_agent::list_installed_agent_skills,
+            commands::pi_agent::install_builtin_agent_skill,
+            commands::pi_agent::remove_installed_agent_skills_by_path,
+            commands::pi_agent::save_agent_skill_source_groups,
+            commands::pi_agent::fetch_agent_skill_detail_api,
+            commands::pi_agent::fetch_agent_skill_audit_api,
+            commands::pi_agent::fetch_skillsmp_skill_search,
+            commands::pi_agent::fetch_skillsmp_ai_search,
+            // MCP UI 由 feature flag 关闭，命令暂留 PR8。
             commands::opencode::list_opencode_mcp_status,
             commands::opencode::add_opencode_mcp_server,
             commands::opencode::delete_opencode_mcp_server,
@@ -193,26 +188,6 @@ fn main() {
             commands::opencode::disconnect_opencode_mcp_server,
             commands::opencode::authenticate_opencode_mcp_server,
             commands::opencode::remove_opencode_mcp_auth,
-            commands::opencode::get_opencode_service_base,
-            commands::opencode::get_opencode_service_settings,
-            commands::opencode::set_opencode_service_settings,
-            commands::opencode::get_opencode_server_global_config,
-            commands::opencode::patch_opencode_server_config,
-            commands::opencode::set_opencode_session_permission,
-            commands::opencode::list_opencode_permissions,
-            commands::opencode::post_opencode_permission_reply,
-            commands::opencode::install_opencode_skill_from_registry,
-            commands::opencode::get_opencode_skill_install_status,
-            commands::opencode::remove_opencode_skill,
-            commands::opencode::remove_installed_opencode_skills_by_path,
-            commands::opencode::save_opencode_skill_source_groups,
-            commands::opencode::set_opencode_server_current_model,
-            commands::opencode::put_opencode_server_auth,
-            commands::opencode::delete_opencode_server_auth,
-            commands::opencode::disconnect_opencode_server_provider,
-            commands::opencode::set_opencode_model_config,
-            commands::opencode::get_opencode_provider_config,
-            commands::opencode::set_opencode_provider_config,
             commands::db::db_save_review_record,
             commands::db::db_list_review_records,
             commands::db::db_save_review_action,
@@ -239,5 +214,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build tauri app");
 
-    app.run(|_app_handle, _event| {});
+    app.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            giteam_core::pi_agent::PiAgentService::global().shutdown();
+        }
+    });
 }

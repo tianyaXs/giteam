@@ -1,4 +1,8 @@
 use super::command_runner;
+use super::pi_agent::{
+    AgentEventEnvelope, AgentEventSink, CustomProviderInput, PiAgentService, PiSessionConfig,
+};
+use futures::executor::block_on;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -187,7 +191,6 @@ pub struct RuntimeRequirementsStatus {
     pub ok: bool,
     pub git: RuntimeDependencyStatus,
     pub entire: RuntimeDependencyStatus,
-    pub opencode: RuntimeDependencyStatus,
     pub giteam: RuntimeDependencyStatus,
 }
 
@@ -1422,16 +1425,19 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished."##),
-        ("opencode", "install") => Ok(r##"giteam_install_opencode 300
-echo "OpenCode install finished.""##),
-        ("opencode", "uninstall") => Ok(r##"giteam_brew_uninstall opencode
-giteam_brew_uninstall anomalyco/tap/opencode
-giteam_npm_uninstall opencode-ai @opencode-ai/opencode opencode
+        ("opencode", "install") | ("opencode", "update") => Ok(r##"echo "OpenCode CLI is no longer required."
+echo "Desktop agent runs on the in-process Pi SDK."
+exit 0"##),
+        ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
+  opencode uninstall --force || true
+fi
+giteam_brew_uninstall opencode || true
+giteam_brew_uninstall anomalyco/tap/opencode || true
+giteam_npm_uninstall opencode-ai @opencode-ai/opencode opencode || true
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
   rm -f "$HOME/.opencode/bin/opencode"
-  echo "[giteam] removed $HOME/.opencode/bin/opencode"
 fi
-echo "OpenCode uninstall finished.""##),
+echo "OpenCode uninstall finished (optional cleanup).""##),
         ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
@@ -1599,6 +1605,208 @@ echo "Runtime bootstrap complete."##),
 // Main RPC dispatcher
 pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
     match command {
+        // In-process Pi Agent commands
+        "agent_runtime_info" => serde_json::to_value(PiAgentService::global().runtime_info())
+            .map_err(|error| error.to_string()),
+        "agent_create_session" => {
+            let repo_path = get_str(&args, "repoPath")?.trim();
+            if repo_path.is_empty() {
+                return Err("repoPath must not be empty".to_string());
+            }
+            let session_dir = get_str_opt(&args, "sessionDir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(repo_path)
+                        .join(".giteam")
+                        .join("pi-sessions")
+                });
+            fs::create_dir_all(&session_dir)
+                .map_err(|error| format!("create Pi session directory failed: {error}"))?;
+            let config = PiSessionConfig {
+                repo_path: PathBuf::from(repo_path),
+                session_dir,
+                session_path: get_str_opt(&args, "sessionPath").map(PathBuf::from),
+                provider: get_str_opt(&args, "provider"),
+                model: get_str_opt(&args, "model"),
+                api_key: get_str_opt(&args, "apiKey"),
+                system_prompt: get_str_opt(&args, "systemPrompt"),
+                append_system_prompt: get_str_opt(&args, "appendSystemPrompt"),
+                enabled_tools: get_string_vec_opt(&args, "enabledTools"),
+                extension_paths: get_string_vec_opt(&args, "extensionPaths")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                no_session: get_bool(&args, "noSession"),
+                thinking: get_str_opt(&args, "thinking"),
+                max_tool_iterations: get_u64_opt(&args, "maxToolIterations").map(|v| v as usize),
+            };
+            let summary = block_on(PiAgentService::global().create_session(config))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(summary).map_err(|error| error.to_string())
+        }
+        "agent_list_sessions" => {
+            let sessions = block_on(PiAgentService::global().list_sessions())
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(sessions).map_err(|error| error.to_string())
+        }
+        "agent_get_session" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let session = block_on(PiAgentService::global().session_summary(session_id))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(session).map_err(|error| error.to_string())
+        }
+        "agent_get_session_messages" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let messages = block_on(PiAgentService::global().messages(session_id))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(messages).map_err(|error| error.to_string())
+        }
+        "agent_prompt" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let run_id = get_str(&args, "runId")?;
+            let prompt = get_str(&args, "prompt")?;
+            let images = args
+                .get("images")
+                .cloned()
+                .map(serde_json::from_value::<Vec<super::pi_agent::AgentPromptImage>>)
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            let events: Arc<Mutex<Vec<AgentEventEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
+            let events_for_sink = Arc::clone(&events);
+            let sink: AgentEventSink = Arc::new(move |event| {
+                if let Ok(mut events) = events_for_sink.lock() {
+                    events.push(event);
+                }
+            });
+            let message = block_on(PiAgentService::global().prompt(
+                session_id,
+                run_id,
+                prompt.to_string(),
+                images,
+                sink,
+            ))
+            .map_err(|error| error.to_string())?;
+            let events = events.lock().map(|items| items.clone()).unwrap_or_default();
+            Ok(serde_json::json!({ "runId": run_id, "message": message, "events": events }))
+        }
+        "agent_abort" => {
+            let run_id = get_str(&args, "runId")?;
+            Ok(serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }))
+        }
+        "agent_delete_session" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let deleted = PiAgentService::global()
+                .delete_session(session_id)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "deleted": deleted }))
+        }
+        "agent_list_providers" => {
+            let providers = PiAgentService::global()
+                .list_providers()
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(providers).map_err(|error| error.to_string())
+        }
+        "agent_list_models" => {
+            let models = PiAgentService::global()
+                .list_models()
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(models).map_err(|error| error.to_string())
+        }
+        "agent_find_model" => {
+            let provider = get_str(&args, "provider")?;
+            let model_id = get_str(&args, "modelId")?;
+            let model = PiAgentService::global()
+                .find_model(provider, model_id)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(model).map_err(|error| error.to_string())
+        }
+        "agent_save_api_key" => {
+            let provider = get_str(&args, "provider")?;
+            let key = get_str(&args, "key")?;
+            PiAgentService::global()
+                .save_api_key(provider, key)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_remove_api_key" => {
+            let provider = get_str(&args, "provider")?;
+            let removed = PiAgentService::global()
+                .remove_api_key(provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "removed": removed }))
+        }
+        "agent_has_credential" => {
+            let provider = get_str(&args, "provider")?;
+            Ok(serde_json::json!({
+                "provider": provider,
+                "hasCredential": PiAgentService::global().has_credential(provider),
+            }))
+        }
+        "agent_save_custom_provider" => {
+            let input: CustomProviderInput =
+                serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+            PiAgentService::global()
+                .save_custom_provider(&input)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_refresh_provider_models" => {
+            let provider = get_str(&args, "provider")?;
+            let added = PiAgentService::global()
+                .refresh_provider_models(provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "added": added }))
+        }
+        "agent_set_model" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let provider = get_str(&args, "provider")?;
+            let model_id = get_str(&args, "modelId")?;
+            let summary = block_on(PiAgentService::global().set_model(
+                session_id, provider, model_id,
+            ))
+            .map_err(|error| error.to_string())?;
+            serde_json::to_value(summary).map_err(|error| error.to_string())
+        }
+        "agent_set_thinking" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let level = get_str(&args, "level")?;
+            block_on(PiAgentService::global().set_thinking_level(session_id, level))
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_list_interactions" => {
+            let session_id = args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let interactions = PiAgentService::global().list_interactions(session_id);
+            serde_json::to_value(interactions).map_err(|error| error.to_string())
+        }
+        "agent_reply_interaction" => {
+            let interaction_id = get_str(&args, "interactionId")?;
+            let reply: super::pi_agent::AgentInteractionReply = serde_json::from_value(
+                args.get("reply").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|error| format!("invalid interaction reply: {error}"))?;
+            PiAgentService::global()
+                .reply_interaction(interaction_id, reply)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_set_auto_approve" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let enabled = args
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            block_on(PiAgentService::global().set_auto_approve(session_id, enabled))
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+
         // Git commands
         "run_git_head_commit" => {
             let repo_path = get_str(&args, "repoPath")?;
@@ -2743,18 +2951,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 &["--version"],
                 "brew install anomalyco/tap/entire",
             );
-            let opencode = check_dep(
-                "opencode",
-                &["--version"],
-                "npm install -g opencode-ai",
-            );
             let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
-            let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
+            let ok = git.installed && entire.installed;
             serde_json::to_value(RuntimeRequirementsStatus {
                 ok,
                 git,
                 entire,
-                opencode,
                 giteam,
             })
             .map_err(|e| e.to_string())
@@ -2768,12 +2970,18 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                     &["--version"],
                     "brew tap entireio/tap && brew install entireio/tap/entire",
                 ),
-                "opencode" => check_dep(
-                    "opencode",
-                    &["--version"],
-                    "npm install -g opencode-ai",
-                ),
                 "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
+                "opencode" => {
+                    // OpenCode CLI is no longer required; keep arm for old clients.
+                    RuntimeDependencyStatus {
+                        name: "opencode".to_string(),
+                        installed: true,
+                        version: Some("not-required".to_string()),
+                        path: None,
+                        install_hint: "OpenCode CLI is not required; desktop agent uses Pi SDK"
+                            .to_string(),
+                    }
+                }
                 _ => return Err(format!("unsupported dependency: {name}")),
             };
             serde_json::to_value(dep).map_err(|e| e.to_string())
@@ -3030,177 +3238,30 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
 
-        // Opencode commands
-        "create_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let title = get_str_opt(&args, "title");
-            let agent = get_str_opt(&args, "agent");
-            let result = super::opencode::create_opencode_session(repo_path, title, agent, None)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_service_base" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_service_base(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "list_opencode_sessions" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::list_opencode_sessions(repo_path, limit)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages_detailed" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed(
-                repo_path, session_id, directory, limit,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "delete_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let result = super::opencode::delete_opencode_session(repo_path, session_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_state" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_state(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_model_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_model_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_service_settings" => {
-            let result = super::opencode::get_opencode_service_settings()?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_service_settings" => {
-            let settings: super::opencode::OpencodeServiceSettings = serde_json::from_value(
-                args.get("settings")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
-            )
-            .map_err(|e| format!("invalid settings: {e}"))?;
-            let repo_path = get_str_opt(&args, "repoPath");
-            let result = super::opencode::set_opencode_service_settings(settings, repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_config_provider_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_config_provider_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_auth(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_global_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_global_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "disconnect_opencode_server_provider" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let result =
-                super::opencode::disconnect_opencode_server_provider(repo_path, provider_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "delete_opencode_server_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let result = super::opencode::delete_opencode_server_auth(repo_path, provider_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "patch_opencode_server_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let patch = serde_json::from_value(
-                args.get("patch")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
-            )
-            .map_err(|e| format!("invalid patch: {e}"))?;
-            let result = super::opencode::patch_opencode_server_config(repo_path, patch)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "put_opencode_server_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let key = get_str(&args, "key")?;
-            let result = super::opencode::put_opencode_server_auth(repo_path, provider_id, key)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_server_current_model" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let result = super::opencode::set_opencode_server_current_model(repo_path, model)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "post_opencode_session_prompt_async" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let prompt = get_str(&args, "prompt")?;
-            let parts = args.get("parts").cloned();
-            let model = get_str_opt(&args, "model");
-            let result = super::opencode::post_opencode_session_prompt_async(
-                repo_path, session_id, prompt, parts, model, None, None,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "abort_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let result = super::opencode::abort_opencode_session(repo_path, session_id, directory)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "list_opencode_agents" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_opencode_agents(repo_path)
-        }
-        "list_installed_opencode_skills" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_installed_opencode_skills(repo_path)
-        }
-        "install_builtin_opencode_skill" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let skill_id = get_str(&args, "skillId")?;
-            let global = args.get("global").and_then(|v| v.as_bool());
-            super::opencode::install_builtin_opencode_skill(repo_path, skill_id, global)
-        }
+
+        // OpenCode MCP + skills marketplace (agent runtime removed)
         "sync_opencode_skill_mcp_manifests" => {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::sync_opencode_skill_mcp_manifests(repo_path)
         }
+
         "fetch_opencode_skill_detail_api" => {
             let repo_path = get_str(&args, "repoPath")?;
             let id = get_str(&args, "id")?;
-            super::opencode::fetch_opencode_skill_detail_api(repo_path, id)
+            super::skills_market::fetch_agent_skill_detail_api(repo_path, id)
         }
+
         "fetch_opencode_skill_audit_api" => {
             let repo_path = get_str(&args, "repoPath")?;
             let id = get_str(&args, "id")?;
-            super::opencode::fetch_opencode_skill_audit_api(repo_path, id)
+            super::skills_market::fetch_agent_skill_audit_api(repo_path, id)
         }
-        "list_opencode_permissions" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_opencode_permissions(repo_path)
-        }
+
         "list_opencode_mcp_status" => {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::list_opencode_mcp_status(repo_path)
         }
+
         "add_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
@@ -3210,79 +3271,40 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 .unwrap_or_else(|| serde_json::json!({}));
             super::opencode::add_opencode_mcp_server(repo_path, name, config)
         }
+
         "connect_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::connect_opencode_mcp_server(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "disconnect_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::disconnect_opencode_mcp_server(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "authenticate_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             super::opencode::authenticate_opencode_mcp_server(repo_path, name)
         }
+
         "remove_opencode_mcp_auth" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::remove_opencode_mcp_auth(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "delete_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             super::opencode::delete_opencode_mcp_server(repo_path, name)
         }
-        "post_opencode_permission_reply" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let request_id = get_str(&args, "requestId")?;
-            let reply = get_str(&args, "reply")?;
-            let message = get_str_opt(&args, "message");
-            let result = super::opencode::post_opencode_permission_reply(
-                repo_path, request_id, reply, message,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages_detailed_page" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let before = get_str_opt(&args, "before");
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed_page(
-                repo_path, session_id, directory, before, limit,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_provider_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str(&args, "provider")?;
-            let result = super::opencode::get_opencode_provider_config(repo_path, provider)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_current_project" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_current_project(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "list_opencode_projects" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::list_opencode_projects(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let limit = get_u32_opt(&args, "limit");
-            let result =
-                super::opencode::get_opencode_session_messages(repo_path, session_id, limit)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
+
         "set_mobile_model_state_from_desktop" => {
             let state = args
                 .get("state")
@@ -3291,6 +3313,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             super::control::set_mobile_model_state_from_desktop(state)?;
             Ok(serde_json::json!(true))
         }
+
         "fetch_skillsmp_skill_search" => {
             let repo_path = get_str(&args, "repoPath")?;
             let query = get_str(&args, "query")?;
@@ -3300,135 +3323,22 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let category = get_str_opt(&args, "category");
             let occupation = get_str_opt(&args, "occupation");
             let api_key = get_str_opt(&args, "apiKey");
-            super::opencode::fetch_skillsmp_skill_search(
+            super::skills_market::fetch_skillsmp_skill_search(
                 repo_path, query, page, limit, sort_by, category, occupation, api_key,
             )
         }
+
         "fetch_skillsmp_ai_search" => {
             let repo_path = get_str(&args, "repoPath")?;
             let query = get_str(&args, "query")?;
             let api_key = get_str_opt(&args, "apiKey");
-            super::opencode::fetch_skillsmp_ai_search(repo_path, query, api_key)
+            super::skills_market::fetch_skillsmp_ai_search(repo_path, query, api_key)
         }
-        "set_opencode_session_permission" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let permission = serde_json::from_value(
-                args.get("permission")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
-            )
-            .map_err(|e| format!("invalid permission: {e}"))?;
-            super::opencode::set_opencode_session_permission(repo_path, session_id, permission)
-        }
-        "remove_opencode_skill" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let name = get_str(&args, "name")?;
-            let global = args.get("global").and_then(|v| v.as_bool());
-            let result = super::opencode::remove_opencode_skill(repo_path, name, global)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "run_opencode_version" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_version(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_prompt" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let prompt = get_str(&args, "prompt")?;
-            let model = get_str_opt(&args, "model");
-            let result = super::opencode::run_opencode_prompt(repo_path, prompt, model)?;
-            Ok(Value::String(result))
-        }
-        "test_opencode_model" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let message = get_str_opt(&args, "message");
-            let result = super::opencode::test_opencode_model(repo_path, model, message)?;
-            Ok(Value::String(result))
-        }
-        "get_opencode_models_dev_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_models_dev_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "run_opencode_providers" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_providers(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_models" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str_opt(&args, "provider");
-            let result = super::opencode::run_opencode_models(repo_path, provider)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_agent" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_agent(repo_path)?;
-            Ok(Value::String(result))
-        }
+
         "run_opencode_mcp" => {
             let repo_path = get_str(&args, "repoPath")?;
             let result = super::opencode::run_opencode_mcp(repo_path)?;
             Ok(Value::String(result))
-        }
-        "run_opencode_stats" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_stats(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "set_opencode_provider_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str(&args, "provider")?;
-            let npm = get_str_opt(&args, "npm");
-            let name = get_str_opt(&args, "name");
-            let base_url = get_str_opt(&args, "baseUrl");
-            let api_key = get_str_opt(&args, "apiKey");
-            let headers = args.get("headers").and_then(|v| v.as_object().cloned());
-            let endpoint = get_str_opt(&args, "endpoint");
-            let region = get_str_opt(&args, "region");
-            let profile = get_str_opt(&args, "profile");
-            let project = get_str_opt(&args, "project");
-            let location = get_str_opt(&args, "location");
-            let resource_name = get_str_opt(&args, "resourceName");
-            let enterprise_url = get_str_opt(&args, "enterpriseUrl");
-            let timeout = get_str_opt(&args, "timeout");
-            let chunk_timeout = get_str_opt(&args, "chunkTimeout");
-            let model_id = get_str_opt(&args, "modelId");
-            let model_name = get_str_opt(&args, "modelName");
-            let result = super::opencode::set_opencode_provider_config(
-                repo_path,
-                provider,
-                npm,
-                name,
-                base_url,
-                api_key,
-                headers,
-                endpoint,
-                region,
-                profile,
-                project,
-                location,
-                resource_name,
-                enterprise_url,
-                timeout,
-                chunk_timeout,
-                model_id,
-                model_name,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_model_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let result = super::opencode::set_opencode_model_config(repo_path, model)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         _ => Err(format!("unknown desktop rpc command: {command}")),
@@ -3457,16 +3367,18 @@ fn get_str_opt(value: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn get_bool(value: &Value, key: &str) -> bool {
-    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+fn get_string_vec_opt(value: &Value, key: &str) -> Option<Vec<String>> {
+    value.get(key).and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect()
+    })
 }
 
-fn get_u32(value: &Value, key: &str) -> Result<u32, String> {
-    value
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32)
-        .ok_or_else(|| format!("missing or invalid u32 field: {key}"))
+fn get_bool(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 fn get_u32_opt(value: &Value, key: &str) -> Option<u32> {

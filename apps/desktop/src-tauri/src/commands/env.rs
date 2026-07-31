@@ -102,12 +102,11 @@ giteam_npm_uninstall() {
 }
 "#;
 
-fn wrap_runtime_script(name: &str, action: &str, script: &str) -> String {
+fn wrap_runtime_script(_name: &str, action: &str, script: &str) -> String {
     match action {
         "uninstall" => format!("{UNINSTALL_SHELL_HELPERS}\n{script}"),
-        "bootstrap" | "install" if name == "opencode" => {
-            format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}")
-        }
+        // runtime bootstrap 依赖 giteam_run_timed / giteam_brew_install 等 helper。
+        "bootstrap" => format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}"),
         _ => script.to_string(),
     }
 }
@@ -153,78 +152,6 @@ giteam_brew_install() {
     exit 2
   fi
 }
-
-giteam_npm_install_global() {
-  local timeout_secs=$1
-  shift
-  local npm_cmd=""
-  if command -v npm >/dev/null 2>&1; then
-    npm_cmd=$(command -v npm)
-  else
-    for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
-      if [ -x "$p" ]; then
-        npm_cmd=$p
-        break
-      fi
-    done
-  fi
-  if [ -z "$npm_cmd" ]; then
-    echo "npm is required but not found in PATH."
-    exit 2
-  fi
-  if ! giteam_run_timed "$timeout_secs" "$npm_cmd" install -g --loglevel info --progress=true "$@"; then
-    echo "NETWORK_ERROR: npm 安装超时，请检查网络连接后重试。"
-    exit 2
-  fi
-}
-
-giteam_find_npm() {
-  if command -v npm >/dev/null 2>&1; then
-    command -v npm
-    return
-  fi
-  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
-    if [ -x "$p" ]; then
-      echo "$p"
-      return
-    fi
-  done
-}
-
-giteam_install_opencode() {
-  local timeout_secs=${1:-300}
-  local curl_timeout=60
-  export PATH="$HOME/.opencode/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-  if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
-    echo "[giteam] PROGRESS: 88 OpenCode 已安装"
-    return 0
-  fi
-  local npm_cmd
-  npm_cmd=$(giteam_find_npm)
-  if [ -n "$npm_cmd" ]; then
-    echo "[giteam] PROGRESS: 68 正在通过 npm 安装 OpenCode..."
-    if giteam_run_timed "$timeout_secs" "$npm_cmd" install -g opencode-ai; then
-      if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
-        echo "[giteam] PROGRESS: 88 OpenCode 已安装"
-        return 0
-      fi
-    fi
-    echo "[giteam] npm 安装失败，尝试官方脚本..."
-  fi
-  echo "[giteam] PROGRESS: 74 正在通过官方脚本安装 OpenCode..."
-  if giteam_run_timed "$curl_timeout" bash -c 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'; then
-    if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
-      echo "[giteam] PROGRESS: 88 OpenCode 已安装"
-      return 0
-    fi
-  fi
-  if [ -z "$npm_cmd" ]; then
-    echo "NETWORK_ERROR: OpenCode 安装失败，未找到 npm 且官方脚本不可用。请检查网络后重试。"
-  else
-    echo "NETWORK_ERROR: OpenCode 安装失败，请检查网络连接后重试。"
-  fi
-  exit 2
-}
 "#;
 
 #[derive(Debug, Serialize)]
@@ -247,7 +174,6 @@ pub struct RuntimeRequirementsStatus {
     pub homebrew_installed: bool,
     pub git: RuntimeDependencyStatus,
     pub entire: RuntimeDependencyStatus,
-    pub opencode: RuntimeDependencyStatus,
     pub giteam: RuntimeDependencyStatus,
 }
 
@@ -301,7 +227,6 @@ fn build_path_env() -> String {
         .map(ToString::to_string)
         .collect();
     let extras = [
-        format!("{home}/.opencode/bin"),
         format!("{home}/.local/bin"),
         format!("{home}/.npm-global/bin"),
         format!("{home}/.cargo/bin"),
@@ -491,11 +416,6 @@ pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencySta
             &["--version"],
             "brew tap entireio/tap && brew install entireio/tap/entire",
         )),
-        "opencode" => Ok(check_dep(
-            "opencode",
-            &["--version"],
-            "npm install -g opencode-ai",
-        )),
         "giteam" => Ok(check_giteam_npm_global()),
         _ => Err(format!("unsupported dependency: {}", dep_name)),
     })
@@ -574,16 +494,6 @@ if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished.""##),
-        ("opencode", "install") => Ok(r##"giteam_install_opencode 300
-echo "OpenCode install finished.""##),
-        ("opencode", "uninstall") => Ok(r##"giteam_brew_uninstall opencode
-giteam_brew_uninstall anomalyco/tap/opencode
-giteam_npm_uninstall opencode-ai @opencode-ai/opencode opencode
-if [ -x "$HOME/.opencode/bin/opencode" ]; then
-  rm -f "$HOME/.opencode/bin/opencode"
-  echo "[giteam] removed $HOME/.opencode/bin/opencode"
-fi
-echo "OpenCode uninstall finished.""##),
         ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
@@ -717,32 +627,12 @@ ensure_entire() {
   giteam_brew_install entireio/tap/entire
 }
 
-ensure_opencode() {
-  if has_cmd opencode; then
-    log "OpenCode already installed"
-    return
-  fi
-  log "Installing OpenCode"
-  giteam_install_opencode 300
-}
-
-ensure_giteam() {
-  if has_cmd giteam; then
-    log "giteam already installed"
-    return
-  fi
-  log "Installing giteam"
-  giteam_npm_install_global 300 giteam@latest
-}
-
 install_homebrew
 ensure_brew_in_shell
 ensure_git
 ensure_node
 ensure_brew_in_shell
 ensure_entire
-ensure_opencode
-ensure_giteam
 echo "Runtime bootstrap complete.""##),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
@@ -763,14 +653,12 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
         &["--version"],
         "brew tap entireio/tap && brew install entireio/tap/entire",
     );
-    let opencode = check_dep("opencode", &["--version"], "npm install -g opencode-ai");
     let giteam = check_giteam_npm_global();
     RuntimeRequirementsStatus {
         platform: std::env::consts::OS.to_string(),
         homebrew_installed: homebrew.installed,
         git,
         entire,
-        opencode,
         giteam,
     }
 }

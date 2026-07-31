@@ -1,0 +1,394 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+
+use super::messages::{message_id, AgentMessage};
+use super::types::AgentInteraction;
+use super::AgentSessionStatus;
+
+pub const AGENT_EVENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEventEnvelope {
+    pub schema_version: u32,
+    pub event_id: String,
+    pub sequence: u64,
+    pub repo_path: String,
+    pub session_id: String,
+    pub run_id: Option<String>,
+    pub timestamp_ms: u64,
+    pub event: AgentEvent,
+}
+
+// AgentInteraction 内含 serde_json::Value（非 Eq），事件层只保证 PartialEq。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum AgentEvent {
+    #[serde(rename = "message.delta")]
+    MessageDelta {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(default)]
+        index: usize,
+        delta: String,
+        /// 该 content block 的完整文本快照（replace-per-block 语义，
+        /// 参考 pi coding agent 的 partial 投影；前端优先用快照而非拼接 delta）。
+        #[serde(default)]
+        partial: String,
+    },
+    #[serde(rename = "reasoning.delta")]
+    ReasoningDelta {
+        #[serde(rename = "messageId")]
+        message_id: String,
+        #[serde(default)]
+        index: usize,
+        delta: String,
+        /// 同 MessageDelta.partial，思考块的完整快照。
+        #[serde(default)]
+        partial: String,
+    },
+    /// LLM 流式生成 tool call 的开始（区别于 ToolStarted 的实际执行）。
+    #[serde(rename = "toolCall.started")]
+    ToolCallStarted {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+    },
+    /// LLM 流式生成 tool call 参数的增量。
+    #[serde(rename = "toolCall.delta")]
+    ToolCallDelta {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        delta: String,
+    },
+    #[serde(rename = "message.started")]
+    MessageStarted {
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
+    #[serde(rename = "message.completed")]
+    MessageCompleted { message: AgentMessage },
+    #[serde(rename = "tool.started")]
+    ToolStarted {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool.progress")]
+    ToolProgress {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        output: serde_json::Value,
+    },
+    #[serde(rename = "tool.completed")]
+    ToolCompleted {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        output: serde_json::Value,
+        #[serde(rename = "isError")]
+        is_error: bool,
+    },
+    #[serde(rename = "session.status")]
+    SessionStatusChanged {
+        status: AgentSessionStatus,
+        error: Option<String>,
+    },
+    #[serde(rename = "turn.started")]
+    TurnStarted { index: usize },
+    #[serde(rename = "turn.completed")]
+    TurnCompleted { index: usize },
+    #[serde(rename = "run.completed")]
+    RunCompleted,
+    #[serde(rename = "run.failed")]
+    RunFailed { error: String },
+    #[serde(rename = "runtime.compaction")]
+    Compaction {
+        phase: String,
+        error: Option<String>,
+    },
+    #[serde(rename = "runtime.retry")]
+    Retry {
+        phase: String,
+        attempt: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        success: Option<bool>,
+        error: Option<String>,
+    },
+    #[serde(rename = "runtime.warning")]
+    RuntimeWarning { message: String },
+    /// 工具执行前等待用户裁决（permission/question）。
+    #[serde(rename = "interaction.requested")]
+    InteractionRequested { interaction: AgentInteraction },
+    /// 交互已裁决。resolution: once/always/reject/answers/cancel/timeout/aborted/auto。
+    /// 审计事件只携带 id 与裁决结果，不回放敏感参数。
+    #[serde(rename = "interaction.resolved")]
+    InteractionResolved {
+        id: String,
+        resolution: String,
+        #[serde(default)]
+        automatic: bool,
+    },
+}
+
+pub type EventSubscriberKey = (String, String);
+pub type EventSubscriberBus =
+    Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>;
+
+/// 向匹配 (session_id, run_id) 的订阅者广播事件（Control SSE 通道）。
+pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelope) {
+    let key = (
+        event.session_id.clone(),
+        event.run_id.clone().unwrap_or_default(),
+    );
+    if let Ok(mut subscribers) = subscribers.lock() {
+        if let Some(senders) = subscribers.get_mut(&key) {
+            senders.retain(|sender| sender.send(event.clone()).is_ok());
+            if senders.is_empty() {
+                subscribers.remove(&key);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PiEventTranslator {
+    repo_path: String,
+    session_id: String,
+    run_id: String,
+    sequence: AtomicU64,
+}
+
+impl PiEventTranslator {
+    #[must_use]
+    pub fn new(
+        repo_path: impl Into<String>,
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            repo_path: repo_path.into(),
+            session_id: session_id.into(),
+            run_id: run_id.into(),
+            sequence: AtomicU64::new(0),
+        }
+    }
+
+    /// 把一个已翻译好的 AgentEvent 包装成 envelope。交互事件不走 pi 事件流，
+    /// 由 InteractionStore 直接调用，与 translate 共享同一 sequence 计数器。
+    #[must_use]
+    pub fn envelope(&self, event: AgentEvent) -> AgentEventEnvelope {
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        AgentEventEnvelope {
+            schema_version: AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("{}-{sequence}", self.run_id),
+            sequence,
+            repo_path: self.repo_path.clone(),
+            session_id: self.session_id.clone(),
+            run_id: Some(self.run_id.clone()),
+            timestamp_ms: now_ms(),
+            event,
+        }
+    }
+
+    #[must_use]
+    pub fn translate(&self, event: pi::sdk::AgentEvent) -> Option<AgentEventEnvelope> {
+        let event = self.translate_event(event)?;
+        Some(self.envelope(event))
+    }
+
+    fn translate_event(&self, event: pi::sdk::AgentEvent) -> Option<AgentEvent> {
+        match event {
+            pi::sdk::AgentEvent::AgentStart { .. } => Some(AgentEvent::SessionStatusChanged {
+                status: AgentSessionStatus::Running,
+                error: None,
+            }),
+            pi::sdk::AgentEvent::AgentEnd { error, .. } => Some(match error {
+                Some(error) => AgentEvent::RunFailed { error },
+                None => AgentEvent::RunCompleted,
+            }),
+            pi::sdk::AgentEvent::TurnStart { turn_index, .. } => {
+                Some(AgentEvent::TurnStarted { index: turn_index })
+            }
+            pi::sdk::AgentEvent::TurnEnd { turn_index, .. } => {
+                Some(AgentEvent::TurnCompleted { index: turn_index })
+            }
+            pi::sdk::AgentEvent::MessageStart { message } => Some(AgentEvent::MessageStarted {
+                message_id: pi_message_id(&message),
+            }),
+            pi::sdk::AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event,
+            } => {
+                use pi::model::AssistantMessageEvent as AME;
+                let message_id = pi_message_id(&message);
+                match assistant_message_event {
+                    AME::TextDelta {
+                        content_index,
+                        delta,
+                        partial,
+                    } => Some(AgentEvent::MessageDelta {
+                        message_id,
+                        index: content_index,
+                        delta,
+                        partial: content_block_text(&partial, content_index),
+                    }),
+                    AME::ThinkingDelta {
+                        content_index,
+                        delta,
+                        partial,
+                    } => Some(AgentEvent::ReasoningDelta {
+                        message_id,
+                        index: content_index,
+                        delta,
+                        partial: content_block_text(&partial, content_index),
+                    }),
+                    AME::ToolCallStart {
+                        content_index,
+                        partial,
+                    } => {
+                        let (tool_call_id, tool_name) =
+                            tool_call_identity(&partial, content_index);
+                        Some(AgentEvent::ToolCallStarted {
+                            tool_call_id,
+                            tool_name,
+                        })
+                    }
+                    AME::ToolCallDelta {
+                        content_index,
+                        delta,
+                        partial,
+                    } => {
+                        let (tool_call_id, _) = tool_call_identity(&partial, content_index);
+                        Some(AgentEvent::ToolCallDelta {
+                            tool_call_id,
+                            delta,
+                        })
+                    }
+                    // Start/TextStart/TextEnd/ThinkingStart/ThinkingEnd/ToolCallEnd/Done/Error
+                    // 由 MessageStart、MessageEnd、ToolExecutionStart 与 AgentEnd 等
+                    // 更高层事件覆盖，无需重复下发。
+                    _ => None,
+                }
+            }
+            pi::sdk::AgentEvent::MessageEnd { message } => Some(AgentEvent::MessageCompleted {
+                message: AgentMessage::from_pi(message),
+            }),
+            pi::sdk::AgentEvent::ToolExecutionStart {
+                tool_call_id,
+                tool_name,
+                args,
+            } => Some(AgentEvent::ToolStarted {
+                tool_call_id,
+                tool_name,
+                input: args,
+            }),
+            pi::sdk::AgentEvent::ToolExecutionUpdate {
+                tool_call_id,
+                tool_name,
+                partial_result,
+                ..
+            } => Some(AgentEvent::ToolProgress {
+                tool_call_id,
+                tool_name,
+                output: serde_json::to_value(partial_result).unwrap_or(serde_json::Value::Null),
+            }),
+            pi::sdk::AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                is_error,
+            } => Some(AgentEvent::ToolCompleted {
+                tool_call_id,
+                tool_name,
+                output: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+                is_error,
+            }),
+            pi::sdk::AgentEvent::AutoCompactionStart { .. } => Some(AgentEvent::Compaction {
+                phase: "started".to_string(),
+                error: None,
+            }),
+            pi::sdk::AgentEvent::AutoCompactionEnd { error_message, .. } => {
+                Some(AgentEvent::Compaction {
+                    phase: "completed".to_string(),
+                    error: error_message,
+                })
+            }
+            pi::sdk::AgentEvent::AutoRetryStart {
+                attempt,
+                error_message,
+                ..
+            } => Some(AgentEvent::Retry {
+                phase: "started".to_string(),
+                attempt,
+                success: None,
+                error: Some(error_message),
+            }),
+            pi::sdk::AgentEvent::AutoRetryEnd {
+                success,
+                attempt,
+                final_error,
+            } => Some(AgentEvent::Retry {
+                phase: "completed".to_string(),
+                attempt,
+                success: Some(success),
+                error: final_error,
+            }),
+            pi::sdk::AgentEvent::ExtensionError { error, event, .. } => {
+                Some(AgentEvent::RuntimeWarning {
+                    message: format!("Pi extension event {event} failed: {error}"),
+                })
+            }
+        }
+    }
+}
+
+fn pi_message_id(message: &pi::sdk::Message) -> String {
+    match message {
+        pi::sdk::Message::User(message) => message_id("user", message.timestamp),
+        pi::sdk::Message::Assistant(message) => message_id("assistant", message.timestamp),
+        pi::sdk::Message::ToolResult(message) => message_id("tool", message.timestamp),
+        pi::sdk::Message::Custom(message) => message_id("custom", message.timestamp),
+    }
+}
+
+/// 从流式 partial message 的 content block 中恢复 tool call 的 id/name，
+/// 使 ToolCallStart/ToolCallDelta 事件可以与后续 ToolExecution* 事件关联。
+fn tool_call_identity(
+    message: &pi::sdk::AssistantMessage,
+    content_index: usize,
+) -> (String, String) {
+    match message.content.get(content_index) {
+        Some(pi::sdk::ContentBlock::ToolCall(call)) => (call.id.clone(), call.name.clone()),
+        _ => (String::new(), String::new()),
+    }
+}
+
+/// 提取 partial message 中指定 content block 的完整文本快照
+/// （text/thinking 块），供前端 replace-per-block 渲染。
+fn content_block_text(message: &pi::sdk::AssistantMessage, content_index: usize) -> String {
+    match message.content.get(content_index) {
+        Some(pi::sdk::ContentBlock::Text(text)) => text.text.clone(),
+        Some(pi::sdk::ContentBlock::Thinking(thinking)) => thinking.thinking.clone(),
+        _ => String::new(),
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
+}

@@ -146,6 +146,15 @@ export async function sendRepoTerminalInput(repoPath: string, input: string, ses
   return invoke<void>("send_repo_terminal_input", { repoPath, sessionId, input });
 }
 
+export async function resizeRepoTerminalSession(
+  repoPath: string,
+  cols: number,
+  rows: number,
+  sessionId?: string
+): Promise<void> {
+  return invoke<void>("resize_repo_terminal_session", { repoPath, sessionId, cols, rows });
+}
+
 export async function readRepoTerminalOutput(repoPath: string, afterSeq: number, sessionId?: string): Promise<RepoTerminalSnapshot> {
   return invoke<RepoTerminalSnapshot>("read_repo_terminal_output", { repoPath, sessionId, afterSeq });
 }

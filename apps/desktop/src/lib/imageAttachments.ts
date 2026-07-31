@@ -1,7 +1,7 @@
 import { IS_TAURI, invoke } from "./platform";
 import { makeId } from "./browserRuntime";
 
-export type OpencodeAttachment = {
+export type AgentAttachment = {
   id: string;
   kind: "image" | "file";
   filename: string;
@@ -10,11 +10,11 @@ export type OpencodeAttachment = {
   sourcePath?: string;
 };
 
-export type OpencodeImageAttachment = OpencodeAttachment;
+export type AgentImageAttachment = AgentAttachment;
 
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-export const OPENCODE_ATTACHMENT_INPUT_ACCEPT = [
+export const AGENT_ATTACHMENT_INPUT_ACCEPT = [
   ...ACCEPTED_IMAGE_TYPES,
   "application/pdf",
   "application/msword",
@@ -158,7 +158,7 @@ const BADGE_BY_EXT = new Map([
   ["zsh", "ZSH"],
 ]);
 const SAMPLE_BYTES = 4096;
-const OPENCODE_MEDIA_MIMES = new Set(["application/pdf"]);
+const AGENT_MEDIA_MIMES = new Set(["application/pdf"]);
 const LOCAL_PATH_ATTACHMENT_EXTS = new Set([
   ...IMAGE_EXTS.keys(),
   ...FILE_EXTS.keys(),
@@ -215,12 +215,12 @@ export function getAttachmentDataUrlMime(dataUrl: string): string {
   return normalizeMime(match?.[1] || "");
 }
 
-export function isOpencodeSupportedAttachmentMedia(mime: string): boolean {
+export function isAgentSupportedAttachmentMedia(mime: string): boolean {
   const normalized = normalizeMime(mime);
-  return normalized.startsWith("image/") || isTextMime(normalized) || OPENCODE_MEDIA_MIMES.has(normalized);
+  return normalized.startsWith("image/") || isTextMime(normalized) || AGENT_MEDIA_MIMES.has(normalized);
 }
 
-export function isOfficeAttachment(attachment: Pick<OpencodeAttachment, "mime" | "filename">): boolean {
+export function isOfficeAttachment(attachment: Pick<AgentAttachment, "mime" | "filename">): boolean {
   const mime = normalizeMime(attachment.mime || "");
   if (FILE_MIMES.has(mime)) return true;
   return /(\.docx?|\.pptx?|\.xlsx?)$/i.test(attachment.filename || "");
@@ -232,7 +232,7 @@ function filenameExt(name: string): string {
   return name.slice(idx + 1).toLowerCase();
 }
 
-function attachmentIdentity(attachment: Pick<OpencodeAttachment, "kind" | "filename" | "mime" | "dataUrl" | "sourcePath">): string {
+function attachmentIdentity(attachment: Pick<AgentAttachment, "kind" | "filename" | "mime" | "dataUrl" | "sourcePath">): string {
   return [attachment.kind, attachment.filename, attachment.mime, attachment.sourcePath || attachment.dataUrl].join("::");
 }
 
@@ -355,9 +355,9 @@ export function hasTransferAttachments(transfer: DataTransfer | null | undefined
 }
 
 export function mergeUniqueAttachments(
-  current: OpencodeAttachment[],
-  incoming: OpencodeAttachment[]
-): OpencodeAttachment[] {
+  current: AgentAttachment[],
+  incoming: AgentAttachment[]
+): AgentAttachment[] {
   if (incoming.length === 0) return current;
   const seen = new Set(current.map((attachment) => attachmentIdentity(attachment)));
   const next = [...current];
@@ -370,7 +370,7 @@ export function mergeUniqueAttachments(
   return next;
 }
 
-export function getAttachmentBadgeLabel(attachment: Pick<OpencodeAttachment, "mime" | "filename">): string {
+export function getAttachmentBadgeLabel(attachment: Pick<AgentAttachment, "mime" | "filename">): string {
   const mime = normalizeMime(attachment.mime || "");
   if (mime === "application/pdf") return "PDF";
   if (mime.startsWith("image/")) return BADGE_BY_EXT.get(filenameExt(attachment.filename)) || "IMG";
@@ -401,14 +401,91 @@ export async function resolveAttachmentMime(file: File): Promise<string | undefi
   return "text/plain";
 }
 
-export function isImageAttachment(attachment: Pick<OpencodeAttachment, "kind" | "mime" | "dataUrl" | "filename">): boolean {
+export function isImageAttachment(attachment: Pick<AgentAttachment, "kind" | "mime" | "dataUrl" | "filename">): boolean {
   if (attachment.kind === "image") return true;
   if (attachment.mime.startsWith("image/")) return true;
   if (attachment.dataUrl.startsWith("data:image/")) return true;
   return /\.(png|jpe?g|webp|gif|heic)$/i.test(attachment.filename);
 }
 
-export function attachmentsFromLocalPaths(paths: string[]): OpencodeAttachment[] {
+export type AgentPromptImagePayload = {
+  mimeType: string;
+  /** 绝对路径；Rust multimodal 读盘用。 */
+  path: string;
+  /** 相对仓库根路径；无视觉模型用 read 工具（必须在 cwd 内）。 */
+  relativePath: string;
+};
+
+type StageAgentPromptImageInput = {
+  mime?: string;
+  dataBase64?: string;
+  path?: string;
+  filename?: string;
+};
+
+/** 从 data URL 提取 base64 载荷；失败返回 null。 */
+export function dataUrlToBase64Payload(dataUrl: string): { mimeType: string; data: string } | null {
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match) return null;
+  const mimeType = normalizeMime(match[1] || "") || "image/png";
+  const data = (match[2] || "").trim();
+  if (!data) return null;
+  return { mimeType, data };
+}
+
+async function stageAgentPromptImages(
+  repoPath: string,
+  inputs: StageAgentPromptImageInput[]
+): Promise<AgentPromptImagePayload[]> {
+  if (!IS_TAURI || inputs.length === 0) return [];
+  const staged = await invoke<Array<{ mimeType: string; path: string; relativePath: string }>>(
+    "stage_agent_prompt_images",
+    { repoPath, images: inputs }
+  );
+  return (staged || [])
+    .map((item) => ({
+      mimeType: normalizeMime(item.mimeType) || "image/png",
+      path: String(item.path || "").trim(),
+      relativePath: String(item.relativePath || "").trim()
+    }))
+    .filter((item) => Boolean(item.path));
+}
+
+/**
+ * 把 UI 附件落到仓库 `.giteam/prompt-attachments/`。
+ * 优先已有 sourcePath（会复制进仓库）；否则写 dataUrl。
+ */
+export async function resolveAgentPromptImages(
+  attachments: AgentAttachment[],
+  repoPath: string
+): Promise<AgentPromptImagePayload[]> {
+  const root = String(repoPath || "").trim();
+  if (!root) throw new Error("repoPath is required to stage prompt images");
+  const inputs: StageAgentPromptImageInput[] = [];
+  for (const attachment of attachments) {
+    if (!isImageAttachment(attachment)) continue;
+    const path = String(attachment.sourcePath || "").trim();
+    if (path) {
+      inputs.push({
+        mime: normalizeMime(attachment.mime) || undefined,
+        path,
+        filename: attachment.filename
+      });
+      continue;
+    }
+    const fromDataUrl = dataUrlToBase64Payload(attachment.dataUrl);
+    if (!fromDataUrl) continue;
+    inputs.push({
+      mime: normalizeMime(attachment.mime) || fromDataUrl.mimeType,
+      dataBase64: fromDataUrl.data,
+      filename: attachment.filename
+    });
+  }
+  return stageAgentPromptImages(root, inputs);
+}
+
+export function attachmentsFromLocalPaths(paths: string[]): AgentAttachment[] {
   return Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean))).map((path) => {
     const filename = filenameFromPath(path);
     const ext = filenameExt(filename);
@@ -422,10 +499,10 @@ export function attachmentsFromLocalPaths(paths: string[]): OpencodeAttachment[]
       dataUrl: "",
       sourcePath: path
     };
-  }).filter(Boolean) as OpencodeAttachment[];
+  }).filter(Boolean) as AgentAttachment[];
 }
 
-export async function readFileAsAttachment(file: File): Promise<OpencodeAttachment | null> {
+export async function readFileAsAttachment(file: File): Promise<AgentAttachment | null> {
   const mime = await resolveAttachmentMime(file);
   if (!mime) return null;
   if (isOfficeAttachment({ mime, filename: file.name })) {
@@ -433,7 +510,7 @@ export async function readFileAsAttachment(file: File): Promise<OpencodeAttachme
       `Attached file "${file.name || "Office document"}" was added.`,
       "",
       "This Office document was pasted or uploaded through a browser file object, so the desktop app cannot access its local path to convert it to text.",
-      "OpenCode can directly read images, PDFs, and text attachments. To include this document's contents, use the desktop file picker, export it as PDF/text, or paste the document text."
+      "Giteam can directly read images, PDFs, and text attachments. To include this document's contents, use the desktop file picker, export it as PDF/text, or paste the document text."
     ].join("\n");
     return {
       id: `file-${makeId()}`,
@@ -465,7 +542,7 @@ export async function readFileAsAttachment(file: File): Promise<OpencodeAttachme
   });
 }
 
-export function readImageFileAsAttachment(file: File): Promise<OpencodeAttachment | null> {
+export function readImageFileAsAttachment(file: File): Promise<AgentAttachment | null> {
   return readFileAsAttachment(file);
 }
 
@@ -479,13 +556,13 @@ function extensionFromMime(mime: string): string {
   return "png";
 }
 
-export async function readBrowserClipboardAttachments(): Promise<OpencodeAttachment[]> {
+export async function readBrowserClipboardAttachments(): Promise<AgentAttachment[]> {
   if (typeof navigator === "undefined" || !navigator.clipboard || typeof navigator.clipboard.read !== "function") {
     return [];
   }
   try {
     const clipboardItems = await navigator.clipboard.read();
-    const attachments: OpencodeAttachment[] = [];
+    const attachments: AgentAttachment[] = [];
     for (const item of clipboardItems) {
       const imageType = item.types.find((type) => normalizeMime(type).startsWith("image/"));
       if (!imageType) continue;
@@ -502,15 +579,15 @@ export async function readBrowserClipboardAttachments(): Promise<OpencodeAttachm
   }
 }
 
-export async function pickDesktopAttachments(): Promise<OpencodeAttachment[]> {
+export async function pickDesktopAttachments(): Promise<AgentAttachment[]> {
   if (!IS_TAURI) return [];
-  return invoke<OpencodeAttachment[]>("pick_opencode_attachments");
+  return invoke<AgentAttachment[]>("pick_agent_attachments");
 }
 
-export async function readDesktopAttachmentsFromPaths(paths: string[]): Promise<OpencodeAttachment[]> {
+export async function readDesktopAttachmentsFromPaths(paths: string[]): Promise<AgentAttachment[]> {
   const normalized = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)));
   if (!IS_TAURI || normalized.length === 0) return [];
-  return invoke<OpencodeAttachment[]>("read_opencode_attachments_from_paths", { paths: normalized });
+  return invoke<AgentAttachment[]>("read_agent_attachments_from_paths", { paths: normalized });
 }
 
 export async function readDesktopClipboardFilePaths(): Promise<string[]> {
@@ -518,9 +595,9 @@ export async function readDesktopClipboardFilePaths(): Promise<string[]> {
   return invoke<string[]>("read_clipboard_file_paths");
 }
 
-export async function readDesktopClipboardImageAttachment(): Promise<OpencodeAttachment[]> {
+export async function readDesktopClipboardImageAttachment(): Promise<AgentAttachment[]> {
   if (!IS_TAURI) return [];
-  return invoke<OpencodeAttachment[]>("read_clipboard_image_attachment");
+  return invoke<AgentAttachment[]>("read_clipboard_image_attachment");
 }
 
 export async function readLocalAttachmentPreview(path: string): Promise<{

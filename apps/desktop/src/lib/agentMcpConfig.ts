@@ -1,6 +1,6 @@
 import type { McpServerMarketData } from "./mcpMarket";
 
-export type OpencodeMcpParamSpec = {
+export type AgentMcpParamSpec = {
   key: string;
   required: boolean;
   description: string;
@@ -19,10 +19,10 @@ export function getInstalledMcpParamSpecs(
   marketServers: McpServerMarketData,
   name: string,
   status: Record<string, unknown> | undefined
-): OpencodeMcpParamSpec[] {
+): AgentMcpParamSpec[] {
   const state: any = status || {};
   const definition = getMcpMarketDefinition(marketServers, name);
-  const specs = new Map<string, OpencodeMcpParamSpec>();
+  const specs = new Map<string, AgentMcpParamSpec>();
   const addSpec = (key: string, required = false, description = "", example = "") => {
     const normalizedKey = key.trim();
     if (!normalizedKey) return;
@@ -56,22 +56,22 @@ export function getInstalledMcpTools(marketServers: McpServerMarketData, name: s
   return Array.isArray(definition?.tools) ? definition.tools : [];
 }
 
-export type OpencodeMcpPanelRow = {
+export type AgentMcpPanelRow = {
   name: string;
   sourceLabel: string;
   typeLabel: string;
   toolsCount: number;
 };
 
-export function buildOpencodeMcpRows(status: Record<string, Record<string, unknown>>, visible: boolean) {
+export function buildAgentMcpRows(status: Record<string, Record<string, unknown>>, visible: boolean) {
   if (!visible) return [];
   return Object.entries(status).sort(([a], [b]) => a.localeCompare(b));
 }
 
-export function buildOpencodeMcpPanelRows(
+export function buildAgentMcpPanelRows(
   rows: Array<[string, Record<string, unknown>]>,
   getTools: (name: string) => unknown[]
-): OpencodeMcpPanelRow[] {
+): AgentMcpPanelRow[] {
   return rows.map(([name, status]) => {
     const state: any = status || {};
     const source = String(state.source || (state.configured ? "project" : "runtime"));
@@ -215,8 +215,8 @@ function collectPlaceholderNames(value: unknown, out: Set<string>) {
   }
 }
 
-export function getCustomMcpParamSpecs(input: string, fallbackName: string): OpencodeMcpParamSpec[] {
-  const specs = new Map<string, OpencodeMcpParamSpec>();
+export function getCustomMcpParamSpecs(input: string, fallbackName: string): AgentMcpParamSpec[] {
+  const specs = new Map<string, AgentMcpParamSpec>();
   const add = (key: string, required = true, description = "", example = "") => {
     const normalizedKey = key.trim();
     if (!normalizedKey) return;
@@ -259,7 +259,7 @@ export function replaceMcpConfigPlaceholders(value: unknown, values: Record<stri
 
 export function getEditableMcpParamValues(
   status: Record<string, unknown> | undefined,
-  specs: OpencodeMcpParamSpec[]
+  specs: AgentMcpParamSpec[]
 ): Record<string, string> {
   const state: any = status || {};
   const params = (state.type === "remote" ? state.headers : state.environment) || {};
@@ -271,9 +271,9 @@ export function getEditableMcpParamValues(
 }
 
 export function getMissingMcpRequiredParams(
-  specs: OpencodeMcpParamSpec[],
+  specs: AgentMcpParamSpec[],
   values: Record<string, string>
-): OpencodeMcpParamSpec[] {
+): AgentMcpParamSpec[] {
   return specs.filter((spec) => spec.required && !String(values[spec.key] || "").trim());
 }
 

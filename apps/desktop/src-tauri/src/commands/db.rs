@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,12 +62,12 @@ fn legacy_db_path() -> Option<PathBuf> {
 }
 
 fn db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let app_data = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("cannot resolve app data dir: {e}"))?;
-    let dir = app_data.join(".giteam");
-    fs::create_dir_all(&dir).map_err(|e| format!("cannot create .giteam directory: {e}"))?;
+    let _ = app_handle;
+    // 与 giteam-core / CLI 共用权威数据根（Application Support/giteam），
+    // 不再使用 Tauri bundle id 目录（io.giteam.desktop），避免双写分裂。
+    giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
+    let dir = giteam_core::pi_agent::ensure_data_dir()
+        .ok_or_else(|| "cannot resolve Giteam data dir".to_string())?;
     let db = dir.join("client.db");
 
     if !db.exists() {

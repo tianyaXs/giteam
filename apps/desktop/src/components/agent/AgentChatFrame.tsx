@@ -5,25 +5,17 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type MutableRefObject,
-  type ReactNode,
-  type RefObject,
-  type UIEventHandler,
-  type WheelEventHandler
+  type ReactNode
 } from "react";
 import { Card, CardContent, CardFooter } from "../ui/card";
-import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 
-type OpencodeSideRailRender = (state: { collapsed: boolean }) => ReactNode;
+type AgentSideRailRender = (state: { collapsed: boolean }) => ReactNode;
 
-type OpencodeChatFrameProps = {
+type AgentChatFrameProps = {
   empty: boolean;
-  threadRef: RefObject<HTMLDivElement | null>;
-  onThreadScroll: UIEventHandler<HTMLDivElement>;
-  onThreadWheel: WheelEventHandler<HTMLDivElement>;
   stream: ReactNode;
-  sideRail?: ReactNode | OpencodeSideRailRender;
+  sideRail?: ReactNode | AgentSideRailRender;
   sideRailHidden?: boolean;
   composer: ReactNode;
 };
@@ -45,19 +37,13 @@ function getSideRailMode(width: number): SideRailMode {
   return "hidden";
 }
 
-export function OpencodeChatFrame({
+export function AgentChatFrame({
   empty,
-  threadRef,
-  onThreadScroll,
-  onThreadWheel,
   stream,
   sideRail,
   sideRailHidden = false,
   composer
-}: OpencodeChatFrameProps) {
-  const setThreadNode = (node: HTMLDivElement | null) => {
-    (threadRef as MutableRefObject<HTMLDivElement | null>).current = node;
-  };
+}: AgentChatFrameProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [sideRailMode, setSideRailMode] = useState<SideRailMode>("hidden");
   const sideRailStyle = {
@@ -107,20 +93,9 @@ export function OpencodeChatFrame({
   return (
     <Card className="flex h-full min-h-0 w-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
       <CardContent ref={contentRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0">
-        <ScrollArea
-          type="always"
-          className="min-h-0 flex-1"
-          viewportRef={setThreadNode}
-          viewportClassName="pt-4"
-          viewportProps={{
-            onScroll: onThreadScroll,
-            onWheel: onThreadWheel
-          }}
-        >
-          <div className="mx-auto flex w-full max-w-[860px] flex-col px-6 pb-4">
-            {stream}
-          </div>
-        </ScrollArea>
+        <div className="relative min-h-0 flex-1">
+          {stream}
+        </div>
         {sideRail ? (
           <>
             <aside
@@ -156,8 +131,17 @@ export function OpencodeChatFrame({
           </>
         ) : null}
       </CardContent>
-      <CardFooter className="mx-auto w-full max-w-[860px] shrink-0 p-0">
-        {composer}
+      {/*
+        与消息流 Virtuoso 的 scrollbar-gutter:stable 对齐：footer 同样预留滚动条槽位，
+        使输入框内容区与消息流左右边界对齐——消息流 Virtuoso 因 stable 预留了右侧滚动条槽，
+        内容整体偏左、左侧压输入框左边线。footer 用 overflow-y-auto + stable：内容不溢出时
+        不显示滚动条，但仍预留 stable 槽位（若再用 scrollbar-width:none / ::-webkit-scrollbar
+        隐藏滚动条，WebKit 下 stable 会失效而不预留，导致再次错位）。
+      */}
+      <CardFooter className="w-full shrink-0 overflow-y-auto p-0 [scrollbar-gutter:stable]">
+        <div className="mx-auto w-full max-w-[860px] px-8 pb-4 pt-3">
+          {composer}
+        </div>
       </CardFooter>
     </Card>
   );

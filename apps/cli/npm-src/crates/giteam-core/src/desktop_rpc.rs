@@ -1,4 +1,8 @@
 use super::command_runner;
+use super::pi_agent::{
+    AgentEventEnvelope, AgentEventSink, CustomProviderInput, PiAgentService, PiSessionConfig,
+};
+use futures::executor::block_on;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,8 +72,6 @@ pub struct GitWorktreeOverview {
     pub staged_count: u32,
     pub unstaged_count: u32,
     pub untracked_count: u32,
-    pub added_lines: u32,
-    pub deleted_lines: u32,
     pub entries: Vec<GitWorktreeEntry>,
     pub raw: String,
 }
@@ -117,6 +119,8 @@ pub struct GitUserIdentity {
 pub struct GitWorktreeFileContent {
     pub original: String,
     pub modified: String,
+    pub preview_supported: bool,
+    pub preview_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -187,7 +191,6 @@ pub struct RuntimeRequirementsStatus {
     pub ok: bool,
     pub git: RuntimeDependencyStatus,
     pub entire: RuntimeDependencyStatus,
-    pub opencode: RuntimeDependencyStatus,
     pub giteam: RuntimeDependencyStatus,
 }
 
@@ -251,6 +254,225 @@ fn set_job_done(job_id: &str, success: bool, exit_code: Option<i32>, err: Option
 }
 
 const INSTALL_TIMEOUT_SECS: u64 = 15 * 60;
+const UNINSTALL_TIMEOUT_SECS: u64 = 2 * 60;
+
+/// Shared shell helpers for uninstall scripts. Homebrew may hang while fetching
+/// formulae.brew.sh even with HOMEBREW_NO_AUTO_UPDATE; timed brew + Cellar fallback
+/// keeps the desktop UI responsive.
+const UNINSTALL_SHELL_HELPERS: &str = r#"
+giteam_run_timed() {
+  local timeout_secs=$1
+  shift
+  "$@" &
+  local pid=$!
+  local elapsed=0
+  while kill -0 "$pid" 2>/dev/null && [ "$elapsed" -lt "$timeout_secs" ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid"
+  return $?
+}
+
+giteam_brew_cellar_name() {
+  local formula=$1
+  case "$formula" in */*) echo "${formula##*/}" ;; *) echo "$formula" ;; esac
+}
+
+giteam_brew_formula_installed() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Cellar/$base" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+giteam_brew_remove_formula() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Cellar/$base" ]; then
+      rm -rf "$prefix/Cellar/$base"
+      rm -f "$prefix/bin/$base"
+      rm -rf "$prefix/opt/$base"
+      echo "[giteam] removed $prefix/Cellar/$base directly"
+    fi
+  done
+}
+
+giteam_brew_uninstall() {
+  local formula=$1
+  if ! command -v brew >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! giteam_brew_formula_installed "$formula"; then
+    return 0
+  fi
+  echo "[giteam] uninstalling brew formula: $formula"
+  if giteam_run_timed 12 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew uninstall --force "$formula"; then
+    echo "[giteam] brew uninstall $formula succeeded"
+  else
+    echo "[giteam] brew uninstall $formula timed out or failed; removing Cellar directly"
+    giteam_brew_remove_formula "$formula"
+  fi
+}
+
+giteam_find_npm() {
+  if command -v npm >/dev/null 2>&1; then
+    command -v npm
+    return
+  fi
+  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return
+    fi
+  done
+}
+
+giteam_npm_uninstall() {
+  local npm_cmd
+  npm_cmd=$(giteam_find_npm)
+  if [ -z "$npm_cmd" ]; then
+    return 0
+  fi
+  echo "[giteam] npm uninstall: $*"
+  giteam_run_timed 60 "$npm_cmd" uninstall -g "$@" || echo "[giteam] npm uninstall timed out or failed"
+}
+"#;
+
+fn wrap_runtime_script(name: &str, action: &str, script: &str) -> String {
+    match action {
+        "uninstall" => format!("{UNINSTALL_SHELL_HELPERS}\n{script}"),
+        "bootstrap" | "install" if name == "opencode" => {
+            format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}")
+        }
+        _ => script.to_string(),
+    }
+}
+
+fn apply_homebrew_offline_env(cmd: &mut Command) {
+    cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1");
+    cmd.env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+    cmd.env("HOMEBREW_NO_ANALYTICS", "1");
+}
+
+/// Shared shell helpers for macOS runtime bootstrap. Skips brew when present,
+/// never runs `brew update`, and surfaces network timeouts clearly.
+const BOOTSTRAP_SHELL_HELPERS: &str = r#"
+giteam_run_timed() {
+  local timeout_secs=$1
+  shift
+  "$@" &
+  local pid=$!
+  local elapsed=0
+  while kill -0 "$pid" 2>/dev/null && [ "$elapsed" -lt "$timeout_secs" ]; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid"
+  return $?
+}
+
+giteam_network_fail() {
+  echo "NETWORK_ERROR: 安装超时，请检查网络连接后重试。"
+  exit 2
+}
+
+giteam_brew_install() {
+  local spec=$1
+  local timeout_secs=${2:-180}
+  if ! giteam_run_timed "$timeout_secs" env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew install -v "$spec"; then
+    echo "NETWORK_ERROR: $spec 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
+}
+
+giteam_npm_install_global() {
+  local timeout_secs=$1
+  shift
+  local npm_cmd=""
+  if command -v npm >/dev/null 2>&1; then
+    npm_cmd=$(command -v npm)
+  else
+    for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+      if [ -x "$p" ]; then
+        npm_cmd=$p
+        break
+      fi
+    done
+  fi
+  if [ -z "$npm_cmd" ]; then
+    echo "npm is required but not found in PATH."
+    exit 2
+  fi
+  if ! giteam_run_timed "$timeout_secs" "$npm_cmd" install -g --loglevel info --progress=true "$@"; then
+    echo "NETWORK_ERROR: npm 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
+}
+
+giteam_find_npm() {
+  if command -v npm >/dev/null 2>&1; then
+    command -v npm
+    return
+  fi
+  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return
+    fi
+  done
+}
+
+giteam_install_opencode() {
+  local timeout_secs=${1:-300}
+  local curl_timeout=60
+  export PATH="$HOME/.opencode/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+  if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+    return 0
+  fi
+  local npm_cmd
+  npm_cmd=$(giteam_find_npm)
+  if [ -n "$npm_cmd" ]; then
+    echo "[giteam] PROGRESS: 68 正在通过 npm 安装 OpenCode..."
+    if giteam_run_timed "$timeout_secs" "$npm_cmd" install -g opencode-ai; then
+      if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+        echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+        return 0
+      fi
+    fi
+    echo "[giteam] npm 安装失败，尝试官方脚本..."
+  fi
+  echo "[giteam] PROGRESS: 74 正在通过官方脚本安装 OpenCode..."
+  if giteam_run_timed "$curl_timeout" bash -c 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'; then
+    if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+      echo "[giteam] PROGRESS: 88 OpenCode 已安装"
+      return 0
+    fi
+  fi
+  if [ -z "$npm_cmd" ]; then
+    echo "NETWORK_ERROR: OpenCode 安装失败，未找到 npm 且官方脚本不可用。请检查网络后重试。"
+  else
+    echo "NETWORK_ERROR: OpenCode 安装失败，请检查网络连接后重试。"
+  fi
+  exit 2
+}
+"#;
 
 // Terminal session management
 #[derive(Debug)]
@@ -487,6 +709,94 @@ fn run_git_with_timeout(
     command_runner::run_and_capture_in_dir_with_timeout("git", args, repo_path, timeout_secs)
 }
 
+const PREVIEW_SAMPLE_BYTES: usize = 4096;
+
+fn is_untracked_worktree_path(repo_path: &str, path: &str) -> bool {
+    if command_runner::validate_repo_path(repo_path).is_err() {
+        return false;
+    }
+    let output = Command::new("git")
+        .args(["ls-files", "-z", "--others", "--exclude-standard", "--", path])
+        .current_dir(repo_path)
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let path_bytes = path.as_bytes();
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|entry| entry == path_bytes)
+}
+
+fn read_git_blob_bytes(repo_path: &str, spec: &str) -> Result<Vec<u8>, String> {
+    command_runner::validate_repo_path(repo_path)?;
+    let output = Command::new("git")
+        .args(["show", spec])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("failed to read git blob: {e}"))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        return Err("failed to read git blob".to_string());
+    }
+    Err(stderr)
+}
+
+fn detect_unsupported_preview_reason(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let sample = &bytes[..bytes.len().min(PREVIEW_SAMPLE_BYTES)];
+    if sample.contains(&0) {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    if std::str::from_utf8(sample).is_err() {
+        return Some("该文件包含不可解析内容，暂不支持文本预览。");
+    }
+    let control_bytes = sample
+        .iter()
+        .filter(|byte| matches!(**byte, 0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F))
+        .count();
+    if control_bytes * 100 / sample.len().max(1) >= 8 {
+        return Some("该文件可能是二进制文件，暂不支持文本预览。");
+    }
+    None
+}
+
+fn decode_preview_text(bytes: Vec<u8>) -> Result<String, &'static str> {
+    if let Some(reason) = detect_unsupported_preview_reason(&bytes) {
+        return Err(reason);
+    }
+    String::from_utf8(bytes).map_err(|_| "该文件包含不可解析内容，暂不支持文本预览。")
+}
+
+fn build_untracked_text_patch(path: &str, text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut patch = format!(
+        "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+        lines.len()
+    );
+    for line in lines {
+        patch.push('+');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    if !text.ends_with('\n') {
+        patch.push_str("\\ No newline at end of file\n");
+    }
+    patch
+}
+
 fn decode_git_quoted_path(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -606,20 +916,9 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
         staged_count,
         unstaged_count,
         untracked_count,
-        added_lines: 0,
-        deleted_lines: 0,
         entries,
         raw,
     }
-}
-
-fn parse_numstat_totals(raw: &str) -> (u32, u32) {
-    raw.lines().fold((0u32, 0u32), |(added_total, deleted_total), line| {
-        let mut parts = line.split_whitespace();
-        let added = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        let deleted = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        (added_total.saturating_add(added), deleted_total.saturating_add(deleted))
-    })
 }
 
 fn sanitize_branch_for_dir(branch: &str) -> String {
@@ -913,6 +1212,7 @@ fn build_path_env() -> String {
         .map(ToString::to_string)
         .collect();
     let home_dirs = [
+        format!("{home}/.opencode/bin"),
         format!("{home}/.local/bin"),
         format!("{home}/.npm-global/bin"),
         format!("{home}/.bun/bin"),
@@ -1110,7 +1410,7 @@ else
   echo "Homebrew not found. Triggered Xcode Command Line Tools installer."
 fi"#),
         ("git", "uninstall") => Ok(r#"if command -v brew >/dev/null 2>&1; then
-  brew uninstall git || true
+  giteam_brew_uninstall git || true
 else
   echo "Git installed by Xcode Command Line Tools must be removed manually."
 fi"#),
@@ -1120,29 +1420,24 @@ fi"#),
 fi
 brew tap entireio/tap
 brew install entireio/tap/entire"#),
-        ("entire", "uninstall") => Ok(r##"if command -v brew >/dev/null 2>&1; then
-  brew uninstall entireio/tap/entire || true
-fi
+        ("entire", "uninstall") => Ok(r##"giteam_brew_uninstall entire
 if [ -f "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
 fi
 echo "Entire uninstall finished."##),
-        ("opencode", "install") => Ok(r##"if command -v npm >/dev/null 2>&1; then
-  npm install -g opencode-ai
-else
-  echo "npm is required to install OpenCode (not found in PATH)."
-  exit 2
-fi"##),
+        ("opencode", "install") | ("opencode", "update") => Ok(r##"echo "OpenCode CLI is no longer required."
+echo "Desktop agent runs on the in-process Pi SDK."
+exit 0"##),
         ("opencode", "uninstall") => Ok(r##"if command -v opencode >/dev/null 2>&1; then
   opencode uninstall --force || true
 fi
-if command -v brew >/dev/null 2>&1; then
-  brew uninstall anomalyco/tap/opencode || true
+giteam_brew_uninstall opencode || true
+giteam_brew_uninstall anomalyco/tap/opencode || true
+giteam_npm_uninstall opencode-ai @opencode-ai/opencode opencode || true
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  rm -f "$HOME/.opencode/bin/opencode"
 fi
-if command -v npm >/dev/null 2>&1; then
-  npm uninstall -g opencode-ai || true
-fi
-echo "OpenCode uninstall finished."##),
+echo "OpenCode uninstall finished (optional cleanup).""##),
         ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
 if command -v npm >/dev/null 2>&1; then
   NPM_CMD=$(command -v npm)
@@ -1197,21 +1492,112 @@ if [ -x "$BIN" ]; then
 else
   echo "[giteam] install finished but bin not found at $BIN"
 fi"##),
-        ("giteam", "uninstall") => Ok(r##"NPM_CMD=""
-if command -v npm >/dev/null 2>&1; then
-  NPM_CMD=$(command -v npm)
-else
-  for p in "$HOME/.npm-global/bin/npm" "/usr/local/bin/npm" "/opt/homebrew/bin/npm" "/opt/homebrew/Caskroom/miniconda/base/bin/npm" "/opt/homebrew/Caskroom/miniconda3/base/bin/npm"; do
-    if [ -x "$p" ]; then
-      NPM_CMD=$p
-      break
-    fi
-  done
-fi
-if [ -n "$NPM_CMD" ]; then
-  "$NPM_CMD" uninstall -g giteam || true
-fi
+        ("giteam", "uninstall") => Ok(r##"giteam_npm_uninstall giteam
 echo "giteam uninstall finished."##),
+        // Mirrors the standalone macOS runtime bootstrap script so first-launch
+        // setup can run inside the packaged desktop app without relying on an
+        // external file path.
+        ("runtime", "bootstrap") => Ok(r##"set -e
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Runtime bootstrap only supports macOS."
+  exit 1
+fi
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+log() {
+  printf '==> %s\n' "$1"
+}
+
+ensure_brew_in_shell() {
+  if command -v brew >/dev/null 2>&1; then
+    return
+  fi
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    return
+  fi
+  if [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+}
+
+install_homebrew() {
+  if has_cmd brew; then
+    log "Homebrew already installed"
+    return
+  fi
+  log "Installing Homebrew"
+  if ! giteam_run_timed 600 env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+    echo "NETWORK_ERROR: Homebrew 安装超时，请检查网络连接后重试。"
+    exit 2
+  fi
+  ensure_brew_in_shell
+  if ! has_cmd brew; then
+    echo "Homebrew installation failed."
+    exit 2
+  fi
+}
+
+ensure_git() {
+  if has_cmd git; then
+    log "git already installed"
+    return
+  fi
+  log "Installing git"
+  giteam_brew_install git
+}
+
+ensure_node() {
+  if has_cmd node && has_cmd npm; then
+    log "node/npm already installed"
+    return
+  fi
+  log "Installing node"
+  giteam_brew_install node
+}
+
+ensure_entire() {
+  if has_cmd entire; then
+    log "Entire already installed"
+    return
+  fi
+  log "Installing Entire"
+  if ! giteam_run_timed 120 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew tap entireio/tap; then
+    giteam_network_fail
+  fi
+  giteam_brew_install entireio/tap/entire
+}
+
+ensure_opencode() {
+  if has_cmd opencode; then
+    log "OpenCode already installed"
+    return
+  fi
+  log "Installing OpenCode"
+  giteam_install_opencode 300
+}
+
+ensure_giteam() {
+  if has_cmd giteam; then
+    log "giteam already installed"
+    return
+  fi
+  log "Installing giteam"
+  giteam_npm_install_global 300 giteam@latest
+}
+
+install_homebrew
+ensure_brew_in_shell
+ensure_git
+ensure_node
+ensure_brew_in_shell
+ensure_entire
+ensure_opencode
+ensure_giteam
+echo "Runtime bootstrap complete."##),
         _ => Err(format!("unsupported action: {action} {name}")),
     }
 }
@@ -1219,6 +1605,208 @@ echo "giteam uninstall finished."##),
 // Main RPC dispatcher
 pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
     match command {
+        // In-process Pi Agent commands
+        "agent_runtime_info" => serde_json::to_value(PiAgentService::global().runtime_info())
+            .map_err(|error| error.to_string()),
+        "agent_create_session" => {
+            let repo_path = get_str(&args, "repoPath")?.trim();
+            if repo_path.is_empty() {
+                return Err("repoPath must not be empty".to_string());
+            }
+            let session_dir = get_str_opt(&args, "sessionDir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(repo_path)
+                        .join(".giteam")
+                        .join("pi-sessions")
+                });
+            fs::create_dir_all(&session_dir)
+                .map_err(|error| format!("create Pi session directory failed: {error}"))?;
+            let config = PiSessionConfig {
+                repo_path: PathBuf::from(repo_path),
+                session_dir,
+                session_path: get_str_opt(&args, "sessionPath").map(PathBuf::from),
+                provider: get_str_opt(&args, "provider"),
+                model: get_str_opt(&args, "model"),
+                api_key: get_str_opt(&args, "apiKey"),
+                system_prompt: get_str_opt(&args, "systemPrompt"),
+                append_system_prompt: get_str_opt(&args, "appendSystemPrompt"),
+                enabled_tools: get_string_vec_opt(&args, "enabledTools"),
+                extension_paths: get_string_vec_opt(&args, "extensionPaths")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                no_session: get_bool(&args, "noSession"),
+                thinking: get_str_opt(&args, "thinking"),
+                max_tool_iterations: get_u64_opt(&args, "maxToolIterations").map(|v| v as usize),
+            };
+            let summary = block_on(PiAgentService::global().create_session(config))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(summary).map_err(|error| error.to_string())
+        }
+        "agent_list_sessions" => {
+            let sessions = block_on(PiAgentService::global().list_sessions())
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(sessions).map_err(|error| error.to_string())
+        }
+        "agent_get_session" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let session = block_on(PiAgentService::global().session_summary(session_id))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(session).map_err(|error| error.to_string())
+        }
+        "agent_get_session_messages" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let messages = block_on(PiAgentService::global().messages(session_id))
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(messages).map_err(|error| error.to_string())
+        }
+        "agent_prompt" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let run_id = get_str(&args, "runId")?;
+            let prompt = get_str(&args, "prompt")?;
+            let images = args
+                .get("images")
+                .cloned()
+                .map(serde_json::from_value::<Vec<super::pi_agent::AgentPromptImage>>)
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            let events: Arc<Mutex<Vec<AgentEventEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
+            let events_for_sink = Arc::clone(&events);
+            let sink: AgentEventSink = Arc::new(move |event| {
+                if let Ok(mut events) = events_for_sink.lock() {
+                    events.push(event);
+                }
+            });
+            let message = block_on(PiAgentService::global().prompt(
+                session_id,
+                run_id,
+                prompt.to_string(),
+                images,
+                sink,
+            ))
+            .map_err(|error| error.to_string())?;
+            let events = events.lock().map(|items| items.clone()).unwrap_or_default();
+            Ok(serde_json::json!({ "runId": run_id, "message": message, "events": events }))
+        }
+        "agent_abort" => {
+            let run_id = get_str(&args, "runId")?;
+            Ok(serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }))
+        }
+        "agent_delete_session" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let deleted = PiAgentService::global()
+                .delete_session(session_id)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "deleted": deleted }))
+        }
+        "agent_list_providers" => {
+            let providers = PiAgentService::global()
+                .list_providers()
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(providers).map_err(|error| error.to_string())
+        }
+        "agent_list_models" => {
+            let models = PiAgentService::global()
+                .list_models()
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(models).map_err(|error| error.to_string())
+        }
+        "agent_find_model" => {
+            let provider = get_str(&args, "provider")?;
+            let model_id = get_str(&args, "modelId")?;
+            let model = PiAgentService::global()
+                .find_model(provider, model_id)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(model).map_err(|error| error.to_string())
+        }
+        "agent_save_api_key" => {
+            let provider = get_str(&args, "provider")?;
+            let key = get_str(&args, "key")?;
+            PiAgentService::global()
+                .save_api_key(provider, key)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_remove_api_key" => {
+            let provider = get_str(&args, "provider")?;
+            let removed = PiAgentService::global()
+                .remove_api_key(provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "removed": removed }))
+        }
+        "agent_has_credential" => {
+            let provider = get_str(&args, "provider")?;
+            Ok(serde_json::json!({
+                "provider": provider,
+                "hasCredential": PiAgentService::global().has_credential(provider),
+            }))
+        }
+        "agent_save_custom_provider" => {
+            let input: CustomProviderInput =
+                serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
+            PiAgentService::global()
+                .save_custom_provider(&input)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_refresh_provider_models" => {
+            let provider = get_str(&args, "provider")?;
+            let added = PiAgentService::global()
+                .refresh_provider_models(provider)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "added": added }))
+        }
+        "agent_set_model" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let provider = get_str(&args, "provider")?;
+            let model_id = get_str(&args, "modelId")?;
+            let summary = block_on(PiAgentService::global().set_model(
+                session_id, provider, model_id,
+            ))
+            .map_err(|error| error.to_string())?;
+            serde_json::to_value(summary).map_err(|error| error.to_string())
+        }
+        "agent_set_thinking" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let level = get_str(&args, "level")?;
+            block_on(PiAgentService::global().set_thinking_level(session_id, level))
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_list_interactions" => {
+            let session_id = args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let interactions = PiAgentService::global().list_interactions(session_id);
+            serde_json::to_value(interactions).map_err(|error| error.to_string())
+        }
+        "agent_reply_interaction" => {
+            let interaction_id = get_str(&args, "interactionId")?;
+            let reply: super::pi_agent::AgentInteractionReply = serde_json::from_value(
+                args.get("reply").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|error| format!("invalid interaction reply: {error}"))?;
+            PiAgentService::global()
+                .reply_interaction(interaction_id, reply)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "agent_set_auto_approve" => {
+            let session_id = get_str(&args, "sessionId")?;
+            let enabled = args
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            block_on(PiAgentService::global().set_auto_approve(session_id, enabled))
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+
         // Git commands
         "run_git_head_commit" => {
             let repo_path = get_str(&args, "repoPath")?;
@@ -1500,11 +2088,6 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let repo_path = get_str(&args, "repoPath")?;
             let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
             let mut overview = parse_worktree_overview(raw);
-            if let Ok(numstat) = run_git(&["diff", "--numstat", "HEAD", "--"], repo_path) {
-                let (added_lines, deleted_lines) = parse_numstat_totals(&numstat);
-                overview.added_lines = added_lines;
-                overview.deleted_lines = deleted_lines;
-            }
             if overview.branch.is_empty() {
                 overview.branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
                     .unwrap_or_default()
@@ -1888,8 +2471,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             if path.is_empty() {
                 return Err("file path is empty".to_string());
             }
-            if path.contains('\n') || path.contains('\r') {
-                return Err("file path contains invalid line breaks".to_string());
+            if path.contains('\n') || path.contains('\r') || path.contains('\0') {
+                return Err("file path contains invalid characters".to_string());
+            }
+            let rel_path = std::path::Path::new(path);
+            if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
+                return Err("file path must be repository-relative".to_string());
             }
             let staged = run_git(&["diff", "--cached", "--", path], repo_path)?;
             let unstaged = run_git(&["diff", "--", path], repo_path)?;
@@ -1899,6 +2486,20 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             }
             if !unstaged.trim().is_empty() {
                 parts.push(format!("# Working Tree\n\n{}", unstaged.trim_end()));
+            }
+            if parts.is_empty() {
+                if is_untracked_worktree_path(repo_path, path) {
+                    let repo_root = normalize_repo_key(repo_path)?;
+                    let full_path = PathBuf::from(repo_root).join(rel_path);
+                    if let Ok(bytes) = fs::read(full_path) {
+                        if let Ok(text) = decode_preview_text(bytes) {
+                            let patch = build_untracked_text_patch(path, &text);
+                            if !patch.trim().is_empty() {
+                                parts.push(format!("# Working Tree\n\n{}", patch.trim_end()));
+                            }
+                        }
+                    }
+                }
             }
             if parts.is_empty() {
                 return Ok(Value::String(
@@ -1921,15 +2522,45 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             if rel_path.is_absolute() || path.split('/').any(|part| part == "..") {
                 return Err("file path must be repository-relative".to_string());
             }
-            let original =
-                run_git(&["show", &format!("HEAD:{path}")], repo_path).unwrap_or_default();
             let repo_root = normalize_repo_key(repo_path)?;
             let full_path = PathBuf::from(repo_root).join(rel_path);
-            let modified = fs::read(full_path)
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-                .unwrap_or_default();
-            serde_json::to_value(GitWorktreeFileContent { original, modified })
-                .map_err(|e| e.to_string())
+            let original = match read_git_blob_bytes(repo_path, &format!("HEAD:{path}")) {
+                Ok(bytes) => match decode_preview_text(bytes) {
+                    Ok(text) => text,
+                    Err(reason) => {
+                        return serde_json::to_value(GitWorktreeFileContent {
+                            original: String::new(),
+                            modified: String::new(),
+                            preview_supported: false,
+                            preview_reason: Some(reason.to_string()),
+                        })
+                        .map_err(|e| e.to_string());
+                    }
+                },
+                Err(_) => String::new(),
+            };
+            let modified = match fs::read(full_path) {
+                Ok(bytes) => match decode_preview_text(bytes) {
+                    Ok(text) => text,
+                    Err(reason) => {
+                        return serde_json::to_value(GitWorktreeFileContent {
+                            original: String::new(),
+                            modified: String::new(),
+                            preview_supported: false,
+                            preview_reason: Some(reason.to_string()),
+                        })
+                        .map_err(|e| e.to_string());
+                    }
+                },
+                Err(_) => String::new(),
+            };
+            serde_json::to_value(GitWorktreeFileContent {
+                original,
+                modified,
+                preview_supported: true,
+                preview_reason: None,
+            })
+            .map_err(|e| e.to_string())
         }
         "run_repo_terminal_command" => {
             let repo_path = get_str(&args, "repoPath")?;
@@ -2320,18 +2951,12 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 &["--version"],
                 "brew install anomalyco/tap/entire",
             );
-            let opencode = check_dep(
-                "opencode",
-                &["--version"],
-                "npm i -g opencode-ai",
-            );
             let giteam = check_dep("giteam", &["--version"], "cargo install giteam");
-            let ok = git.installed && entire.installed && opencode.installed && giteam.installed;
+            let ok = git.installed && entire.installed;
             serde_json::to_value(RuntimeRequirementsStatus {
                 ok,
                 git,
                 entire,
-                opencode,
                 giteam,
             })
             .map_err(|e| e.to_string())
@@ -2345,12 +2970,18 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                     &["--version"],
                     "brew tap entireio/tap && brew install entireio/tap/entire",
                 ),
-                "opencode" => check_dep(
-                    "opencode",
-                    &["--version"],
-                    "npm i -g opencode-ai",
-                ),
                 "giteam" => check_dep("giteam", &["--version"], "npm install -g giteam@latest"),
+                "opencode" => {
+                    // OpenCode CLI is no longer required; keep arm for old clients.
+                    RuntimeDependencyStatus {
+                        name: "opencode".to_string(),
+                        installed: true,
+                        version: Some("not-required".to_string()),
+                        path: None,
+                        install_hint: "OpenCode CLI is not required; desktop agent uses Pi SDK"
+                            .to_string(),
+                    }
+                }
                 _ => return Err(format!("unsupported dependency: {name}")),
             };
             serde_json::to_value(dep).map_err(|e| e.to_string())
@@ -2378,13 +3009,17 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 map.insert(job_id.clone(), job);
             }
 
-            let script_owned = script.to_string();
+            let script_owned = wrap_runtime_script(name, action, script);
+            let action_owned = action.to_string();
             let job_id_for_thread = job_id.clone();
             thread::spawn(move || {
                 let shell = resolve_posix_shell_path();
                 let mut cmd = Command::new(shell.as_str());
                 cmd.args(["-lc", &script_owned]);
                 apply_shell_env(&mut cmd);
+                if action_owned == "uninstall" || action_owned == "bootstrap" {
+                    apply_homebrew_offline_env(&mut cmd);
+                }
                 cmd.stdin(Stdio::null());
                 cmd.stdout(Stdio::piped());
                 cmd.stderr(Stdio::piped());
@@ -2427,6 +3062,11 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 }
 
                 let start = Instant::now();
+                let timeout_secs = if action_owned == "uninstall" {
+                    UNINSTALL_TIMEOUT_SECS
+                } else {
+                    INSTALL_TIMEOUT_SECS
+                };
                 loop {
                     match child.try_wait() {
                         Ok(Some(status)) => {
@@ -2443,15 +3083,18 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                             break;
                         }
                         Ok(None) => {
-                            if start.elapsed() > Duration::from_secs(INSTALL_TIMEOUT_SECS) {
+                            if start.elapsed() > Duration::from_secs(timeout_secs) {
                                 let _ = child.kill();
                                 let _ = child.wait();
-                                append_job_log(&job_id_for_thread, "installation timed out.");
+                                append_job_log(
+                                    &job_id_for_thread,
+                                    "runtime dependency action timed out.",
+                                );
                                 set_job_done(
                                     &job_id_for_thread,
                                     false,
                                     Some(-1),
-                                    Some("installation timed out".to_string()),
+                                    Some("runtime dependency action timed out".to_string()),
                                 );
                                 break;
                             }
@@ -2595,177 +3238,30 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             serde_json::to_value(info).map_err(|e| e.to_string())
         }
 
-        // Opencode commands
-        "create_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let title = get_str_opt(&args, "title");
-            let agent = get_str_opt(&args, "agent");
-            let result = super::opencode::create_opencode_session(repo_path, title, agent, None)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_service_base" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_service_base(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "list_opencode_sessions" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::list_opencode_sessions(repo_path, limit)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages_detailed" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed(
-                repo_path, session_id, directory, limit,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "delete_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let result = super::opencode::delete_opencode_session(repo_path, session_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_state" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_state(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_model_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_model_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_service_settings" => {
-            let result = super::opencode::get_opencode_service_settings()?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_service_settings" => {
-            let settings: super::opencode::OpencodeServiceSettings = serde_json::from_value(
-                args.get("settings")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
-            )
-            .map_err(|e| format!("invalid settings: {e}"))?;
-            let repo_path = get_str_opt(&args, "repoPath");
-            let result = super::opencode::set_opencode_service_settings(settings, repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_config_provider_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_config_provider_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_auth(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_global_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_global_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_config(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "disconnect_opencode_server_provider" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let result =
-                super::opencode::disconnect_opencode_server_provider(repo_path, provider_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "delete_opencode_server_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let result = super::opencode::delete_opencode_server_auth(repo_path, provider_id)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "patch_opencode_server_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let patch = serde_json::from_value(
-                args.get("patch")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
-            )
-            .map_err(|e| format!("invalid patch: {e}"))?;
-            let result = super::opencode::patch_opencode_server_config(repo_path, patch)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "put_opencode_server_auth" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider_id = get_str(&args, "providerId")?;
-            let key = get_str(&args, "key")?;
-            let result = super::opencode::put_opencode_server_auth(repo_path, provider_id, key)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_server_current_model" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let result = super::opencode::set_opencode_server_current_model(repo_path, model)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "post_opencode_session_prompt_async" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let prompt = get_str(&args, "prompt")?;
-            let parts = args.get("parts").cloned();
-            let model = get_str_opt(&args, "model");
-            let result = super::opencode::post_opencode_session_prompt_async(
-                repo_path, session_id, prompt, parts, model, None, None,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "abort_opencode_session" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let result = super::opencode::abort_opencode_session(repo_path, session_id, directory)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "list_opencode_agents" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_opencode_agents(repo_path)
-        }
-        "list_installed_opencode_skills" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_installed_opencode_skills(repo_path)
-        }
-        "install_builtin_opencode_skill" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let skill_id = get_str(&args, "skillId")?;
-            let global = args.get("global").and_then(|v| v.as_bool());
-            super::opencode::install_builtin_opencode_skill(repo_path, skill_id, global)
-        }
+
+        // OpenCode MCP + skills marketplace (agent runtime removed)
         "sync_opencode_skill_mcp_manifests" => {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::sync_opencode_skill_mcp_manifests(repo_path)
         }
+
         "fetch_opencode_skill_detail_api" => {
             let repo_path = get_str(&args, "repoPath")?;
             let id = get_str(&args, "id")?;
-            super::opencode::fetch_opencode_skill_detail_api(repo_path, id)
+            super::skills_market::fetch_agent_skill_detail_api(repo_path, id)
         }
+
         "fetch_opencode_skill_audit_api" => {
             let repo_path = get_str(&args, "repoPath")?;
             let id = get_str(&args, "id")?;
-            super::opencode::fetch_opencode_skill_audit_api(repo_path, id)
+            super::skills_market::fetch_agent_skill_audit_api(repo_path, id)
         }
-        "list_opencode_permissions" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            super::opencode::list_opencode_permissions(repo_path)
-        }
+
         "list_opencode_mcp_status" => {
             let repo_path = get_str(&args, "repoPath")?;
             super::opencode::list_opencode_mcp_status(repo_path)
         }
+
         "add_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
@@ -2775,79 +3271,40 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 .unwrap_or_else(|| serde_json::json!({}));
             super::opencode::add_opencode_mcp_server(repo_path, name, config)
         }
+
         "connect_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::connect_opencode_mcp_server(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "disconnect_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::disconnect_opencode_mcp_server(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "authenticate_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             super::opencode::authenticate_opencode_mcp_server(repo_path, name)
         }
+
         "remove_opencode_mcp_auth" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             let result = super::opencode::remove_opencode_mcp_auth(repo_path, name)?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
+
         "delete_opencode_mcp_server" => {
             let repo_path = get_str(&args, "repoPath")?;
             let name = get_str(&args, "name")?;
             super::opencode::delete_opencode_mcp_server(repo_path, name)
         }
-        "post_opencode_permission_reply" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let request_id = get_str(&args, "requestId")?;
-            let reply = get_str(&args, "reply")?;
-            let message = get_str_opt(&args, "message");
-            let result = super::opencode::post_opencode_permission_reply(
-                repo_path, request_id, reply, message,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages_detailed_page" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let directory = get_str_opt(&args, "directory");
-            let before = get_str_opt(&args, "before");
-            let limit = get_u32_opt(&args, "limit");
-            let result = super::opencode::get_opencode_session_messages_detailed_page(
-                repo_path, session_id, directory, before, limit,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_provider_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str(&args, "provider")?;
-            let result = super::opencode::get_opencode_provider_config(repo_path, provider)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_current_project" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_current_project(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "list_opencode_projects" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::list_opencode_projects(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_session_messages" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let limit = get_u32_opt(&args, "limit");
-            let result =
-                super::opencode::get_opencode_session_messages(repo_path, session_id, limit)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
+
         "set_mobile_model_state_from_desktop" => {
             let state = args
                 .get("state")
@@ -2856,6 +3313,7 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             super::control::set_mobile_model_state_from_desktop(state)?;
             Ok(serde_json::json!(true))
         }
+
         "fetch_skillsmp_skill_search" => {
             let repo_path = get_str(&args, "repoPath")?;
             let query = get_str(&args, "query")?;
@@ -2865,135 +3323,22 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             let category = get_str_opt(&args, "category");
             let occupation = get_str_opt(&args, "occupation");
             let api_key = get_str_opt(&args, "apiKey");
-            super::opencode::fetch_skillsmp_skill_search(
+            super::skills_market::fetch_skillsmp_skill_search(
                 repo_path, query, page, limit, sort_by, category, occupation, api_key,
             )
         }
+
         "fetch_skillsmp_ai_search" => {
             let repo_path = get_str(&args, "repoPath")?;
             let query = get_str(&args, "query")?;
             let api_key = get_str_opt(&args, "apiKey");
-            super::opencode::fetch_skillsmp_ai_search(repo_path, query, api_key)
+            super::skills_market::fetch_skillsmp_ai_search(repo_path, query, api_key)
         }
-        "set_opencode_session_permission" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let session_id = get_str(&args, "sessionId")?;
-            let permission = serde_json::from_value(
-                args.get("permission")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
-            )
-            .map_err(|e| format!("invalid permission: {e}"))?;
-            super::opencode::set_opencode_session_permission(repo_path, session_id, permission)
-        }
-        "remove_opencode_skill" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let name = get_str(&args, "name")?;
-            let global = args.get("global").and_then(|v| v.as_bool());
-            let result = super::opencode::remove_opencode_skill(repo_path, name, global)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "get_opencode_server_provider_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_server_provider_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "run_opencode_version" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_version(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_prompt" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let prompt = get_str(&args, "prompt")?;
-            let model = get_str_opt(&args, "model");
-            let result = super::opencode::run_opencode_prompt(repo_path, prompt, model)?;
-            Ok(Value::String(result))
-        }
-        "test_opencode_model" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let message = get_str_opt(&args, "message");
-            let result = super::opencode::test_opencode_model(repo_path, model, message)?;
-            Ok(Value::String(result))
-        }
-        "get_opencode_models_dev_catalog" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::get_opencode_models_dev_catalog(repo_path)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "run_opencode_providers" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_providers(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_models" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str_opt(&args, "provider");
-            let result = super::opencode::run_opencode_models(repo_path, provider)?;
-            Ok(Value::String(result))
-        }
-        "run_opencode_agent" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_agent(repo_path)?;
-            Ok(Value::String(result))
-        }
+
         "run_opencode_mcp" => {
             let repo_path = get_str(&args, "repoPath")?;
             let result = super::opencode::run_opencode_mcp(repo_path)?;
             Ok(Value::String(result))
-        }
-        "run_opencode_stats" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let result = super::opencode::run_opencode_stats(repo_path)?;
-            Ok(Value::String(result))
-        }
-        "set_opencode_provider_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let provider = get_str(&args, "provider")?;
-            let npm = get_str_opt(&args, "npm");
-            let name = get_str_opt(&args, "name");
-            let base_url = get_str_opt(&args, "baseUrl");
-            let api_key = get_str_opt(&args, "apiKey");
-            let headers = args.get("headers").and_then(|v| v.as_object().cloned());
-            let endpoint = get_str_opt(&args, "endpoint");
-            let region = get_str_opt(&args, "region");
-            let profile = get_str_opt(&args, "profile");
-            let project = get_str_opt(&args, "project");
-            let location = get_str_opt(&args, "location");
-            let resource_name = get_str_opt(&args, "resourceName");
-            let enterprise_url = get_str_opt(&args, "enterpriseUrl");
-            let timeout = get_str_opt(&args, "timeout");
-            let chunk_timeout = get_str_opt(&args, "chunkTimeout");
-            let model_id = get_str_opt(&args, "modelId");
-            let model_name = get_str_opt(&args, "modelName");
-            let result = super::opencode::set_opencode_provider_config(
-                repo_path,
-                provider,
-                npm,
-                name,
-                base_url,
-                api_key,
-                headers,
-                endpoint,
-                region,
-                profile,
-                project,
-                location,
-                resource_name,
-                enterprise_url,
-                timeout,
-                chunk_timeout,
-                model_id,
-                model_name,
-            )?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "set_opencode_model_config" => {
-            let repo_path = get_str(&args, "repoPath")?;
-            let model = get_str(&args, "model")?;
-            let result = super::opencode::set_opencode_model_config(repo_path, model)?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
         _ => Err(format!("unknown desktop rpc command: {command}")),
@@ -3022,16 +3367,18 @@ fn get_str_opt(value: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn get_bool(value: &Value, key: &str) -> bool {
-    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+fn get_string_vec_opt(value: &Value, key: &str) -> Option<Vec<String>> {
+    value.get(key).and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect()
+    })
 }
 
-fn get_u32(value: &Value, key: &str) -> Result<u32, String> {
-    value
-        .get(key)
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32)
-        .ok_or_else(|| format!("missing or invalid u32 field: {key}"))
+fn get_bool(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 fn get_u32_opt(value: &Value, key: &str) -> Option<u32> {
@@ -3153,27 +3500,40 @@ fn giteam_http_json(method: &str, port: u16, path: &str, body: Option<&str>) -> 
     }
 }
 
-fn read_control_settings_payload(args: &Value) -> Result<super::control::ControlServerSettings, String> {
-    let raw = args.get("settings").cloned().unwrap_or_else(|| args.clone());
+fn read_control_settings_payload(
+    args: &Value,
+) -> Result<super::control::ControlServerSettings, String> {
+    let raw = args
+        .get("settings")
+        .cloned()
+        .unwrap_or_else(|| args.clone());
     serde_json::from_value(raw).map_err(|e| format!("invalid settings: {e}"))
 }
 
-fn current_pair_from_managed_service(port: u16) -> Result<super::control::ControlPairCodeInfo, String> {
+fn current_pair_from_managed_service(
+    port: u16,
+) -> Result<super::control::ControlPairCodeInfo, String> {
     let value = giteam_http_json("GET", port, "/api/v1/pair/current", None)?;
     serde_json::from_value(value).map_err(|e| format!("invalid pair.current payload: {e}"))
 }
 
-fn refresh_pair_from_managed_service(port: u16) -> Result<super::control::ControlPairCodeInfo, String> {
+fn refresh_pair_from_managed_service(
+    port: u16,
+) -> Result<super::control::ControlPairCodeInfo, String> {
     let value = giteam_http_json("POST", port, "/api/v1/pair/request", Some("{}"))?;
     serde_json::from_value(value).map_err(|e| format!("invalid pair.request payload: {e}"))
 }
 
-fn access_info_from_managed_service(port: u16) -> Result<super::control::ControlAccessInfo, String> {
+fn access_info_from_managed_service(
+    port: u16,
+) -> Result<super::control::ControlAccessInfo, String> {
     let value = giteam_http_json("GET", port, "/api/v1/admin/control/access-info", None)?;
     serde_json::from_value(value).map_err(|e| format!("invalid admin control access payload: {e}"))
 }
 
-fn restart_managed_mobile_service(settings: &super::control::ControlServerSettings) -> Result<(), String> {
+fn restart_managed_mobile_service(
+    settings: &super::control::ControlServerSettings,
+) -> Result<(), String> {
     if settings.enabled {
         run_current_giteam_cli(&["service", "restart", "--force", "--json"])?;
         wait_for_giteam_service_port(settings.port)?;

@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use super::models::RemoteRepoConfig;
 
@@ -116,12 +116,10 @@ fn migrate_service_settings_schema(conn: &Connection) -> Result<(), String> {
 }
 
 fn db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let app_data = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("cannot resolve app data dir: {e}"))?;
-    let dir = app_data.join(".giteam");
-    fs::create_dir_all(&dir).map_err(|e| format!("cannot create .giteam directory: {e}"))?;
+    let _ = app_handle;
+    giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
+    let dir = giteam_core::pi_agent::ensure_data_dir()
+        .ok_or_else(|| "cannot resolve Giteam data dir".to_string())?;
     Ok(dir.join("client.db"))
 }
 

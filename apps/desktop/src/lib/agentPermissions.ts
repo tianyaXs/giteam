@@ -1,64 +1,33 @@
-export type OpencodePermissionRequest = {
-  id: string;
-  sessionID: string;
-  permission: string;
-  patterns: string[];
-  always?: string[];
-  metadata?: Record<string, unknown>;
-  tool?: { messageID?: string; callID?: string };
+import type { AgentInteraction } from "./agent/client";
+
+/** UI 层对审批的回复语义；发送时映射为 pi wire 的 AgentInteractionReply。 */
+export type AgentPermissionReply = "once" | "always" | "reject";
+
+/** pi 原生 permission 交互（kind === "permission"）。input 已在后端脱敏。 */
+export type PermissionInteraction = Extract<AgentInteraction, { kind: "permission" }>;
+
+/** 审批卡片展示视图：从 pi 原生 input 派生目标（bash→command，写类→path）。 */
+export type PermissionInteractionView = {
+  tool: string;
+  risk: string;
+  target: string;
 };
 
-export type OpencodePermissionReply = "once" | "always" | "reject";
-
-export function parseOpencodePermissionRequests(raw: unknown): OpencodePermissionRequest[] {
-  const rows = Array.isArray(raw) ? raw : [];
-  return rows
-    .map((item: any): OpencodePermissionRequest | null => {
-      const id = String(item?.id || "").trim();
-      const sessionID = String(item?.sessionID || "").trim();
-      if (!id || !sessionID) return null;
-      return {
-        id,
-        sessionID,
-        permission: String(item?.permission || ""),
-        patterns: Array.isArray(item?.patterns) ? item.patterns.map((value: unknown) => String(value || "")).filter(Boolean) : [],
-        always: Array.isArray(item?.always) ? item.always.map((value: unknown) => String(value || "")).filter(Boolean) : [],
-        metadata: item?.metadata || undefined,
-        tool: item?.tool || undefined
-      };
-    })
-    .filter(Boolean) as OpencodePermissionRequest[];
-}
-
-export function filterPermissionsBySession(
-  rows: OpencodePermissionRequest[],
-  sessionId: string
-): OpencodePermissionRequest[] {
-  const id = sessionId.trim();
-  return id ? rows.filter((row) => row.sessionID === id) : rows;
-}
-
-export function removePermissionsById(
-  rows: OpencodePermissionRequest[],
-  ids: Set<string>
-): OpencodePermissionRequest[] {
-  return rows.filter((row) => !ids.has(row.id));
-}
-
-export function replaceSessionPermissions(
-  previous: OpencodePermissionRequest[],
-  nextRows: OpencodePermissionRequest[],
-  sessionId: string
-): OpencodePermissionRequest[] {
-  const id = sessionId.trim();
-  const rest = id ? previous.filter((row) => row.sessionID !== id) : [];
-  return [...rest, ...nextRows];
-}
-
-export function upsertPermissionRequest(
-  previous: OpencodePermissionRequest[],
-  request: OpencodePermissionRequest
-): OpencodePermissionRequest[] {
-  if (!request?.id) return previous;
-  return [...previous.filter((item) => item.id !== request.id), request];
+/**
+ * 从 pi 原生 permission 交互提取展示信息，避免在视图层散落 input 解析，
+ * 也不再套用旧的 permission/patterns 模型。
+ */
+export function describePermissionInteraction(
+  interaction: PermissionInteraction
+): PermissionInteractionView {
+  const input = (interaction.input || {}) as Record<string, unknown>;
+  const target =
+    (typeof input.command === "string" && input.command.trim()) ||
+    (typeof input.path === "string" && input.path.trim()) ||
+    "";
+  return {
+    tool: interaction.tool || "tool",
+    risk: interaction.risk || "",
+    target,
+  };
 }

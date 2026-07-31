@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Plus, RefreshCw, X } from "lucide-react";
 import {
-  convertToOpencodeMcpConfig,
+  convertToAgentMcpConfig,
   filterByCategory,
   getAllCategories,
   getCategoryLabel,
@@ -135,7 +135,7 @@ export function McpMarketplace({
       return;
     }
     const installKey = getDefaultInstallKey(server);
-    const config = convertToOpencodeMcpConfig(server, installKey);
+    const config = convertToAgentMcpConfig(server, installKey);
     if (!config) {
       setNotice("该 MCP 暂无可转换的安装配置");
       return;
@@ -402,7 +402,7 @@ export function McpMarketplace({
               <div className="grid gap-1">
                 <Badge variant="outline" className="w-fit normal-case tracking-normal">configure mcp</Badge>
                 <DialogTitle>{configServer.display_name}</DialogTitle>
-                <DialogDescription>填写连接所需参数后再添加到 OpenCode 配置。</DialogDescription>
+                <DialogDescription>填写连接所需参数后再添加到 Giteam 配置。</DialogDescription>
               </div>
               <DialogClose asChild>
                 <Button variant="ghost" size="icon" aria-label="关闭配置">

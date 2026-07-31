@@ -63,12 +63,112 @@ fn terminal_shell_envs() -> Vec<(String, String)> {
     let mut envs = terminal_proxy_envs();
     // The desktop app owns terminal session state; avoid inheriting Apple Terminal's
     // zsh session restore, which prints "Restored session" on every embedded shell.
+    // script 在无真实 TTY 时 winsize 常为 0x0，CLI 会按 0 列换行（一字一行）；给默认尺寸兜底。
     envs.extend([
         ("SHELL_SESSIONS_DISABLE".to_string(), "1".to_string()),
         ("TERM_SESSION_ID".to_string(), String::new()),
         ("SHELL_SESSION_DID_INIT".to_string(), "1".to_string()),
+        ("COLUMNS".to_string(), "120".to_string()),
+        ("LINES".to_string(), "40".to_string()),
     ]);
     envs
+}
+
+fn clamp_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.clamp(20, 500), rows.clamp(8, 200))
+}
+
+#[cfg(unix)]
+fn set_tty_winsize(tty_name: &str, cols: u16, rows: u16) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+
+    let (cols, rows) = clamp_terminal_size(cols, rows);
+    let path = if tty_name.starts_with('/') {
+        tty_name.to_string()
+    } else {
+        format!("/dev/{tty_name}")
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("failed to open tty {path}: {e}"))?;
+    let mut size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCSWINSZ, &mut size) };
+    if rc != 0 {
+        return Err(format!("TIOCSWINSZ failed for {path}"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn resolve_session_tty_name(script_pid: u32) -> Option<String> {
+    let child_out = Command::new("pgrep")
+        .args(["-P", &script_pid.to_string()])
+        .output()
+        .ok()?;
+    let child_pid = String::from_utf8_lossy(&child_out.stdout)
+        .lines()
+        .find_map(|line| {
+            let pid = line.trim();
+            if pid.is_empty() {
+                None
+            } else {
+                Some(pid.to_string())
+            }
+        })?;
+    let tty_out = Command::new("ps")
+        .args(["-o", "tty=", "-p", &child_pid])
+        .output()
+        .ok()?;
+    let tty = String::from_utf8_lossy(&tty_out.stdout).trim().to_string();
+    if tty.is_empty() || tty == "??" || tty == "?" {
+        None
+    } else {
+        Some(tty)
+    }
+}
+
+fn apply_session_winsize(session: &mut ManagedRepoTerminalSession, cols: u16, rows: u16) -> Result<(), String> {
+    let (cols, rows) = clamp_terminal_size(cols, rows);
+    if session.cols == cols && session.rows == rows {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        let pid = session.child.id();
+        if let Some(tty) = resolve_session_tty_name(pid) {
+            set_tty_winsize(&tty, cols, rows)?;
+            session.cols = cols;
+            session.rows = rows;
+            return Ok(());
+        }
+        return Err("terminal tty not ready".to_string());
+    }
+    #[cfg(not(unix))]
+    {
+        write_terminal_winsize(&mut session.stdin, cols, rows)?;
+        session.cols = cols;
+        session.rows = rows;
+        Ok(())
+    }
+}
+
+fn write_terminal_winsize(stdin: &mut impl Write, cols: u16, rows: u16) -> Result<(), String> {
+    let (cols, rows) = clamp_terminal_size(cols, rows);
+    let cmd = format!("stty cols {cols} rows {rows} 2>/dev/null || true\n");
+    stdin
+        .write_all(cmd.as_bytes())
+        .map_err(|e| format!("failed writing terminal winsize: {e}"))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("failed flushing terminal winsize: {e}"))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,6 +245,8 @@ struct ManagedRepoTerminalSession {
     stdin: ChildStdin,
     buffer: Arc<Mutex<TerminalBuffer>>,
     cwd: String,
+    cols: u16,
+    rows: u16,
 }
 
 static REPO_TERMINAL_SESSIONS: OnceLock<Mutex<HashMap<String, ManagedRepoTerminalSession>>> =
@@ -437,8 +539,10 @@ fn session_alive(session: &mut ManagedRepoTerminalSession) -> bool {
 
 fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSession, String> {
     // Use `script` to allocate a PTY so interactive shell behavior matches a real terminal better.
+    // 先 stty 再 exec 交互 shell：避免 winsize=0x0 时安装类 CLI 一字一行换行。
+    let boot = "stty cols 120 rows 40 2>/dev/null || true; exec /bin/zsh -il";
     let mut child = Command::new("/usr/bin/script")
-        .args(["-q", "/dev/null", "/bin/zsh", "-il"])
+        .args(["-q", "/dev/null", "/bin/zsh", "-c", boot])
         .current_dir(repo_path)
         .envs(terminal_shell_envs())
         .env("TERM", "xterm-256color")
@@ -462,12 +566,29 @@ fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSes
     let buffer = Arc::new(Mutex::new(TerminalBuffer::default()));
     spawn_terminal_reader(stdout, Arc::clone(&buffer));
     spawn_terminal_reader(stderr, Arc::clone(&buffer));
-    Ok(ManagedRepoTerminalSession {
+    let mut session = ManagedRepoTerminalSession {
         child,
         stdin,
         buffer,
         cwd: repo_path.to_string(),
-    })
+        cols: 0,
+        rows: 0,
+    };
+    // child zsh 可能稍后才挂上 tty，短暂重试；失败再回退 stty。
+    let mut sized = false;
+    for _ in 0..8 {
+        if apply_session_winsize(&mut session, 120, 40).is_ok() {
+            sized = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !sized {
+        let _ = write_terminal_winsize(&mut session.stdin, 120, 40);
+        session.cols = 120;
+        session.rows = 40;
+    }
+    Ok(session)
 }
 
 fn ensure_terminal_session(repo_path: &str, session_id: Option<&str>) -> Result<String, String> {
@@ -1861,6 +1982,27 @@ pub fn send_repo_terminal_input(
         session.cwd = next_cwd;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn resize_repo_terminal_session(
+    repo_path: &str,
+    session_id: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let key = ensure_terminal_session(repo_path, session_id.as_deref())?;
+    let (cols, rows) = clamp_terminal_size(cols, rows);
+    let mut sessions = terminal_sessions()
+        .lock()
+        .map_err(|_| "failed to lock terminal sessions".to_string())?;
+    let Some(session) = sessions.get_mut(&key) else {
+        return Err("terminal session not found".to_string());
+    };
+    if session.cols == cols && session.rows == rows {
+        return Ok(());
+    }
+    apply_session_winsize(session, cols, rows)
 }
 
 #[tauri::command]

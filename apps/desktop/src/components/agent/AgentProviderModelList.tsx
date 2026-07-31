@@ -1,11 +1,11 @@
-import { normalizeModelRef } from "../../lib/opencodeModels";
+import { normalizeModelRef } from "../../lib/agentModels";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Switch } from "../ui/switch";
 import { cn } from "@/lib/utils";
 
-type OpenCodeProviderModelListProps = {
+type AgentProviderModelListProps = {
   models: string[];
   providerId: string;
   configuredProviderId: string;
@@ -20,7 +20,7 @@ type OpenCodeProviderModelListProps = {
   onHideModel: (modelRef: string) => void;
 };
 
-export function OpenCodeProviderModelList(props: OpenCodeProviderModelListProps) {
+export function AgentProviderModelList(props: AgentProviderModelListProps) {
   if (props.models.length === 0) {
     return (
       <Empty className="min-h-72 border-0">
@@ -42,7 +42,9 @@ export function OpenCodeProviderModelList(props: OpenCodeProviderModelListProps)
         const configured = (props.configuredModelsByProvider[props.configuredProviderId] ?? []).includes(modelId);
         const locallyEnabled = !!refNorm && props.enabledModels.has(refNorm);
         const hidden = !!refNorm && props.hiddenModels.has(refNorm);
-        const enabled = !!refNorm && !hidden && (configured || locallyEnabled);
+        // 打开哪个，模型选择器才显示哪个：开关只反映用户显式启用，
+        // "已配置"不再默认全开。
+        const enabled = !!refNorm && !hidden && locallyEnabled;
         const modelDisplay =
           props.modelNamesByProvider[props.providerId]?.[modelId] ||
           props.configuredModelNamesByProvider[props.configuredProviderId]?.[modelId] ||

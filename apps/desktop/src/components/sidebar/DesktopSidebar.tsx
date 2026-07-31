@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   PencilLine,
   Plug,
+  Search,
   Settings,
   Sparkles,
   SquareTerminal,
@@ -20,10 +21,11 @@ import { memo, useEffect, useMemo, useRef, type ComponentPropsWithoutRef, type C
 import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
 
 import type { AppText } from "../../lib/generalSettings";
-import type { OpencodeChatSession } from "../../lib/opencodeSessions";
+import type { AgentChatSession } from "../../lib/agentSessions";
 import { firstLetter } from "../../lib/textFormatting";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
 import { cn } from "../../lib/utils";
+import { MCP_MODULE_ENABLED, REMOTE_REPO_MODULE_ENABLED } from "../../lib/featureFlags";
 import {
   Collapsible,
   CollapsibleContent,
@@ -70,7 +72,7 @@ type DesktopSidebarProps = {
   text: AppText;
   noRepos: boolean;
   busy: boolean;
-  opencodeInstalled: boolean;
+  agentInstalled: boolean;
   repos: RepositoryEntry[];
   pinnedRepoIds: string[];
   expandedProjectIds: string[];
@@ -79,17 +81,18 @@ type DesktopSidebarProps = {
   draftRepoId: string;
   sessionBusyById: Record<string, boolean>;
   gitUserIdentity: GitUserIdentity;
-  getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
+  getVisibleRepoSessions: (repoId: string) => AgentChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
   onImportRepository: () => void | Promise<void>;
   onCreateSession: () => void | Promise<void>;
+  onOpenSearch: () => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
-  onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
   rightDrawerOpen: boolean;
@@ -114,7 +117,9 @@ const LEFT_NAV_PANES: Array<{
   { tab: "worktree", icon: GitBranch, labelKey: "worktree" },
   { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
   { tab: "skills", icon: Sparkles, labelKey: "skills" },
-  { tab: "mcp", icon: Plug, labelKey: "mcp" },
+  ...(MCP_MODULE_ENABLED
+    ? [{ tab: "mcp" as const, icon: Plug, labelKey: "mcp" as const }]
+    : [])
 ];
 
 const SIDEBAR_SCROLL_EDGE_EPSILON = 1;
@@ -197,7 +202,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     text,
     noRepos,
     busy,
-    opencodeInstalled,
+    agentInstalled,
     repos,
     pinnedRepoIds,
     expandedProjectIds,
@@ -212,6 +217,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     isRepoSessionsPaging,
     onImportRepository,
     onCreateSession,
+    onOpenSearch,
     onToggleRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
@@ -254,14 +260,21 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             icon={PencilLine}
             label={text.newSession}
             onClick={() => void (noRepos ? onImportRepository() : onCreateSession())}
-            disabled={noRepos ? busy : busy || !opencodeInstalled}
+            disabled={noRepos ? busy : busy || !agentInstalled}
           />
           <NavItem
-            icon={Cloud}
-            label="远程仓库"
-            isActive={remoteRepoActive}
-            onClick={onOpenRemoteRepos}
+            icon={Search}
+            label={text.search}
+            onClick={onOpenSearch}
           />
+          {REMOTE_REPO_MODULE_ENABLED ? (
+            <NavItem
+              icon={Cloud}
+              label="远程仓库"
+              isActive={remoteRepoActive}
+              onClick={onOpenRemoteRepos}
+            />
+          ) : null}
           {LEFT_NAV_PANES.map(({ tab, icon, labelKey }) =>
             rightModules[tab] ? (
               <NavItem
@@ -306,7 +319,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             repos={pinnedRepos}
             isPinnedSection
             busy={busy}
-            opencodeInstalled={opencodeInstalled}
+            agentInstalled={agentInstalled}
             expandedProjectIdSet={expandedProjectIdSet}
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
@@ -332,7 +345,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             title={text.projects}
             repos={otherRepos}
             busy={busy}
-            opencodeInstalled={opencodeInstalled}
+            agentInstalled={agentInstalled}
             expandedProjectIdSet={expandedProjectIdSet}
             selectedRepoId={selectedRepoId}
             activeSessionId={activeSessionId}
@@ -442,13 +455,13 @@ type ProjectSectionProps = {
   repos: RepositoryEntry[];
   isPinnedSection?: boolean;
   busy: boolean;
-  opencodeInstalled: boolean;
+  agentInstalled: boolean;
   expandedProjectIdSet: ReadonlySet<string>;
   selectedRepoId: string;
   activeSessionId: string;
   draftRepoId: string;
   sessionBusyById: Record<string, boolean>;
-  getVisibleRepoSessions: (repoId: string) => OpencodeChatSession[];
+  getVisibleRepoSessions: (repoId: string) => AgentChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
@@ -456,7 +469,7 @@ type ProjectSectionProps = {
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
-  onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
   headerAction?: ReactNode;
@@ -469,7 +482,7 @@ function ProjectSection(props: ProjectSectionProps) {
     repos,
     isPinnedSection = false,
     busy,
-    opencodeInstalled,
+    agentInstalled,
     expandedProjectIdSet,
     selectedRepoId,
     activeSessionId,
@@ -506,7 +519,7 @@ function ProjectSection(props: ProjectSectionProps) {
               repo={repo}
               pinned={isPinnedSection}
               busy={busy}
-              opencodeInstalled={opencodeInstalled}
+              agentInstalled={agentInstalled}
               expanded={expandedProjectIdSet.has(repo.id)}
               selectedRepoId={selectedRepoId}
               activeSessionId={activeSessionId}
@@ -536,13 +549,13 @@ type ProjectRowProps = {
   repo: RepositoryEntry;
   pinned: boolean;
   busy: boolean;
-  opencodeInstalled: boolean;
+  agentInstalled: boolean;
   expanded: boolean;
   selectedRepoId: string;
   activeSessionId: string;
   hasDraftForRepo: boolean;
   sessionBusyById: Record<string, boolean>;
-  sessions: OpencodeChatSession[];
+  sessions: AgentChatSession[];
   hasMoreSessions: boolean;
   sessionsLoading: boolean;
   sessionsPaging: boolean;
@@ -550,7 +563,7 @@ type ProjectRowProps = {
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
   onFocusDraftSession: () => void;
-  onOpenSession: (repo: RepositoryEntry, session: OpencodeChatSession) => void;
+  onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
 };
@@ -561,7 +574,7 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
     repo,
     pinned,
     busy,
-    opencodeInstalled,
+    agentInstalled,
     expanded,
     selectedRepoId,
     activeSessionId,
@@ -580,11 +593,11 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
     onLoadMoreSessions,
   } = props;
 
-  const hasCollapsibleContent = sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !opencodeInstalled;
-  const showLoadMoreRow = opencodeInstalled && (hasMoreSessions || sessionsPaging);
+  const hasCollapsibleContent = sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !agentInstalled;
+  const showLoadMoreRow = agentInstalled && (hasMoreSessions || sessionsPaging);
   const loadMorePending = sessionsLoading || sessionsPaging;
   const loadMoreLabel = loadMorePending ? `${text.loadMore}...` : text.loadMore;
-  const showLoadingSkeleton = opencodeInstalled && sessionsLoading && sessions.length === 0;
+  const showLoadingSkeleton = agentInstalled && sessionsLoading && sessions.length === 0;
   const reduceMotion = useReducedMotion();
   const contentTransition = reduceMotion
     ? { duration: 0.01 }
@@ -674,11 +687,11 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
                     <SessionRow active title={text.newSession} onClick={onFocusDraftSession} />
                   ) : null}
 
-                  {!opencodeInstalled ? (
-                    <p className="px-2 py-1 text-xs text-muted-foreground">{text.opencodeRequired}</p>
+                  {!agentInstalled ? (
+                    <p className="px-2 py-1 text-xs text-muted-foreground">{text.agentRequired}</p>
                   ) : null}
 
-                  {opencodeInstalled
+                  {agentInstalled
                     ? sessions.map((session) => (
                       <SessionRow
                         key={`left-session-${session.id}`}
@@ -729,7 +742,9 @@ type SessionRowProps = {
 };
 
 const SessionRow = memo(function SessionRow({ title, active = false, running = false, time = "", onClick, onArchive, archiveLabel = "归档会话" }: SessionRowProps) {
-  const hasArchive = Boolean(onArchive);
+  // 进行中的会话不允许归档：隐藏归档按钮——既避免与运行中 spinner 在右列重叠，
+  // 也防止误归档正在运行的会话（归档会中断/丢失进行中的工作）
+  const hasArchive = Boolean(onArchive) && !running;
   const hasTrailing = running || Boolean(time);
 
   return (

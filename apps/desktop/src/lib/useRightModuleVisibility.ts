@@ -1,9 +1,23 @@
 import { useEffect, useState } from "react";
 import type { RightPaneTab } from "../components/common/AppChromeIcons";
 import { loadLocalJson, saveLocalJson } from "./localPreferences";
+import { MCP_MODULE_ENABLED, REMOTE_REPO_MODULE_ENABLED } from "./featureFlags";
 
 const RIGHT_MODULE_VISIBILITY_KEY = "giteam.right-modules.visibility.v1";
-const RIGHT_PANE_TABS: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "mcp"];
+// 右侧面板可选 tab。mcp / remoteRepos 受各自功能开关控制：开关为 false 时
+// 该 tab 既不出现在列表里，也在下方 visibility 里被强制 false 覆盖 localStorage 缓存。
+const RIGHT_PANE_TABS: RightPaneTab[] = ([
+  "changes",
+  "worktree",
+  "terminal",
+  "remoteRepos",
+  "skills",
+  "mcp",
+] as RightPaneTab[]).filter((tab) =>
+  tab === "mcp" ? MCP_MODULE_ENABLED
+    : tab === "remoteRepos" ? REMOTE_REPO_MODULE_ENABLED
+      : true
+);
 
 const DEFAULT_RIGHT_MODULE_VISIBILITY: Record<RightPaneTab, boolean> = {
   changes: true,
@@ -23,7 +37,14 @@ export function useRightModuleVisibility(
       RIGHT_MODULE_VISIBILITY_KEY,
       DEFAULT_RIGHT_MODULE_VISIBILITY
     );
-    return { ...DEFAULT_RIGHT_MODULE_VISIBILITY, ...stored };
+    // MCP 模块下线时强制 mcp:false，覆盖 localStorage 里可能缓存的 mcp:true，
+    // 使侧边栏 NavItem 与右侧面板 tab bar 都不再出现 mcp。
+    return {
+      ...DEFAULT_RIGHT_MODULE_VISIBILITY,
+      ...stored,
+      ...(MCP_MODULE_ENABLED ? {} : { mcp: false }),
+      ...(REMOTE_REPO_MODULE_ENABLED ? {} : { remoteRepos: false })
+    };
   });
 
   useEffect(() => {

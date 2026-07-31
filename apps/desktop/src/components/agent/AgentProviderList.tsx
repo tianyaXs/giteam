@@ -4,7 +4,7 @@ import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { cn } from "@/lib/utils";
 
-type OpenCodeProviderListProps = {
+type AgentProviderListProps = {
   providers: string[];
   selectedProvider: string;
   connectedProviders: string[];
@@ -15,13 +15,13 @@ type OpenCodeProviderListProps = {
   onSelectProvider: (provider: string, connected: boolean) => void;
 };
 
-export function OpenCodeProviderList(props: OpenCodeProviderListProps) {
+export function AgentProviderList(props: AgentProviderListProps) {
   if (props.providers.length === 0) {
     return (
       <Empty className="min-h-72 border-0">
         <EmptyHeader>
           <EmptyTitle>暂无供应商</EmptyTitle>
-          <EmptyDescription>请检查 OpenCode `/provider` 是否可访问。</EmptyDescription>
+          <EmptyDescription>请检查 Giteam `/provider` 是否可访问。</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -55,7 +55,7 @@ export function OpenCodeProviderList(props: OpenCodeProviderListProps) {
                 e.stopPropagation();
                 props.onSelectProvider(provider, connected);
               }}
-              title={connected ? "已连接" : "未连接（需要在 OpenCode 中连接或配置）"}
+              title={connected ? "已连接" : "未连接（需要在 Giteam 中连接或配置）"}
             >
               <span className="flex min-w-0 flex-1 flex-col gap-2">
                 <span className="truncate text-[16px] font-semibold leading-6">{props.getProviderDisplayName(provider)}</span>

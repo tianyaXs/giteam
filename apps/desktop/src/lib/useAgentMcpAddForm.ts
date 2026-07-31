@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { getCustomMcpParamSpecs, inferCustomMcpName } from "./opencodeMcpConfig";
+import { getCustomMcpParamSpecs, inferCustomMcpName } from "./agentMcpConfig";
 
-export type OpencodeMcpType = "local" | "remote";
+export type AgentMcpType = "local" | "remote";
 
-export function useOpencodeMcpAddForm(isOpen: boolean) {
+export function useAgentMcpAddForm(isOpen: boolean) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<OpencodeMcpType>("remote");
+  const [type, setType] = useState<AgentMcpType>("remote");
   const [command, setCommand] = useState("");
   const [url, setUrl] = useState("");
   const [env, setEnv] = useState("");

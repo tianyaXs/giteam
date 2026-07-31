@@ -356,19 +356,8 @@
   color: var(--danger);
 }
 
-pre {
-  margin: 0;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--gt-radius-lg);
-  padding: var(--gt-space-2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow: auto;
-}
-
-.wb-reading-scroll>pre {
+/* 不再全局样式化 pre：会覆盖 streamdown CodeBlock 内层 <pre> 的官方圆角/边框/内边距 */
+.wb-reading-scroll > pre {
   max-height: none;
   min-height: 100%;
 }

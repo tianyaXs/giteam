@@ -17,7 +17,7 @@ export function shouldUsePromptHistoryKey(
   return direction === "older" ? start === 0 : end === target.value.length;
 }
 
-export function useOpencodePromptHistory(input: {
+export function useAgentPromptHistory(input: {
   activeSessionId: string;
   currentInput: string;
   onApplyHistory: (value: string) => void;

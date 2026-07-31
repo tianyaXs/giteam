@@ -1,14 +1,25 @@
-import type {
-  ChangeEventHandler,
-  ClipboardEventHandler,
-  DragEventHandler,
-  KeyboardEventHandler,
-  MouseEventHandler,
-  RefObject
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEventHandler,
+  type ClipboardEventHandler,
+  type DragEventHandler,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+  type RefObject
 } from "react";
-import { OPENCODE_COMPOSER_AGENT_OPTIONS } from "../../lib/opencodeComposerSettings";
-import { getAttachmentBadgeLabel, isImageAttachment, type OpencodeAttachment } from "../../lib/imageAttachments";
-import type { OpencodePermissionReply, OpencodePermissionRequest } from "../../lib/opencodePermissions";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import appIconUrl from "../../assets/app-icon.png";
+import {
+  AGENT_COMPOSER_AGENT_OPTIONS,
+  shortModelLabel,
+  thinkingLevelMeta,
+  type AgentThinkingLevel,
+  type ComposerAgentName
+} from "../../lib/agentComposerSettings";
+import { getAttachmentBadgeLabel, isImageAttachment, type AgentAttachment } from "../../lib/imageAttachments";
+import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
 import { SendIcon } from "../common/AppChromeIcons";
@@ -25,18 +36,16 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
-import { Input } from "../ui/input";
-import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { cn } from "../../lib/utils";
 import {
   ArrowDownIcon,
   CheckIcon,
-  ChevronRightIcon,
   CloseIcon,
   ImageIcon
 } from "../icons";
+import { Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
 
 type SlashCommandOption = {
   id: string;
@@ -46,15 +55,15 @@ type SlashCommandOption = {
   source: "builtin" | "command" | "skill" | "mcp";
 };
 
-type OpencodeModelDisplay = {
+type AgentModelDisplay = {
   label: string;
   provider: string;
 };
 
-type OpencodeComposerPanelProps = {
-  permissions: OpencodePermissionRequest[];
+type AgentComposerPanelProps = {
+  permissions: PermissionInteraction[];
   onOpenPermissionsPanel: () => void;
-  onReplyPermission: (requestId: string, reply: OpencodePermissionReply) => void;
+  onReplyPermission: (requestId: string, reply: AgentPermissionReply) => void;
   questionLoading: boolean;
   activeQuestions: QuestionRequest[];
   staleQuestions: QuestionRequest[];
@@ -62,10 +71,11 @@ type OpencodeComposerPanelProps = {
   onDismissQuestion: (requestId: string) => void;
   onDismissStaleQuestion: (requestId: string) => void;
   showEmptyState: boolean;
+  activeSessionStale?: boolean;
   selectedRepoName: string;
   showJumpLatest: boolean;
   onJumpLatest: () => void;
-  attachments: OpencodeAttachment[];
+  attachments: AgentAttachment[];
   mcpPromptRefs: string[];
   onRemoveAttachment: (id: string) => void;
   onRemoveMcpPromptRef: (name: string) => void;
@@ -95,15 +105,24 @@ type OpencodeComposerPanelProps = {
   onToggleModelPicker: () => void;
   modelPickerSearch: string;
   onModelPickerSearchChange: (value: string) => void;
-  activeAgent: string;
+  activeAgent: ComposerAgentName | string;
   onApplyAgent: (agentName: string) => void;
+  activeThinkingLevel: AgentThinkingLevel;
+  thinkingLevelOptions: AgentThinkingLevel[];
+  onApplyThinkingLevel: (level: AgentThinkingLevel) => void;
   autoAcceptPermissions: boolean;
   onToggleAutoAcceptPermissions: () => void;
   configuredModelCandidates: string[];
   activeModel: string;
-  getModelDisplay: (modelRef: string) => OpencodeModelDisplay;
+  getModelDisplay: (modelRef: string) => AgentModelDisplay;
   onApplyModel: (modelRef: string) => void;
   onOpenModelSettings: () => void;
+  labels: {
+    model: string;
+    configureModels: string;
+    configureModelsAction: string;
+    emptyComposerHeadline: string;
+  };
   activeSessionBusy: boolean;
   canSubmit: boolean;
   onPrimaryAction: () => void;
@@ -145,22 +164,36 @@ type ComposerConfigButtonProps = {
   showModelPicker: boolean;
   onToggleModelPicker: () => void;
   configSummaryLabel: string;
+  /** 是否已有可用的已启用模型；否则引导去设置配置。 */
+  hasConfiguredModel: boolean;
   modelPickerSearch: string;
   onModelPickerSearchChange: (value: string) => void;
-  activeAgent: string;
+  activeAgent: ComposerAgentName | string;
   onApplyAgent: (agentName: string) => void;
+  modelValueLabel: string;
+  activeThinkingLevel: AgentThinkingLevel;
+  thinkingLevelOptions: AgentThinkingLevel[];
+  thinkingValueLabel: string;
+  onApplyThinkingLevel: (level: AgentThinkingLevel) => void;
   autoAcceptPermissions: boolean;
   onToggleAutoAcceptPermissions: () => void;
   configuredModelCandidates: string[];
   activeModel: string;
-  getModelDisplay: (modelRef: string) => OpencodeModelDisplay;
+  getModelDisplay: (modelRef: string) => AgentModelDisplay;
   onApplyModel: (modelRef: string) => void;
   onOpenModelSettings: () => void;
+  labels: {
+    model: string;
+    configureModels: string;
+    configureModelsAction: string;
+  };
 };
 
-function formatPermissionPatterns(patterns: string[]): string {
-  if (!patterns.length) return "*";
-  return patterns.join(" · ");
+function permissionToolIcon(tool: string): LucideIcon {
+  if (tool === "bash") return Terminal;
+  if (tool === "edit" || tool === "hashline_edit" || tool === "write") return FilePen;
+  if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return FileCode;
+  return Wrench;
 }
 
 function ComposerEditor(props: ComposerEditorProps) {
@@ -192,11 +225,11 @@ function ComposerEditor(props: ComposerEditorProps) {
         </div>
       ) : null}
 
-      <div className="flex min-w-0 items-center">
+      <div className="flex min-w-0 items-end">
         <Textarea
           ref={props.promptInputRef as RefObject<HTMLTextAreaElement>}
           className={cn(
-            "min-h-8 max-h-40 resize-none rounded-none border-0 bg-transparent px-0 py-1 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+            "min-h-8 max-h-40 resize-none rounded-none border-0 bg-transparent px-0 py-1 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
             props.textareaClassName
           )}
           style={{ fontSize: 15, lineHeight: "24px" }}
@@ -245,8 +278,8 @@ function ComposerAttachmentButton(props: ComposerAttachmentButtonProps) {
         <DropdownMenuTrigger asChild>
           <Button
             className={cn(
-              "size-9 rounded-full text-foreground/70 hover:text-foreground",
-              props.attachmentMenuOpen && "bg-accent text-accent-foreground",
+              "size-9 rounded-full text-muted-foreground/75 hover:bg-muted hover:text-muted-foreground",
+              props.attachmentMenuOpen && "bg-muted text-muted-foreground",
               props.buttonClassName
             )}
             aria-label={props.attachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
@@ -283,28 +316,28 @@ function ComposerAttachmentPreview({
   attachment,
   onRemove
 }: {
-  attachment: OpencodeAttachment;
+  attachment: AgentAttachment;
   onRemove: (id: string) => void;
 }) {
   if (isImageAttachment(attachment)) {
     return (
       <div
-        className="group relative size-[76px] overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+        className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
         title={attachment.filename}
       >
         <img
           src={attachment.dataUrl}
           alt={attachment.filename}
-          className="size-full rounded-[14px] border border-border/35 bg-background object-contain"
+          className="size-full rounded-[13px] border border-border/35 bg-background object-cover"
         />
         <Button
-          className="absolute right-1 top-1 size-6 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
+          className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
           onClick={() => onRemove(attachment.id)}
           aria-label={`移除 ${attachment.filename}`}
           variant="ghost"
           size="icon"
         >
-          <CloseIcon width={14} height={14} />
+          <CloseIcon width={12} height={12} />
         </Button>
       </div>
     );
@@ -312,22 +345,22 @@ function ComposerAttachmentPreview({
 
   return (
     <div
-      className="group relative size-[76px] overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+      className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
       title={attachment.filename}
     >
-      <div className="flex size-full items-center justify-center rounded-[14px] border border-border/35 bg-muted/45">
-        <span className="max-w-[54px] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-semibold tracking-normal text-foreground/85">
+      <div className="flex size-full items-center justify-center rounded-[13px] border border-border/35 bg-muted/45">
+        <span className="max-w-[44px] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-semibold tracking-normal text-foreground/85">
           {getAttachmentBadgeLabel(attachment)}
         </span>
       </div>
       <Button
-        className="absolute right-1 top-1 size-6 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
+        className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
         onClick={() => onRemove(attachment.id)}
         aria-label={`移除 ${attachment.filename}`}
         variant="ghost"
         size="icon"
       >
-        <CloseIcon width={14} height={14} />
+        <CloseIcon width={12} height={12} />
       </Button>
     </div>
   );
@@ -337,45 +370,179 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
   const updateOpen = (open: boolean) => {
     if (open !== props.showModelPicker) props.onToggleModelPicker();
   };
+  const agentLabel =
+    AGENT_COMPOSER_AGENT_OPTIONS.find((agent) => agent.name === props.activeAgent)?.label
+    || props.activeAgent
+    || "Build";
+  const rowClass =
+    "h-8 justify-between gap-2 rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground";
+  const valueClass = "min-w-0 flex-1 truncate text-right text-muted-foreground";
 
   return (
     <div ref={props.modelPickerRef as RefObject<HTMLDivElement>}>
       <DropdownMenu open={props.showModelPicker} onOpenChange={updateOpen}>
         <DropdownMenuTrigger asChild>
           <Button
-            className="h-9 max-w-[190px] rounded-full px-3 text-[13px] font-medium leading-5 focus-visible:ring-0"
-            aria-label="配置 Agent、Auto 和模型"
-            title="配置 Agent、Auto 和模型"
+            className={cn(
+              "h-9 max-w-[220px] rounded-full px-2.5 text-[12px] font-medium leading-4 text-muted-foreground/75",
+              "hover:bg-muted hover:text-muted-foreground",
+              "focus-visible:ring-0 data-[state=open]:bg-muted data-[state=open]:text-muted-foreground"
+            )}
+            aria-label={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
+            title={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
             variant="ghost"
           >
             <span className="min-w-0 truncate">{props.configSummaryLabel}</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          align="start"
+          align="end"
           side="top"
-          sideOffset={8}
+          sideOffset={16}
           alignOffset={0}
-          className="w-[190px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
+          collisionPadding={12}
+          className="w-[240px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
         >
-          <DropdownMenuGroup>
-            {OPENCODE_COMPOSER_AGENT_OPTIONS.map((agent) => (
-              <DropdownMenuItem
-                key={agent.name}
-                className={cn(
-                  "h-7 justify-between rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
-                  props.activeAgent === agent.name && "bg-muted text-foreground"
-                )}
-                onSelect={() => props.onApplyAgent(agent.name)}
-                title={agent.title}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className={rowClass}>
+              <span className="shrink-0">模式</span>
+              <span className={valueClass}>{agentLabel}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent
+              sideOffset={6}
+              className="w-[120px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
+            >
+              <DropdownMenuGroup>
+                {AGENT_COMPOSER_AGENT_OPTIONS.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.name}
+                    className={cn(
+                      "h-8 justify-between gap-2 rounded-xl px-2.5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
+                      props.activeAgent === agent.name && "bg-muted text-foreground"
+                    )}
+                    onSelect={() => props.onApplyAgent(agent.name)}
+                  >
+                    <span className="text-[13px] font-medium leading-5">{agent.label}</span>
+                    {props.activeAgent === agent.name ? <CheckIcon width={14} height={14} /> : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          {props.hasConfiguredModel ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className={rowClass}>
+                <span className="shrink-0">{props.labels.model}</span>
+                <span className={valueClass}>{props.modelValueLabel || props.labels.configureModelsAction}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                sideOffset={6}
+                collisionPadding={12}
+                className="w-[220px] overflow-hidden rounded-[18px] border-border/55 bg-background p-1 shadow-md"
               >
-                <span>{agent.label}</span>
-                {props.activeAgent === agent.name ? <CheckIcon width={14} height={14} /> : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
+                <div className="flex h-6 items-center justify-between gap-2 pl-2.5 pr-0.5">
+                  <span className="shrink-0 text-[12px] font-medium leading-4 text-muted-foreground">
+                    {props.labels.model}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 shrink-0 rounded-md text-muted-foreground/80 hover:bg-transparent hover:text-foreground"
+                    aria-label={props.labels.configureModels}
+                    title={props.labels.configureModels}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      props.onOpenModelSettings();
+                    }}
+                  >
+                    <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
+                  </Button>
+                </div>
+                <DropdownMenuSeparator className="my-0.5" />
+                <div
+                  className="max-h-[min(280px,45vh)] overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                  onWheel={(event) => event.stopPropagation()}
+                >
+                  <DropdownMenuGroup>
+                    {props.configuredModelCandidates.map((modelRef) => {
+                      const display = props.getModelDisplay(modelRef);
+                      const selected = modelRef === props.activeModel;
+                      return (
+                        <DropdownMenuItem
+                          key={`saved-model-${modelRef}`}
+                          className={cn(
+                            "h-auto min-h-8 justify-between gap-2 rounded-xl px-2.5 py-1.5 text-left data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
+                            selected && "bg-muted text-foreground"
+                          )}
+                          onSelect={() => props.onApplyModel(modelRef)}
+                          title={modelRef}
+                        >
+                          <span className="grid min-w-0 gap-0.5">
+                            <span className="min-w-0 truncate text-[13px] font-medium leading-5">
+                              {display.label || modelRef}
+                            </span>
+                            {display.provider ? (
+                              <span className="min-w-0 truncate text-[12px] font-medium leading-4 text-muted-foreground">
+                                {display.provider}
+                              </span>
+                            ) : null}
+                          </span>
+                          {selected ? <CheckIcon width={14} height={14} /> : null}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuGroup>
+                </div>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : (
+            <DropdownMenuItem
+              className={cn(rowClass, "bg-muted/40")}
+              onSelect={props.onOpenModelSettings}
+            >
+              <span>{props.labels.model}</span>
+              <span className="text-[13px] font-medium text-foreground">{props.labels.configureModelsAction}</span>
+            </DropdownMenuItem>
+          )}
+
+          {props.hasConfiguredModel ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className={rowClass}>
+                <span className="shrink-0">推理强度</span>
+                <span className={valueClass}>{props.thinkingValueLabel}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                sideOffset={6}
+                className="w-[120px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
+              >
+                <DropdownMenuGroup>
+                  {props.thinkingLevelOptions.map((level) => {
+                    const meta = thinkingLevelMeta(level);
+                    return (
+                      <DropdownMenuItem
+                        key={level}
+                        className={cn(
+                          "h-8 justify-between gap-2 rounded-xl px-2.5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
+                          props.activeThinkingLevel === level && "bg-muted text-foreground"
+                        )}
+                        onSelect={() => props.onApplyThinkingLevel(level)}
+                      >
+                        <span className="text-[13px] font-medium leading-5">{meta.label}</span>
+                        {props.activeThinkingLevel === level ? <CheckIcon width={14} height={14} /> : null}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
+
+          <DropdownMenuSeparator />
           <DropdownMenuItem
-            className="h-7 justify-between rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground"
+            className={rowClass}
             onSelect={(event) => {
               event.preventDefault();
               props.onToggleAutoAcceptPermissions();
@@ -390,66 +557,6 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
               className="pointer-events-none"
             />
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="h-7 justify-between rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground">
-              <span className="min-w-0 truncate">{props.configSummaryLabel || "模型"}</span>
-              <ChevronRightIcon width={14} height={14} aria-hidden="true" />
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent
-              sideOffset={6}
-              className="w-[250px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
-            >
-              <div className="px-1 pb-1">
-                <Input
-                  className="h-8 rounded-xl text-[13px] shadow-none"
-                  placeholder="Search models"
-                  value={props.modelPickerSearch}
-                  onChange={(event) => props.onModelPickerSearchChange(event.target.value)}
-                  onKeyDown={(event) => event.stopPropagation()}
-                />
-              </div>
-              <ScrollArea type="always" className="max-h-72 min-h-0" scrollBarClassName="w-2 bg-transparent py-1" thumbClassName="bg-muted/55 hover:bg-muted/70">
-                {props.configuredModelCandidates.length === 0 ? (
-                  <div className="px-2.5 py-3 text-[13px] text-muted-foreground">
-                    暂无已配置模型
-                  </div>
-                ) : (
-                  <DropdownMenuGroup>
-                    {props.configuredModelCandidates.map((modelRef) => {
-                      const display = props.getModelDisplay(modelRef);
-                      return (
-                        <DropdownMenuItem
-                          key={`saved-model-${modelRef}`}
-                          className={cn(
-                            "h-auto min-h-8 justify-between gap-2 rounded-xl px-2.5 py-1.5 text-left data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
-                            modelRef === props.activeModel && "bg-muted text-foreground"
-                          )}
-                          onSelect={() => props.onApplyModel(modelRef)}
-                          title={modelRef}
-                        >
-                          <span className="grid min-w-0 gap-0.5">
-                            <span className="min-w-0 truncate text-[13px] font-medium leading-5">{display.label || modelRef}</span>
-                            {display.provider ? (
-                              <span className="min-w-0 truncate text-[12px] font-medium leading-4 text-muted-foreground">{display.provider}</span>
-                            ) : null}
-                          </span>
-                          {modelRef === props.activeModel ? <CheckIcon width={14} height={14} /> : null}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuGroup>
-                )}
-              </ScrollArea>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="h-7 justify-between rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground"
-                onSelect={props.onOpenModelSettings}
-              >
-                <span>Add Models</span>
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -484,7 +591,7 @@ function ComposerSubmitButton({
   );
 }
 
-export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
+export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const {
     permissions,
     onOpenPermissionsPanel,
@@ -496,6 +603,7 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     onDismissQuestion,
     onDismissStaleQuestion,
     showEmptyState,
+    activeSessionStale,
     selectedRepoName,
     showJumpLatest,
     onJumpLatest,
@@ -531,6 +639,9 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     onModelPickerSearchChange,
     activeAgent,
     onApplyAgent,
+    activeThinkingLevel,
+    thinkingLevelOptions,
+    onApplyThinkingLevel,
     autoAcceptPermissions,
     onToggleAutoAcceptPermissions,
     configuredModelCandidates,
@@ -538,65 +649,187 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
     getModelDisplay,
     onApplyModel,
     onOpenModelSettings,
+    labels,
     activeSessionBusy,
     canSubmit,
     onPrimaryAction
   } = props;
 
   const activeModelDisplay = getModelDisplay(activeModel || "");
-  const isBlankComposer = !promptInput.trim() && attachments.length === 0 && mcpPromptRefs.length === 0;
+  const hasConfiguredModel = configuredModelCandidates.length > 0;
+  const modelValueLabel = (activeModel || "").trim()
+    ? shortModelLabel(activeModelDisplay.label || "", activeModel || "")
+    : hasConfiguredModel
+      ? "选择模型"
+      : "未配置";
+  const thinkingValueLabel = thinkingLevelMeta(activeThinkingLevel).shortLabel;
   const hasComposerPreviews = attachments.length > 0 || mcpPromptRefs.length > 0;
-  const useStackedComposer = showEmptyState || hasComposerPreviews;
-  const composerPlaceholder = showEmptyState ? "要做什么？" : isBlankComposer ? "继续跟进" : "要做什么？";
-  const configSummaryLabel = activeModelDisplay.label || activeModel || "Auto";
+  // 旧会话空输入始终「继续跟进」；贴图不应改成「要做什么？」。
+  const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
+  const configSummaryLabel = (activeModel || "").trim()
+    ? `${modelValueLabel} ${thinkingValueLabel}`.trim()
+    : hasConfiguredModel
+      ? "选择模型"
+      : labels.configureModels;
   const visiblePermissions = permissions.slice(0, 2);
   const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
+  const previewStripRef = useRef<HTMLDivElement | null>(null);
+  const [emptyGrowUpOffset, setEmptyGrowUpOffset] = useState(0);
+
+  // 空状态垂直居中：贴图增高后用负 margin 抵消布局占位，底边与提示文字位置不变，只向上延伸。
+  useLayoutEffect(() => {
+    if (!showEmptyState || !hasComposerPreviews) {
+      setEmptyGrowUpOffset(0);
+      return;
+    }
+    const node = previewStripRef.current;
+    if (!node) {
+      setEmptyGrowUpOffset(0);
+      return;
+    }
+    const gapPx = 12; // 与卡片内 gap-3 一致
+    const sync = () => setEmptyGrowUpOffset(node.offsetHeight + gapPx);
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [showEmptyState, hasComposerPreviews, attachments.length, mcpPromptRefs.length]);
+
+  const editorProps = {
+    textareaClassName: "py-0 text-[15px] leading-7",
+    promptInputRef,
+    promptInput,
+    placeholder: composerPlaceholder,
+    onCompositionStart: onPromptCompositionStart,
+    onCompositionEnd: onPromptCompositionEnd,
+    onChange: onPromptChange,
+    onKeyDown: onPromptKeyDown,
+    onPaste: onPromptPaste,
+    onContextMenu: onPromptContextMenu,
+    onDragOver: onPromptDragOver,
+    onDrop: onPromptDrop,
+    slashOpen,
+    slashSuggestions,
+    slashActiveIndex,
+    onHoverSlashSuggestion,
+    onActivateSlashCommand
+  } as const;
+
+  const reduceMotion = useReducedMotion();
+  const previewExpandTransition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
+
+  const previewStrip = (
+    <AnimatePresence initial={false}>
+      {hasComposerPreviews ? (
+        <motion.div
+          key="composer-previews"
+          ref={showEmptyState ? previewStripRef : undefined}
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={previewExpandTransition}
+          className="w-full min-w-0 overflow-hidden"
+        >
+          <div className="flex w-full min-w-0 flex-wrap items-start justify-start gap-1.5">
+            {attachments.length > 0 ? (
+              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                {attachments.map((attachment) => (
+                  <ComposerAttachmentPreview
+                    key={attachment.id}
+                    attachment={attachment}
+                    onRemove={onRemoveAttachment}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {mcpPromptRefs.length > 0 ? (
+              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                {mcpPromptRefs.map((name) => (
+                  <Badge key={name} variant="outline" className="max-w-full gap-1.5 normal-case tracking-normal">
+                    <span className="min-w-0 truncate">{name}</span>
+                    <Button
+                      type="button"
+                      className="size-5 shrink-0 rounded-full p-0"
+                      onClick={() => onRemoveMcpPromptRef(name)}
+                      aria-label={`移除 ${name} MCP 引用`}
+                      variant="ghost"
+                      size="icon"
+                    >
+                      <CloseIcon width={14} height={14} />
+                    </Button>
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+
+  const configButtonProps: ComposerConfigButtonProps = {
+    modelPickerRef,
+    showModelPicker,
+    onToggleModelPicker,
+    configSummaryLabel,
+    hasConfiguredModel,
+    modelPickerSearch,
+    onModelPickerSearchChange,
+    activeAgent,
+    onApplyAgent,
+    modelValueLabel,
+    activeThinkingLevel,
+    thinkingLevelOptions,
+    thinkingValueLabel,
+    onApplyThinkingLevel,
+    autoAcceptPermissions,
+    onToggleAutoAcceptPermissions,
+    configuredModelCandidates,
+    activeModel,
+    getModelDisplay,
+    onApplyModel,
+    onOpenModelSettings,
+    labels
+  };
 
   return (
-    <div className={showEmptyState ? "mx-auto flex w-full max-w-[620px] flex-col items-stretch justify-center px-2" : "w-full px-6 pb-4 pt-3"}>
+    <div className={showEmptyState ? "mx-auto flex w-full max-w-[620px] flex-col items-stretch justify-center px-2" : "w-full"}>
       <div className="flex w-full flex-col gap-3">
+        {activeSessionStale ? (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <span>当前会话可能已被移除，请从左侧列表重新选择一个会话。</span>
+          </div>
+        ) : null}
         {permissions.length > 0 ? (
-          <div className="grid gap-2 rounded-xl border border-border/60 bg-card/70 p-2" role="status" aria-live="polite">
-            <div className="flex items-center justify-between px-1">
-              <Badge variant="outline" className="normal-case tracking-normal">请求授权</Badge>
-            </div>
-            {visiblePermissions.map((request) => (
-              <div key={request.id} className="grid gap-3 rounded-lg border border-border/45 bg-background/70 p-3">
-                <div className="grid min-w-0 gap-1.5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <strong className="min-w-0 truncate text-sm">{request.permission || "permission"}</strong>
-                    {request.tool?.callID ? <span className="shrink-0 text-xs text-muted-foreground">{request.tool.callID}</span> : null}
+          <div className="grid gap-2" role="status" aria-live="polite">
+            {visiblePermissions.map((request) => {
+              const view = describePermissionInteraction(request);
+              const ToolIcon = permissionToolIcon(view.tool);
+              return (
+                <div key={request.id} className="grid gap-3 rounded-xl border border-border/60 bg-card/80 p-3 shadow-sm">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
+                      <ToolIcon className="h-4 w-4" />
+                    </span>
+                    <div className="grid min-w-0">
+                      <strong className="truncate text-sm font-semibold">{view.tool}</strong>
+                      {view.risk ? <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{view.risk}</span> : null}
+                    </div>
                   </div>
-                  <div className="grid min-w-0 gap-1">
-                    <span className="text-xs text-muted-foreground">作用范围</span>
-                    <code className="min-w-0 break-words rounded-md bg-muted/55 px-2 py-1 font-mono text-xs">{formatPermissionPatterns(request.patterns || [])}</code>
+                  {view.target ? (
+                    <code className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/55 px-3 py-2 font-mono text-xs leading-relaxed">{view.target}</code>
+                  ) : null}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Button onClick={() => onReplyPermission(request.id, "reject")} variant="ghost" size="sm">拒绝</Button>
+                    <Button onClick={() => onReplyPermission(request.id, "once")} variant="outline" size="sm">本次允许</Button>
+                    <Button onClick={() => onReplyPermission(request.id, "always")} variant="contrast" size="sm">总是允许</Button>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <Button
-                    onClick={() => onReplyPermission(request.id, "once")}
-                    variant="outline"
-                    size="sm"
-                  >
-                    本次允许
-                  </Button>
-                  <Button
-                    onClick={() => onReplyPermission(request.id, "always")}
-                    variant="contrast"
-                    size="sm"
-                  >
-                    总是允许
-                  </Button>
-                  <Button
-                    onClick={() => onReplyPermission(request.id, "reject")}
-                    variant="destructive"
-                    size="sm"
-                  >
-                    拒绝
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {hiddenPermissionCount > 0 ? (
               <Button type="button" className="h-auto justify-start px-3 py-2 text-xs" onClick={onOpenPermissionsPanel} variant="ghost">
                 还有 {hiddenPermissionCount} 条授权请求，前往详情面板处理
@@ -625,92 +858,80 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
         )) : null}
 
         {showEmptyState ? (
-          <div className="text-center text-lg font-semibold text-foreground">What should we build in {selectedRepoName || "Giteam"}?</div>
-        ) : null}
-
-        <div
-          className={cn(
-            "relative w-full min-w-0 border border-border/70 bg-card text-card-foreground shadow-sm",
-            showEmptyState
-              ? "flex min-h-[142px] flex-col gap-3 rounded-3xl p-5"
-              : hasComposerPreviews
-                ? "flex min-h-[148px] flex-col gap-2 rounded-[28px] px-3 py-2.5"
-              : "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-[28px] px-2 py-2"
-          )}
-        >
-          {showJumpLatest ? (
-            <Button
-              className="absolute -top-11 left-1/2 size-9 -translate-x-1/2 rounded-full shadow-md"
-              onClick={onJumpLatest}
-              aria-label="拉到最新"
-              title="拉到最新"
-              variant="ghost"
-              size="icon"
-            >
-              <ArrowDownIcon />
-            </Button>
-          ) : null}
-
-          {hasComposerPreviews ? (
-            <div className="col-span-full flex w-full min-w-0 flex-wrap items-start justify-start gap-2">
-              {attachments.length > 0 ? (
-                <div className="flex min-w-0 flex-wrap items-start gap-2">
-                  {attachments.map((attachment) => (
-                    <ComposerAttachmentPreview
-                      key={attachment.id}
-                      attachment={attachment}
-                      onRemove={onRemoveAttachment}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {mcpPromptRefs.length > 0 ? (
-                <div className="flex min-w-0 flex-wrap items-start gap-1.5">
-                  {mcpPromptRefs.map((name) => (
-                    <Badge key={name} variant="outline" className="max-w-full gap-1.5 normal-case tracking-normal">
-                      <span className="min-w-0 truncate">{name}</span>
-                      <Button
-                        type="button"
-                        className="size-5 shrink-0 rounded-full p-0"
-                        onClick={() => onRemoveMcpPromptRef(name)}
-                        aria-label={`移除 ${name} MCP 引用`}
-                        variant="ghost"
-                        size="icon"
-                      >
-                        <CloseIcon width={14} height={14} />
-                      </Button>
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
+          <div
+            className="flex w-full flex-col gap-5 motion-safe:transition-[margin-top] motion-safe:duration-200 motion-safe:ease-out"
+            style={emptyGrowUpOffset > 0 ? { marginTop: -emptyGrowUpOffset } : undefined}
+          >
+            <div className="flex flex-col items-center gap-5">
+              <div className="size-11 overflow-hidden rounded-[22%] shadow-[0_1px_2px_rgba(15,23,42,0.05)] ring-1 ring-border/40 motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)] motion-safe:hover:rotate-[360deg]">
+                <img
+                  src={appIconUrl}
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  className="size-full origin-center scale-[1.22] opacity-[0.92]"
+                />
+              </div>
+              <div className="max-w-[28rem] text-center text-[22px] font-semibold leading-snug tracking-tight text-foreground">
+                {(labels.emptyComposerHeadline || "What should we build in {name}?").replace(
+                  "{name}",
+                  selectedRepoName || "Giteam"
+                )}
+              </div>
             </div>
-          ) : null}
 
-          {useStackedComposer ? (
-            <>
-              <ComposerEditor
-                className={cn("w-full", showEmptyState && "-mt-0.5")}
-                textareaClassName={cn("py-0 text-[15px] leading-7", hasComposerPreviews && "min-h-8")}
-                promptInputRef={promptInputRef}
-                promptInput={promptInput}
-                placeholder={composerPlaceholder}
-                onCompositionStart={onPromptCompositionStart}
-                onCompositionEnd={onPromptCompositionEnd}
-                onChange={onPromptChange}
-                onKeyDown={onPromptKeyDown}
-                onPaste={onPromptPaste}
-                onContextMenu={onPromptContextMenu}
-                onDragOver={onPromptDragOver}
-                onDrop={onPromptDrop}
-                slashOpen={slashOpen}
-                slashSuggestions={slashSuggestions}
-                slashActiveIndex={slashActiveIndex}
-                onHoverSlashSuggestion={onHoverSlashSuggestion}
-                onActivateSlashCommand={onActivateSlashCommand}
-              />
-              <div className="mt-auto flex items-center justify-between gap-3">
+            <div className="relative flex w-full min-w-0 flex-col gap-3 rounded-3xl border border-border/70 bg-card p-5 text-card-foreground shadow-sm">
+              {previewStrip}
+              <div className="flex min-h-[102px] w-full min-w-0 flex-1 flex-col gap-3">
+                <ComposerEditor className="w-full -mt-0.5" {...editorProps} />
+                <div className="mt-auto flex items-end justify-between gap-3">
+                  <ComposerAttachmentButton
+                    buttonClassName="-ml-3.5 translate-y-3.5"
+                    attachmentMenuOpen={attachmentMenuOpen}
+                    onToggleAttachmentMenu={onToggleAttachmentMenu}
+                    attachmentInputRef={attachmentInputRef}
+                    attachmentInputAccept={attachmentInputAccept}
+                    onOpenAttachmentPicker={onOpenAttachmentPicker}
+                    onAttachmentInputChange={onAttachmentInputChange}
+                  />
+                  <div className="flex translate-x-3.5 translate-y-3.5 items-end gap-1">
+                    <div className="translate-y-0.5">
+                      <ComposerConfigButton {...configButtonProps} />
+                    </div>
+                    <ComposerSubmitButton
+                      activeSessionBusy={activeSessionBusy}
+                      canSubmit={canSubmit}
+                      onPrimaryAction={onPrimaryAction}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          // 旧会话：贴图只叠在输入行上方，底栏「继续跟进」行布局不变，整卡自然向上增高。
+          <div
+            className={cn(
+              "relative flex w-full min-w-0 flex-col rounded-[28px] border border-border/70 bg-card px-2 py-2 text-card-foreground shadow-sm",
+              hasComposerPreviews && "gap-2"
+            )}
+          >
+            {showJumpLatest ? (
+              <Button
+                className="absolute -top-11 left-1/2 size-9 -translate-x-1/2 rounded-full shadow-md"
+                onClick={onJumpLatest}
+                aria-label="拉到最新"
+                title="拉到最新"
+                variant="ghost"
+                size="icon"
+              >
+                <ArrowDownIcon />
+              </Button>
+            ) : null}
+            {previewStrip}
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-2">
+              <div className="flex items-end self-end pb-0.5">
                 <ComposerAttachmentButton
-                  buttonClassName="-ml-2 translate-y-1"
                   attachmentMenuOpen={attachmentMenuOpen}
                   onToggleAttachmentMenu={onToggleAttachmentMenu}
                   attachmentInputRef={attachmentInputRef}
@@ -718,89 +939,19 @@ export function OpencodeComposerPanel(props: OpencodeComposerPanelProps) {
                   onOpenAttachmentPicker={onOpenAttachmentPicker}
                   onAttachmentInputChange={onAttachmentInputChange}
                 />
-                <div className="flex items-center gap-2">
-                  <ComposerConfigButton
-                    modelPickerRef={modelPickerRef}
-                    showModelPicker={showModelPicker}
-                    onToggleModelPicker={onToggleModelPicker}
-                    configSummaryLabel={configSummaryLabel}
-                    modelPickerSearch={modelPickerSearch}
-                    onModelPickerSearchChange={onModelPickerSearchChange}
-                    activeAgent={activeAgent}
-                    onApplyAgent={onApplyAgent}
-                    autoAcceptPermissions={autoAcceptPermissions}
-                    onToggleAutoAcceptPermissions={onToggleAutoAcceptPermissions}
-                    configuredModelCandidates={configuredModelCandidates}
-                    activeModel={activeModel}
-                    getModelDisplay={getModelDisplay}
-                    onApplyModel={onApplyModel}
-                    onOpenModelSettings={onOpenModelSettings}
-                  />
-                  <ComposerSubmitButton
-                    activeSessionBusy={activeSessionBusy}
-                    canSubmit={canSubmit}
-                    onPrimaryAction={onPrimaryAction}
-                  />
-                </div>
               </div>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center">
-              <ComposerAttachmentButton
-                attachmentMenuOpen={attachmentMenuOpen}
-                onToggleAttachmentMenu={onToggleAttachmentMenu}
-                attachmentInputRef={attachmentInputRef}
-                attachmentInputAccept={attachmentInputAccept}
-                onOpenAttachmentPicker={onOpenAttachmentPicker}
-                onAttachmentInputChange={onAttachmentInputChange}
-              />
+              <ComposerEditor {...editorProps} />
+              <div className="flex items-end gap-2 self-end">
+                <ComposerConfigButton {...configButtonProps} />
+                <ComposerSubmitButton
+                  activeSessionBusy={activeSessionBusy}
+                  canSubmit={canSubmit}
+                  onPrimaryAction={onPrimaryAction}
+                />
               </div>
-              <ComposerEditor
-                promptInputRef={promptInputRef}
-                promptInput={promptInput}
-                placeholder={composerPlaceholder}
-                onCompositionStart={onPromptCompositionStart}
-                onCompositionEnd={onPromptCompositionEnd}
-                onChange={onPromptChange}
-                onKeyDown={onPromptKeyDown}
-                onPaste={onPromptPaste}
-                onContextMenu={onPromptContextMenu}
-                onDragOver={onPromptDragOver}
-                onDrop={onPromptDrop}
-                slashOpen={slashOpen}
-                slashSuggestions={slashSuggestions}
-                slashActiveIndex={slashActiveIndex}
-                onHoverSlashSuggestion={onHoverSlashSuggestion}
-                onActivateSlashCommand={onActivateSlashCommand}
-              />
-              <div className="flex items-center gap-2">
-              <ComposerConfigButton
-                modelPickerRef={modelPickerRef}
-                showModelPicker={showModelPicker}
-                onToggleModelPicker={onToggleModelPicker}
-                configSummaryLabel={configSummaryLabel}
-                modelPickerSearch={modelPickerSearch}
-                onModelPickerSearchChange={onModelPickerSearchChange}
-                activeAgent={activeAgent}
-                onApplyAgent={onApplyAgent}
-                autoAcceptPermissions={autoAcceptPermissions}
-                onToggleAutoAcceptPermissions={onToggleAutoAcceptPermissions}
-                configuredModelCandidates={configuredModelCandidates}
-                activeModel={activeModel}
-                getModelDisplay={getModelDisplay}
-                onApplyModel={onApplyModel}
-                onOpenModelSettings={onOpenModelSettings}
-              />
-              <ComposerSubmitButton
-                activeSessionBusy={activeSessionBusy}
-                canSubmit={canSubmit}
-                onPrimaryAction={onPrimaryAction}
-              />
-              </div>
-            </>
-          )}
-        </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

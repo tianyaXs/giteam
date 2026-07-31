@@ -9,7 +9,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 
-export type OpenCodeCustomProviderForm = {
+export type AgentCustomProviderForm = {
   provider: string;
   npm: string;
   name: string;
@@ -17,17 +17,17 @@ export type OpenCodeCustomProviderForm = {
   apiKey: string;
 };
 
-type OpenCodeCustomProviderDialogProps = {
-  config: OpenCodeCustomProviderForm;
+type AgentCustomProviderDialogProps = {
+  config: AgentCustomProviderForm;
   modelId: string;
   busy: boolean;
   onClose: () => void;
-  onConfigChange: (patch: Partial<OpenCodeCustomProviderForm>) => void;
+  onConfigChange: (patch: Partial<AgentCustomProviderForm>) => void;
   onModelChange: (modelId: string) => void;
   onSave: () => void;
 };
 
-export function OpenCodeCustomProviderDialog(props: OpenCodeCustomProviderDialogProps) {
+export function AgentCustomProviderDialog(props: AgentCustomProviderDialogProps) {
   const disabled = props.busy || !props.config.provider.trim() || !props.modelId.trim();
 
   return (

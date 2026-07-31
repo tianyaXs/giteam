@@ -25,6 +25,7 @@ type TerminalPanelProps = {
   onSelectTab: (tabId: string) => void;
   onClearActiveTab: () => void | Promise<void>;
   onInput: (tabId: string, data: string) => void | Promise<void>;
+  onResize?: (tabId: string, cols: number, rows: number) => void | Promise<void>;
 };
 
 export function TerminalPanel({
@@ -38,7 +39,8 @@ export function TerminalPanel({
   onCloseTab,
   onSelectTab,
   onClearActiveTab,
-  onInput
+  onInput,
+  onResize
 }: TerminalPanelProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -48,11 +50,15 @@ export function TerminalPanel({
   const displayedTabIdRef = useRef("");
   const startupWriteTimersRef = useRef<Record<string, number>>({});
   const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
+  const lastPtySizeRef = useRef({ cols: 0, rows: 0 });
+  const resizeTimerRef = useRef<number | null>(null);
   const activeTitle = getTerminalDisplayTitle(activeTab);
   const terminalCountLabel = `${tabs.length} ${tabs.length === 1 ? "Terminal" : "Terminals"}`;
 
   activeTabIdRef.current = activeTabId;
   onInputRef.current = onInput;
+  onResizeRef.current = onResize;
 
   const terminalTheme = useMemo(() => (
     theme === "dark"
@@ -97,9 +103,12 @@ export function TerminalPanel({
       cursorBlink: true,
       cursorStyle: "block",
       disableStdin: false,
-      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      // 优先 Menlo：对 box-drawing / block 字符度量更稳；避免 SF Mono 在部分字符上半宽不一致。
+      fontFamily: 'Menlo, Monaco, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace',
       fontSize: 12,
-      lineHeight: 1.28,
+      // ASCII art / 安装横幅依赖相邻单元格无间隙；>1 会出现框线错位、字符走形。
+      lineHeight: 1,
+      letterSpacing: 0,
       macOptionIsMeta: true,
       scrollback: 6000,
       theme: terminalTheme
@@ -116,9 +125,28 @@ export function TerminalPanel({
       void onInputRef.current(tabId, data);
     });
 
+    const syncPtySize = (cols: number, rows: number) => {
+      if (cols < 20 || rows < 8) return;
+      if (lastPtySizeRef.current.cols === cols && lastPtySizeRef.current.rows === rows) return;
+      // 防抖：避免拖拽时连续 stty 刷屏；尺寸落定后再同步到 PTY。
+      if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = window.setTimeout(() => {
+        if (lastPtySizeRef.current.cols === cols && lastPtySizeRef.current.rows === rows) return;
+        lastPtySizeRef.current = { cols, rows };
+        const tabId = activeTabIdRef.current;
+        if (!tabId || !onResizeRef.current) return;
+        void onResizeRef.current(tabId, cols, rows);
+      }, 360);
+    };
+
+    const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      syncPtySize(cols, rows);
+    });
+
     const resize = () => {
       try {
         fitAddon.fit();
+        syncPtySize(terminal.cols, terminal.rows);
       } catch {
         // xterm can throw while its host is temporarily hidden during pane transitions.
       }
@@ -129,11 +157,13 @@ export function TerminalPanel({
 
     return () => {
       ro.disconnect();
+      if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
       for (const timer of Object.values(startupWriteTimersRef.current)) {
         window.clearTimeout(timer);
       }
       startupWriteTimersRef.current = {};
       inputDisposable.dispose();
+      resizeDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

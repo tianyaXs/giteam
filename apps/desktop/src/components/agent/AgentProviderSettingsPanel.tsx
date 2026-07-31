@@ -1,6 +1,6 @@
-import { resolveProviderAliasWithNames } from "../../lib/opencodeModels";
-import { OpenCodeProviderList } from "./OpenCodeProviderList";
-import { OpenCodeProviderModelList } from "./OpenCodeProviderModelList";
+import { resolveProviderAliasWithNames } from "../../lib/agentModels";
+import { AgentProviderList } from "./AgentProviderList";
+import { AgentProviderModelList } from "./AgentProviderModelList";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
@@ -8,7 +8,7 @@ import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 
-type OpenCodeProviderSettingsPanelProps = {
+type AgentProviderSettingsPanelProps = {
   providerSearch: string;
   modelSearch: string;
   providers: string[];
@@ -40,7 +40,7 @@ type OpenCodeProviderSettingsPanelProps = {
   getProviderDisplayName: (providerId: string) => string;
 };
 
-export function OpenCodeProviderSettingsPanel({
+export function AgentProviderSettingsPanel({
   providerSearch,
   modelSearch,
   providers,
@@ -70,7 +70,7 @@ export function OpenCodeProviderSettingsPanel({
   onEnableModel,
   getProviderTag,
   getProviderDisplayName
-}: OpenCodeProviderSettingsPanelProps) {
+}: AgentProviderSettingsPanelProps) {
   const resolved = resolveProviderAliasWithNames(selectedProvider, modelsByProvider, providerNames);
   const cfgResolved = resolveProviderAliasWithNames(selectedProvider, configuredModelsByProvider, providerNames);
   const providerId = (resolved || selectedProvider.trim()) || "";
@@ -109,7 +109,7 @@ export function OpenCodeProviderSettingsPanel({
           </div>
           <ScrollArea className={panelHeight}>
             <div className="flex flex-col gap-1 pr-2">
-              <OpenCodeProviderList
+              <AgentProviderList
                 providers={providers}
                 selectedProvider={selectedProvider}
                 connectedProviders={connectedProviders}
@@ -151,8 +151,8 @@ export function OpenCodeProviderSettingsPanel({
                 </div>
                 <p className="m-0 max-w-[640px] text-[15px] font-medium leading-7 text-muted-foreground">
                   {connected
-                    ? `${providerName} 已连接。若 API Key 已变更，可在此更新（写入 OpenCode auth.json）。`
-                    : `${providerName} 未连接。请先输入 API Key 连接（写入 OpenCode auth.json），再选择模型。`}
+                    ? `${providerName} 已连接。若 API Key 已变更，可在此更新（写入 Giteam auth.json）。`
+                    : `${providerName} 未连接。请先输入 API Key 连接（写入 Giteam auth.json），再选择模型。`}
                 </p>
                 {authOpen ? (
                   <div className="flex flex-col gap-3 rounded-xl bg-secondary/45 p-3">
@@ -179,7 +179,7 @@ export function OpenCodeProviderSettingsPanel({
               {connected ? (
                 <ScrollArea className="min-h-0 flex-1">
                   <div className="flex flex-col gap-1 px-1 pb-2">
-                    <OpenCodeProviderModelList
+                    <AgentProviderModelList
                       models={filteredModels}
                       providerId={providerId}
                       configuredProviderId={configuredProviderId}

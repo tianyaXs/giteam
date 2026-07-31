@@ -3,16 +3,16 @@ import { loadLocalJson, saveLocalJson } from "./localPreferences";
 import {
   buildInstalledSkillInfoRows,
   INSTALLED_VIA_SKILLS_DESCRIPTION,
-  normalizeInstalledOpencodeSkills,
+  normalizeInstalledAgentSkills,
   reconcilePendingSkillInstallGroups,
-  type OpencodeInstalledSkillGroup,
-  type OpencodeSkillInfo,
+  type AgentInstalledSkillGroup,
+  type AgentSkillInfo,
   type PendingSkillInstallGroup
-} from "./opencodeSkillData";
-import { quoteShellArg, skillSourceGroupFromSpec } from "./opencodeSkillMarketplace";
+} from "./agentSkillData";
+import { quoteShellArg, skillSourceGroupFromSpec } from "./agentSkillMarketplace";
 import { invoke } from "./platform";
 
-const OPENCODE_SKILL_SOURCE_GROUPS_KEY = "giteam.opencode.skill-source-groups.v1";
+const AGENT_SKILL_SOURCE_GROUPS_KEY = "giteam.agent.skill-source-groups.v1";
 const GITEAM_BUILTIN_SKILL_PREFIX = "giteam-builtin:";
 
 function waitForPaint(): Promise<void> {
@@ -21,7 +21,7 @@ function waitForPaint(): Promise<void> {
   });
 }
 
-function buildInstalledSkillRemovePaths(skills: OpencodeSkillInfo[]): string[] {
+function buildInstalledSkillRemovePaths(skills: AgentSkillInfo[]): string[] {
   return Array.from(new Set(
     skills
       .map((skill) => String(skill.path || "").trim())
@@ -29,7 +29,7 @@ function buildInstalledSkillRemovePaths(skills: OpencodeSkillInfo[]): string[] {
   ));
 }
 
-type UseOpencodeInstalledSkillsInput = {
+type UseAgentInstalledSkillsInput = {
   repoPath: string;
   skillsVisible: boolean;
   ensureRepoSelected: () => boolean;
@@ -39,7 +39,7 @@ type UseOpencodeInstalledSkillsInput = {
   runCommandInTerminalModule: (command: string) => Promise<void>;
 };
 
-export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInput) {
+export function useAgentInstalledSkills(input: UseAgentInstalledSkillsInput) {
   const {
     repoPath,
     skillsVisible,
@@ -63,40 +63,40 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
   setErrorRef.current = setError;
   runCommandInTerminalModuleRef.current = runCommandInTerminalModule;
 
-  const [opencodeSkills, setOpencodeSkills] = useState<OpencodeSkillInfo[]>([]);
-  const [opencodeSkillsLoading, setOpencodeSkillsLoading] = useState(false);
-  const [opencodeSkillsLoadedOnce, setOpencodeSkillsLoadedOnce] = useState(false);
-  const [opencodeSkillsError, setOpencodeSkillsError] = useState("");
-  const [opencodeSkillInstallSpec, setOpencodeSkillInstallSpec] = useState("");
-  const [opencodeSkillInstallScope, setOpencodeSkillInstallScope] = useState<"project" | "global">("project");
-  const [opencodeSkillInstallingSpec, setOpencodeSkillInstallingSpec] = useState("");
-  const [opencodeSkillInstallNotice, setOpencodeSkillInstallNotice] = useState("");
-  const [opencodeSkillInstallLog, setOpencodeSkillInstallLog] = useState("");
-  const [opencodeSkillListFilter, setOpencodeSkillListFilter] = useState<"all" | "global" | "project" | "source">("all");
-  const [opencodeSkillListQuery, setOpencodeSkillListQuery] = useState("");
-  const [opencodeSkillSourceInput, setOpencodeSkillSourceInput] = useState("");
-  const [opencodeSkillSourceKind, setOpencodeSkillSourceKind] = useState<"url" | "path">("url");
-  const [opencodeSkillBusy, setOpencodeSkillBusy] = useState(false);
-  const [opencodeSkillRemovingKey, setOpencodeSkillRemovingKey] = useState("");
+  const [agentSkills, setAgentSkills] = useState<AgentSkillInfo[]>([]);
+  const [agentSkillsLoading, setAgentSkillsLoading] = useState(false);
+  const [agentSkillsLoadedOnce, setAgentSkillsLoadedOnce] = useState(false);
+  const [agentSkillsError, setAgentSkillsError] = useState("");
+  const [agentSkillInstallSpec, setAgentSkillInstallSpec] = useState("");
+  const [agentSkillInstallScope, setAgentSkillInstallScope] = useState<"project" | "global">("project");
+  const [agentSkillInstallingSpec, setAgentSkillInstallingSpec] = useState("");
+  const [agentSkillInstallNotice, setAgentSkillInstallNotice] = useState("");
+  const [agentSkillInstallLog, setAgentSkillInstallLog] = useState("");
+  const [agentSkillListFilter, setAgentSkillListFilter] = useState<"all" | "global" | "project" | "source">("all");
+  const [agentSkillListQuery, setAgentSkillListQuery] = useState("");
+  const [agentSkillSourceInput, setAgentSkillSourceInput] = useState("");
+  const [agentSkillSourceKind, setAgentSkillSourceKind] = useState<"url" | "path">("url");
+  const [agentSkillBusy, setAgentSkillBusy] = useState(false);
+  const [agentSkillRemovingKey, setAgentSkillRemovingKey] = useState("");
 
-  const skillsByRepoRef = useRef<Record<string, OpencodeSkillInfo[]>>({});
-  const skillSourceGroupsRef = useRef<Record<string, string>>(loadLocalJson<Record<string, string>>(OPENCODE_SKILL_SOURCE_GROUPS_KEY, {}));
+  const skillsByRepoRef = useRef<Record<string, AgentSkillInfo[]>>({});
+  const skillSourceGroupsRef = useRef<Record<string, string>>(loadLocalJson<Record<string, string>>(AGENT_SKILL_SOURCE_GROUPS_KEY, {}));
   const pendingSkillInstallGroupsRef = useRef<Record<string, PendingSkillInstallGroup[]>>({});
 
-  const filteredOpencodeSkills = useMemo(() => {
-    const query = opencodeSkillListQuery.trim().toLowerCase();
-    return opencodeSkills.filter((skill) => {
+  const filteredAgentSkills = useMemo(() => {
+    const query = agentSkillListQuery.trim().toLowerCase();
+    return agentSkills.filter((skill) => {
       const scope = skill.scope || "source";
-      if (opencodeSkillListFilter !== "all" && scope !== opencodeSkillListFilter) return false;
+      if (agentSkillListFilter !== "all" && scope !== agentSkillListFilter) return false;
       if (!query) return true;
       return [skill.name, skill.description, skill.path, skill.location]
         .some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [opencodeSkills, opencodeSkillListFilter, opencodeSkillListQuery]);
+  }, [agentSkills, agentSkillListFilter, agentSkillListQuery]);
 
-  const groupedOpencodeSkills = useMemo<OpencodeInstalledSkillGroup[]>(() => {
-    const groups = new Map<string, OpencodeSkillInfo[]>();
-    filteredOpencodeSkills.forEach((skill) => {
+  const groupedAgentSkills = useMemo<AgentInstalledSkillGroup[]>(() => {
+    const groups = new Map<string, AgentSkillInfo[]>();
+    filteredAgentSkills.forEach((skill) => {
       const key = (skill.sourceGroup || skill.name).trim() || "Unnamed Skill";
       const bucket = groups.get(key) || [];
       bucket.push(skill);
@@ -123,17 +123,17 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredOpencodeSkills]);
+  }, [filteredAgentSkills]);
 
   function restoreCachedSkillsForRepo(targetRepoPath: string, options: { resetFilter?: boolean } = {}) {
     const cached = skillsByRepoRef.current[targetRepoPath] || null;
     startTransition(() => {
-      if (cached) setOpencodeSkills(cached);
-      setOpencodeSkillsLoadedOnce(Boolean(cached));
-      setOpencodeSkillsLoading(!cached);
-      setOpencodeSkillsError("");
-      if (options.resetFilter) setOpencodeSkillListQuery("");
-      setOpencodeSkillRemovingKey("");
+      if (cached) setAgentSkills(cached);
+      setAgentSkillsLoadedOnce(Boolean(cached));
+      setAgentSkillsLoading(!cached);
+      setAgentSkillsError("");
+      if (options.resetFilter) setAgentSkillListQuery("");
+      setAgentSkillRemovingKey("");
     });
     return cached;
   }
@@ -149,21 +149,21 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
     });
     if (!changed) return;
     skillSourceGroupsRef.current = nextMap;
-    saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, nextMap);
+    saveLocalJson(AGENT_SKILL_SOURCE_GROUPS_KEY, nextMap);
   }
 
-  async function refreshOpencodeSkills() {
+  async function refreshAgentSkills() {
     const requestRepoPath = repoPathRef.current.trim();
     if (!requestRepoPath) return;
     startTransition(() => {
-      setOpencodeSkillsLoading(true);
-      setOpencodeSkillsError("");
+      setAgentSkillsLoading(true);
+      setAgentSkillsError("");
     });
     await waitForPaint();
     try {
-      const installedRaw = await invoke<unknown>("list_installed_opencode_skills", { repoPath: requestRepoPath }).catch(() => []);
+      const installedRaw = await invoke<unknown>("list_installed_agent_skills", { repoPath: requestRepoPath }).catch(() => []);
       if (repoPathRef.current.trim() !== requestRepoPath) return;
-      const installedRows = normalizeInstalledOpencodeSkills(installedRaw);
+      const installedRows = normalizeInstalledAgentSkills(installedRaw);
       const pending = pendingSkillInstallGroupsRef.current[requestRepoPath] || [];
       if (pending.length > 0) {
         const reconciled = reconcilePendingSkillInstallGroups({
@@ -174,7 +174,7 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
         pendingSkillInstallGroupsRef.current[requestRepoPath] = reconciled.pending;
         if (reconciled.changed) {
           skillSourceGroupsRef.current = reconciled.sourceGroupMap;
-          saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, reconciled.sourceGroupMap);
+          saveLocalJson(AGENT_SKILL_SOURCE_GROUPS_KEY, reconciled.sourceGroupMap);
         }
       }
       const sourceGroupMap = skillSourceGroupsRef.current;
@@ -186,33 +186,32 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
         }))
         .filter((entry) => entry.path && entry.sourceGroup);
       if (sourceGroupEntries.length > 0) {
-        void invoke("save_opencode_skill_source_groups", { repoPath: requestRepoPath, entries: sourceGroupEntries }).catch(() => null);
+        void invoke("save_agent_skill_source_groups", { repoPath: requestRepoPath, entries: sourceGroupEntries }).catch(() => null);
       }
-      void invoke("sync_opencode_skill_mcp_manifests", { repoPath: requestRepoPath })
-        .catch((error) => appendDebugLogRef.current(`skill.mcp.sync.error ${String(error)}`));
+      // PR7：pi 目录下的 MCP manifest 同步归 PR8，此处不再触发 opencode.jsonc 写入。
       const rows = buildInstalledSkillInfoRows(installedRows, sourceGroupMap);
       skillsByRepoRef.current[requestRepoPath] = rows;
       startTransition(() => {
-        setOpencodeSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
+        setAgentSkills(rows.sort((a, b) => (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)));
       });
     } catch (error) {
       if (repoPathRef.current.trim() !== requestRepoPath) return;
       const message = String(error);
-      startTransition(() => setOpencodeSkillsError(message));
+      startTransition(() => setAgentSkillsError(message));
       appendDebugLogRef.current(`skill.list.error ${message}`);
     } finally {
       if (repoPathRef.current.trim() === requestRepoPath) {
         startTransition(() => {
-          setOpencodeSkillsLoadedOnce(true);
-          setOpencodeSkillsLoading(false);
+          setAgentSkillsLoadedOnce(true);
+          setAgentSkillsLoading(false);
         });
       }
     }
   }
 
-  async function installOpencodeSkillFromRegistry(
-    specArg = opencodeSkillInstallSpec,
-    scopeArg: "project" | "global" = opencodeSkillInstallScope
+  async function installAgentSkillFromRegistry(
+    specArg = agentSkillInstallSpec,
+    scopeArg: "project" | "global" = agentSkillInstallScope
   ) {
     if (!ensureRepoSelectedRef.current()) return;
     const requestRepoPath = repoPathRef.current.trim();
@@ -222,7 +221,7 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
       return;
     }
     const groupName = skillSourceGroupFromSpec(primarySpec);
-    const beforePaths = opencodeSkills
+    const beforePaths = agentSkills
       .filter((skill) => (skill.scope || "project") === scopeArg)
       .map((skill) => String(skill.path || ""))
       .filter(Boolean);
@@ -232,14 +231,14 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
         setErrorRef.current("内置 Skill 缺少标识。");
         return;
       }
-      setOpencodeSkillBusy(true);
-      setOpencodeSkillInstallingSpec(primarySpec);
-      setOpencodeSkillInstallNotice("");
-      setOpencodeSkillInstallLog(`Installing built-in skill: ${skillId}`);
-      setOpencodeSkillsError("");
-      setOpencodeSkillInstallSpec("");
+      setAgentSkillBusy(true);
+      setAgentSkillInstallingSpec(primarySpec);
+      setAgentSkillInstallNotice("");
+      setAgentSkillInstallLog(`Installing built-in skill: ${skillId}`);
+      setAgentSkillsError("");
+      setAgentSkillInstallSpec("");
       try {
-        const result: any = await invoke("install_builtin_opencode_skill", {
+        const result: any = await invoke("install_builtin_agent_skill", {
           repoPath: requestRepoPath,
           skillId,
           global: scopeArg === "global"
@@ -250,23 +249,23 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
             ...skillSourceGroupsRef.current,
             [installedPath]: groupName || skillId
           };
-          saveLocalJson(OPENCODE_SKILL_SOURCE_GROUPS_KEY, skillSourceGroupsRef.current);
-          void invoke("save_opencode_skill_source_groups", {
+          saveLocalJson(AGENT_SKILL_SOURCE_GROUPS_KEY, skillSourceGroupsRef.current);
+          void invoke("save_agent_skill_source_groups", {
             repoPath: requestRepoPath,
             entries: [{ path: installedPath, scope: scopeArg, sourceGroup: groupName || skillId }]
           }).catch(() => null);
         }
-        await refreshOpencodeSkills();
-        setOpencodeSkillInstallLog(`Installed built-in skill: ${skillId}`);
+        await refreshAgentSkills();
+        setAgentSkillInstallLog(`Installed built-in skill: ${skillId}`);
         setMessageRef.current(`Skill installed: ${skillId}`);
       } catch (error) {
         const message = String(error);
-        setOpencodeSkillsError(message);
+        setAgentSkillsError(message);
         setErrorRef.current(message);
-        setOpencodeSkillInstallLog(message);
+        setAgentSkillInstallLog(message);
       } finally {
-        setOpencodeSkillBusy(false);
-        setOpencodeSkillInstallingSpec("");
+        setAgentSkillBusy(false);
+        setAgentSkillInstallingSpec("");
       }
       return;
     }
@@ -275,137 +274,116 @@ export function useOpencodeInstalledSkills(input: UseOpencodeInstalledSkillsInpu
       { groupName: groupName || primarySpec, scope: scopeArg, beforePaths }
     ];
     const globalFlag = scopeArg === "global" ? " -g" : "";
-    const command = `SKILLS_CLONE_TIMEOUT_MS=600000 npx -y skills add ${quoteShellArg(primarySpec)} --agent opencode -y${globalFlag}`;
-    setOpencodeSkillBusy(false);
-    setOpencodeSkillInstallingSpec("");
-    setOpencodeSkillInstallNotice("");
-    setOpencodeSkillInstallLog("");
-    setOpencodeSkillsError("");
-    setOpencodeSkillInstallSpec("");
-    appendDebugLogRef.current(`skill.install.terminal ${primarySpec} scope=${scopeArg}`);
-    setMessageRef.current(`已切到终端执行 Skill 安装: ${primarySpec}`);
+    const command = `SKILLS_CLONE_TIMEOUT_MS=600000 npx -y skills add ${quoteShellArg(primarySpec)} --agent pi -y${globalFlag}`;
+    setAgentSkillBusy(false);
+    setAgentSkillInstallingSpec("");
+    setAgentSkillInstallNotice("");
+    setAgentSkillInstallLog("");
+    setAgentSkillsError("");
+    setAgentSkillInstallSpec("");
+    appendDebugLogRef.current(`skill.install.terminal ${primarySpec} scope=${scopeArg} agent=pi`);
+    setMessageRef.current(`已切到终端执行 Skill 安装: ${primarySpec}（写入 .pi/skills，安装完成后可被 pi 运行时加载）`);
     await runCommandInTerminalModuleRef.current(command);
     [6000, 15000, 30000].forEach((delay) => {
-      window.setTimeout(() => void refreshOpencodeSkills(), delay);
+      window.setTimeout(() => void refreshAgentSkills(), delay);
     });
   }
 
-  async function removeOpencodeSkill(skill: OpencodeSkillInfo) {
+  async function removeAgentSkill(skill: AgentSkillInfo) {
     if (!ensureRepoSelectedRef.current()) return;
     const requestRepoPath = repoPathRef.current.trim();
     const scope = skill.scope || "source";
     const key = `${scope}:${skill.name}:${skill.path || skill.location || ""}`;
     const removablePaths = buildInstalledSkillRemovePaths([skill]);
     if (removablePaths.length === 0) {
-      setOpencodeSkillsError("缺少可删除的技能路径。");
+      setAgentSkillsError("缺少可删除的技能路径。");
       return;
     }
-    setOpencodeSkillRemovingKey(key);
-    setOpencodeSkillsError("");
+    setAgentSkillRemovingKey(key);
+    setAgentSkillsError("");
     try {
-      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath: requestRepoPath, paths: removablePaths });
+      const result = await invoke<any>("remove_installed_agent_skills_by_path", { repoPath: requestRepoPath, paths: removablePaths });
       pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
-      await refreshOpencodeSkills();
+      await refreshAgentSkills();
       setMessageRef.current(`Skill removed: ${skill.name}`);
     } catch (error) {
       const message = String(error);
-      setOpencodeSkillsError(message);
+      setAgentSkillsError(message);
       setErrorRef.current(message);
     } finally {
-      setOpencodeSkillRemovingKey("");
+      setAgentSkillRemovingKey("");
     }
   }
 
-  async function removeOpencodeSkillGroup(group: OpencodeInstalledSkillGroup) {
+  async function removeAgentSkillGroup(group: AgentInstalledSkillGroup) {
     if (!ensureRepoSelectedRef.current()) return;
     const requestRepoPath = repoPathRef.current.trim();
     if (group.removableItems.length === 0) {
-      setOpencodeSkillsError("该目录下没有可删除的已安装项。");
+      setAgentSkillsError("该目录下没有可删除的已安装项。");
       return;
     }
-    setOpencodeSkillsError("");
+    setAgentSkillsError("");
     try {
       const removeKeys = group.removableItems.map((skill) => `${skill.scope || "source"}:${skill.name}:${skill.path || skill.location || ""}`);
       const removablePaths = buildInstalledSkillRemovePaths(group.removableItems);
       if (removablePaths.length === 0) throw new Error("该目录下没有可删除的技能路径。");
-      setOpencodeSkillRemovingKey(removeKeys[0] || "");
-      const result = await invoke<any>("remove_installed_opencode_skills_by_path", { repoPath: requestRepoPath, paths: removablePaths });
+      setAgentSkillRemovingKey(removeKeys[0] || "");
+      const result = await invoke<any>("remove_installed_agent_skills_by_path", { repoPath: requestRepoPath, paths: removablePaths });
       pruneRemovedSkillSourceGroups(Array.isArray(result?.removed) ? result.removed.map((item: unknown) => String(item || "")) : removablePaths);
-      await refreshOpencodeSkills();
+      await refreshAgentSkills();
       setMessageRef.current(`Skill group removed: ${group.name}`);
     } catch (error) {
       const message = String(error);
-      setOpencodeSkillsError(message);
+      setAgentSkillsError(message);
       setErrorRef.current(message);
     } finally {
-      setOpencodeSkillRemovingKey("");
+      setAgentSkillRemovingKey("");
     }
   }
 
-  async function addOpencodeSkillSource() {
-    if (!ensureRepoSelectedRef.current()) return;
-    const requestRepoPath = repoPathRef.current.trim();
-    const source = opencodeSkillSourceInput.trim();
+  async function addAgentSkillSource() {
+    // pi 没有 opencode 式的 skills.urls/paths 配置；来源直接按第三方 skill 安装进 .pi/skills。
+    const source = agentSkillSourceInput.trim();
     if (!source) return;
-    setOpencodeSkillBusy(true);
-    setOpencodeSkillsError("");
-    try {
-      const cfg = await invoke<any>("get_opencode_server_global_config", { repoPath: requestRepoPath });
-      const currentSkills = (cfg?.skills && typeof cfg.skills === "object") ? cfg.skills : {};
-      const key = opencodeSkillSourceKind === "url" ? "urls" : "paths";
-      const prev = Array.isArray(currentSkills[key]) ? currentSkills[key].map((value: unknown) => String(value || "")).filter(Boolean) : [];
-      const next = Array.from(new Set([...prev, source]));
-      await invoke("patch_opencode_server_config", {
-        repoPath: requestRepoPath,
-        patch: { skills: { ...currentSkills, [key]: next } }
-      });
-      setOpencodeSkillSourceInput("");
-      await refreshOpencodeSkills();
-      setMessageRef.current(`Skill source added: ${source}`);
-    } catch (error) {
-      const message = String(error);
-      setOpencodeSkillsError(message);
-      setErrorRef.current(message);
-    } finally {
-      setOpencodeSkillBusy(false);
-    }
+    setAgentSkillSourceInput("");
+    await installAgentSkillFromRegistry(source, agentSkillInstallScope);
   }
 
   return {
-    opencodeSkills,
-    opencodeSkillsLoading,
-    opencodeSkillsLoadedOnce,
-    opencodeSkillsError,
-    opencodeSkillInstallSpec,
-    setOpencodeSkillInstallSpec,
-    opencodeSkillInstallScope,
-    setOpencodeSkillInstallScope,
-    opencodeSkillInstallingSpec,
-    opencodeSkillInstallNotice,
-    opencodeSkillInstallLog,
-    opencodeSkillListFilter,
-    setOpencodeSkillListFilter,
-    opencodeSkillListQuery,
-    setOpencodeSkillListQuery,
-    opencodeSkillSourceInput,
-    setOpencodeSkillSourceInput,
-    opencodeSkillSourceKind,
-    setOpencodeSkillSourceKind,
-    opencodeSkillBusy,
-    opencodeSkillRemovingKey,
-    groupedOpencodeSkills,
-    filteredOpencodeSkills,
+    agentSkills,
+    agentSkillsLoading,
+    agentSkillsLoadedOnce,
+    agentSkillsError,
+    agentSkillInstallSpec,
+    setAgentSkillInstallSpec,
+    agentSkillInstallScope,
+    setAgentSkillInstallScope,
+    agentSkillInstallingSpec,
+    agentSkillInstallNotice,
+    agentSkillInstallLog,
+    agentSkillListFilter,
+    setAgentSkillListFilter,
+    agentSkillListQuery,
+    setAgentSkillListQuery,
+    agentSkillSourceInput,
+    setAgentSkillSourceInput,
+    agentSkillSourceKind,
+    setAgentSkillSourceKind,
+    agentSkillBusy,
+    agentSkillRemovingKey,
+    groupedAgentSkills,
+    filteredAgentSkills,
     skillsByRepoRef,
-    setOpencodeSkills,
-    setOpencodeSkillsLoadedOnce,
-    setOpencodeSkillsLoading,
-    setOpencodeSkillsError,
-    setOpencodeSkillRemovingKey,
+    setAgentSkills,
+    setAgentSkillsLoadedOnce,
+    setAgentSkillsLoading,
+    setAgentSkillsError,
+    setAgentSkillRemovingKey,
     restoreCachedSkillsForRepo,
-    refreshOpencodeSkills,
-    installOpencodeSkillFromRegistry,
-    removeOpencodeSkill,
-    removeOpencodeSkillGroup,
-    addOpencodeSkillSource
+    refreshAgentSkills,
+    installAgentSkillFromRegistry,
+    removeAgentSkill,
+    removeAgentSkillGroup,
+    addAgentSkillSource
   };
 }

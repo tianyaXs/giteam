@@ -2,12 +2,12 @@ import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
-  type OpencodeInstalledSkillGroup,
-  type OpencodeSkillInfo
-} from "../../lib/opencodeSkillData";
-import type { OpencodeAgentInfo } from "../../lib/opencodeAgents";
-import type { OpencodePermissionReply, OpencodePermissionRequest } from "../../lib/opencodePermissions";
-import { OPENCODE_RECOMMENDED_SKILLS, type OpencodeSkillSearchResult } from "../../lib/opencodeSkillMarketplace";
+  type AgentInstalledSkillGroup,
+  type AgentSkillInfo
+} from "../../lib/agentSkillData";
+import type { AgentDefinition } from "../../lib/agentDefinitions";
+import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
+import { AGENT_RECOMMENDED_SKILLS, type AgentSkillSearchResult } from "../../lib/agentSkillMarketplace";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -33,20 +33,21 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { cn } from "../../lib/utils";
+import { MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 
-export type OpencodeModuleTab = "agents" | "permissions" | "mcp" | "skills";
+export type AgentModuleTab = "agents" | "permissions" | "mcp" | "skills";
 
-type OpenCodeModulePanelProps = {
+type AgentModulePanelProps = {
   open: boolean;
-  activeTab: OpencodeModuleTab;
+  activeTab: AgentModuleTab;
   agentSearch: string;
   agentsLoading: boolean;
   agentsError: string;
-  visibleAgents: OpencodeAgentInfo[];
+  visibleAgents: AgentDefinition[];
   activeAgent: string;
   autoAcceptPermissions: boolean;
   permissionLoading: boolean;
-  activePermissions: OpencodePermissionRequest[];
+  activePermissions: PermissionInteraction[];
   mcpLoading: boolean;
   mcpError: string;
   mcpBusyName: string;
@@ -67,10 +68,10 @@ type OpenCodeModulePanelProps = {
   };
   skillsLoading: boolean;
   skillsError: string;
-  skills: OpencodeSkillInfo[];
-  filteredSkills: OpencodeSkillInfo[];
-  groupedSkills: OpencodeInstalledSkillGroup[];
-  skillSearchResults: OpencodeSkillSearchResult[];
+  skills: AgentSkillInfo[];
+  filteredSkills: AgentSkillInfo[];
+  groupedSkills: AgentInstalledSkillGroup[];
+  skillSearchResults: AgentSkillSearchResult[];
   skillInstallScope: "project" | "global";
   skillBusy: boolean;
   skillInstallingSpec: string;
@@ -83,13 +84,13 @@ type OpenCodeModulePanelProps = {
   skillListQuery: string;
   skillRemovingKey: string;
   onClose: () => void;
-  onTabChange: (tab: OpencodeModuleTab) => void;
+  onTabChange: (tab: AgentModuleTab) => void;
   onAgentSearchChange: (value: string) => void;
   onRefreshAgents: () => void;
   onApplyAgent: (name: string) => void;
   onToggleAutoAccept: () => void;
   onRefreshPermissions: () => void;
-  onSendPermissionReply: (requestId: string, reply: OpencodePermissionReply) => void;
+  onSendPermissionReply: (requestId: string, reply: AgentPermissionReply) => void;
   onRefreshMcp: () => void;
   onRefreshSkills: () => void;
   onAddMcp: () => void;
@@ -104,12 +105,12 @@ type OpenCodeModulePanelProps = {
   onAddSkillSource: () => void;
   onSkillListFilterChange: (value: "all" | "global" | "project" | "source") => void;
   onSkillListQueryChange: (value: string) => void;
-  onReferenceSkill: (skill: OpencodeSkillInfo) => void;
-  onRemoveSkill: (skill: OpencodeSkillInfo) => void;
-  onRemoveSkillGroup: (group: OpencodeInstalledSkillGroup) => void;
+  onReferenceSkill: (skill: AgentSkillInfo) => void;
+  onRemoveSkill: (skill: AgentSkillInfo) => void;
+  onRemoveSkillGroup: (group: AgentInstalledSkillGroup) => void;
 };
 
-export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
+export function AgentModulePanel(props: AgentModulePanelProps) {
   if (!props.open) return null;
 
   return (
@@ -117,12 +118,12 @@ export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
       <DialogContent className="flex max-h-[min(760px,calc(100vh-32px))] w-[min(920px,calc(100vw-32px))] flex-col overflow-hidden p-0">
         <DialogHeader className="flex-row items-start justify-between gap-4 border-b border-border p-4">
           <div className="grid min-w-0 gap-1">
-            <Badge variant="outline" className="w-fit normal-case tracking-normal">OpenCode Modules</Badge>
+            <Badge variant="outline" className="w-fit normal-case tracking-normal">Giteam Modules</Badge>
             <DialogTitle>Agent / 权限 / MCP / Skills</DialogTitle>
-            <DialogDescription className="sr-only">管理 OpenCode 的 agent、权限、MCP 与 skills。</DialogDescription>
+            <DialogDescription className="sr-only">管理 Giteam 的 agent、权限、MCP 与 skills。</DialogDescription>
           </div>
           <DialogClose asChild>
-            <Button type="button" variant="ghost" size="icon" aria-label="关闭 OpenCode 模块">
+            <Button type="button" variant="ghost" size="icon" aria-label="关闭 Giteam 模块">
               <X data-icon="inline-start" aria-hidden="true" />
             </Button>
           </DialogClose>
@@ -132,7 +133,7 @@ export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
             type="single"
             value={props.activeTab}
             onValueChange={(value) => {
-              if (value) props.onTabChange(value as OpencodeModuleTab);
+              if (value) props.onTabChange(value as AgentModuleTab);
             }}
             variant="outline"
             size="sm"
@@ -141,9 +142,9 @@ export function OpenCodeModulePanel(props: OpenCodeModulePanelProps) {
             {([
               ["agents", "Agents"],
               ["permissions", `权限${props.activePermissions.length ? ` (${props.activePermissions.length})` : ""}`],
-              ["mcp", "MCP"],
+              ...(MCP_MODULE_ENABLED ? ([["mcp", "MCP"]] as Array<[AgentModuleTab, string]>) : []),
               ["skills", "Skills"]
-            ] as Array<[OpencodeModuleTab, string]>).map(([tab, label]) => (
+            ] as Array<[AgentModuleTab, string]>).map(([tab, label]) => (
               <ToggleGroupItem key={tab} value={tab}>{label}</ToggleGroupItem>
             ))}
           </ToggleGroup>
@@ -182,7 +183,7 @@ function SkillScopeBadge({ scope, children }: { scope?: string; children?: React
   );
 }
 
-function AgentsSection(props: OpenCodeModulePanelProps) {
+function AgentsSection(props: AgentModulePanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -190,7 +191,7 @@ function AgentsSection(props: OpenCodeModulePanelProps) {
         <Button variant="outline" size="sm" onClick={props.onRefreshAgents} disabled={props.agentsLoading}>刷新</Button>
       </div>
       {props.agentsError ? <ModuleEmpty title="Agent 加载失败" description={props.agentsError} danger /> : null}
-      {props.visibleAgents.length === 0 ? <ModuleEmpty title="没有匹配的 Agent" description="试试清空搜索词或刷新 OpenCode agent 列表。" /> : null}
+      {props.visibleAgents.length === 0 ? <ModuleEmpty title="没有匹配的 Agent" description="试试清空搜索词或刷新 Giteam agent 列表。" /> : null}
       <div className="grid gap-2">
         {props.visibleAgents.map((agent) => (
           <Card key={agent.name} className={cn("rounded-lg shadow-none transition-colors", agent.name === props.activeAgent && "border-primary/40 bg-primary/5")}>
@@ -211,14 +212,14 @@ function AgentsSection(props: OpenCodeModulePanelProps) {
   );
 }
 
-function PermissionsSection(props: OpenCodeModulePanelProps) {
+function PermissionsSection(props: AgentModulePanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <Card className="rounded-lg shadow-none">
         <CardContent className="flex items-center justify-between gap-4 p-3">
           <div className="grid min-w-0 gap-1">
             <strong className="text-sm font-semibold">自动接受权限</strong>
-            <small className="text-sm text-muted-foreground">为当前会话写入 allow-all 规则，并自动回复后续 permission.asked。</small>
+            <small className="text-sm text-muted-foreground">开启后自动通过当前会话的工具授权请求（写文件、执行命令等）。</small>
           </div>
           <Switch checked={props.autoAcceptPermissions} aria-label="自动接受权限" onCheckedChange={props.onToggleAutoAccept} />
         </CardContent>
@@ -230,27 +231,29 @@ function PermissionsSection(props: OpenCodeModulePanelProps) {
         <ModuleEmpty title="当前没有待处理授权" />
       ) : (
         <div className="grid gap-2">
-          {props.activePermissions.map((req) => (
-            <Card key={req.id} className="rounded-lg shadow-none">
-              <CardContent className="grid gap-3 p-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_auto] md:items-center">
-                <strong className="truncate text-sm font-semibold">{req.permission || "permission"}</strong>
-                <span className="truncate text-sm text-muted-foreground">{(req.patterns || []).join(", ") || "*"}</span>
-                <code className="truncate rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">{req.id}</code>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</Button>
-                  <Button variant="contrast" size="sm" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</Button>
-                  <Button variant="destructive" size="sm" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+          {props.activePermissions.map((req) => {
+            const view = describePermissionInteraction(req);
+            return (
+              <Card key={req.id} className="rounded-lg shadow-none">
+                <CardContent className="grid gap-3 p-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.6fr)_auto] md:items-center">
+                  <strong className="truncate text-sm font-semibold">{view.tool}</strong>
+                  <code className="truncate rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">{view.target || "*"}</code>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</Button>
+                    <Button variant="contrast" size="sm" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</Button>
+                    <Button variant="destructive" size="sm" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function McpSection(props: OpenCodeModulePanelProps) {
+function McpSection(props: AgentModulePanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -315,7 +318,7 @@ function McpSection(props: OpenCodeModulePanelProps) {
   );
 }
 
-function SkillsSection(props: OpenCodeModulePanelProps) {
+function SkillsSection(props: AgentModulePanelProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -330,8 +333,8 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
             <p className="m-0 text-sm text-muted-foreground">默认推荐全局安装通用能力；项目特定规范、私有工作流或团队模板建议安装到当前仓库。</p>
           </div>
           <div className="flex flex-wrap gap-2 md:justify-end">
-            <Badge variant="secondary" className="normal-case tracking-normal">{props.skills.filter((skill: OpencodeSkillInfo) => skill.scope === "global").length} Global</Badge>
-            <Badge variant="secondary" className="normal-case tracking-normal">{props.skills.filter((skill: OpencodeSkillInfo) => skill.scope === "project").length} Repo</Badge>
+            <Badge variant="secondary" className="normal-case tracking-normal">{props.skills.filter((skill: AgentSkillInfo) => skill.scope === "global").length} Global</Badge>
+            <Badge variant="secondary" className="normal-case tracking-normal">{props.skills.filter((skill: AgentSkillInfo) => skill.scope === "project").length} Repo</Badge>
             <Badge variant="outline" className="normal-case tracking-normal">{props.skillSearchResults.length} Results</Badge>
           </div>
         </CardContent>
@@ -344,7 +347,7 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
         </ToggleGroup>
       </div>
       {props.skillBusy ? (
-        <ModuleEmpty title="正在安装 Skill" description="会从 skills.sh / GitHub 拉取内容，完成后自动刷新 OpenCode Skills 列表。" />
+        <ModuleEmpty title="正在安装 Skill" description="会从 skills.sh / GitHub 拉取内容，完成后自动刷新 Giteam Skills 列表。" />
       ) : null}
       {(props.skillBusy || props.skillInstallingSpec || props.skillInstallLog) ? (
         <Card className="rounded-lg shadow-none">
@@ -358,7 +361,7 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
         </Card>
       ) : null}
       <div className="grid gap-2 md:grid-cols-2">
-        {OPENCODE_RECOMMENDED_SKILLS.map((skill) => (
+        {AGENT_RECOMMENDED_SKILLS.map((skill) => (
           <Card key={skill.spec} className="rounded-lg shadow-none">
             <CardContent className="grid gap-2 p-3">
               <div className="flex items-center justify-between gap-2">
@@ -417,13 +420,13 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="url">skills.urls</SelectItem>
-              <SelectItem value="path">skills.paths</SelectItem>
+              <SelectItem value="url">URL / GitHub</SelectItem>
+              <SelectItem value="path">本地路径</SelectItem>
             </SelectGroup>
           </SelectContent>
         </Select>
-        <Input className="h-10 rounded-lg" placeholder={props.skillSourceKind === "url" ? "https://example.com/.well-known/skills/" : "/path/to/skills"} value={props.skillSourceInput} onChange={(event) => props.onSkillSourceInputChange(event.target.value)} />
-        <Button variant="outline" size="sm" onClick={props.onAddSkillSource} disabled={props.skillBusy}>添加来源</Button>
+        <Input className="h-10 rounded-lg" placeholder={props.skillSourceKind === "url" ? "owner/repo 或 https://github.com/..." : "/path/to/skill"} value={props.skillSourceInput} onChange={(event) => props.onSkillSourceInputChange(event.target.value)} />
+        <Button variant="outline" size="sm" onClick={props.onAddSkillSource} disabled={props.skillBusy}>安装到 pi</Button>
       </div>
       <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px] md:items-center">
         <div className="min-w-0">
@@ -440,7 +443,7 @@ function SkillsSection(props: OpenCodeModulePanelProps) {
         </div>
         <Input className="h-10 rounded-lg" placeholder="过滤已安装 skills" value={props.skillListQuery} onChange={(event) => props.onSkillListQueryChange(event.target.value)} />
       </div>
-      {props.skills.length === 0 ? <ModuleEmpty title="暂无 Skills" description="OpenCode 会扫描 .opencode/skills 和 ~/.config/opencode/skills。" /> : null}
+      {props.skills.length === 0 ? <ModuleEmpty title="暂无 Skills" description="Giteam 会扫描项目 .pi/skills 与全局 pi-agent/skills。" /> : null}
       {props.skills.length > 0 && props.filteredSkills.length === 0 ? <ModuleEmpty title="没有匹配当前过滤条件的 Skill" /> : null}
       <div className="grid gap-2">
         {props.groupedSkills.map((group) => {

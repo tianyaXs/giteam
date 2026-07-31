@@ -20,17 +20,14 @@ type RuntimeSetupDialogProps = {
   onRunAutoInit: () => void;
 };
 
-const RUNTIME_DEPS: RuntimeDepName[] = ["git", "entire", "opencode", "giteam"];
+/** 首启必装：git + entire。giteam CLI 仅手机端连接，在设置里可选安装。 */
+const RUNTIME_DEPS: RuntimeDepName[] = ["git", "entire"];
 
 const BOOTSTRAP_LOG_WEIGHTS: Array<[RegExp, number]> = [
   [/homebrew/i, 12],
-  [/installing git|git already installed/i, 28],
-  [/installing node|node\/npm already installed/i, 42],
-  [/installing entire|entire already installed/i, 58],
-  [/\[giteam\] PROGRESS: 68|正在通过 npm 安装 OpenCode|installing opencode|opencode already installed/i, 72],
-  [/npm 安装失败|PROGRESS: 74|正在通过官方脚本|OpenCode includes free models|█▀▀█|\[giteam\] PROGRESS: 88/i, 86],
-  [/installing opencode|OpenCode includes free models|█▀▀█|\[giteam\] PROGRESS: 88/i, 86],
-  [/installing giteam|giteam already installed/i, 91],
+  [/installing git|git already installed/i, 32],
+  [/installing node|node\/npm already installed/i, 52],
+  [/installing entire|entire already installed/i, 84],
   [/installed_version|runtime bootstrap complete|setup completed|finished/i, 100]
 ];
 
@@ -40,12 +37,6 @@ function inferBootstrapStage(log: string): string {
     const line = lines[i].replace(/\x1b\[[0-9;]*m/g, "");
     const progress = line.match(/\[giteam\] PROGRESS: \d+ (.+)/);
     if (progress?.[1]) return progress[1];
-    if (/installing giteam/i.test(line)) return "正在安装 giteam";
-    if (/giteam already installed/i.test(line)) return "giteam 已就绪";
-    if (/OpenCode includes free models|█▀▀█/i.test(line)) return "OpenCode 安装完成";
-    if (/正在通过 npm 安装 OpenCode/i.test(line)) return "正在通过 npm 安装 OpenCode";
-    if (/正在通过官方脚本安装 OpenCode/i.test(line)) return "正在通过官方脚本安装 OpenCode";
-    if (/opencode already installed/i.test(line)) return "OpenCode 已就绪";
     if (/installing entire/i.test(line)) return "正在安装 Entire";
     if (/entire already installed/i.test(line)) return "Entire 已就绪";
     if (/installing node/i.test(line)) return "正在安装 Node.js";

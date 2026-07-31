@@ -1,0 +1,9 @@
+[package]
+name = "giteam-pi-sdk-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+futures = "0.3"
+pi = { package = "pi_agent_rust", git = "https://github.com/Dicklesworthstone/pi_agent_rust", rev = "b27abd576cc0d2f39e2eef8f87f7897edec53b4f", default-features = false }

@@ -1,5 +1,19 @@
-import { cloneElement, isValidElement, useMemo, useRef } from "react";
-import { Streamdown } from "streamdown";
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
+import {
+  CodeBlockContainer,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+  Streamdown,
+  useIsCodeFenceIncomplete
+} from "streamdown";
+import type { HighlightResult } from "@streamdown/code";
 import { cjk as streamdownCjk } from "@streamdown/cjk";
 import { createCodePlugin } from "@streamdown/code";
 import { math as streamdownMath } from "@streamdown/math";
@@ -11,8 +25,11 @@ const streamdownCode = createCodePlugin({
   themes: ["github-light", "github-dark"]
 });
 
+const STREAMDOWN_SHIKI_THEMES = ["github-light", "github-dark"] as const;
+
 const STREAMDOWN_CONTROLS = {
-  code: false,
+  // 先开代码复制；下载/表格控件仍关，避免工具栏变重、样式冲突再冒出来
+  code: { copy: true, download: false },
   table: false,
   mermaid: {
     copy: true,
@@ -22,12 +39,34 @@ const STREAMDOWN_CONTROLS = {
   }
 };
 
+const STREAMDOWN_TRANSLATIONS = {
+  copyCode: "复制代码",
+  copied: "已复制",
+  downloadFile: "下载文件",
+  copyTable: "复制表格",
+  downloadDiagram: "下载图表",
+  viewFullscreen: "全屏查看",
+  exitFullscreen: "退出全屏",
+  openLink: "打开链接",
+  openExternalLink: "打开外部链接",
+  copyLink: "复制链接",
+  close: "关闭",
+  externalLinkWarning: "即将打开外部链接"
+};
+
 const STREAMDOWN_PLUGINS = {
   cjk: streamdownCjk,
   code: streamdownCode,
   math: streamdownMath,
   mermaid: streamdownMermaid
 };
+
+// 与官方 CodeBlock 行号样式一致（含 block：每行独立成行，否则 token 会横排挤成一行）
+const CODE_LINE_NUMBER_CLASS =
+  "block before:content-[counter(line)] before:mr-4 before:inline-block before:w-6 before:select-none before:text-right before:font-mono before:text-[13px] before:text-muted-foreground/50 before:[counter-increment:line]";
+
+const FLAT_CODE_CONTAINER_CLASS =
+  "gap-0 overflow-hidden bg-background p-0";
 
 const MARKDOWN_INLINE_WRAP_CLASS = "min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]";
 const MARKDOWN_LINK_WRAP_CLASS = "inline break-words text-left font-mono text-[0.94em] [overflow-wrap:anywhere]";
@@ -285,6 +324,7 @@ function restoreMistaggedFences(source: string): string {
       if (looksLikeMermaid(normalizedContent)) {
         return `${leadingNewline}${indent}${fence}mermaid\n${content}\n${indent}${fence}`;
       }
+      // 无语言围栏交回官方默认 CodeBlock，不再改写为 text / 自定义渲染器
       return match;
     }
   );
@@ -384,6 +424,221 @@ function getInlineText(value: unknown): string {
   return "";
 }
 
+function extractFenceCode(children: unknown): string {
+  if (typeof children === "string") return children;
+  if (isValidElement(children)) {
+    const childProps = children.props as { children?: unknown };
+    if (typeof childProps.children === "string") return childProps.children;
+  }
+  return getInlineText(children);
+}
+
+function trimTrailingNewline(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "\n") end -= 1;
+  return value.slice(0, end);
+}
+
+function parseFenceMeta(className: string | undefined, metastring: unknown): {
+  language: string;
+  startLine?: number;
+  lineNumbers: boolean;
+} {
+  const language = String(className || "").match(/language-([^\s]+)/)?.[1] || "";
+  const meta = typeof metastring === "string" ? metastring : "";
+  const startMatch = meta.match(/startLine=(\d+)/);
+  const startLineRaw = startMatch ? Number.parseInt(startMatch[1], 10) : undefined;
+  const startLine = startLineRaw && startLineRaw >= 1 ? startLineRaw : undefined;
+  const lineNumbers = !/\bnoLineNumbers\b/.test(meta);
+  return { language, startLine, lineNumbers };
+}
+
+function buildPlainHighlightResult(code: string): HighlightResult {
+  return {
+    bg: "transparent",
+    fg: "inherit",
+    tokens: code.split("\n").map((line) => [
+      {
+        content: line,
+        color: "inherit",
+        bgColor: "transparent",
+        htmlStyle: {},
+        offset: 0
+      }
+    ])
+  } as HighlightResult;
+}
+
+function FlatHighlightedBody({
+  code,
+  language,
+  lineNumbers,
+  startLine
+}: {
+  code: string;
+  language: string;
+  lineNumbers: boolean;
+  startLine?: number;
+}) {
+  const trimmed = useMemo(() => trimTrailingNewline(code), [code]);
+  const fallback = useMemo(() => buildPlainHighlightResult(trimmed), [trimmed]);
+  const [result, setResult] = useState<HighlightResult>(fallback);
+
+  useEffect(() => {
+    setResult(fallback);
+    const sync = streamdownCode.highlight(
+      {
+        code: trimmed,
+        language: language as never,
+        themes: [...STREAMDOWN_SHIKI_THEMES]
+      },
+      (next) => setResult(next)
+    );
+    if (sync) setResult(sync);
+  }, [trimmed, language, fallback]);
+
+  const rootStyle = useMemo(() => {
+    const style: Record<string, string> = {};
+    if (result.bg) style["--sdm-bg"] = String(result.bg);
+    if (result.fg) style["--sdm-fg"] = String(result.fg);
+    return style;
+  }, [result.bg, result.fg]);
+
+  return (
+    <div
+      className="overflow-x-auto p-4 text-sm"
+      data-language={language}
+      data-streamdown="code-block-body"
+    >
+      <pre
+        className="bg-[var(--sdm-bg,inherit)] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit))]"
+        style={rootStyle}
+      >
+        <code
+          className={lineNumbers ? "[counter-increment:line_0] [counter-reset:line]" : undefined}
+          style={lineNumbers && startLine && startLine > 1 ? { counterReset: `line ${startLine - 1}` } : undefined}
+        >
+          {result.tokens.map((line, lineIndex) => {
+            const isEmpty = line.length === 0 || (line.length === 1 && line[0]?.content === "");
+            const lineNodes = isEmpty
+              ? "\n"
+              : line.map((token, tokenIndex) => {
+                  const style: Record<string, string> = {};
+                  let hasBg = Boolean(token.bgColor);
+                  if (token.color) style["--sdm-c"] = String(token.color);
+                  if (token.bgColor) style["--sdm-tbg"] = String(token.bgColor);
+                  if (token.htmlStyle) {
+                    for (const [key, value] of Object.entries(token.htmlStyle)) {
+                      if (key === "color") style["--sdm-c"] = String(value);
+                      else if (key === "background-color") {
+                        style["--sdm-tbg"] = String(value);
+                        hasBg = true;
+                      } else style[key] = String(value);
+                    }
+                  }
+                  return (
+                    <span
+                      className={cn(
+                        "text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,var(--sdm-c,inherit))]",
+                        hasBg && "bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]"
+                      )}
+                      key={tokenIndex}
+                      style={style}
+                    >
+                      {token.content}
+                    </span>
+                  );
+                });
+            // 无行号时官方靠换行符断行；有行号时靠 span.block 断行
+            return (
+              <span className={lineNumbers ? CODE_LINE_NUMBER_CLASS : undefined} key={lineIndex}>
+                {lineNodes}
+                {!lineNumbers && !isEmpty && lineIndex < result.tokens.length - 1 ? "\n" : null}
+              </span>
+            );
+          })}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+function FlatMermaidBody({ chart }: { chart: string }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const host = hostRef.current;
+    if (!host) return;
+    host.replaceChildren();
+    const id = `mermaid-${Math.random().toString(36).slice(2)}`;
+    void streamdownMermaid
+      .getMermaid()
+      .render(id, chart)
+      .then(({ svg }) => {
+        if (cancelled || !hostRef.current) return;
+        hostRef.current.innerHTML = svg;
+      })
+      .catch((error) => {
+        if (cancelled || !hostRef.current) return;
+        hostRef.current.textContent = String(error || "Mermaid render failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  return (
+    <div
+      className="overflow-x-auto p-4"
+      ref={hostRef}
+      style={{ minHeight: MERMAID_PREVIEW_MIN_HEIGHT }}
+    />
+  );
+}
+
+function FlatFenceBlock({
+  code,
+  language,
+  lineNumbers,
+  startLine,
+  mermaid
+}: {
+  code: string;
+  language: string;
+  lineNumbers: boolean;
+  startLine?: number;
+  mermaid?: boolean;
+}) {
+  const isIncomplete = useIsCodeFenceIncomplete();
+  const label = language || (mermaid ? "mermaid" : "text");
+
+  return (
+    <CodeBlockContainer
+      className={FLAT_CODE_CONTAINER_CLASS}
+      isIncomplete={isIncomplete}
+      language={label}
+    >
+      <div className="flex h-8 items-center justify-between border-b border-border px-2">
+        <CodeBlockHeader language={label} />
+        <div className="flex shrink-0 items-center gap-1">
+          <CodeBlockCopyButton code={code} />
+        </div>
+      </div>
+      {mermaid ? (
+        <FlatMermaidBody chart={code} />
+      ) : (
+        <FlatHighlightedBody
+          code={code}
+          language={language || "text"}
+          lineNumbers={lineNumbers}
+          startLine={startLine}
+        />
+      )}
+    </CodeBlockContainer>
+  );
+}
+
 function getPathDisplayName(path: string, line?: number): string {
   const normalized = path.replace(/^file:\/\//i, "").replace(/\\/g, "/").replace(/\/+$/, "");
   const name = normalized.split("/").filter(Boolean).pop() || normalized || path;
@@ -399,13 +654,11 @@ function isMermaidCodeBlock(value: unknown): boolean {
 function renderPreBlock(children: any) {
   if (!isValidElement(children)) return children;
   const block = cloneElement(children, { "data-block": "true" } as any);
-  if (!isMermaidCodeBlock(children)) return block;
-
-  return (
-    <div style={{ minHeight: MERMAID_PREVIEW_MIN_HEIGHT }}>
-      {block}
-    </div>
-  );
+  // FlatFenceBlock 自带高度；这里只负责给 fence code 打上 data-block 标记
+  if (isMermaidCodeBlock(children)) {
+    return <div style={{ minHeight: MERMAID_PREVIEW_MIN_HEIGHT }}>{block}</div>;
+  }
+  return block;
 }
 
 function renderPathButton(
@@ -504,6 +757,48 @@ export function MarkdownLite(props: MarkdownLiteProps) {
           </code>
         );
       },
+      // 官方默认是 sidebar 外壳 + 内层白盒双边框；按 Components 文档用导出原语拼成单层壳
+      // （见 https://streamdown.ai/docs/components），避免 CSS 选择器硬盖。
+      code: ({ node, className, children, ...rest }: any) => {
+        const isInline = !("data-block" in rest);
+        if (isInline) {
+          const rawText = getInlineText(children).trim();
+          const resolved = rawText ? resolveMarkdownPath(rawText, markdownOptions) : null;
+          const pathButton = resolved ? renderPathButton(resolved, children, propsRef.current, true) : null;
+          if (pathButton) return pathButton;
+          return (
+            <code data-streamdown="inline-code" className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-sm", className)} {...rest}>
+              {children}
+            </code>
+          );
+        }
+
+        const metastring = (node as { properties?: { metastring?: unknown } } | undefined)?.properties?.metastring;
+        const { language, startLine, lineNumbers } = parseFenceMeta(className, metastring);
+        const code = extractFenceCode(children);
+        return (
+          <FlatFenceBlock
+            code={code}
+            language={language}
+            lineNumbers={lineNumbers}
+            mermaid={language === "mermaid"}
+            startLine={startLine}
+          />
+        );
+      },
+      table: ({ children, className, node: _node, ...tableProps }: any) => (
+        <div className="my-4 overflow-hidden rounded-xl border border-border" data-streamdown="table-wrapper">
+          <div className="overflow-x-auto">
+            <table
+              className={cn("w-full divide-y divide-border", className)}
+              data-streamdown="table"
+              {...tableProps}
+            >
+              {children}
+            </table>
+          </div>
+        </div>
+      ),
       pre: ({ children }: any) => renderPreBlock(children),
       a: ({ href, children, node: _node, ...anchorProps }: any) => {
         const rawHref = String(href || "").trim();
@@ -534,6 +829,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
   return (
     <div className="markdown-lite min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
       <Streamdown
+        caret={props.streaming ? "block" : undefined}
         controls={STREAMDOWN_CONTROLS}
         dir="auto"
         isAnimating={Boolean(props.streaming)}
@@ -543,6 +839,7 @@ export function MarkdownLite(props: MarkdownLiteProps) {
         parseIncompleteMarkdown={Boolean(props.streaming)}
         plugins={STREAMDOWN_PLUGINS}
         components={components}
+        translations={STREAMDOWN_TRANSLATIONS}
       >
         {text}
       </Streamdown>

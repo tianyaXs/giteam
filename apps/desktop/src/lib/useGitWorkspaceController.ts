@@ -84,7 +84,7 @@ type GitWorkspaceControllerOptions = {
   forgetBranchParent: (branchName: string) => void;
   rememberWorktreeParent: (worktreePath: string, parentBranch: string) => void;
   unbindWorkspaceAgent: (workspacePathInput: string) => void;
-  appendOpencodeDebugLog: (text: string) => void;
+  appendAgentDebugLog: (text: string) => void;
   setSelectedRepo: SetState<RepositoryEntry | null>;
   setMessage: SetState<string>;
   setError: SetState<string>;
@@ -166,7 +166,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     forgetBranchParent,
     rememberWorktreeParent,
     unbindWorkspaceAgent,
-    appendOpencodeDebugLog,
+    appendAgentDebugLog,
     setSelectedRepo,
     setMessage,
     setError,
@@ -565,7 +565,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
       setSelectedCommit(sha);
       setMessage(isRevert ? `已 revert: ${label}` : `已 cherry-pick: ${label}`);
-      appendOpencodeDebugLog(`git.${isRevert ? "revert" : "cherry-pick"} ${result.trim() || label}`);
+      appendAgentDebugLog(`git.${isRevert ? "revert" : "cherry-pick"} ${result.trim() || label}`);
     } catch (error) {
       const text = String(error);
       setError(text);
@@ -805,7 +805,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       setCommitMessage("");
       setMessage("提交成功");
       await refreshWorktreeData();
-      appendOpencodeDebugLog(`git.commit ${result.trim()}`);
+      appendAgentDebugLog(`git.commit ${result.trim()}`);
     } catch (error) {
       setError(String(error));
       setMessage("提交失败");
@@ -824,7 +824,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       const result = await gitPush(repoPath);
       setMessage("推送成功");
       await refreshWorktreeData();
-      appendOpencodeDebugLog(`git.push ${result.trim()}`);
+      appendAgentDebugLog(`git.push ${result.trim()}`);
     } catch (error) {
       setError(String(error));
       setMessage("推送失败");
@@ -874,8 +874,8 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       setCommitMessage("");
       setMessage("提交并推送成功");
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
-      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
+      appendAgentDebugLog(`git.commit ${commitResult.trim()}`);
+      appendAgentDebugLog(`git.push ${pushResult.trim()}`);
     } catch (error) {
       setError(String(error));
       setMessage("提交并推送失败");
@@ -903,8 +903,8 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       setCommitMessage("");
       setMessage("Commit & Sync succeeded");
       await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData()]);
-      appendOpencodeDebugLog(`git.commit ${commitResult.trim()}`);
-      appendOpencodeDebugLog(`git.push ${pushResult.trim()}`);
+      appendAgentDebugLog(`git.commit ${commitResult.trim()}`);
+      appendAgentDebugLog(`git.push ${pushResult.trim()}`);
     } catch (error) {
       setError(String(error));
       setMessage("Commit & Sync failed");

@@ -25,14 +25,14 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { cn } from "../../lib/utils";
 
-export type OpencodeMcpPanelRow = {
+export type AgentMcpPanelRow = {
   name: string;
   sourceLabel: string;
   typeLabel: string;
   toolsCount: number;
 };
 
-export type OpencodeMcpParamSpec = {
+export type AgentMcpParamSpec = {
   key: string;
   required: boolean;
   description: string;
@@ -50,7 +50,7 @@ function McpModuleEmpty({ title, description, danger = false }: { title: string;
   );
 }
 
-function InstalledMcpButton({ row, onClick }: { row: OpencodeMcpPanelRow; onClick: () => void }) {
+function InstalledMcpButton({ row, onClick }: { row: AgentMcpPanelRow; onClick: () => void }) {
   return (
     <Button
       variant="ghost"
@@ -67,13 +67,13 @@ function InstalledMcpButton({ row, onClick }: { row: OpencodeMcpPanelRow; onClic
 }
 
 type InstalledMcpGridProps = {
-  rows: OpencodeMcpPanelRow[];
+  rows: AgentMcpPanelRow[];
   loading: boolean;
   error: string;
   onReferenceMcp: (name: string) => void;
 };
 
-export function OpencodeInstalledMcpGrid(props: InstalledMcpGridProps) {
+export function AgentInstalledMcpGrid(props: InstalledMcpGridProps) {
   const { rows, loading, error, onReferenceMcp } = props;
 
   return (
@@ -89,14 +89,14 @@ export function OpencodeInstalledMcpGrid(props: InstalledMcpGridProps) {
 }
 
 type SettingsMcpGridProps = {
-  rows: OpencodeMcpPanelRow[];
+  rows: AgentMcpPanelRow[];
   error: string;
   busyName: string;
   onEditMcp: (name: string) => void;
   onRemoveMcp: (name: string) => void | Promise<void>;
 };
 
-export function OpencodeSettingsMcpGrid(props: SettingsMcpGridProps) {
+export function AgentSettingsMcpGrid(props: SettingsMcpGridProps) {
   const { rows, error, busyName, onEditMcp, onRemoveMcp } = props;
 
   return (
@@ -145,7 +145,7 @@ type CustomMcpDialogProps = {
   json: string;
   paramValues: Record<string, string>;
   busyName: string;
-  paramSpecs: OpencodeMcpParamSpec[];
+  paramSpecs: AgentMcpParamSpec[];
   normalizeConfig: (input: string, fallbackName: string) => { name: string; config: Record<string, unknown> };
   onClose: () => void;
   onNameChange: (value: string) => void;
@@ -154,7 +154,7 @@ type CustomMcpDialogProps = {
   onAdd: () => void | Promise<void>;
 };
 
-export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
+export function AgentCustomMcpDialog(props: CustomMcpDialogProps) {
   const {
     name,
     json,
@@ -196,7 +196,7 @@ export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
             <div className="grid gap-1">
               <Badge variant="outline" className="w-fit normal-case tracking-normal">custom mcp</Badge>
               <DialogTitle>自定义添加 MCP Server</DialogTitle>
-              <DialogDescription>支持 OpenCode MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</DialogDescription>
+              <DialogDescription>支持 Giteam MCP 配置、mcpServers 包装、直接 server map 或 marketplace JSON。</DialogDescription>
             </div>
             <DialogClose asChild>
               <Button variant="ghost" size="icon" aria-label="关闭自定义添加">
@@ -240,7 +240,7 @@ export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
                   ))}
                 </Card>
               ) : (
-                <McpModuleEmpty title="没有检测到必填参数" description="添加后会写入当前项目的 OpenCode 配置。" />
+                <McpModuleEmpty title="没有检测到必填参数" description="添加后会写入当前项目的 Giteam 配置。" />
               )}
             </aside>
           </div>
@@ -259,7 +259,7 @@ export function OpencodeCustomMcpDialog(props: CustomMcpDialogProps) {
 type EditMcpDialogProps = {
   name: string;
   status: Record<string, unknown> | undefined;
-  specs: OpencodeMcpParamSpec[];
+  specs: AgentMcpParamSpec[];
   tools: Array<{ name?: string; description?: string }>;
   paramValues: Record<string, string>;
   busyName: string;
@@ -269,7 +269,7 @@ type EditMcpDialogProps = {
   onSave: () => void | Promise<void>;
 };
 
-export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
+export function AgentEditMcpDialog(props: EditMcpDialogProps) {
   const { name, status, specs, tools, paramValues, busyName, onClose, onParamChange, onRemove, onSave } = props;
   const state: any = status || {};
   const paramKind = state.type === "remote" ? "Headers" : "Environment";
@@ -284,10 +284,10 @@ export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
             <div className="grid gap-1">
               <Badge variant="outline" className="w-fit normal-case tracking-normal">update mcp params</Badge>
               <DialogTitle>{name}</DialogTitle>
-              <DialogDescription className="sr-only">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</DialogDescription>
+              <DialogDescription className="sr-only">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 Giteam 配置。</DialogDescription>
             </div>
           </DialogHeader>
-          <p className="m-0 text-[15px] text-muted-foreground">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 OpenCode 配置。</p>
+          <p className="m-0 text-[15px] text-muted-foreground">更新该 MCP 的 {paramKind} 参数。保存后会写回当前项目的 Giteam 配置。</p>
           {specs.length === 0 ? <McpModuleEmpty title="这个 MCP 当前没有可编辑参数。" /> : (
             <div className="grid gap-3">
               {specs.map((spec) => (
@@ -340,7 +340,7 @@ export function OpencodeEditMcpDialog(props: EditMcpDialogProps) {
 }
 
 type McpMarketPanelProps = {
-  rows: OpencodeMcpPanelRow[];
+  rows: AgentMcpPanelRow[];
   loading: boolean;
   error: string;
   installedOpen: boolean;
@@ -353,7 +353,7 @@ type McpMarketPanelProps = {
   onAddMcpFromMarket: (name: string, config: Record<string, unknown>) => void | Promise<void>;
 };
 
-export function OpencodeMcpMarketPanel(props: McpMarketPanelProps) {
+export function AgentMcpMarketPanel(props: McpMarketPanelProps) {
   const {
     rows,
     loading,
@@ -389,7 +389,7 @@ type McpDialogsProps = {
   customJson: string;
   customParamValues: Record<string, string>;
   busyName: string;
-  customParamSpecs: OpencodeMcpParamSpec[];
+  customParamSpecs: AgentMcpParamSpec[];
   normalizeConfig: (input: string, fallbackName: string) => { name: string; config: Record<string, unknown> };
   onCloseCustomAdd: () => void;
   onCustomNameChange: (value: string) => void;
@@ -398,7 +398,7 @@ type McpDialogsProps = {
   onAddCustomMcp: () => void | Promise<void>;
   editingName: string;
   editingStatus: Record<string, unknown> | undefined;
-  editingSpecs: OpencodeMcpParamSpec[];
+  editingSpecs: AgentMcpParamSpec[];
   editingTools: Array<{ name?: string; description?: string }>;
   editingParamValues: Record<string, string>;
   onCloseEditing: () => void;
@@ -407,7 +407,7 @@ type McpDialogsProps = {
   onSaveEditingMcp: () => void | Promise<void>;
 };
 
-export function OpencodeMcpDialogs(props: McpDialogsProps) {
+export function AgentMcpDialogs(props: McpDialogsProps) {
   const {
     showCustomAdd,
     customName,
@@ -435,7 +435,7 @@ export function OpencodeMcpDialogs(props: McpDialogsProps) {
   return (
     <>
       {showCustomAdd ? (
-        <OpencodeCustomMcpDialog
+        <AgentCustomMcpDialog
           name={customName}
           json={customJson}
           paramValues={customParamValues}
@@ -451,7 +451,7 @@ export function OpencodeMcpDialogs(props: McpDialogsProps) {
       ) : null}
 
       {editingName ? (
-        <OpencodeEditMcpDialog
+        <AgentEditMcpDialog
           name={editingName}
           status={editingStatus}
           specs={editingSpecs}
