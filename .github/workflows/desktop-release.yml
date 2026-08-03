@@ -33,6 +33,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # pi_agent_rust 仓库含极深测试路径；Windows MAX_PATH(260) 会在 cargo git checkout 时炸
+      - name: Windows long path workaround
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p /c/c
+          echo "CARGO_HOME=C:/c" >> "$GITHUB_ENV"
+          git config --global core.longpaths true
+          powershell.exe -NoProfile -Command \
+            "New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force | Out-Null"
+          echo "Enabled Windows long paths; CARGO_HOME=C:/c"
+
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
