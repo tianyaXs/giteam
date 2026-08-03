@@ -68,11 +68,8 @@ jobs:
         run: |
           node -v
           npm -v
-          # ci 失败时打印原因；部分可选原生依赖在跨平台矩阵上对 npm ci 更敏感
-          npm ci --no-fund --no-audit || {
-            echo "::warning::npm ci failed, falling back to npm install"
-            npm install --no-fund --no-audit
-          }
+          # 必须与 package-lock.json 同步（用 Node 22/npm 10 维护 lock）；勿回退 npm install
+          npm ci --no-fund --no-audit
 
       # 单独跑一遍，失败时 annotation 直接指向 tsc/vite，而不是埋在 tauri-action 日志里
       - name: Build frontend (typecheck + vite)
