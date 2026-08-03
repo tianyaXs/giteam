@@ -19,9 +19,10 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             args: "--target aarch64-apple-darwin"
-          - name: macos-x86_64
-            os: macos-14
-            args: "--target x86_64-apple-darwin"
+          # Intel 交叉编译先关掉：在 arm runner 上曾 40s 内失败，且日志不可见；需要时再单独加回
+          # - name: macos-x86_64
+          #   os: macos-14
+          #   args: "--target x86_64-apple-darwin"
           - name: linux-x86_64
             os: ubuntu-22.04
             args: ""
@@ -36,9 +37,6 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
-          # 禁用 npm cache：矩阵任务上曾出现坏缓存干扰 Install frontend
-          # cache: npm
-          # cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Verify updater signing secret
         shell: bash
@@ -55,7 +53,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macos-aarch64' && 'aarch64-apple-darwin' || matrix.name == 'macos-x86_64' && 'x86_64-apple-darwin' || matrix.name == 'linux-x86_64' && 'x86_64-unknown-linux-gnu' || matrix.name == 'windows-x86_64' && 'x86_64-pc-windows-msvc' || '' }}
+          targets: ${{ matrix.name == 'macos-aarch64' && 'aarch64-apple-darwin' || matrix.name == 'linux-x86_64' && 'x86_64-unknown-linux-gnu' || matrix.name == 'windows-x86_64' && 'x86_64-pc-windows-msvc' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-release-${{ matrix.name }}
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -68,25 +72,60 @@ jobs:
         run: |
           node -v
           npm -v
-          # 必须与 package-lock.json 同步（用 Node 22/npm 10 维护 lock）；勿回退 npm install
           npm ci --no-fund --no-audit
 
-      # 单独跑一遍，失败时 annotation 直接指向 tsc/vite，而不是埋在 tauri-action 日志里
       - name: Build frontend (typecheck + vite)
         working-directory: apps/desktop
         run: npm run build
 
-      - name: Build and publish
+      # 先单独构建并落盘日志，失败时把尾部打进 annotation（避免只能看到 npm exit 1）
+      - name: Build Tauri app
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -o pipefail
+          EXTRA_ARGS="${{ matrix.args }}"
+          # shellcheck disable=SC2086
+          npx tauri build --config src-tauri/tauri.ci.conf.json ${EXTRA_ARGS} 2>&1 | tee tauri-build.log
+
+      - name: Upload Tauri build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-build-log-${{ matrix.name }}
+          path: apps/desktop/tauri-build.log
+          if-no-files-found: ignore
+
+      - name: Annotate Tauri build failure
+        if: failure()
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          if [ -f tauri-build.log ]; then
+            echo "::group::tauri-build.log (tail)"
+            tail -n 120 tauri-build.log
+            echo "::endgroup::"
+            ERR_LINE="$(grep -niE 'error(\[|:)|failed|panic' tauri-build.log | tail -n 8 || true)"
+            if [ -n "$ERR_LINE" ]; then
+              while IFS= read -r line; do
+                echo "::error::${line}"
+              done <<< "$ERR_LINE"
+            else
+              echo "::error::Tauri build failed; see artifact tauri-build-log-${{ matrix.name }}"
+            fi
+          fi
+
+      - name: Publish to GitHub Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 私钥内容（整段）；本地密钥在 ~/.giteam/updater.key
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # --ci 生成的密钥可无密码；未配置 Secret 时为空字符串
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          # 强制 npm：目录里曾残留 pnpm-lock.yaml，会导致 action 误调 pnpm 并瞬间失败
           tauriScript: npm run tauri
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
@@ -98,4 +137,5 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          args: ${{ matrix.args }}
+          # 跳过 beforeBuildCommand；rust-cache 会加速 action 内的二次 build
+          args: ${{ matrix.args }} --config src-tauri/tauri.ci.conf.json
