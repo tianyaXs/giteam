@@ -108,9 +108,15 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            Desktop build for in-app updater.
+            ## What's New
 
-            Installers and `latest.json` are attached for `tauri-plugin-updater`.
+            Desktop release `${{ github.ref_name }}`.
+
+            ### Highlights
+            - In-app updates via GitHub Releases (`latest.json`)
+            - Signed installers for macOS (Apple Silicon), Windows, and Linux
+
+            Open **Settings → Updates** to install, or download the asset for your platform below.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

@@ -164,8 +164,15 @@ import {
   downloadAndInstallAppUpdate,
   getAppVersion,
   relaunchApp,
-  type AppUpdateState
+  resolveStartupUpdateCelebration,
+  type AppUpdateState,
+  type UpdateCelebration
 } from "./lib/appUpdater";
+import {
+  AppUpdateAvailableDialog,
+  AppUpdateWhatsNewDialog,
+  getAppUpdateDialogText
+} from "./components/settings/AppUpdateDialogs";
 import {
   clearRepoTerminalSession,
   closeRepoTerminalSession,
@@ -720,6 +727,10 @@ export function App() {
     loadGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY)
   ));
   const appText = useMemo(() => getAppText(generalSettings.language), [generalSettings.language]);
+  const updateDialogText = useMemo(
+    () => getAppUpdateDialogText(generalSettings.language),
+    [generalSettings.language]
+  );
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showAgentApiDialog, setShowAgentApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
@@ -859,6 +870,12 @@ export function App() {
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ status: "idle" });
+  const [updateAvailablePrompt, setUpdateAvailablePrompt] = useState<{
+    currentVersion: string;
+    version: string;
+    notes: string;
+  } | null>(null);
+  const [updateCelebration, setUpdateCelebration] = useState<UpdateCelebration | null>(null);
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
@@ -6516,7 +6533,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     let cancelled = false;
     void getAppVersion()
       .then((version) => {
-        if (!cancelled) setAppVersion(version);
+        if (cancelled) return;
+        setAppVersion(version);
+        const celebration = resolveStartupUpdateCelebration(version);
+        if (celebration) setUpdateCelebration(celebration);
       })
       .catch(() => {
         if (!cancelled) setAppVersion("");
@@ -6528,6 +6548,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   useEffect(() => {
     if (!generalSettings.updatesStartup) return;
+    // 刚更新完先展示 What's New，避免叠两个弹窗
+    if (updateCelebration) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -6535,11 +6557,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         const next = await checkAppUpdate();
         if (cancelled) return;
         setAppUpdateState(next);
-        if (next.status === "available" && generalSettings.notificationsAgent) {
-          void showSettingsNotification(
-            "Update available",
-            `giteam ${next.version} is ready to install`
-          );
+        if (next.status === "available") {
+          setUpdateAvailablePrompt({
+            currentVersion: next.currentVersion,
+            version: next.version,
+            notes: next.notes
+          });
+          if (generalSettings.notificationsAgent) {
+            void showSettingsNotification(
+              "Update available",
+              `giteam ${next.version} is ready to install`
+            );
+          }
         }
       })();
     }, 2500);
@@ -6547,7 +6576,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [generalSettings.updatesStartup, generalSettings.notificationsAgent]);
+  }, [generalSettings.updatesStartup, generalSettings.notificationsAgent, updateCelebration]);
 
   useEffect(() => {
     let cancelled = false;
@@ -9247,6 +9276,44 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onSelect={handleSearchLocate}
         />
 
+        <AppUpdateWhatsNewDialog
+          open={Boolean(updateCelebration)}
+          celebration={updateCelebration}
+          text={updateDialogText}
+          onClose={() => setUpdateCelebration(null)}
+        />
+        <AppUpdateAvailableDialog
+          open={Boolean(updateAvailablePrompt) && !updateCelebration}
+          currentVersion={updateAvailablePrompt?.currentVersion || appVersion}
+          version={updateAvailablePrompt?.version || ""}
+          notes={updateAvailablePrompt?.notes || ""}
+          busy={appUpdateState.status === "downloading" || appUpdateState.status === "checking"}
+          text={updateDialogText}
+          onLater={() => setUpdateAvailablePrompt(null)}
+          onInstall={() => {
+            void (async () => {
+              if (!updateAvailablePrompt) return;
+              setAppUpdateState({
+                status: "downloading",
+                currentVersion: updateAvailablePrompt.currentVersion,
+                version: updateAvailablePrompt.version,
+                notes: updateAvailablePrompt.notes,
+                progress: 0
+              });
+              setUpdateAvailablePrompt(null);
+              const next = await downloadAndInstallAppUpdate((progress) => {
+                setAppUpdateState((prev) =>
+                  prev.status === "downloading" ? { ...prev, progress } : prev
+                );
+              });
+              setAppUpdateState(next);
+              if (next.status === "ready") {
+                await relaunchApp();
+              }
+            })();
+          }}
+        />
+
         {showSettings ? (
           <SettingsDialog
             theme={theme}
@@ -9290,11 +9357,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 setAppUpdateState({ status: "checking" });
                 const next = await checkAppUpdate();
                 setAppUpdateState(next);
-                if (next.status === "available" && generalSettings.notificationsAgent) {
-                  void showSettingsNotification(
-                    "Update available",
-                    `giteam ${next.version} is ready to install`
-                  );
+                if (next.status === "available") {
+                  setUpdateAvailablePrompt({
+                    currentVersion: next.currentVersion,
+                    version: next.version,
+                    notes: next.notes
+                  });
+                  if (generalSettings.notificationsAgent) {
+                    void showSettingsNotification(
+                      "Update available",
+                      `giteam ${next.version} is ready to install`
+                    );
+                  }
                 }
               })();
             }}
@@ -9304,12 +9378,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   await relaunchApp();
                   return;
                 }
+                setUpdateAvailablePrompt(null);
                 setAppUpdateState((prev) =>
                   prev.status === "available"
                     ? {
                         status: "downloading",
                         currentVersion: prev.currentVersion,
                         version: prev.version,
+                        notes: prev.notes,
                         progress: 0
                       }
                     : { status: "checking" }
