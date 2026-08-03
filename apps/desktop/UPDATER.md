@@ -19,6 +19,12 @@
 
 1. `TAURI_SIGNING_PRIVATE_KEY`：**必填**，`cat ~/.giteam/updater.key` 的完整内容（一行 base64）
 2. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：仅在生成密钥时设了密码才需要；`--ci` 无密码生成时可省略
+3. （可选）`GH_RELEASE_TOKEN`：classic PAT，勾选 `repo`。当默认 `GITHUB_TOKEN` 被锁成只读、Create Release 报 `Resource not accessible by integration` 时使用
+
+同时打开 [Actions 权限](https://github.com/tianyaXs/giteam/settings/actions)：
+
+- Workflow permissions → **Read and write permissions**
+- 勾选 Allow GitHub Actions to create and approve pull requests（可选）
 
 丢失私钥后无法给已安装用户继续签名升级，务必备份。
 

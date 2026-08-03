@@ -6,12 +6,17 @@ on:
     tags:
       - "desktop-v*.*.*"
 
+# 仓库 Settings → Actions → General → Workflow permissions 必须选
+# “Read and write permissions”，否则创建 Release 会报：
+# Resource not accessible by integration
 permissions:
   contents: write
 
 jobs:
   publish:
     name: Build ${{ matrix.name }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +24,7 @@ jobs:
           - name: macos-aarch64
             os: macos-14
             args: "--target aarch64-apple-darwin"
-          # Intel 交叉编译先关掉：在 arm runner 上曾 40s 内失败，且日志不可见；需要时再单独加回
+          # Intel 交叉编译先关掉
           # - name: macos-x86_64
           #   os: macos-14
           #   args: "--target x86_64-apple-darwin"
@@ -62,6 +67,36 @@ jobs:
           fi
           echo "TAURI_SIGNING_PRIVATE_KEY is set (${#TAURI_SIGNING_PRIVATE_KEY} chars)."
 
+      # 可选：仓库 Secrets 里建 GH_RELEASE_TOKEN（classic PAT, scope=repo）可绕过只读 GITHUB_TOKEN
+      - name: Verify GitHub release permission
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CODE="$(curl -sS -o /tmp/gh-perm.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=1")"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Cannot list releases (HTTP ${CODE}). Check token."
+            cat /tmp/gh-perm.json || true
+            exit 1
+          fi
+          # 探测 create 权限：对不存在的 tag 发 dry 请求不现实，改用 repo 权限字段
+          CODE="$(curl -sS -o /tmp/gh-repo.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}")"
+          PERM="$(python3 -c 'import json; print(json.load(open("/tmp/gh-repo.json")).get("permissions",{}).get("push", False))' 2>/dev/null || echo False)"
+          echo "repo.push=${PERM} list_releases_http=${CODE}"
+          if [ "$PERM" != "True" ] && [ "$PERM" != "true" ]; then
+            echo "::error::Token cannot push/create releases (Resource not accessible by integration)."
+            echo "Fix: https://github.com/${{ github.repository }}/settings/actions → Workflow permissions → Read and write permissions"
+            echo "Or add secret GH_RELEASE_TOKEN = classic PAT with repo scope."
+            exit 1
+          fi
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,50 +125,11 @@ jobs:
         working-directory: apps/desktop
         run: npm run build
 
-      # 先单独构建并落盘日志，失败时把尾部打进 annotation（避免只能看到 npm exit 1）
-      - name: Build Tauri app
-        working-directory: apps/desktop
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -o pipefail
-          EXTRA_ARGS="${{ matrix.args }}"
-          # shellcheck disable=SC2086
-          npx tauri build --config src-tauri/tauri.ci.conf.json ${EXTRA_ARGS} 2>&1 | tee tauri-build.log
-
-      - name: Upload Tauri build log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-build-log-${{ matrix.name }}
-          path: apps/desktop/tauri-build.log
-          if-no-files-found: ignore
-
-      - name: Annotate Tauri build failure
-        if: failure()
-        shell: bash
-        working-directory: apps/desktop
-        run: |
-          if [ -f tauri-build.log ]; then
-            echo "::group::tauri-build.log (tail)"
-            tail -n 120 tauri-build.log
-            echo "::endgroup::"
-            ERR_LINE="$(grep -niE 'error(\[|:)|failed|panic' tauri-build.log | tail -n 8 || true)"
-            if [ -n "$ERR_LINE" ]; then
-              while IFS= read -r line; do
-                echo "::error::${line}"
-              done <<< "$ERR_LINE"
-            else
-              echo "::error::Tauri build failed; see artifact tauri-build-log-${{ matrix.name }}"
-            fi
-          fi
-
-      - name: Publish to GitHub Release
+      - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 优先用 PAT，避免仓库把 GITHUB_TOKEN 锁成只读
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -149,5 +145,5 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          # 跳过 beforeBuildCommand；rust-cache 会加速 action 内的二次 build
-          args: ${{ matrix.args }} --config src-tauri/tauri.ci.conf.json
+          # inline JSON，避免 tauri-action 把文件路径先当 JSON 解析
+          args: ${{ matrix.args }} --config {"build":{"beforeBuildCommand":""}}
