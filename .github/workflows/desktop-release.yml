@@ -106,15 +106,24 @@ jobs:
           projectPath: apps/desktop
           tauriScript: npm run tauri
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
-          releaseName: giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
+          releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
             ## What's New
 
-            ### Data directory
-            - Persist app data under `~/.giteam` (Codex-style), overridable with `$GITEAM_HOME`
-            - Auto-migrate existing data from Application Support / old Tauri bundle paths (idempotent, never overwrites)
+            ### 应用
+            - 应用显示名称统一为 **Giteam**
 
-            Open **Settings → Updates** to install, or download the asset for your platform below.
+            ### 输入与会话
+            - 切换会话后自动聚焦输入框，可直接继续打字
+            - 新会话 / 继续跟进输入区更轻薄：悬浮阴影、图标与模型选择器视觉对齐
+            - 全选对话时减少空白块与附件被整块高亮
+
+            ### 进度与稳定性
+            - 进度卡片收起态改为单层胶囊，并更贴近内容区
+            - 修复工具调用相关稳定性问题
+            - 优化应用内更新体验（下载安装与跨卷临时目录）
+
+            打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

@@ -287,7 +287,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
   if (locale === "en-US") {
     return {
       availableKicker: "Update",
-      availableTitle: "A newer giteam is ready",
+      availableTitle: "A newer Giteam is ready",
       availableSubtitle: (version) => `Version ${version} includes improvements you can install now.`,
       currentLabel: "Now",
       newLabel: "New",
@@ -306,7 +306,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
   if (locale === "zh-TW") {
     return {
       availableKicker: "更新",
-      availableTitle: "有新的 giteam 可用",
+      availableTitle: "有新的 Giteam 可用",
       availableSubtitle: (version) => `版本 ${version} 已準備就緒，可立即安裝。`,
       currentLabel: "目前",
       newLabel: "新版",
@@ -324,7 +324,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
   }
   return {
     availableKicker: "更新",
-    availableTitle: "有新的 giteam 可用",
+    availableTitle: "有新的 Giteam 可用",
     availableSubtitle: (version) => `版本 ${version} 已就绪，可以立即安装。`,
     currentLabel: "当前",
     newLabel: "新版",

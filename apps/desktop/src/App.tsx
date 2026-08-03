@@ -6631,7 +6631,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           if (generalSettings.notificationsAgent) {
             void showSettingsNotification(
               "Update available",
-              `giteam ${next.version} is ready to install`
+              `Giteam ${next.version} is ready to install`
             );
           }
         }
@@ -9437,7 +9437,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   if (generalSettings.notificationsAgent) {
                     void showSettingsNotification(
                       "Update available",
-                      `giteam ${next.version} is ready to install`
+                      `Giteam ${next.version} is ready to install`
                     );
                   }
                 }
