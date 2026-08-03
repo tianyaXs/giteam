@@ -931,7 +931,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             )}
           >
             {previewStrip}
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-1">
               <ComposerAttachmentButton
                 attachmentMenuOpen={attachmentMenuOpen}
                 onToggleAttachmentMenu={onToggleAttachmentMenu}
