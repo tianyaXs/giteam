@@ -66,9 +66,18 @@ export async function checkAppUpdate(): Promise<AppUpdateState> {
     };
   } catch (error) {
     pendingUpdate = null;
+    const raw = error instanceof Error ? error.message : String(error);
+    const lower = raw.toLowerCase();
+    const hint =
+      lower.includes("release json") ||
+      lower.includes("latest.json") ||
+      lower.includes("404") ||
+      lower.includes("not found")
+        ? "（通常是 GitHub Release 尚未发布，或 Desktop Release CI 失败，没有 latest.json）"
+        : "";
     return {
       status: "error",
-      message: error instanceof Error ? error.message : String(error)
+      message: `${raw}${hint}`
     };
   }
 }

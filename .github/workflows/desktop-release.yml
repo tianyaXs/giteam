@@ -35,14 +35,15 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          node-version: 22
+          # 禁用 npm cache：曾出现矩阵任务在 Install frontend 直接失败，先排除坏缓存干扰
+          # cache: npm
+          # cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macos-aarch64' && 'aarch64-apple-darwin' || matrix.name == 'macos-x86_64' && 'x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.name == 'macos-aarch64' && 'aarch64-apple-darwin' || matrix.name == 'macos-x86_64' && 'x86_64-apple-darwin' || matrix.name == 'linux-x86_64' && 'x86_64-unknown-linux-gnu' || matrix.name == 'windows-x86_64' && 'x86_64-pc-windows-msvc' || '' }}
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -52,8 +53,14 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: apps/desktop
-        run: npm ci
-
+        run: |
+          node -v
+          npm -v
+          # ci 失败时打印原因，便于排查；部分可选原生依赖在跨平台矩阵上对 npm ci 更敏感
+          npm ci --no-fund --no-audit || {
+            echo "::warning::npm ci failed, falling back to npm install"
+            npm install --no-fund --no-audit
+          }
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -69,7 +76,7 @@ jobs:
             Desktop build for in-app updater.
 
             Installers and `latest.json` are attached for `tauri-plugin-updater`.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
