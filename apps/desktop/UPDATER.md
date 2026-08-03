@@ -17,22 +17,22 @@
 
 在 GitHub 仓库 Settings → Secrets and variables → Actions 添加：
 
-1. `TAURI_SIGNING_PRIVATE_KEY`：`cat ~/.giteam/updater.key` 的完整内容
-2. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：若生成时设了密码则填；当前无密码可留空或不建
+1. `TAURI_SIGNING_PRIVATE_KEY`：**必填**，`cat ~/.giteam/updater.key` 的完整内容（一行 base64）
+2. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：仅在生成密钥时设了密码才需要；`--ci` 无密码生成时可省略
 
 丢失私钥后无法给已安装用户继续签名升级，务必备份。
 
 ## 发布流程
 
 1. 同步版本号：`apps/desktop/package.json`、`apps/desktop/src-tauri/Cargo.toml`、`apps/desktop/src-tauri/tauri.conf.json`
-2. 打标签并推送：
+2. 确认本地 `cd apps/desktop && npm run build` 能通过（CI 会跑同一条命令）
+3. 打标签并推送：
    ```bash
    git tag desktop-v0.1.34
    git push origin desktop-v0.1.34
    ```
-3. 或手动跑 Actions：`Desktop Release`
-4. 检查 draft Release：应有各平台安装包与 `latest.json`
-5. 确认无误后 Publish Release
+4. 或手动跑 Actions：`Desktop Release`
+5. Actions 成功后 Release 会直接发布（非 draft），应含各平台安装包与 `latest.json`
 6. 客户端 endpoint：
    `https://github.com/tianyaXs/giteam/releases/latest/download/latest.json`
 

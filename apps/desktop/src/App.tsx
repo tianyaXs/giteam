@@ -5149,28 +5149,29 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             if (completedId) frozenAssistantMessageIds.add(completedId);
           }
           break;
-        case "message.started":
-          if (event.messageId) {
+        case "message.started": {
+          const startedMessageId = String(event.messageId || "").trim();
+          if (startedMessageId) {
             const previousServerId = currentServerAssistantId;
-            currentServerAssistantId = event.messageId;
-            ensureLocalAssistant(event.messageId);
+            currentServerAssistantId = startedMessageId;
+            ensureLocalAssistant(startedMessageId);
             // 首包失败时重试事件可能写在 retry-pending 键下，迁到真实 messageId。
             if (
               previousServerId &&
               previousServerId.startsWith("retry-pending:") &&
-              previousServerId !== event.messageId
+              previousServerId !== startedMessageId
             ) {
               commitAgentLiveParts((prev) => {
                 const pending = prev[previousServerId];
                 if (!pending?.length) return prev;
-                const existing = prev[event.messageId] || [];
+                const existing = prev[startedMessageId] || [];
                 const merged = [...existing];
                 for (const part of pending) {
                   const id = String((part as { id?: string }).id || "").trim();
                   if (!id || merged.some((item) => String((item as { id?: string }).id || "") === id)) continue;
                   merged.push(part);
                 }
-                const next = { ...prev, [event.messageId]: merged };
+                const next = { ...prev, [startedMessageId]: merged };
                 delete next[previousServerId];
                 return next;
               });
@@ -5180,36 +5181,39 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             if (pendingToolsBeforeMessage.length > 0) {
               const queued = pendingToolsBeforeMessage.splice(0, pendingToolsBeforeMessage.length);
               for (const part of queued) {
-                upsertAgentLivePart(event.messageId, part);
+                upsertAgentLivePart(startedMessageId, part);
               }
               scrollToBottom();
             }
           }
           break;
-        case "toolCall.started":
+        }
+        case "toolCall.started": {
           // 先冲刷未落盘的 reasoning/text，避免 24ms 合帧窗口内 tool 先入列、思考后到而乱序
           flushStreamUpdates();
           // LLM 流式生成 tool call 的开始；执行开始时 tool.started 会用完整 input 覆盖同 id part。
           // 禁止 makeId()：空 toolCallId 时跳过，否则过程中会累积幽灵工具，结束后 history 对账数量变少。
-          if ((event.toolCallId || "").trim()) {
+          const startedToolCallId = String(event.toolCallId || "").trim();
+          if (startedToolCallId) {
             updateToolPart(currentServerAssistantId, buildToolPart({
-              toolCallId: event.toolCallId.trim(),
+              toolCallId: startedToolCallId,
               toolName: event.toolName || "",
               status: "running"
             }));
           }
           break;
-        case "toolCall.delta":
+        }
+        case "toolCall.delta": {
           // 流式参数增量：累积到 inputRaw，tool.started 到达后被完整 input 取代。
-          if ((event.toolCallId || "").trim() && event.delta) {
-            const toolId = event.toolCallId.trim();
+          const deltaToolCallId = String(event.toolCallId || "").trim();
+          if (deltaToolCallId && event.delta) {
             const targetId = currentServerAssistantId.trim();
             if (targetId && frozenAssistantMessageIds.has(targetId)) {
               let pending = pendingToolsBeforeMessage.find(
-                (item) => String((item as { id?: string }).id || "").trim() === toolId
+                (item) => String((item as { id?: string }).id || "").trim() === deltaToolCallId
               ) as { id?: string; inputRaw?: string } | undefined;
               if (!pending) {
-                pending = buildToolPart({ toolCallId: toolId, toolName: "", status: "running" }) as {
+                pending = buildToolPart({ toolCallId: deltaToolCallId, toolName: "", status: "running" }) as {
                   id?: string;
                   inputRaw?: string;
                 };
@@ -5217,10 +5221,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               }
               pending.inputRaw = `${pending.inputRaw || ""}${event.delta}`;
             } else if (targetId) {
-              patchAgentLivePartDelta(targetId, toolId, "inputRaw", event.delta);
+              patchAgentLivePartDelta(targetId, deltaToolCallId, "inputRaw", event.delta);
             }
           }
           break;
+        }
         case "runtime.retry": {
           const attempt = Number(event.attempt) || 0;
           const maxAttempts = Number(event.maxAttempts) || 10;
@@ -5290,37 +5295,43 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }
           break;
         }
-        case "tool.started":
+        case "tool.started": {
           flushStreamUpdates();
-          if ((event.toolCallId || "").trim()) {
+          const toolStartedId = String(event.toolCallId || "").trim();
+          if (toolStartedId) {
             updateToolPart(currentServerAssistantId, buildToolPart({
-              toolCallId: event.toolCallId.trim(),
+              toolCallId: toolStartedId,
               toolName: event.toolName || "",
               status: "running",
               input: event.input
             }));
           }
           break;
-        case "tool.progress":
-          if ((event.toolCallId || "").trim()) {
+        }
+        case "tool.progress": {
+          const toolProgressId = String(event.toolCallId || "").trim();
+          if (toolProgressId) {
             updateToolPart(currentServerAssistantId, buildToolPart({
-              toolCallId: event.toolCallId.trim(),
+              toolCallId: toolProgressId,
               toolName: event.toolName || "",
               status: "running",
               output: event.output
             }));
           }
           break;
-        case "tool.completed":
-          if ((event.toolCallId || "").trim()) {
+        }
+        case "tool.completed": {
+          const toolCompletedId = String(event.toolCallId || "").trim();
+          if (toolCompletedId) {
             updateToolPart(currentServerAssistantId, buildToolPart({
-              toolCallId: event.toolCallId.trim(),
+              toolCallId: toolCompletedId,
               toolName: event.toolName || "",
               status: event.isError ? "error" : "completed",
               output: event.output
             }));
           }
           break;
+        }
         case "run.failed":
           cancelStreamBatch();
           // 先清 busy，再写 error，避免「运行失败」横幅与「运行中 N / 停止键」同框。
