@@ -67,36 +67,6 @@ jobs:
           fi
           echo "TAURI_SIGNING_PRIVATE_KEY is set (${#TAURI_SIGNING_PRIVATE_KEY} chars)."
 
-      # 可选：仓库 Secrets 里建 GH_RELEASE_TOKEN（classic PAT, scope=repo）可绕过只读 GITHUB_TOKEN
-      - name: Verify GitHub release permission
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          CODE="$(curl -sS -o /tmp/gh-perm.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=1")"
-          if [ "$CODE" != "200" ]; then
-            echo "::error::Cannot list releases (HTTP ${CODE}). Check token."
-            cat /tmp/gh-perm.json || true
-            exit 1
-          fi
-          # 探测 create 权限：对不存在的 tag 发 dry 请求不现实，改用 repo 权限字段
-          CODE="$(curl -sS -o /tmp/gh-repo.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}")"
-          PERM="$(python3 -c 'import json; print(json.load(open("/tmp/gh-repo.json")).get("permissions",{}).get("push", False))' 2>/dev/null || echo False)"
-          echo "repo.push=${PERM} list_releases_http=${CODE}"
-          if [ "$PERM" != "True" ] && [ "$PERM" != "true" ]; then
-            echo "::error::Token cannot push/create releases (Resource not accessible by integration)."
-            echo "Fix: https://github.com/${{ github.repository }}/settings/actions → Workflow permissions → Read and write permissions"
-            echo "Or add secret GH_RELEASE_TOKEN = classic PAT with repo scope."
-            exit 1
-          fi
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
