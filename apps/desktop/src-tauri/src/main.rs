@@ -81,8 +81,18 @@ mod macos_context_menu {
 }
 
 fn main() {
-    let app = tauri::Builder::default()
-        .manage(commands::watch::GitWorktreeWatcherState::default())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .manage(commands::watch::GitWorktreeWatcherState::default());
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+
+    let app = builder
         .setup(|app| {
             // 统一权威数据根，并迁入旧 Tauri bundle 目录残留。
             giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();

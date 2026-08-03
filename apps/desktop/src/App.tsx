@@ -160,6 +160,13 @@ import {
   showSettingsNotification
 } from "./lib/generalSettings";
 import {
+  checkAppUpdate,
+  downloadAndInstallAppUpdate,
+  getAppVersion,
+  relaunchApp,
+  type AppUpdateState
+} from "./lib/appUpdater";
+import {
   clearRepoTerminalSession,
   closeRepoTerminalSession,
   getCommitChangedFiles,
@@ -850,6 +857,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ status: "idle" });
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
@@ -4769,6 +4778,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     // 当前 assistant 服务端消息 id 作为 live parts 的归组键；否则工具时间线
     // 无处挂载，永远渲染不出来（只能退化为 content 里的纯文本行）。
     let currentServerAssistantId = "";
+    // message.completed 之后冻结该 id：下一回合的 toolCall 常在 message.started 前到达，
+    // 若仍写入上一回合 live，合并展示时会与新回合重复 → 过程中「已运行 3/1/7」、结束后对账成 2/1/4。
+    const frozenAssistantMessageIds = new Set<string>();
+    const pendingToolsBeforeMessage: AgentDetailedPart[] = [];
     let eventSubscription: { close: () => void } | null = null;
     let finalized = false;
     let finalizePromise: Promise<void> | null = null;
@@ -4800,16 +4813,32 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       return localId;
     };
 
-    const replaceAssistantMessage = (message: AgentMessage) => {
+    const replaceAssistantMessage = (
+      message: AgentMessage,
+      options?: { rebuildLive?: boolean }
+    ) => {
       if (message.role !== "assistant") return;
       const localId = ensureLocalAssistant(message.id);
       const mapped = agentMessageToChatMessage(message);
       if (!mapped) return;
-      updateAgentSessionById(sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((item) => item.id === localId ? { ...mapped, id: localId } : item),
-        updatedAt: Date.now()
-      }));
+      updateAgentSessionById(sessionId, (session) => {
+        const current = session.messages.find((item) => item.id === localId);
+        if (
+          current &&
+          current.content === mapped.content &&
+          !current.error &&
+          !mapped.error
+        ) {
+          return session;
+        }
+        return {
+          ...session,
+          messages: session.messages.map((item) => item.id === localId ? { ...mapped, id: localId } : item),
+          updatedAt: Date.now()
+        };
+      });
+      // 流式结束后的最终 replace 不要重建 live：否则刚稳定的时间线会被 history 结构换掉，列表闪一下。
+      if (options?.rebuildLive === false) return;
       // 按完成态消息的 block 顺序重建 live：与 session jsonl 一致（thinking → toolCall* → text），
       // 丢掉流式期乱序/幽灵工具；status/output 仍从旧 live 按 toolCallId 继承。
       const finalTools = message.parts.filter(
@@ -4817,6 +4846,80 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       );
       commitAgentLiveParts((prev) => {
         const current = prev[message.id] || [];
+        const liveToolIds = current
+          .filter((part) => String((part as { type?: string }).type || "") === "toolCall")
+          .map((part) => String((part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || "").trim())
+          .filter(Boolean);
+        const finalToolIds = finalTools.map((part) => part.toolCallId);
+        // 工具集合（按 id，不要求顺序）已与完成态一致时，只就地补正文/思考，
+        // 避免按 history block 顺序整段重建导致 timeline remount、列表闪一下。
+        const liveToolIdSet = new Set(liveToolIds);
+        const toolsMatch =
+          liveToolIds.length === finalToolIds.length &&
+          finalToolIds.every((id) => liveToolIdSet.has(id));
+        if (toolsMatch && current.length > 0) {
+          let changed = false;
+          const finalTextBlocks = message.parts.filter(
+            (part): part is Extract<AgentPart, { type: "text" }> =>
+              part.type === "text" && Boolean(part.text.trim())
+          );
+          const finalReasoningBlocks = message.parts
+            .map((part, index) =>
+              part.type === "reasoning" || part.type === "redactedReasoning"
+                ? { index, part }
+                : null
+            )
+            .filter((item): item is { index: number; part: Extract<AgentPart, { type: "reasoning" | "redactedReasoning" }> } => Boolean(item));
+          let textOrdinal = 0;
+          let reasoningOrdinal = 0;
+          const next = current.map((part) => {
+            const type = String((part as { type?: string }).type || "");
+            const id = String((part as { id?: string }).id || "");
+            if (type === "text" || id.startsWith("text:")) {
+              const block = finalTextBlocks[textOrdinal++];
+              if (block) {
+                const text = block.text;
+                if (String((part as { text?: string }).text || "") !== text) {
+                  changed = true;
+                  return { ...(part as object), type: "text", text } as AgentDetailedPart;
+                }
+              }
+              return part;
+            }
+            if (type === "reasoning" || id.startsWith("reasoning:")) {
+              const entry = finalReasoningBlocks[reasoningOrdinal++];
+              if (entry) {
+                const text = entry.part.type === "reasoning" ? entry.part.text : "";
+                const redacted = entry.part.type === "redactedReasoning";
+                if (
+                  String((part as { text?: string }).text || "") !== text ||
+                  Boolean((part as { redacted?: boolean }).redacted) !== redacted
+                ) {
+                  changed = true;
+                  return {
+                    ...(part as object),
+                    type: "reasoning",
+                    text,
+                    ...(redacted ? { redacted: true } : {})
+                  } as AgentDetailedPart;
+                }
+              }
+              return part;
+            }
+            return part;
+          });
+          // live 尚无正文、完成态已有时再追加（按序号，避免用 history index 造出重复 text:N）
+          while (textOrdinal < finalTextBlocks.length) {
+            const block = finalTextBlocks[textOrdinal++];
+            changed = true;
+            next.push({
+              id: `text:soft:${textOrdinal - 1}`,
+              type: "text",
+              text: block.text
+            } as AgentDetailedPart);
+          }
+          return changed ? { ...prev, [message.id]: next } : prev;
+        }
         const liveByToolId = new Map<string, AgentDetailedPart>();
         for (const part of current) {
           if (String((part as { type?: string }).type || "") !== "toolCall") continue;
@@ -4861,22 +4964,41 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }
           }
         });
-        // 完成消息里没有 toolCall 时清掉该消息上残留的工具卡片
-        if (finalTools.length === 0 && current.some((part) => String((part as { type?: string }).type || "") === "toolCall")) {
-          return { ...prev, [message.id]: next };
+        // 保留流式期写入的重试/失败事件（history message.parts 不含这些 ephemeral 类型）
+        for (const part of current) {
+          const type = String((part as { type?: string }).type || "");
+          if (type !== "runtime.retry" && type !== "runtime.failure") continue;
+          const id = String((part as { id?: string }).id || "").trim();
+          if (!id) continue;
+          if (next.some((item) => String((item as { id?: string }).id || "") === id)) continue;
+          next.push(part);
         }
         const changed =
           next.length !== current.length ||
           next.some((part, index) => {
-            const prevPart = current[index] as { id?: string; type?: string; text?: string } | undefined;
+            const prevPart = current[index] as {
+              id?: string;
+              type?: string;
+              text?: string;
+              status?: string;
+              error?: string;
+              phase?: string;
+              attempt?: number;
+              success?: boolean | null;
+            } | undefined;
             if (!prevPart) return true;
             if (String(prevPart.id || "") !== String((part as { id?: string }).id || "")) return true;
             if (String(prevPart.type || "") !== String((part as { type?: string }).type || "")) return true;
+            if (String(prevPart.text || "") !== String((part as { text?: string }).text || "")) return true;
+            if (String(prevPart.status || "") !== String((part as { status?: string }).status || "")) return true;
+            if (String(prevPart.error || "") !== String((part as { error?: string }).error || "")) return true;
+            if (String(prevPart.phase || "") !== String((part as { phase?: string }).phase || "")) return true;
+            if (Number(prevPart.attempt || 0) !== Number((part as { attempt?: number }).attempt || 0)) return true;
+            if (Boolean(prevPart.success) !== Boolean((part as { success?: boolean | null }).success)) return true;
             return false;
           });
         return changed ? { ...prev, [message.id]: next } : prev;
       });
-      scrollToBottom();
     };
 
     // 流式渲染批处理（对齐 super_agent_mobile STREAM_UPDATE_BATCH_MS 的双层合帧思路）：
@@ -4964,8 +5086,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const updateToolPart = (messageId: string, part: AgentDetailedPart) => {
       // 禁止回退到 session 级孤儿桶：空 messageId 时工具无处归属，硬塞会在过程中虚增
       // 「已运行 N 条」，结束后 history 对账又对不上。等 message.started 建立 current 后再挂。
-      const id = messageId.trim();
+      let id = messageId.trim();
       if (!id) return;
+      if (frozenAssistantMessageIds.has(id)) {
+        // 已完成回合不再收新工具；挂到尚未冻结的当前回合，否则先缓冲到下一次 message.started。
+        const current = currentServerAssistantId.trim();
+        if (current && current !== id && !frozenAssistantMessageIds.has(current)) {
+          id = current;
+        } else {
+          const pid = String((part as { id?: string }).id || "").trim();
+          if (pid) {
+            const hit = pendingToolsBeforeMessage.findIndex(
+              (item) => String((item as { id?: string }).id || "").trim() === pid
+            );
+            if (hit >= 0) pendingToolsBeforeMessage[hit] = { ...pendingToolsBeforeMessage[hit], ...part };
+            else pendingToolsBeforeMessage.push(part);
+          }
+          return;
+        }
+      }
       upsertAgentLivePart(id, part);
       scrollToBottom();
     };
@@ -5007,12 +5146,44 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               if (key === completedId || key.startsWith(`${completedId}::`)) pendingReasoningStream.delete(key);
             }
             replaceAssistantMessage(event.message);
+            if (completedId) frozenAssistantMessageIds.add(completedId);
           }
           break;
         case "message.started":
           if (event.messageId) {
+            const previousServerId = currentServerAssistantId;
             currentServerAssistantId = event.messageId;
             ensureLocalAssistant(event.messageId);
+            // 首包失败时重试事件可能写在 retry-pending 键下，迁到真实 messageId。
+            if (
+              previousServerId &&
+              previousServerId.startsWith("retry-pending:") &&
+              previousServerId !== event.messageId
+            ) {
+              commitAgentLiveParts((prev) => {
+                const pending = prev[previousServerId];
+                if (!pending?.length) return prev;
+                const existing = prev[event.messageId] || [];
+                const merged = [...existing];
+                for (const part of pending) {
+                  const id = String((part as { id?: string }).id || "").trim();
+                  if (!id || merged.some((item) => String((item as { id?: string }).id || "") === id)) continue;
+                  merged.push(part);
+                }
+                const next = { ...prev, [event.messageId]: merged };
+                delete next[previousServerId];
+                return next;
+              });
+              localAssistantByMessageId.delete(previousServerId);
+            }
+            // 上一回合 completed 之后、本回合 started 之前到达的工具，冲刷到本消息。
+            if (pendingToolsBeforeMessage.length > 0) {
+              const queued = pendingToolsBeforeMessage.splice(0, pendingToolsBeforeMessage.length);
+              for (const part of queued) {
+                upsertAgentLivePart(event.messageId, part);
+              }
+              scrollToBottom();
+            }
           }
           break;
         case "toolCall.started":
@@ -5030,19 +5201,61 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           break;
         case "toolCall.delta":
           // 流式参数增量：累积到 inputRaw，tool.started 到达后被完整 input 取代。
-          if ((event.toolCallId || "").trim() && event.delta && currentServerAssistantId) {
-            patchAgentLivePartDelta(currentServerAssistantId, event.toolCallId.trim(), "inputRaw", event.delta);
+          if ((event.toolCallId || "").trim() && event.delta) {
+            const toolId = event.toolCallId.trim();
+            const targetId = currentServerAssistantId.trim();
+            if (targetId && frozenAssistantMessageIds.has(targetId)) {
+              let pending = pendingToolsBeforeMessage.find(
+                (item) => String((item as { id?: string }).id || "").trim() === toolId
+              ) as { id?: string; inputRaw?: string } | undefined;
+              if (!pending) {
+                pending = buildToolPart({ toolCallId: toolId, toolName: "", status: "running" }) as {
+                  id?: string;
+                  inputRaw?: string;
+                };
+                pendingToolsBeforeMessage.push(pending as AgentDetailedPart);
+              }
+              pending.inputRaw = `${pending.inputRaw || ""}${event.delta}`;
+            } else if (targetId) {
+              patchAgentLivePartDelta(targetId, toolId, "inputRaw", event.delta);
+            }
           }
           break;
-        case "runtime.retry":
+        case "runtime.retry": {
+          const attempt = Number(event.attempt) || 0;
+          const maxAttempts = Number(event.maxAttempts) || 10;
+          const phase = String(event.phase || "started");
+          // 尚无 server messageId（首包即失败）时，用本地 assistant 占位键，流式映射建立后仍可读。
+          if (!currentServerAssistantId && currentLocalAssistantId) {
+            currentServerAssistantId = `retry-pending:${runId}`;
+            localAssistantByMessageId.set(currentServerAssistantId, currentLocalAssistantId);
+            setAgentServerMessageIdByLocalId((prev) => ({
+              ...prev,
+              [currentLocalAssistantId]: currentServerAssistantId
+            }));
+          }
+          if (currentServerAssistantId) {
+            upsertAgentLivePart(currentServerAssistantId, {
+              id: `retry:${attempt}:${phase}`,
+              type: "runtime.retry",
+              phase,
+              attempt,
+              maxAttempts,
+              delayMs: event.delayMs ?? null,
+              success: event.success ?? null,
+              error: event.error || "",
+              status: phase === "started" ? "running" : event.success ? "completed" : "error"
+            });
+          }
           setMessage(
-            event.phase === "completed"
+            phase === "completed"
               ? event.success
                 ? "请求重试成功"
                 : `请求重试失败${event.error ? `: ${event.error}` : ""}`
-              : `请求失败，正在自动重试 (第 ${event.attempt ?? "?"} 次)${event.error ? `: ${event.error}` : ""}`
+              : `请求失败，正在自动重试 (${attempt || "?"}/${maxAttempts})${event.error ? `: ${event.error}` : ""}`
           );
           break;
+        }
         case "runtime.compaction":
           setMessage(
             event.phase === "started"
@@ -5113,6 +5326,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           // 先清 busy，再写 error，避免「运行失败」横幅与「运行中 N / 停止键」同框。
           setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
           setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
+          if (!currentServerAssistantId && currentLocalAssistantId) {
+            currentServerAssistantId = `retry-pending:${runId}`;
+            localAssistantByMessageId.set(currentServerAssistantId, currentLocalAssistantId);
+            setAgentServerMessageIdByLocalId((prev) => ({
+              ...prev,
+              [currentLocalAssistantId]: currentServerAssistantId
+            }));
+          }
+          if (currentServerAssistantId) {
+            upsertAgentLivePart(currentServerAssistantId, {
+              id: "runtime.failure",
+              type: "runtime.failure",
+              error: event.error || "unknown error",
+              status: "error"
+            });
+          }
           updateAgentSessionById(sessionId, (session) => ({
             ...session,
             messages: session.messages.map((item) =>
@@ -5151,34 +5380,34 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         if (agentRunIdBySessionRef.current[sessionId] === runId) {
           delete agentRunIdBySessionRef.current[sessionId];
         }
-        setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
-        setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
-
-        // 中止/结束时先把仍 running 的 live 工具收口，避免卡在「探索中 / 运行中」；
-        // 随后以 history 为准清掉本轮 live parts，防止 stale live 盖住已拉取的详情。
+        // 结束收口：只把 live 工具标成完成并写入 details，不再整表 reload history / 清空 live。
+        // 否则会：本地 assistant id → 服务端 id 换键、live→history 结构切换、列表整段重挂，
+        // 表现为「流式刚结束列表快速闪一下」。保持当前 DOM 稳定，下次进会话再冷加载 history。
         const liveMessageIds = new Set<string>();
         for (const serverId of localAssistantByMessageId.keys()) {
           if (serverId.trim()) liveMessageIds.add(serverId.trim());
         }
         if (currentServerAssistantId.trim()) liveMessageIds.add(currentServerAssistantId.trim());
         const settleStatus = failure ? "error" : "completed";
-        // 用 ref 快照收口 live，避免 setState updater 副作用；先写入 details 再清 live，
-        // 防止结束瞬间过程态事件被空/残缺 history 替换而跳变。
         const settledLiveByServerId: Record<string, AgentDetailedPart[]> = {};
         const liveSnapshot = agentLivePartsByServerMessageIdRef.current;
         for (const mid of liveMessageIds) {
           const parts = liveSnapshot[mid];
           if (!Array.isArray(parts) || parts.length === 0) continue;
-          settledLiveByServerId[mid] = parts.map((part) => {
+          let changed = false;
+          const nextParts = parts.map((part) => {
             if (String((part as { type?: string }).type || "") !== "toolCall") return part;
             const st = String((part as { status?: string }).status || "").trim().toLowerCase();
             if (st !== "running" && st !== "pending" && st !== "deciding") return part;
+            changed = true;
             return {
               ...(part as object),
               status: settleStatus,
               isError: Boolean(failure)
             } as AgentDetailedPart;
           });
+          // 工具已是终态时不要整表换新数组，否则结束瞬间无意义重渲染会闪一下。
+          if (changed) settledLiveByServerId[mid] = nextParts;
         }
         if (Object.keys(settledLiveByServerId).length > 0) {
           commitAgentLiveParts((prev) => {
@@ -5200,7 +5429,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 },
                 parts
               };
-              // 同时写入 local / server 键：对账前后 msg.id 可能是任一形态。
               next[serverId] = detail;
               const localId = localAssistantByMessageId.get(serverId);
               if (localId) next[localId] = detail;
@@ -5209,36 +5437,32 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           });
         }
 
-        try {
-          await loadAgentSessionMessages(sessionId, repoPath);
-        } catch (error) {
-          appendAgentDebugLog("agent.messages.reconcile.error " + String(error));
-        }
-        if (liveMessageIds.size > 0) {
-          commitAgentLiveParts((prev) => {
-            let changed = false;
-            const next = { ...prev };
-            for (const mid of liveMessageIds) {
-              if (!(mid in next)) continue;
-              delete next[mid];
-              changed = true;
-            }
-            return changed ? next : prev;
-          });
-        }
-        // 对账后：用户气泡恢复为「可见文案 + 本地预览附件」，不要展示内部 path hint。
+        // 工具收口后再清 busy/streaming，避免「运行中→已运行」与 parts 切换分两帧闪。
+        setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
+        setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
+
+        // 仅就地修补必要字段，不替换整份 messages（保留本地 id / 合并行 stableKey）。
         updateAgentSessionById(sessionId, (session) => {
           const messages = [...session.messages];
+          let changed = false;
           for (let index = messages.length - 1; index >= 0; index -= 1) {
             if (messages[index]?.role !== "user") continue;
             const existingAttachments = messages[index].attachments || [];
-            messages[index] = {
-              ...messages[index],
-              content: prompt,
-              attachments: displayAttachments.length > 0
-                ? displayAttachments
-                : existingAttachments
-            };
+            const nextAttachments = displayAttachments.length > 0 ? displayAttachments : existingAttachments;
+            const sameAttachments =
+              (messages[index].attachments || []).length === nextAttachments.length &&
+              (messages[index].attachments || []).every((item, attachmentIndex) => {
+                const other = nextAttachments[attachmentIndex];
+                return Boolean(other) && item.uri === other.uri && item.mime === other.mime;
+              });
+            if (messages[index].content !== prompt || !sameAttachments) {
+              messages[index] = {
+                ...messages[index],
+                content: prompt,
+                attachments: nextAttachments
+              };
+              changed = true;
+            }
             break;
           }
           if (failure) {
@@ -5248,11 +5472,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               .find(({ item }) => item.role === "assistant")
               ?.index;
             if (lastAssistantIndex != null && !(messages[lastAssistantIndex]?.content || "").trim()) {
-              messages[lastAssistantIndex] = {
-                ...messages[lastAssistantIndex],
-                content: "",
-                error: failure
-              };
+              if (messages[lastAssistantIndex].error !== failure) {
+                messages[lastAssistantIndex] = {
+                  ...messages[lastAssistantIndex],
+                  content: "",
+                  error: failure
+                };
+                changed = true;
+              }
             } else if (
               !messages.some(
                 (item) => item.role === "assistant" && Boolean(item.error?.trim())
@@ -5264,22 +5491,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 content: "",
                 error: failure
               });
+              changed = true;
             }
           } else {
             for (const localId of localAssistantIds) {
               const idx = messages.findIndex((item) => item.id === localId);
-              if (idx >= 0 && !(messages[idx].content || "").trim()) {
-                messages[idx] = { ...messages[idx], content: "(empty response)" };
+              if (idx >= 0 && !(messages[idx].content || "").trim() && !messages[idx].error) {
+                // 不写 "(empty response)" 占位：避免结束瞬间突然冒出一行文案造成闪动。
+                // 时间线/空气泡保持原样即可。
               }
             }
           }
+          if (!changed) return session;
           return { ...session, messages, updatedAt: Date.now() };
         });
         if (failure) {
           setError(failure);
           setMessage("Agent run failed");
         }
-        scrollToBottom();
         appendAgentDebugLog("agent.prompt.finalize session=" + sessionId + " run=" + runId);
       })();
       return finalizePromise;
@@ -5299,7 +5528,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         }))
       });
       for (const event of result.events || []) onAgentEvent(event);
-      replaceAssistantMessage(result.message);
+      // 最终结果只同步正文，不重建 live 时间线（避免输出刚结束列表闪一下）。
+      replaceAssistantMessage(result.message, { rebuildLive: false });
       await finalize();
     } catch (error) {
       const messageText = String(error);
@@ -6270,6 +6500,43 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       window.removeEventListener("resize", collapseIfNarrow);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAppVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {
+        if (!cancelled) setAppVersion("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!generalSettings.updatesStartup) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setAppUpdateState({ status: "checking" });
+        const next = await checkAppUpdate();
+        if (cancelled) return;
+        setAppUpdateState(next);
+        if (next.status === "available" && generalSettings.notificationsAgent) {
+          void showSettingsNotification(
+            "Update available",
+            `giteam ${next.version} is ready to install`
+          );
+        }
+      })();
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [generalSettings.updatesStartup, generalSettings.notificationsAgent]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8526,8 +8793,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         // 首次连接后无论静态目录是否已有条目，都强制刷新 UI 模型列表（否则会停在过期快照）。
         await fetchAgentModels(authPid).catch(() => [] as string[]);
       } catch (refreshError) {
-        appendAgentDebugLog(`连接后模型刷新异常（连接已保留）: ${String(refreshError)}`);
-        setError(`已连接，但拉取最新模型失败：${String(refreshError)}`);
+        const detail = String(refreshError);
+        appendAgentDebugLog(`连接后模型刷新异常（连接已保留）: ${detail}`);
+        if (/凭据|credential|auth\.json|权限|unauthorized|401|403/i.test(detail)) {
+          setError(`已连接，但凭据确认失败：${detail}`);
+        } else {
+          setError(`已连接，但拉取最新模型失败：${detail}`);
+        }
       }
       setAgentProviderPickerProvider(authPid);
     } catch (e) {
@@ -9002,7 +9274,48 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 }
               }
             }}
-            onCheckUpdates={() => void refreshRuntimeRequirements()}
+            onCheckAppUpdate={() => {
+              void (async () => {
+                setAppUpdateState({ status: "checking" });
+                const next = await checkAppUpdate();
+                setAppUpdateState(next);
+                if (next.status === "available" && generalSettings.notificationsAgent) {
+                  void showSettingsNotification(
+                    "Update available",
+                    `giteam ${next.version} is ready to install`
+                  );
+                }
+              })();
+            }}
+            onInstallAppUpdate={() => {
+              void (async () => {
+                if (appUpdateState.status === "ready") {
+                  await relaunchApp();
+                  return;
+                }
+                setAppUpdateState((prev) =>
+                  prev.status === "available"
+                    ? {
+                        status: "downloading",
+                        currentVersion: prev.currentVersion,
+                        version: prev.version,
+                        progress: 0
+                      }
+                    : { status: "checking" }
+                );
+                const next = await downloadAndInstallAppUpdate((progress) => {
+                  setAppUpdateState((prev) =>
+                    prev.status === "downloading" ? { ...prev, progress } : prev
+                  );
+                });
+                setAppUpdateState(next);
+                if (next.status === "ready") {
+                  await relaunchApp();
+                }
+              })();
+            }}
+            appVersion={appVersion}
+            appUpdateState={appUpdateState}
             agentPort={agentServiceSettings.port}
             agentBusy={agentServiceSettingsBusy}
             onAgentPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}

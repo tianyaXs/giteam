@@ -555,14 +555,30 @@ impl PiAgentService {
         let event_translator = Arc::clone(&translator);
         let event_sink = Arc::clone(&sink);
         let subscribers = Arc::clone(&self.subscribers);
-        let on_event = move |event| {
+        // 重试期间抑制 AgentEnd 映射出的 run.completed/failed，避免前端提前 finalize；
+        // 循环结束后再发最终终态事件。
+        let accept_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accept_terminal_for_events = Arc::clone(&accept_terminal);
+        let on_event = Arc::new(move |event: pi::sdk::AgentEvent| {
             if let Some(event) = event_translator.translate(event) {
-                // The service-owned bus is used by Control SSE; the
-                // caller sink is used by Desktop Tauri/CLI adapters.
-                // Both receive the same provider-neutral envelope.
+                if !accept_terminal_for_events.load(Ordering::Relaxed) {
+                    match &event.event {
+                        AgentEvent::RunCompleted | AgentEvent::RunFailed { .. } => return,
+                        AgentEvent::SessionStatusChanged {
+                            status: AgentSessionStatus::Idle
+                                | AgentSessionStatus::Failed
+                                | AgentSessionStatus::Aborted,
+                            ..
+                        } => return,
+                        _ => {}
+                    }
+                }
                 publish_event(&subscribers, &event);
                 event_sink(event);
             }
+        });
+        let emit_pi = |event: pi::sdk::AgentEvent| {
+            on_event(event);
         };
         // 与 Pi RPC prompt(images) 对齐：有图时走 multimodal content blocks。
         // 图片优先从 path 读盘，避免前端把大 base64 塞进 IPC。
@@ -615,37 +631,221 @@ impl PiAgentService {
         } else {
             prompt.clone()
         };
-        let result = {
+
+        // 对齐 Pi RPC `run_prompt_with_retry`：可重试错误不终止任务，自动 resume；
+        // 默认最多 10 次（settings.json retry.maxRetries，由 ensure_pi_retry_settings 写入）。
+        let retry_config = pi::config::Config::load().unwrap_or_else(|_| pi::config::Config {
+            retry: Some(pi::config::RetrySettings {
+                enabled: Some(true),
+                max_retries: Some(10),
+                base_delay_ms: None,
+                max_delay_ms: None,
+            }),
+            ..Default::default()
+        });
+        let retry_enabled = retry_config.retry_enabled();
+        let max_retries = retry_config.retry_max_retries().max(1);
+        let mut retry_count: u32 = 0;
+        let mut final_error: Option<String> = None;
+
+        let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
             // 发送前清洗历史里的“空文本块”：pi 的 anthropic-messages convert 不过滤空 text
             // （pi src/providers/anthropic.rs convert_content_block_to_anthropic），流式占位/截断
             // 会留下 TextContent{text:""} 并落地进历史，下一轮原样发给 provider。
             // kimi-coding 等严格端点据此返回 HTTP 400 “text content is empty”。
             // pi 仓库只读无法改其 convert，这里用 pi 公开的 messages/replace_messages 在发送前剔除。
-            strip_empty_text_blocks(&mut handle.session_mut().agent);
-            // OpenAI Responses / 部分兼容网关要求 call_id ≤ 64；历史里偶发把整段
-            // arguments 写进 id（可达数千字符），下一轮回放会 HTTP 400。
-            sanitize_oversized_tool_call_ids(&mut handle.session_mut().agent);
-            match content_blocks {
-                None => {
+            loop {
+                // 每次尝试前都清洗：同一次 prompt 的 tool loop 里，兼容网关可能在每个
+                // stream chunk 重复下发完整 tool_calls[].id，pi openai 适配器用 push_str
+                // 累加后 id 可达数百/上千字符；下一轮回放会 HTTP 400（call_id ≤ 64）。
+                // 仅在进入 prompt 前清洗一次拦不住「本轮流式刚写出的超长 id」。
+                strip_empty_text_blocks(&mut handle.session_mut().agent);
+                sanitize_oversized_tool_call_ids(&mut handle.session_mut().agent);
+
+                let on_event_cb = {
+                    let cb = Arc::clone(&on_event);
+                    move |event| cb(event)
+                };
+                let attempt_result = if retry_count == 0 {
+                    match &content_blocks {
+                        None => {
+                            handle
+                                .prompt_with_abort(
+                                    effective_prompt.clone(),
+                                    abort_signal_for_prompt.clone(),
+                                    on_event_cb,
+                                )
+                                .await
+                        }
+                        Some(blocks) => {
+                            handle
+                                .session_mut()
+                                .run_with_content_with_abort(
+                                    blocks.clone(),
+                                    Some(abort_signal_for_prompt.clone()),
+                                    on_event_cb,
+                                )
+                                .await
+                        }
+                    }
+                } else {
                     handle
-                        .prompt_with_abort(effective_prompt, abort_signal_for_prompt, on_event)
+                        .continue_turn_with_abort(abort_signal_for_prompt.clone(), on_event_cb)
                         .await
+                };
+
+                if abort_signal.is_aborted() {
+                    final_error = Some(
+                        attempt_result
+                            .as_ref()
+                            .err()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "Retry aborted".to_string()),
+                    );
+                    break Err(attempt_result.err().unwrap_or_else(|| {
+                        pi::error::Error::session("aborted".to_string())
+                    }));
                 }
-                Some(blocks) => {
-                    handle
-                        .session_mut()
-                        .run_with_content_with_abort(blocks, Some(abort_signal_for_prompt), on_event)
-                        .await
+
+                let should_retry = match &attempt_result {
+                    Ok(message)
+                        if matches!(
+                            message.stop_reason,
+                            pi::sdk::StopReason::Error
+                        ) =>
+                    {
+                        let err_msg = message
+                            .error_message
+                            .clone()
+                            .unwrap_or_else(|| "Request error".to_string());
+                        final_error = Some(err_msg.clone());
+                        retry_enabled
+                            && retry_count < max_retries
+                            && (pi::error::is_retryable_error(
+                                &err_msg,
+                                Some(message.usage.input),
+                                None,
+                            ) || is_tool_call_id_overflow_error(&err_msg))
+                    }
+                    Ok(message)
+                        if matches!(message.stop_reason, pi::sdk::StopReason::Aborted) =>
+                    {
+                        final_error = message
+                            .error_message
+                            .clone()
+                            .or_else(|| Some("Aborted".to_string()));
+                        false
+                    }
+                    Ok(_) => {
+                        final_error = None;
+                        false
+                    }
+                    Err(err) => {
+                        let err_str = err.to_string();
+                        final_error = Some(err_str.clone());
+                        retry_enabled
+                            && retry_count < max_retries
+                            && (err.is_transient()
+                                || pi::error::is_retryable_error(&err_str, None, None)
+                                || is_tool_call_id_overflow_error(&err_str))
+                    }
+                };
+
+                match attempt_result {
+                    Ok(message) if !should_retry => {
+                        if matches!(
+                            message.stop_reason,
+                            pi::sdk::StopReason::Error | pi::sdk::StopReason::Aborted
+                        ) {
+                            break Err(pi::error::Error::session(
+                                final_error
+                                    .clone()
+                                    .unwrap_or_else(|| "Request error".to_string()),
+                            ));
+                        }
+                        break Ok(message);
+                    }
+                    Err(err) if !should_retry => break Err(err),
+                    Ok(_) | Err(_) => {}
                 }
+
+                retry_count += 1;
+                let delay_ms = retry_delay_ms(&retry_config, retry_count);
+                let error_message = final_error
+                    .clone()
+                    .unwrap_or_else(|| "Request error".to_string());
+                emit_pi(pi::sdk::AgentEvent::AutoRetryStart {
+                    attempt: retry_count,
+                    max_attempts: max_retries,
+                    delay_ms: u64::from(delay_ms),
+                    error_message,
+                });
+
+                // block_on 路径下用短睡切片检查 abort，避免一次长 sleep 无法响应停止。
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(u64::from(delay_ms));
+                let mut cancelled = false;
+                while std::time::Instant::now() < deadline {
+                    if abort_signal.is_aborted() {
+                        cancelled = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if cancelled {
+                    emit_pi(pi::sdk::AgentEvent::AutoRetryEnd {
+                        success: false,
+                        attempt: retry_count,
+                        final_error: Some("Retry aborted".to_string()),
+                    });
+                    break Err(pi::error::Error::session("Retry aborted".to_string()));
+                }
+
+                let _ = handle.session_mut().revert_incomplete_response().await;
             }
         };
+
+        if retry_count > 0 {
+            let success = result.is_ok();
+            emit_pi(pi::sdk::AgentEvent::AutoRetryEnd {
+                success,
+                attempt: retry_count,
+                final_error: if success {
+                    None
+                } else {
+                    final_error.clone()
+                },
+            });
+        }
+
+        accept_terminal.store(true, Ordering::Relaxed);
         let status = match &result {
             Ok(_) => AgentSessionStatus::Idle,
             Err(_) if abort_signal.is_aborted() => AgentSessionStatus::Aborted,
             Err(_) => AgentSessionStatus::Failed,
         };
         let error = result.as_ref().err().map(ToString::to_string);
+        // 发出最终终态（重试期间被抑制的 AgentEnd 替代品）。
+        let terminal = match status {
+            AgentSessionStatus::Idle => translator.translate(pi::sdk::AgentEvent::AgentEnd {
+                session_id: session_id.into(),
+                messages: Vec::new(),
+                error: None,
+            }),
+            AgentSessionStatus::Failed | AgentSessionStatus::Aborted => {
+                translator.translate(pi::sdk::AgentEvent::AgentEnd {
+                    session_id: session_id.into(),
+                    messages: Vec::new(),
+                    error: error.clone(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(event) = terminal {
+            publish_event(&self.subscribers, &event);
+            (sink)(event);
+        }
         self.remove_run(run_id);
         session.hub.end_run(run_id);
         // run 结束（无论成败）释放残留 pending，工具 future 不得悬挂。
@@ -1111,6 +1311,15 @@ fn publish_event(
     super::events::publish_event(subscribers, event);
 }
 
+fn retry_delay_ms(config: &pi::config::Config, attempt: u32) -> u32 {
+    let base = u64::from(config.retry_base_delay_ms());
+    let max = u64::from(config.retry_max_delay_ms());
+    let shift = attempt.saturating_sub(1);
+    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let delay = base.saturating_mul(multiplier).min(max);
+    u32::try_from(delay).unwrap_or(u32::MAX)
+}
+
 fn resolve_prompt_images(
     images: &[super::AgentPromptImage],
 ) -> Result<Vec<pi::sdk::ImageContent>, PiAgentError> {
@@ -1284,10 +1493,50 @@ fn strip_empty_text_blocks(agent: &mut pi::sdk::Agent) {
 /// OpenAI Responses API：`call_id` 最大 64 字符（`string_above_max_length`）。
 const OPENAI_TOOL_CALL_ID_MAX_LEN: usize = 64;
 
+/// indemind 等兼容网关在每个 stream chunk 重复下发完整 `tool_calls[].id`，
+/// pi `openai.rs` 用 `push_str` 累加后会变成 `call_XXXcall_XXX...`（可达上千字符），
+/// 下一轮回放触发 `Invalid 'input[n].call_id': string too long`。
+fn is_tool_call_id_overflow_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let mentions_call_id = lower.contains("call_id") || lower.contains("tool_call_id");
+    if !mentions_call_id {
+        return false;
+    }
+    lower.contains("string_above_max_length")
+        || lower.contains("string too long")
+        || lower.contains("maximum length 64")
+        || lower.contains("max length 64")
+        || lower.contains("above_max_length")
+}
+
+/// 折叠「完整 id 被重复拼接」的形态：`call_ABCcall_ABC...` → `call_ABC`。
+fn collapse_repeated_tool_call_id(id: &str) -> Option<String> {
+    let trimmed = id.trim();
+    let len = trimmed.len();
+    if len <= OPENAI_TOOL_CALL_ID_MAX_LEN || trimmed.is_empty() {
+        return None;
+    }
+    // 精确整数倍重复（session 实证：29 字符 × 36 = 1044）。
+    let max_period = OPENAI_TOOL_CALL_ID_MAX_LEN.min(len / 2);
+    for period in 1..=max_period {
+        if len % period != 0 {
+            continue;
+        }
+        let unit = &trimmed[..period];
+        if trimmed.as_bytes().chunks_exact(period).all(|chunk| chunk == unit.as_bytes()) {
+            return Some(unit.to_string());
+        }
+    }
+    None
+}
+
 fn shorten_tool_call_id(id: &str) -> String {
     let trimmed = id.trim();
     if trimmed.is_empty() || trimmed.len() <= OPENAI_TOOL_CALL_ID_MAX_LEN {
         return trimmed.to_string();
+    }
+    if let Some(collapsed) = collapse_repeated_tool_call_id(trimmed) {
+        return collapsed;
     }
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1759,5 +2008,18 @@ mod tests {
         assert!(call.id.len() <= OPENAI_TOOL_CALL_ID_MAX_LEN);
         assert_eq!(call.id, result.tool_call_id);
         assert_eq!(shorten_tool_call_id("short"), "short");
+    }
+
+    #[test]
+    fn shorten_tool_call_id_collapses_repeated_stream_concatenation() {
+        let unit = "call_uXpDRd1ZyOtU0XHAxi17HP0r";
+        assert_eq!(unit.len(), 29);
+        let long_id = unit.repeat(36);
+        assert_eq!(long_id.len(), 1044);
+        assert_eq!(shorten_tool_call_id(&long_id), unit);
+        assert!(is_tool_call_id_overflow_error(
+            r#"Invalid 'input[2].call_id': string too long. Expected a string with maximum length 64, but got a string with length 1044 instead.","code":"string_above_max_length""#
+        ));
+        assert!(!is_tool_call_id_overflow_error("HTTP 400 invalid api key"));
     }
 }

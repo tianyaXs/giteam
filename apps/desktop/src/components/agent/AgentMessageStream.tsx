@@ -7,6 +7,7 @@ import {
   type AgentAssistantRenderGroup,
   buildAgentAssistantRenderGroups,
   buildAgentReplyMarkdownFromParts,
+  dedupeAgentToolParts,
   isAgentRenderablePart,
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
@@ -24,7 +25,7 @@ import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Skeleton } from "../ui/skeleton";
 import { cn } from "../../lib/utils";
 import { useHighlightKeyword } from "../../lib/highlightKeyword";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, RotateCw } from "lucide-react";
 
 type AgentPreviewImage = {
   uri: string;
@@ -116,6 +117,10 @@ function ThinkingPlaceholder() {
 function mergeAdjacentContextGroups(groups: AgentAssistantRenderGroup[]): AgentAssistantRenderGroup[] {
   const merged: AgentAssistantRenderGroup[] = [];
   groups.forEach((group) => {
+    if (group.kind === "boundary") {
+      merged.push(group);
+      return;
+    }
     const last = merged[merged.length - 1];
     if (group.kind === "context" && last?.kind === "context") {
       merged[merged.length - 1] = {
@@ -138,10 +143,16 @@ function buildDisplayTimelineGroups(
   // 不再把 context 推到 reasoning 之前、也不跨回合合并成一个大组。否则会产生「一个汇总了
   // 数十次调用的大探索组堆在前面、后面跟着一堆思考」的失真布局——探索与思考时序颠倒、
   // 探索计数跨回合累积。
+  // 隐藏思考时插入不可见 boundary，保留「思考作为分隔」的语义，避免多轮 shell 收成大数。
   const out: AgentAssistantRenderGroup[] = [];
   groups.forEach((group) => {
     if (group.kind === "reasoning") {
       if (showReasoningSummaries) out.push(group);
+      else out.push({ kind: "boundary", key: `boundary:${group.key}` });
+      return;
+    }
+    if (group.kind === "boundary") {
+      out.push(group);
       return;
     }
     out.push(group);
@@ -250,6 +261,10 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentD
   };
 
   groups.forEach((group) => {
+    if (group.kind === "boundary") {
+      flush();
+      return;
+    }
     const nextKind = getBatchKind(group);
     if (!nextKind) {
       flush();
@@ -628,8 +643,18 @@ function AssistantTimeline({
   // 补齐/合并/重排，组 key 永不变化，React 始终复用同一实例——标签从挂载起就不再卸载。
   // Map 只增不减、幂等（strict mode 双渲染无害），组件重挂载时随 ref 重置、按当前结构重判。
   const partAnchorRef = useRef(new Map<string, string>()).current;
-  const getGroupParts = (group: AgentDisplayTimelineGroup): AgentDetailedPart[] =>
-    group.kind === "part" ? [group.part] : group.parts;
+  const getGroupParts = (group: AgentDisplayTimelineGroup): AgentDetailedPart[] => {
+    switch (group.kind) {
+      case "part":
+        return [group.part];
+      case "tool-batch":
+      case "context":
+      case "reasoning":
+        return group.parts;
+      case "boundary":
+        return [];
+    }
+  };
   const stableGroupKeys = displayTimelineGroups.map((group) => {
     const parts = getGroupParts(group);
     let anchor = "";
@@ -729,8 +754,19 @@ function AssistantTimeline({
           );
         }
 
+        if (group.kind === "boundary") return null;
+
         if (group.kind !== "part") return null;
         const type = String((group.part as { type?: string }).type || "");
+        if (type === "runtime.retry") {
+          return <RuntimeRetryPart key={timelineKey} part={group.part} />;
+        }
+        if (type === "runtime.failure") {
+          const message = String((group.part as { error?: string; text?: string }).error
+            || (group.part as { error?: string; text?: string }).text
+            || "任务未能完成。").trim();
+          return <AgentErrorMessage key={timelineKey} message={message} />;
+        }
         if (type === "text") {
           const text = String((group.part as { text?: string }).text || "").trim();
           if (!text) return null;
@@ -882,7 +918,8 @@ function AssistantMessage({
     hasTimeline,
     fallbackReply,
     detailsError,
-    errorMessage
+    errorMessage,
+    renderParts
   } = row;
 
   return (
@@ -903,7 +940,7 @@ function AssistantMessage({
         />
       ) : fallbackReply ? (
         <AssistantTextBlock text={fallbackReply} streaming={isStreaming} renderMarkdown={renderMarkdown} />
-      ) : isStreaming ? (
+      ) : isStreaming && !errorMessage ? (
         <ThinkingPlaceholder />
       ) : null}
       {detailsError ? (
@@ -911,7 +948,63 @@ function AssistantMessage({
           {detailsError}
         </div>
       ) : null}
-      {errorMessage ? <AgentErrorMessage message={errorMessage} /> : null}
+      {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
+      {errorMessage && !renderPartsHasFailure(row.renderParts) ? <AgentErrorMessage message={errorMessage} /> : null}
+    </div>
+  );
+}
+
+function renderPartsHasFailure(parts: AgentDetailedPart[]): boolean {
+  return parts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure");
+}
+
+function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
+  const phase = String((part as { phase?: string }).phase || "").trim();
+  const attempt = Number((part as { attempt?: number }).attempt) || 0;
+  const maxAttempts = Number((part as { maxAttempts?: number }).maxAttempts) || 0;
+  const success = (part as { success?: boolean | null }).success;
+  const error = String((part as { error?: string }).error || "").trim();
+  const attemptLabel = maxAttempts > 0 ? `${attempt}/${maxAttempts}` : String(attempt || "?");
+  const running = phase === "started" || (phase === "completed" && success === false && !error);
+  let title = `请求失败，自动重试（${attemptLabel}）`;
+  if (phase === "completed" && success === true) title = `重试成功（第 ${attempt} 次）`;
+  else if (phase === "completed" && success === false) title = `重试未恢复（${attemptLabel}）`;
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-xl border px-3.5 py-2.5 text-sm text-foreground",
+        running
+          ? "border-border/70 bg-muted/40"
+          : success === true
+            ? "border-border/60 bg-muted/25"
+            : "border-destructive/25 bg-destructive/[0.05]"
+      )}
+      aria-live="polite"
+    >
+      <div
+        className={cn(
+          "absolute inset-y-0 left-0 w-1",
+          running ? "bg-foreground/25" : success === true ? "bg-foreground/15" : "bg-destructive/60"
+        )}
+        aria-hidden="true"
+      />
+      <div className="flex min-w-0 items-start gap-2.5 pl-1">
+        <span
+          className={cn(
+            "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full",
+            running ? "bg-foreground/10 text-foreground/70" : success === true ? "bg-foreground/8 text-foreground/60" : "bg-destructive/15 text-destructive"
+          )}
+          aria-hidden="true"
+        >
+          <RotateCw className={cn("size-3.5", running && "animate-spin")} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium leading-5 text-foreground/90">{title}</div>
+          {error ? (
+            <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-foreground/70">{error}</p>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1103,7 +1196,7 @@ export function AgentMessageStream({
       }
       return part;
     });
-    const renderParts = detailParts.filter(isAgentRenderablePart);
+    const renderParts = dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart));
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];
     const timelineGroups = buildDisplayTimelineGroups(
@@ -1132,47 +1225,53 @@ export function AgentMessageStream({
   const mergedRenderRows = renderRows.reduce<AgentMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
     if (row.isAssistant && last?.isAssistant && !last.errorMessage && !row.errorMessage) {
+      const rebuildTimeline = (target: AgentMessageRenderRow) => {
+        target.timelineGroups = buildDisplayTimelineGroups(
+          buildAgentAssistantRenderGroups(target.renderParts),
+          showReasoningSummaries
+        );
+        target.hasTimeline = target.timelineGroups.length > 0;
+        target.fallbackReply = (
+          buildAgentReplyMarkdownFromParts(target.renderParts) ||
+          target.msg.content ||
+          ""
+        ).trim();
+        target.contextOnly =
+          target.timelineGroups.length > 0 &&
+          target.timelineGroups.every((group) => group.kind === "context") &&
+          !target.fallbackReply;
+      };
       if (isEmptyAssistantPlaceholder(last)) {
         row.isStreaming = last.isStreaming || row.isStreaming;
-        row.liveParts = [...last.liveParts, ...row.liveParts];
-        row.renderParts = [...last.renderParts, ...row.renderParts];
+        row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+        row.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         row.detailsLoading = last.detailsLoading || row.detailsLoading;
         row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
         row.stableKey = last.stableKey;
         row.msg = { ...row.msg, id: `${last.msg.id}:${row.msg.id}` };
+        rebuildTimeline(row);
         out[out.length - 1] = row;
         return out;
       }
       if (isEmptyAssistantPlaceholder(row)) {
         last.isStreaming = last.isStreaming || row.isStreaming;
-        last.liveParts = [...last.liveParts, ...row.liveParts];
-        last.renderParts = [...last.renderParts, ...row.renderParts];
+        last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+        last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         if (row.todoItems.length > 0) last.todoItems = row.todoItems;
         last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
+        rebuildTimeline(last);
         return out;
       }
-      // 连续 assistant 回合按 parts 流拼接后重建时间线：同类型且中间无思考/正文/其它类型
-      // 时自然合并（如两轮纯 bash → 一个「已运行 N」）；中间有 thinking 则保持分开
-      // （原始 session：thinking+2bash / thinking+2bash → 「已运行 2」「已运行 2」）。
-      // 禁止只拼 timelineGroups：那会在隐藏 reasoning 后把多轮 shell 错收成一个大数，
-      // 或在禁止合并时过程中打出 2、1、2、结束后又变成 2、2。
-      last.liveParts = [...last.liveParts, ...row.liveParts];
-      last.renderParts = [...last.renderParts, ...row.renderParts];
-      last.timelineGroups = buildDisplayTimelineGroups(
-        buildAgentAssistantRenderGroups(last.renderParts),
-        showReasoningSummaries
-      );
-      last.hasTimeline = last.timelineGroups.length > 0;
-      last.fallbackReply = (
-        buildAgentReplyMarkdownFromParts(last.renderParts) ||
-        row.msg.content ||
-        last.msg.content ||
-        ""
-      ).trim();
-      last.contextOnly =
-        last.timelineGroups.length > 0 &&
-        last.timelineGroups.every((group) => group.kind === "context") &&
-        !last.fallbackReply;
+      // 仅 timeline-only（尚无正文回复）才跨 assistant 拼接：保留思考作分隔后重建时间线。
+      // 两边都已有正文时不合并，避免两轮完整答复粘成一条。
+      // 合并时按 toolCallId 去重：下一回合 tool 常在 message.started 前误写入上一回合，
+      // 不去重会在过程中虚高（3/1/7），结束后 history 对账才回到 2/1/4。
+      if (last.fallbackReply && row.fallbackReply) {
+        out.push(row);
+        return out;
+      }
+      last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+      last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
       last.isStreaming = last.isStreaming || row.isStreaming;
       last.detailsLoading = last.detailsLoading || row.detailsLoading;
       last.detailsError = last.detailsError || row.detailsError;
@@ -1182,6 +1281,7 @@ export function AgentMessageStream({
         id: `${last.msg.id}:${row.msg.id}`,
         content: row.msg.content || last.msg.content
       };
+      rebuildTimeline(last);
       return out;
     }
     out.push(row);

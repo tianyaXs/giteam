@@ -213,11 +213,40 @@ pub fn default_pi_agent_dir() -> Option<PathBuf> {
 /// 返回生效的目录。
 pub fn ensure_pi_agent_dir_env() -> Option<PathBuf> {
     if let Some(existing) = std::env::var_os("PI_CODING_AGENT_DIR") {
-        return Some(PathBuf::from(existing));
+        let dir = PathBuf::from(existing);
+        ensure_pi_retry_settings(&dir, 10);
+        return Some(dir);
     }
     let dir = default_pi_agent_dir()?;
     std::env::set_var("PI_CODING_AGENT_DIR", &dir);
+    ensure_pi_retry_settings(&dir, 10);
     Some(dir)
+}
+
+/// 幂等写入/合并 `{PI_CODING_AGENT_DIR}/settings.json` 的 retry 配置。
+///
+/// Giteam in-process prompt 也会读同一配置；产品要求默认最多自动重试 10 次。
+pub fn ensure_pi_retry_settings(dir: &Path, max_retries: u32) {
+    if fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let path = dir.join("settings.json");
+    let mut root = match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let retry = obj.entry("retry").or_insert_with(|| serde_json::json!({}));
+    let Some(retry_obj) = retry.as_object_mut() else {
+        return;
+    };
+    retry_obj.insert("enabled".to_string(), serde_json::json!(true));
+    retry_obj.insert("maxRetries".to_string(), serde_json::json!(max_retries));
+    if let Ok(raw) = serde_json::to_string_pretty(&root) {
+        let _ = fs::write(&path, format!("{raw}\n"));
+    }
 }
 
 /// Giteam 跨平台数据目录（唯一权威根）。

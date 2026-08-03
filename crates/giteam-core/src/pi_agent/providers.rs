@@ -227,13 +227,30 @@ impl ProviderCatalog {
         let entry = entry.as_object_mut().ok_or_else(|| {
             PiAgentError::Provider(format!("models.json provider {provider} must be an object"))
         })?;
+        // 密钥绝不写入 models.json；provider 级 apiKey 由 vault（auth.json）解析。
+        entry.remove("apiKey");
+        // provider 显示名：勿用裸 id 覆盖已有品牌名（refresh 常传 name=provider id）。
+        let incoming_provider_name = input.name.trim();
+        let existing_provider_name = entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("");
+        let provider_display = if !incoming_provider_name.is_empty()
+            && !incoming_provider_name.eq_ignore_ascii_case(provider)
+        {
+            incoming_provider_name.to_string()
+        } else if !existing_provider_name.is_empty() {
+            existing_provider_name.to_string()
+        } else if !incoming_provider_name.is_empty() {
+            incoming_provider_name.to_string()
+        } else {
+            provider.to_string()
+        };
         entry.insert(
             "name".to_string(),
-            serde_json::Value::String(if input.name.trim().is_empty() {
-                provider.to_string()
-            } else {
-                input.name.trim().to_string()
-            }),
+            serde_json::Value::String(provider_display),
         );
         entry.insert(
             "baseUrl".to_string(),
@@ -260,26 +277,38 @@ impl ProviderCatalog {
                 );
             }
         }
-        // 密钥绝不写入 models.json；provider 级 apiKey 由 vault（auth.json）解析。
-        entry.remove("apiKey");
-        let model_name = input
-            .model_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(model_id)
-            .to_string();
         let models = entry
             .entry("models")
             .or_insert_with(|| serde_json::json!([]));
         let models = models.as_array_mut().ok_or_else(|| {
             PiAgentError::Provider(format!("models.json provider {provider} models must be an array"))
         })?;
+        let existing_model_name = models
+            .iter()
+            .find(|model| model.get("id").and_then(serde_json::Value::as_str) == Some(model_id))
+            .and_then(|model| model.get("name").and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        // model 显示名：显式传入 > 保留已有品牌名 > 才回退 id（避免 refresh 抹掉 GPT-5.3 Codex）。
+        let model_name = input
+            .model_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .or(existing_model_name)
+            .unwrap_or_else(|| model_id.to_string());
         let new_model = serde_json::json!({ "id": model_id, "name": model_name });
         if let Some(existing) = models.iter_mut().find(|model| {
             model.get("id").and_then(serde_json::Value::as_str) == Some(model_id)
         }) {
-            *existing = new_model;
+            if let Some(obj) = existing.as_object_mut() {
+                obj.insert("id".to_string(), serde_json::Value::String(model_id.to_string()));
+                obj.insert("name".to_string(), serde_json::Value::String(model_name));
+            } else {
+                *existing = new_model;
+            }
         } else {
             models.push(new_model);
         }
@@ -406,10 +435,46 @@ impl ProviderCatalog {
             _ => allocate_openai_compatible_provider_id(display_name, providers),
         };
 
-        let models = ids
+        // 重连合并：保留已有模型的品牌 name，并保留本次未返回但仍在列表中的条目。
+        let previous = providers.get(&provider_id).cloned();
+        let mut name_by_id = std::collections::HashMap::<String, String>::new();
+        let mut kept: Vec<serde_json::Value> = Vec::new();
+        if let Some(prev_models) = previous
+            .as_ref()
+            .and_then(|entry| entry.get("models"))
+            .and_then(|value| value.as_array())
+        {
+            for model in prev_models {
+                let Some(id) = model.get("id").and_then(|value| value.as_str()).map(str::trim) else {
+                    continue;
+                };
+                if id.is_empty() {
+                    continue;
+                }
+                if let Some(name) = model
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    name_by_id.insert(id.to_string(), name.to_string());
+                }
+                if !ids.iter().any(|live| live == id) {
+                    kept.push(model.clone());
+                }
+            }
+        }
+        let mut models = ids
             .iter()
-            .map(|id| serde_json::json!({ "id": id, "name": id }))
+            .map(|id| {
+                let name = name_by_id
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| id.clone());
+                serde_json::json!({ "id": id, "name": name })
+            })
             .collect::<Vec<_>>();
+        models.extend(kept);
         providers.insert(
             provider_id.clone(),
             serde_json::json!({
@@ -834,7 +899,32 @@ impl ProviderCatalog {
             .map(|entry| entry.model.id.to_ascii_lowercase())
             .collect();
 
+        // 首次写入 models.json 前先种子完整内置目录，避免 Pi「有 models 数组就整表覆盖」
+        // 只留下一条 live 新模型、冲掉其余内置条目与品牌名。
+        self.seed_provider_catalog_models_if_needed(
+            &catalog_provider,
+            &base_url,
+            &api,
+            if headers.is_empty() {
+                None
+            } else {
+                Some(&headers)
+            },
+            template_entry,
+        )?;
+
         let mut added = Vec::new();
+        // provider 显示名：优先内置 metadata / 已有 models.json，禁止用裸 id 覆盖。
+        let provider_display = self
+            .provider_display_names()
+            .get(&catalog_provider)
+            .cloned()
+            .or_else(|| {
+                pi::provider_metadata::provider_metadata(&catalog_provider)
+                    .and_then(|meta| meta.display_name)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| catalog_provider.clone());
         for model_id in live {
             let model_id = model_id.trim().to_string();
             if model_id.is_empty() || existing.contains(&model_id.to_ascii_lowercase()) {
@@ -843,7 +933,7 @@ impl ProviderCatalog {
             self.save_custom_provider(&CustomProviderInput {
                 // 写入与目录条目同一 provider id，避免别名分裂成两组。
                 provider: catalog_provider.clone(),
-                name: catalog_provider.clone(),
+                name: provider_display.clone(),
                 base_url: base_url.clone(),
                 api: Some(api.clone()),
                 model_id: model_id.clone(),
@@ -858,6 +948,78 @@ impl ProviderCatalog {
             added.push(model_id);
         }
         Ok(added)
+    }
+
+    /// 若 models.json 尚无该 provider 或 models 为空，从 registry 种子完整列表（保留品牌 name）。
+    fn seed_provider_catalog_models_if_needed(
+        &self,
+        catalog_provider: &str,
+        base_url: &str,
+        api: &str,
+        headers: Option<&std::collections::HashMap<String, String>>,
+        template_entry: &pi::sdk::ModelEntry,
+    ) -> Result<(), PiAgentError> {
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let root_obj = root.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json root must be an object".to_string())
+        })?;
+        let providers = root_obj
+            .entry("providers")
+            .or_insert_with(|| serde_json::json!({}));
+        let providers = providers.as_object_mut().ok_or_else(|| {
+            PiAgentError::Provider("models.json providers must be an object".to_string())
+        })?;
+        let needs_seed = match providers.get(catalog_provider) {
+            None => true,
+            Some(entry) => entry
+                .get("models")
+                .and_then(|value| value.as_array())
+                .map(|models| models.is_empty())
+                .unwrap_or(true),
+        };
+        if !needs_seed {
+            return Ok(());
+        }
+        let registry = self.registry()?;
+        let catalog_models: Vec<(String, String)> = registry
+            .models()
+            .iter()
+            .filter(|entry| providers_equivalent(&entry.model.provider, catalog_provider))
+            .map(|entry| (entry.model.id.clone(), entry.model.name.clone()))
+            .collect();
+        let display = pi::provider_metadata::provider_metadata(catalog_provider)
+            .and_then(|meta| meta.display_name)
+            .unwrap_or(catalog_provider);
+        let models = if catalog_models.is_empty() {
+            vec![serde_json::json!({
+                "id": template_entry.model.id,
+                "name": template_entry.model.name
+            })]
+        } else {
+            catalog_models
+                .into_iter()
+                .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                .collect::<Vec<_>>()
+        };
+        let mut entry = serde_json::json!({
+            "name": display,
+            "baseUrl": base_url,
+            "api": api,
+            "models": models,
+        });
+        if let Some(headers) = headers {
+            if !headers.is_empty() {
+                if let Ok(value) = serde_json::to_value(headers) {
+                    entry
+                        .as_object_mut()
+                        .map(|obj| obj.insert("headers".to_string(), value));
+                }
+            }
+        }
+        providers.insert(catalog_provider.to_string(), entry);
+        write_models_json(&path, &root)?;
+        Ok(())
     }
 
     /// 拉取 live 模型 id：优先走可从路由 base_url 推导的 OpenAI 兼容

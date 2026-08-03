@@ -174,6 +174,8 @@ export type AgentEvent = {
     index?: number;
     phase?: string;
     attempt?: number;
+    maxAttempts?: number;
+    delayMs?: number;
     success?: boolean | null;
     /** interaction.requested 为 AgentInteraction。 */
     interaction?: AgentInteraction;

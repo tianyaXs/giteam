@@ -3,6 +3,8 @@ import type { AgentChatMessage, AgentDetailedPart, AgentTodoItem } from "./agent
 export type AgentAssistantRenderGroup =
   | { kind: "context"; key: string; parts: AgentDetailedPart[] }
   | { kind: "reasoning"; key: string; parts: AgentDetailedPart[] }
+  /** 隐藏思考时仍保留的不可见分隔，避免跨回合 shell/explore 被收成一个大数。 */
+  | { kind: "boundary"; key: string }
   | { kind: "part"; key: string; part: AgentDetailedPart };
 
 const GITEAM_DIAGNOSTIC_SEGMENT_RE = /\[giteam\]\s+(?:exec|done)\b.*?(?=(?:\[giteam\]\s+(?:exec|done)\b)|(?:retry failed: )|(?:curl failed with code )|\n|$)/gis;
@@ -125,11 +127,35 @@ export function mergeAgentMessageErrors(prev: AgentChatMessage[] | undefined, ne
   return merged;
 }
 
+export function dedupeAgentToolParts(parts: AgentDetailedPart[] | undefined | null): AgentDetailedPart[] {
+  const rows = Array.isArray(parts) ? parts : [];
+  const seen = new Set<string>();
+  const out: AgentDetailedPart[] = [];
+  for (const part of rows) {
+    if (!part) continue;
+    const type = String((part as { type?: string }).type || "");
+    if (type === "toolCall") {
+      const id = String(
+        (part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || ""
+      ).trim();
+      if (id) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+      }
+    }
+    out.push(part);
+  }
+  return out;
+}
+
 export function isAgentRenderablePart(p: AgentDetailedPart | undefined | null): boolean {
   if (!p) return false;
   const t = String((p as any)?.type || "");
   if (t === "text") return !!String((p as any)?.text ?? "").trim();
   if (t === "reasoning") return !!String((p as any)?.text ?? "").trim();
+  // 跨 assistant 回合分隔：不可见，但阻止 shell/explore 批组跨回合合并。
+  if (t === "turn-boundary") return true;
+  if (t === "runtime.retry" || t === "runtime.failure") return true;
   if (t === "step-start" || t === "step-finish" || t === "patch") return false;
   if (t === "toolCall") {
     // toolName 尚未到达（toolCall.started 常先于 tool.started、初始为空）时不渲染：空 toolName 的
@@ -331,6 +357,12 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
       }
       const firstId = String((batch[0] as any)?.id || "");
       out.push({ kind: "reasoning", key: `reasoning:${firstId || i}`, parts: batch });
+      continue;
+    }
+    if (t === "turn-boundary") {
+      const pid = String((cur as any)?.id || "");
+      out.push({ kind: "boundary", key: `boundary:${pid || i}` });
+      i += 1;
       continue;
     }
     const pid = String((cur as any)?.id || "");

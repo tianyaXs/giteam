@@ -324,6 +324,8 @@ fn auto_retry_events_carry_the_success_flag() {
         AgentEvent::Retry {
             phase: "started".to_string(),
             attempt: 2,
+            max_attempts: Some(5),
+            delay_ms: Some(500),
             success: None,
             error: Some("429 rate limited".to_string()),
         }
@@ -333,6 +335,8 @@ fn auto_retry_events_carry_the_success_flag() {
         AgentEvent::Retry {
             phase: "completed".to_string(),
             attempt: 5,
+            max_attempts: None,
+            delay_ms: None,
             success: Some(false),
             error: Some("gave up".to_string()),
         }

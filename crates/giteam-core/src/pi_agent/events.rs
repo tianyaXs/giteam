@@ -123,6 +123,10 @@ pub enum AgentEvent {
         phase: String,
         attempt: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_attempts: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         success: Option<bool>,
         error: Option<String>,
     },
@@ -335,11 +339,14 @@ impl PiEventTranslator {
             }
             pi::sdk::AgentEvent::AutoRetryStart {
                 attempt,
+                max_attempts,
+                delay_ms,
                 error_message,
-                ..
             } => Some(AgentEvent::Retry {
                 phase: "started".to_string(),
                 attempt,
+                max_attempts: Some(max_attempts),
+                delay_ms: Some(delay_ms),
                 success: None,
                 error: Some(error_message),
             }),
@@ -350,6 +357,8 @@ impl PiEventTranslator {
             } => Some(AgentEvent::Retry {
                 phase: "completed".to_string(),
                 attempt,
+                max_attempts: None,
+                delay_ms: None,
                 success: Some(success),
                 error: final_error,
             }),

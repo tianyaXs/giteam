@@ -1,0 +1,76 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-aarch64
+            os: macos-14
+            args: "--target aarch64-apple-darwin"
+          - name: macos-x86_64
+            os: macos-14
+            args: "--target x86_64-apple-darwin"
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            args: ""
+          - name: windows-x86_64
+            os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macos-aarch64' && 'aarch64-apple-darwin' || matrix.name == 'macos-x86_64' && 'x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 私钥内容（整段 minisign secret）；本地密钥在 ~/.giteam/updater.key
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
+          releaseName: giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
+          releaseBody: |
+            Desktop build for in-app updater.
+
+            Installers and `latest.json` are attached for `tauri-plugin-updater`.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
