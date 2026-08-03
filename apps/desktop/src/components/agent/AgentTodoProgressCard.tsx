@@ -1,5 +1,4 @@
 import type { AgentTodoItem } from "../../lib/agentSessions";
-import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { ScrollArea } from "../ui/scroll-area";
@@ -58,22 +57,36 @@ export function AgentTodoProgressCard({
 }: AgentTodoProgressCardProps) {
   if (todos.length <= 0) return null;
 
-  return (
-    <Collapsible open={!collapsed}>
-      <Card
+  const label = `${progress.done}/${progress.total}`;
+  const title = progress.active?.content
+    ? `进度 ${label} · ${progress.active.content}`
+    : `进度 ${label}`;
+
+  if (collapsed) {
+    // 单层胶囊：避免 Card+Badge 叠成「外白圈 + 内灰底」。
+    return (
+      <div
         className={cn(
-          "w-full rounded-[28px] border-border/55 bg-card/95 shadow-sm transition-all duration-200",
-          collapsed && "rounded-full shadow-sm"
+          "inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-border/60 bg-card px-2.5",
+          "text-xs font-medium tabular-nums tracking-normal text-muted-foreground shadow-sm",
+          "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out",
+          "hover:-translate-y-px hover:border-border hover:bg-muted hover:text-foreground hover:shadow-md",
+          "active:translate-y-0 active:shadow-sm"
         )}
+        title={title}
+        aria-label={title}
       >
-        <CardHeader className={cn("flex-row items-center justify-between gap-2 px-4 pb-2 pt-4", collapsed && "justify-center p-1.5")}>
-          {collapsed ? (
-            <Badge variant="secondary" className="px-2 text-xs font-normal">
-              {progress.done}/{progress.total}
-            </Badge>
-          ) : (
-            <CardTitle className="text-sm font-normal text-muted-foreground">进度</CardTitle>
-          )}
+        {label}
+      </div>
+    );
+  }
+
+  return (
+    <Collapsible open>
+      <Card className="w-full rounded-[28px] border-border/55 bg-card/95 shadow-sm transition-all duration-200">
+        <CardHeader className="flex-row items-center justify-between gap-2 px-4 pb-2 pt-4">
+          <CardTitle className="text-sm font-normal text-muted-foreground">进度</CardTitle>
+          <span className="text-xs font-medium tabular-nums text-muted-foreground">{label}</span>
         </CardHeader>
         <CollapsibleContent>
           <CardContent className="px-4 pb-4 pt-0">

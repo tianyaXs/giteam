@@ -47,6 +47,7 @@ const CELEBRATION_KEY = "giteam.app.updateCelebration.v1";
 const LAST_LAUNCHED_VERSION_KEY = "giteam.app.lastLaunchedVersion.v1";
 
 let pendingUpdate: PendingUpdate | null = null;
+let installInFlight: Promise<AppUpdateState> | null = null;
 
 export async function getAppVersion(): Promise<string> {
   if (!IS_TAURI) return "web";
@@ -121,6 +122,21 @@ export function resolveStartupUpdateCelebration(currentVersion: string): UpdateC
   return null;
 }
 
+function isCrossDeviceUpdaterError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("cross-device") ||
+    lower.includes("crossesdevices") ||
+    lower.includes("os error 18") ||
+    lower.includes("exdev")
+  );
+}
+
+function isNoPendingUpdaterError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("no pending update") || lower.includes("check for updates first");
+}
+
 export async function checkAppUpdate(): Promise<AppUpdateState> {
   if (!IS_TAURI) {
     pendingUpdate = null;
@@ -164,10 +180,22 @@ export async function checkAppUpdate(): Promise<AppUpdateState> {
   }
 }
 
-export async function downloadAndInstallAppUpdate(
+async function ensurePendingUpdate(): Promise<AppUpdateState | null> {
+  if (pendingUpdate) return null;
+  const checked = await checkAppUpdate();
+  if (checked.status === "available" && pendingUpdate) return null;
+  if (checked.status === "upToDate" || checked.status === "unsupported") {
+    return {
+      status: "error",
+      message: "没有可用更新。请先检查更新。"
+    };
+  }
+  return checked;
+}
+
+async function runPendingDownloadAndInstall(
   onProgress?: (progress: number) => void
 ): Promise<AppUpdateState> {
-  if (!IS_TAURI) return { status: "unsupported" };
   if (!pendingUpdate) {
     return { status: "error", message: "No pending update. Check for updates first." };
   }
@@ -207,10 +235,54 @@ export async function downloadAndInstallAppUpdate(
     return { status: "ready", currentVersion, version, notes };
   } catch (error) {
     clearUpdateCelebration();
-    return {
-      status: "error",
-      message: error instanceof Error ? error.message : String(error)
-    };
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "error", message };
+  }
+}
+
+export async function downloadAndInstallAppUpdate(
+  onProgress?: (progress: number) => void
+): Promise<AppUpdateState> {
+  if (!IS_TAURI) return { status: "unsupported" };
+
+  // 合并连点：同一时刻只跑一次安装，避免“要点两次”和重复下载。
+  if (installInFlight) return installInFlight;
+
+  installInFlight = (async () => {
+    const missing = await ensurePendingUpdate();
+    if (missing) return missing;
+
+    let result = await runPendingDownloadAndInstall(onProgress);
+
+    // 首次失败常见原因：pending Update 已失效，或跨卷 rename。自动重新 check 再试一次。
+    if (
+      result.status === "error" &&
+      (isNoPendingUpdaterError(result.message) || isCrossDeviceUpdaterError(result.message))
+    ) {
+      pendingUpdate = null;
+      const refreshed = await ensurePendingUpdate();
+      if (!refreshed && pendingUpdate) {
+        result = await runPendingDownloadAndInstall(onProgress);
+      } else if (refreshed) {
+        result = refreshed;
+      }
+    }
+
+    if (result.status === "error" && isCrossDeviceUpdaterError(result.message)) {
+      return {
+        status: "error",
+        message:
+          `${result.message}（安装临时目录与应用不在同一磁盘卷。请把 giteam.app 放到本机磁盘如 /Applications 后再试，或重新打开应用后重试一次。）`
+      };
+    }
+
+    return result;
+  })();
+
+  try {
+    return await installInFlight;
+  } finally {
+    installInFlight = null;
   }
 }
 

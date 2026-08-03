@@ -116,7 +116,7 @@ function ToolEditorFrame({
 function ToolScrollBody({ children, className }: { children: ReactNode; className?: string }) {
   // 不用 ScrollArea：其 viewport 会 inherit 外层圆角，在标题下方顶角留出空隙
   return (
-    <div className={cn("max-h-[360px] overflow-auto", className)}>
+    <div className={cn("max-h-[360px] select-text overflow-auto", className)}>
       {children}
     </div>
   );

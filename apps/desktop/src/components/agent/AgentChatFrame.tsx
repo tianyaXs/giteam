@@ -25,17 +25,25 @@ type AgentChatFrameProps = {
 type SideRailMode = "expanded" | "collapsed" | "hidden";
 
 const THREAD_MAX_WIDTH = 860;
-const SIDE_RAIL_GAP = 12;
+/** 与 AgentMessageListContainer 的 px-10 对齐，进度轨贴内容区而非 860 外框。 */
+const THREAD_CONTENT_PADDING_X = 40;
+const SIDE_RAIL_GAP = 8;
 const SIDE_RAIL_EXPANDED_WIDTH = 300;
 const SIDE_RAIL_COLLAPSED_WIDTH = 46;
-const SIDE_RAIL_OUTER_PADDING = 12;
+const SIDE_RAIL_OUTER_PADDING = 8;
+/** 相对内容区中心：内容右缘 + 小间距，比贴 860 外框更靠左。 */
+const SIDE_RAIL_LEFT_FROM_CENTER =
+  THREAD_MAX_WIDTH / 2 - THREAD_CONTENT_PADDING_X + SIDE_RAIL_GAP;
 
 function getSideRailMode(width: number): SideRailMode {
-  const rightSideSpace = Math.max(0, (width - THREAD_MAX_WIDTH) / 2);
-  if (rightSideSpace >= SIDE_RAIL_GAP + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING) return "expanded";
-
-  if (rightSideSpace >= SIDE_RAIL_GAP + SIDE_RAIL_COLLAPSED_WIDTH + SIDE_RAIL_OUTER_PADDING) return "collapsed";
-
+  // 用实际轨道起点算余量，左移后展开所需窗口宽度会明显下降。
+  const half = width / 2;
+  if (half >= SIDE_RAIL_LEFT_FROM_CENTER + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING) {
+    return "expanded";
+  }
+  if (half >= SIDE_RAIL_LEFT_FROM_CENTER + SIDE_RAIL_COLLAPSED_WIDTH + SIDE_RAIL_OUTER_PADDING) {
+    return "collapsed";
+  }
   return "hidden";
 }
 
@@ -50,7 +58,7 @@ export function AgentChatFrame({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [sideRailMode, setSideRailMode] = useState<SideRailMode>("hidden");
   const sideRailStyle = {
-    left: `calc(50% + ${THREAD_MAX_WIDTH / 2}px + ${SIDE_RAIL_GAP}px)`
+    left: `calc(50% + ${SIDE_RAIL_LEFT_FROM_CENTER}px)`
   } satisfies CSSProperties;
   const updateSideRailMode = useCallback(() => {
     const node = contentRef.current;
@@ -85,7 +93,7 @@ export function AgentChatFrame({
 
   if (empty) {
     return (
-      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-hidden border-0 bg-transparent px-4 py-6 shadow-none">
+      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-hidden border-0 bg-transparent px-4 pb-[14vh] pt-6 shadow-none">
         <CardContent className="mx-auto w-full max-w-[620px] p-0">
           {composer}
         </CardContent>

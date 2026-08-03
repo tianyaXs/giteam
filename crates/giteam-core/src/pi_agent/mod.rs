@@ -3,6 +3,7 @@ mod interactions;
 mod messages;
 mod project_memory;
 mod prompt;
+mod provider_sanitizer;
 mod providers;
 mod secrets;
 mod service;

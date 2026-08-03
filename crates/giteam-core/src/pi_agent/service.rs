@@ -12,6 +12,9 @@ use pi::sdk::{create_agent_session, AbortHandle, AgentSessionHandle, SessionOpti
 use thiserror::Error;
 
 use super::interactions::{InteractionHub, InteractionRunContext, InteractionStore};
+use super::provider_sanitizer::{
+    ensure_tool_call_id_sanitizer, shorten_tool_call_id, OPENAI_TOOL_CALL_ID_MAX_LEN,
+};
 use super::tools::GiteamToolFactory;
 use super::{
     ensure_pi_agent_dir_env, AgentEvent, AgentEventEnvelope, AgentInteraction,
@@ -207,6 +210,9 @@ struct ManagedSession {
     handle: AsyncMutex<AgentSessionHandle>,
     /// 审批/提问交互枢纽（PR6）：随 session 创建，run 上下文在 prompt 时绑定。
     hub: Arc<InteractionHub>,
+    /// 已安装的 tool call id 清洗包装（见 provider_sanitizer）。pi 切换模型会
+    /// 重建 provider 丢弃包装，prompt 前按指针比对重装。
+    sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
 }
 
 struct ActiveRun {
@@ -389,6 +395,7 @@ impl PiAgentService {
             repo_path,
             handle: AsyncMutex::new(handle),
             hub,
+            sanitized_provider: Mutex::new(None),
         });
         let mut sessions = self
             .sessions
@@ -650,6 +657,14 @@ impl PiAgentService {
 
         let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
+            // 根修：给 provider 套上流事件清洗包装（见 provider_sanitizer 模块文档）。
+            // indemind 等兼容网关逐 chunk 重复下发完整 tool_calls[].id，pi 端 push_str
+            // 累加出超长 id（实测 1479）污染消息历史，下一轮回放 HTTP 400（call_id ≤ 64）。
+            // 在事件层收敛 id，污染根本进不了历史，同一次 run 内不再 400。
+            ensure_tool_call_id_sanitizer(
+                &mut handle.session_mut().agent,
+                &session.sanitized_provider,
+            );
             // 发送前清洗历史里的“空文本块”：pi 的 anthropic-messages convert 不过滤空 text
             // （pi src/providers/anthropic.rs convert_content_block_to_anthropic），流式占位/截断
             // 会留下 TextContent{text:""} 并落地进历史，下一轮原样发给 provider。
@@ -1237,6 +1252,7 @@ impl PiAgentService {
             repo_path: record.repo_path,
             handle: AsyncMutex::new(handle),
             hub,
+            sanitized_provider: Mutex::new(None),
         });
         let mut sessions = self
             .sessions
@@ -1490,9 +1506,6 @@ fn strip_empty_text_blocks(agent: &mut pi::sdk::Agent) {
     agent.replace_messages(messages);
 }
 
-/// OpenAI Responses API：`call_id` 最大 64 字符（`string_above_max_length`）。
-const OPENAI_TOOL_CALL_ID_MAX_LEN: usize = 64;
-
 /// indemind 等兼容网关在每个 stream chunk 重复下发完整 `tool_calls[].id`，
 /// pi `openai.rs` 用 `push_str` 累加后会变成 `call_XXXcall_XXX...`（可达上千字符），
 /// 下一轮回放触发 `Invalid 'input[n].call_id': string too long`。
@@ -1507,53 +1520,6 @@ fn is_tool_call_id_overflow_error(message: &str) -> bool {
         || lower.contains("maximum length 64")
         || lower.contains("max length 64")
         || lower.contains("above_max_length")
-}
-
-/// 折叠「完整 id 被重复拼接」的形态：`call_ABCcall_ABC...` → `call_ABC`。
-fn collapse_repeated_tool_call_id(id: &str) -> Option<String> {
-    let trimmed = id.trim();
-    let len = trimmed.len();
-    if len <= OPENAI_TOOL_CALL_ID_MAX_LEN || trimmed.is_empty() {
-        return None;
-    }
-    // 精确整数倍重复（session 实证：29 字符 × 36 = 1044）。
-    let max_period = OPENAI_TOOL_CALL_ID_MAX_LEN.min(len / 2);
-    for period in 1..=max_period {
-        if len % period != 0 {
-            continue;
-        }
-        let unit = &trimmed[..period];
-        if trimmed.as_bytes().chunks_exact(period).all(|chunk| chunk == unit.as_bytes()) {
-            return Some(unit.to_string());
-        }
-    }
-    None
-}
-
-fn shorten_tool_call_id(id: &str) -> String {
-    let trimmed = id.trim();
-    if trimmed.is_empty() || trimmed.len() <= OPENAI_TOOL_CALL_ID_MAX_LEN {
-        return trimmed.to_string();
-    }
-    if let Some(collapsed) = collapse_repeated_tool_call_id(trimmed) {
-        return collapsed;
-    }
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    trimmed.hash(&mut hasher);
-    let hash = hasher.finish();
-    let prefix: String = trimmed
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
-        .take(12)
-        .collect();
-    let prefix = if prefix.is_empty() {
-        "tc".to_string()
-    } else {
-        prefix
-    };
-    format!("{prefix}_{hash:016x}")
 }
 
 fn message_has_oversized_tool_call_id(message: &pi::sdk::Message) -> bool {

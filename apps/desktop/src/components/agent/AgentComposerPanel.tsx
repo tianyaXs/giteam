@@ -256,12 +256,12 @@ function ComposerAddIcon(props: { className?: string }) {
       aria-hidden="true"
       className={props.className}
       fill="none"
-      height="18"
+      height="20"
       viewBox="0 0 20 20"
-      width="18"
+      width="20"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <path d="M10 4.75V15.25M4.75 10H15.25" stroke="currentColor" strokeLinecap="round" strokeWidth="1.35" />
+      <path d="M10 3.75V16.25M3.75 10H16.25" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
     </svg>
   );
 }
@@ -278,8 +278,10 @@ function ComposerAttachmentButton(props: ComposerAttachmentButtonProps) {
         <DropdownMenuTrigger asChild>
           <Button
             className={cn(
-              "size-9 rounded-full text-muted-foreground/75 hover:bg-muted hover:text-muted-foreground",
-              props.attachmentMenuOpen && "bg-muted text-muted-foreground",
+              // 参考底栏：干净细线 +，默认黑色；与发送按钮同为 size-8。
+              "size-8 rounded-full text-foreground [&_svg]:size-[18px]",
+              "hover:bg-muted/70 hover:text-foreground",
+              props.attachmentMenuOpen && "bg-muted text-foreground",
               props.buttonClassName
             )}
             aria-label={props.attachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
@@ -384,9 +386,9 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
         <DropdownMenuTrigger asChild>
           <Button
             className={cn(
-              "h-9 max-w-[220px] rounded-full px-2.5 text-[12px] font-medium leading-4 text-muted-foreground/75",
-              "hover:bg-muted hover:text-muted-foreground",
-              "focus-visible:ring-0 data-[state=open]:bg-muted data-[state=open]:text-muted-foreground"
+              "h-7 max-w-[220px] rounded-full px-2.5 py-0 text-[13px] font-medium leading-4 text-foreground",
+              "hover:bg-muted/70 hover:text-foreground",
+              "focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
             )}
             aria-label={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
             title={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
@@ -579,8 +581,13 @@ function ComposerSubmitButton({
   return (
     <Button
       className={cn(
-        "size-9 rounded-full shadow-sm transition-transform hover:-translate-y-0.5 active:translate-y-0",
-        disabled && "shadow-none hover:translate-y-0"
+        "size-8 rounded-full shadow-sm transition-[transform,background-color,color,box-shadow] duration-150",
+        // 覆盖 Button 默认 [&_svg]:size-4，让箭头在圆钮里更饱满。
+        "[&_svg]:size-5",
+        "hover:-translate-y-0.5 active:translate-y-0",
+        disabled
+          ? "shadow-none hover:translate-y-0 hover:bg-muted/80"
+          : "hover:shadow-md"
       )}
       disabled={disabled}
       onClick={onPrimaryAction}
@@ -722,6 +729,10 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
 
+  // 软悬浮：近距微阴影 + 中层 + 远距弥散，避免「只有描边、贴在平面上」的扁平感。
+  const composerSurfaceClass =
+    "border border-border/55 bg-card text-card-foreground shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_16px_rgba(15,23,42,0.06),0_18px_44px_rgba(15,23,42,0.09)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_8px_24px_rgba(0,0,0,0.32)]";
+
   const previewStrip = (
     <AnimatePresence initial={false}>
       {hasComposerPreviews ? (
@@ -860,7 +871,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
 
         {showEmptyState ? (
           <div
-            className="flex w-full flex-col gap-5 motion-safe:transition-[margin-top] motion-safe:duration-200 motion-safe:ease-out"
+            className="flex w-full flex-col gap-8 motion-safe:transition-[margin-top] motion-safe:duration-200 motion-safe:ease-out"
             style={emptyGrowUpOffset > 0 ? { marginTop: -emptyGrowUpOffset } : undefined}
           >
             <div className="flex flex-col items-center gap-5">
@@ -881,13 +892,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </div>
             </div>
 
-            <div className="relative flex w-full min-w-0 flex-col gap-3 rounded-3xl border border-border/70 bg-card p-5 text-card-foreground shadow-sm">
+            <div className={cn("relative flex w-full min-w-0 flex-col gap-3 rounded-3xl p-5", composerSurfaceClass)}>
               {previewStrip}
               <div className="flex min-h-[102px] w-full min-w-0 flex-1 flex-col gap-3">
                 <ComposerEditor className="w-full -mt-0.5" {...editorProps} />
                 <div className="mt-auto flex items-end justify-between gap-3">
                   <ComposerAttachmentButton
-                    buttonClassName="-ml-3.5 translate-y-3.5"
+                    buttonClassName="-ml-[15px] translate-y-[15px]"
                     attachmentMenuOpen={attachmentMenuOpen}
                     onToggleAttachmentMenu={onToggleAttachmentMenu}
                     attachmentInputRef={attachmentInputRef}
@@ -895,10 +906,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     onOpenAttachmentPicker={onOpenAttachmentPicker}
                     onAttachmentInputChange={onAttachmentInputChange}
                   />
-                  <div className="flex translate-x-3.5 translate-y-3.5 items-end gap-1">
-                    <div className="translate-y-0.5">
-                      <ComposerConfigButton {...configButtonProps} />
-                    </div>
+                  <div className="flex translate-x-[15px] translate-y-[15px] items-center gap-1">
+                    <ComposerConfigButton {...configButtonProps} />
                     <ComposerSubmitButton
                       activeSessionBusy={activeSessionBusy}
                       canSubmit={canSubmit}
@@ -915,24 +924,28 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           // 「拉到最新」由 AgentChatFrame 悬浮渲染，避免占行或被 footer overflow 裁切。
           <div
             className={cn(
-              "relative flex w-full min-w-0 flex-col rounded-[28px] border border-border/70 bg-card px-2 py-2 text-card-foreground shadow-sm",
+              // 再收一档厚度：控件 size-8 + py-1，贴边约 4px。
+              "relative flex w-full min-w-0 flex-col rounded-[24px] px-1 py-1",
+              composerSurfaceClass,
               hasComposerPreviews && "gap-2"
             )}
           >
             {previewStrip}
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-2">
-              <div className="flex items-end self-end pb-0.5">
-                <ComposerAttachmentButton
-                  attachmentMenuOpen={attachmentMenuOpen}
-                  onToggleAttachmentMenu={onToggleAttachmentMenu}
-                  attachmentInputRef={attachmentInputRef}
-                  attachmentInputAccept={attachmentInputAccept}
-                  onOpenAttachmentPicker={onOpenAttachmentPicker}
-                  onAttachmentInputChange={onAttachmentInputChange}
-                />
-              </div>
-              <ComposerEditor {...editorProps} />
-              <div className="flex items-end gap-2 self-end">
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
+              <ComposerAttachmentButton
+                attachmentMenuOpen={attachmentMenuOpen}
+                onToggleAttachmentMenu={onToggleAttachmentMenu}
+                attachmentInputRef={attachmentInputRef}
+                attachmentInputAccept={attachmentInputAccept}
+                onOpenAttachmentPicker={onOpenAttachmentPicker}
+                onAttachmentInputChange={onAttachmentInputChange}
+              />
+              <ComposerEditor
+                {...editorProps}
+                // 与 size-8 控件同高，单行文字上下约 4px。
+                textareaClassName="min-h-8 py-1 text-[15px] leading-6"
+              />
+              <div className="flex items-center gap-1">
                 <ComposerConfigButton {...configButtonProps} />
                 <ComposerSubmitButton
                   activeSessionBusy={activeSessionBusy}

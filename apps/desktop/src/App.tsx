@@ -876,6 +876,7 @@ export function App() {
     notes: string;
   } | null>(null);
   const [updateCelebration, setUpdateCelebration] = useState<UpdateCelebration | null>(null);
+  const installInFlightGuard = useRef(false);
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
@@ -1117,15 +1118,19 @@ export function App() {
   const previousSessionBusyRef = useRef(false);
   const previousPermissionCountRef = useRef(0);
 
+  function focusAgentComposer() {
+    // 会话切换/布局切换后 textarea 可能尚未挂稳；等 React 提交后再抢输入态。
+    const tryFocus = () => agentInputRef.current?.focus({ preventScroll: true });
+    queueMicrotask(() => {
+      requestAnimationFrame(tryFocus);
+    });
+  }
+
   function appendAgentAttachments(next: AgentAttachment[]) {
     if (next.length === 0) return;
     setAgentImageAttachments((prev) => mergeUniqueAttachments(prev, next));
     // 粘贴/拖入附件后布局可能切换，异步读盘也会让焦点丢失；等 React 提交后再抢回输入态。
-    queueMicrotask(() => {
-      requestAnimationFrame(() => {
-        agentInputRef.current?.focus({ preventScroll: true });
-      });
-    });
+    focusAgentComposer();
   }
 
   async function readTransferAttachments(transfer: DataTransfer | null | undefined): Promise<AgentAttachment[]> {
@@ -1606,6 +1611,21 @@ export function App() {
     || (activeAgentSessionId && (!activeAgentSession || !activeAgentSession.loaded))
   );
   const agentShowEmptyState = !hydratingActiveAgentSession && !pendingSidebarSessionSwitch && !agentSessionLoading && agentMessages.length === 0;
+  // 切会话后空态/消息态会 remount 输入框；等 loading 结束再补一次焦点，避免落在已卸载节点上。
+  useEffect(() => {
+    const intent = agentSelectionIntentRef.current;
+    if (!intent) return;
+    if (Date.now() - intent.at > 2500) return;
+    if (intent.sessionId && intent.sessionId !== activeAgentSessionId) return;
+    if (agentSessionLoading || hydratingActiveAgentSession || pendingSidebarSessionSwitch) return;
+    focusAgentComposer();
+  }, [
+    activeAgentSessionId,
+    agentSessionLoading,
+    hydratingActiveAgentSession,
+    pendingSidebarSessionSwitch,
+    agentShowEmptyState,
+  ]);
   const activeAgentSessionBusy = Boolean(activeAgentSessionId && agentRunBusyBySession[activeAgentSessionId]);
   const activeAgentStreamingAssistantId = activeAgentSessionId ? (agentStreamingAssistantIdBySession[activeAgentSessionId] || "") : "";
   const visibleAgentDefinitions = useMemo(() => {
@@ -2012,7 +2032,6 @@ export function App() {
     clearAgentSessionHydration();
     selectAgentSession("", "draft-clear", { draft: true });
     setAgentPromptInput("");
-    requestAnimationFrame(() => agentInputRef.current?.focus());
   }
   const agentSavedModelCandidates = useMemo(() => {
     const q = agentModelPickerSearch.trim().toLowerCase();
@@ -2533,6 +2552,8 @@ export function App() {
     } else {
       setDraftAgentSession(options.draft);
     }
+    // 切换会话后默认进入输入态，方便直接打字。
+    focusAgentComposer();
   }
 
   function ensureActiveAgentSession(): string {
@@ -3136,9 +3157,6 @@ export function App() {
     clearAgentSessionHydration();
     selectAgentSession("", "draft-clear", { draft: true });
     setAgentPromptInput(seedPrompt?.trim() || "");
-    requestAnimationFrame(() => {
-      agentInputRef.current?.focus();
-    });
   }
 
   async function createAndSwitchAgentSessionForSidebar(seedPrompt?: string) {
@@ -3156,9 +3174,6 @@ export function App() {
     clearAgentSessionHydration();
     selectAgentSession("", "draft-clear", { draft: true });
     setAgentPromptInput(seedPrompt?.trim() || "");
-    requestAnimationFrame(() => {
-      agentInputRef.current?.focus();
-    });
   }
 
   async function openAgentChildSession(childSessionId: string, titleHint?: string) {
@@ -5257,16 +5272,36 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }));
           }
           if (currentServerAssistantId) {
-            upsertAgentLivePart(currentServerAssistantId, {
-              id: `retry:${attempt}:${phase}`,
+            // 固定 id：同一条重试行原地更新，避免每次 attempt 堆一行「重试中」。
+            const retryPart: Record<string, unknown> = {
+              id: "runtime.retry",
               type: "runtime.retry",
               phase,
               attempt,
-              maxAttempts,
               delayMs: event.delayMs ?? null,
               success: event.success ?? null,
               error: event.error || "",
               status: phase === "started" ? "running" : event.success ? "completed" : "error"
+            };
+            // completed 事件常不带 maxAttempts，缺省不覆盖已写入值。
+            if (Number(event.maxAttempts) > 0) {
+              retryPart.maxAttempts = Number(event.maxAttempts);
+            } else if (phase === "started") {
+              retryPart.maxAttempts = maxAttempts;
+            }
+            upsertAgentLivePart(currentServerAssistantId, retryPart);
+            // 清掉旧版按 attempt/phase 生成的多行 retry:*，只留 runtime.retry 一条。
+            commitAgentLiveParts((prev) => {
+              const mid = currentServerAssistantId.trim();
+              const current = prev[mid];
+              if (!Array.isArray(current) || current.length === 0) return prev;
+              const next = current.filter((part) => {
+                const type = String((part as { type?: string }).type || "");
+                if (type !== "runtime.retry") return true;
+                return String((part as { id?: string }).id || "").trim() === "runtime.retry";
+              });
+              if (next.length === current.length) return prev;
+              return { ...prev, [mid]: next };
             });
           }
           setMessage(
@@ -5293,8 +5328,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }
           break;
         case "interaction.requested": {
-          // PR6：工具执行前/提问发起的裁决请求。auto（自动接受）只发 requested+resolved 成对事件，
-          // 这里 upsert 后 resolved case 会立即移除，因此 UI 不会闪烁。
+          // PR6：工具执行前/提问发起的裁决请求。auto（自动接受）在后端只发单条
+          // resolved(auto) 审计事件、不发 requested，因此这里永远不会收到 auto 的卡片。
           const interaction = event.interaction;
           if (interaction && interaction.sessionId === sessionId) {
             setAgentInteractions((prev) => {
@@ -5422,20 +5457,48 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         for (const mid of liveMessageIds) {
           const parts = liveSnapshot[mid];
           if (!Array.isArray(parts) || parts.length === 0) continue;
-          let changed = false;
-          const nextParts = parts.map((part) => {
-            if (String((part as { type?: string }).type || "") !== "toolCall") return part;
-            const st = String((part as { status?: string }).status || "").trim().toLowerCase();
-            if (st !== "running" && st !== "pending" && st !== "deciding") return part;
-            changed = true;
-            return {
-              ...(part as object),
-              status: settleStatus,
-              isError: Boolean(failure)
-            } as AgentDetailedPart;
+          let nextParts = parts.map((part) => {
+            const type = String((part as { type?: string }).type || "");
+            if (type === "toolCall") {
+              const st = String((part as { status?: string }).status || "").trim().toLowerCase();
+              if (st !== "running" && st !== "pending" && st !== "deciding") return part;
+              return {
+                ...(part as object),
+                status: settleStatus,
+                isError: Boolean(failure)
+              } as AgentDetailedPart;
+            }
+            // 中止/失败时把仍停在「重试中」的行收成终态，避免暂停后整段消失或一直 pulse。
+            if (failure && type === "runtime.retry") {
+              const phase = String((part as { phase?: string }).phase || "").trim();
+              if (phase === "started" || String((part as { status?: string }).status || "") === "running") {
+                return {
+                  ...(part as object),
+                  phase: "completed",
+                  success: false,
+                  status: "error",
+                  error:
+                    String((part as { error?: string }).error || "").trim() ||
+                    failure
+                } as AgentDetailedPart;
+              }
+            }
+            return part;
           });
-          // 工具已是终态时不要整表换新数组，否则结束瞬间无意义重渲染会闪一下。
-          if (changed) settledLiveByServerId[mid] = nextParts;
+          if (failure && !nextParts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure")) {
+            nextParts = [
+              ...nextParts,
+              {
+                id: "runtime.failure",
+                type: "runtime.failure",
+                error: failure,
+                status: "error"
+              } as AgentDetailedPart
+            ];
+          }
+          // 无论工具是否变化，都把含 runtime.retry/failure 的 live 快照写入 details，
+          // 否则暂停后仅靠 ephemeral live，一旦键漂移就会整段消失。
+          settledLiveByServerId[mid] = nextParts;
         }
         if (Object.keys(settledLiveByServerId).length > 0) {
           commitAgentLiveParts((prev) => {
@@ -5460,6 +5523,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               next[serverId] = detail;
               const localId = localAssistantByMessageId.get(serverId);
               if (localId) next[localId] = detail;
+              // retry-pending 键也按当前 local assistant 再挂一份，保证映射丢失时仍可读。
+              if (currentLocalAssistantId) next[currentLocalAssistantId] = detail;
             }
             return next;
           });
@@ -9292,7 +9357,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onLater={() => setUpdateAvailablePrompt(null)}
           onInstall={() => {
             void (async () => {
-              if (!updateAvailablePrompt) return;
+              if (!updateAvailablePrompt || installInFlightGuard.current) return;
+              installInFlightGuard.current = true;
               setAppUpdateState({
                 status: "downloading",
                 currentVersion: updateAvailablePrompt.currentVersion,
@@ -9301,14 +9367,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 progress: 0
               });
               setUpdateAvailablePrompt(null);
-              const next = await downloadAndInstallAppUpdate((progress) => {
-                setAppUpdateState((prev) =>
-                  prev.status === "downloading" ? { ...prev, progress } : prev
-                );
-              });
-              setAppUpdateState(next);
-              if (next.status === "ready") {
-                await relaunchApp();
+              try {
+                const next = await downloadAndInstallAppUpdate((progress) => {
+                  setAppUpdateState((prev) =>
+                    prev.status === "downloading" ? { ...prev, progress } : prev
+                  );
+                });
+                setAppUpdateState(next);
+                if (next.status === "ready") {
+                  await relaunchApp();
+                }
+              } finally {
+                installInFlightGuard.current = false;
               }
             })();
           }}
@@ -9357,7 +9427,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 setAppUpdateState({ status: "checking" });
                 const next = await checkAppUpdate();
                 setAppUpdateState(next);
-                if (next.status === "available") {
+                // 已在设置「关于」页时不叠弹窗，直接在页内下载安装，避免要点两次。
+                if (next.status === "available" && !showSettings) {
                   setUpdateAvailablePrompt({
                     currentVersion: next.currentVersion,
                     version: next.version,
@@ -9378,6 +9449,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   await relaunchApp();
                   return;
                 }
+                if (installInFlightGuard.current) return;
+                installInFlightGuard.current = true;
                 setUpdateAvailablePrompt(null);
                 setAppUpdateState((prev) =>
                   prev.status === "available"
@@ -9390,14 +9463,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                       }
                     : { status: "checking" }
                 );
-                const next = await downloadAndInstallAppUpdate((progress) => {
-                  setAppUpdateState((prev) =>
-                    prev.status === "downloading" ? { ...prev, progress } : prev
-                  );
-                });
-                setAppUpdateState(next);
-                if (next.status === "ready") {
-                  await relaunchApp();
+                try {
+                  const next = await downloadAndInstallAppUpdate((progress) => {
+                    setAppUpdateState((prev) =>
+                      prev.status === "downloading" ? { ...prev, progress } : prev
+                    );
+                  });
+                  setAppUpdateState(next);
+                  if (next.status === "ready") {
+                    await relaunchApp();
+                  }
+                } finally {
+                  installInFlightGuard.current = false;
                 }
               })();
             }}

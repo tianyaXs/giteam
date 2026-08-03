@@ -86,6 +86,10 @@ export function SendIcon(props: { busy: boolean }) {
   return props.busy ? (
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="5.5" width="13" height="13" rx="3" fill="currentColor" /></svg>
   ) : (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5V16.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /><path d="M7 10L12 4.5L17 10" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    // 箭头放大、线宽保持细精致，在圆钮里占更满的视觉比例。
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.25V18.25" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <path d="M5.75 10L12 3.25L18.25 10" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

@@ -80,7 +80,89 @@ mod macos_context_menu {
     }
 }
 
+/// 把临时目录放到与应用同一卷，避免 updater `rename` 触发 EXDEV（os error 18）。
+fn align_temp_dir_with_app_volume() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let app_path = resolve_app_install_path(&exe);
+    let Ok(app_meta) = std::fs::metadata(&app_path) else {
+        return;
+    };
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(parent) = app_path.parent() {
+        candidates.push(parent.join(".giteam-updater-tmp"));
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = std::path::PathBuf::from(home);
+        candidates.push(home.join(".giteam").join("updater-tmp"));
+        candidates.push(home.join("Library").join("Caches").join("giteam-updater"));
+    }
+
+    for candidate in candidates {
+        if std::fs::create_dir_all(&candidate).is_err() {
+            continue;
+        }
+        let Ok(tmp_meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if !same_fs_device(&app_meta, &tmp_meta) {
+            continue;
+        }
+        std::env::set_var("TMPDIR", &candidate);
+        #[cfg(windows)]
+        {
+            std::env::set_var("TEMP", &candidate);
+            std::env::set_var("TMP", &candidate);
+        }
+        return;
+    }
+}
+
+fn resolve_app_install_path(exe: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        // …/App.app/Contents/MacOS/binary → App.app
+        if let (Some(macos), Some(contents), Some(bundle)) = (
+            exe.parent(),
+            exe.parent().and_then(|p| p.parent()),
+            exe.parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent()),
+        ) {
+            let _ = macos;
+            let _ = contents;
+            if bundle.extension().and_then(|ext| ext.to_str()) == Some("app") {
+                return bundle.to_path_buf();
+            }
+        }
+    }
+    exe.to_path_buf()
+}
+
+fn same_fs_device(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return a.dev() == b.dev();
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return a.volume_serial_number() == b.volume_serial_number();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (a, b);
+        true
+    }
+}
+
 fn main() {
+    // Updater 用 rename 安装；TMPDIR 与 .app 跨卷会触发 Cross-device link (os error 18)。
+    align_temp_dir_with_app_volume();
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .manage(commands::watch::GitWorktreeWatcherState::default());

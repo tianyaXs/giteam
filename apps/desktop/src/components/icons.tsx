@@ -238,6 +238,84 @@ export function SyncIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEleme
   );
 }
 
+export function AboutIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10 9V14" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <circle cx="10" cy="6.5" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function BellIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M10 3.25C7.51472 3.25 5.5 5.26472 5.5 7.75V10.4L4.2 12.35C4.072 12.542 4.086 12.796 4.234 12.972C4.382 13.148 4.62 13.2 4.82 13.1L5.5 12.8V13.25C5.5 14.7688 6.73122 16 8.25 16H11.75C13.2688 16 14.5 14.7688 14.5 13.25V12.8L15.18 13.1C15.38 13.2 15.618 13.148 15.766 12.972C15.914 12.796 15.928 12.542 15.8 12.35L14.5 10.4V7.75C14.5 5.26472 12.4853 3.25 10 3.25Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+      <path d="M8.5 16.25C8.75 17.05 9.3 17.75 10 17.75C10.7 17.75 11.25 17.05 11.5 16.25" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+export function SoundIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M3.5 8.25V11.75C3.5 12.3023 3.94772 12.75 4.5 12.75H6.6L10.15 15.55C10.55 15.86 11.15 15.58 11.15 15.07V4.93C11.15 4.42 10.55 4.14 10.15 4.45L6.6 7.25H4.5C3.94772 7.25 3.5 7.69772 3.5 8.25Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+      <path d="M13.25 7.5C13.9 8.05 14.35 8.95 14.35 10C14.35 11.05 13.9 11.95 13.25 12.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+      <path d="M14.85 5.75C16.05 6.85 16.85 8.3 16.85 10C16.85 11.7 16.05 13.15 14.85 14.25" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+export function LinkIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M8.25 11.75L11.75 8.25M7.1 9.4L5.6 10.9C4.45 12.05 4.45 13.9 5.6 15.05C6.75 16.2 8.6 16.2 9.75 15.05L11.25 13.55M8.75 6.45L10.25 4.95C11.4 3.8 13.25 3.8 14.4 4.95C15.55 6.1 15.55 7.95 14.4 9.1L12.9 10.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+export function PackageIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M10 2.75L16.25 6.25V13.75L10 17.25L3.75 13.75V6.25L10 2.75Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+      <path d="M10 17.25V10M10 10L3.9 6.15M10 10L16.1 6.15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+export function ModelIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect x="3.5" y="3.5" width="5.5" height="5.5" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="11" y="3.5" width="5.5" height="5.5" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
+      <rect x="3.5" y="11" width="5.5" height="5.5" rx="1.2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M11 13.75H16.5M13.75 11V16.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 export function PanelLeftIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
   return (
     <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>

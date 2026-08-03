@@ -25,7 +25,6 @@ import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Skeleton } from "../ui/skeleton";
 import { cn } from "../../lib/utils";
 import { useHighlightKeyword } from "../../lib/highlightKeyword";
-import { AlertTriangle, RotateCw } from "lucide-react";
 
 type AgentPreviewImage = {
   uri: string;
@@ -327,7 +326,7 @@ type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
 // @see https://virtuoso.dev/react-virtuoso/troubleshooting/
 const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
   ({ children, style, ...rest }, ref) => (
-    <div ref={ref} style={style} {...rest} className="mx-auto w-full max-w-[860px] px-10">
+    <div ref={ref} style={style} {...rest} className="mx-auto w-full max-w-[860px] select-none px-10">
       {children}
     </div>
   )
@@ -352,7 +351,7 @@ function StreamLoadingState() {
 function SystemMessageRow({ content }: { content: string }) {
   return (
     <div className="flex w-full items-center gap-2 py-1.5" aria-live="polite">
-      <span className="min-w-0 whitespace-pre-wrap break-words text-xs text-muted-foreground">{content}</span>
+      <span className="min-w-0 select-text whitespace-pre-wrap break-words text-xs text-muted-foreground">{content}</span>
     </div>
   );
 }
@@ -581,7 +580,7 @@ function ReasoningGroup({
       </CollapsibleTrigger>
       <AnimatedCollapsibleContent open={open}>
         <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
-          <div className="min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
+          <div className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]">
             {renderMarkdown(text, active)}
           </div>
         </div>
@@ -600,7 +599,7 @@ function AssistantTextBlock({
   renderMarkdown: RenderMarkdown;
 }) {
   return (
-    <div className="min-w-0 max-w-full overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]">
+    <div className="min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]">
       {renderMarkdown(text, streaming)}
     </div>
   );
@@ -810,7 +809,7 @@ function CollapsibleUserText({
   renderMarkdown: RenderMarkdown;
 }) {
   return (
-    <Collapsible className="grid gap-2" open={open} onOpenChange={onOpenChange}>
+    <Collapsible className="grid select-text gap-2" open={open} onOpenChange={onOpenChange}>
       {open ? null : (
         <div className="min-w-0 text-sm leading-relaxed">
           {renderMarkdown(collapsePreview(text))}
@@ -820,7 +819,7 @@ function CollapsibleUserText({
         {renderMarkdown(text)}
       </CollapsibleContent>
       <CollapsibleTrigger asChild>
-        <Button className="h-7 w-fit px-2 text-xs" size="sm" variant="ghost" aria-controls={`message-${messageId}`}>
+        <Button className="h-7 w-fit select-none px-2 text-xs" size="sm" variant="ghost" aria-controls={`message-${messageId}`}>
           {open ? "收起" : "展开全文"}
         </Button>
       </CollapsibleTrigger>
@@ -861,7 +860,7 @@ function UserMessage({
       />
       {hasContent ? (
         hasAttachments ? (
-          <div className="w-fit max-w-full rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground">
+          <div className="w-fit max-w-full select-text rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground">
             {shouldCollapseMessage(msg.content) ? (
               <CollapsibleUserText
                 messageId={msg.id}
@@ -874,17 +873,21 @@ function UserMessage({
               />
             ) : renderMarkdown(msg.content)}
           </div>
-        ) : shouldCollapseMessage(msg.content) ? (
-            <CollapsibleUserText
-              messageId={msg.id}
-              text={msg.content}
-              open={messageOpenState[msg.id] ?? false}
-              onOpenChange={(open) => {
-                setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
-              }}
-              renderMarkdown={renderMarkdown}
-            />
-          ) : renderMarkdown(msg.content)
+        ) : (
+          <div className="select-text">
+            {shouldCollapseMessage(msg.content) ? (
+              <CollapsibleUserText
+                messageId={msg.id}
+                text={msg.content}
+                open={messageOpenState[msg.id] ?? false}
+                onOpenChange={(open) => {
+                  setMessageOpenState((prev) => ({ ...prev, [msg.id]: open }));
+                }}
+                renderMarkdown={renderMarkdown}
+              />
+            ) : renderMarkdown(msg.content)}
+          </div>
+        )
       ) : null}
     </div>
   );
@@ -944,8 +947,16 @@ function AssistantMessage({
         <ThinkingPlaceholder />
       ) : null}
       {detailsError ? (
-        <div className="mt-1 text-xs text-destructive">
-          {detailsError}
+        <div className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1">
+          <div className="flex min-w-0 items-center gap-2 overflow-hidden px-0 py-1.5 whitespace-nowrap">
+            <ActivityStatus
+              active={false}
+              activeLabel="详情失败"
+              doneLabel="详情失败"
+              className="text-sm text-destructive"
+            />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{detailsError}</span>
+          </div>
         </div>
       ) : null}
       {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
@@ -958,7 +969,30 @@ function renderPartsHasFailure(parts: AgentDetailedPart[]): boolean {
   return parts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure");
 }
 
+/** 同一轮里多次 runtime.retry 只保留最后一条；failure 最多一条，挂到末尾。 */
+function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
+  let latestRetry: AgentDetailedPart | null = null;
+  let failure: AgentDetailedPart | null = null;
+  const rest: AgentDetailedPart[] = [];
+  for (const part of parts) {
+    const type = String((part as { type?: string }).type || "");
+    if (type === "runtime.retry") {
+      latestRetry = part;
+      continue;
+    }
+    if (type === "runtime.failure") {
+      failure = part;
+      continue;
+    }
+    rest.push(part);
+  }
+  if (latestRetry) rest.push(latestRetry);
+  if (failure) rest.push(failure);
+  return rest;
+}
+
 function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
+  const [open, setOpen] = useState(false);
   const phase = String((part as { phase?: string }).phase || "").trim();
   const attempt = Number((part as { attempt?: number }).attempt) || 0;
   const maxAttempts = Number((part as { maxAttempts?: number }).maxAttempts) || 0;
@@ -966,67 +1000,121 @@ function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
   const error = String((part as { error?: string }).error || "").trim();
   const attemptLabel = maxAttempts > 0 ? `${attempt}/${maxAttempts}` : String(attempt || "?");
   const running = phase === "started" || (phase === "completed" && success === false && !error);
-  let title = `请求失败，自动重试（${attemptLabel}）`;
-  if (phase === "completed" && success === true) title = `重试成功（第 ${attempt} 次）`;
-  else if (phase === "completed" && success === false) title = `重试未恢复（${attemptLabel}）`;
-  return (
-    <div
-      className={cn(
-        "relative overflow-hidden rounded-xl border px-3.5 py-2.5 text-sm text-foreground",
-        running
-          ? "border-border/70 bg-muted/40"
-          : success === true
-            ? "border-border/60 bg-muted/25"
-            : "border-destructive/25 bg-destructive/[0.05]"
-      )}
-      aria-live="polite"
-    >
-      <div
-        className={cn(
-          "absolute inset-y-0 left-0 w-1",
-          running ? "bg-foreground/25" : success === true ? "bg-foreground/15" : "bg-destructive/60"
-        )}
-        aria-hidden="true"
+  const failed = phase === "completed" && success === false;
+  const recovered = phase === "completed" && success === true;
+  const doneLabel = recovered ? "已重试" : "重试失败";
+  const preview = error
+    ? error.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || error
+    : recovered
+      ? "请求已恢复"
+      : running
+        ? "自动重试中"
+        : "";
+  const canExpand = Boolean(error);
+
+  const header = (
+    <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+      <ActivityStatus
+        active={running}
+        activeLabel="重试中"
+        doneLabel={doneLabel}
+        className={cn("text-sm", !running && failed && "text-destructive")}
       />
-      <div className="flex min-w-0 items-start gap-2.5 pl-1">
-        <span
-          className={cn(
-            "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full",
-            running ? "bg-foreground/10 text-foreground/70" : success === true ? "bg-foreground/8 text-foreground/60" : "bg-destructive/15 text-destructive"
-          )}
-          aria-hidden="true"
-        >
-          <RotateCw className={cn("size-3.5", running && "animate-spin")} strokeWidth={2.2} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="font-medium leading-5 text-foreground/90">{title}</div>
-          {error ? (
-            <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-foreground/70">{error}</p>
-          ) : null}
-        </div>
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{attemptLabel}</span>
+      {!open && preview ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {preview}</span>
+      ) : null}
+    </span>
+  );
+
+  if (!canExpand) {
+    return (
+      <div className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" aria-live="polite">
+        <div className="flex min-w-0 items-center overflow-hidden px-0 py-1.5">{header}</div>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <Collapsible
+      className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1"
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground"
+          variant="ghost"
+        >
+          {header}
+        </Button>
+      </CollapsibleTrigger>
+      <AnimatedCollapsibleContent open={open}>
+        <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+          <p className="min-w-0 max-w-full select-text whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        </div>
+      </AnimatedCollapsibleContent>
+    </Collapsible>
   );
 }
 
 function AgentErrorMessage({ message }: { message: string }) {
-  return (
-    <div
-      role="alert"
-      aria-live="polite"
-      className="relative overflow-hidden rounded-xl border border-destructive/30 bg-destructive/[0.07] px-3.5 py-3 text-sm text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--danger)_8%,transparent)]"
-    >
-      <div className="absolute inset-y-0 left-0 w-1 bg-destructive/70" aria-hidden="true" />
-      <div className="flex min-w-0 items-start gap-2.5 pl-1">
-        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive" aria-hidden="true">
-          <AlertTriangle className="size-3.5" strokeWidth={2.2} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold leading-5 text-destructive">运行失败</div>
-          <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-foreground/80">{message}</p>
-        </div>
+  const [open, setOpen] = useState(false);
+  const text = message.trim();
+  if (!text) return null;
+  const preview =
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) || text;
+  const long = text.length > 96 || text.includes("\n");
+
+  const header = (
+    <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+      <ActivityStatus
+        active={false}
+        activeLabel="运行失败"
+        doneLabel="运行失败"
+        className="text-sm text-destructive"
+      />
+      {!open ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
+      ) : null}
+    </span>
+  );
+
+  if (!long) {
+    return (
+      <div className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" role="alert" aria-live="polite">
+        <div className="flex min-w-0 items-center overflow-hidden px-0 py-1.5">{header}</div>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <Collapsible
+      className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1"
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground"
+          variant="ghost"
+        >
+          {header}
+        </Button>
+      </CollapsibleTrigger>
+      <AnimatedCollapsibleContent open={open}>
+        <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+          <p className="min-w-0 max-w-full select-text whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+            {text}
+          </p>
+        </div>
+      </AnimatedCollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -1053,7 +1141,7 @@ function MessageAttachments({
   const imageColumnCount = Math.min(imageAttachments.length, 3);
 
   return (
-    <div className={cn("grid min-w-0 gap-2", className)}>
+    <div className={cn("grid min-w-0 select-none gap-2", className)}>
       {imageAttachments.length > 0 ? (
         <div
           className="grid max-w-full gap-2.5"
@@ -1075,7 +1163,13 @@ function MessageAttachments({
               title="点击查看，右键复制图片数据"
               variant="ghost"
             >
-              <img className="size-full rounded-[14px] border border-border/35 bg-background object-contain" src={attachment.uri} alt={attachment.filename || "图片附件"} loading="lazy" />
+              <img
+                className="pointer-events-none size-full rounded-[14px] border border-border/35 bg-background object-contain"
+                src={attachment.uri}
+                alt={attachment.filename || "图片附件"}
+                loading="lazy"
+                draggable={false}
+              />
             </Button>
           ))}
         </div>
@@ -1187,7 +1281,8 @@ export function AgentMessageStream({
       (mappedServerMid && livePartsByServerMessageId[mappedServerMid]) ||
       livePartsByServerMessageId[msg.id] ||
       [];
-    const detailParts = (liveParts.length > 0 ? liveParts : fetchedParts).map((part) => {
+    const detailParts = coalesceRuntimeParts(
+      (liveParts.length > 0 ? liveParts : fetchedParts).map((part) => {
       // 兼容旧 bug：reasoning 流曾被误标成 text，导致思考正文与「思考中」标签分离
       const id = String((part as { id?: string }).id || "").trim();
       const type = String((part as { type?: string }).type || "");
@@ -1195,7 +1290,8 @@ export function AgentMessageStream({
         return { ...(part as object), type: "reasoning" } as AgentDetailedPart;
       }
       return part;
-    });
+    })
+    );
     const renderParts = dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart));
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];

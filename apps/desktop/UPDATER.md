@@ -6,7 +6,7 @@
 - 分发：GitHub Release 附件里的安装包 + `latest.json`
 - 验签：minisign；公钥写在 `apps/desktop/src-tauri/tauri.conf.json`，私钥只放 CI Secret
 
-更新入口：设置 → 更新。`updatesStartup` 控制启动后自动检查。
+更新入口：设置 → 关于。`updatesStartup` 控制启动后自动检查。
 
 产品交互：
 

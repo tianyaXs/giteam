@@ -61,7 +61,7 @@ impl Tool for ApprovalTool {
         // 快路径：显式自动接受或命中 session 级 always 规则。审计事件照常发布。
         if self.hub.is_allowed(&tool, &input) {
             if let Some(context) = self.hub.run_context() {
-                publish_auto_approval(&context, &tool, tool_call_id, &input, self.risk);
+                publish_auto_approval(&context);
             }
             return self.inner.execute(tool_call_id, input, on_update).await;
         }
@@ -106,29 +106,12 @@ impl Tool for ApprovalTool {
     }
 }
 
-/// 自动接受也要留下审计轨迹：requested 后紧跟 resolved(auto)。
-fn publish_auto_approval(
-    context: &super::super::interactions::InteractionRunContext,
-    tool: &str,
-    tool_call_id: &str,
-    input: &Value,
-    risk: InteractionRisk,
-) {
-    let id = new_interaction_id();
-    context.publish(super::super::events::AgentEvent::InteractionRequested {
-        interaction: AgentInteraction::Permission {
-            id: id.clone(),
-            session_id: context.session_id.clone(),
-            run_id: context.run_id.clone(),
-            tool_call_id: tool_call_id.to_string(),
-            tool: tool.to_string(),
-            risk: risk.as_str().to_string(),
-            input: redact_tool_input(input),
-            created_at_ms: now_ms(),
-        },
-    });
+/// 自动接受的审计轨迹：只发单条 resolved(auto)。
+/// 不能再先发 requested：requested/resolved 是两条独立 SSE 消息，前端在两条
+/// 消息之间会真实渲染一帧权限卡片，用户感知为"auto 模式下仍弹审批"。
+fn publish_auto_approval(context: &super::super::interactions::InteractionRunContext) {
     context.publish(super::super::events::AgentEvent::InteractionResolved {
-        id,
+        id: new_interaction_id(),
         resolution: "auto".to_string(),
         automatic: true,
     });
