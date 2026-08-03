@@ -251,15 +251,38 @@ pub fn ensure_pi_retry_settings(dir: &Path, max_retries: u32) {
 
 /// Giteam 跨平台数据目录（唯一权威根）。
 ///
-/// 布局（对齐成熟桌面应用惯例，CLI / Desktop 共用同一根，避免按 bundle id 分裂）：
+/// 对齐 Codex（`~/.codex` + `CODEX_HOME`）等 coding CLI 惯例：
 /// ```text
-/// macOS:   ~/Library/Application Support/giteam/
-/// Windows: %APPDATA%\giteam\
-/// Linux:   ${XDG_DATA_HOME:-~/.local/share}/giteam/
+/// 默认：   ~/.giteam/
+/// 覆盖：   $GITEAM_HOME（若设置且非空）
 /// ```
 /// 子目录约定：`pi-agent/`（auth/models）、`pi-sessions/`（catalog）、根级 `client.db` / `theme`。
+///
+/// 注意：仓库内的 `<repo>/.giteam/` 是**项目级**运行时数据，与本全局根不同。
 #[must_use]
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(override_dir) = std::env::var_os("GITEAM_HOME") {
+        let dir = PathBuf::from(override_dir);
+        if !dir.as_os_str().is_empty() {
+            return Some(dir);
+        }
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".giteam"))
+}
+
+/// 确保权威数据根存在，返回路径。
+pub fn ensure_data_dir() -> Option<PathBuf> {
+    let dir = default_data_dir()?;
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    Some(dir)
+}
+
+/// 旧版平台 Application Support / XDG 数据根（迁到 `~/.giteam` 之前）。
+#[must_use]
+pub fn legacy_platform_data_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     let home = PathBuf::from(home);
     #[cfg(target_os = "windows")]
@@ -282,16 +305,7 @@ pub fn default_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// 确保权威数据根存在，返回路径。
-pub fn ensure_data_dir() -> Option<PathBuf> {
-    let dir = default_data_dir()?;
-    if fs::create_dir_all(&dir).is_err() {
-        return None;
-    }
-    Some(dir)
-}
-
-/// Tauri 按 `identifier = io.giteam.desktop` 解析出的旧数据根（与 `giteam/` 分裂）。
+/// Tauri 按 `identifier = io.giteam.desktop` 解析出的旧数据根。
 #[must_use]
 pub fn legacy_tauri_bundle_data_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
@@ -330,25 +344,58 @@ fn copy_file_if_missing(from: &Path, to: &Path) {
     let _ = fs::copy(from, to);
 }
 
-/// 一次性把旧 Tauri bundle 目录中的通用文件迁入权威 `giteam/` 根（幂等、不覆盖已有）。
-///
-/// 覆盖：`client.db`、`theme`，以及误放在 `io.giteam.desktop/.giteam/` 下的同名文件。
-pub fn migrate_legacy_tauri_data_into_canonical() {
-    let Some(canonical) = ensure_data_dir() else {
+fn copy_dir_merge_missing(from: &Path, to: &Path) {
+    if !from.is_dir() {
+        return;
+    }
+    let _ = fs::create_dir_all(to);
+    let Ok(entries) = fs::read_dir(from) else {
         return;
     };
-    let Some(legacy) = legacy_tauri_bundle_data_dir() else {
-        return;
-    };
-    if !legacy.exists() {
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir_merge_missing(&src, &dst);
+        } else {
+            copy_file_if_missing(&src, &dst);
+        }
+    }
+}
+
+fn migrate_one_legacy_root(legacy: &Path, canonical: &Path) {
+    if !legacy.exists() || legacy == canonical {
         return;
     }
     copy_file_if_missing(&legacy.join("theme"), &canonical.join("theme"));
+    copy_file_if_missing(&legacy.join("client.db"), &canonical.join("client.db"));
     copy_file_if_missing(
         &legacy.join(".giteam").join("client.db"),
         &canonical.join("client.db"),
     );
-    copy_file_if_missing(&legacy.join("client.db"), &canonical.join("client.db"));
+    copy_file_if_missing(
+        &legacy.join("pi-skill-source-groups.json"),
+        &canonical.join("pi-skill-source-groups.json"),
+    );
+    copy_dir_merge_missing(&legacy.join("pi-agent"), &canonical.join("pi-agent"));
+    copy_dir_merge_missing(&legacy.join("pi-sessions"), &canonical.join("pi-sessions"));
+}
+
+/// 一次性把旧数据根迁入权威 `~/.giteam`（幂等、不覆盖已有）。
+///
+/// 来源（按平台）：
+/// - `~/Library/Application Support/giteam` / `%APPDATA%\giteam` / XDG `giteam`
+/// - Tauri bundle id 目录 `io.giteam.desktop`
+pub fn migrate_legacy_tauri_data_into_canonical() {
+    let Some(canonical) = ensure_data_dir() else {
+        return;
+    };
+    if let Some(legacy) = legacy_platform_data_dir() {
+        migrate_one_legacy_root(&legacy, &canonical);
+    }
+    if let Some(legacy) = legacy_tauri_bundle_data_dir() {
+        migrate_one_legacy_root(&legacy, &canonical);
+    }
 }
 
 /// 确保仓库内 `.giteam/.gitignore` 存在，避免会话/附件被误提交（成熟项目惯例）。
@@ -492,5 +539,56 @@ mod tests {
         assert!(content.contains("pi-sessions/"));
         assert!(content.contains("prompt-attachments/"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_data_dir_honors_giteam_home() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let override_dir = std::env::temp_dir().join(format!(
+            "giteam-home-override-{}-{stamp}",
+            std::process::id()
+        ));
+        let previous = std::env::var_os("GITEAM_HOME");
+        // SAFETY: test-only env mutation scoped to this assertion.
+        std::env::set_var("GITEAM_HOME", &override_dir);
+        let resolved = default_data_dir().expect("data dir");
+        assert_eq!(resolved, override_dir);
+        match previous {
+            Some(value) => std::env::set_var("GITEAM_HOME", value),
+            None => std::env::remove_var("GITEAM_HOME"),
+        }
+    }
+
+    #[test]
+    fn migrate_one_legacy_root_copies_missing_files() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let base = std::env::temp_dir().join(format!(
+            "giteam-migrate-{}-{stamp}",
+            std::process::id()
+        ));
+        let legacy = base.join("legacy");
+        let canonical = base.join("canonical");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(legacy.join("pi-agent")).expect("legacy pi-agent");
+        fs::create_dir_all(&canonical).expect("canonical");
+        fs::write(legacy.join("theme"), b"dark").expect("theme");
+        fs::write(legacy.join("client.db"), b"db").expect("db");
+        fs::write(legacy.join("pi-agent").join("auth.json"), b"{}").expect("auth");
+        // Prefer existing canonical file over legacy.
+        fs::write(canonical.join("theme"), b"keep").expect("keep theme");
+
+        migrate_one_legacy_root(&legacy, &canonical);
+
+        assert_eq!(fs::read_to_string(canonical.join("theme")).unwrap(), "keep");
+        assert_eq!(fs::read(canonical.join("client.db")).unwrap(), b"db");
+        assert_eq!(
+            fs::read(canonical.join("pi-agent").join("auth.json")).unwrap(),
+            b"{}"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }

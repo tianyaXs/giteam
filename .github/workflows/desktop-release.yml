@@ -110,11 +110,9 @@ jobs:
           releaseBody: |
             ## What's New
 
-            Desktop release `${{ github.ref_name }}`.
-
-            ### Highlights
-            - In-app updates via GitHub Releases (`latest.json`)
-            - Signed installers for macOS (Apple Silicon), Windows, and Linux
+            ### Data directory
+            - Persist app data under `~/.giteam` (Codex-style), overridable with `$GITEAM_HOME`
+            - Auto-migrate existing data from Application Support / old Tauri bundle paths (idempotent, never overwrites)
 
             Open **Settings → Updates** to install, or download the asset for your platform below.
           releaseDraft: false

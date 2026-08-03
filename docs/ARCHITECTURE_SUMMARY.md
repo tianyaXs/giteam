@@ -152,7 +152,7 @@ Desktop (Host)                          Mobile (Client)
 | 终端 | xterm.js |
 | 桌面壳 | Tauri v2（Rust） |
 | 数据库 | SQLite（rusqlite） |
-| 存储路径 | `~/Library/Application Support/giteam/client.db` |
+| 存储路径 | `~/.giteam/client.db`（`$GITEAM_HOME` 可覆盖） |
 
 **特殊处理**：macOS 右键菜单通过 Objective-C Runtime Hook 拦截，禁用原生菜单，保留前端自定义右键。
 

@@ -145,7 +145,7 @@ giteam/
 **技术栈**：
 - **前端**：React 18 + TypeScript + Vite + Tailwind CSS v4 + Radix UI + Framer Motion
 - **后端**：Tauri v2（Rust）
-- **本地存储**：SQLite（rusqlite，文件位于 `~/Library/Application Support/giteam/client.db`）
+- **本地存储**：SQLite（rusqlite，文件位于 `~/.giteam/client.db`，可用 `$GITEAM_HOME` 覆盖）
 
 **窗口配置**：
 - 默认尺寸 1480×940，暗色主题，Overlay 标题栏
@@ -358,7 +358,7 @@ Giteam 以 **Git Worktree** 为核心工作单元：
 
 ### 8.1 SQLite 数据库
 
-**位置**：`~/Library/Application Support/giteam/client.db`（macOS）
+**位置**：`~/.giteam/client.db`（可用 `$GITEAM_HOME` 覆盖；对齐 Codex 的 `~/.codex` / `CODEX_HOME`）
 
 **核心表**：
 

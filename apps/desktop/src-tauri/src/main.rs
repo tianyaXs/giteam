@@ -94,7 +94,7 @@ fn main() {
 
     let app = builder
         .setup(|app| {
-            // 统一权威数据根，并迁入旧 Tauri bundle 目录残留。
+            // 统一权威数据根（~/.giteam），并迁入旧 Application Support / Tauri bundle 残留。
             giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
             let _ = giteam_core::pi_agent::ensure_pi_agent_dir_env();
             commands::ui::apply_saved_window_theme(app.handle());

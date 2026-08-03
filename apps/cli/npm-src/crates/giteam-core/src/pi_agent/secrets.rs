@@ -220,29 +220,19 @@ pub fn ensure_pi_agent_dir_env() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Giteam 跨平台数据目录，与 session catalog 同级。
+/// Giteam 跨平台数据目录（唯一权威根）。
+///
+/// 对齐 Codex（`~/.codex` + `CODEX_HOME`）：默认 `~/.giteam/`，可用 `$GITEAM_HOME` 覆盖。
 #[must_use]
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(override_dir) = std::env::var_os("GITEAM_HOME") {
+        let dir = PathBuf::from(override_dir);
+        if !dir.as_os_str().is_empty() {
+            return Some(dir);
+        }
+    }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    let home = PathBuf::from(home);
-    #[cfg(target_os = "windows")]
-    {
-        let root = std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join("AppData").join("Roaming"));
-        return Some(root.join("giteam"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return Some(home.join("Library").join("Application Support").join("giteam"));
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let root = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local").join("share"));
-        Some(root.join("giteam"))
-    }
+    Some(PathBuf::from(home).join(".giteam"))
 }
 
 #[cfg(test)]

@@ -63,8 +63,8 @@ fn legacy_db_path() -> Option<PathBuf> {
 
 fn db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let _ = app_handle;
-    // 与 giteam-core / CLI 共用权威数据根（Application Support/giteam），
-    // 不再使用 Tauri bundle id 目录（io.giteam.desktop），避免双写分裂。
+    // 与 giteam-core / CLI 共用权威数据根（~/.giteam 或 $GITEAM_HOME），
+    // 并从旧 Application Support / Tauri bundle 目录幂等迁入。
     giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
     let dir = giteam_core::pi_agent::ensure_data_dir()
         .ok_or_else(|| "cannot resolve Giteam data dir".to_string())?;
