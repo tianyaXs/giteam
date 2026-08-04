@@ -165,6 +165,7 @@ import {
   getAppVersion,
   relaunchApp,
   resolveStartupUpdateCelebration,
+  splitReleaseNotesIntoSteps,
   type AppUpdateState,
   type UpdateCelebration
 } from "./lib/appUpdater";
@@ -173,6 +174,7 @@ import {
   AppUpdateWhatsNewDialog,
   getAppUpdateDialogText
 } from "./components/settings/AppUpdateDialogs";
+import { AppUpdateMajorWizard } from "./components/settings/AppUpdateMajorWizard";
 import {
   clearRepoTerminalSession,
   closeRepoTerminalSession,
@@ -473,6 +475,11 @@ const WORKTREE_DIFF_STREAM_INITIAL_LOAD = WORKTREE_DIFF_STREAM_BATCH_SIZE + WORK
 
 const RUNTIME_FIRST_CHECK_KEY = "giteam.runtime.first-check.v1";
 const MACOS_RUNTIME_BOOTSTRAP_NAME = "runtime";
+
+/** 启动屏最小展示时长：避免数据过快就绪导致闪一下即消失。 */
+const SPLASH_MIN_DISPLAY_MS = 600;
+/** 启动屏兜底时长：启动链路挂起时强制放行，避免永久遮挡界面。 */
+const SPLASH_MAX_DISPLAY_MS = 8000;
 const AGENT_MODEL_VIS_KEY = "giteam.agent.model-visibility.v1";
 const AGENT_MODEL_ENABLE_KEY = "giteam.agent.model-enabled.v1";
 const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v1";
@@ -718,7 +725,7 @@ export function App() {
   useTauriDragRegions();
   const [theme, toggleTheme] = useDesktopTheme();
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
-  const { uiFontSize, codeFontSize, setUiFontSize, setCodeFontSize } = useAppearanceFontSize();
+  const { uiZoom, codeFontSize, setUiZoom, setCodeFontSize } = useAppearanceFontSize();
   const [agentPreviewImage, setAgentPreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "models" | "skillsmp" | "mcp">("general");
@@ -735,6 +742,11 @@ export function App() {
   const [showAgentApiDialog, setShowAgentApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [runtimeStartupChecking, setRuntimeStartupChecking] = useState(true);
+  // 启动屏：等待首批仓库列表与运行时检测就绪后淡出。
+  const [reposLoaded, setReposLoaded] = useState(false);
+  // agent 工作区 bootstrap 首轮完成（会话已选中/已进入草稿态），供启动屏判定。
+  const [agentBootstrapSettled, setAgentBootstrapSettled] = useState(false);
+  const splashShownAtRef = useRef(Date.now());
   const [sidebarWidth, setSidebarWidth] = useState(() => loadCachedWidth(SIDEBAR_WIDTH_CACHE_KEY, 304, 292, 340));
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
@@ -876,6 +888,14 @@ export function App() {
     notes: string;
   } | null>(null);
   const [updateCelebration, setUpdateCelebration] = useState<UpdateCelebration | null>(null);
+  // 大更新且 notes 能切出 ≥2 个章节时走全屏分步向导，否则用小更新提示窗。
+  const showUpdateWizard = useMemo(
+    () =>
+      Boolean(updateCelebration) &&
+      updateCelebration?.kind === "major" &&
+      splitReleaseNotesIntoSteps(updateCelebration.notes).length >= 2,
+    [updateCelebration]
+  );
   const installInFlightGuard = useRef(false);
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
@@ -3597,12 +3617,42 @@ export function App() {
   }
 
   async function refreshRepositories() {
-    const all = await listRepositories();
-    const preferredRepo = all.find((repo) => pinnedRepoIds.includes(repo.id)) || all[0] || null;
-    setRepos(all);
-    if (preferredRepo && !selectedRepo) setSelectedRepo(preferredRepo);
-    if (preferredRepo && !gitPaneRepo) setGitPaneRepo(preferredRepo);
+    try {
+      const all = await listRepositories();
+      const preferredRepo = all.find((repo) => pinnedRepoIds.includes(repo.id)) || all[0] || null;
+      setRepos(all);
+      if (preferredRepo && !selectedRepo) setSelectedRepo(preferredRepo);
+      if (preferredRepo && !gitPaneRepo) setGitPaneRepo(preferredRepo);
+    } finally {
+      // 幂等打点：仓库列表首次返回（含失败）即视为首批数据就绪，供启动屏判定。
+      setReposLoaded(true);
+    }
   }
+
+  // 启动屏隐藏判定：首批仓库列表 + 运行时检测 + agent 会话首轮加载均就绪后，
+  // 补足最小展示时长再淡出——避免界面先露出"会话未加载完"的中间态。
+  // 启动屏本体是 index.html 的内联 CSS 节点——transform/opacity 动画由合成器线程
+  // 驱动，启动期 JS 主线程繁忙（bundle 执行 + 首屏渲染）时动画依然流畅，因此
+  // 不迁移为 React 组件；这里只负责打淡出类并在过渡结束后移除节点。
+  // 另有兜底超时，防止启动链路挂起导致启动屏永久遮挡界面。
+  useEffect(() => {
+    const splash = document.getElementById("app-splash");
+    if (!splash) return;
+    const elapsed = Date.now() - splashShownAtRef.current;
+    // 无仓库时不会有 agent bootstrap，直接视为会话侧就绪。
+    const noWorkspace = reposLoaded && repos.length === 0;
+    const sessionSettled = agentBootstrapSettled && !agentSessionLoading;
+    const ready = reposLoaded && !runtimeStartupChecking && (noWorkspace || sessionSettled);
+    const delay = ready
+      ? Math.max(SPLASH_MIN_DISPLAY_MS - elapsed, 0)
+      : Math.max(SPLASH_MAX_DISPLAY_MS - elapsed, 0);
+    const timer = window.setTimeout(() => {
+      splash.classList.add("app-splash-exit");
+      // 等 CSS 淡出过渡（320ms）结束后再移除节点
+      window.setTimeout(() => splash.remove(), 400);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [reposLoaded, repos.length, runtimeStartupChecking, agentBootstrapSettled, agentSessionLoading]);
 
   const {
     activateLinkedWorktree,
@@ -4257,6 +4307,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (isCancelled()) return;
 
       agentBootstrapDoneForRepoRef.current = serviceOk && providersOk ? repoId : "";
+      // 启动屏信号：bootstrap 首轮结束（此时会话已选中，消息水合由 agentSessionLoading 覆盖）。
+      setAgentBootstrapSettled(true);
       appendAgentDebugLog(
         `bootstrap.done repo=${repoId} service=${serviceOk} providers=${providersOk} config=${configOk} modelConfig=${modelConfigOk} configuredModels=${configuredModelsOk} sessions=${sessionsOk}`
       );
@@ -7966,12 +8018,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       hasMoreRepoSessions={hasMoreRepoSessions}
       isRepoSessionsLoading={isRepoSessionsLoading}
       isRepoSessionsPaging={isRepoSessionsPaging}
+      isRepoSessionsLoaded={hasLoadedSidebarRepoSessions}
       onImportRepository={() => void pickAndImportRepository()}
       onCreateSession={() => void createAndSwitchAgentSessionForSidebar()}
       onOpenSearch={() => setSearchPanelOpen(true)}
       onToggleRepoSessions={toggleRepoSessions}
+      onEnsureRepoSessions={(repo) => {
+        // 悬浮卡片需要任务数量：未加载且不在加载中时补拉一次会话列表。
+        if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
+        void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+      }}
       onOpenRepoContextMenu={openRepoContextMenu}
       onTogglePinnedRepo={togglePinnedRepo}
+      onStartDraftSession={startDraftSessionForRepo}
       onFocusDraftSession={() => agentInputRef.current?.focus()}
       onOpenSession={openSidebarAgentSession}
       onArchiveSession={(repo, sessionId) => archiveAgentSession(repo, sessionId)}
@@ -9342,7 +9401,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         />
 
         <AppUpdateWhatsNewDialog
-          open={Boolean(updateCelebration)}
+          open={Boolean(updateCelebration) && !showUpdateWizard}
+          celebration={updateCelebration}
+          text={updateDialogText}
+          onClose={() => setUpdateCelebration(null)}
+        />
+        <AppUpdateMajorWizard
+          open={Boolean(updateCelebration) && showUpdateWizard}
           celebration={updateCelebration}
           text={updateDialogText}
           onClose={() => setUpdateCelebration(null)}
@@ -9499,9 +9564,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
               setMessage("SkillsMP API Key cleared");
             }}
-            uiFontSize={uiFontSize}
+            uiZoom={uiZoom}
             codeFontSize={codeFontSize}
-            onUiFontSizeChange={setUiFontSize}
+            onUiZoomChange={setUiZoom}
             onCodeFontSizeChange={setCodeFontSize}
             controlSettings={controlServerSettings}
             controlBusy={controlServerSettingsBusy}
@@ -10040,6 +10105,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               if (!open) setRepoContextMenu(null);
             }}
           >
+            <DropdownMenuItem
+              onSelect={() => togglePinnedRepo(repoContextMenu.repo.id)}
+              disabled={busy}
+            >
+              {pinnedRepoIds.includes(repoContextMenu.repo.id) ? appText.unpinProject : appText.pinProject}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => void closeRepository(repoContextMenu.repo)}
               disabled={busy}

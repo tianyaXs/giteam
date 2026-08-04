@@ -256,9 +256,10 @@ pub fn ensure_pi_retry_settings(dir: &Path, max_retries: u32) {
 /// 默认：   ~/.giteam/
 /// 覆盖：   $GITEAM_HOME（若设置且非空）
 /// ```
-/// 子目录约定：`pi-agent/`（auth/models）、`pi-sessions/`（catalog）、根级 `client.db` / `theme`。
+/// 子目录约定：`pi-agent/`（auth/models）、`pi-sessions/`（catalog + 按仓库会话正文）、根级 `client.db` / `theme`。
 ///
-/// 注意：仓库内的 `<repo>/.giteam/` 是**项目级**运行时数据，与本全局根不同。
+/// 注意：仓库内的 `<repo>/.giteam/` 仅保留**项目级**附件等（如 `prompt-attachments/`），
+/// Agent 会话 JSONL **不**再写入仓库旁，统一落在本全局根下。
 #[must_use]
 pub fn default_data_dir() -> Option<PathBuf> {
     if let Some(override_dir) = std::env::var_os("GITEAM_HOME") {
@@ -398,7 +399,171 @@ pub fn migrate_legacy_tauri_data_into_canonical() {
     }
 }
 
-/// 确保仓库内 `.giteam/.gitignore` 存在，避免会话/附件被误提交（成熟项目惯例）。
+/// 全局会话根：`~/.giteam/pi-sessions/`（含 `catalog.json` 与 `repos/`）。
+#[must_use]
+pub fn pi_sessions_root() -> Option<PathBuf> {
+    default_data_dir().map(|root| root.join("pi-sessions"))
+}
+
+/// 旧版仓库旁会话目录（迁移源）：`<repo>/.giteam/pi-sessions`。
+#[must_use]
+pub fn legacy_repo_pi_sessions_dir(repo_path: &Path) -> PathBuf {
+    repo_path.join(".giteam").join("pi-sessions")
+}
+
+fn normalize_repo_path_key(repo_path: &Path) -> String {
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let mut normalized = canonical.to_string_lossy().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    // macOS / Windows 路径大小写不敏感，统一小写避免同仓双目录。
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        normalized = normalized.to_lowercase();
+    }
+    normalized
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// 仓库隔离键：`<dirname>-<fnv1a64>`，稳定、可读、不依赖额外哈希 crate。
+#[must_use]
+pub fn repo_sessions_key(repo_path: &Path) -> String {
+    let normalized = normalize_repo_path_key(repo_path);
+    let digest = fnv1a64(normalized.as_bytes());
+    let slug: String = repo_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repo")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    let slug = if slug.is_empty() {
+        "repo".to_string()
+    } else {
+        slug
+    };
+    format!("{slug}-{digest:016x}")
+}
+
+/// 用户目录下按仓库隔离的会话目录：`~/.giteam/pi-sessions/repos/<key>/`。
+#[must_use]
+pub fn pi_sessions_dir_for_repo(repo_path: &Path) -> Option<PathBuf> {
+    Some(
+        pi_sessions_root()?
+            .join("repos")
+            .join(repo_sessions_key(repo_path)),
+    )
+}
+
+pub(crate) fn write_repo_sessions_meta(session_dir: &Path, repo_path: &Path) {
+    let meta_path = session_dir.join("repo.json");
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "repoPath": canonical.to_string_lossy(),
+    });
+    if let Ok(bytes) = serde_json::to_vec_pretty(&payload) {
+        let _ = fs::write(meta_path, bytes);
+    }
+}
+
+/// 确保用户目录会话仓存在，并写入 `repo.json` 便于人工排查。
+pub fn ensure_repo_pi_sessions_dir(repo_path: &Path) -> Result<PathBuf, PiAgentError> {
+    let dir = pi_sessions_dir_for_repo(repo_path).ok_or_else(|| {
+        PiAgentError::Persistence("cannot resolve Giteam data directory (~/.giteam)".to_string())
+    })?;
+    fs::create_dir_all(&dir).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+    write_repo_sessions_meta(&dir, repo_path);
+    Ok(dir)
+}
+
+fn move_file_if_needed(from: &Path, to: &Path) -> Result<(), PiAgentError> {
+    if from == to {
+        return Ok(());
+    }
+    if !from.exists() {
+        return Ok(());
+    }
+    if to.exists() {
+        let _ = fs::remove_file(from);
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+    }
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(from, to).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+            let _ = fs::remove_file(from);
+            Ok(())
+        }
+    }
+}
+
+/// 迁移会话 JSONL 及其 sidecar（`.bak` / wal / shm / `.lock`），幂等。
+pub fn migrate_session_file_bundle(old_path: &Path, new_path: &Path) -> Result<(), PiAgentError> {
+    move_file_if_needed(old_path, new_path)?;
+    let sidecars = [
+        old_path.with_extension("jsonl.bak"),
+        old_path.with_extension("jsonl-wal"),
+        old_path.with_extension("jsonl-shm"),
+    ];
+    let new_sidecars = [
+        new_path.with_extension("jsonl.bak"),
+        new_path.with_extension("jsonl-wal"),
+        new_path.with_extension("jsonl-shm"),
+    ];
+    for (from, to) in sidecars.iter().zip(new_sidecars.iter()) {
+        move_file_if_needed(from, to)?;
+    }
+    // 常见锁文件：`session-….jsonl.lock`
+    let old_lock = PathBuf::from(format!("{}.lock", old_path.display()));
+    let new_lock = PathBuf::from(format!("{}.lock", new_path.display()));
+    move_file_if_needed(&old_lock, &new_lock)?;
+    Ok(())
+}
+
+/// 若路径仍指向仓库旁旧布局，返回应迁入的用户目录目标路径。
+#[must_use]
+pub fn remap_legacy_session_path(repo_path: &Path, path: &Path) -> Option<PathBuf> {
+    let legacy = legacy_repo_pi_sessions_dir(repo_path);
+    let relative = path
+        .strip_prefix(&legacy)
+        .ok()
+        .map(|p| p.to_path_buf())
+        .or_else(|| {
+            let canon_path = fs::canonicalize(path).ok()?;
+            let canon_legacy = fs::canonicalize(&legacy).ok()?;
+            Some(canon_path.strip_prefix(canon_legacy).ok()?.to_path_buf())
+        })?;
+    let new_dir = pi_sessions_dir_for_repo(repo_path)?;
+    if relative.as_os_str().is_empty() {
+        Some(new_dir)
+    } else {
+        Some(new_dir.join(relative))
+    }
+}
+
+/// 确保仓库内 `.giteam/.gitignore` 存在，避免附件等被误提交（成熟项目惯例）。
+///
+/// 会话正文已迁至 `~/.giteam/pi-sessions/`；此处仍忽略历史残留的 `pi-sessions/`。
 pub fn ensure_workspace_giteam_gitignore(repo_root: &Path) {
     let giteam_dir = repo_root.join(".giteam");
     if fs::create_dir_all(&giteam_dir).is_err() {
@@ -589,6 +754,53 @@ mod tests {
             fs::read(canonical.join("pi-agent").join("auth.json")).unwrap(),
             b"{}"
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn repo_sessions_key_is_stable_and_includes_dirname() {
+        let repo = PathBuf::from("/tmp/demo-repo");
+        let key = repo_sessions_key(&repo);
+        assert!(key.starts_with("demo-repo-"));
+        assert_eq!(key, repo_sessions_key(&repo));
+    }
+
+    #[test]
+    fn remap_and_migrate_legacy_session_bundle() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let base = std::env::temp_dir().join(format!(
+            "giteam-session-migrate-{}-{stamp}",
+            std::process::id()
+        ));
+        let repo = base.join("repo");
+        let home = base.join("home");
+        let legacy = legacy_repo_pi_sessions_dir(&repo);
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        let old_path = legacy.join("session-1.jsonl");
+        fs::write(&old_path, b"{\"type\":\"session\"}\n").expect("write session");
+        fs::write(
+            PathBuf::from(format!("{}.lock", old_path.display())),
+            b"lock",
+        )
+        .expect("write lock");
+
+        let previous = std::env::var_os("GITEAM_HOME");
+        std::env::set_var("GITEAM_HOME", &home);
+
+        let remapped = remap_legacy_session_path(&repo, &old_path).expect("remap");
+        assert!(remapped.starts_with(home.join("pi-sessions").join("repos")));
+        migrate_session_file_bundle(&old_path, &remapped).expect("migrate");
+        assert!(remapped.exists());
+        assert!(!old_path.exists());
+        assert!(PathBuf::from(format!("{}.lock", remapped.display())).exists());
+
+        match previous {
+            Some(value) => std::env::set_var("GITEAM_HOME", value),
+            None => std::env::remove_var("GITEAM_HOME"),
+        }
         let _ = fs::remove_dir_all(&base);
     }
 }

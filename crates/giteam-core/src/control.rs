@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -147,8 +147,8 @@ struct PiControlAutoApproveRequest {
     enabled: bool,
 }
 
-fn pi_session_dir(repo_path: &str) -> PathBuf {
-    PathBuf::from(repo_path).join(".giteam").join("pi-sessions")
+fn pi_session_dir(repo_path: &str) -> Result<PathBuf, String> {
+    crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path)).map_err(|error| error.to_string())
 }
 
 fn pi_error_response(error: PiAgentError) -> (u16, Value) {
@@ -1369,10 +1369,13 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if repo_path.is_empty() {
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
-        let session_dir = request
-            .session_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| pi_session_dir(repo_path.as_str()));
+        let session_dir = match request.session_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => match pi_session_dir(repo_path.as_str()) {
+                Ok(dir) => dir,
+                Err(error) => return (500, serde_json::json!({ "error": error })),
+            },
+        };
         if let Err(error) = fs::create_dir_all(&session_dir) {
             return (
                 500,

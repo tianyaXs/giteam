@@ -2,7 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactNode } from "react";
 import appIconUrl from "../../assets/app-icon.png";
 import type { UpdateCelebration } from "../../lib/appUpdater";
-import { cn } from "../../lib/utils";
+import { MarkdownLite } from "../common/MarkdownLite";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -13,9 +13,6 @@ import {
   DialogTitle
 } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
-
-/** 与设置侧栏一致的暖石色，避免 primary 冷色跳出产品气质 */
-const STONE = "#8f8270";
 
 export type AppUpdateDialogText = {
   availableKicker: string;
@@ -33,6 +30,13 @@ export type AppUpdateDialogText = {
   whatsNewSubtitle: (from: string, to: string) => string;
   whatsNewEmpty: string;
   gotIt: string;
+  wizardKicker: string;
+  wizardTitle: (to: string) => string;
+  wizardSkip: string;
+  wizardPrev: string;
+  wizardNext: string;
+  wizardStart: string;
+  wizardStepIndicator: (current: number, total: number) => string;
 };
 
 type AvailableProps = {
@@ -60,16 +64,16 @@ function VersionPath(props: {
   toLabel?: string;
 }) {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-[12.5px] tracking-tight">
-      <span className="text-muted-foreground/80">
+    <div className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-[12px] tracking-tight">
+      <span className="text-muted-foreground">
         {props.fromLabel ? `${props.fromLabel} ` : null}
-        <span className="text-foreground/70">{props.from || "—"}</span>
+        <span className="text-foreground/75">{props.from || "—"}</span>
       </span>
-      <span className="text-[color-mix(in_srgb,#8f8270_55%,transparent)]" aria-hidden="true">
+      <span className="text-muted-foreground/60" aria-hidden="true">
         →
       </span>
       <span className="text-foreground">
-        {props.toLabel ? <span className="text-muted-foreground/80">{props.toLabel} </span> : null}
+        {props.toLabel ? <span className="text-muted-foreground">{props.toLabel} </span> : null}
         <span className="font-medium">{props.to}</span>
       </span>
     </div>
@@ -78,15 +82,13 @@ function VersionPath(props: {
 
 function NotesBlock(props: { notes: string; empty: string }) {
   const notes = props.notes.trim();
+  if (!notes) {
+    return <div className="text-[13.5px] leading-7 text-muted-foreground">{props.empty}</div>;
+  }
   return (
-    <ScrollArea className="max-h-[min(260px,38vh)]">
-      <div
-        className={cn(
-          "whitespace-pre-wrap pr-3 text-[13.5px] leading-7",
-          notes ? "text-foreground/88" : "text-muted-foreground"
-        )}
-      >
-        {notes || props.empty}
+    <ScrollArea className="max-h-[min(280px,40vh)]">
+      <div className="pr-3 text-[13.5px] [&_.markdown-lite]:text-[13.5px]">
+        <MarkdownLite source={notes} />
       </div>
     </ScrollArea>
   );
@@ -104,9 +106,9 @@ function UpdateShell(props: {
   notesEmpty: string;
   footer: React.ReactNode;
   onDismiss: () => void;
-  celebrate?: boolean;
 }) {
   const reduceMotion = useReducedMotion();
+  const hasNotes = Boolean(props.notes.trim());
   return (
     <Dialog
       open={props.open}
@@ -114,50 +116,22 @@ function UpdateShell(props: {
         if (!open && !props.busy) props.onDismiss();
       }}
     >
-      <DialogContent
-        className={cn(
-          "w-[min(480px,calc(100vw-32px))] gap-0 overflow-hidden p-0 shadow-[0_24px_64px_-28px_rgba(0,0,0,0.45)]",
-          "border-[color-mix(in_srgb,#8f8270_18%,var(--border))]"
-        )}
-      >
-        <div
-          aria-hidden="true"
-          className="h-[2px] w-full"
-          style={{
-            background: `linear-gradient(90deg, transparent 0%, color-mix(in srgb, ${STONE} 72%, transparent) 28%, color-mix(in srgb, ${STONE} 88%, #c4b5a0) 52%, color-mix(in srgb, ${STONE} 40%, transparent) 100%)`
-          }}
-        />
-        <div
-          className="relative px-6 pb-5 pt-5"
-          style={{
-            background: `linear-gradient(180deg, color-mix(in srgb, ${STONE} 10%, var(--bg)) 0%, var(--bg) 100%)`
-          }}
-        >
+      <DialogContent className="w-[min(440px,calc(100vw-32px))] gap-0 overflow-hidden rounded-2xl p-0">
+        <div className="px-6 pb-5 pt-6">
           <div className="flex items-start gap-3.5">
             <motion.div
               initial={reduceMotion ? false : { opacity: 0, scale: 0.92, y: 4 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-              className="relative mt-0.5 size-11 shrink-0 overflow-hidden rounded-[12px] border border-[color-mix(in_srgb,#8f8270_22%,transparent)] bg-[color-mix(in_srgb,#8f8270_12%,var(--bg))] shadow-[inset_0_1px_0_color-mix(in_srgb,#fff_8%,transparent)]"
+              className="mt-0.5 size-11 shrink-0 overflow-hidden rounded-[12px] border border-border bg-muted/40"
             >
               <img src={appIconUrl} alt="" className="size-full object-cover" draggable={false} />
-              {props.celebrate ? (
-                <span
-                  className="pointer-events-none absolute inset-0 rounded-[12px]"
-                  style={{
-                    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${STONE} 28%, transparent)`
-                  }}
-                />
-              ) : null}
             </motion.div>
             <DialogHeader className="min-w-0 flex-1 gap-1.5 text-left">
-              <div
-                className="text-[11px] font-medium uppercase tracking-[0.14em]"
-                style={{ color: `color-mix(in srgb, ${STONE} 82%, var(--muted-foreground))` }}
-              >
+              <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 {props.kicker}
               </div>
-              <DialogTitle className="text-[21px] font-semibold tracking-[-0.025em] text-foreground">
+              <DialogTitle className="text-[20px] font-semibold tracking-[-0.02em] text-foreground">
                 {props.title}
               </DialogTitle>
               <DialogDescription className="text-[13.5px] leading-6 text-muted-foreground">
@@ -168,17 +142,16 @@ function UpdateShell(props: {
           <div className="mt-4 pl-[58px]">{props.versionPath}</div>
         </div>
 
-        <div className="border-t border-[color-mix(in_srgb,#8f8270_12%,var(--border))] px-6 py-4">
-          <div
-            className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.12em]"
-            style={{ color: `color-mix(in srgb, ${STONE} 70%, var(--muted-foreground))` }}
-          >
-            {props.notesTitle}
+        {hasNotes ? (
+          <div className="border-t border-border px-6 py-4">
+            <div className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+              {props.notesTitle}
+            </div>
+            <NotesBlock notes={props.notes} empty={props.notesEmpty} />
           </div>
-          <NotesBlock notes={props.notes} empty={props.notesEmpty} />
-        </div>
+        ) : null}
 
-        <DialogFooter className="border-t border-[color-mix(in_srgb,#8f8270_12%,var(--border))] bg-[color-mix(in_srgb,#8f8270_5%,var(--bg))] px-6 py-3.5 sm:justify-end">
+        <DialogFooter className="border-t border-border bg-muted/30 px-6 py-3.5 sm:justify-end">
           {props.footer}
         </DialogFooter>
       </DialogContent>
@@ -208,19 +181,10 @@ export function AppUpdateAvailableDialog(props: AvailableProps) {
       onDismiss={props.onLater}
       footer={
         <>
-          <Button
-            variant="ghost"
-            className="hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)]"
-            disabled={props.busy}
-            onClick={props.onLater}
-          >
+          <Button variant="ghost" disabled={props.busy} onClick={props.onLater}>
             {props.text.later}
           </Button>
-          <Button
-            disabled={props.busy}
-            className="bg-[color-mix(in_srgb,#8f8270_88%,#1a1814)] text-[color-mix(in_srgb,#fff_92%,#f3eee6)] hover:bg-[color-mix(in_srgb,#8f8270_96%,#1a1814)]"
-            onClick={props.onInstall}
-          >
+          <Button variant="contrast" disabled={props.busy} onClick={props.onInstall}>
             <AnimatePresence mode="wait" initial={false}>
               <motion.span
                 key={props.busy ? "busy" : "idle"}
@@ -244,7 +208,6 @@ export function AppUpdateWhatsNewDialog(props: WhatsNewProps) {
   return (
     <UpdateShell
       open={props.open && Boolean(celebration)}
-      celebrate
       kicker={props.text.whatsNewKicker}
       title={props.text.whatsNewTitle}
       description={
@@ -262,10 +225,7 @@ export function AppUpdateWhatsNewDialog(props: WhatsNewProps) {
       notesEmpty={props.text.whatsNewEmpty}
       onDismiss={props.onClose}
       footer={
-        <Button
-          className="bg-[color-mix(in_srgb,#8f8270_88%,#1a1814)] text-[color-mix(in_srgb,#fff_92%,#f3eee6)] hover:bg-[color-mix(in_srgb,#8f8270_96%,#1a1814)]"
-          onClick={props.onClose}
-        >
+        <Button variant="contrast" onClick={props.onClose}>
           {props.text.gotIt}
         </Button>
       }
@@ -300,7 +260,14 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
       whatsNewTitle: "Welcome to the new build",
       whatsNewSubtitle: (from, to) => `Successfully moved from ${from} to ${to}.`,
       whatsNewEmpty: "You're on the latest desktop build. Thanks for updating.",
-      gotIt: "Continue"
+      gotIt: "Continue",
+      wizardKicker: "What's new",
+      wizardTitle: (to) => `Welcome to Giteam ${to}`,
+      wizardSkip: "Skip",
+      wizardPrev: "Back",
+      wizardNext: "Next",
+      wizardStart: "Get started",
+      wizardStepIndicator: (current, total) => `${current} of ${total}`
     };
   }
   if (locale === "zh-TW") {
@@ -319,7 +286,14 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
       whatsNewTitle: "歡迎使用新版本",
       whatsNewSubtitle: (from, to) => `已順利從 ${from} 更新到 ${to}。`,
       whatsNewEmpty: "你已在最新桌面版。感謝更新。",
-      gotIt: "繼續使用"
+      gotIt: "繼續使用",
+      wizardKicker: "新功能",
+      wizardTitle: (to) => `歡迎使用 Giteam ${to}`,
+      wizardSkip: "略過",
+      wizardPrev: "上一步",
+      wizardNext: "下一步",
+      wizardStart: "開始使用",
+      wizardStepIndicator: (current, total) => `第 ${current} 步，共 ${total} 步`
     };
   }
   return {
@@ -337,6 +311,13 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
     whatsNewTitle: "欢迎使用新版本",
     whatsNewSubtitle: (from, to) => `已顺利从 ${from} 更新到 ${to}。`,
     whatsNewEmpty: "你已在最新桌面版。感谢更新。",
-    gotIt: "继续使用"
+    gotIt: "继续使用",
+    wizardKicker: "新功能",
+    wizardTitle: (to) => `欢迎使用 Giteam ${to}`,
+    wizardSkip: "跳过",
+    wizardPrev: "上一步",
+    wizardNext: "下一步",
+    wizardStart: "开始使用",
+    wizardStepIndicator: (current, total) => `第 ${current} 步，共 ${total} 步`
   };
 }

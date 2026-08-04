@@ -19,8 +19,10 @@ pub use providers::{
 };
 pub use secrets::{
     default_data_dir, default_pi_agent_dir, ensure_data_dir, ensure_pi_agent_dir_env,
-    ensure_pi_retry_settings, ensure_workspace_giteam_gitignore, legacy_platform_data_dir,
-    legacy_tauri_bundle_data_dir, migrate_legacy_tauri_data_into_canonical, SecretStore,
+    ensure_pi_retry_settings, ensure_repo_pi_sessions_dir, ensure_workspace_giteam_gitignore,
+    legacy_platform_data_dir, legacy_repo_pi_sessions_dir, legacy_tauri_bundle_data_dir,
+    migrate_legacy_tauri_data_into_canonical, migrate_session_file_bundle, pi_sessions_dir_for_repo,
+    pi_sessions_root, remap_legacy_session_path, repo_sessions_key, SecretStore,
 };
 pub use service::{
     AgentEventReceiver, AgentEventSink, PiAgentError, PiAgentService, PiSessionConfig,

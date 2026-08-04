@@ -14,10 +14,45 @@
         if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#1e1e1e");
       })();
     </script>
+    <style>
+      /* 启动屏：纯 CSS 实现，transform 动画由合成器线程驱动——
+         启动期 JS 主线程繁忙（bundle 执行 + 首屏渲染）时动画依然流畅。
+         React 数据就绪后加 .app-splash-exit 淡出并移除节点。 */
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 5000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1e1e1e;
+        transition: opacity 320ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      html[data-theme="light"] #app-splash { background: #ffffff; }
+      #app-splash.app-splash-exit { opacity: 0; }
+      #app-splash img {
+        width: 64px;
+        height: 64px;
+        /* 透明底的黑色 logo 本体：drop-shadow 跟随 alpha 轮廓，旋转时与图形同步 */
+        filter: drop-shadow(0 0 14px rgba(0, 0, 0, 0.16));
+        animation: app-splash-spin 2.4s linear infinite;
+      }
+      /* 深色主题：黑色本体反转为白，配白色光晕，避免深底色上不可见 */
+      html[data-theme="dark"] #app-splash img {
+        filter: invert(1) drop-shadow(0 0 14px rgba(255, 255, 255, 0.22));
+      }
+      @keyframes app-splash-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #app-splash img { animation: none; }
+      }
+    </style>
     <title>Giteam</title>
   </head>
   <body>
     <div id="root"></div>
+    <div id="app-splash" role="status" aria-label="应用加载中"><img src="data:image/png;base64,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" alt="" /></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

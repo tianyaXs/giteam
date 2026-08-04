@@ -6,17 +6,20 @@ import {
   FolderPlus,
   GitBranch,
   LoaderCircle,
+  MessageCircle,
   MoreHorizontal,
   PencilLine,
   Plug,
   Search,
   Settings,
   Sparkles,
+  SquarePen,
   SquareTerminal,
 } from "lucide-react";
 import Lenis from "lenis";
 import { motion, useReducedMotion } from "motion/react";
-import { memo, useEffect, useMemo, useRef, type ComponentPropsWithoutRef, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
 
@@ -85,12 +88,15 @@ type DesktopSidebarProps = {
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
+  isRepoSessionsLoaded: (repoId: string) => boolean;
   onImportRepository: () => void | Promise<void>;
   onCreateSession: () => void | Promise<void>;
   onOpenSearch: () => void;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
+  onEnsureRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
+  onStartDraftSession: (repo: RepositoryEntry) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
@@ -215,12 +221,15 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     hasMoreRepoSessions,
     isRepoSessionsLoading,
     isRepoSessionsPaging,
+    isRepoSessionsLoaded,
     onImportRepository,
     onCreateSession,
     onOpenSearch,
     onToggleRepoSessions,
+    onEnsureRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
+    onStartDraftSession,
     onFocusDraftSession,
     onOpenSession,
     onArchiveSession,
@@ -330,12 +339,15 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             isRepoSessionsLoading={isRepoSessionsLoading}
             isRepoSessionsPaging={isRepoSessionsPaging}
             onToggleRepoSessions={onToggleRepoSessions}
+            onEnsureRepoSessions={onEnsureRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
             onTogglePinnedRepo={onTogglePinnedRepo}
+            onStartDraftSession={onStartDraftSession}
             onFocusDraftSession={onFocusDraftSession}
             onOpenSession={onOpenSession}
             onArchiveSession={onArchiveSession}
             onLoadMoreSessions={onLoadMoreSessions}
+            isRepoSessionsLoaded={isRepoSessionsLoaded}
           />
         ) : null}
 
@@ -356,12 +368,15 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             isRepoSessionsLoading={isRepoSessionsLoading}
             isRepoSessionsPaging={isRepoSessionsPaging}
             onToggleRepoSessions={onToggleRepoSessions}
+            onEnsureRepoSessions={onEnsureRepoSessions}
             onOpenRepoContextMenu={onOpenRepoContextMenu}
             onTogglePinnedRepo={onTogglePinnedRepo}
+            onStartDraftSession={onStartDraftSession}
             onFocusDraftSession={onFocusDraftSession}
             onOpenSession={onOpenSession}
             onArchiveSession={onArchiveSession}
             onLoadMoreSessions={onLoadMoreSessions}
+            isRepoSessionsLoaded={isRepoSessionsLoaded}
             headerAction={
               <ProjectImportAction label={text.openWorkspace} disabled={busy} onClick={onImportRepository} />
             }
@@ -425,10 +440,10 @@ function ProjectImportAction({ label, disabled, onClick }: { label: string; disa
   );
 }
 
-function SidebarPinnedIcon() {
+function SidebarPinnedIcon({ className }: { className?: string }) {
   return (
     <span
-      className="inline-block size-3.5 bg-current opacity-70"
+      className={cn("inline-block size-3.5 bg-current opacity-70", className)}
       aria-hidden="true"
       style={{
         WebkitMaskImage: `url(${pinnedIconUrl})`,
@@ -441,6 +456,15 @@ function SidebarPinnedIcon() {
         maskSize: "contain",
       }}
     />
+  );
+}
+
+/** 实心图钉（Material push_pin, Apache-2.0）：置顶态使用，与描边态形成实心/描边对比。 */
+function FilledPinIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={cn("size-3.5", className)}>
+      <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
+    </svg>
   );
 }
 
@@ -465,9 +489,12 @@ type ProjectSectionProps = {
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
   isRepoSessionsPaging: (repoId: string) => boolean;
+  isRepoSessionsLoaded: (repoId: string) => boolean;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
+  onEnsureRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
+  onStartDraftSession: (repo: RepositoryEntry) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
@@ -492,9 +519,12 @@ function ProjectSection(props: ProjectSectionProps) {
     hasMoreRepoSessions,
     isRepoSessionsLoading,
     isRepoSessionsPaging,
+    isRepoSessionsLoaded,
     onToggleRepoSessions,
+    onEnsureRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
+    onStartDraftSession,
     onFocusDraftSession,
     onOpenSession,
     onArchiveSession,
@@ -530,12 +560,15 @@ function ProjectSection(props: ProjectSectionProps) {
               sessionsLoading={isRepoSessionsLoading(repo.id)}
               sessionsPaging={isRepoSessionsPaging(repo.id)}
               onToggleRepoSessions={onToggleRepoSessions}
+              onEnsureRepoSessions={onEnsureRepoSessions}
               onOpenRepoContextMenu={onOpenRepoContextMenu}
               onTogglePinnedRepo={onTogglePinnedRepo}
+              onStartDraftSession={onStartDraftSession}
               onFocusDraftSession={onFocusDraftSession}
               onOpenSession={onOpenSession}
               onArchiveSession={onArchiveSession}
               onLoadMoreSessions={onLoadMoreSessions}
+              sessionsLoaded={isRepoSessionsLoaded(repo.id)}
             />
           ))}
         </SidebarMenu>
@@ -560,13 +593,86 @@ type ProjectRowProps = {
   sessionsLoading: boolean;
   sessionsPaging: boolean;
   onToggleRepoSessions: (repo: RepositoryEntry) => void;
+  onEnsureRepoSessions: (repo: RepositoryEntry) => void;
   onOpenRepoContextMenu: (x: number, y: number, repo: RepositoryEntry) => void;
   onTogglePinnedRepo: (repoId: string) => void;
+  onStartDraftSession: (repo: RepositoryEntry) => void;
   onFocusDraftSession: () => void;
   onOpenSession: (repo: RepositoryEntry, session: AgentChatSession) => void;
   onArchiveSession: (repo: RepositoryEntry, sessionId: string) => void | Promise<void>;
   onLoadMoreSessions: (repo: RepositoryEntry) => void | Promise<void>;
+  sessionsLoaded: boolean;
 };
+
+const PROJECT_HOVER_CARD_OPEN_DELAY_MS = 400;
+const PROJECT_HOVER_CARD_CLOSE_DELAY_MS = 180;
+const PROJECT_HOVER_CARD_WIDTH = 248;
+
+/** 目录行悬浮卡片：置顶开关、任务数量、所在目录（参考 ChatGPT 项目悬浮卡）。 */
+function ProjectHoverCard({
+  text,
+  repo,
+  pinned,
+  sessionCountLabel,
+  sessionsLoaded,
+  position,
+  onTogglePin,
+  onMouseEnter,
+  onMouseLeave
+}: {
+  text: AppText;
+  repo: RepositoryEntry;
+  pinned: boolean;
+  sessionCountLabel: string;
+  sessionsLoaded: boolean;
+  position: { x: number; y: number };
+  onTogglePin: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}) {
+  return createPortal(
+    <div
+      className="fixed z-[3000] w-[248px] overflow-hidden rounded-xl border border-border/60 bg-popover py-0 text-popover-foreground shadow-[0_10px_36px_-8px_rgba(0,0,0,0.22)] animate-in fade-in-0 zoom-in-95 slide-in-from-left-1 duration-150"
+      style={{ left: position.x, top: position.y }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      role="dialog"
+      aria-label={repo.name}
+    >
+      <div className="flex items-center gap-2 px-3 pt-3">
+        <Folder className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{repo.name}</span>
+        {/* 置顶态只靠实心图钉区分，不加常亮底色 */}
+        <button
+          type="button"
+          className={cn(
+            "shrink-0 rounded-md p-1.5 transition-colors hover:bg-muted",
+            pinned ? "text-foreground" : "text-muted-foreground/50 hover:text-foreground"
+          )}
+          onClick={(event) => {
+            event.stopPropagation();
+            onTogglePin();
+          }}
+          title={pinned ? text.unpinProject : text.pinProject}
+          aria-label={pinned ? text.unpinProject : text.pinProject}
+          aria-pressed={pinned}
+        >
+          {pinned ? <FilledPinIcon className="rotate-45" /> : <SidebarPinnedIcon />}
+        </button>
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 px-3 pb-3 text-xs text-muted-foreground">
+        <MessageCircle className="size-3.5 shrink-0" />
+        <span>{sessionsLoaded ? sessionCountLabel : "…"}</span>
+      </div>
+      <div className="border-t border-border/60" />
+      <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-muted-foreground">
+        <FolderOpen className="size-3.5 shrink-0" />
+        <span className="min-w-0 truncate" title={repo.path}>{repo.path}</span>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
   const {
@@ -585,12 +691,15 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
     sessionsLoading,
     sessionsPaging,
     onToggleRepoSessions,
+    onEnsureRepoSessions,
     onOpenRepoContextMenu,
     onTogglePinnedRepo,
+    onStartDraftSession,
     onFocusDraftSession,
     onOpenSession,
     onArchiveSession,
     onLoadMoreSessions,
+    sessionsLoaded,
   } = props;
 
   const hasCollapsibleContent = sessionsLoading || sessions.length > 0 || hasMoreSessions || hasDraftForRepo || !agentInstalled;
@@ -599,6 +708,36 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
   const loadMoreLabel = loadMorePending ? `${text.loadMore}...` : text.loadMore;
   const showLoadingSkeleton = agentInstalled && sessionsLoading && sessions.length === 0;
   const reduceMotion = useReducedMotion();
+
+  // 悬浮卡片：带打开/关闭延迟的 hover intent，卡片本身可悬浮交互（置顶开关）。
+  const [hoverCard, setHoverCard] = useState<{ x: number; y: number } | null>(null);
+  const hoverCardOpenTimerRef = useRef(0);
+  const hoverCardCloseTimerRef = useRef(0);
+  const clearHoverCardTimers = () => {
+    window.clearTimeout(hoverCardOpenTimerRef.current);
+    window.clearTimeout(hoverCardCloseTimerRef.current);
+  };
+  useEffect(() => clearHoverCardTimers, []);
+  const scheduleHoverCardOpen = (event: ReactMouseEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    clearHoverCardTimers();
+    hoverCardOpenTimerRef.current = window.setTimeout(() => {
+      setHoverCard({
+        x: Math.min(rect.right + 8, window.innerWidth - PROJECT_HOVER_CARD_WIDTH - 8),
+        y: Math.min(Math.max(rect.top - 6, 8), window.innerHeight - 132)
+      });
+      // 未加载过会话列表的目录，打开卡片时顺带拉取，保证任务数量准确。
+      if (!sessionsLoaded) onEnsureRepoSessions(repo);
+    }, PROJECT_HOVER_CARD_OPEN_DELAY_MS);
+  };
+  const scheduleHoverCardClose = () => {
+    clearHoverCardTimers();
+    hoverCardCloseTimerRef.current = window.setTimeout(() => setHoverCard(null), PROJECT_HOVER_CARD_CLOSE_DELAY_MS);
+  };
+  const cancelHoverCardClose = () => {
+    window.clearTimeout(hoverCardCloseTimerRef.current);
+  };
+  const sessionCountLabel = text.projectTaskCount.replace("{count}", `${sessions.length}${hasMoreSessions ? "+" : ""}`);
   const contentTransition = reduceMotion
     ? { duration: 0.01 }
     : {
@@ -621,9 +760,13 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
             size="sm"
             className="h-8 rounded-lg border border-transparent pl-[10px] pr-2 text-sm text-muted-foreground transition-[background-color,border-color,color] hover:!bg-[color-mix(in_srgb,var(--text)_5%,transparent)] active:!bg-[color-mix(in_srgb,var(--text)_7%,transparent)] data-[state=open]:!bg-transparent data-[state=open]:hover:!bg-[color-mix(in_srgb,var(--text)_5%,transparent)] data-[state=open]:active:!bg-[color-mix(in_srgb,var(--text)_7%,transparent)]"
             disabled={busy || (!expanded && sessionsLoading)}
+            onMouseEnter={scheduleHoverCardOpen}
+            onMouseLeave={scheduleHoverCardClose}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
+              clearHoverCardTimers();
+              setHoverCard(null);
               onOpenRepoContextMenu(event.clientX, event.clientY, repo);
             }}
           >
@@ -635,6 +778,8 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
               className="right-7"
               onClick={(event) => {
                 event.stopPropagation();
+                clearHoverCardTimers();
+                setHoverCard(null);
                 const rect = event.currentTarget.getBoundingClientRect();
                 onOpenRepoContextMenu(rect.left, rect.bottom + 4, repo);
               }}
@@ -645,18 +790,32 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps) {
             </SidebarMenuAction>
             <SidebarMenuAction
               type="button"
-              showOnHover={!pinned}
+              showOnHover
               onClick={(event) => {
                 event.stopPropagation();
-                onTogglePinnedRepo(repo.id);
+                onStartDraftSession(repo);
               }}
-              title={pinned ? text.unpinProject : text.pinProject}
-              aria-label={pinned ? text.unpinProject : text.pinProject}
+              title={text.newSession}
+              aria-label={text.newSession}
             >
-              <SidebarPinnedIcon />
+              <SquarePen />
             </SidebarMenuAction>
           </SidebarMenuButton>
         </CollapsibleTrigger>
+
+        {hoverCard ? (
+          <ProjectHoverCard
+            text={text}
+            repo={repo}
+            pinned={pinned}
+            sessionCountLabel={sessionCountLabel}
+            sessionsLoaded={sessionsLoaded}
+            position={hoverCard}
+            onTogglePin={() => onTogglePinnedRepo(repo.id)}
+            onMouseEnter={cancelHoverCardClose}
+            onMouseLeave={scheduleHoverCardClose}
+          />
+        ) : null}
 
         <CollapsibleContent
           asChild

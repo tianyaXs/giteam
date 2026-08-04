@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import type { TerminalTabState } from "../../lib/terminalState";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
+import { useCodeFontSize } from "../../lib/useAppearanceFontSize";
 
 function getTerminalDisplayTitle(tab?: TerminalTabState): string {
   const raw = String(tab?.title || "").trim();
@@ -53,6 +54,7 @@ export function TerminalPanel({
   const onResizeRef = useRef(onResize);
   const lastPtySizeRef = useRef({ cols: 0, rows: 0 });
   const resizeTimerRef = useRef<number | null>(null);
+  const codeFontSize = useCodeFontSize();
   const activeTitle = getTerminalDisplayTitle(activeTab);
   const terminalCountLabel = `${tabs.length} ${tabs.length === 1 ? "Terminal" : "Terminals"}`;
 
@@ -105,7 +107,7 @@ export function TerminalPanel({
       disableStdin: false,
       // 优先 Menlo：对 box-drawing / block 字符度量更稳；避免 SF Mono 在部分字符上半宽不一致。
       fontFamily: 'Menlo, Monaco, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace',
-      fontSize: 12,
+      fontSize: codeFontSize,
       // ASCII art / 安装横幅依赖相邻单元格无间隙；>1 会出现框线错位、字符走形。
       lineHeight: 1,
       letterSpacing: 0,
@@ -174,6 +176,19 @@ export function TerminalPanel({
     if (!terminalRef.current) return;
     terminalRef.current.options.theme = terminalTheme;
   }, [terminalTheme]);
+
+  // 代码字号变化：更新终端字号并重排，使设置即时生效。
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    terminal.options.fontSize = codeFontSize;
+    try {
+      fitAddon.fit();
+    } catch {
+      // 字号变更后重排可能因宿主隐藏而抛错，忽略。
+    }
+  }, [codeFontSize]);
 
   useEffect(() => {
     for (const tab of tabs) {

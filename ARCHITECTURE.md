@@ -368,7 +368,17 @@ Giteam 以 **Git Worktree** 为核心工作单元：
 | `review_records` | AI Code Review 记录 |
 | `review_actions` | Review 后的用户操作（Accept/Reject） |
 
-### 8.2 配置文件
+### 8.2 Agent 会话存储
+
+| 路径 | 说明 |
+|------|------|
+| `~/.giteam/pi-sessions/catalog.json` | 全局会话索引 |
+| `~/.giteam/pi-sessions/repos/<repo-key>/session-*.jsonl` | 按仓库隔离的会话正文（不写仓库旁） |
+| `<repo>/.giteam/prompt-attachments/` | 项目级提示附件（仍在仓库隐藏目录） |
+
+启动时若发现 catalog 仍指向旧路径 `<repo>/.giteam/pi-sessions/`，会幂等迁入用户目录并回写 catalog。可用 `$GITEAM_HOME` 覆盖根目录。
+
+### 8.3 配置文件
 
 | 文件 | 说明 |
 |------|------|
@@ -376,7 +386,7 @@ Giteam 以 **Git Worktree** 为核心工作单元：
 | `control-auth.json` | 持久化的 Bearer Token |
 | `mobile-model-state.json` | 移动端模型选择状态同步 |
 
-### 8.3 本地缓存
+### 8.4 本地缓存
 
 - **Desktop**：`localStorage`（宽度、主题、设置）+ `appCache.ts`（运行时状态）
 - **Mobile**：MMKV（偏好设置）+ AsyncStorage（会话缓存）+ 内存缓存（消息窗口）

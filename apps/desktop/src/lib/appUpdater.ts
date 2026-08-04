@@ -26,11 +26,58 @@ export type AppUpdateState =
     }
   | { status: "error"; message: string };
 
+/** 更新分档：major/minor 变化为大更新（全屏向导），仅 patch 为小更新（提示窗）。 */
+export type UpdateKind = "major" | "patch";
+
 export type UpdateCelebration = {
   fromVersion: string;
   toVersion: string;
   notes: string;
+  kind: UpdateKind;
 };
+
+/** 大更新向导的一步：release notes 的一个章节。 */
+export type ReleaseNotesStep = {
+  title: string;
+  body: string;
+};
+
+/** 按语义化版本号分档；解析失败保守按小更新处理。 */
+export function parseUpdateKind(fromVersion: string, toVersion: string): UpdateKind {
+  const parse = (value: string): [number, number] | null => {
+    const match = /^v?(\d+)\.(\d+)/.exec(String(value || "").trim());
+    return match ? [Number(match[1]), Number(match[2])] : null;
+  };
+  const from = parse(fromVersion);
+  const to = parse(toVersion);
+  if (!from || !to) return "patch";
+  return from[0] !== to[0] || from[1] !== to[1] ? "major" : "patch";
+}
+
+/**
+ * 把 release notes 按章节切成向导步骤：优先按 `## ` 切，不足 2 步回退 `### `；
+ * 仍不足 2 步返回空数组（调用方降级为整页展示）。空节（无正文）直接丢弃。
+ */
+export function splitReleaseNotesIntoSteps(notes: string): ReleaseNotesStep[] {
+  const lines = String(notes || "").split("\n");
+  for (const marker of ["## ", "### "]) {
+    const steps: ReleaseNotesStep[] = [];
+    let current: ReleaseNotesStep | null = null;
+    for (const line of lines) {
+      if (line.startsWith(marker)) {
+        current = { title: line.slice(marker.length).trim(), body: "" };
+        steps.push(current);
+      } else if (current) {
+        current.body += `${line}\n`;
+      }
+    }
+    const usable = steps
+      .filter((step) => step.title && step.body.trim())
+      .map((step) => ({ title: step.title, body: step.body.trim() }));
+    if (usable.length >= 2) return usable;
+  }
+  return [];
+}
 
 type PendingUpdate = {
   version: string;
@@ -55,7 +102,8 @@ export async function getAppVersion(): Promise<string> {
   return getVersion();
 }
 
-export function stashUpdateCelebration(payload: UpdateCelebration): void {
+/** 安装前缓存（kind 为派生字段，consume 时重算，无需持久化）。 */
+export function stashUpdateCelebration(payload: Omit<UpdateCelebration, "kind">): void {
   try {
     window.localStorage.setItem(CELEBRATION_KEY, JSON.stringify(payload));
   } catch {
@@ -73,7 +121,8 @@ export function consumeUpdateCelebration(currentVersion: string): UpdateCelebrat
     const notes = String(parsed.notes || "").trim();
     if (!toVersion || toVersion !== currentVersion) return null;
     window.localStorage.removeItem(CELEBRATION_KEY);
-    return { fromVersion: fromVersion || "—", toVersion, notes };
+    const from = fromVersion || "—";
+    return { fromVersion: from, toVersion, notes, kind: parseUpdateKind(from, toVersion) };
   } catch {
     return null;
   }
@@ -117,7 +166,7 @@ export function resolveStartupUpdateCelebration(currentVersion: string): UpdateC
   const last = readLastLaunchedVersion();
   writeLastLaunchedVersion(version);
   if (last && last !== version) {
-    return { fromVersion: last, toVersion: version, notes: "" };
+    return { fromVersion: last, toVersion: version, notes: "", kind: parseUpdateKind(last, version) };
   }
   return null;
 }

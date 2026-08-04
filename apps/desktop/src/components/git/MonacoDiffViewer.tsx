@@ -1,5 +1,6 @@
 import { DiffEditor, Editor, loader } from "@monaco-editor/react";
 import { useEffect, useRef } from "react";
+import { useCodeFontSize } from "../../lib/useAppearanceFontSize";
 import * as monaco from "monaco-editor";
 
 loader.config({ monaco });
@@ -63,6 +64,7 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
   const focusLineRef = useRef<number | undefined>(props.focusLine);
 
   focusLineRef.current = props.focusLine;
+  const codeFontSize = useCodeFontSize();
 
   const highlightLine = (editor: monaco.editor.IStandaloneCodeEditor | null, line?: number, target: "code" | "diff" = "code") => {
     if (!editor) return;
@@ -150,8 +152,8 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
           scrollBeyondLastLine: false,
           folding: true,
           glyphMargin: true,
-          fontSize: 12,
-          lineHeight: 18,
+          fontSize: codeFontSize,
+          lineHeight: Math.round(codeFontSize * 1.5),
           wordWrap: "off",
           scrollbar: {
             alwaysConsumeMouseWheel: false,
@@ -192,8 +194,8 @@ export default function MonacoDiffViewer(props: MonacoDiffViewerProps) {
         renderOverviewRuler: false,
         folding: true,
         glyphMargin: true,
-        fontSize: 12,
-        lineHeight: 18,
+        fontSize: codeFontSize,
+        lineHeight: Math.round(codeFontSize * 1.5),
         wordWrap: "off",
         scrollbar: {
           alwaysConsumeMouseWheel: false,

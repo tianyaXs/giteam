@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -1613,13 +1613,11 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
             if repo_path.is_empty() {
                 return Err("repoPath must not be empty".to_string());
             }
-            let session_dir = get_str_opt(&args, "sessionDir")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(repo_path)
-                        .join(".giteam")
-                        .join("pi-sessions")
-                });
+            let session_dir = match get_str_opt(&args, "sessionDir") {
+                Some(dir) => PathBuf::from(dir),
+                None => crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path))
+                    .map_err(|error| error.to_string())?,
+            };
             fs::create_dir_all(&session_dir)
                 .map_err(|error| format!("create Pi session directory failed: {error}"))?;
             let config = PiSessionConfig {

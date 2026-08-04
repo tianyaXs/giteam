@@ -254,10 +254,15 @@ impl PiAgentService {
 
     fn new_with_catalog(load_catalog: bool) -> Self {
         let catalog_path = global_catalog_path();
-        let records = if load_catalog {
+        let mut records = if load_catalog {
             load_catalog_records(catalog_path.as_ref())
         } else {
             HashMap::new()
+        };
+        let catalog_dirty = if load_catalog {
+            migrate_repo_session_paths(&mut records)
+        } else {
+            false
         };
         // 生产模式（global）：先把 PI_CODING_AGENT_DIR 指到 Giteam 管理的目录，
         // 使 Pi 内部 AuthStorage/ModelRegistry 与本 service 的 vault 读写同一文件；
@@ -268,7 +273,7 @@ impl PiAgentService {
         } else {
             None
         };
-        Self {
+        let service = Self {
             sessions: Mutex::new(HashMap::new()),
             records: Mutex::new(records),
             catalog_path: if load_catalog { catalog_path } else { None },
@@ -276,7 +281,11 @@ impl PiAgentService {
             subscribers: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(InteractionStore::new()),
             secrets,
+        };
+        if catalog_dirty {
+            let _ = service.persist_catalog();
         }
+        service
     }
 
     /// 注入隔离的 secret vault（测试或自定义数据目录场景）。
@@ -345,12 +354,8 @@ impl PiAgentService {
         if !config.no_session {
             fs::create_dir_all(&config.session_dir)
                 .map_err(|error| PiAgentError::Persistence(error.to_string()))?;
-            // 仓库 .giteam 下写入 ignore，避免会话/附件被用户误提交。
-            if let Some(repo_root) = config.session_dir.parent().and_then(|p| p.parent()) {
-                super::ensure_workspace_giteam_gitignore(repo_root);
-            } else {
-                super::ensure_workspace_giteam_gitignore(&config.repo_path);
-            }
+            // 用户目录会话仓写入 repo.json，便于人工对照仓库路径。
+            super::secrets::write_repo_sessions_meta(&config.session_dir, &config.repo_path);
             if config.session_path.is_none() {
                 config.session_path = Some(next_session_path(&config.session_dir));
             }
@@ -1689,6 +1694,50 @@ fn load_catalog_records(path: Option<&PathBuf>) -> HashMap<String, PersistedSess
         .filter(|record| !record.session_id.trim().is_empty())
         .map(|record| (record.session_id.clone(), record))
         .collect()
+}
+
+/// 把 catalog 中仍指向 `<repo>/.giteam/pi-sessions` 的记录迁到
+/// `~/.giteam/pi-sessions/repos/<key>/`（幂等）。返回是否改写了任何记录。
+fn migrate_repo_session_paths(records: &mut HashMap<String, PersistedSessionRecord>) -> bool {
+    let mut dirty = false;
+    for record in records.values_mut() {
+        if record.no_session {
+            continue;
+        }
+        let Some(new_dir) = super::pi_sessions_dir_for_repo(&record.repo_path) else {
+            continue;
+        };
+        let remapped_dir =
+            super::remap_legacy_session_path(&record.repo_path, &record.session_dir);
+        let remapped_path =
+            super::remap_legacy_session_path(&record.repo_path, &record.session_path);
+        if remapped_dir.is_none() && remapped_path.is_none() {
+            continue;
+        }
+        if fs::create_dir_all(&new_dir).is_err() {
+            continue;
+        }
+        super::secrets::write_repo_sessions_meta(&new_dir, &record.repo_path);
+
+        let target_path = remapped_path.unwrap_or_else(|| {
+            let name = record
+                .session_path
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("session.jsonl"));
+            new_dir.join(name)
+        });
+        if record.session_path != target_path {
+            let _ = super::migrate_session_file_bundle(&record.session_path, &target_path);
+            record.session_path = target_path;
+            dirty = true;
+        }
+        if record.session_dir != new_dir {
+            record.session_dir = new_dir;
+            dirty = true;
+        }
+    }
+    dirty
 }
 
 fn remove_session_files(path: &PathBuf) {

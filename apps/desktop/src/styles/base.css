@@ -3,6 +3,52 @@
   box-sizing: border-box;
 }
 
+/* 字号设置滑块：细 track + 圆形 thumb，自适应明暗主题。 */
+.gt-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  cursor: pointer;
+  outline: none;
+}
+.gt-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--text);
+  border: 2px solid var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease;
+}
+.gt-range::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+}
+.gt-range:active::-webkit-slider-thumb {
+  transform: scale(1.1);
+}
+.gt-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.gt-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.gt-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--text);
+  border: 2px solid var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
 html,
 body,
 #root {
@@ -35,4 +81,37 @@ textarea,
 :root[data-theme="light"] html,
 :root[data-theme="light"] #root {
   background: var(--bg);
+}
+
+/*
+ * 主题自适应浅色滚动条：用前景色低透明度，亮色主题偏浅灰、暗色主题偏柔和浅条，
+ * 避免系统默认深色粗条抢视觉。
+ */
+.gt-subtle-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text) 32%, transparent);
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
 }

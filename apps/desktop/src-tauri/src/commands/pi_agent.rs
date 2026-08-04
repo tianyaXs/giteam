@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use giteam_core::pi_agent::{
@@ -145,14 +145,11 @@ pub async fn agent_create_session(
 ) -> Result<PiSessionSummary, String> {
     let config = PiSessionConfig {
         repo_path: PathBuf::from(&request.repo_path),
-        session_dir: request
-            .session_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(&request.repo_path)
-                    .join(".giteam")
-                    .join("pi-sessions")
-            }),
+        session_dir: match request.session_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => giteam_core::pi_agent::ensure_repo_pi_sessions_dir(Path::new(&request.repo_path))
+                .map_err(|error| error.to_string())?,
+        },
         session_path: request.session_path.map(PathBuf::from),
         provider: request.provider,
         model: request.model,

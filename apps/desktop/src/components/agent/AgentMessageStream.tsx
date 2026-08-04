@@ -323,10 +323,17 @@ type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
 
 // Virtuoso List：必须把官方传入的 style（含 paddingTop/height）原样挂上；不要用 flex/gap，
 // 也不要用会覆盖 paddingTop 语义的布局类抢测高。行间距放在 Item 内 padding。
+// 左缘由 AgentChatFrame 下发的 --chat-content-left 决定（未定义时回退 mx-auto 居中），
+// margin 过渡让窗口宽度变化时内容列平滑滑动。
 // @see https://virtuoso.dev/react-virtuoso/troubleshooting/
 const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
   ({ children, style, ...rest }, ref) => (
-    <div ref={ref} style={style} {...rest} className="mx-auto w-full max-w-[860px] select-none px-10">
+    <div
+      ref={ref}
+      style={style}
+      {...rest}
+      className="ml-[var(--chat-content-left,auto)] mr-auto w-full max-w-[860px] select-none px-10 motion-safe:transition-[margin] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)]"
+    >
       {children}
     </div>
   )
@@ -335,6 +342,11 @@ AgentMessageListContainer.displayName = "AgentMessageListContainer";
 
 function AgentMessageRowFrame({ children }: { children: ReactNode }) {
   return <div className="pb-4">{children}</div>;
+}
+
+/** 首条消息与顶部分隔线之间的呼吸留白（参考 ChatGPT 首条消息的顶部间距）。 */
+function AgentMessageListHeader() {
+  return <div className="h-12" aria-hidden="true" />;
 }
 
 function StreamLoadingState() {
@@ -1557,7 +1569,7 @@ export function AgentMessageStream({
 
   if (sessionLoading) {
     return (
-      <div className="mx-auto w-full max-w-[860px] px-10 pt-4">
+      <div className="ml-[var(--chat-content-left,auto)] mr-auto w-full max-w-[860px] px-10 pt-12 motion-safe:transition-[margin] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)]">
         <StreamLoadingState />
       </div>
     );
@@ -1571,7 +1583,7 @@ export function AgentMessageStream({
       data={visibleRenderRows}
       computeItemKey={(_index, row) => row.stableKey}
       scrollerRef={scrollerRef}
-      className="h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
+      className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
       initialTopMostItemIndex={
         initialLocateIndex >= 0
           ? { index: initialLocateIndex, align: "start" }
@@ -1586,7 +1598,7 @@ export function AgentMessageStream({
       rangeChanged={onRangeChanged}
       increaseViewportBy={{ top: 600, bottom: 600 }}
       defaultItemHeight={160}
-      components={{ List: AgentMessageListContainer }}
+      components={{ List: AgentMessageListContainer, Header: AgentMessageListHeader }}
       itemContent={(_index, row) =>
         row.isSystem ? (
           <AgentMessageRowFrame>

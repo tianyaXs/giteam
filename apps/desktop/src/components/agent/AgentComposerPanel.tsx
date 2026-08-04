@@ -10,7 +10,7 @@ import {
   type RefObject
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import appIconUrl from "../../assets/app-icon.png";
+import appIconMarkUrl from "../../assets/app-icon-mark.png";
 import {
   AGENT_COMPOSER_AGENT_OPTIONS,
   shortModelLabel,
@@ -875,15 +875,14 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             style={emptyGrowUpOffset > 0 ? { marginTop: -emptyGrowUpOffset } : undefined}
           >
             <div className="flex flex-col items-center gap-5">
-              <div className="size-11 overflow-hidden rounded-[22%] shadow-[0_1px_2px_rgba(15,23,42,0.05)] ring-1 ring-border/40 motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)] motion-safe:hover:rotate-[360deg]">
-                <img
-                  src={appIconUrl}
-                  alt=""
-                  aria-hidden="true"
-                  draggable={false}
-                  className="size-full origin-center scale-[1.22] opacity-[0.92]"
-                />
-              </div>
+              {/* 透明底 logo 本体，深色主题反白；悬浮旋转一周的彩蛋保留 */}
+              <img
+                src={appIconMarkUrl}
+                alt=""
+                aria-hidden="true"
+                draggable={false}
+                className="size-9 origin-center opacity-[0.92] dark:invert motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)] motion-safe:hover:rotate-[360deg]"
+              />
               <div className="max-w-[28rem] text-center text-[22px] font-semibold leading-snug tracking-tight text-foreground">
                 {(labels.emptyComposerHeadline || "What should we build in {name}?").replace(
                   "{name}",
