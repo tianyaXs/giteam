@@ -1,3 +1,7 @@
+// Windows 发行版用 WINDOWS 子系统，避免双击打开时多出一个会拖垮应用的 cmd 窗口；
+// debug 仍保留控制台，方便看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod commands;
 mod remote_repo;
 
