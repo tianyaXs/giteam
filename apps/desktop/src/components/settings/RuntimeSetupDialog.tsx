@@ -20,7 +20,7 @@ type RuntimeSetupDialogProps = {
   onRunAutoInit: () => void;
 };
 
-/** 首启必装：git + entire。giteam CLI 仅手机端连接，在设置里可选安装。 */
+/** 首启可选安装（设置入口）：git + entire。giteam CLI 仅手机端连接，在设置里可选安装。 */
 const RUNTIME_DEPS: RuntimeDepName[] = ["git", "entire"];
 
 const BOOTSTRAP_LOG_WEIGHTS: Array<[RegExp, number]> = [

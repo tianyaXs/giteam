@@ -145,7 +145,6 @@ import {
   type GiteamMobileServiceStatus
 } from "./lib/controlServer";
 import {
-  hasRuntimeFirstCheckCompleted,
   markRuntimeFirstCheckCompleted,
   markRuntimeReady,
   setRuntimeSetupDismissed
@@ -4006,7 +4005,7 @@ function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
   return runtimeJobFailureMessage(job);
 }
 
-/** 桌面端必装依赖：git + entire。giteam CLI 仅供手机端连接，不阻塞首启。 */
+/** 设置页「插件」里提示可装的依赖：git / entire；giteam CLI 仅手机端，不阻塞桌面。 */
 function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepName[] {
   return (["git", "entire"] as RuntimeDepName[]).filter((name) => !status[name].installed);
 }
@@ -6795,23 +6794,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     setRuntimeInstallLog("");
     setError("");
     setRuntimeStartupChecking(true);
+    // Pi 运行时已内置，不再强制首启安装 git/entire/opencode；仅后台刷新依赖状态，
+    // 缺依赖可在「设置 → 插件」里按需安装，不挡进主界面。
     void refreshRuntimeRequirements()
       .then((res) => {
         if (cancelled) return;
-        const firstLaunch = !hasRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
         markRuntimeFirstCheckCompleted(RUNTIME_FIRST_CHECK_KEY);
-        const missing = getMissingRuntimeDeps(res);
-        if (missing.length === 0) {
+        if (getMissingRuntimeDeps(res).length === 0) {
           setRuntimeSetupDismissed(false);
-          setShowEnvSetup(false);
-          return;
         }
-
-        if (firstLaunch) {
-          setRuntimeSetupDismissed(false);
-          setShowEnvSetup(true);
-          runRuntimeSetupForMissing(res, { showRuntimePanel: true });
-        }
+        setShowEnvSetup(false);
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -7714,8 +7706,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   const runtimeDepsMissing = !runtimeStatus.git.installed || !runtimeStatus.entire.installed;
   const runtimeInstallActive = Boolean(installingDep || runtimeJobId);
-  const runtimeSetupVisible =
-    showEnvSetup && (runtimeStartupChecking || runtimeDepsMissing || runtimeInstallActive);
+  // 仅用户从设置主动打开时显示；不再因缺依赖在启动时全屏拦截。
+  const runtimeSetupVisible = showEnvSetup && (runtimeStartupChecking || runtimeDepsMissing || runtimeInstallActive);
 
   const refreshRemoteRepoGitNexusStatus = useCallback(async (repoId: string, refOrCommit: string) => {
     const statusKey = remoteRepoGraphStatusKey(repoId, refOrCommit);
