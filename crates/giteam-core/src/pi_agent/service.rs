@@ -1398,11 +1398,18 @@ fn mime_from_image_path(path: &str) -> String {
 
 /// 装配带审批门禁的 SessionOptions：GiteamToolFactory 包装写/执行类工具，
 /// 并按 enabled_tools 决定是否追加 question 工具。
+/// 后台任务日志落在会话目录 background-tasks/ 下；no_session 模式传 None
+/// （registry 回落到临时目录），避免向磁盘写会话侧产物。
 fn sdk_options_with_factory(
     config: PiSessionConfig,
     hub: &Arc<InteractionHub>,
 ) -> pi::sdk::SessionOptions {
-    let factory = GiteamToolFactory::new(Arc::clone(hub), config.enabled_tools.as_deref());
+    let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
+    let factory = GiteamToolFactory::new(
+        Arc::clone(hub),
+        config.enabled_tools.as_deref(),
+        background_log_dir,
+    );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));
     options

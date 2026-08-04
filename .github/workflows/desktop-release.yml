@@ -108,32 +108,32 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## Agent 与数据
+            ## Agent 与工具
 
-            - Agent 运行时统一为 Pi SDK，会话、工具与事件链路更稳定
-            - 会话正文迁至 `~/.giteam/pi-sessions/`（按仓库隔离），不再写入仓库旁 `.giteam/`
-            - 旧会话会在启动时自动迁移；全局索引仍为 `catalog.json`
-            - 应用数据统一落在 `~/.giteam`（可用 `$GITEAM_HOME` 覆盖）
+            - 新增一等公民后台 Shell：`bash(run_in_background=true)`、`bash_output`、`kill_shell`
+            - 前台禁止 `timeout: 0` 与超长超时；识别 `http.server` / `npm run dev` 等长驻命令并引导改后台
+            - 禁止用 `&` / `nohup` / `setsid` 伪后台；会话结束自动回收后台进程
+            - 修复「帮我启动」类任务因前台长驻服务导致会话卡住的问题
 
             ## 输入与对话体验
 
-            - 应用显示名称统一为 **Giteam**
+            - 进度卡片与内容区留出间距，并略收窄卡片宽度
             - 切换会话后自动聚焦输入框；新会话 / 继续跟进输入区更轻薄对齐
             - 多行跟进时附件、模型与发送按钮固定贴底
             - 全选对话时减少空白与附件被整块高亮
             - 进度卡片避开滚动条，消息流滚动条改为主题自适应浅色细条
 
-            ## 设置与侧栏
+            ## 设置与数据
 
-            - 设置新增界面缩放与代码字号，拖动即时预览
-            - 侧栏支持置顶项目与悬停卡片，项目导航更清晰
-            - 大版本更新后提供分步「What's New」向导
+            - 会话正文位于 `~/.giteam/pi-sessions/`（按仓库隔离）；应用数据统一落在 `~/.giteam`
+            - 设置支持界面缩放、代码字号、自动更新开关；大版本更新后提供「What's New」向导
+            - 侧栏支持置顶项目与悬停卡片
 
             ## 稳定性修复
 
-            - 修复工具调用与事件合并相关问题
+            - 启动不再强制全屏依赖安装页（Ubuntu 等平台不再卡在 0%）
+            - 修复 Windows 构建中的同卷判断问题
             - 优化应用内更新下载安装（含跨卷临时目录）
-            - 修复若干会话初始化与渲染抖动问题
 
             打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
           releaseDraft: false

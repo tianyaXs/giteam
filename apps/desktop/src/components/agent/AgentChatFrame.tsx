@@ -33,9 +33,9 @@ export type ChatLayout = {
 const THREAD_MAX_WIDTH = 860;
 /** 与 AgentMessageListContainer 的 px-10 对齐，进度轨贴内容区而非 860 外框。 */
 const THREAD_CONTENT_PADDING_X = 40;
-/** 相对内容右缘的间距；略收以给右侧滚动条留空，避免卡片压住滚动条。 */
-const SIDE_RAIL_GAP = 0;
-const SIDE_RAIL_EXPANDED_WIDTH = 300;
+/** 相对内容右缘的间距，避免进度卡贴着消息区。 */
+const SIDE_RAIL_GAP = 12;
+const SIDE_RAIL_EXPANDED_WIDTH = 276;
 const SIDE_RAIL_COLLAPSED_WIDTH = 46;
 /** 右侧外侧余量：覆盖 scrollbar-gutter（约 12–16px）+ 少量呼吸感。 */
 const SIDE_RAIL_OUTER_PADDING = 20;
@@ -169,7 +169,7 @@ export function AgentChatFrame({
           <>
             <aside
               className={cn(
-                "pointer-events-none absolute top-4 z-10 w-[300px] min-w-0 opacity-0 motion-safe:transition-all motion-safe:duration-200 motion-safe:ease-out",
+                "pointer-events-none absolute top-4 z-10 w-[276px] min-w-0 opacity-0 motion-safe:transition-all motion-safe:duration-200 motion-safe:ease-out",
                 sideRailMode === "expanded" && !sideRailHidden
                   ? "translate-x-0 scale-100 opacity-100"
                   : "translate-x-3 scale-95 opacity-0"

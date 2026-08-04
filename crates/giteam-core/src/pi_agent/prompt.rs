@@ -39,7 +39,9 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
 
     let tool_descriptions = [
         ("read", "Read file contents (with optional line ranges and hashline=true to get LINE#HASH tags)"),
-        ("bash", "Execute shell commands (build, test, git status, etc.)"),
+        ("bash", "Execute shell commands (build, test, git status, etc.). Foreground commands must finish within the timeout (default 120s, max 600s; timeout: 0 is rejected). Start servers, watchers, and other never-exiting commands with run_in_background=true and manage them with bash_output / kill_shell."),
+        ("bash_output", "Read output and status of a background shell started with bash(run_in_background=true); optionally wait for it to exit. Omit shell_id to list all background shells of this session."),
+        ("kill_shell", "Terminate a background shell (and its whole process tree) started with bash(run_in_background=true). Kill shells you started once they are no longer needed."),
         ("edit", "Make surgical edits to files (find exact text and replace)"),
         ("write", "Create new files or completely rewrite existing ones"),
         ("grep", "Search file contents with regex (respects .gitignore, supports hashline=true)"),
@@ -53,13 +55,17 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
     ];
 
     // question / todowrite 是否启用：默认全量时启用，或用户显式包含（与 GiteamToolFactory 判断一致）。
+    // bash_output / kill_shell 随 bash 启用（与 GiteamToolFactory 一致）。
     let question_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "question");
     let todo_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "todowrite");
+    let bash_background_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "bash");
     let has_tool = |name: &str| {
         if name == "question" {
             question_enabled
         } else if name == "todowrite" {
             todo_enabled
+        } else if name == "bash_output" || name == "kill_shell" {
+            bash_background_enabled
         } else {
             tools.iter().any(|tool| tool == name)
         }
@@ -75,6 +81,11 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
     if has_tool("bash") && (has_tool("grep") || has_tool("find") || has_tool("ls")) {
         guidelines.push(
             "Prefer the grep/find/ls tools over bash for file exploration — they are faster and respect .gitignore. Reserve bash for builds, tests, git, and other commands that have no dedicated tool.",
+        );
+    }
+    if has_tool("bash") && has_tool("bash_output") {
+        guidelines.push(
+            "Never run servers, watchers, or other never-exiting commands in the foreground — they hang the session. Start them with bash(run_in_background=true) (not with a trailing '&', nohup, or setsid), verify readiness with a health check in a separate foreground call, then manage them with bash_output (read output or wait for exit) and kill_shell (terminate when done). `timeout: 0` is rejected — long-running always means background.",
         );
     }
     if has_tool("read") && has_tool("edit") {
@@ -138,6 +149,31 @@ mod tests {
         assert!(!prompt.contains("inside pi"));
         assert!(!prompt.contains("Pi documentation"));
         assert!(!prompt.contains("docs/extensions.md"));
+    }
+
+    #[test]
+    fn prompt_describes_background_shell_tools_when_bash_enabled() {
+        // 默认全量：bash 启用，bash_output/kill_shell 与后台准则应出现。
+        let prompt = default_system_prompt(None);
+        assert!(prompt.contains("- bash_output:"));
+        assert!(prompt.contains("- kill_shell:"));
+        assert!(prompt.contains("run_in_background=true"));
+        assert!(prompt.contains("`timeout: 0` is rejected"));
+
+        // 显式启用 bash：同样应描述后台三件套。
+        let tools = vec!["read".to_string(), "bash".to_string()];
+        let prompt = default_system_prompt(Some(&tools));
+        assert!(prompt.contains("- bash_output:"));
+        assert!(prompt.contains("- kill_shell:"));
+    }
+
+    #[test]
+    fn prompt_hides_background_shell_tools_without_bash() {
+        let tools = vec!["read".to_string(), "grep".to_string()];
+        let prompt = default_system_prompt(Some(&tools));
+        assert!(!prompt.contains("- bash_output:"));
+        assert!(!prompt.contains("- kill_shell:"));
+        assert!(!prompt.contains("run_in_background=true"));
     }
 
     #[test]

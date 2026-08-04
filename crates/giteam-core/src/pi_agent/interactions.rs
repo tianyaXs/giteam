@@ -54,8 +54,8 @@ impl InteractionRisk {
     #[must_use]
     pub fn for_tool(tool: &str) -> Self {
         match tool {
-            "read" | "grep" | "find" | "ls" => Self::Read,
-            "bash" => Self::Execute,
+            "read" | "grep" | "find" | "ls" | "bash_output" => Self::Read,
+            "bash" | "kill_shell" => Self::Execute,
             _ => Self::Write,
         }
     }

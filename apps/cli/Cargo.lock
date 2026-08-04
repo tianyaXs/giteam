@@ -1596,6 +1596,7 @@ dependencies = [
  "async-trait",
  "base64",
  "futures",
+ "libc",
  "pi_agent_rust",
  "reqwest",
  "rusqlite",

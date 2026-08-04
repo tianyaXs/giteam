@@ -72,7 +72,7 @@ checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
 
 [[package]]
 name = "alloc-stdlib"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94fb8275041c72129eb51b7d0322c29b8387a0386127718b096429201a5d6ece"
 dependencies = [
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "crypto-common"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
@@ -2500,6 +2500,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "libc",
  "pi_agent_rust",
  "reqwest 0.12.28",
  "rusqlite",
@@ -2515,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-desktop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "fastrand",
@@ -5941,7 +5942,7 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4c8ed856279c9737206bf725bf36935d8666ead7aa69b52be55af369d193402"
 dependencies = [
@@ -6226,7 +6227,7 @@ dependencies = [
 
 [[package]]
 name = "rich_rust"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b739581beb432b2743e3561cec117559483d7a66fdd11acd72e98b6ffad19915"
 dependencies = [
@@ -7122,7 +7123,7 @@ dependencies = [
 
 [[package]]
 name = "sqlmodel-core"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fa4101fbdfea631e594f1d4a94aaa3765fdbfb88c5ee2e34e1f462b60df67df"
 dependencies = [
@@ -7135,7 +7136,7 @@ dependencies = [
 
 [[package]]
 name = "sqlmodel-sqlite"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e916ef96571b8c22643b9ca36c15f3a27b0e742b1a3dd641e06c2ad459d7f86a"
 dependencies = [
@@ -8636,7 +8637,7 @@ checksum = "da36089a805484bcccfffe0739803392c8298778a2d2f09febf76fac5ad9025b"
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
@@ -8713,7 +8714,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "utf8parse"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
