@@ -78,9 +78,15 @@ export function AppUpdateMajorWizard(props: WizardProps) {
             </div>
           </div>
           <DialogDescription className="mt-3 inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-0.5 font-mono text-[11.5px]">
-            <span className="text-muted-foreground">{celebration.fromVersion}</span>
-            <span aria-hidden="true" className="text-muted-foreground/60">→</span>
-            <span className="font-medium text-foreground">{celebration.toVersion}</span>
+            {celebration.fromVersion === celebration.toVersion ? (
+              <span className="font-medium text-foreground">{celebration.toVersion}</span>
+            ) : (
+              <>
+                <span className="text-muted-foreground">{celebration.fromVersion}</span>
+                <span aria-hidden="true" className="text-muted-foreground/60">→</span>
+                <span className="font-medium text-foreground">{celebration.toVersion}</span>
+              </>
+            )}
           </DialogDescription>
 
           <nav className="mt-8 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto" aria-label={props.text.wizardKicker}>
@@ -93,7 +99,7 @@ export function AppUpdateMajorWizard(props: WizardProps) {
                   type="button"
                   onClick={() => goTo(i)}
                   className={cn(
-                    "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors",
+                    "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-0",
                     active
                       ? "bg-background font-medium text-foreground shadow-sm"
                       : "text-muted-foreground hover:bg-background/60 hover:text-foreground"

@@ -107,7 +107,7 @@ fn align_temp_dir_with_app_volume() {
         let Ok(tmp_meta) = std::fs::metadata(&candidate) else {
             continue;
         };
-        if !same_fs_device(&app_meta, &tmp_meta) {
+        if !same_fs_device(&app_path, &candidate, &app_meta, &tmp_meta) {
             continue;
         }
         std::env::set_var("TMPDIR", &candidate);
@@ -141,20 +141,47 @@ fn resolve_app_install_path(exe: &std::path::Path) -> std::path::PathBuf {
     exe.to_path_buf()
 }
 
-fn same_fs_device(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+fn same_fs_device(
+    a_path: &std::path::Path,
+    b_path: &std::path::Path,
+    a: &std::fs::Metadata,
+    b: &std::fs::Metadata,
+) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let _ = (a_path, b_path);
         return a.dev() == b.dev();
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        return a.volume_serial_number() == b.volume_serial_number();
+        // `MetadataExt::volume_serial_number` 仍是 unstable，稳定版用盘符/UNC 根比较。
+        let _ = (a, b);
+        fn volume_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+            use std::path::{Component, PathBuf};
+            let abs = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir().ok()?.join(path)
+            };
+            let mut components = abs.components();
+            match components.next()? {
+                Component::Prefix(prefix) => {
+                    let mut root = PathBuf::new();
+                    root.push(Component::Prefix(prefix));
+                    if matches!(components.next(), Some(Component::RootDir)) {
+                        root.push(Component::RootDir);
+                    }
+                    Some(root)
+                }
+                _ => None,
+            }
+        }
+        return volume_root(a_path) == volume_root(b_path);
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (a, b);
+        let _ = (a_path, b_path, a, b);
         true
     }
 }
@@ -199,6 +226,7 @@ fn main() {
             commands::env::check_runtime_dependency,
             commands::env::start_runtime_dependency_action,
             commands::env::get_runtime_dependency_action,
+            commands::release_notes::fetch_latest_release,
             commands::ui::pick_agent_attachments,
             commands::ui::read_agent_attachments_from_paths,
             commands::ui::read_clipboard_file_paths,

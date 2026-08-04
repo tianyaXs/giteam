@@ -63,15 +63,21 @@ function VersionPath(props: {
   fromLabel?: string;
   toLabel?: string;
 }) {
+  // from 缺失或与 to 相同（dev / 同版本查看）时只展示目标版本，避免「—」或「X → X」冗余。
+  const showPath = Boolean(props.from) && props.from !== props.to;
   return (
     <div className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-[12px] tracking-tight">
-      <span className="text-muted-foreground">
-        {props.fromLabel ? `${props.fromLabel} ` : null}
-        <span className="text-foreground/75">{props.from || "—"}</span>
-      </span>
-      <span className="text-muted-foreground/60" aria-hidden="true">
-        →
-      </span>
+      {showPath ? (
+        <span className="text-muted-foreground">
+          {props.fromLabel ? `${props.fromLabel} ` : null}
+          <span className="text-foreground/75">{props.from}</span>
+        </span>
+      ) : null}
+      {showPath ? (
+        <span className="text-muted-foreground/60" aria-hidden="true">
+          →
+        </span>
+      ) : null}
       <span className="text-foreground">
         {props.toLabel ? <span className="text-muted-foreground">{props.toLabel} </span> : null}
         <span className="font-medium">{props.to}</span>
@@ -258,7 +264,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
       installing: "Installing…",
       whatsNewKicker: "Updated",
       whatsNewTitle: "Welcome to the new build",
-      whatsNewSubtitle: (from, to) => `Successfully moved from ${from} to ${to}.`,
+      whatsNewSubtitle: (from, to) => (from && from !== to ? `Successfully moved from ${from} to ${to}.` : `Here's what's new in Giteam ${to}.`),
       whatsNewEmpty: "You're on the latest desktop build. Thanks for updating.",
       gotIt: "Continue",
       wizardKicker: "What's new",
@@ -284,7 +290,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
       installing: "安裝中…",
       whatsNewKicker: "已更新",
       whatsNewTitle: "歡迎使用新版本",
-      whatsNewSubtitle: (from, to) => `已順利從 ${from} 更新到 ${to}。`,
+      whatsNewSubtitle: (from, to) => (from && from !== to ? `已順利從 ${from} 更新到 ${to}。` : `以下是 Giteam ${to} 的更新內容。`),
       whatsNewEmpty: "你已在最新桌面版。感謝更新。",
       gotIt: "繼續使用",
       wizardKicker: "新功能",
@@ -309,7 +315,7 @@ export function getAppUpdateDialogText(language: "system" | "zh-CN" | "zh-TW" | 
     installing: "安装中…",
     whatsNewKicker: "已更新",
     whatsNewTitle: "欢迎使用新版本",
-    whatsNewSubtitle: (from, to) => `已顺利从 ${from} 更新到 ${to}。`,
+    whatsNewSubtitle: (from, to) => (from && from !== to ? `已顺利从 ${from} 更新到 ${to}。` : `以下是 Giteam ${to} 的更新内容。`),
     whatsNewEmpty: "你已在最新桌面版。感谢更新。",
     gotIt: "继续使用",
     wizardKicker: "新功能",

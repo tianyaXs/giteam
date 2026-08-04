@@ -163,9 +163,13 @@ import {
   checkAppUpdate,
   downloadAndInstallAppUpdate,
   getAppVersion,
+  parseUpdateKind,
+  readLastLaunchedVersion,
+  readLastWhatsNew,
   relaunchApp,
   resolveStartupUpdateCelebration,
   splitReleaseNotesIntoSteps,
+  writeLastWhatsNew,
   type AppUpdateState,
   type UpdateCelebration
 } from "./lib/appUpdater";
@@ -888,15 +892,86 @@ export function App() {
     notes: string;
   } | null>(null);
   const [updateCelebration, setUpdateCelebration] = useState<UpdateCelebration | null>(null);
-  // 大更新且 notes 能切出 ≥2 个章节时走全屏分步向导，否则用小更新提示窗。
+  // 内容丰富的更新（release notes 能切出 ≥2 个章节）走全屏分步向导，否则用提示窗。
+  // 不再用 semver kind 判定：「查看更新内容」入口在 dev / 同版本场景下 fromVersion 会退化为「—」，
+  // parseUpdateKind 随即误判 patch；而「内容多 = 大更新」本就是直观感知，章节数是更可靠的信号。
   const showUpdateWizard = useMemo(
     () =>
       Boolean(updateCelebration) &&
-      updateCelebration?.kind === "major" &&
-      splitReleaseNotesIntoSteps(updateCelebration.notes).length >= 2,
+      splitReleaseNotesIntoSteps(updateCelebration?.notes || "").length >= 2,
     [updateCelebration]
   );
+  // 「关于」页「查看更新内容」入口：优先用持久化的最近更新说明；没有缓存（dev/首次安装）
+  // 时仅在 latest.json 仍对应当前运行版本时拉取，避免下次发版后被新 notes 顶替。
+  const reopenUpdateCelebration = useCallback(async () => {
+    const from = readLastLaunchedVersion();
+    // 1) 离线缓存优先：真实更新后即时、有完整说明，下次发版后仍能看本次内容。
+    const last = readLastWhatsNew();
+    if (last && String(last.notes || "").trim()) {
+      setShowSettings(false);
+      setUpdateCelebration(last);
+      return;
+    }
+    if (!appVersion || appVersion === "web") return;
+    // 2) 无缓存（dev / 首次安装）：Rust 侧拉取最新版 release notes，绕开 webview CORS。
+    let notes = "";
+    let toVersion = appVersion;
+    if (IS_TAURI) {
+      try {
+        const release = await invoke<{ version: string; notes: string } | null>("fetch_latest_release");
+        // 只采纳「仍是当前运行版本」的 latest，防止下一次发布覆盖本次说明的展示。
+        if (release && (!release.version || release.version === appVersion)) {
+          notes = release.notes;
+          toVersion = release.version || appVersion;
+        }
+      } catch {
+        // 网络/解析失败：退化为空骨架。
+      }
+    }
+    // WhatsNew 弹窗与设置同为 Radix Dialog、同 z-index，且在 JSX 中先于设置渲染会被遮挡，
+    // 故拉取完成后再关闭设置，让更新内容弹窗独占显示。
+    setShowSettings(false);
+    const sameVersion = toVersion === appVersion;
+    const celebration: UpdateCelebration = {
+      // 拿不到真实旧版本（dev / 同版本 / 无启动记录）时回退当前版本，避免左栏显示「—」；
+      // from===to 时由 UI（向导 / VersionPath）退化为单版本展示。
+      fromVersion: sameVersion ? (from && from !== appVersion ? from : appVersion) : appVersion,
+      toVersion,
+      notes,
+      kind: parseUpdateKind(sameVersion ? (from || "") : appVersion, toVersion)
+    };
+    if (String(notes || "").trim()) writeLastWhatsNew(celebration);
+    setUpdateCelebration(celebration);
+  }, [appVersion]);
   const installInFlightGuard = useRef(false);
+  const installAppUpdateNow = useCallback(
+    async (available: { currentVersion: string; version: string; notes: string }) => {
+      if (installInFlightGuard.current) return;
+      installInFlightGuard.current = true;
+      setUpdateAvailablePrompt(null);
+      setAppUpdateState({
+        status: "downloading",
+        currentVersion: available.currentVersion,
+        version: available.version,
+        notes: available.notes,
+        progress: 0
+      });
+      try {
+        const next = await downloadAndInstallAppUpdate((progress) => {
+          setAppUpdateState((prev) =>
+            prev.status === "downloading" ? { ...prev, progress } : prev
+          );
+        });
+        setAppUpdateState(next);
+        if (next.status === "ready") {
+          await relaunchApp();
+        }
+      } finally {
+        installInFlightGuard.current = false;
+      }
+    },
+    []
+  );
   const [checkingDeps, setCheckingDeps] = useState<Record<RuntimeDepName, boolean>>({
     git: false,
     entire: false,
@@ -6674,18 +6749,31 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         const next = await checkAppUpdate();
         if (cancelled) return;
         setAppUpdateState(next);
-        if (next.status === "available") {
-          setUpdateAvailablePrompt({
+        if (next.status !== "available") return;
+        if (generalSettings.updatesAutoInstall) {
+          if (generalSettings.notificationsAgent) {
+            void showSettingsNotification(
+              "Updating Giteam",
+              `Downloading ${next.version}…`
+            );
+          }
+          await installAppUpdateNow({
             currentVersion: next.currentVersion,
             version: next.version,
             notes: next.notes
           });
-          if (generalSettings.notificationsAgent) {
-            void showSettingsNotification(
-              "Update available",
-              `Giteam ${next.version} is ready to install`
-            );
-          }
+          return;
+        }
+        setUpdateAvailablePrompt({
+          currentVersion: next.currentVersion,
+          version: next.version,
+          notes: next.notes
+        });
+        if (generalSettings.notificationsAgent) {
+          void showSettingsNotification(
+            "Update available",
+            `Giteam ${next.version} is ready to install`
+          );
         }
       })();
     }, 2500);
@@ -6693,7 +6781,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [generalSettings.updatesStartup, generalSettings.notificationsAgent, updateCelebration]);
+  }, [
+    generalSettings.updatesStartup,
+    generalSettings.updatesAutoInstall,
+    generalSettings.notificationsAgent,
+    updateCelebration,
+    installAppUpdateNow
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -9421,31 +9515,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           text={updateDialogText}
           onLater={() => setUpdateAvailablePrompt(null)}
           onInstall={() => {
-            void (async () => {
-              if (!updateAvailablePrompt || installInFlightGuard.current) return;
-              installInFlightGuard.current = true;
-              setAppUpdateState({
-                status: "downloading",
-                currentVersion: updateAvailablePrompt.currentVersion,
-                version: updateAvailablePrompt.version,
-                notes: updateAvailablePrompt.notes,
-                progress: 0
-              });
-              setUpdateAvailablePrompt(null);
-              try {
-                const next = await downloadAndInstallAppUpdate((progress) => {
-                  setAppUpdateState((prev) =>
-                    prev.status === "downloading" ? { ...prev, progress } : prev
-                  );
-                });
-                setAppUpdateState(next);
-                if (next.status === "ready") {
-                  await relaunchApp();
-                }
-              } finally {
-                installInFlightGuard.current = false;
-              }
-            })();
+            if (!updateAvailablePrompt) return;
+            void installAppUpdateNow(updateAvailablePrompt);
           }}
         />
 
@@ -9492,8 +9563,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 setAppUpdateState({ status: "checking" });
                 const next = await checkAppUpdate();
                 setAppUpdateState(next);
+                if (next.status !== "available") return;
+                if (generalSettings.updatesAutoInstall) {
+                  await installAppUpdateNow({
+                    currentVersion: next.currentVersion,
+                    version: next.version,
+                    notes: next.notes
+                  });
+                  return;
+                }
                 // 已在设置「关于」页时不叠弹窗，直接在页内下载安装，避免要点两次。
-                if (next.status === "available" && !showSettings) {
+                if (!showSettings) {
                   setUpdateAvailablePrompt({
                     currentVersion: next.currentVersion,
                     version: next.version,
@@ -9510,41 +9590,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }}
             onInstallAppUpdate={() => {
               void (async () => {
-                if (appUpdateState.status === "ready") {
-                  await relaunchApp();
-                  return;
-                }
-                if (installInFlightGuard.current) return;
-                installInFlightGuard.current = true;
-                setUpdateAvailablePrompt(null);
-                setAppUpdateState((prev) =>
-                  prev.status === "available"
+                const available =
+                  appUpdateState.status === "available" || appUpdateState.status === "ready"
                     ? {
-                        status: "downloading",
-                        currentVersion: prev.currentVersion,
-                        version: prev.version,
-                        notes: prev.notes,
-                        progress: 0
+                        currentVersion: appUpdateState.currentVersion,
+                        version: appUpdateState.version,
+                        notes: appUpdateState.notes
                       }
-                    : { status: "checking" }
-                );
-                try {
-                  const next = await downloadAndInstallAppUpdate((progress) => {
-                    setAppUpdateState((prev) =>
-                      prev.status === "downloading" ? { ...prev, progress } : prev
-                    );
-                  });
-                  setAppUpdateState(next);
-                  if (next.status === "ready") {
-                    await relaunchApp();
-                  }
-                } finally {
-                  installInFlightGuard.current = false;
-                }
+                    : updateAvailablePrompt;
+                if (!available) return;
+                await installAppUpdateNow(available);
               })();
             }}
             appVersion={appVersion}
             appUpdateState={appUpdateState}
+            onReopenUpdateCelebration={reopenUpdateCelebration}
             agentPort={agentServiceSettings.port}
             agentBusy={agentServiceSettingsBusy}
             onAgentPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}

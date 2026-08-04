@@ -16,6 +16,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   soundsPermissions: true,
   soundsErrors: true,
   updatesStartup: true,
+  updatesAutoInstall: false,
   maxToolIterations: 0
 };
 

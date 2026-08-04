@@ -42,8 +42,8 @@ Release body 会写入 `latest.json` 的 `notes`，请在打 tag 前写好更新
 2. 确认本地 `cd apps/desktop && npm run build` 能通过（CI 会跑同一条命令）
 3. 打标签并推送：
    ```bash
-   git tag desktop-v0.2.0
-   git push origin desktop-v0.2.0
+   git tag desktop-v0.2.1
+   git push origin desktop-v0.2.1
    ```
 4. 或手动跑 Actions：`Desktop Release`
 5. Actions 成功后 Release 会直接发布（非 draft），应含各平台安装包与 `latest.json`

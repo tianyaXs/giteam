@@ -4,6 +4,7 @@ pub mod env;
 pub mod git;
 pub mod giteam_cli;
 pub mod pi_agent;
+pub mod release_notes;
 pub mod ui;
 pub mod watch;
 

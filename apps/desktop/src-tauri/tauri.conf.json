@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Giteam",
-  "version": "0.2.0",
+  "mainBinaryName": "Giteam",
+  "version": "0.2.1",
   "identifier": "io.giteam.desktop",
   "build": {
     "frontendDist": "../dist",

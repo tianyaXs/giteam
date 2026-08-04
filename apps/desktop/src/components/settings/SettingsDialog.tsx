@@ -36,6 +36,8 @@ export type GeneralSettingsDraft = {
   soundsPermissions: boolean;
   soundsErrors: boolean;
   updatesStartup: boolean;
+  /** 发现新版本后自动下载安装并重启（默认关，需用户显式开启）。 */
+  updatesAutoInstall: boolean;
   /** 单次任务最大工具调用轮数；0 = 不限制（默认），仅对新建会话生效。 */
   maxToolIterations: number;
 };
@@ -62,12 +64,14 @@ const SETTINGS_TEXT = {
     apiKey: "API 密钥", apiKeyConfigured: "已配置；清空输入框并保存即可移除。", apiKeyDesc: "可选项；未配置时 AI 搜索会自动回退关键词搜索。",
     agentNotifications: "Agent 通知", agentNotificationsDesc: "Agent 完成或需要关注时发送通知。", permissionNotifications: "授权通知", permissionNotificationsDesc: "出现授权请求时发送通知。", errorNotifications: "错误通知", errorNotificationsDesc: "发生错误时发送通知。",
     agentSound: "Agent 提示音", agentSoundDesc: "Agent 完成或状态变化时播放提示音。", permissionSound: "授权提示音", permissionSoundDesc: "出现授权请求时播放提示音。", errorSound: "错误提示音", errorSoundDesc: "发生错误时播放提示音。",
-    startupCheck: "启动时检查更新", startupCheckDesc: "应用启动后自动检查是否有新版本。", checkNow: "检查更新", checkNowDesc: "立即向 GitHub Releases 查询新版本。",
+    startupCheck: "启动时检查更新", startupCheckDesc: "应用启动后自动检查是否有新版本。",
+    autoInstall: "自动更新", autoInstallDesc: "发现新版本后自动下载安装并重启，无需再点确认。",
+    checkNow: "检查更新", checkNowDesc: "立即向 GitHub Releases 查询新版本。",
     currentVersion: "当前版本", currentVersionDesc: "本机正在运行的应用版本。",
     updateAvailable: "发现新版本", updateAvailableDesc: "下载并安装后需要重启应用。",
     installUpdate: "下载并安装", upToDate: "已是最新版本", downloading: "下载中", restartToUpdate: "重启以完成更新",
     updateUnsupported: "当前环境不支持在线更新", updateUnsupportedDesc: "请使用桌面端安装包运行以启用自动更新。",
-    updateNotes: "更新内容", updateNotesEmpty: "此版本未提供更新说明。", updateFromTo: "版本",
+    updateNotes: "更新内容", updateNotesEmpty: "此版本未提供更新说明。", updateFromTo: "版本", reviewWhatsNew: "查看更新内容", reviewWhatsNewDesc: "重新查看本次更新的说明", review: "查看", whatsNewLoadingLabel: "加载中…",
     save: "保存", saving: "保存中...", installFirst: "先安装", install: "安装", uninstall: "卸载", installing: "安装中", uninstalling: "卸载中", checking: "检查中...", check: "检查", refresh: "刷新", installed: "已安装", missing: "缺失", saveMobileTitle: "保存移动端控制配置", installDependencyTitle: "先安装 giteam 依赖", saveToApply: "保存后生效"
   },
   "zh-TW": {}, "en-US": {}
@@ -95,16 +99,18 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     apiKey: "API 金鑰", apiKeyConfigured: "已設定；清空輸入框並儲存即可移除。", apiKeyDesc: "可選項；未設定時 AI 搜尋會自動回退關鍵字搜尋。",
     agentNotifications: "Agent 通知", agentNotificationsDesc: "Agent 完成或需要關注時傳送通知。", permissionNotifications: "授權通知", permissionNotificationsDesc: "出現授權請求時傳送通知。", errorNotifications: "錯誤通知", errorNotificationsDesc: "發生錯誤時傳送通知。",
     agentSound: "Agent 提示音", agentSoundDesc: "Agent 完成或狀態變化時播放提示音。", permissionSound: "授權提示音", permissionSoundDesc: "出現授權請求時播放提示音。", errorSound: "錯誤提示音", errorSoundDesc: "發生錯誤時播放提示音。",
-    startupCheck: "啟動時檢查更新", startupCheckDesc: "應用啟動後自動檢查是否有新版本。", checkNow: "檢查更新", checkNowDesc: "立即向 GitHub Releases 查詢新版本。",
+    startupCheck: "啟動時檢查更新", startupCheckDesc: "應用啟動後自動檢查是否有新版本。",
+    autoInstall: "自動更新", autoInstallDesc: "發現新版本後自動下載安裝並重新啟動，無需再點確認。",
+    checkNow: "檢查更新", checkNowDesc: "立即向 GitHub Releases 查詢新版本。",
     currentVersion: "目前版本", currentVersionDesc: "本機正在執行的應用版本。",
     updateAvailable: "發現新版本", updateAvailableDesc: "下載並安裝後需要重新啟動應用。",
     installUpdate: "下載並安裝", upToDate: "已是最新版本", downloading: "下載中", restartToUpdate: "重新啟動以完成更新",
     updateUnsupported: "目前環境不支援線上更新", updateUnsupportedDesc: "請使用桌面端安裝包執行以啟用自動更新。",
-    updateNotes: "更新內容", updateNotesEmpty: "此版本未提供更新說明。", updateFromTo: "版本",
+    updateNotes: "更新內容", updateNotesEmpty: "此版本未提供更新說明。", updateFromTo: "版本", reviewWhatsNew: "查看更新內容", reviewWhatsNewDesc: "重新查看本次更新的說明", review: "查看", whatsNewLoadingLabel: "載入中…",
     save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", uninstall: "解除安裝", installing: "安裝中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
   },
   "en-US": {
-    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Check and manage desktop runtime plugins such as Git and Entire; giteam is optional for mobile connection.", api: "API", apiKicker: "Connection", apiDesc: "Manage mobile control service and Giteam connection settings.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mcpDesc: "Show MCP server management.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, auth, and QR pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Port used by the mobile control service.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
+    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Check and manage desktop runtime plugins such as Git and Entire; giteam is optional for mobile connection.", api: "API", apiKicker: "Connection", apiDesc: "Manage mobile control service and Giteam connection settings.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mcpDesc: "Show MCP server management.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, auth, and QR pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Port used by the mobile control service.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -168,6 +174,7 @@ type SettingsDialogProps = {
   appUpdateState: import("../../lib/appUpdater").AppUpdateState;
   onCheckAppUpdate: () => void;
   onInstallAppUpdate: () => void;
+  onReopenUpdateCelebration: () => void | Promise<void>;
   agentPort: number;
   agentBusy: boolean;
   onAgentPortChange: (port: number) => void;
@@ -477,6 +484,31 @@ function CodePreview(props: { fontSize: number }) {
         <code>{'const greet = (name: string) => {\n  return `Hello, ${name}!`;\n};'}</code>
       </pre>
     </div>
+  );
+}
+
+function WhatsNewReviewButton(props: {
+  label: string;
+  loadingLabel: string;
+  onReopen: () => void | Promise<void>;
+}) {
+  const [loading, setLoading] = useState(false);
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={loading}
+      onClick={async () => {
+        setLoading(true);
+        try {
+          await props.onReopen();
+        } finally {
+          setLoading(false);
+        }
+      }}
+    >
+      {loading ? props.loadingLabel : props.label}
+    </Button>
   );
 }
 
@@ -896,6 +928,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
         )
       },
       {
+        title: text.autoInstall,
+        description: text.autoInstallDesc,
+        action: (
+          <SwitchControl
+            checked={props.generalSettings.updatesAutoInstall}
+            onChange={(checked) => updateGeneral({ updatesAutoInstall: checked })}
+          />
+        )
+      },
+      {
         title: text.checkNow,
         description: updateStatusLabel || text.checkNowDesc,
         action: (
@@ -920,7 +962,20 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </Button>
           </div>
         )
-      }
+      },
+      ...(props.appVersion && props.appVersion !== "web"
+        ? [{
+            title: text.reviewWhatsNew,
+            description: text.reviewWhatsNewDesc,
+            action: (
+              <WhatsNewReviewButton
+                label={text.review}
+                loadingLabel={text.whatsNewLoadingLabel}
+                onReopen={props.onReopenUpdateCelebration}
+              />
+            )
+          }]
+        : [])
     ];
     const updatesContent = (
       <div className="flex flex-col gap-6">

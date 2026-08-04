@@ -92,6 +92,8 @@ type PendingUpdate = {
 
 const CELEBRATION_KEY = "giteam.app.updateCelebration.v1";
 const LAST_LAUNCHED_VERSION_KEY = "giteam.app.lastLaunchedVersion.v1";
+// 最近一次展示过的更新内容（只读副本）：供“再次查看更新内容”入口读取，不随弹窗关闭删除。
+const LAST_WHATS_NEW_KEY = "giteam.app.lastWhatsNew.v1";
 
 let pendingUpdate: PendingUpdate | null = null;
 let installInFlight: Promise<AppUpdateState> | null = null;
@@ -121,7 +123,7 @@ export function consumeUpdateCelebration(currentVersion: string): UpdateCelebrat
     const notes = String(parsed.notes || "").trim();
     if (!toVersion || toVersion !== currentVersion) return null;
     window.localStorage.removeItem(CELEBRATION_KEY);
-    const from = fromVersion || "—";
+    const from = fromVersion || toVersion;
     return { fromVersion: from, toVersion, notes, kind: parseUpdateKind(from, toVersion) };
   } catch {
     return null;
@@ -154,6 +156,46 @@ export function writeLastLaunchedVersion(version: string): void {
   }
 }
 
+/**
+ * 记录最近一次有实质内容的更新说明（只读副本）。kind 为派生字段不入库，读取时重算；
+ * 与一次性的 CELEBRATION_KEY 区分：那份会被 consume 删除，这份长期保留供“再次查看”。
+ * 空 notes 不覆盖已有富文本缓存，避免下次发版后「查看更新内容」丢失本次说明。
+ */
+export function writeLastWhatsNew(payload: UpdateCelebration): void {
+  try {
+    if (!String(payload.notes || "").trim()) {
+      const existing = readLastWhatsNew();
+      if (existing && String(existing.notes || "").trim()) return;
+    }
+    window.localStorage.setItem(
+      LAST_WHATS_NEW_KEY,
+      JSON.stringify({ fromVersion: payload.fromVersion, toVersion: payload.toVersion, notes: payload.notes })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/** 读取最近一次更新说明；无记录或损坏返回 null（kind 由 from/to 重算）。 */
+export function readLastWhatsNew(): UpdateCelebration | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_WHATS_NEW_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<UpdateCelebration>;
+    const toVersion = String(parsed.toVersion || "").trim();
+    const fromVersion = String(parsed.fromVersion || "").trim();
+    if (!toVersion) return null;
+    return {
+      fromVersion: fromVersion || toVersion,
+      toVersion,
+      notes: String(parsed.notes || ""),
+      kind: parseUpdateKind(fromVersion, toVersion)
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** 启动时解析：优先用安装前缓存的更新说明；否则仅版本号变化时给简版提示。 */
 export function resolveStartupUpdateCelebration(currentVersion: string): UpdateCelebration | null {
   const version = String(currentVersion || "").trim();
@@ -161,6 +203,7 @@ export function resolveStartupUpdateCelebration(currentVersion: string): UpdateC
   const stashed = consumeUpdateCelebration(version);
   if (stashed) {
     writeLastLaunchedVersion(version);
+    writeLastWhatsNew(stashed);
     return stashed;
   }
   const last = readLastLaunchedVersion();
