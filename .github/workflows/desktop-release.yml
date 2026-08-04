@@ -131,6 +131,7 @@ jobs:
 
             ## 稳定性修复
 
+            - Windows 系统通知不再附带闪烁的 cmd/PowerShell 窗口（Agent 每次回复结束时）
             - Windows 发行版改为 GUI 子系统，打开应用不再附带会拖垮进程的 cmd 窗口
             - 启动不再强制全屏依赖安装页（Ubuntu 等平台不再卡在 0%）
             - 修复 Windows 构建中的同卷判断问题

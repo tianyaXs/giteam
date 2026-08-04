@@ -202,12 +202,18 @@ fn require_cli_installed() -> Result<(), String> {
 
 fn run_giteam_cli(args: &[&str]) -> Result<String, String> {
     let binary = resolve_giteam_binary()?;
-    let output = Command::new(binary)
-        .args(args)
+    let mut cmd = Command::new(binary);
+    cmd.args(args)
         .env("PATH", build_path_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = cmd
         .output()
         .map_err(|e| format!("failed to run giteam CLI: {e}"))?;
     if output.status.success() {
@@ -262,12 +268,18 @@ fn start_managed_giteam_service() -> Result<(), String> {
     let binary = resolve_giteam_binary()?;
     stop_managed_giteam_service();
     control::stop_control_server();
-    let child = Command::new(binary)
-        .arg("serve")
+    let mut cmd = Command::new(binary);
+    cmd.arg("serve")
         .env("PATH", build_path_env())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn giteam CLI service: {e}"))?;
     if let Ok(mut guard) = runtime_cell().lock() {

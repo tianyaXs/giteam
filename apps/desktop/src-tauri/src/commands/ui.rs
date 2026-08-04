@@ -9,6 +9,18 @@ use tauri::{AppHandle, Manager, Theme, Window};
 
 const ATTACHMENT_SAMPLE_BYTES: usize = 4096;
 
+/// Windows GUI 进程拉起 console 子系统子进程时，必须带 CREATE_NO_WINDOW，
+/// 否则每次 spawn 都会闪一个 cmd/PowerShell 窗口（通知、打开链接等路径都会踩）。
+#[cfg(windows)]
+fn hide_console_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_cmd: &mut Command) {}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAgentAttachment {
@@ -272,6 +284,7 @@ pub fn open_external_url(url: &str) -> Result<(), String> {
     let mut cmd = {
         let mut c = Command::new("cmd");
         c.args(["/C", "start", "", trimmed]);
+        hide_console_window(&mut c);
         c
     };
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -622,6 +635,7 @@ pub fn open_local_path(path: String) -> Result<(), String> {
     let mut command = {
         let mut cmd = Command::new("explorer");
         cmd.arg(&target);
+        hide_console_window(&mut cmd);
         cmd
     };
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -671,7 +685,17 @@ pub fn send_desktop_notification(title: &str, body: &str) -> Result<(), String> 
             safe_body.replace('"', "'")
         );
         let mut c = Command::new("powershell");
-        c.args(["-NoProfile", "-Command", &script]);
+        // -WindowStyle Hidden  alone is not enough for GUI hosts; CREATE_NO_WINDOW
+        // is what stops the console flash when Agent 回复触发系统通知。
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ]);
+        hide_console_window(&mut c);
         c
     };
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -686,6 +710,9 @@ pub fn send_desktop_notification(title: &str, body: &str) -> Result<(), String> 
         c
     };
 
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to send notification: {e}"))

@@ -608,8 +608,11 @@ fn isolate_process_group(cmd: &mut Command) {
 #[cfg(windows)]
 fn isolate_process_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
+    // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW：独立进程组便于整树回收，
+    // 同时避免 GUI 宿主下每次 bash 后台任务闪出控制台。
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
 
 #[cfg(not(any(unix, windows)))]
