@@ -130,7 +130,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -141,7 +141,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -256,7 +256,7 @@ dependencies = [
 [[package]]
 name = "asupersync"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -429,7 +429,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1465,7 +1465,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1670,7 +1670,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1840,7 +1840,7 @@ dependencies = [
 [[package]]
 name = "franken-decision"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
 dependencies = [
  "franken-evidence",
  "franken-kernel",
@@ -1850,7 +1850,7 @@ dependencies = [
 [[package]]
 name = "franken-evidence"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1859,7 +1859,7 @@ dependencies = [
 [[package]]
 name = "franken-kernel"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
 dependencies = [
  "serde",
 ]
@@ -3405,7 +3405,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -3647,15 +3647,6 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -4250,7 +4241,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4533,7 +4524,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.42.0",
 ]
 
 [[package]]
@@ -5133,7 +5124,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -5706,7 +5697,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6282,7 +6273,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6397,7 +6388,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7167,10 +7158,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8280,7 +8271,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
