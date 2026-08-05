@@ -9,6 +9,7 @@ mod background;
 mod edit_guard;
 mod question;
 mod todo;
+mod web;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, Kil
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
 pub use todo::TodoTool;
+pub use web::{WebFetchTool, WebSearchTool};
 
 /// 基于 pi `default_tool_registry` 装配，写/执行类工具包装 ApprovalTool；
 /// question/todowrite 与后台三件套（bash/bash_output/kill_shell）不是 pi 内置工具，按启用情况追加。
@@ -31,6 +33,10 @@ pub struct GiteamToolFactory {
     question_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "todowrite" 时为 true。
     todo_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "web_fetch" 时为 true。
+    web_fetch_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "web_search" 时为 true。
+    web_search_enabled: bool,
     /// 后台任务日志目录（会话目录下）；no_session 模式为 None（落临时目录）。
     session_dir: Option<PathBuf>,
 }
@@ -46,10 +52,16 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
         let todo_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "todowrite"));
+        let web_fetch_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
+        let web_search_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
         Self {
             hub,
             question_enabled,
             todo_enabled,
+            web_fetch_enabled,
+            web_search_enabled,
             session_dir,
         }
     }
@@ -62,6 +74,8 @@ impl ToolFactory for GiteamToolFactory {
         // bash 走 Giteam 版（前台护栏 + run_in_background），不再用 pi 内置；
         // bash_output/kill_shell 随 bash 启用，由本工厂显式注册。
         let bash_enabled = enabled.contains(&"bash");
+        let wants_web_fetch = enabled.contains(&"web_fetch");
+        let wants_web_search = enabled.contains(&"web_search");
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
@@ -69,6 +83,7 @@ impl ToolFactory for GiteamToolFactory {
                 !matches!(
                     *name,
                     "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
+                        | "web_fetch" | "web_search"
                 )
             })
             .collect();
@@ -113,6 +128,13 @@ impl ToolFactory for GiteamToolFactory {
         }
         if self.todo_enabled || wants_todo {
             registry.push(Box::new(TodoTool::new()));
+        }
+        // web 工具经 wrap：InteractionRisk::for_tool 归 Network → 自动套 ApprovalTool。
+        if self.web_fetch_enabled || wants_web_fetch {
+            registry.push(wrap(Box::new(WebFetchTool::new())));
+        }
+        if self.web_search_enabled || wants_web_search {
+            registry.push(wrap(Box::new(WebSearchTool::new())));
         }
         registry
     }

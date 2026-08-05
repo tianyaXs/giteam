@@ -23,6 +23,7 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 which = "6"
+html2text = "0.17.1"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

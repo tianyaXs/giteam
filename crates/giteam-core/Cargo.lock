@@ -256,7 +256,7 @@ dependencies = [
 [[package]]
 name = "asupersync"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#82e7e6f86430c95054c4d72966317e21593df6c3"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1840,7 +1840,7 @@ dependencies = [
 [[package]]
 name = "franken-decision"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#82e7e6f86430c95054c4d72966317e21593df6c3"
 dependencies = [
  "franken-evidence",
  "franken-kernel",
@@ -1850,7 +1850,7 @@ dependencies = [
 [[package]]
 name = "franken-evidence"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#82e7e6f86430c95054c4d72966317e21593df6c3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1859,7 +1859,7 @@ dependencies = [
 [[package]]
 name = "franken-kernel"
 version = "0.3.9"
-source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#305bf16e715a73aaa6a97f40c10ebbc7e8ddabd0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#82e7e6f86430c95054c4d72966317e21593df6c3"
 dependencies = [
  "serde",
 ]
@@ -2224,6 +2224,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "html2text",
  "libc",
  "pi_agent_rust",
  "reqwest 0.12.28",
@@ -3259,6 +3260,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "html2text"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1c97eea9d3e6524d8d2a4643ce0e3135500c4c7ca1d02393a485f871bef69d8"
+dependencies = [
+ "html5ever 0.39.0",
+ "tendril 0.5.0",
+ "thiserror 2.0.18",
+ "unicode-width",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3278,6 +3291,16 @@ checksum = "1054432bae2f14e0061e33d23402fbaa67a921d319d56adc6bcf887ddad1cbc2"
 dependencies = [
  "log",
  "markup5ever 0.38.0",
+]
+
+[[package]]
+name = "html5ever"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8"
+dependencies = [
+ "log",
+ "markup5ever 0.39.0",
 ]
 
 [[package]]
@@ -4014,6 +4037,17 @@ name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8983d30f2915feeaaab2d6babdd6bc7e9ed1a00b66b5e6d74df19aa9c0e91862"
+dependencies = [
+ "log",
+ "tendril 0.5.0",
+ "web_atoms",
+]
+
+[[package]]
+name = "markup5ever"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de"
 dependencies = [
  "log",
  "tendril 0.5.0",

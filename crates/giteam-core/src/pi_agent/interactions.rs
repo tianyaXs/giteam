@@ -48,6 +48,9 @@ pub enum InteractionRisk {
     Read,
     Write,
     Execute,
+    /// 网络访问（web_fetch/web_search）：抓取外部数据进 context，首次审批、
+    /// 按 `always_rule_key` 域名/后端粒度放行（见 `.giteam/permissions.json`）。
+    Network,
 }
 
 impl InteractionRisk {
@@ -56,6 +59,7 @@ impl InteractionRisk {
         match tool {
             "read" | "grep" | "find" | "ls" | "bash_output" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
+            "web_fetch" | "web_search" => Self::Network,
             _ => Self::Write,
         }
     }
@@ -71,6 +75,7 @@ impl InteractionRisk {
             Self::Read => "read",
             Self::Write => "write",
             Self::Execute => "execute",
+            Self::Network => "network",
         }
     }
 }
@@ -80,14 +85,32 @@ impl InteractionRisk {
 /// 否则同任务里每次不同命令/路径都会反复弹窗。
 #[must_use]
 pub fn always_rule_key(tool: &str, input: &Value) -> String {
-    let target = match tool {
-        "bash" => input.get("command").and_then(Value::as_str),
-        _ => input.get("path").and_then(Value::as_str),
+    let target: Option<String> = match tool {
+        "bash" => input.get("command").and_then(Value::as_str).map(str::to_string),
+        // web_fetch 按域名粒度：同站点一次「总是允许」覆盖后续页面。
+        "web_fetch" => input.get("url").and_then(Value::as_str).and_then(url_host),
+        // web_search 按后端粒度：搜索无固定目标，同一后端一次放行后续查询。
+        "web_search" => Some(web_search_backend()),
+        _ => input.get("path").and_then(Value::as_str).map(str::to_string),
     };
-    match target {
-        Some(target) if !target.is_empty() => format!("{tool}:{target}"),
-        _ => tool.to_string(),
+    match target.filter(|target| !target.is_empty()) {
+        Some(target) => format!("{tool}:{target}"),
+        None => tool.to_string(),
     }
+}
+
+/// 当前 web_search 后端（默认 duckduckgo；可经 `GITEAM_WEB_SEARCH_BACKEND` 覆盖）。
+#[must_use]
+pub fn web_search_backend() -> String {
+    std::env::var("GITEAM_WEB_SEARCH_BACKEND").unwrap_or_else(|_| "duckduckgo".to_string())
+}
+
+/// 极简 URL host 提取（审批键用；只取主机名小写化，忽略端口/路径）。
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let host = after_scheme.split(['/', ':', '?', '#']).next()?;
+    let host = host.trim();
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 #[derive(Default)]
@@ -669,6 +692,19 @@ mod tests {
             "write:/tmp/a.txt"
         );
         assert_eq!(always_rule_key("webfetch", &serde_json::json!({})), "webfetch");
+        // web_fetch 细粒度按域名（忽略端口/路径）。
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({"url": "https://doc.rust-lang.org/book/"})),
+            "web_fetch:doc.rust-lang.org"
+        );
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({"url": "http://EXAMPLE.com:8080/x?q=1"})),
+            "web_fetch:example.com"
+        );
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({})),
+            "web_fetch"
+        );
     }
 
     #[test]
@@ -687,6 +723,9 @@ mod tests {
         assert!(!InteractionRisk::for_tool("grep").requires_approval());
         assert!(InteractionRisk::for_tool("write").requires_approval());
         assert_eq!(InteractionRisk::for_tool("bash"), InteractionRisk::Execute);
+        assert_eq!(InteractionRisk::for_tool("web_fetch"), InteractionRisk::Network);
+        assert_eq!(InteractionRisk::for_tool("web_search"), InteractionRisk::Network);
+        assert!(InteractionRisk::for_tool("web_fetch").requires_approval());
         assert!(InteractionRisk::for_tool("unknown_tool").requires_approval());
     }
 

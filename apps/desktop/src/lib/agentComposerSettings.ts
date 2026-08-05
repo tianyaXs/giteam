@@ -47,14 +47,16 @@ export const AGENT_THINKING_LEVELS: Array<{
   { value: "xhigh", label: "极高", shortLabel: "极高", description: "最强" }
 ];
 
-/** Plan 模式：只读探索 + 提问/待办；禁止写文件与执行命令。 */
+/** Plan 模式：只读探索 + 提问/待办 + 网络查阅；禁止写文件与执行命令。 */
 export const PLAN_ENABLED_TOOLS = [
   "read",
   "grep",
   "find",
   "ls",
   "question",
-  "todowrite"
+  "todowrite",
+  "web_fetch",
+  "web_search"
 ] as const;
 
 const BUILD_MODE_APPEND = [
