@@ -11,6 +11,11 @@
     "core:event:allow-emit-to",
     "core:window:allow-start-dragging",
     "core:window:allow-set-title-bar-style",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-destroy",
+    "core:window:allow-set-focus",
+    "core:webview:allow-set-webview-zoom",
     "updater:default",
     "process:default"
   ]

@@ -115,7 +115,7 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }}>
-      <DialogContent className="flex max-h-[min(760px,calc(100vh-32px))] w-[min(920px,calc(100vw-32px))] flex-col overflow-hidden p-0">
+      <DialogContent className="flex max-h-[min(760px,calc(100dvh-32px))] w-[min(920px,calc(100dvw-32px))] flex-col overflow-hidden p-0">
         <DialogHeader className="flex-row items-start justify-between gap-4 border-b border-border p-4">
           <div className="grid min-w-0 gap-1">
             <Badge variant="outline" className="w-fit normal-case tracking-normal">Giteam Modules</Badge>

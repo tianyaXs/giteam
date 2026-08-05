@@ -1,11 +1,12 @@
 //! Giteam 工具装配：在 pi 内置工具集上叠加审批门禁、后台 shell 与 Question 工具。
 //!
-//! bash 由 Giteam 版替换（`background::GiteamBashTool`）：前台仍委托 pi 内置执行，
+//! bash 由 Giteam 版替换（`background::GiteamBashTool`）：前台自实现（std::process
 //! 新增 `run_in_background` 一等公民后台（配套 bash_output / kill_shell），
 //! 并带长驻命令前台护栏，避免再起服务挂死会话。
 
 mod approval;
 mod background;
+mod shell_resolver;
 mod edit_guard;
 mod question;
 mod todo;

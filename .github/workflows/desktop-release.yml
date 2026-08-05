@@ -108,34 +108,23 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## Agent 与工具
+            ## Windows 与桌面体验
 
-            - 新增一等公民后台 Shell：`bash(run_in_background=true)`、`bash_output`、`kill_shell`
-            - 前台禁止 `timeout: 0` 与超长超时；识别 `http.server` / `npm run dev` 等长驻命令并引导改后台
-            - 禁止用 `&` / `nohup` / `setsid` 伪后台；会话结束自动回收后台进程
-            - 修复「帮我启动」类任务因前台长驻服务导致会话卡住的问题
+            - 窗口首启智能适配屏幕尺寸（不再底部被任务栏裁剪），并记忆大小 / 位置 / 最大化状态
+            - 关闭按钮支持「最小化到托盘 / 直接退出 / 每次询问」三态，默认最小化到托盘；托盘菜单可显示窗口或真正退出
+            - Agent 回复完成时，若窗口处于前台聚焦则不再弹系统通知（仅失焦 / 最小化时提醒）
+            - 13 寸小屏下进度卡片正常渲染、左侧栏小屏默认折叠回收空间
+            - 界面缩放改用 webview 原生缩放，缩放后不再出现底部白块
 
-            ## 输入与对话体验
+            ## Shell 与工具
 
-            - 进度卡片与内容区留出间距，并略收窄卡片宽度
-            - 切换会话后自动聚焦输入框；新会话 / 继续跟进输入区更轻薄对齐
-            - 多行跟进时附件、模型与发送按钮固定贴底
-            - 全选对话时减少空白与附件被整块高亮
-            - 进度卡片避开滚动条，消息流滚动条改为主题自适应浅色细条
+            - bash 前台执行改为自实现，Windows 自动探测 Git Bash / PowerShell / cmd，裸 Windows 也能执行命令（不再 `program not found`）
+            - 后台 Shell（run_in_background / bash_output / kill_shell）同步跨平台兼容
 
-            ## 设置与数据
+            ## Agent 与网络
 
-            - 会话正文位于 `~/.giteam/pi-sessions/`（按仓库隔离）；应用数据统一落在 `~/.giteam`
-            - 设置支持界面缩放、代码字号、自动更新开关；大版本更新后提供「What's New」向导
-            - 侧栏支持置顶项目与悬停卡片
-
-            ## 稳定性修复
-
-            - Windows 系统通知不再附带闪烁的 cmd/PowerShell 窗口（Agent 每次回复结束时）
-            - Windows 发行版改为 GUI 子系统，打开应用不再附带会拖垮进程的 cmd 窗口
-            - 启动不再强制全屏依赖安装页（Ubuntu 等平台不再卡在 0%）
-            - 修复 Windows 构建中的同卷判断问题
-            - 优化应用内更新下载安装（含跨卷临时目录）
+            - 新增 web_fetch / web_search 工具，带域名级审批与 SSRF 防护
+            - 会话工具配置支持热切换（重建 handle，保留历史）
 
             打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
           releaseDraft: false

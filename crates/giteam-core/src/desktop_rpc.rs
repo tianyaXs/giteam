@@ -1320,23 +1320,41 @@ fn apply_shell_env(cmd: &mut Command) {
 }
 
 fn resolve_posix_shell_path() -> String {
-    [
-        std::env::var("SHELL").ok(),
-        Some("/bin/bash".to_string()),
-        Some("/usr/bin/bash".to_string()),
-        Some("/bin/sh".to_string()),
-        Some("/usr/bin/sh".to_string()),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|item| item.trim().to_string())
-    .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
-    .unwrap_or_else(|| "/bin/sh".to_string())
+    #[cfg(unix)]
+    {
+        [
+            std::env::var("SHELL").ok(),
+            Some("/bin/bash".to_string()),
+            Some("/usr/bin/bash".to_string()),
+            Some("/bin/sh".to_string()),
+            Some("/usr/bin/sh".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|item| item.trim().to_string())
+        .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
+        .unwrap_or_else(|| "/bin/sh".to_string())
+    }
+    #[cfg(windows)]
+    {
+        // Windows 无 POSIX shell：依赖体检（git/gh --version 等简单命令）用 cmd.exe 跑。
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "/bin/sh".to_string()
+    }
 }
 
 fn run_shell_output(script: &str) -> Result<std::process::Output, String> {
     let shell = resolve_posix_shell_path();
     let mut cmd = Command::new(shell.as_str());
+    #[cfg(windows)]
+    cmd.args(["/C", script]);
+    #[cfg(not(windows))]
     cmd.args(["-lc", script]);
     apply_shell_env(&mut cmd);
     cmd.stdin(Stdio::null());

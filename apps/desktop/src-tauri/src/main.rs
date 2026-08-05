@@ -5,6 +5,8 @@
 mod commands;
 mod remote_repo;
 
+use tauri::Manager;
+
 #[cfg(target_os = "macos")]
 mod macos_context_menu {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -196,7 +198,9 @@ fn main() {
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
-        .manage(commands::watch::GitWorktreeWatcherState::default());
+        .manage(commands::watch::GitWorktreeWatcherState::default())
+        // 窗口状态持久化：保存/恢复 size、position、maximized（首次启动用 tauri.conf 默认）。
+        .plugin(tauri_plugin_window_state::Builder::default().build());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -216,6 +220,13 @@ fn main() {
                 std::env::set_var("ASUPERSYNC_CONNECT_LOG", dir.join("asupersync-connect.log"));
             }
             commands::ui::apply_saved_window_theme(app.handle());
+            // 钳制主窗口不超出当前屏幕可用区：Windows 高 DPI（125%/150%）+ 任务栏下，
+            // 默认或恢复的窗口尺寸可能超出屏幕致底部被任务栏遮挡，需手动最大化才完整。
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = clamp_window_to_monitor(&window);
+            }
+            // 系统托盘：关闭最小化到托盘时，点托盘图标或菜单恢复窗口、或真正退出。
+            let _ = build_tray(app.handle());
 
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
@@ -352,4 +363,81 @@ fn main() {
             giteam_core::pi_agent::PiAgentService::global().shutdown();
         }
     });
+}
+
+/// 钳制主窗口不超出当前屏幕可用区。最大化状态由 window-state 插件恢复、不干预；
+/// 仅对非最大化的窗口，按 monitor 尺寸（扣除任务栏/dock + 标题栏余量）约束宽高并居中。
+fn clamp_window_to_monitor(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    if window.is_maximized().unwrap_or(false) {
+        return Ok(());
+    }
+    let Some(monitor) = window.current_monitor()? else {
+        return Ok(());
+    };
+    let scale = monitor.scale_factor();
+    // 全部转逻辑像素统一比较。
+    let mon_w = monitor.size().width as f64 / scale;
+    let mon_h = monitor.size().height as f64 / scale;
+    // monitor.size() 是显示器全分辨率（含任务栏区），扣保守余量估算工作区：
+    // Windows 任务栏约 48px + 标题栏，macOS/Linux dock 可变，统一取 80。
+    let max_w = (mon_w - 16.0).max(640.0);
+    let max_h = (mon_h - 80.0).max(480.0);
+    let cur = window.outer_size()?;
+    let cur_w = cur.width as f64 / scale;
+    let cur_h = cur.height as f64 / scale;
+    if cur_w <= max_w && cur_h <= max_h {
+        return Ok(());
+    }
+    let new_w = cur_w.min(max_w).round();
+    let new_h = cur_h.min(max_h).round();
+    window.set_size(tauri::LogicalSize::new(new_w, new_h))?;
+    let mon_pos = monitor.position();
+    let mon_x = mon_pos.x as f64 / scale;
+    let mon_y = mon_pos.y as f64 / scale;
+    let x = (mon_x + (mon_w - new_w) / 2.0).round();
+    let y = (mon_y + (mon_h - new_h) / 2.0).round();
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    Ok(())
+}
+
+/// 构建系统托盘图标与菜单。关闭按钮由前端按 `closeBehavior` 决定 hide（最小化到
+/// 托盘）或 destroy（退出）；托盘提供「显示窗口」恢复、「退出 Giteam」真正关闭
+/// （触发 `RunEvent::Exit` 走既有 pi_agent shutdown）。
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show = tauri::menu::MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
+    let quit = tauri::menu::MenuItem::with_id(app, "tray_quit", "退出 Giteam", true, None::<&str>)?;
+    let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
+    let icon = app.default_window_icon().cloned();
+    let mut builder = tauri::tray::TrayIconBuilder::new()
+        .tooltip("Giteam")
+        .menu(&menu)
+        .menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击恢复窗口（menu_on_left_click=false 让左键不弹菜单，改由这里处理）。
+            if matches!(
+                event,
+                tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. }
+            ) {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
+    if let Some(icon) = icon {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
 }

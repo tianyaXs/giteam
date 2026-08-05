@@ -26,9 +26,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use wait_timeout::ChildExt;
 use pi::sdk::{ContentBlock, Result, TextContent, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::Value;
+
+use super::shell_resolver::{is_bash_like, resolve_default_shell, shell_invoke_args};
 
 /// 前台硬上限：超过一律引导走后台（Hermes FOREGROUND_MAX_TIMEOUT 同值）。
 pub const MAX_FOREGROUND_TIMEOUT_SECS: u64 = 600;
@@ -383,17 +386,19 @@ impl BackgroundTaskRegistry {
                 cwd.display()
             ));
         }
-        let shell = shell_path.map(str::to_string).unwrap_or_else(|| {
-            for path in ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"] {
-                if Path::new(path).exists() {
-                    return path.to_string();
-                }
-            }
-            "sh".to_string()
-        });
-        let command = command_prefix
-            .filter(|p| !p.trim().is_empty())
-            .map_or_else(|| command.to_string(), |prefix| format!("{prefix}\n{command}"));
+        let shell = shell_path
+            .map(str::to_string)
+            .or_else(resolve_default_shell)
+            .unwrap_or_else(|| "sh".to_string());
+        // command_prefix（如 set -euo pipefail）与 pi 注入的 trap 仅对 POSIX shell
+        // 有意义；cmd/powershell 不兼容这些语法，直接跳过，避免整条命令变语法错。
+        let command = if is_bash_like(&shell) {
+            command_prefix
+                .filter(|p| !p.trim().is_empty())
+                .map_or_else(|| command.to_string(), |prefix| format!("{prefix}\n{command}"))
+        } else {
+            command.to_string()
+        };
 
         fs::create_dir_all(&self.log_dir).map_err(|e| format!("failed to create log dir: {e}"))?;
         let shell_id = format!("bg-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -405,7 +410,7 @@ impl BackgroundTaskRegistry {
             .map_err(|e| format!("failed to clone log file handle: {e}"))?;
 
         let mut cmd = Command::new(&shell);
-        cmd.arg("-c")
+        cmd.args(shell_invoke_args(&shell))
             .arg(&command)
             .current_dir(cwd)
             .stdin(Stdio::null())
@@ -741,7 +746,6 @@ fn text_output(text: String, details: Option<Value>, is_error: bool) -> ToolOutp
 // ============================================================================
 
 pub struct GiteamBashTool {
-    inner: pi::tools::BashTool,
     registry: Arc<BackgroundTaskRegistry>,
     cwd: PathBuf,
     shell_path: Option<String>,
@@ -755,12 +759,16 @@ impl GiteamBashTool {
         config: &pi::sdk::Config,
         registry: Arc<BackgroundTaskRegistry>,
     ) -> Self {
-        let shell_path = config.shell_path.clone();
+        // config.shell_path 通常为 None（pi 不设），用平台默认 shell 兜底：Windows 上
+        // 探测 bash(Git Bash)/pwsh/cmd，避免回落 "sh" 报 program not found。前台 bash
+        // 不再委托 pi（pi 注入的 trap + 硬编码 -c 在 cmd/powershell 下整条失败），改由
+        // run_foreground_blocking 自实现，shell_path/prefix 在此透传给执行器。
+        let shell_path = config
+            .shell_path
+            .clone()
+            .or_else(resolve_default_shell);
         let command_prefix = config.shell_command_prefix.clone();
-        let inner =
-            pi::tools::BashTool::with_shell(cwd, shell_path.clone(), command_prefix.clone());
         Self {
-            inner,
             registry,
             cwd: cwd.to_path_buf(),
             shell_path,
@@ -816,14 +824,15 @@ impl Tool for GiteamBashTool {
     }
 
     fn effects(&self) -> ToolEffects {
-        self.inner.effects()
+        // 与 pi 的 BashTool 对齐：进程执行 + 可能写入（执行任意命令）。
+        ToolEffects::process().union(ToolEffects::write())
     }
 
     async fn execute(
         &self,
-        tool_call_id: &str,
+        _tool_call_id: &str,
         input: Value,
-        on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+        _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
     ) -> Result<ToolOutput> {
         #[derive(serde::Deserialize)]
         struct GiteamBashInput {
@@ -889,22 +898,231 @@ impl Tool for GiteamBashTool {
             return Ok(text_output(prepend_notices(notices, guidance), None, true));
         }
 
-        // 前台委托 pi 内置 bash（超时默认 120s，进程组树超时回收均已内置）。
-        let delegated = serde_json::json!({
-            "command": input.command,
-            "timeout": input.timeout,
+        // 前台自实现（不委托 pi）：std::process + 线程排空 stdout/stderr + wait_timeout
+        // 超时 + 进程树回收。shell 经 shell_resolver 分叉、不注入 pi 的 trap，cmd/
+        // powershell 也能跑。阻塞在线程内，结果经 oneshot 送回，不卡 async executor。
+        let timeout_secs = input.timeout.unwrap_or(DEFAULT_FOREGROUND_TIMEOUT_SECS);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let cwd = self.cwd.clone();
+        let shell_path = self.shell_path.clone();
+        let command_prefix = self.command_prefix.clone();
+        let command = input.command.clone();
+        std::thread::spawn(move || {
+            let result = run_foreground_blocking(
+                &cwd,
+                shell_path.as_deref(),
+                command_prefix.as_deref(),
+                &command,
+                timeout_secs,
+            );
+            let _ = tx.send(result);
         });
-        let mut output = self
-            .inner
-            .execute(tool_call_id, delegated, on_update)
-            .await?;
-        if !notices.is_empty() {
-            if let Some(ContentBlock::Text(text)) = output.content.first_mut() {
-                text.text = prepend_notices(notices, std::mem::take(&mut text.text));
-            }
-        }
-        Ok(output)
+        let result = rx.await.unwrap_or_else(|_| {
+            ForegroundResult::failed("foreground worker dropped unexpectedly")
+        });
+        let body = format_foreground_output(&result, &input.command, timeout_secs);
+        Ok(text_output(
+            prepend_notices(notices, body),
+            None,
+            result.is_error(),
+        ))
     }
+}
+
+// ============================================================================
+// bash 前台执行（Giteam 自实现，不委托 pi）
+// ----------------------------------------------------------------------------
+// pi 内置 run_bash_command 注入 `trap '...' EXIT` + 硬编码 `-c`，cmd/powershell
+// 不兼容 POSIX 语法会整条失败；且 pi 用 mpsc/pump 流式集成自己的 async runtime，
+// 对 giteam 前台（返回完整输出即可）过重。此处用 std::process + 独立线程排空
+// stdout/stderr + wait-timeout 超时 + 进程树回收，shell 经 shell_resolver 分叉、
+// 不注入 trap，全环境（bash/sh/cmd/pwsh）闭环。
+// ============================================================================
+
+/// 前台默认超时（秒），与 pi 默认一致；foreground_guard 已保证非 0 且 ≤ 600。
+const DEFAULT_FOREGROUND_TIMEOUT_SECS: u64 = 120;
+/// 前台输出截断：与 pi / description 声明一致（最后 2000 行 / 1MB）。
+const FOREGROUND_MAX_LINES: usize = 2000;
+const FOREGROUND_MAX_BYTES: usize = 1_000_000;
+
+struct ForegroundResult {
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    spawn_error: Option<String>,
+}
+
+impl ForegroundResult {
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: false,
+            spawn_error: Some(message.into()),
+        }
+    }
+
+    /// 是否作为错误结果返回（spawn 失败 / 超时 / 非零退出）。
+    fn is_error(&self) -> bool {
+        self.spawn_error.is_some()
+            || self.timed_out
+            || matches!(self.exit_code, Some(code) if code != 0)
+    }
+}
+
+/// 前台同步执行单条命令。在独立线程内调用，结果经 oneshot 送回 async 侧（不阻塞 executor）。
+fn run_foreground_blocking(
+    cwd: &Path,
+    shell_path: Option<&str>,
+    command_prefix: Option<&str>,
+    command: &str,
+    timeout_secs: u64,
+) -> ForegroundResult {
+    let shell = shell_path
+        .map(str::to_string)
+        .or_else(resolve_default_shell)
+        .unwrap_or_else(|| "sh".to_string());
+    // command_prefix 仅对 POSIX shell 有意义；cmd/powershell 跳过，避免语法错。
+    let full_command = if is_bash_like(&shell) {
+        command_prefix
+            .filter(|p| !p.trim().is_empty())
+            .map_or_else(|| command.to_string(), |prefix| format!("{prefix}\n{command}"))
+    } else {
+        command.to_string()
+    };
+
+    let mut cmd = Command::new(&shell);
+    cmd.args(shell_invoke_args(&shell))
+        .arg(&full_command)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_process_group(&mut cmd);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return ForegroundResult::failed(format!("failed to spawn shell {shell}: {e}")),
+    };
+    let pid = child.id();
+
+    // 两个独立线程排空 stdout/stderr，避免输出写满 OS 管道缓冲区致子进程写阻塞死锁。
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || drain_pipe(stdout_handle));
+    let stderr_thread = std::thread::spawn(move || drain_pipe(stderr_handle));
+
+    // wait-timeout：Ok(Some) 正常退出，Ok(None) 超时，Err 表示 wait 本身失败。
+    let timeout = Duration::from_secs(timeout_secs);
+    let (status, timed_out) = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => (Some(status), false),
+        Ok(None) => {
+            // 超时：回收整棵进程树后再收尸，避免孤儿。
+            terminate_process_tree(pid);
+            let _ = child.wait();
+            (None, true)
+        }
+        Err(_) => {
+            terminate_process_tree(pid);
+            let _ = child.wait();
+            (None, false)
+        }
+    };
+
+    let stdout_text = stdout_thread.join().unwrap_or_default();
+    let stderr_text = stderr_thread.join().unwrap_or_default();
+    let exit_code = status.as_ref().map(exit_status_code);
+
+    ForegroundResult {
+        stdout: stdout_text,
+        stderr: stderr_text,
+        exit_code,
+        timed_out,
+        spawn_error: None,
+    }
+}
+
+/// 排空一根进程管道到 String（UTF-8 lossy）。handle 为 None 时返回空。
+fn drain_pipe<R: Read>(mut handle: Option<R>) -> String {
+    let mut buf = Vec::new();
+    if let Some(ref mut r) = handle {
+        let _ = r.read_to_end(&mut buf);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// 按字节（1MB）与行数（2000）双上限截取尾部，返回 (text, truncated)。
+fn truncate_output(text: &str) -> (String, bool) {
+    let mut truncated = false;
+    let mut s: &str = text;
+    if text.len() > FOREGROUND_MAX_BYTES {
+        truncated = true;
+        // 对齐到 UTF-8 字符边界，再丢弃首行（截断点可能落在半行）。
+        let mut start = text.len() - FOREGROUND_MAX_BYTES;
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
+        s = &text[start..];
+        if let Some(pos) = s.find('\n') {
+            s = &s[pos + 1..];
+        }
+    }
+    let lines: Vec<&str> = s.lines().collect();
+    if lines.len() > FOREGROUND_MAX_LINES {
+        truncated = true;
+        (lines[lines.len() - FOREGROUND_MAX_LINES..].join("\n"), truncated)
+    } else {
+        (s.to_string(), truncated)
+    }
+}
+
+/// 把前台执行结果格式化为模型可读文本：stdout/stderr 分段截断 + 状态尾注。
+fn format_foreground_output(result: &ForegroundResult, command: &str, timeout_secs: u64) -> String {
+    if let Some(err) = &result.spawn_error {
+        return format!("Failed to run command: {err}");
+    }
+    let (stdout_text, stdout_truncated) = truncate_output(&result.stdout);
+    let (stderr_text, stderr_truncated) = truncate_output(&result.stderr);
+    let stdout_empty = stdout_text.is_empty();
+    let mut parts: Vec<String> = Vec::new();
+    if !stdout_empty {
+        parts.push(stdout_text);
+    }
+    if !stderr_text.is_empty() {
+        parts.push(if stdout_empty {
+            stderr_text
+        } else {
+            format!("── stderr ──\n{stderr_text}")
+        });
+    }
+    let mut notes: Vec<String> = Vec::new();
+    if stdout_truncated || stderr_truncated {
+        notes.push(format!(
+            "Output truncated to the last {FOREGROUND_MAX_LINES} lines / {FOREGROUND_MAX_BYTES} bytes."
+        ));
+    }
+    if result.timed_out {
+        notes.push(format!(
+            "Command timed out after {timeout_secs}s and was terminated. Re-run with run_in_background=true if it is long-lived."
+        ));
+    } else if let Some(code) = result.exit_code {
+        if code != 0 {
+            notes.push(format!("Exited with code {code}"));
+        }
+    }
+    if parts.is_empty() && notes.is_empty() {
+        return format!("Command finished with no output.\n$ {command}");
+    }
+    let mut body = parts.join("\n");
+    if !notes.is_empty() {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&notes.join("\n"));
+    }
+    body
 }
 
 // ============================================================================

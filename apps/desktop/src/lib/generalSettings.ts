@@ -17,7 +17,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   soundsErrors: true,
   updatesStartup: true,
   updatesAutoInstall: false,
-  maxToolIterations: 0
+  maxToolIterations: 0,
+  closeBehavior: "tray"
 };
 
 export type AppLocale = "zh-CN" | "zh-TW" | "en-US";
@@ -154,6 +155,10 @@ export function loadGeneralSettings(
       ...DEFAULT_GENERAL_SETTINGS,
       ...parsed,
       language: normalizeStoredLanguage(parsed.language),
+      closeBehavior:
+        parsed.closeBehavior === "quit" || parsed.closeBehavior === "ask"
+          ? parsed.closeBehavior
+          : "tray",
       // 数值字段防御归一：手改 localStorage 产生的 NaN/负数/小数组值回退为 0（不限制）。
       maxToolIterations:
         typeof parsed.maxToolIterations === "number" &&
@@ -214,6 +219,9 @@ export function playSettingsTone(kind: "agent" | "permission" | "error"): void {
 }
 
 export async function showSettingsNotification(title: string, body: string): Promise<void> {
+  // 窗口处于前台并聚焦时（用户正盯着应用）不弹系统通知；只有失焦或最小化时才提醒。
+  // 一处短路覆盖所有调用点（agent 完成 / 授权 / 错误 / 应用更新）。
+  if (typeof document !== "undefined" && document.hasFocus()) return;
   try {
     await invoke("send_desktop_notification", { title, body });
     return;

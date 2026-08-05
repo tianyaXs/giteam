@@ -36,11 +36,14 @@ const THREAD_CONTENT_PADDING_X = 40;
 /** 相对内容右缘的间距，避免进度卡贴着消息区。 */
 const SIDE_RAIL_GAP = 12;
 const SIDE_RAIL_EXPANDED_WIDTH = 276;
-const SIDE_RAIL_COLLAPSED_WIDTH = 46;
+const SIDE_RAIL_COLLAPSED_WIDTH = 40;
 /** 右侧外侧余量：覆盖 scrollbar-gutter（约 12–16px）+ 少量呼吸感。 */
 const SIDE_RAIL_OUTER_PADDING = 20;
-/** 空间不足时内容列左缘的最小留白——左侧空白是首个被牺牲的区域。 */
-const MIN_LEFT_GAP = 24;
+/** 空间不足时内容列左缘的最小留白——左侧空白是首个被牺牲的区域。
+ *  13 寸小屏(minWidth 1080)下 editor 实际宽约 1k 出头，左缘留白压到 8，让
+ *  collapsed 进度轨(阈值 8 + 832 + 40 + 20 = 900)在 ~920px 落入 collapsed 档渲染，
+ *  不再因差几像素跌破 hidden 阈值而消失。 */
+const MIN_LEFT_GAP = 8;
 /** 860 外框左缘 → 进度轨左缘的距离（贴内容区右缘 + 小间距）。 */
 const SIDE_RAIL_OFFSET_FROM_CONTENT =
   THREAD_MAX_WIDTH - THREAD_CONTENT_PADDING_X + SIDE_RAIL_GAP;
@@ -184,7 +187,7 @@ export function AgentChatFrame({
             </aside>
             <aside
               className={cn(
-                "pointer-events-none absolute top-4 z-10 w-[46px] min-w-0 opacity-0 motion-safe:transition-all motion-safe:duration-200 motion-safe:ease-out",
+                "pointer-events-none absolute top-4 z-10 w-[40px] min-w-0 opacity-0 motion-safe:transition-all motion-safe:duration-200 motion-safe:ease-out",
                 sideRailMode === "collapsed" && !sideRailHidden
                   ? "translate-x-0 scale-100 opacity-100"
                   : "translate-x-3 scale-95 opacity-0"

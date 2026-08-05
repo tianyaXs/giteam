@@ -753,7 +753,10 @@ export function App() {
   const [rightPaneWidth, setRightPaneWidth] = useState(() => loadCachedWidth(RIGHT_PANE_WIDTH_CACHE_KEY, 520, 520, 1120));
   const [changesSidebarWidth, setChangesSidebarWidth] = useState(276);
   const [gitTreeSidebarSize, setGitTreeSidebarSize] = useState(() => loadCachedWidth(GITTREE_SIDEBAR_WIDTH_CACHE_KEY, 34, 24, 48));
-  const [leftDrawerOpen, setLeftDrawerOpen] = useState(true);
+  // 小屏(视口 <1280)默认折叠左侧栏，把空间让给内容区；大屏保持展开。
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(
+    () => typeof window === "undefined" || window.innerWidth >= 1280
+  );
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const panelPlacement: PanelPlacement = rightDrawerOpen ? "right" : "hidden";
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
@@ -1335,6 +1338,47 @@ export function App() {
         /* noop */
       });
   }, []);
+
+  // 关闭按钮行为：tray=最小化到系统托盘（默认，后台运行）；quit=直接退出；ask=每次询问。
+  // 托盘图标与菜单恢复窗口（见 main.rs build_tray）；首次最小化时发一条提示告知后台运行。
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      if (disposed) return;
+      const win = getCurrentWindow();
+      win.onCloseRequested(async (event) => {
+        event.preventDefault();
+        const behavior = generalSettings.closeBehavior ?? "tray";
+        if (behavior === "quit") {
+          await win.destroy();
+          return;
+        }
+        if (behavior === "ask") {
+          // 每次询问：webview 原生 confirm。确定=最小化到托盘，取消=退出应用。
+          const minimize = window.confirm("最小化到系统托盘后台运行？\n（取消则退出应用；可在设置中固定行为）");
+          if (minimize) {
+            await win.hide();
+          } else {
+            await win.destroy();
+          }
+          return;
+        }
+        await win.hide();
+        if (!window.localStorage.getItem("giteam:closeHintShown")) {
+          window.localStorage.setItem("giteam:closeHintShown", "1");
+          void showSettingsNotification("Giteam", "已最小化到系统托盘，点击托盘图标恢复窗口");
+        }
+      }).then((fn) => {
+        unlisten = fn;
+      });
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [generalSettings.closeBehavior]);
 
   const repoPath = selectedRepo?.path ?? "";
   const gitPanePath = gitPaneRepo?.path ?? repoPath;
@@ -10080,7 +10124,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   Preview the selected image. Click the left or right side of the image to move between attachments.
                 </DialogDescription>
                 <img
-                  className="block max-h-[calc(100vh-32px)] max-w-[calc(100vw-32px)] object-contain"
+                  className="block max-h-[calc(100dvh-32px)] max-w-[calc(100dvw-32px)] object-contain"
                   src={image.uri}
                   alt={image.filename || "preview"}
                   onClick={(e) => {

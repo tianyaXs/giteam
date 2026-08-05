@@ -46,7 +46,7 @@ export function ShellPanelToggle(props: {
       variant="ghost"
       size="icon"
       className={cn(
-        "size-[26px] text-muted-foreground hover:bg-transparent hover:text-foreground",
+        "size-7 text-muted-foreground hover:bg-transparent hover:text-foreground",
         className
       )}
       style={style}
