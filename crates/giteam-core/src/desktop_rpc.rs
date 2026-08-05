@@ -1867,6 +1867,31 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 .map_err(|error| error.to_string())?;
             Ok(serde_json::json!({ "ok": true }))
         }
+        "agent_set_session_options" => {
+            // Build/Plan 模式热切：重建 session handle（保留 id 与历史，换工具集+系统提示）。
+            let session_id = get_str(&args, "sessionId")?;
+            let enabled_tools: Option<Vec<String>> = args
+                .get("enabledTools")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                });
+            let append_system_prompt: Option<String> = args
+                .get("appendSystemPrompt")
+                .and_then(Value::as_str)
+                .map(String::from);
+            let summary = block_on(PiAgentService::global().set_session_options(
+                session_id,
+                enabled_tools,
+                append_system_prompt,
+            ))
+            .map_err(|error| error.to_string())?;
+            serde_json::to_value(summary).map_err(|error| error.to_string())
+        }
 
         // Git commands
         "run_git_head_commit" => {

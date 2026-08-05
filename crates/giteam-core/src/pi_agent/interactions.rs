@@ -106,6 +106,8 @@ pub struct InteractionHub {
     policy: Mutex<ApprovalPolicy>,
     /// 本会话被 read 工具读取过的文件（canonicalize 后），EditGuardTool 据此放行 edit。
     read_files: Mutex<HashSet<PathBuf>>,
+    /// 会话所在仓库（绑定后加载/写入 `.giteam/permissions.json`）；None 时持久化规则不可用。
+    repo_path: Mutex<Option<PathBuf>>,
 }
 
 impl InteractionHub {
@@ -116,6 +118,7 @@ impl InteractionHub {
             run: Mutex::new(None),
             policy: Mutex::new(ApprovalPolicy::default()),
             read_files: Mutex::new(HashSet::new()),
+            repo_path: Mutex::new(None),
         }
     }
 
@@ -166,6 +169,34 @@ impl InteractionHub {
             if !policy.always_rules.contains(&tool.to_string()) {
                 policy.always_rules.push(tool.to_string());
             }
+        }
+    }
+
+    /// 绑定会话所在仓库并加载项目级权限规则（`.giteam/permissions.json`）。
+    /// service 创建/恢复 hub 后调用一次，使持久化规则随会话生效（跨重启）。
+    pub fn set_repo_path(&self, repo_path: PathBuf) {
+        let rules = super::permissions::load_allow_rules(&repo_path);
+        if let Ok(mut policy) = self.policy.lock() {
+            for rule in rules {
+                if !policy.always_rules.contains(&rule) {
+                    policy.always_rules.push(rule);
+                }
+            }
+        }
+        if let Ok(mut path) = self.repo_path.lock() {
+            *path = Some(repo_path);
+        }
+    }
+
+    /// 把「总是允许」的细粒度规则持久化到项目文件（跨会话/重启再生效）。
+    /// 持久化失败仅记录、不影响本次执行（审批已通过，下次失败再弹窗）。
+    pub fn persist_allow(&self, tool: &str, input: &Value) {
+        let key = always_rule_key(tool, input);
+        let Some(repo_path) = self.repo_path.lock().ok().and_then(|path| path.clone()) else {
+            return;
+        };
+        if let Err(error) = super::permissions::append_allow_rule(&repo_path, &key) {
+            eprintln!("giteam: persist allow rule failed ({key}): {error}");
         }
     }
 

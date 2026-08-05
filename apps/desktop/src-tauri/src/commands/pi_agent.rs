@@ -400,3 +400,27 @@ pub async fn agent_set_auto_approve(session_id: String, enabled: bool) -> Result
         .await
         .map_err(|error| error.to_string())
 }
+
+/// 热切换已存在 session 的工具白名单与系统提示追加段（Build/Plan 模式切换）。
+/// 后端重建 session handle：保留 session_id 与 jsonl 对话历史，仅更换工具集 + 系统提示。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiSetSessionOptionsRequest {
+    pub session_id: String,
+    pub enabled_tools: Option<Vec<String>>,
+    pub append_system_prompt: Option<String>,
+}
+
+#[tauri::command]
+pub async fn agent_set_session_options(
+    request: PiSetSessionOptionsRequest,
+) -> Result<PiSessionSummary, String> {
+    service()
+        .set_session_options(
+            &request.session_id,
+            request.enabled_tools,
+            request.append_system_prompt,
+        )
+        .await
+        .map_err(|error| error.to_string())
+}

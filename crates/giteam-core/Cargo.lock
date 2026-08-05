@@ -256,8 +256,7 @@ dependencies = [
 [[package]]
 name = "asupersync"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cbadf37dce3015a059ffe058804d958026e8b276d665116015e3126d2673cfe"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -765,6 +764,12 @@ dependencies = [
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
+
+[[package]]
+name = "chunked_transfer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "cipher"
@@ -1835,8 +1840,7 @@ dependencies = [
 [[package]]
 name = "franken-decision"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "763ba284c68c173e3c5b3147b214bd115c1be55bc04f79738027b2a9a5037eb0"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
 dependencies = [
  "franken-evidence",
  "franken-kernel",
@@ -1846,8 +1850,7 @@ dependencies = [
 [[package]]
 name = "franken-evidence"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ca41db3fe4b037a73b71e764f118e8f182afbae188635a0721aafa078588dd8"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1856,8 +1859,7 @@ dependencies = [
 [[package]]
 name = "franken-kernel"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7cd75f374e2b7ba2316b3c11987b410ba0487211d5d868ade5f66bb7a6d3cb2"
+source = "git+https://github.com/tianyaXs/asupersync-1?branch=fix%2Fwindows-connect-completion-v0.3.9#9b5050e36eeb99e381c3c9832b06b8c72c4ba2a0"
 dependencies = [
  "serde",
 ]
@@ -2229,7 +2231,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tauri",
+ "tempfile",
  "thiserror 2.0.18",
+ "tiny_http",
  "urlencoding",
  "uuid",
  "wait-timeout",
@@ -3314,6 +3318,12 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hybrid-array"
@@ -7264,6 +7274,18 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tiny_http"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
+dependencies = [
+ "ascii",
+ "chunked_transfer",
+ "httpdate",
+ "log",
 ]
 
 [[package]]

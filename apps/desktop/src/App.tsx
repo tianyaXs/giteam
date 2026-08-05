@@ -227,7 +227,6 @@ import { type AgentDefinition } from "./lib/agentDefinitions";
 import {
   AGENT_COMPOSER_AGENT_OPTIONS,
   clampThinkingLevelToModel,
-  composerAgentPromptPrefix,
   composerAgentSessionOptions,
   isComposerAgentName,
   normalizeComposerAgentName,
@@ -2313,17 +2312,36 @@ export function App() {
 
   function applyAgentAgent(agentName: string) {
     const name = normalizeComposerAgentName(agentName);
+    const previous = activeAgentAgent;
+    // 只影响用户当前选中的会话；未选中时改 draft（发送时 createPersistedAgentSession 硬切）。
+    // 不用 ensureActiveAgentSession：它会自动落到 agentSessions[0]，误热切未选中会话。
     const sid = activeAgentSessionId.trim();
     if (sid) {
       setAgentSessionAgent((prev) => ({ ...prev, [sid]: name }));
+      // 已有会话：热切后端工具集 + 系统提示（重建 handle，保留 sessionId 与对话历史），
+      // 使切换在当前会话立即硬生效，而非仅加软约束前缀。
+      const opts = composerAgentSessionOptions(name);
+      void agentClient
+        .setSessionOptions(sid, {
+          enabledTools: opts.enabledTools,
+          appendSystemPrompt: opts.appendSystemPrompt
+        })
+        .catch((error) => {
+          // 生成中(ensure_not_running)或其他失败：回退 UI 到切换前 + 提示重试。
+          setAgentSessionAgent((prev) =>
+            prev[sid] === name ? { ...prev, [sid]: previous } : prev
+          );
+          setError(`切换模式未生效：${String(error)}`);
+          setMessage("模式切换失败，请停止生成后重试");
+        });
     } else {
       setAgentDraftAgent(name);
     }
     saveLocalString(AGENT_COMPOSER_SELECTION_KEY, name);
     setMessage(
       name === "plan"
-        ? "已切换到 Plan：新建会话将只读规划；当前会话将以提示约束软生效"
-        : "已切换到 Build：新建会话可完整改代码与执行命令"
+        ? "已切换到 Plan：当前会话工具集已切为只读规划"
+        : "已切换到 Build：当前会话可完整改代码与执行命令"
     );
   }
 
@@ -4832,16 +4850,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
 
     bindAgentSessionToWorkspace(sessionId, repoPath, worktreeOverview.branch || selectedBranch);
-    if (activeAgentAgent) {
-      setAgentSessionAgent((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeAgentAgent }));
-    }
-    setAgentSessionThinkingLevel((prev) => ({ ...prev, [sessionId]: prev[sessionId] || activeAgentThinkingLevel }));
+    // 会话级 mode/thinking 已由 createPersistedAgentSession（新建）与 applyAgentAgent /
+    // applyAgentThinkingLevel（切换）写入；此处不再「首次锁定」，避免切换后旧值覆盖。
     if (agentRunBusyBySession[sessionId]) return;
 
     const assistantId = "assistant-" + makeId();
     const runId = "run-" + makeId();
     const userId = "user-" + makeId();
-    const modePrefix = composerAgentPromptPrefix(normalizeComposerAgentName(activeAgentAgent));
     // 图片落到仓库 .giteam/prompt-attachments/，始终随消息透传给后端（对齐 opencode：直传、不降级）。
     // 后端按当前模型 input 能力分流：支持图片 → multimodal；不支持 → 不发 image block（避免
     //   provider HTTP 400），让模型基于文字回复。前端不再判断 imageInput，图片照常预览展示。
@@ -4870,10 +4885,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         "The attachment was selected in the desktop UI but is not available as a filesystem path to the embedded agent."
       ].join("\n")];
     });
-    const sessionPrompt = [modePrefix + prompt, ...fileHints]
-      .filter(Boolean)
-      .join("\n\n")
-      .trim();
+    const sessionPrompt = [prompt, ...fileHints].filter(Boolean).join("\n\n").trim();
     if (!sessionPrompt && multimodalImages.length === 0) {
       if (attachments.some((attachment) => isImageAttachment(attachment))) {
         setError("无法读取图片附件，请重试或改用文件选择器添加图片。");

@@ -1,6 +1,8 @@
 mod events;
+mod https_egress;
 mod interactions;
 mod messages;
+mod permissions;
 mod project_memory;
 mod prompt;
 mod provider_sanitizer;

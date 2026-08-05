@@ -299,6 +299,7 @@ fn main() {
             commands::pi_agent::agent_list_interactions,
             commands::pi_agent::agent_reply_interaction,
             commands::pi_agent::agent_set_auto_approve,
+            commands::pi_agent::agent_set_session_options,
             commands::pi_agent::list_installed_agent_skills,
             commands::pi_agent::install_builtin_agent_skill,
             commands::pi_agent::remove_installed_agent_skills_by_path,

@@ -11,6 +11,7 @@ use futures::lock::Mutex as AsyncMutex;
 use pi::sdk::{create_agent_session, AbortHandle, AgentSessionHandle, SessionOptions};
 use thiserror::Error;
 
+use super::https_egress::{ensure_https_egress_shim_with_paths, HttpsEgressShimState};
 use super::interactions::{InteractionHub, InteractionRunContext, InteractionStore};
 use super::provider_sanitizer::{
     ensure_tool_call_id_sanitizer, shorten_tool_call_id, OPENAI_TOOL_CALL_ID_MAX_LEN,
@@ -179,6 +180,19 @@ struct PersistedSessionRecord {
     /// 派生标题缓存；旧 catalog 无此字段，靠 default 兼容。
     #[serde(default)]
     title: Option<String>,
+    /// 工具白名单（Plan 模式限定只读 6 工具）；未限定时 None。持久化以便
+    /// set_session_options 重建 handle 与冷启动恢复时回填，旧 catalog 靠 default 兼容。
+    #[serde(default)]
+    enabled_tools: Option<Vec<String>>,
+    /// 用户层系统提示追加段（Build/Plan 模式提示）；恢复与重建时回填。
+    #[serde(default)]
+    append_system_prompt: Option<String>,
+    /// 推理强度（off/minimal/low/medium/high/xhigh）；持久化以便恢复时回填，旧 catalog 靠 default 兼容。
+    #[serde(default)]
+    thinking: Option<String>,
+    /// 单次 prompt 工具调用上限；持久化以便恢复时回填，旧 catalog 靠 default 兼容。
+    #[serde(default)]
+    max_tool_iterations: Option<usize>,
 }
 
 #[derive(Debug, Error)]
@@ -210,6 +224,8 @@ struct ManagedSession {
     handle: AsyncMutex<AgentSessionHandle>,
     /// 审批/提问交互枢纽（PR6）：随 session 创建，run 上下文在 prompt 时绑定。
     hub: Arc<InteractionHub>,
+    /// Windows HTTPS 出站旁路（见 https_egress）：https base → loopback HTTP 反代。
+    https_egress_provider: Mutex<Option<HttpsEgressShimState>>,
     /// 已安装的 tool call id 清洗包装（见 provider_sanitizer）。pi 切换模型会
     /// 重建 provider 丢弃包装，prompt 前按指针比对重装。
     sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
@@ -376,7 +392,15 @@ impl PiAgentService {
         let repo_path = config.repo_path.clone();
         let session_dir = config.session_dir.clone();
         let session_path = config.session_path.clone();
+        // config 随 sdk_options_with_factory 按值消费；先把模式相关字段 clone 出来，
+        // 供 record 持久化（set_session_options 重建与冷启动恢复都依赖此回填）。
+        let enabled_tools = config.enabled_tools.clone();
+        let append_system_prompt = config.append_system_prompt.clone();
+        let thinking = config.thinking.clone();
+        let max_tool_iterations = config.max_tool_iterations;
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
+        // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
+        hub.set_repo_path(repo_path.clone());
         let handle = create_agent_session(sdk_options_with_factory(config, &hub))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
@@ -400,6 +424,7 @@ impl PiAgentService {
             repo_path,
             handle: AsyncMutex::new(handle),
             hub,
+            https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
         });
         let mut sessions = self
@@ -424,6 +449,10 @@ impl PiAgentService {
                 no_session: false,
                 updated_at_ms: now_ms(),
                 title: None,
+                enabled_tools,
+                append_system_prompt,
+                thinking,
+                max_tool_iterations,
             };
             self.records
                 .lock()
@@ -662,6 +691,26 @@ impl PiAgentService {
 
         let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
+            // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），
+            // 避开 asupersync TLS 的 WSAENOTCONN 10057。必须在 sanitizer 之前安装，
+            // 以便清洗包装套在 loopback provider 上。
+            /* Windows HTTPS 出站已由 asupersync fork 的 connect 完成检测根治修复
+             * （[patch.crates-io] tianyaXs/asupersync-1 分支 fix/windows-connect-completion-v0.3.9），
+             * pi 直连 https 即可，不再需要 loopback 反代旁路。反代安装块暂时禁用，
+             * 便于本次 fork 真机验证：若 10057 复现，去掉此块注释即可回退到反代兜底。
+            if let Ok(store) = self.secret_store() {
+                let models_path = store
+                    .auth_file_path()
+                    .parent()
+                    .map(|dir| dir.join("models.json"));
+                ensure_https_egress_shim_with_paths(
+                    &mut handle.session_mut().agent,
+                    &session.https_egress_provider,
+                    store.auth_file_path(),
+                    models_path,
+                );
+            }
+            */
             // 根修：给 provider 套上流事件清洗包装（见 provider_sanitizer 模块文档）。
             // indemind 等兼容网关逐 chunk 重复下发完整 tool_calls[].id，pi 端 push_str
             // 累加出超长 id（实测 1479）污染消息历史，下一轮回放 HTTP 400（call_id ≤ 64）。
@@ -1101,6 +1150,13 @@ impl PiAgentService {
                 .set_model(provider, model_id)
                 .await
                 .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
+            // pi 已按新模型重建 provider，旁路/清洗缓存失效，下次 prompt 重装。
+            if let Ok(mut slot) = session.https_egress_provider.lock() {
+                *slot = None;
+            }
+            if let Ok(mut slot) = session.sanitized_provider.lock() {
+                *slot = None;
+            }
             handle
                 .state()
                 .await
@@ -1139,6 +1195,60 @@ impl PiAgentService {
             .set_thinking_level(level)
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))
+    }
+
+    /// 热切换已存在 session 的工具白名单与系统提示追加段（Build/Plan 模式切换）。
+    ///
+    /// pi 的 ToolRegistry 创建后不可变（无 remove/replace），无法直接改工具集；
+    /// 这里复用 set_model 的「更新 record → 丢弃内存 handle → get_session 重建」模式：
+    /// 重建会按新 enabled_tools/append_system_prompt 重装配工具与系统提示，同时从
+    /// session_path 指向的 jsonl 重载全部对话历史，session_id 不变（对用户透明）。
+    pub async fn set_session_options(
+        &self,
+        session_id: &str,
+        enabled_tools: Option<Vec<String>>,
+        append_system_prompt: Option<String>,
+    ) -> Result<PiSessionSummary, PiAgentError> {
+        self.ensure_not_running(session_id)?;
+        // 1. 更新持久化 record（锁内短改即释）。
+        if let Ok(mut records) = self.records.lock() {
+            if let Some(record) = records.get_mut(session_id) {
+                record.enabled_tools = enabled_tools.clone();
+                record.append_system_prompt = append_system_prompt.clone();
+                record.updated_at_ms = now_ms();
+            }
+        }
+        let _ = self.persist_catalog();
+        // 2. 丢弃内存 handle，迫使 get_session 用新 record 重建。
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(session_id);
+        }
+        // 3. 重建：重载 jsonl 历史 + 新工具集/系统提示；session_id 不变。
+        let session = self.get_session(session_id).await?;
+        let state = {
+            let handle = session.handle.lock().await;
+            handle
+                .state()
+                .await
+                .map_err(|error| PiAgentError::Sdk(error.to_string()))?
+        };
+        if let Ok(mut records) = self.records.lock() {
+            if let Some(record) = records.get_mut(session_id) {
+                record.provider = state.provider.clone();
+                record.model = state.model_id.clone();
+                record.updated_at_ms = now_ms();
+            }
+        }
+        let _ = self.persist_catalog();
+        Ok(PiSessionSummary {
+            session_id: state.session_id.unwrap_or_else(|| session_id.to_string()),
+            repo_path: session.repo_path.clone(),
+            provider: state.provider,
+            model: state.model_id,
+            message_count: state.message_count,
+            updated_at_ms: self.record_updated_at_ms(session_id),
+            title: self.record_title(session_id),
+        })
     }
 
     /// 规范化 session 凭据注入策略。
@@ -1226,18 +1336,22 @@ impl PiAgentService {
             provider: (!record.provider.is_empty()).then_some(record.provider),
             model: (!record.model.is_empty()).then_some(record.model),
             api_key: None,
+            // system_prompt 保持 None：品牌默认提示由 into_sdk_options 的
+            // default_system_prompt(enabled_tools) 按当前 mode 重算。
             system_prompt: None,
-            append_system_prompt: None,
-            enabled_tools: None,
+            // 回填用户层模式覆盖：冷启动恢复与 set_session_options 重建共用此路径。
+            append_system_prompt: record.append_system_prompt.clone(),
+            enabled_tools: record.enabled_tools.clone(),
             extension_paths: Vec::new(),
             no_session: record.no_session,
-            thinking: None,
-            // 恢复路径不持久化该配置：None = 不限制，与默认语义一致。
-            max_tool_iterations: None,
+            thinking: record.thinking.clone(),
+            max_tool_iterations: record.max_tool_iterations,
         };
         // 恢复 session 时凭据不落盘到 record，统一从 vault 现取注入。
         let config = self.with_secret_fallback(config)?;
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
+        // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
+        hub.set_repo_path(record.repo_path.clone());
         let handle = create_agent_session(sdk_options_with_factory(config, &hub))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
@@ -1257,6 +1371,7 @@ impl PiAgentService {
             repo_path: record.repo_path,
             handle: AsyncMutex::new(handle),
             hub,
+            https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
         });
         let mut sessions = self
@@ -1819,6 +1934,10 @@ mod tests {
             no_session: false,
             updated_at_ms: now_ms(),
             title: None,
+            enabled_tools: None,
+            append_system_prompt: None,
+            thinking: None,
+            max_tool_iterations: None,
         };
         fs::write(&path, serde_json::to_vec(&vec![record]).expect("serialize catalog"))
             .expect("write catalog");

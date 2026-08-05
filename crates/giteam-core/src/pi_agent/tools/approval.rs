@@ -90,6 +90,8 @@ impl Tool for ApprovalTool {
             }
             InteractionResolution::Reply(AgentInteractionReply::Always) => {
                 self.hub.remember_always(&tool, &input);
+                // 持久化细粒度键：跨会话/重启后同命令/路径不再弹窗（对照 Claude Code 的 permissions）。
+                self.hub.persist_allow(&tool, &input);
                 self.inner.execute(tool_call_id, input, on_update).await
             }
             InteractionResolution::Reply(AgentInteractionReply::Reject) => {

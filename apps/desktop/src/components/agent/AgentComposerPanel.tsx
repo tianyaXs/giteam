@@ -170,6 +170,8 @@ type ComposerConfigButtonProps = {
   onModelPickerSearchChange: (value: string) => void;
   activeAgent: ComposerAgentName | string;
   onApplyAgent: (agentName: string) => void;
+  /** 生成中禁用模式切换：热切需重建 handle，不能在运行中进行。 */
+  activeSessionBusy?: boolean;
   modelValueLabel: string;
   activeThinkingLevel: AgentThinkingLevel;
   thinkingLevelOptions: AgentThinkingLevel[];
@@ -418,6 +420,7 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
                 {AGENT_COMPOSER_AGENT_OPTIONS.map((agent) => (
                   <DropdownMenuItem
                     key={agent.name}
+                    disabled={props.activeSessionBusy}
                     className={cn(
                       "h-8 justify-between gap-2 rounded-xl px-2.5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
                       props.activeAgent === agent.name && "bg-muted text-foreground"
@@ -792,6 +795,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     onModelPickerSearchChange,
     activeAgent,
     onApplyAgent,
+    activeSessionBusy,
     modelValueLabel,
     activeThinkingLevel,
     thinkingLevelOptions,

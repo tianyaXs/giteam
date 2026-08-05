@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [], optional = true }
 thiserror = "2"
+tiny_http = "0.12"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
@@ -25,3 +26,10 @@ which = "6"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+# Windows HTTPS 出站修复（asupersync#35），见 apps/desktop/src-tauri/Cargo.toml 注释。
+asupersync = { git = "https://github.com/tianyaXs/asupersync-1", branch = "fix/windows-connect-completion-v0.3.9" }

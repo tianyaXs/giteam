@@ -268,6 +268,14 @@ export type AgentClient = {
   replyInteraction(interactionId: string, reply: AgentInteractionReply): Promise<void>;
   /** 显式开启/关闭 session 级自动接受（默认关；审计事件照常发布）。 */
   setAutoApprove(sessionId: string, enabled: boolean): Promise<void>;
+  /**
+   * 热切换已存在 session 的工具白名单与系统提示追加段（Build/Plan 模式切换）。
+   * 后端重建 session handle：保留 sessionId 与对话历史，仅更换工具集 + 系统提示。
+   */
+  setSessionOptions(
+    sessionId: string,
+    input: { enabledTools?: string[]; appendSystemPrompt?: string }
+  ): Promise<AgentSessionSummary>;
   subscribeEvents(sessionId: string, runId: string, onEvent: (event: AgentEvent) => void): Promise<AgentEventSubscription>;
 };
 
@@ -344,6 +352,10 @@ function createTauriAgentClient(): AgentClient {
       invoke<void>("agent_reply_interaction", { interactionId, reply }),
     setAutoApprove: (sessionId, enabled) =>
       invoke<void>("agent_set_auto_approve", { sessionId, enabled }),
+    setSessionOptions: (sessionId, input) =>
+      invoke<AgentSessionSummary>("agent_set_session_options", {
+        request: { sessionId, ...input }
+      }),
     async subscribeEvents(sessionId, runId, onEvent) {
       const unlisten: UnlistenFn = await listen<AgentEvent>(AGENT_EVENT_NAME, (event) => {
         if (event.payload.sessionId !== sessionId || event.payload.runId !== runId) return;
@@ -461,6 +473,11 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, enabled }),
+    }),
+    setSessionOptions: (sessionId, input) => request<AgentSessionSummary>("/api/v1/agent/session-options", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, ...input }),
     }),
     async subscribeEvents(sessionId, runId, onEvent) {
       const controller = new AbortController();

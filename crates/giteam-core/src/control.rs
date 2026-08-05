@@ -134,6 +134,14 @@ struct PiControlSetThinkingRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PiControlSetSessionOptionsRequest {
+    session_id: String,
+    enabled_tools: Option<Vec<String>>,
+    append_system_prompt: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PiControlInteractionReplyRequest {
     interaction_id: String,
     reply: AgentInteractionReply,
@@ -1807,6 +1815,32 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             request.level.as_str(),
         )) {
             Ok(()) => (200, serde_json::json!({ "ok": true })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    // Build/Plan 模式热切：重建 session handle，保留 session_id 与 jsonl 历史，
+    // 仅按新 enabledTools/appendSystemPrompt 更换工具集与系统提示。
+    if req.method == "POST" && req.path == "/api/v1/agent/session-options" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let request: PiControlSetSessionOptionsRequest = match serde_json::from_value(raw) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error.to_string() })),
+        };
+        if request.session_id.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "sessionId is required" }));
+        }
+        return match block_on(PiAgentService::global().set_session_options(
+            request.session_id.as_str(),
+            request.enabled_tools,
+            request.append_system_prompt,
+        )) {
+            Ok(summary) => serde_json::to_value(summary)
+                .map(|value| (200, value))
+                .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
             Err(error) => pi_error_response(error),
         };
     }

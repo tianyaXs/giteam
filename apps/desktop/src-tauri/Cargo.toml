@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -41,3 +41,11 @@ tauri-plugin-updater = "2.10.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[patch.crates-io]
+# Windows HTTPS 出站修复（asupersync#35）：asupersync 非阻塞 connect() 在 Windows
+# 上 peer_addr() 假成功，把仍 pending 的 socket 交给 TLS 致首个 send 命中
+# WSAENOTCONN (os error 10057)。fork 改为等 reactor writable 就绪 + SO_ERROR
+# 确认连接真正完成后再交出 socket。详见 https://github.com/tianyaXs/asupersync-1
+# 分支 fix/windows-connect-completion-v0.3.9。
+asupersync = { git = "https://github.com/tianyaXs/asupersync-1", branch = "fix/windows-connect-completion-v0.3.9" }

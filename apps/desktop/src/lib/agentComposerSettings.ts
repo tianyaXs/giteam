@@ -148,16 +148,6 @@ export function composerAgentSessionOptions(agent: ComposerAgentName): {
   };
 }
 
-/** 已有会话无法热切换工具集时，对 Plan 做软约束前缀。 */
-export function composerAgentPromptPrefix(agent: ComposerAgentName): string {
-  if (agent !== "plan") return "";
-  return [
-    "[Plan mode] Do not modify files or run mutating commands.",
-    "Explore with read/search tools and produce a plan only.",
-    ""
-  ].join("\n");
-}
-
 export function allowAllPermissionRules(): AgentPermissionRule[] {
   return [{ permission: "*", pattern: "*", action: "allow" }];
 }
