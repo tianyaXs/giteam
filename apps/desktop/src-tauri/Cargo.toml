@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -14,19 +14,30 @@ tauri-app = []
 
 [dependencies]
 giteam-core = { path = "../../../crates/giteam-core", features = ["tauri-app"] }
+async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-window-state = "2"
 rusqlite = { version = "0.39", features = ["bundled"] }
 wait-timeout = "0.2"
 rfd = "0.14"
 urlencoding = "2"
+url = "2"
 base64 = "0.22"
 notify = "6.1"
 fastrand = "2"
 reqwest = { version = "0.12", features = ["json"] }
 thiserror = "1"
+# tokio features：browser_use requestId RPC（sync/time）+ chromiumoxide 启动 Chrome 子进程（process）、
+# WebSocket（net）、handler task 轮询（rt/spawn）；tauri 已传递依赖，显式声明不增编译。
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "process"] }
+# chromiumoxide 的 Handler 实现 Stream，轮询 next() 需 futures::StreamExt。
+futures = "0.3"
+# 内置浏览器后端：CDP（Chrome DevTools Protocol）客户端，agent 经标准 WebSocket 操作真实 Chrome，
+# 绕开 Tauri 外部 URL 子 webview 的 IPC 断链（postMessage/invoke/fetch custom scheme 均不可达 Rust）。
+# 0.9 已默认绑 tokio（无 tokio-runtime feature）；default 不含 fetcher，用系统 Chrome 不下载。
+chromiumoxide = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

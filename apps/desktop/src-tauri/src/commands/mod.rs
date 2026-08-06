@@ -1,4 +1,7 @@
 pub mod db;
+pub mod browser_controller;
+pub mod browser_panel;
+pub mod chromiumoxide_controller;
 pub mod entire;
 pub mod env;
 pub mod git;

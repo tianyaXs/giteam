@@ -6,6 +6,7 @@
 
 mod approval;
 mod background;
+mod browser_use;
 mod shell_resolver;
 mod edit_guard;
 mod question;
@@ -17,10 +18,12 @@ use std::sync::Arc;
 
 use pi::sdk::{default_tool_registry, Config, Tool, ToolFactory, ToolRegistry};
 
+use super::browser_controller::SharedBrowserController;
 use super::interactions::{InteractionHub, InteractionRisk};
 
 pub use approval::ApprovalTool;
 pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, KillShellTool};
+pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
 pub use todo::TodoTool;
@@ -38,6 +41,10 @@ pub struct GiteamToolFactory {
     web_fetch_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "web_search" 时为 true。
     web_search_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "browser_use" 时为 true。
+    browser_use_enabled: bool,
+    /// 内置浏览器控制器；desktop 注入实现，CLI/control 为 None。
+    browser_controller: SharedBrowserController,
     /// 后台任务日志目录（会话目录下）；no_session 模式为 None（落临时目录）。
     session_dir: Option<PathBuf>,
 }
@@ -48,6 +55,7 @@ impl GiteamToolFactory {
         hub: Arc<InteractionHub>,
         enabled_tools: Option<&[String]>,
         session_dir: Option<PathBuf>,
+        browser_controller: SharedBrowserController,
     ) -> Self {
         let question_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
@@ -57,12 +65,16 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
         let web_search_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
+        let browser_use_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
         Self {
             hub,
             question_enabled,
             todo_enabled,
             web_fetch_enabled,
             web_search_enabled,
+            browser_use_enabled,
+            browser_controller,
             session_dir,
         }
     }
@@ -77,6 +89,7 @@ impl ToolFactory for GiteamToolFactory {
         let bash_enabled = enabled.contains(&"bash");
         let wants_web_fetch = enabled.contains(&"web_fetch");
         let wants_web_search = enabled.contains(&"web_search");
+        let wants_browser_use = enabled.contains(&"browser_use");
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
@@ -84,7 +97,7 @@ impl ToolFactory for GiteamToolFactory {
                 !matches!(
                     *name,
                     "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
-                        | "web_fetch" | "web_search"
+                        | "web_fetch" | "web_search" | "browser_use"
                 )
             })
             .collect();
@@ -136,6 +149,10 @@ impl ToolFactory for GiteamToolFactory {
         }
         if self.web_search_enabled || wants_web_search {
             registry.push(wrap(Box::new(WebSearchTool::new())));
+        }
+        // browser_use 经 wrap：InteractionRisk::for_tool 归 Network → 自动套 ApprovalTool。
+        if self.browser_use_enabled || wants_browser_use {
+            registry.push(wrap(Box::new(BrowserUseTool::new(self.browser_controller.clone()))));
         }
         registry
     }

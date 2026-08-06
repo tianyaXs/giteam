@@ -113,7 +113,7 @@ type DesktopSidebarProps = {
 
 const SECTION_LABEL_CLASS = "h-6 min-w-0 flex-1 px-1.5 text-sm font-medium text-muted-foreground";
 
-type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos">;
+type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser">;
 
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;

@@ -59,7 +59,7 @@ impl InteractionRisk {
         match tool {
             "read" | "grep" | "find" | "ls" | "bash_output" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
-            "web_fetch" | "web_search" => Self::Network,
+            "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,
         }
     }
@@ -91,6 +91,9 @@ pub fn always_rule_key(tool: &str, input: &Value) -> String {
         "web_fetch" => input.get("url").and_then(Value::as_str).and_then(url_host),
         // web_search 按后端粒度：搜索无固定目标，同一后端一次放行后续查询。
         "web_search" => Some(web_search_backend()),
+        // browser_use 按域名粒度：navigate 有 url 时同站点一次放行后续操作；
+        // click/type 等无 url 的操作退化为工具名粒度（同会话内 always 放行）。
+        "browser_use" => input.get("url").and_then(Value::as_str).and_then(url_host),
         _ => input.get("path").and_then(Value::as_str).map(str::to_string),
     };
     match target.filter(|target| !target.is_empty()) {

@@ -1656,6 +1656,8 @@ pub fn handle_desktop_rpc(command: &str, args: Value) -> Result<Value, String> {
                 no_session: get_bool(&args, "noSession"),
                 thinking: get_str_opt(&args, "thinking"),
                 max_tool_iterations: get_u64_opt(&args, "maxToolIterations").map(|v| v as usize),
+                // HTTP/CLI 路径无桌面端内置浏览器，browser_use 不可用。
+                browser_controller: None,
             };
             let summary = block_on(PiAgentService::global().create_session(config))
                 .map_err(|error| error.to_string())?;

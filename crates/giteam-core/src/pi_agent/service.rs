@@ -44,6 +44,8 @@ pub struct PiSessionConfig {
     /// 单次 run 的最大工具迭代次数。`None` = 不限制（映射为 `usize::MAX`，
     /// pi 侧 never-warn/never-stop）；`Some(n)` 透传 pi 的迭代预算与 80% 移交警告。
     pub max_tool_iterations: Option<usize>,
+    /// 内置浏览器控制器（desktop 注入实现；CLI/control 为 None）。
+    pub browser_controller: super::browser_controller::SharedBrowserController,
 }
 
 impl std::fmt::Debug for PiSessionConfig {
@@ -84,6 +86,7 @@ impl PiSessionConfig {
             no_session: false,
             thinking: None,
             max_tool_iterations: None,
+            browser_controller: None,
         }
     }
 
@@ -248,6 +251,11 @@ pub struct PiAgentService {
     interactions: Arc<InteractionStore>,
     /// 统一 secret vault。`None` 仅用于隔离测试（不触碰真实 vault 与环境变量）。
     secrets: Option<SecretStore>,
+    /// 内置浏览器 controller（desktop 注入）。不可持久化，故由 service 全局持有——
+    /// 冷启动恢复 / set_session_options 重建 handle 时复用此引用，避免 controller 随
+    /// 重建丢失导致 browser_use 在热切/恢复后失效（实测缺陷：旧 session 调
+    /// browser_use 报「内置浏览器仅在桌面端可用」）。
+    browser_controller: Mutex<super::browser_controller::SharedBrowserController>,
 }
 
 impl Default for PiAgentService {
@@ -297,6 +305,7 @@ impl PiAgentService {
             subscribers: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(InteractionStore::new()),
             secrets,
+            browser_controller: Mutex::new(None),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -309,6 +318,25 @@ impl PiAgentService {
     pub fn with_secrets(mut self, secrets: SecretStore) -> Self {
         self.secrets = Some(secrets);
         self
+    }
+
+    /// 注入内置浏览器 controller（desktop 启动时调用，全局共享）。`create_session`
+    /// 注入时也会缓存到此。冷启动恢复旧 session / `set_session_options` 重建 handle
+    /// 时复用，避免 controller 不可持久化导致 browser_use 在热切/恢复后失效。
+    pub fn set_browser_controller(
+        &self,
+        controller: super::browser_controller::SharedBrowserController,
+    ) {
+        if let Ok(mut slot) = self.browser_controller.lock() {
+            *slot = controller;
+        }
+    }
+
+    /// 取当前缓存的 controller（会话恢复/热切重建路径回填 config 用）。
+    fn current_browser_controller(&self) -> super::browser_controller::SharedBrowserController {
+        self.browser_controller
+            .lock()
+            .map_or(None, |slot| slot.clone())
     }
 
     #[must_use]
@@ -367,6 +395,13 @@ impl PiAgentService {
         config: PiSessionConfig,
     ) -> Result<PiSessionSummary, PiAgentError> {
         let mut config = self.with_secret_fallback(config)?;
+        // 缓存 controller 到 service 全局槽：冷启动恢复 / set_session_options 重建
+        // handle 时复用，避免 controller 随重建丢失（browser_use 在热切/恢复后失效）。
+        if config.browser_controller.is_some() {
+            if let Ok(mut slot) = self.browser_controller.lock() {
+                *slot = config.browser_controller.clone();
+            }
+        }
         if !config.no_session {
             fs::create_dir_all(&config.session_dir)
                 .map_err(|error| PiAgentError::Persistence(error.to_string()))?;
@@ -1346,6 +1381,9 @@ impl PiAgentService {
             no_session: record.no_session,
             thinking: record.thinking.clone(),
             max_tool_iterations: record.max_tool_iterations,
+            // controller 不可持久化：从 service 全局缓存取（desktop 启动注入 +
+            // create_session 缓存），冷启动恢复 / 热切重建 handle 均复用，不再丢 controller。
+            browser_controller: self.current_browser_controller(),
         };
         // 恢复 session 时凭据不落盘到 record，统一从 vault 现取注入。
         let config = self.with_secret_fallback(config)?;
@@ -1520,10 +1558,12 @@ fn sdk_options_with_factory(
     hub: &Arc<InteractionHub>,
 ) -> pi::sdk::SessionOptions {
     let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
+    let browser_controller = config.browser_controller.clone();
     let factory = GiteamToolFactory::new(
         Arc::clone(hub),
         config.enabled_tools.as_deref(),
         background_log_dir,
+        browser_controller,
     );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));

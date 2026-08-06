@@ -1,3 +1,4 @@
+mod browser_controller;
 mod events;
 mod https_egress;
 mod interactions;
@@ -13,6 +14,7 @@ mod skills;
 mod tools;
 mod types;
 
+pub use browser_controller::{BrowserAction, BrowserActionResult, BrowserController};
 pub use events::{AgentEvent, AgentEventEnvelope, PiEventTranslator, AGENT_EVENT_SCHEMA_VERSION};
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
 pub use prompt::default_system_prompt;

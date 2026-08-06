@@ -1409,6 +1409,8 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             no_session: request.no_session.unwrap_or(false),
             thinking: None,
             max_tool_iterations: request.max_tool_iterations,
+            // HTTP/CLI 路径无桌面端内置浏览器，browser_use 不可用。
+            browser_controller: None,
         };
         return match block_on(PiAgentService::global().create_session(config)) {
             Ok(summary) => serde_json::to_value(summary)

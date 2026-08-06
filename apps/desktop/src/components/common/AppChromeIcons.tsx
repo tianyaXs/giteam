@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import {
   CloudIcon,
   GitBranchIcon,
+  Globe,
   ListChecksIcon,
   PlugIcon,
   SparklesIcon,
@@ -14,13 +15,13 @@ import { Button } from "@/components/ui/button";
 import layoutSidebarIconUrl from "./layout_sidebar_icon_159994.png";
 import layoutSidebarReverseIconUrl from "./layout_sidebar_reverse_icon_184859.png";
 
-export type RightPaneTab = "worktree" | "changes" | "terminal" | "skills" | "mcp" | "remoteRepos";
+export type RightPaneTab = "worktree" | "changes" | "terminal" | "skills" | "mcp" | "remoteRepos" | "browser";
 
 export const PINNED_RIGHT_PANE_TAB = "changes" satisfies RightPaneTab;
 
 export type OptionalRightPaneTab = Exclude<RightPaneTab, typeof PINNED_RIGHT_PANE_TAB>;
 
-export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "mcp"];
+export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "mcp", "browser"];
 
 export const RIGHT_PANE_TAB_ICONS: Record<RightPaneTab, LucideIcon> = {
   changes: ListChecksIcon,
@@ -29,6 +30,7 @@ export const RIGHT_PANE_TAB_ICONS: Record<RightPaneTab, LucideIcon> = {
   remoteRepos: CloudIcon,
   skills: SparklesIcon,
   mcp: PlugIcon,
+  browser: Globe,
 };
 
 export function ShellPanelToggle(props: {

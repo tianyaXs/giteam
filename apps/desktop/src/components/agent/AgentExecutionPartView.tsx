@@ -20,7 +20,7 @@ import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
-import { FilePen, Folder, MessageCircleQuestionMark, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
+import { FilePen, Folder, Globe, MessageCircleQuestionMark, MousePointerClick, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
 
 export type AgentToolFileTarget = {
   filePath: string;
@@ -40,6 +40,7 @@ type AgentExecutionPartViewProps = {
   listItem?: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
 };
 
 const INLINE_PREVIEW_MAX_LINES = 28;
@@ -49,9 +50,11 @@ function normalizeText(value: unknown): string {
 }
 
 function toolKindIcon(tool: string): LucideIcon {
-  if (tool === "bash") return Terminal;
+  if (tool === "bash" || tool === "bash_output" || tool === "kill_shell") return Terminal;
   if (tool === "read" || tool === "grep" || tool === "find") return Search;
   if (tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch") return FilePen;
+  if (tool === "web_fetch" || tool === "web_search") return Globe;
+  if (tool === "browser_use") return MousePointerClick;
   if (tool === "ls") return Folder;
   if (tool === "question") return MessageCircleQuestionMark;
   return Wrench;
@@ -310,7 +313,8 @@ export function AgentExecutionPartView({
   shellToolPartsExpanded,
   editToolPartsExpanded,
   listItem = false,
-  onOpenToolFile
+  onOpenToolFile,
+  onOpenBrowserUrl
 }: AgentExecutionPartViewProps) {
   const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
   const type = String(part?.type || "");
@@ -333,6 +337,12 @@ export function AgentExecutionPartView({
   const preview = getToolResultPreview(tool, input, outputText, details);
   const shellTool = tool === "bash";
   const editTool = tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch";
+  const webTool = tool === "web_fetch" || tool === "web_search";
+  const webUrl = webTool
+    ? tool === "web_fetch"
+      ? normalizeText(input.url) || normalizeText(details?.url)
+      : `https://duckduckgo.com/?q=${encodeURIComponent(normalizeText(input.query))}`
+    : "";
   const bashCommand = normalizeText(input.command);
   const editOldText = tool === "edit" && typeof input.oldText === "string" ? input.oldText : "";
   const editNewText = tool === "edit" && typeof input.newText === "string" ? input.newText : "";
@@ -349,6 +359,9 @@ export function AgentExecutionPartView({
   const changeStats = preview?.kind === "diff"
     ? { added: preview.additions, removed: preview.deletions }
     : null;
+  // edit 首改行号（details.firstChangedLine）：headline 显示 L{n} 帮助定位代码位置。
+  const editFirstLineRaw = details?.firstChangedLine;
+  const editFirstLine = typeof editFirstLineRaw === "number" ? editFirstLineRaw : null;
 
   const toolFileTarget = (() => {
     if (tool === "read") {
@@ -476,6 +489,11 @@ export function AgentExecutionPartView({
           {targetLabel}
         </span>
       ) : <span className="min-w-0 flex-1" />}
+      {editTool && editFirstLine !== null ? (
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+          L{editFirstLine}
+        </span>
+      ) : null}
       {editTool ? (
         <span className="inline-grid shrink-0 grid-cols-1 grid-rows-1 font-mono text-[11px]">
           <span className="invisible col-start-1 row-start-1 tabular-nums" aria-hidden>
@@ -484,10 +502,37 @@ export function AgentExecutionPartView({
           {changeStats ? (
             <span className="col-start-1 row-start-1 tabular-nums">
               <span className="font-semibold text-emerald-600 dark:text-emerald-400">+{changeStats.added}</span>
-              {" "}
-              <span className="font-semibold text-rose-600 dark:text-rose-400">-{changeStats.removed}</span>
+              {changeStats.removed > 0 ? (
+                <>
+                  {" "}
+                  <span className="font-semibold text-rose-600 dark:text-rose-400">-{changeStats.removed}</span>
+                </>
+              ) : null}
             </span>
           ) : null}
+        </span>
+      ) : null}
+      {webTool && webUrl && onOpenBrowserUrl ? (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onOpenBrowserUrl(webUrl);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenBrowserUrl(webUrl);
+            }
+          }}
+          className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground"
+          title="在内置浏览器打开"
+        >
+          <Globe className="size-3" />
+          打开
         </span>
       ) : null}
     </div>

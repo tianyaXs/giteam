@@ -1,17 +1,14 @@
-import { useEffect, useRef, useState, forwardRef, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { MarkdownLite } from "../common/MarkdownLite";
-import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
-import { getAttachmentBadgeLabel, isImageAttachment } from "../../lib/imageAttachments";
 import {
-  type AgentAssistantRenderGroup,
   buildAgentAssistantRenderGroups,
   buildAgentReplyMarkdownFromParts,
   dedupeAgentToolParts,
   isAgentRenderablePart,
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
-  summarizeAgentContextToolCounts
+  summarizeAgentContextToolCounts,
+  type AgentAssistantRenderGroup
 } from "../../lib/agentParts";
 import type {
   AgentChatMessage,
@@ -19,12 +16,17 @@ import type {
   AgentDetailedPart,
   AgentTodoItem
 } from "../../lib/agentSessions";
+import type { AppText } from "../../lib/generalSettings";
+import { useHighlightKeyword } from "../../lib/highlightKeyword";
+import { getAttachmentBadgeLabel, isImageAttachment } from "../../lib/imageAttachments";
+import { cn } from "../../lib/utils";
+import { MarkdownLite } from "../common/MarkdownLite";
+import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
-import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Skeleton } from "../ui/skeleton";
-import { cn } from "../../lib/utils";
-import { useHighlightKeyword } from "../../lib/highlightKeyword";
+import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
+import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
 
 type AgentPreviewImage = {
   uri: string;
@@ -57,7 +59,7 @@ const COLLAPSE_CHAR_LIMIT = 420;
 
 type AgentDisplayTimelineGroup =
   | AgentAssistantRenderGroup
-  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit"; parts: AgentDetailedPart[] };
+  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser"; parts: AgentDetailedPart[] };
 
 function formatContextCount(count: number, noun: string): string {
   return count > 0 ? `${count}次${noun}` : "";
@@ -188,6 +190,21 @@ function collapsePreview(text: string): string {
   return preview;
 }
 
+/** 提取消息首行非空文本作为右侧导航条 hover 预览，去掉 markdown 行首标记并截断。 */
+function navigatorFirstLine(text: string): string {
+  const firstLine = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || "";
+  const cleaned = firstLine
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*+>]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim();
+  if (!cleaned) return "";
+  return cleaned.length > 120 ? `${cleaned.slice(0, 120).trimEnd()}…` : cleaned;
+}
+
 function localPathToFileUrl(path: string): string {
   return encodeURI(`file://${path}`);
 }
@@ -200,13 +217,15 @@ function getToolName(part: AgentDetailedPart): string {
   return String((part as any)?.toolName || "").trim();
 }
 
-function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "" {
+function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "" {
   if (group.kind !== "part") return "";
   const type = String((group.part as any)?.type || "");
   if (type !== "toolCall") return "";
   const tool = getToolName(group.part);
-  if (tool === "bash") return "shell";
+  if (tool === "bash" || tool === "bash_output" || tool === "kill_shell") return "shell";
   if (tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch") return "edit";
+  if (tool === "web_fetch" || tool === "web_search") return "web";
+  if (tool === "browser_use") return "browser";
   return "";
 }
 
@@ -237,7 +256,7 @@ function rowMatchesMessageId(row: AgentMessageRenderRow, messageId: string): boo
 
 function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentDisplayTimelineGroup[] {
   const out: AgentDisplayTimelineGroup[] = [];
-  let pendingKind: "shell" | "edit" | "" = "";
+  let pendingKind: "shell" | "edit" | "web" | "browser" | "" = "";
   let pending: AgentAssistantRenderGroup[] = [];
 
   const flush = () => {
@@ -300,6 +319,7 @@ type AgentMessageStreamProps = {
   onOpenWorkspaceDirectory?: (path: string) => void;
   onOpenLocalDirectory?: (absolutePath: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
   onPreviewImageGroup: (images: AgentPreviewImage[], index: number) => void;
   onCopyAttachmentUri: (uri: string) => void;
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
@@ -317,14 +337,25 @@ type AgentMessageStreamProps = {
   locateNonce?: number;
   /** 定位命中后用于在正文里高亮关键词的搜索词（空则不高亮）。 */
   highlightKeyword?: string;
+  /** UI 文案（角色名、aria 标签等）。 */
+  text: AppText;
+  /** 右侧抽屉打开等场景下隐藏导航条（与 sideRail 一致）。 */
+  navigatorHidden?: boolean;
+  /** 概览标尺贴内容列左缘还是右缘（默认右）。 */
+  navigatorSide?: "left" | "right";
+  /** 概览标尺范围：all=全部消息（默认）；sent=仅「我发送」。 */
+  navigatorScope?: "sent" | "all";
+  /** 外部强制恢复贴底跟随（发送时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
+  stickResetSignal?: number;
 };
 
 type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
 
 // Virtuoso List：必须把官方传入的 style（含 paddingTop/height）原样挂上；不要用 flex/gap，
 // 也不要用会覆盖 paddingTop 语义的布局类抢测高。行间距放在 Item 内 padding。
-// 左缘由 AgentChatFrame 下发的 --chat-content-left 决定（未定义时回退 mx-auto 居中），
-// margin 过渡让窗口宽度变化时内容列平滑滑动。
+// 左缘由 AgentChatFrame 下发的 --chat-content-left 决定（未定义时回退 mx-auto 居中）。
+// 不加 margin 过渡：侧栏收起时 main 宽度逐帧变 → contentLeft 逐帧重算，
+// 有过渡会让 margin 滞后追赶、内容先左后右来回滑动；即时跟随则单调平滑。
 // @see https://virtuoso.dev/react-virtuoso/troubleshooting/
 const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
   ({ children, style, ...rest }, ref) => (
@@ -332,7 +363,7 @@ const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactN
       ref={ref}
       style={style}
       {...rest}
-      className="ml-[var(--chat-content-left,auto)] mr-auto w-full max-w-[860px] select-none px-10 motion-safe:transition-[margin] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)]"
+      className="ml-[var(--chat-content-left,auto)] mr-auto max-w-[860px] select-none px-10"
     >
       {children}
     </div>
@@ -403,7 +434,7 @@ function MessageShell({
             ? "w-full"
             : userHasAttachments
               ? "max-w-[min(74%,620px)]"
-            : "max-w-[min(74%,620px)] rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground"
+              : "max-w-[min(74%,620px)] rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground"
         )}
       >
         {children}
@@ -421,7 +452,8 @@ function ToolBatchGroup({
   shellToolPartsExpanded,
   editToolPartsExpanded,
   onOpenTaskSession,
-  onOpenToolFile
+  onOpenToolFile,
+  onOpenBrowserUrl
 }: {
   timelineKey: string;
   group: Extract<AgentDisplayTimelineGroup, { kind: "tool-batch" }>;
@@ -432,13 +464,22 @@ function ToolBatchGroup({
   editToolPartsExpanded: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
 }) {
   // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
   // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
   const running = !forceInactive;
   const shell = group.batchKind === "shell";
-  const noun = shell ? "条命令" : "个文件";
-  const label = shell ? (running ? "运行中" : "已运行") : (running ? "编辑中" : "已编辑");
+  const web = group.batchKind === "web";
+  const browser = group.batchKind === "browser";
+  const noun = shell ? "条命令" : web ? "次" : browser ? "次" : "个文件";
+  const label = shell
+    ? (running ? "运行中" : "已运行")
+    : web
+      ? (running ? "联网中" : "联网")
+      : browser
+        ? (running ? "浏览中" : "已浏览")
+        : (running ? "编辑中" : "已编辑");
 
   return (
     <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
@@ -468,6 +509,7 @@ function ToolBatchGroup({
               editToolPartsExpanded={editToolPartsExpanded}
               onOpenTaskSession={onOpenTaskSession}
               onOpenToolFile={onOpenToolFile}
+              onOpenBrowserUrl={onOpenBrowserUrl}
             />
           ))}
         </div>
@@ -628,6 +670,7 @@ function AssistantTimeline({
   editToolPartsExpanded,
   onOpenTaskSession,
   onOpenToolFile,
+  onOpenBrowserUrl,
   renderMarkdown
 }: {
   stableKey: string;
@@ -640,6 +683,7 @@ function AssistantTimeline({
   editToolPartsExpanded: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
   renderMarkdown: RenderMarkdown;
 }) {
   const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
@@ -728,6 +772,7 @@ function AssistantTimeline({
               editToolPartsExpanded={editToolPartsExpanded}
               onOpenTaskSession={onOpenTaskSession}
               onOpenToolFile={onOpenToolFile}
+              onOpenBrowserUrl={onOpenBrowserUrl}
             />
           );
         }
@@ -914,6 +959,7 @@ function AssistantMessage({
   editToolPartsExpanded,
   onOpenTaskSession,
   onOpenToolFile,
+  onOpenBrowserUrl,
   renderMarkdown
 }: {
   row: AgentMessageRenderRow;
@@ -924,6 +970,7 @@ function AssistantMessage({
   editToolPartsExpanded: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
   renderMarkdown: RenderMarkdown;
 }) {
   const {
@@ -951,6 +998,7 @@ function AssistantMessage({
           editToolPartsExpanded={editToolPartsExpanded}
           onOpenTaskSession={onOpenTaskSession}
           onOpenToolFile={onOpenToolFile}
+          onOpenBrowserUrl={onOpenBrowserUrl}
           renderMarkdown={renderMarkdown}
         />
       ) : fallbackReply ? (
@@ -1239,6 +1287,7 @@ export function AgentMessageStream({
   onOpenWorkspaceDirectory,
   onOpenLocalDirectory,
   onOpenToolFile,
+  onOpenBrowserUrl,
   onPreviewImageGroup,
   onCopyAttachmentUri,
   onOpenAttachment,
@@ -1251,11 +1300,18 @@ export function AgentMessageStream({
   pendingScrollMessageId,
   onPendingScrollDone,
   locateNonce = 0,
-  highlightKeyword
+  highlightKeyword,
+  text,
+  navigatorHidden = false,
+  navigatorSide = "right",
+  navigatorScope = "all",
+  stickResetSignal = 0
 }: AgentMessageStreamProps) {
   const [timelineOpenState, setTimelineOpenState] = useState<Record<string, boolean>>({});
   const [messageOpenState, setMessageOpenState] = useState<Record<string, boolean>>({});
   const [highlightMessageId, setHighlightMessageId] = useState("");
+  /** 当前可视区中部对应的消息下标，由 Virtuoso rangeChanged 换算，用于把导航条对应 marker 变蓝。 */
+  const [navigatorActiveIndex, setNavigatorActiveIndex] = useState<number | null>(null);
   /** 本会话已完成过搜索定位：禁止随后的「滚到底唤醒」抢走视口，也避免清掉关键词高亮。 */
   const locatedThisSessionRef = useRef(false);
   /**
@@ -1263,6 +1319,42 @@ export function AgentMessageStream({
    * @see https://virtuoso.dev/react-virtuoso/virtuoso/initial-index/
    */
   const locateStickyMountKeyRef = useRef<string | null>(null);
+  const scrollerElRef = useRef<HTMLElement | null>(null);
+  /**
+   * 用户「贴底跟随」意图：默认 true。wheel/touch 主动上滚置 false（区分「用户上滚」与
+   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）。
+   * atBottom 回到 true（贴底/跳最新）或 stickResetSignal（发送）恢复 true。驱动持续 rAF 钉底。
+   */
+  const stickToBottomRef = useRef(true);
+  const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
+  // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
+  const pendingLocateIdRef = useRef("");
+  /**
+   * DOM 实测校正：Virtuoso 对变高 item 用 defaultItemHeight(160) 估算累计偏移，超长消息（数千字
+   * toolResult / 长 assistant 回复）估算严重偏小 → scrollToIndex 的 align:center 落到结尾、
+   * align:end 的 LAST 落点偏上看不到最新、initialTopMostItemIndex 同理锚偏。在 Virtuoso 滚动后
+   * 用真实 DOM 位置 scrollBy 校正，彻底绕过高度估算。
+   *   - center：消息中线对齐视口中线（真居中，标尺跳转用）
+   *   - end：消息底部对齐视口底部（真贴底，切会话唤醒 / 流式钉底用）
+   * 返回校正函数；调用方在多个 setTimeout/raf 上重试，覆盖 Virtuoso 异步渲染与测量收敛。
+   */
+  const adjustToMessage = useCallback((stableKey: string, align: "start" | "center" | "end") => {
+    const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
+    return () => {
+      const el = document.querySelector<HTMLElement>(sel);
+      const sc = scrollerElRef.current;
+      if (!el || !sc) return;
+      const e = el.getBoundingClientRect();
+      const s = sc.getBoundingClientRect();
+      const delta =
+        align === "start"
+          ? e.top - s.top
+          : align === "end"
+            ? e.bottom - s.bottom
+            : e.top + e.height / 2 - (s.top + s.height / 2);
+      if (Math.abs(delta) >= 8) sc.scrollBy({ top: delta, behavior: "auto" });
+    };
+  }, []);
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
   const openLocalFile = (absolutePath: string) => {
     onOpenAttachment(localPathToFileUrl(absolutePath), filenameFromPath(absolutePath));
@@ -1295,14 +1387,14 @@ export function AgentMessageStream({
       [];
     const detailParts = coalesceRuntimeParts(
       (liveParts.length > 0 ? liveParts : fetchedParts).map((part) => {
-      // 兼容旧 bug：reasoning 流曾被误标成 text，导致思考正文与「思考中」标签分离
-      const id = String((part as { id?: string }).id || "").trim();
-      const type = String((part as { type?: string }).type || "");
-      if (type === "text" && (id === "reasoning" || id.startsWith("reasoning:"))) {
-        return { ...(part as object), type: "reasoning" } as AgentDetailedPart;
-      }
-      return part;
-    })
+        // 兼容旧 bug：reasoning 流曾被误标成 text，导致思考正文与「思考中」标签分离
+        const id = String((part as { id?: string }).id || "").trim();
+        const type = String((part as { type?: string }).type || "");
+        if (type === "text" && (id === "reasoning" || id.startsWith("reasoning:"))) {
+          return { ...(part as object), type: "reasoning" } as AgentDetailedPart;
+        }
+        return part;
+      })
     );
     const renderParts = dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart));
     const errorMessage = isAssistant ? runFailureText(msg) : "";
@@ -1401,7 +1493,148 @@ export function AgentMessageStream({
     return row.isStreaming;
   });
 
+  // 导航条数据：每行一个 marker（角色 + 首行预览），跳转沿用原始下标。
+  const allNavigatorMarkers: NavigatorMarker[] = visibleRenderRows.map((row, index) => ({
+    key: row.stableKey,
+    originalIndex: index,
+    role: row.isSystem ? "system" : row.isAssistant ? "assistant" : "user",
+    preview: navigatorFirstLine(row.isAssistant ? row.fallbackReply || row.msg.content : row.msg.content)
+  }));
+  // scope=sent 只保留「我发送」的 user 消息；originalIndex 仍指向 visibleRenderRows 真实下标，跳转/active 匹配正确。
+  const navigatorMarkers: NavigatorMarker[] =
+    navigatorScope === "sent" ? allNavigatorMarkers.filter((m) => m.role === "user") : allNavigatorMarkers;
+  const handleNavigatorJump = useCallback(
+    (index: number, behavior: "smooth" | "auto") => {
+      // 点标尺跳转 = 用户主动离开贴底跟随 → 必须先取消 stick，否则持续 rAF 钉底会立即把视口
+      // 拉回底部，导致「贴底时点标尺跳不过去」。跳到底部时 atBottom=true 会自动恢复 stick。
+      stickToBottomRef.current = false;
+      const stableKey = visibleRenderRows[index]?.stableKey;
+      if (!stableKey) return;
+      const total = visibleRenderRows.length;
+      // 列表首/尾消息无法真正居中（上方/下方无内容），用 start/end 贴顶/贴底是最接近「居中」的落点；
+      // 也避开 Virtuoso 对边界 item 的 center 估算落点偏（点最旧标尺却停在半路的根因）。中间消息才 center。
+      const target: "start" | "center" | "end" =
+        index <= 0 ? "start" : index >= total - 1 ? "end" : "center";
+      const sc = scrollerElRef.current;
+      const el = document.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(stableKey)}"]`
+      );
+      // 已在渲染范围内：直接 DOM 实测 scrollBy 一步到位——绕过 Virtuoso defaultItemHeight 估算，
+      // 既准又无「smooth 动画被校正打断」的二次上下偏移。behavior 透传（点击 smooth / 拖动 auto）。
+      if (el && sc) {
+        const e = el.getBoundingClientRect();
+        const s = sc.getBoundingClientRect();
+        const delta =
+          target === "start"
+            ? e.top - s.top
+            : target === "end"
+              ? e.bottom - s.bottom
+              : e.top + e.height / 2 - (s.top + s.height / 2);
+        sc.scrollBy({ top: delta, behavior });
+        return;
+      }
+      // 不在渲染范围（远处跳转）：scrollToIndex 先把目标拉进视口，立即 + rAF 连续校正到目标对齐。
+      // scrollToIndex(auto) 与首帧校正同步执行、浏览器合并渲染 → 用户只见一次到位；后续 rAF
+      // 兜底 Virtuoso 异步测量收敛，到位后 adjustToMessage 内 |delta|<8 不再 scrollBy，不反复偏移。
+      virtuosoRef.current?.scrollToIndex({ index, align: target, behavior: "auto" });
+      const adjust = adjustToMessage(stableKey, target);
+      const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
+      adjust();
+      let frames = 0;
+      const step = () => {
+        adjust();
+        if (++frames < 6) {
+          requestAnimationFrame(step);
+        } else if (target === "start") {
+          // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
+          // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
+          const sc = scrollerElRef.current;
+          if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
+            sc.scrollTo({ top: 0, behavior: "auto" });
+          }
+        }
+      };
+      requestAnimationFrame(step);
+    },
+    [visibleRenderRows, adjustToMessage]
+  );
+  // wheel/touch 主动上滚 = 用户想看历史 → 取消贴底跟随（这是区分「用户上滚」与「内容增长
+  // 离开底部」的唯一可靠信号——后者 Virtuoso 也报 atBottom=false，但不应取消跟随）。
+  // 用 ref 不用 state：高频事件不触发重渲染，stick 变化由下方 rAF 钉底读取。
+  const attachScrollerListeners = useCallback((el: HTMLElement) => {
+    if (scrollerListenersRef.current?.el === el) return; // Virtuoso 可能多次回传同一 el
+    scrollerListenersRef.current?.clean();
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) stickToBottomRef.current = false;
+    };
+    let lastTouchY: number | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      lastTouchY = e.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? null;
+      if (lastTouchY != null && y != null && y < lastTouchY) stickToBottomRef.current = false;
+      lastTouchY = y;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    scrollerListenersRef.current = {
+      el,
+      clean: () => {
+        el.removeEventListener("wheel", onWheel);
+        el.removeEventListener("touchstart", onTouchStart);
+        el.removeEventListener("touchmove", onTouchMove);
+      }
+    };
+  }, []);
+
+  // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂 wheel/touch。
+  const handleScrollerRef = useCallback(
+    (node: HTMLElement | Window | null) => {
+      const el = node instanceof HTMLElement ? node : null;
+      scrollerElRef.current = el;
+      if (el) attachScrollerListeners(el);
+      scrollerRef(node);
+    },
+    [attachScrollerListeners, scrollerRef]
+  );
+
+  // 持续 rAF 钉底：stick=true 时每帧把 scrollTop 钉到容器底（scrollHeight - clientHeight）。
+  // 物理即时、无高度估算，对「同 row 内容增长」（流式 token / 占位→内容 / 完成 reflow）统一贴底，
+  // 从根上替代 followOutput 的估算滚底——消除发送抖动（问题2）、占位拖离锚点（问题1）、
+  // 完成后被 Virtuoso 顶部锚点拉回发送位置（问题4）。stick=false（用户上滚）则完全不干预。
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
+      if (
+        stickToBottomRef.current &&
+        !pendingLocateIdRef.current &&
+        !locatedThisSessionRef.current
+      ) {
+        const sc = scrollerElRef.current;
+        if (sc) {
+          const max = sc.scrollHeight - sc.clientHeight;
+          if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // 外部（发送）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
+  const prevStickResetRef = useRef(stickResetSignal);
+  useEffect(() => {
+    if (stickResetSignal === prevStickResetRef.current) return;
+    prevStickResetRef.current = stickResetSignal;
+    stickToBottomRef.current = true;
+  }, [stickResetSignal]);
+
   const pendingLocateId = pendingScrollMessageId?.trim() || "";
+  pendingLocateIdRef.current = pendingLocateId;
   const pendingLocateIndex = pendingLocateId
     ? visibleRenderRows.findIndex((row) => rowMatchesMessageId(row, pendingLocateId))
     : -1;
@@ -1547,9 +1780,12 @@ export function AgentMessageStream({
 
   // loading→就绪且无定位：滚到末尾唤醒虚拟窗口。
   // pendingLocateId 在 loading 期间也会下发（跨会话），故就绪首帧即可拦住 wake，避免先 LAST 再定位。
+  // 超长会话（含数千字 toolResult / 长 assistant）下 scrollToIndex(LAST,end) 因 defaultItemHeight 估算偏
+  // 会落点偏上、看不到最新；DOM 实测把最后一条底部对齐视口底部 = 真贴底，多帧覆盖 Virtuoso 测量收敛。
   useEffect(() => {
     if (sessionLoading || visibleRenderRows.length === 0) return;
     if (pendingLocateId || locatedThisSessionRef.current) return;
+    const lastKey = visibleRenderRows[visibleRenderRows.length - 1]?.stableKey;
     const wake = () => {
       virtuosoRef.current?.scrollToIndex({
         index: visibleRenderRows.length - 1,
@@ -1558,18 +1794,24 @@ export function AgentMessageStream({
       });
     };
     wake();
+    const stickTimers: number[] = [];
+    if (lastKey) {
+      const stickEnd = adjustToMessage(lastKey, "end");
+      [80, 200, 420].forEach((t) => stickTimers.push(window.setTimeout(stickEnd, t)));
+    }
     const raf = requestAnimationFrame(wake);
     const timer = window.setTimeout(wake, 64);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
+      stickTimers.forEach((t) => window.clearTimeout(t));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId, sessionLoading, visibleRenderRows.length]);
 
   if (sessionLoading) {
     return (
-      <div className="ml-[var(--chat-content-left,auto)] mr-auto w-full max-w-[860px] px-10 pt-12 motion-safe:transition-[margin] motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)]">
+      <div className="ml-[var(--chat-content-left,auto)] mr-auto max-w-[860px] px-10 pt-12">
         <StreamLoadingState />
       </div>
     );
@@ -1577,70 +1819,94 @@ export function AgentMessageStream({
   if (messages.length === 0) return null;
 
   return (
-    <Virtuoso
-      key={virtuosoMountKey}
-      ref={virtuosoRef}
-      data={visibleRenderRows}
-      computeItemKey={(_index, row) => row.stableKey}
-      scrollerRef={scrollerRef}
-      className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
-      initialTopMostItemIndex={
-        initialLocateIndex >= 0
-          ? { index: initialLocateIndex, align: "start" }
-          : { index: "LAST", align: "end" }
-      }
-      followOutput={(atBottom) =>
-        atBottom && !pendingLocateId && !locatedThisSessionRef.current ? "auto" : false
-      }
-      atBottomThreshold={48}
-      atBottomStateChange={onAtBottomChange}
-      startReached={onStartReached}
-      rangeChanged={onRangeChanged}
-      increaseViewportBy={{ top: 600, bottom: 600 }}
-      defaultItemHeight={160}
-      components={{ List: AgentMessageListContainer, Header: AgentMessageListHeader }}
-      itemContent={(_index, row) =>
-        row.isSystem ? (
-          <AgentMessageRowFrame>
-            <SystemMessageRow content={row.msg.content.trim()} />
-          </AgentMessageRowFrame>
-        ) : (
-        <AgentMessageRowFrame>
-        <MessageShell
-          isAssistant={row.isAssistant}
-          todoItems={row.todoItems}
-          userHasAttachments={!row.isAssistant && Boolean(row.msg.attachments?.length)}
-          highlight={Boolean(highlightMessageId) && rowMatchesMessageId(row, highlightMessageId)}
-          highlightKeyword={highlightKeyword}
-          locateMessageId={row.stableKey}
-        >
-          {row.isAssistant ? (
-            <AssistantMessage
-              row={row}
-              timelineOpenState={timelineOpenState}
-              setTimelineOpenState={setTimelineOpenState}
-              showReasoningSummaries={showReasoningSummaries}
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-              renderMarkdown={renderMarkdown}
-            />
+    <>
+      <AgentMessageNavigator
+        markers={navigatorMarkers}
+        totalCount={visibleRenderRows.length}
+        activeIndex={navigatorActiveIndex}
+        onNavigate={handleNavigatorJump}
+        text={text}
+        hidden={navigatorHidden}
+        side={navigatorSide}
+      />
+      <Virtuoso
+        key={virtuosoMountKey}
+        ref={virtuosoRef}
+        data={visibleRenderRows}
+        computeItemKey={(_index, row) => row.stableKey}
+        scrollerRef={handleScrollerRef}
+        className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
+        initialTopMostItemIndex={
+          initialLocateIndex >= 0
+            ? { index: initialLocateIndex, align: "start" }
+            : { index: "LAST", align: "end" }
+        }
+        followOutput={() =>
+          // followOutput 只对 item 数量变化触发且依赖 defaultItemHeight 估算滚底——对同 row 内容增长
+          // （流式 token / 占位→内容 / 完成 reflow）是盲区。一律禁用，改由持续 rAF 物理钉底
+          // （stick ref 驱动）统一接管，消除发送估算抖动(问题2)、占位拖离锚点(问题1)、
+          // 完成后被顶部锚点拉回发送位置(问题4)。
+          false
+        }
+        atBottomThreshold={48}
+        atBottomStateChange={(atBottom) => {
+          if (atBottom) stickToBottomRef.current = true; // 贴底/跳最新 → 恢复跟随
+          onAtBottomChange(atBottom); // 透传 App 驱动「跳到最新」按钮（atBottom=false 时弹出）
+        }}
+        startReached={onStartReached}
+        rangeChanged={(range) => {
+          onRangeChanged();
+          const reach = range.endIndex - range.startIndex;
+          const mid = reach > 0 ? Math.round((range.startIndex + range.endIndex) / 2) : range.startIndex;
+          setNavigatorActiveIndex((prev) => (prev === mid ? prev : mid));
+        }}
+        increaseViewportBy={{ top: 600, bottom: 600 }}
+        defaultItemHeight={160}
+        components={{ List: AgentMessageListContainer, Header: AgentMessageListHeader }}
+        itemContent={(_index, row) =>
+          row.isSystem ? (
+            <AgentMessageRowFrame>
+              <SystemMessageRow content={row.msg.content.trim()} />
+            </AgentMessageRowFrame>
           ) : (
-            <UserMessage
-              msg={row.msg}
-              messageOpenState={messageOpenState}
-              setMessageOpenState={setMessageOpenState}
-              renderMarkdown={renderMarkdown}
-              onPreviewImageGroup={onPreviewImageGroup}
-              onCopyAttachmentUri={onCopyAttachmentUri}
-              onOpenAttachment={onOpenAttachment}
-            />
-          )}
-        </MessageShell>
-        </AgentMessageRowFrame>
-        )
-      }
-    />
+            <AgentMessageRowFrame>
+              <MessageShell
+                isAssistant={row.isAssistant}
+                todoItems={row.todoItems}
+                userHasAttachments={!row.isAssistant && Boolean(row.msg.attachments?.length)}
+                highlight={Boolean(highlightMessageId) && rowMatchesMessageId(row, highlightMessageId)}
+                highlightKeyword={highlightKeyword}
+                locateMessageId={row.stableKey}
+              >
+                {row.isAssistant ? (
+                  <AssistantMessage
+                    row={row}
+                    timelineOpenState={timelineOpenState}
+                    setTimelineOpenState={setTimelineOpenState}
+                    showReasoningSummaries={showReasoningSummaries}
+                    shellToolPartsExpanded={shellToolPartsExpanded}
+                    editToolPartsExpanded={editToolPartsExpanded}
+                    onOpenTaskSession={onOpenTaskSession}
+                    onOpenToolFile={onOpenToolFile}
+                    onOpenBrowserUrl={onOpenBrowserUrl}
+                    renderMarkdown={renderMarkdown}
+                  />
+                ) : (
+                  <UserMessage
+                    msg={row.msg}
+                    messageOpenState={messageOpenState}
+                    setMessageOpenState={setMessageOpenState}
+                    renderMarkdown={renderMarkdown}
+                    onPreviewImageGroup={onPreviewImageGroup}
+                    onCopyAttachmentUri={onCopyAttachmentUri}
+                    onOpenAttachment={onOpenAttachment}
+                  />
+                )}
+              </MessageShell>
+            </AgentMessageRowFrame>
+          )
+        }
+      />
+    </>
   );
 }

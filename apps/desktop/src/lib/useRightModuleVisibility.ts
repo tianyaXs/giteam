@@ -13,6 +13,7 @@ const RIGHT_PANE_TABS: RightPaneTab[] = ([
   "remoteRepos",
   "skills",
   "mcp",
+  "browser",
 ] as RightPaneTab[]).filter((tab) =>
   tab === "mcp" ? MCP_MODULE_ENABLED
     : tab === "remoteRepos" ? REMOTE_REPO_MODULE_ENABLED
@@ -25,7 +26,8 @@ const DEFAULT_RIGHT_MODULE_VISIBILITY: Record<RightPaneTab, boolean> = {
   terminal: true,
   remoteRepos: true,
   skills: true,
-  mcp: true
+  mcp: true,
+  browser: true
 };
 
 export function useRightModuleVisibility(

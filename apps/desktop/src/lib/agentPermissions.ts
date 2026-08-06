@@ -23,7 +23,9 @@ export function describePermissionInteraction(
   const input = (interaction.input || {}) as Record<string, unknown>;
   const target =
     (typeof input.command === "string" && input.command.trim()) ||
+    (typeof input.url === "string" && input.url.trim()) ||
     (typeof input.path === "string" && input.path.trim()) ||
+    (typeof input.selector === "string" && input.selector.trim()) ||
     "";
   return {
     tool: interaction.tool || "tool",

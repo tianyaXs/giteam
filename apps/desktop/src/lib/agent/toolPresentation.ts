@@ -21,6 +21,11 @@ export function toolDisplayName(tool: string): string {
   if (tool === "write") return "写入";
   if (tool === "edit" || tool === "hashline_edit") return "编辑";
   if (tool === "bash") return "bash";
+  if (tool === "bash_output") return "输出";
+  if (tool === "kill_shell") return "终止";
+  if (tool === "web_fetch") return "联网";
+  if (tool === "web_search") return "搜索";
+  if (tool === "browser_use") return "浏览器";
   if (tool === "question") return "提问";
   return tool || "tool";
 }
@@ -31,6 +36,10 @@ export function toolMode(tool: string): string {
   if (tool === "find") return "搜索";
   if (tool === "write" || tool === "edit" || tool === "hashline_edit") return "写入";
   if (tool === "bash") return "命令";
+  if (tool === "bash_output") return "输出";
+  if (tool === "kill_shell") return "终止";
+  if (tool === "web_fetch" || tool === "web_search") return "联网";
+  if (tool === "browser_use") return "浏览";
   if (tool === "question") return "等待";
   return "";
 }
@@ -42,6 +51,17 @@ export function isContextTool(tool: string): boolean {
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/** 从 URL 提取主域名（去 www. 前缀；非法 URL 回退到首段）。web 工具 headline 用。 */
+function domainOfUrl(value: unknown): string {
+  const url = normalizeText(value);
+  if (!url) return "";
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url.split("/")[0] || url;
+  }
 }
 
 /** 路径末段（/ 与 \ 兼容）。 */
@@ -75,9 +95,30 @@ export function extractToolDetails(output: unknown): Record<string, unknown> | u
   return details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
 }
 
+/** browser_use headline：navigate→动作+域名，click/type/read_dom→动作+选择器，screenshot→screenshot。 */
+function browserUseHeadline(input: PiToolInput): string {
+  const action = normalizeText(input.action);
+  if (action === "navigate") {
+    const url = normalizeText(input.url);
+    return [action, domainOfUrl(url) || url].filter(Boolean).join(" · ");
+  }
+  if (action === "screenshot") return "screenshot";
+  const selector = normalizeText(input.selector);
+  return [action, selector].filter(Boolean).join(" · ");
+}
+
 /** 工具卡片头部的目标描述：bash→命令，搜索→pattern · path，提问→题头/数量，文件类→文件名。 */
 export function toolHeadlineTarget(tool: string, input: PiToolInput): string {
   if (tool === "bash") return normalizeText(input.command);
+  if (tool === "bash_output" || tool === "kill_shell") {
+    return normalizeText(input.shell_id) || normalizeText(input.shellId);
+  }
+  if (tool === "browser_use") return browserUseHeadline(input);
+  if (tool === "web_fetch") {
+    const url = normalizeText(input.url);
+    return domainOfUrl(url) || url;
+  }
+  if (tool === "web_search") return normalizeText(input.query);
   if (tool === "grep" || tool === "find") {
     const pattern = normalizeText(input.pattern);
     const path = compactPath(input.path);

@@ -141,6 +141,7 @@ pub fn fetch_skillsmp_ai_search(
 
 #[tauri::command]
 pub async fn agent_create_session(
+    app: AppHandle,
     request: PiCreateSessionRequest,
 ) -> Result<PiSessionSummary, String> {
     let config = PiSessionConfig {
@@ -165,6 +166,7 @@ pub async fn agent_create_session(
         no_session: request.no_session,
         thinking: request.thinking,
         max_tool_iterations: request.max_tool_iterations,
+        browser_controller: Some(super::browser_controller::desktop_browser_controller(app)),
     };
     service()
         .create_session(config)

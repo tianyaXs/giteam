@@ -21,9 +21,12 @@ export function Workbench(props: {
   onRightPanelResizeStart?: MouseEventHandler<HTMLDivElement>;
 }) {
   const reduceMotion = useReducedMotion();
+  // 临界阻尼（damping≈2√(stiffness·mass)≈36.4）：消除 width 过冲，让 editor 宽度随
+  // 侧栏收放单调变化 → contentLeft（纯 CSS calc 即时跟随）单调 → 消息流/进度卡/标题不再来回滑动。
+  // 标题已改纯 CSS calc（CHAT_CONTENT_LEFT_CSS，与内容列同源同帧），不再需要 motion spring 同参数。
   const sidebarTransition = reduceMotion
     ? { duration: 0 }
-    : { type: "spring" as const, stiffness: 360, damping: 34, mass: 0.92 };
+    : { type: "spring" as const, stiffness: 360, damping: 38, mass: 0.92 };
   const splitterTransition = reduceMotion
     ? { duration: 0 }
     : { duration: 0.22, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] };

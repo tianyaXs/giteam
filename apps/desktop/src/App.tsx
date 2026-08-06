@@ -1,4 +1,4 @@
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
 import QRCode from "qrcode";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -25,7 +25,7 @@ import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentM
 import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPickerDialog";
 import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
 import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
-import { AgentChatFrame } from "./components/agent/AgentChatFrame";
+import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentChatFrame";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import {
   AgentMcpDialogs,
@@ -33,6 +33,7 @@ import {
   AgentSettingsMcpGrid
 } from "./components/agent/AgentMcpPanels";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
+import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { SearchPanel } from "./components/search/SearchPanel";
 import type { SearchHit, SearchScope } from "./lib/sessionSearch";
 import { AgentTodoProgressCard } from "./components/agent/AgentTodoProgressCard";
@@ -491,7 +492,6 @@ const AGENT_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
 const AGENT_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const AGENT_OLDER_MESSAGE_FETCH_LIMIT = 8;
 const TITLEBAR_LEFT_TOGGLE_X = 80;
-const TITLEBAR_COLLAPSED_TITLE_INSET = 220;
 const DRAG_REGION_INTERACTIVE_SELECTOR = [
   "a",
   "button",
@@ -723,7 +723,6 @@ function FloatingContextMenu({
 }
 
 export function App() {
-  const reduceMotion = useReducedMotion();
   useTauriDragRegions();
   const [theme, toggleTheme] = useDesktopTheme();
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
@@ -861,6 +860,7 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
+  const [browserPaneUrl, setBrowserPaneUrl] = useState("");
   const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
   const rightOpenTabs = useMemo(
     (): RightPaneTab[] => [PINNED_RIGHT_PANE_TAB, ...rightOptionalTabs],
@@ -1105,6 +1105,7 @@ export function App() {
   const [agentSlashActiveIndex, setAgentSlashActiveIndex] = useState(0);
   const [agentAutoFollowLatest, setAgentAutoFollowLatest] = useState(true);
   const [agentShowJumpLatest, setAgentShowJumpLatest] = useState(false);
+  const [agentStickResetSignal, setAgentStickResetSignal] = useState(0);
   const [agentSessionFetchLimit, setAgentSessionFetchLimit] = useState(AGENT_SESSION_PAGE_SIZE);
   const [draftAgentSession, setDraftAgentSession] = useState(false);
   const [agentRunBusyBySession, setAgentRunBusyBySession] = useState<Record<string, boolean>>({});
@@ -2335,6 +2336,19 @@ export function App() {
             setAgentSelectedModel(prevModel);
             throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
           }
+          // 切换成功：清当前会话残留的运行失败错误占位（上一 provider 的报错），否则 UI 仍显示
+          // 旧 provider 的错误——例如已切到 gptluna，最后一条却仍显示 kimi-coding 报错（问题3）。
+          updateAgentSessionById(sid, (session) => {
+            let changed = false;
+            const messages = session.messages.map((message) => {
+              if (message.role === "assistant" && Boolean(message.error) && !(message.content || "").trim()) {
+                changed = true;
+                return { ...message, error: "" };
+              }
+              return message;
+            });
+            return changed ? { ...session, messages } : session;
+          });
         }
       }
       // 切换模型后钳制推理档到新模型能力。
@@ -4951,12 +4965,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
     const scrollToBottom = (options?: { force?: boolean }) => {
       if (activeAgentSessionId !== sessionId) return;
-      // 流式增量交给 virtuoso followOutput 自动追底；仅在 force（用户发送/跳最新）时显式滚到底并恢复跟随。
+      // 仅 force（用户发送）时恢复贴底跟随：递增 signal 让 AgentMessageStream 的 stick ref 置 true，
+      // 由其持续 rAF 物理钉底接管滚到底。不再用 scrollToIndex——它依赖 defaultItemHeight(160) 估算，
+      // 实测校正那一帧就是「发送后气泡下移」抖动（问题2）。
       if (!options?.force) return;
       setAgentAutoFollowLatest(true);
-      window.requestAnimationFrame(() => {
-        agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
-      });
+      setAgentStickResetSignal((n) => n + 1);
     };
 
     updateAgentSessionById(sessionId, (session) => {
@@ -6636,6 +6650,35 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
+  function openUrlInBrowserPane(url: string) {
+    const trimmed = (url || "").trim();
+    if (!trimmed) return;
+    setBrowserPaneUrl(trimmed);
+    openRightPane("browser");
+    // 内嵌浏览器由 BrowserPanel 挂载后自行 open/navigate；web 端 BrowserPanel 降级提示。
+  }
+
+  // agent 调 browser_use 导航但右侧浏览器面板尚无 tab：Rust controller 发此事件，
+  // 这里复用 openUrlInBrowserPane 自动展开面板并新建 tab 导航，避免 agent fallback 系统浏览器。
+  // openUrlInBrowserPane 内部仅调用稳定的 setState，闭包 stale 无副作用。
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    let unlisten: (() => void) | undefined;
+    let alive = true;
+    void listen<{ url: string }>("giteam://browser-agent-open", (event) => {
+      if (!alive) return;
+      const u = event.payload?.url;
+      if (u) openUrlInBrowserPane(u);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function runSelectedReview() {
     if (!ensureRepoSelected() || !selectedCommit) return;
     setBusy(true);
@@ -7676,7 +7719,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     setAgentShowJumpLatest(false);
     const frame = window.requestAnimationFrame(() => {
       if (locateInFlightRef.current) return;
-      agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
+      agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
     });
     return () => window.cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7693,7 +7736,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   function jumpAgentToLatest() {
     locateInFlightRef.current = false;
     setAgentAutoFollowLatest(true);
-    agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "smooth" });
+    agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
   }
 
   useEffect(() => {
@@ -8225,6 +8268,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 clearLocateRequest();
               }}
               highlightKeyword={highlightKeyword}
+              text={appText}
+              navigatorHidden={rightDrawerOpen}
+              navigatorSide={generalSettings.navigatorSide}
+              navigatorScope={generalSettings.navigatorScope}
+              stickResetSignal={agentStickResetSignal}
               messages={agentMessages}
               renderedMessages={agentRenderedMessages}
               activeStreamingAssistantId={activeAgentStreamingAssistantId}
@@ -8255,6 +8303,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onOpenToolFile={(target) => {
                 void openToolFileInRightPane(target);
               }}
+              onOpenBrowserUrl={(url) => openUrlInBrowserPane(url)}
               onPreviewImageGroup={(images, index) => {
                 setAgentPreviewImage({ images, index });
               }}
@@ -8510,6 +8559,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           ? "terminal"
           : "default"}
     >
+      {rightPaneTab === "browser" ? (
+        <BrowserPanel url={browserPaneUrl} />
+      ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (
           remoteRepoResourceMode ? (
@@ -8829,6 +8881,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         remoteRepos: "远程仓库",
         skills: appText.skills,
         mcp: appText.mcp,
+        browser: "浏览器",
       }}
       fileTabLabel={standaloneRightFileTab?.label}
       closeFileLabel={appText.closeFileView}
@@ -8848,22 +8901,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden"
   );
 
-  const editorHeaderTransition = reduceMotion
-    ? { duration: 0 }
-    : { type: "spring" as const, stiffness: 360, damping: 34, mass: 0.92 };
-
   const editor = (
-    <div className={editorShellClass}>
-      <motion.div
-        className="shrink-0"
-        initial={false}
-        animate={{ paddingLeft: leftDrawerOpen ? 16 : TITLEBAR_COLLAPSED_TITLE_INSET }}
-        transition={editorHeaderTransition}
-      >
+    <div
+      className={editorShellClass}
+      style={{ containerType: "inline-size", "--chat-content-left": CHAT_CONTENT_LEFT_CSS } as CSSProperties}
+    >
+      {/* 标题消费 editor 列上的 --chat-content-left（与消息流同源），侧栏收放时即时跟随、与内容列同步。
+          关键：container-type 必须挂在无 padding 的 editor 列——cqw 基于 query container 的 content-box，
+          若挂在标题自身（其 paddingLeft 正是该 calc）会形成循环依赖、解不出值，标题就追不上内容区
+          （「侧栏收起后标题没跟过去」）。editor 列无 padding，100cqw = available，无循环。 */}
+      <div className="shrink-0" style={{ paddingLeft: "var(--chat-content-left)" }}>
         <EditorSessionHeader
           title={activeAgentSession?.title || (draftAgentSession ? appText.newSession : "会话摘要")}
         />
-      </motion.div>
+      </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className={centerColClass}>{centerPane}</div>
       </div>

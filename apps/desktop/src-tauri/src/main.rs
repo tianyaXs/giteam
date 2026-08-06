@@ -220,6 +220,19 @@ fn main() {
                 std::env::set_var("ASUPERSYNC_CONNECT_LOG", dir.join("asupersync-connect.log"));
             }
             commands::ui::apply_saved_window_theme(app.handle());
+            // 内置浏览器 controller（desktop 全局注入）：service 跨 session 持有，
+            // 冷启动恢复 / set_session_options 重建 handle 时复用，避免 browser_use
+            // 在热切/恢复后失效（旧 session 报「内置浏览器仅在桌面端可用」）。
+            // CDP 版：chromiumoxide 经 Chrome DevTools Protocol 操作真实 Chrome，绕开 Tauri
+            // 外部 URL 子 webview 的 IPC 断链（旧 TauriBrowserController 保留作 fallback，不再注入）。
+            giteam_core::pi_agent::PiAgentService::global().set_browser_controller(Some(
+                commands::chromiumoxide_controller::new_controller(),
+            ));
+            // browser_use action 的 requestId 配对注册表（app state 共享）：
+            // controller 注册 sender + eval JS，browser_event command 按 request_id 唤醒。
+            app.manage(std::sync::Arc::new(
+                commands::browser_controller::BrowserActionRegistry::default(),
+            ));
             // 钳制主窗口不超出当前屏幕可用区：Windows 高 DPI（125%/150%）+ 任务栏下，
             // 默认或恢复的窗口尺寸可能超出屏幕致底部被任务栏遮挡，需手动最大化才完整。
             if let Some(window) = app.get_webview_window("main") {
@@ -343,6 +356,16 @@ fn main() {
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
             commands::ui::open_external_url,
+            commands::browser_panel::open_browser_embedded,
+            commands::browser_panel::select_browser_tab,
+            commands::browser_panel::navigate_browser,
+            commands::browser_panel::set_browser_bounds,
+            commands::browser_panel::hide_browser,
+            commands::browser_panel::hide_all_browser,
+            commands::browser_panel::close_browser,
+            commands::browser_panel::reload_browser,
+            commands::browser_panel::browser_go,
+            commands::browser_panel::browser_event,
             commands::ui::send_desktop_notification,
             commands::giteam_cli::giteam_cli_get_settings,
             commands::giteam_cli::giteam_cli_get_mobile_service_status,

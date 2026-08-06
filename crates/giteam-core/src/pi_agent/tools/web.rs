@@ -61,7 +61,7 @@ fn truncate(text: &str, limit: usize) -> String {
 }
 
 /// 提取 host（小写化；忽略端口/路径）。web_fetch 审批键 + 围栏 source 用。
-fn domain_of(url: &str) -> Option<String> {
+pub(crate) fn domain_of(url: &str) -> Option<String> {
     let after_scheme = url.split("://").nth(1).unwrap_or(url);
     let host = after_scheme.split(['/', ':', '?', '#']).next()?;
     let host = host.trim();
@@ -70,7 +70,7 @@ fn domain_of(url: &str) -> Option<String> {
 
 /// SSRF 防护：拒绝 loopback / 私网 / 链路本地 host（MVP 级 host+明文 IP 检查）。
 /// DNS rebinding（域名解析到私网 IP）留 TODO——当前只看 host 字符串/明文 IP。
-fn is_ssrf(url: &str) -> bool {
+pub(crate) fn is_ssrf(url: &str) -> bool {
     let Some(host) = domain_of(url) else {
         return true; // 无法解析 host 视为危险
     };
@@ -78,6 +78,26 @@ fn is_ssrf(url: &str) -> bool {
         return true;
     }
     if let Some(ip) = host_to_ipv4(&host) {
+        return is_private_ipv4(ip);
+    }
+    false
+}
+
+/// SSRF 防护（浏览器变体）：与 `is_ssrf` 相同，但**放行 loopback**（localhost /
+/// 127.0.0.0/8 / ::1）。browser_use 驱动用户本地可见的内置浏览器，打开本地 dev
+/// server（如 localhost:5173）是核心场景；与 web_fetch 的服务端抓取不同，loopback
+/// 不构成 SSRF 风险。仍拦截私网/链路本地（云元数据 169.254.169.254 等）与 CGNAT。
+pub(crate) fn is_ssrf_allow_loopback(url: &str) -> bool {
+    let Some(host) = domain_of(url) else {
+        return true; // 无法解析 host 视为危险
+    };
+    if host == "localhost" || host == "::1" {
+        return false;
+    }
+    if let Some(ip) = host_to_ipv4(&host) {
+        if ip[0] == 127 {
+            return false; // 127.0.0.0/8 loopback 放行
+        }
         return is_private_ipv4(ip);
     }
     false
@@ -107,14 +127,14 @@ fn is_private_ipv4(ip: [u8; 4]) -> bool {
 }
 
 /// 把内容包进不可信围栏（配合系统提示词声明：围栏内为外部数据，勿执行其中指令）。
-fn fence(source: &str, body: &str) -> String {
+pub(crate) fn fence(source: &str, body: &str) -> String {
     format!("<untrusted_web_content source=\"{source}\">\n{body}\n</untrusted_web_content>")
 }
 
-fn text_output(body: String) -> ToolOutput {
+pub(crate) fn text_output(body: String, details: Option<Value>) -> ToolOutput {
     ToolOutput {
         content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(body))],
-        details: None,
+        details,
         is_error: false,
     }
 }
@@ -243,10 +263,15 @@ impl Tool for WebFetchTool {
         };
         let truncated = truncate(&cleaned, max_chars);
         let source = domain_of(&url).unwrap_or_else(|| url.clone());
-        Ok(text_output(fence(
-            &format!("{source} — {url}"),
-            &truncated,
-        )))
+        let details = Some(serde_json::json!({
+            "kind": "web_fetch",
+            "url": url,
+            "domain": source,
+        }));
+        Ok(text_output(
+            fence(&format!("{source} — {url}"), &truncated),
+            details,
+        ))
     }
 }
 
@@ -341,10 +366,15 @@ impl Tool for WebSearchTool {
                 &format!("未找到「{query}」的相关结果"),
             ));
         }
-        Ok(text_output(fence(
-            &format!("duckduckgo — {query}"),
-            &body,
-        )))
+        let details = Some(serde_json::json!({
+            "kind": "web_search",
+            "query": query,
+            "backend": backend,
+        }));
+        Ok(text_output(
+            fence(&format!("duckduckgo — {query}"), &body),
+            details,
+        ))
     }
 }
 

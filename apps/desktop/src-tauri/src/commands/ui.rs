@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 use tauri::{AppHandle, Manager, Theme, Window};
+use tauri::utils::config::Color;
 
 const ATTACHMENT_SAMPLE_BYTES: usize = 4096;
 
@@ -255,6 +256,13 @@ pub fn apply_saved_window_theme(app: &AppHandle) {
 
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_theme(theme);
+        // WebView2 / WKWebView 控件默认白底，HTML 解析前的空白帧是白色，
+        // 深色主题下表现为启动白闪。设控件底色与主题一致消除首帧白闪。
+        let bg = match theme {
+            Some(Theme::Light) => Color(255, 255, 255, 255),
+            _ => Color(30, 30, 30, 255),
+        };
+        let _ = window.set_background_color(Some(bg));
     }
 }
 
