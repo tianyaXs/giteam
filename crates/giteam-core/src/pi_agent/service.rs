@@ -707,6 +707,13 @@ impl PiAgentService {
         } else {
             prompt.clone()
         };
+        // 图片降级重试用的纯文本 prompt：乐观直传图片后若 provider 拒收（不支持 image），
+        // 去图用此 prompt 重试一次，附加软说明让模型如实告知用户，而非报错中断。
+        let degraded_image_prompt = if prompt.trim().is_empty() {
+            "（用户发送了图片，但当前端点不支持图像输入，图片已被忽略。请告知用户该端点无法处理图片，建议切换到支持视觉的模型后重试。）".to_string()
+        } else {
+            format!("{prompt}\n\n（系统提示：当前端点不支持图像输入，本次附图已被移除；请基于上述文字内容正常回复，并简要告知用户图片未能处理，建议切换到支持视觉的模型。）")
+        };
 
         // 对齐 Pi RPC `run_prompt_with_retry`：可重试错误不终止任务，自动 resume；
         // 默认最多 10 次（settings.json retry.maxRetries，由 ensure_pi_retry_settings 写入）。
@@ -723,6 +730,8 @@ impl PiAgentService {
         let max_retries = retry_config.retry_max_retries().max(1);
         let mut retry_count: u32 = 0;
         let mut final_error: Option<String> = None;
+        // 图片降级重试标记：provider 拒收图片时去图重试一次，不报错中断（配套"默认允许图片"）。
+        let mut image_degraded_retry = false;
 
         let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
@@ -771,7 +780,17 @@ impl PiAgentService {
                     let cb = Arc::clone(&on_event);
                     move |event| cb(event)
                 };
-                let attempt_result = if retry_count == 0 {
+                let attempt_result = if image_degraded_retry {
+                    // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
+                    image_degraded_retry = false;
+                    handle
+                        .prompt_with_abort(
+                            degraded_image_prompt.clone(),
+                            abort_signal_for_prompt.clone(),
+                            on_event_cb,
+                        )
+                        .await
+                } else if retry_count == 0 {
                     match &content_blocks {
                         None => {
                             handle
@@ -823,6 +842,11 @@ impl PiAgentService {
                             .error_message
                             .clone()
                             .unwrap_or_else(|| "Request error".to_string());
+                        let image_unsup =
+                            content_blocks.is_some() && is_image_unsupported_error(&err_msg);
+                        if image_unsup {
+                            image_degraded_retry = true;
+                        }
                         final_error = Some(err_msg.clone());
                         retry_enabled
                             && retry_count < max_retries
@@ -830,7 +854,8 @@ impl PiAgentService {
                                 &err_msg,
                                 Some(message.usage.input),
                                 None,
-                            ) || is_tool_call_id_overflow_error(&err_msg))
+                            ) || is_tool_call_id_overflow_error(&err_msg)
+                                || image_unsup)
                     }
                     Ok(message)
                         if matches!(message.stop_reason, pi::sdk::StopReason::Aborted) =>
@@ -847,12 +872,18 @@ impl PiAgentService {
                     }
                     Err(err) => {
                         let err_str = err.to_string();
+                        let image_unsup =
+                            content_blocks.is_some() && is_image_unsupported_error(&err_str);
+                        if image_unsup {
+                            image_degraded_retry = true;
+                        }
                         final_error = Some(err_str.clone());
                         retry_enabled
                             && retry_count < max_retries
                             && (err.is_transient()
                                 || pi::error::is_retryable_error(&err_str, None, None)
-                                || is_tool_call_id_overflow_error(&err_str))
+                                || is_tool_call_id_overflow_error(&err_str)
+                                || image_unsup)
                     }
                 };
 
@@ -1687,6 +1718,28 @@ fn is_tool_call_id_overflow_error(message: &str) -> bool {
         || lower.contains("maximum length 64")
         || lower.contains("max length 64")
         || lower.contains("above_max_length")
+}
+
+/// provider 拒收图片的常见错误措辞（OpenAI/Anthropic/各兼容网关）。
+/// 仅用于乐观直传图片失败后的降级判断——去图用纯文本重试，避免报错中断 agent。
+/// 关键词宽松（含 image/multimodal/vision/modality + 不支持/无效等）：误判仅多一次无图重试，
+/// 去图后若仍失败则按原错误正常上报，无害。
+fn is_image_unsupported_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let mentions_image = lower.contains("image")
+        || lower.contains("multimodal")
+        || lower.contains("vision")
+        || lower.contains("modality");
+    if !mentions_image {
+        return false;
+    }
+    lower.contains("unsupported")
+        || lower.contains("not support")
+        || lower.contains("does not support")
+        || lower.contains("not allowed")
+        || lower.contains("invalid")
+        || lower.contains("unable")
+        || lower.contains("not enabled")
 }
 
 fn message_has_oversized_tool_call_id(message: &pi::sdk::Message) -> bool {

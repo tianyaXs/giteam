@@ -1112,7 +1112,20 @@ impl ProviderCatalog {
             base_url: model.base_url.clone(),
             reasoning: model.reasoning,
             supports_xhigh: entry.supports_xhigh(),
-            image_input: model.input.contains(&pi::sdk::InputType::Image),
+            // image_input：三轨乐观，避免静默丢图（用户明确要求"默认允许图片"）。
+            // ① pi 清单明确标 Image（内置视觉模型如 Claude/GPT-4o）→ 支持；
+            // ② 自定义 OpenAI 兼容 provider（openai-compatible.*，is_removable）→ 乐观；
+            // ③ 第三方 endpoint（base_url 非官方域名，如 gaccode relay / 内网 IP）→ 乐观。
+            // 真根因实测：openai-codex 等「内置 provider id 但 base_url 连第三方 relay」的视觉模型
+            // （gpt-5.6-luna），pi 清单不标 Image、is_oauth_native_api_locked 判 true→is_removable=false，
+            // 严格判 image_input=false→service.rs 静默丢图+注入"看不到图"提示→模型忽略提示答非所问
+            // （截图现象：问"这是什么"+图，agent 答上一轮番茄钟结论）。第三轨按 base_url 是否官方
+            // 域名判断，覆盖这类「id 像内置、实连第三方」的 provider。官方纯文本（deepseek
+            // api.deepseek.com 等）base_url 在官方白名单→不乐观，按 pi 清单 [Text] 判。
+            // 误乐观（端点真不支持图）由 service.rs image 降级兜底（provider 拒收→去图纯文本重试，不报错）。
+            image_input: model.input.contains(&pi::sdk::InputType::Image)
+                || is_removable_custom_provider_id(&model.provider)
+                || is_third_party_endpoint(&model.base_url),
             context_window: model.context_window,
             max_tokens: model.max_tokens,
             cost: Some(AgentModelCost {
@@ -1170,6 +1183,31 @@ fn is_removable_custom_provider_id(provider: &str) -> bool {
         return false;
     }
     true
+}
+
+/// base_url 是否指向第三方/自建 endpoint（非官方域名）。
+/// 用于 image_input 第三轨乐观：内置 provider id（如 openai-codex）但 base_url 连第三方 relay
+/// 或内网时，按第三方对待，乐观允许图片，避免 pi 清单不标 Image 而静默丢图。官方域名白名单
+/// 内的（api.openai.com / api.deepseek.com / api.z.ai 等）视为官方，不乐观（按 pi 清单 [Text] 判）。
+fn is_third_party_endpoint(base_url: &str) -> bool {
+    let url = base_url.trim().to_ascii_lowercase();
+    if url.is_empty() {
+        return false;
+    }
+    // 官方域名标记（base_url 含任一即视为官方 endpoint，不触发乐观）。
+    const OFFICIAL_MARKERS: &[&str] = &[
+        "chatgpt.com",
+        "api.openai.com",
+        "api.anthropic.com",
+        "api.deepseek.com",
+        "api.z.ai",
+        "api.kimi.com",
+        "api.moonshot.cn",
+        "generativelanguage.googleapis.com",
+        "api.groq.com",
+        "api.mistral.ai",
+    ];
+    !OFFICIAL_MARKERS.iter().any(|marker| url.contains(marker))
 }
 
 fn is_official_openai_codex_base(url: &str) -> bool {
