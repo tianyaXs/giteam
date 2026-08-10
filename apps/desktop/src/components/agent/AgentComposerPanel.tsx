@@ -51,7 +51,7 @@ type SlashCommandOption = {
   trigger: string;
   title: string;
   description?: string;
-  source: "builtin" | "command" | "skill" | "mcp";
+  source: "builtin" | "command" | "skill";
 };
 
 type AgentModelDisplay = {
@@ -76,9 +76,7 @@ type AgentComposerPanelProps = {
   showJumpLatest?: boolean;
   onJumpLatest?: () => void;
   attachments: AgentAttachment[];
-  mcpPromptRefs: string[];
   onRemoveAttachment: (id: string) => void;
-  onRemoveMcpPromptRef: (name: string) => void;
   slashOpen: boolean;
   slashSuggestions: SlashCommandOption[];
   slashActiveIndex: number;
@@ -619,9 +617,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     activeSessionStale,
     selectedRepoName,
     attachments,
-    mcpPromptRefs,
     onRemoveAttachment,
-    onRemoveMcpPromptRef,
     slashOpen,
     slashSuggestions,
     slashActiveIndex,
@@ -674,7 +670,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       ? "选择模型"
       : "未配置";
   const thinkingValueLabel = thinkingLevelMeta(activeThinkingLevel).shortLabel;
-  const hasComposerPreviews = attachments.length > 0 || mcpPromptRefs.length > 0;
+  const hasComposerPreviews = attachments.length > 0;
   // 旧会话空输入始终「继续跟进」；贴图不应改成「要做什么？」。
   const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
   const configSummaryLabel = (activeModel || "").trim()
@@ -705,7 +701,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     const observer = new ResizeObserver(sync);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [showEmptyState, hasComposerPreviews, attachments.length, mcpPromptRefs.length]);
+  }, [showEmptyState, hasComposerPreviews, attachments.length]);
 
   const editorProps = {
     textareaClassName: "py-0 text-[15px] leading-7",
@@ -757,25 +753,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     attachment={attachment}
                     onRemove={onRemoveAttachment}
                   />
-                ))}
-              </div>
-            ) : null}
-            {mcpPromptRefs.length > 0 ? (
-              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
-                {mcpPromptRefs.map((name) => (
-                  <Badge key={name} variant="outline" className="max-w-full gap-1.5 normal-case tracking-normal">
-                    <span className="min-w-0 truncate">{name}</span>
-                    <Button
-                      type="button"
-                      className="size-5 shrink-0 rounded-full p-0"
-                      onClick={() => onRemoveMcpPromptRef(name)}
-                      aria-label={`移除 ${name} MCP 引用`}
-                      variant="ghost"
-                      size="icon"
-                    >
-                      <CloseIcon width={14} height={14} />
-                    </Button>
-                  </Badge>
                 ))}
               </div>
             ) : null}

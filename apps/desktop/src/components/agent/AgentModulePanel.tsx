@@ -30,12 +30,10 @@ import {
   SelectValue
 } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { cn } from "../../lib/utils";
-import { MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 
-export type AgentModuleTab = "agents" | "permissions" | "mcp" | "skills";
+export type AgentModuleTab = "agents" | "permissions" | "skills";
 
 type AgentModulePanelProps = {
   open: boolean;
@@ -48,24 +46,6 @@ type AgentModulePanelProps = {
   autoAcceptPermissions: boolean;
   permissionLoading: boolean;
   activePermissions: PermissionInteraction[];
-  mcpLoading: boolean;
-  mcpError: string;
-  mcpBusyName: string;
-  mcpRows: Array<[string, Record<string, any>]>;
-  mcpAddForm: {
-    name: string;
-    type: "remote" | "local";
-    url: string;
-    headers: string;
-    command: string;
-    env: string;
-    setName: (value: string) => void;
-    setType: (value: "remote" | "local") => void;
-    setUrl: (value: string) => void;
-    setHeaders: (value: string) => void;
-    setCommand: (value: string) => void;
-    setEnv: (value: string) => void;
-  };
   skillsLoading: boolean;
   skillsError: string;
   skills: AgentSkillInfo[];
@@ -91,10 +71,7 @@ type AgentModulePanelProps = {
   onToggleAutoAccept: () => void;
   onRefreshPermissions: () => void;
   onSendPermissionReply: (requestId: string, reply: AgentPermissionReply) => void;
-  onRefreshMcp: () => void;
   onRefreshSkills: () => void;
-  onAddMcp: () => void;
-  onRunMcpAction: (name: string, action: "connect" | "disconnect" | "auth" | "logout") => void;
   onSkillInstallScopeChange: (scope: "project" | "global") => void;
   onSkillInstallSpecChange: (value: string) => void;
   onSkillSearchQueryChange: (value: string) => void;
@@ -119,8 +96,8 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
         <DialogHeader className="flex-row items-start justify-between gap-4 border-b border-border p-4">
           <div className="grid min-w-0 gap-1">
             <Badge variant="outline" className="w-fit normal-case tracking-normal">Giteam Modules</Badge>
-            <DialogTitle>Agent / 权限 / MCP / Skills</DialogTitle>
-            <DialogDescription className="sr-only">管理 Giteam 的 agent、权限、MCP 与 skills。</DialogDescription>
+            <DialogTitle>Agent / 权限 / Skills</DialogTitle>
+            <DialogDescription className="sr-only">管理 Giteam 的 agent、权限与 skills。</DialogDescription>
           </div>
           <DialogClose asChild>
             <Button type="button" variant="ghost" size="icon" aria-label="关闭 Giteam 模块">
@@ -142,7 +119,6 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
             {([
               ["agents", "Agents"],
               ["permissions", `权限${props.activePermissions.length ? ` (${props.activePermissions.length})` : ""}`],
-              ...(MCP_MODULE_ENABLED ? ([["mcp", "MCP"]] as Array<[AgentModuleTab, string]>) : []),
               ["skills", "Skills"]
             ] as Array<[AgentModuleTab, string]>).map(([tab, label]) => (
               <ToggleGroupItem key={tab} value={tab}>{label}</ToggleGroupItem>
@@ -152,7 +128,6 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {props.activeTab === "agents" ? <AgentsSection {...props} /> : null}
           {props.activeTab === "permissions" ? <PermissionsSection {...props} /> : null}
-          {props.activeTab === "mcp" ? <McpSection {...props} /> : null}
           {props.activeTab === "skills" ? <SkillsSection {...props} /> : null}
         </div>
       </DialogContent>
@@ -249,71 +224,6 @@ function PermissionsSection(props: AgentModulePanelProps) {
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-function McpSection(props: AgentModulePanelProps) {
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" onClick={props.onRefreshMcp} disabled={props.mcpLoading}>刷新 MCP</Button>
-        {props.mcpError ? <Badge variant="destructive" className="normal-case tracking-normal">{props.mcpError}</Badge> : null}
-      </div>
-      <Card className="rounded-lg shadow-none">
-        <CardContent className="grid gap-3 p-3">
-          <Input className="h-10 rounded-lg" placeholder="mcp 名称，例如 context7" value={props.mcpAddForm.name} onChange={(event) => props.mcpAddForm.setName(event.target.value)} />
-          <Select value={props.mcpAddForm.type} onValueChange={(value) => props.mcpAddForm.setType(value as "remote" | "local")}>
-            <SelectTrigger className="h-10 rounded-lg">
-              <SelectValue placeholder="选择类型" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="remote">remote</SelectItem>
-                <SelectItem value="local">local</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {props.mcpAddForm.type === "remote" ? (
-            <>
-              <Input className="h-10 rounded-lg" placeholder="https://mcp.example.com/mcp" value={props.mcpAddForm.url} onChange={(event) => props.mcpAddForm.setUrl(event.target.value)} />
-              <Textarea className="min-h-24 rounded-lg font-mono text-xs" placeholder="Headers，每行 KEY=VALUE（可选）" value={props.mcpAddForm.headers} onChange={(event) => props.mcpAddForm.setHeaders(event.target.value)} />
-            </>
-          ) : (
-            <>
-              <Input className="h-10 rounded-lg" placeholder="npx -y @modelcontextprotocol/server-everything" value={props.mcpAddForm.command} onChange={(event) => props.mcpAddForm.setCommand(event.target.value)} />
-              <Textarea className="min-h-24 rounded-lg font-mono text-xs" placeholder="Environment，每行 KEY=VALUE（可选）" value={props.mcpAddForm.env} onChange={(event) => props.mcpAddForm.setEnv(event.target.value)} />
-            </>
-          )}
-          <Button variant="contrast" size="sm" onClick={props.onAddMcp} disabled={!!props.mcpBusyName}>添加 MCP</Button>
-        </CardContent>
-      </Card>
-      {props.mcpRows.length === 0 ? <ModuleEmpty title="暂无 MCP server" description="可添加 Context7、Sentry、Grep 等。" /> : null}
-      <div className="grid gap-2">
-        {props.mcpRows.map(([name, status]) => {
-          const statusLabel = String(status?.status || status?.state || (status?.enabled === false ? "disabled" : "configured"));
-          const tools = Array.isArray(status?.tools) ? status.tools.length : undefined;
-          return (
-            <Card key={name} className="rounded-lg shadow-none">
-              <CardContent className="grid gap-3 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <div className="grid min-w-0 gap-1">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <strong className="truncate text-sm font-semibold">{name}</strong>
-                    <Badge variant="secondary" className="normal-case tracking-normal">{String(status?.type || "mcp")}</Badge>
-                  </div>
-                  <span className="truncate text-xs text-muted-foreground">{statusLabel}{typeof tools === "number" ? ` · ${tools} tools` : ""}</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "connect")} disabled={!!props.mcpBusyName}>连接</Button>
-                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "disconnect")} disabled={!!props.mcpBusyName}>断开</Button>
-                <Button variant="outline" size="sm" onClick={() => props.onRunMcpAction(name, "auth")} disabled={!!props.mcpBusyName}>OAuth</Button>
-                <Button variant="destructive" size="sm" onClick={() => props.onRunMcpAction(name, "logout")} disabled={!!props.mcpBusyName}>登出</Button>
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
     </div>
   );
 }

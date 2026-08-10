@@ -1694,16 +1694,22 @@ export function AgentMessageStream({
     });
   }, [pendingLocateId, pendingLocateIndex, sessionLoading, visibleRenderRows.length, activeSessionId, locateNonce]);
 
-  // remount 后：initialTopMostItemIndex 已锚定命中行。仅当关键词完全在视口外时 scrollBy 一次；
-  // 已可见则不动，避免「定位后再抖一下」。
+  // remount 后校正定位：与标尺跳转同一套路——Virtuoso initialTopMostItemIndex / scrollToIndex
+  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧 scrollBy 收敛。
+  // 流程：① 把命中消息拉进视口并对齐 start ② 等关键词 <mark> 出现后居中（对齐 highlight 重试节奏）。
   useEffect(() => {
     if (!pendingLocateId || sessionLoading) return;
     if (pendingLocateIndex < 0) return;
     if (!virtuosoMountKey.includes(":locate:")) return;
 
+    const stableKey = visibleRenderRows[pendingLocateIndex]?.stableKey;
+    if (!stableKey) return;
+
     let cancelled = false;
     let finished = false;
     const timers: number[] = [];
+    const adjustMsg = adjustToMessage(stableKey, "start");
+    const msgSel = `[data-message-id="${CSS.escape(stableKey)}"]`;
 
     const finish = () => {
       if (cancelled || finished) return;
@@ -1726,42 +1732,83 @@ export function AgentMessageStream({
       return null;
     };
 
-    const ensureKeywordVisibleOnce = (): boolean => {
-      const root = document.querySelector<HTMLElement>(`[data-locate-hit="1"]`);
+    /** ① 消息进视口 + DOM 校正到 start（标尺 distant-jump 同款）。 */
+    const bringMessageIntoView = () => {
+      if (cancelled || finished) return;
+      const el = document.querySelector<HTMLElement>(msgSel);
+      if (!el) {
+        virtuosoRef.current?.scrollToIndex({
+          index: pendingLocateIndex,
+          align: "start",
+          behavior: "auto"
+        });
+      }
+      adjustMsg();
+    };
+
+    /** ② 关键词居中；未高亮完返回 false 以便重试。无关键词时消息到位即视为成功。 */
+    const centerKeyword = (): boolean => {
+      if (cancelled || finished) return false;
+      const root =
+        document.querySelector<HTMLElement>(`[data-locate-hit="1"]`) ||
+        document.querySelector<HTMLElement>(msgSel);
       if (!root) return false;
+      const query = (highlightKeyword || "").trim();
+      if (!query) return true;
       const target = findKeywordEl(root);
       if (!target) return false;
-      const scroller =
-        root.closest<HTMLElement>("[data-virtuoso-scroller]") ||
-        root.closest<HTMLElement>(".overflow-auto");
-      if (!scroller) return false;
+      const sc = scrollerElRef.current;
+      if (!sc) return false;
       const markRect = target.getBoundingClientRect();
-      const scrollerRect = scroller.getBoundingClientRect();
+      const scrollerRect = sc.getBoundingClientRect();
       const fullyVisible =
         markRect.top >= scrollerRect.top + 8 && markRect.bottom <= scrollerRect.bottom - 8;
       if (fullyVisible) return true;
       const delta =
         markRect.top + markRect.height / 2 - (scrollerRect.top + scrollerRect.height / 2);
-      if (Math.abs(delta) >= 16) {
-        virtuosoRef.current?.scrollBy({ top: delta, behavior: "auto" });
-      }
+      if (Math.abs(delta) >= 8) sc.scrollBy({ top: delta, behavior: "auto" });
       return true;
     };
 
-    let doneScroll = false;
-    const delays = [80, 240, 480];
+    // 关键词一旦出现，就不再拉回消息 start——否则长消息里会 start↔center 互抢抖动。
+    let keywordLocked = !(highlightKeyword || "").trim();
+
+    const tick = () => {
+      if (!keywordLocked) {
+        bringMessageIntoView();
+        keywordLocked = centerKeyword();
+      } else {
+        // 无关键词：持续消息 start 校正；有关键词：只 refinement 居中，覆盖 Virtuoso 测量收敛。
+        if (!(highlightKeyword || "").trim()) bringMessageIntoView();
+        else centerKeyword();
+      }
+    };
+
+    // 首帧立即校正；随后 rAF 连续收敛（覆盖 Virtuoso 异步测量），与标尺 jump 一致。
+    tick();
+    let frames = 0;
+    const step = () => {
+      if (cancelled || finished) return;
+      tick();
+      if (++frames < 8) requestAnimationFrame(step);
+    };
+    const raf = requestAnimationFrame(step);
+
+    // 超时重试对齐 useHighlightKeyword（rAF / 280 / 700）：代码块 shiki 异步替换后才有 mark。
+    const delays = [80, 280, 480, 720, 1100];
     delays.forEach((delay, i) => {
       timers.push(
         window.setTimeout(() => {
           if (cancelled || finished) return;
-          if (!doneScroll) doneScroll = ensureKeywordVisibleOnce();
-          if (doneScroll || i === delays.length - 1) finish();
+          tick();
+          if (i === delays.length - 1) finish();
         }, delay)
       );
     });
 
     return () => {
       cancelled = true;
+      cancelAnimationFrame(raf);
       timers.forEach((t) => window.clearTimeout(t));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

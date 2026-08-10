@@ -5,7 +5,7 @@
 mod commands;
 mod remote_repo;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "macos")]
 mod macos_context_menu {
@@ -244,6 +244,28 @@ fn main() {
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
+            // 手机端模型开关双向同步：后台线程轮询 mobile-model-state.json，
+            // updatedAt 变化时 emit 给前端 apply（手机端 toggle → control server
+            // 合并写文件 → 这里 30s 内感知 → 前端 diff 应用 enabled/hidden →
+            // 重算 availableModels push 回手机）。control server 在独立 CLI 子进程，
+            // 无 Tauri event 通道，故走文件 + 轮询（非实时是架构约束，非 bug）。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut last_updated_at: Option<u64> = None;
+                    loop {
+                        let value = giteam_core::control::get_mobile_model_state_for_desktop()
+                            .unwrap_or(serde_json::Value::Null);
+                        let ts = value.get("updatedAt").and_then(|v| v.as_u64());
+                        if !value.is_null() && ts != last_updated_at {
+                            let _ = handle.emit("mobile-model-state-pulled", value);
+                            last_updated_at = ts;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                    }
+                });
+            }
+
             std::thread::spawn(|| {
                 commands::giteam_cli::start_managed_mobile_service();
             });
@@ -337,14 +359,6 @@ fn main() {
             commands::pi_agent::fetch_agent_skill_audit_api,
             commands::pi_agent::fetch_skillsmp_skill_search,
             commands::pi_agent::fetch_skillsmp_ai_search,
-            // MCP UI 由 feature flag 关闭，命令暂留 PR8。
-            commands::opencode::list_opencode_mcp_status,
-            commands::opencode::add_opencode_mcp_server,
-            commands::opencode::delete_opencode_mcp_server,
-            commands::opencode::connect_opencode_mcp_server,
-            commands::opencode::disconnect_opencode_mcp_server,
-            commands::opencode::authenticate_opencode_mcp_server,
-            commands::opencode::remove_opencode_mcp_auth,
             commands::db::db_save_review_record,
             commands::db::db_list_review_records,
             commands::db::db_save_review_action,
@@ -375,6 +389,7 @@ fn main() {
             commands::giteam_cli::giteam_cli_refresh_pair_code,
             commands::giteam_cli::giteam_cli_get_access_info,
             commands::control::set_mobile_model_state_from_desktop,
+            commands::control::get_mobile_model_state_for_desktop,
             commands::watch::start_git_worktree_watcher,
             commands::watch::stop_git_worktree_watcher
         ])

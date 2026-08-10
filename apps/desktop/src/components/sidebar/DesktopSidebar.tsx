@@ -9,7 +9,6 @@ import {
   MessageCircle,
   MoreHorizontal,
   PencilLine,
-  Plug,
   Search,
   Settings,
   Sparkles,
@@ -28,7 +27,7 @@ import type { AgentChatSession } from "../../lib/agentSessions";
 import { firstLetter } from "../../lib/textFormatting";
 import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
 import { cn } from "../../lib/utils";
-import { MCP_MODULE_ENABLED, REMOTE_REPO_MODULE_ENABLED } from "../../lib/featureFlags";
+import { REMOTE_REPO_MODULE_ENABLED } from "../../lib/featureFlags";
 import {
   Collapsible,
   CollapsibleContent,
@@ -118,14 +117,11 @@ type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;
   icon: React.ComponentType<{ className?: string }>;
-  labelKey: keyof Pick<AppText, "worktree" | "terminal" | "skills" | "mcp">;
+  labelKey: keyof Pick<AppText, "worktree" | "terminal" | "skills">;
 }> = [
   { tab: "worktree", icon: GitBranch, labelKey: "worktree" },
   { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
-  { tab: "skills", icon: Sparkles, labelKey: "skills" },
-  ...(MCP_MODULE_ENABLED
-    ? [{ tab: "mcp" as const, icon: Plug, labelKey: "mcp" as const }]
-    : [])
+  { tab: "skills", icon: Sparkles, labelKey: "skills" }
 ];
 
 const SIDEBAR_SCROLL_EDGE_EPSILON = 1;

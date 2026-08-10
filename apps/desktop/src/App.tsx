@@ -4,8 +4,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { flushSync } from "react-dom";
-import rawMcpServers from "../servers.json";
-import { MCP_MODULE_ENABLED, REMOTE_REPO_MODULE_ENABLED } from "./lib/featureFlags";
+import { REMOTE_REPO_MODULE_ENABLED } from "./lib/featureFlags";
 import {
   PINNED_RIGHT_PANE_TAB,
   ShellPanelToggle,
@@ -27,11 +26,6 @@ import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSett
 import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
 import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentChatFrame";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
-import {
-  AgentMcpDialogs,
-  AgentMcpMarketPanel,
-  AgentSettingsMcpGrid
-} from "./components/agent/AgentMcpPanels";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { SearchPanel } from "./components/search/SearchPanel";
@@ -223,7 +217,6 @@ import {
   saveLocalBool,
   saveLocalString
 } from "./lib/localPreferences";
-import { normalizeMcpMarketData } from "./lib/mcpMarket";
 import { type AgentDefinition } from "./lib/agentDefinitions";
 import {
   AGENT_COMPOSER_AGENT_OPTIONS,
@@ -238,18 +231,6 @@ import {
   type ComposerAgentName,
   type AgentThinkingLevel
 } from "./lib/agentComposerSettings";
-import {
-  buildAgentMcpPanelRows,
-  buildAgentMcpRows,
-  buildUpdatedMcpParamConfig,
-  getCustomMcpParamSpecs,
-  getEditableMcpParamValues,
-  getInstalledMcpParamSpecs as getInstalledMcpParamSpecsFromMarket,
-  getInstalledMcpTools as getInstalledMcpToolsFromMarket,
-  getMissingMcpRequiredParams,
-  normalizeCustomMcpJson,
-  replaceMcpConfigPlaceholders
-} from "./lib/agentMcpConfig";
 import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
@@ -369,7 +350,6 @@ import { useAppearanceFontSize } from "./lib/useAppearanceFontSize";
 import { useDesktopTheme } from "./lib/useDesktopTheme";
 import { useGitWorkspaceController } from "./lib/useGitWorkspaceController";
 import { useAgentInstalledSkills } from "./lib/useAgentInstalledSkills";
-import { useAgentMcpAddForm } from "./lib/useAgentMcpAddForm";
 import { useAgentMessageCache } from "./lib/useAgentMessageCache";
 import { useAgentModelSelection } from "./lib/useAgentModelSelection";
 import { useAgentModelVisibility } from "./lib/useAgentModelVisibility";
@@ -402,17 +382,14 @@ import {
   shortSha
 } from "./lib/worktreeTopology";
 
-const MCP_MARKET_SERVERS = normalizeMcpMarketData(rawMcpServers);
-
 type DetailTab = "diff" | "context" | "findings";
 type AgentSlashCommand = {
   id: string;
   trigger: string;
   title: string;
   description?: string;
-  source: "builtin" | "command" | "skill" | "mcp";
+  source: "builtin" | "command" | "skill";
 };
-type AgentMcpStatusMap = Record<string, Record<string, unknown>>;
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state: { error: string | null } = { error: null };
@@ -729,7 +706,7 @@ export function App() {
   const { uiZoom, codeFontSize, setUiZoom, setCodeFontSize } = useAppearanceFontSize();
   const [agentPreviewImage, setAgentPreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "models" | "skillsmp" | "mcp">("general");
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "models" | "skillsmp">("general");
   const [settingsMobileVisible, setSettingsMobileVisible] = useState(false);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => (
     loadGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY)
@@ -1028,7 +1005,8 @@ export function App() {
     hiddenModels: agentHiddenModels,
     enabledModels: agentEnabledModels,
     hideModel: hideAgentModel,
-    enableModel: enableAgentModel
+    enableModel: enableAgentModel,
+    applyMobileModelVisibility: applyAgentModelVisibility
   } = useAgentModelVisibility({
     hidden: `${AGENT_MODEL_VIS_KEY}:global`,
     enabled: `${AGENT_MODEL_ENABLE_KEY}:global`
@@ -1053,7 +1031,6 @@ export function App() {
 
   const [agentProviderConfigBusy, setAgentProviderConfigBusy] = useState(false);
   const [agentPromptInput, setAgentPromptInput] = useState("");
-  const [agentMcpPromptRefs, setAgentMcpPromptRefs] = useState<string[]>([]);
   const [agentImageAttachments, setAgentImageAttachments] = useState<AgentAttachment[]>([]);
   const [agentAttachmentMenuOpen, setAgentAttachmentMenuOpen] = useState(false);
   const [agentDefinitions, setAgentDefinitions] = useState<AgentDefinition[]>([]);
@@ -1070,18 +1047,6 @@ export function App() {
   const [showAgentModulePanel, setShowAgentModulePanel] = useState(false);
   const [agentModuleTab, setAgentModuleTab] = useState<AgentModuleTab>("permissions");
   const agentSkillsVisible = rightPaneTab === "skills" || (showAgentModulePanel && agentModuleTab === "skills");
-  const agentMcpVisible = rightPaneTab === "mcp" || (showAgentModulePanel && agentModuleTab === "mcp");
-  const [agentMcpStatus, setAgentMcpStatus] = useState<AgentMcpStatusMap>({});
-  const [agentMcpLoading, setAgentMcpLoading] = useState(false);
-  const agentMcpLoadingRef = useRef(false);
-  const agentMcpLoadedRef = useRef(false);
-  const [agentMcpError, setAgentMcpError] = useState("");
-  const [agentMcpBusyName, setAgentMcpBusyName] = useState("");
-  const [showMcpAddForm, setShowMcpAddForm] = useState(false);
-  const agentMcpAddForm = useAgentMcpAddForm(showMcpAddForm);
-  const [mcpInstalledOpen, setMcpInstalledOpen] = useState(false);
-  const [editingMcpName, setEditingMcpName] = useState("");
-  const [editingMcpParamValues, setEditingMcpParamValues] = useState<Record<string, string>>({});
   const [skillsmpApiKey, setSkillsmpApiKey] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [skillsmpApiKeyDraft, setSkillsmpApiKeyDraft] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [showSkillsmpSettings, setShowSkillsmpSettings] = useState(false);
@@ -1299,9 +1264,6 @@ export function App() {
     { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" },
     { id: "builtin-open", trigger: "open", title: "Open", description: "搜索文件、命令和会话", source: "builtin" },
     { id: "builtin-terminal", trigger: "terminal", title: "Terminal", description: "打开或聚焦终端", source: "builtin" },
-    ...(MCP_MODULE_ENABLED
-      ? [{ id: "builtin-mcp", trigger: "mcp", title: "MCP", description: "切换 MCPs", source: "builtin" as const }]
-      : []),
     { id: "builtin-workspace", trigger: "workspace", title: "Workspace", description: "在侧边栏启用或禁用多个工作区", source: "builtin" },
     { id: "builtin-init", trigger: "init", title: "Init", description: "create/update AGENTS.md", source: "builtin" },
     { id: "builtin-review", trigger: "review", title: "Review", description: "review changes [commit|branch|pr]", source: "builtin" }
@@ -1838,10 +1800,6 @@ export function App() {
     if (generalSettings.soundsErrors) playSettingsTone("error");
     if (generalSettings.notificationsErrors) void showSettingsNotification("Giteam error", nextError.slice(0, 120));
   }, [error, generalSettings.soundsErrors, generalSettings.notificationsErrors]);
-  const getInstalledMcpParamSpecs = (name: string, status: AgentMcpStatusMap[string]) => getInstalledMcpParamSpecsFromMarket(MCP_MARKET_SERVERS, name, status);
-  const getInstalledMcpTools = (name: string) => getInstalledMcpToolsFromMarket(MCP_MARKET_SERVERS, name);
-  const agentMcpRows = useMemo(() => buildAgentMcpRows(agentMcpStatus, agentMcpVisible), [agentMcpVisible, agentMcpStatus]);
-  const agentMcpPanelRows = useMemo(() => buildAgentMcpPanelRows(agentMcpRows, getInstalledMcpTools), [agentMcpRows]);
   const settingsSkillsContent = (
     <AgentSettingsSkillsGrid
       error={agentSkillsError}
@@ -1850,21 +1808,6 @@ export function App() {
       onRemoveSkillGroup={removeAgentSkillGroup}
     />
   );
-
-  const settingsMcpContent = (
-    <AgentSettingsMcpGrid
-      rows={agentMcpPanelRows}
-      error={agentMcpError}
-      busyName={agentMcpBusyName}
-      onEditMcp={(name) => startEditMcpParams(name, agentMcpStatus[name])}
-      onRemoveMcp={removeAgentMcpServer}
-    />
-  );
-
-  useEffect(() => {
-    agentMcpLoadedRef.current = false;
-    agentMcpLoadingRef.current = false;
-  }, [repoPath]);
 
   useEffect(() => {
     if (!repoPath.trim() || !activeAgentSessionId.trim()) return;
@@ -1889,7 +1832,6 @@ export function App() {
     if (!showAgentModulePanel) return;
     if (agentModuleTab === "agents") void refreshAgentDefinitions();
     if (agentModuleTab === "permissions") void refreshPendingPermissions();
-    if (agentModuleTab === "mcp" && !agentMcpLoadedRef.current) void refreshAgentMcpStatus();
     if (agentModuleTab === "skills") {
       const timer = scheduleAfterInteraction(() => void refreshAgentSkills(), 280);
       return () => window.clearTimeout(timer);
@@ -1903,11 +1845,7 @@ export function App() {
         return () => window.clearTimeout(timer);
       }
     }
-    if (agentMcpVisible && !agentMcpLoadedRef.current) {
-      const timer = scheduleAfterInteraction(() => void refreshAgentMcpStatus(), 280);
-      return () => window.clearTimeout(timer);
-    }
-  }, [agentSkillsVisible, agentMcpVisible, repoPath, agentSkillsLoadedOnce, agentSkillsLoading]);
+  }, [agentSkillsVisible, repoPath, agentSkillsLoadedOnce, agentSkillsLoading]);
 
   function bindAgentSessionToWorkspace(sessionId: string, workspacePathInput = repoPath, branchInput = worktreeOverview.branch || selectedBranch) {
     const workspace = normalizeWorkspacePath(workspacePathInput);
@@ -2444,33 +2382,6 @@ export function App() {
     }
   }
 
-  async function refreshAgentMcpStatus() {
-    // MCP 模块下线：断掉所有自动/手动后端 invoke（list_opencode_mcp_status 等），
-    // 配合各 UI 入口隐藏，确保 pi 运行时不触发未实现的 MCP 链路。PR8 恢复时移除此守卫。
-    if (!MCP_MODULE_ENABLED) return;
-    if (!repoPath.trim()) return;
-    if (agentMcpLoadingRef.current) return;
-    agentMcpLoadingRef.current = true;
-    const hasCachedRows = Object.keys(agentMcpStatus).length > 0;
-    startTransition(() => {
-      if (!hasCachedRows) setAgentMcpLoading(true);
-      setAgentMcpError("");
-    });
-    await waitForPaint();
-    try {
-      const raw = await invoke<unknown>("list_opencode_mcp_status", { repoPath });
-      startTransition(() => setAgentMcpStatus(raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AgentMcpStatusMap : {}));
-      agentMcpLoadedRef.current = true;
-    } catch (e) {
-      const msg = String(e);
-      startTransition(() => setAgentMcpError(msg));
-      appendAgentDebugLog(`mcp.status.error ${msg}`);
-    } finally {
-      agentMcpLoadingRef.current = false;
-      startTransition(() => setAgentMcpLoading(false));
-    }
-  }
-
   // PR6：从后端拉取当前 session 的全部待裁决交互（permission+question），同步单一真相源。
   // 事件已实时驱动，此函数仅作会话切换/重连后的兜底对账。
   async function syncAgentInteractions(sessionIdArg: string) {
@@ -2546,153 +2457,7 @@ export function App() {
     setShowAgentModulePanel(true);
     if (tab === "agents") void refreshAgentDefinitions();
     if (tab === "permissions") void refreshPendingPermissions();
-    if (tab === "mcp") void refreshAgentMcpStatus();
     if (tab === "skills") void refreshAgentSkills();
-  }
-
-  async function addAgentMcpServer() {
-    if (!ensureRepoSelected()) return;
-    let normalized: { name: string; config: Record<string, unknown> };
-    try {
-      normalized = normalizeCustomMcpJson(agentMcpAddForm.json, agentMcpAddForm.name);
-    } catch (e) {
-      setError(`MCP JSON 配置无效：${String(e instanceof Error ? e.message : e)}`);
-      return;
-    }
-    const { name, config } = normalized;
-    const paramSpecs = getCustomMcpParamSpecs(agentMcpAddForm.json, name);
-    const missing = paramSpecs.filter((spec) => spec.required && !String(agentMcpAddForm.paramValues[spec.key] || "").trim());
-    if (missing.length > 0) {
-      setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
-      return;
-    }
-    const resolvedConfig = replaceMcpConfigPlaceholders(config, agentMcpAddForm.paramValues) as Record<string, unknown>;
-    setAgentMcpBusyName(name);
-    setAgentMcpError("");
-    try {
-      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config: resolvedConfig });
-      setAgentMcpStatus((prev) => ({ ...prev, [name]: { ...(resolvedConfig as any), status: "configured" } }));
-      agentMcpAddForm.reset();
-      setShowMcpAddForm(false);
-      setMcpInstalledOpen(true);
-      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
-      setMessage(`MCP added: ${name}`);
-    } catch (e) {
-      const msg = String(e);
-      setAgentMcpError(msg);
-      setError(msg);
-    } finally {
-      setAgentMcpBusyName("");
-    }
-  }
-
-  async function addAgentMcpServerFromMarket(name: string, config: Record<string, unknown>) {
-    if (!ensureRepoSelected()) return;
-    const normalizedName = name.trim();
-    if (!normalizedName) return;
-    setAgentMcpBusyName(normalizedName);
-    setAgentMcpError("");
-    try {
-      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name: normalizedName, config });
-      setAgentMcpStatus((prev) => ({ ...prev, [normalizedName]: { ...(config as any), status: "configured" } }));
-      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
-      setMessage(`MCP added: ${normalizedName}`);
-    } catch (e) {
-      const msg = String(e);
-      setAgentMcpError(msg);
-      setError(msg);
-      throw e;
-    } finally {
-      setAgentMcpBusyName("");
-    }
-  }
-
-  async function runMcpAction(name: string, action: "connect" | "disconnect" | "auth" | "logout") {
-    if (!ensureRepoSelected()) return;
-    const n = name.trim();
-    if (!n) return;
-    setAgentMcpBusyName(`${n}:${action}`);
-    setAgentMcpError("");
-    try {
-      if (action === "connect") await invoke<boolean>("connect_opencode_mcp_server", { repoPath, name: n });
-      if (action === "disconnect") await invoke<boolean>("disconnect_opencode_mcp_server", { repoPath, name: n });
-      if (action === "auth") await invoke<unknown>("authenticate_opencode_mcp_server", { repoPath, name: n });
-      if (action === "logout") await invoke<boolean>("remove_opencode_mcp_auth", { repoPath, name: n });
-      await refreshAgentMcpStatus();
-      setMessage(`MCP ${action}: ${n}`);
-    } catch (e) {
-      const msg = String(e);
-      setAgentMcpError(msg);
-      setError(msg);
-    } finally {
-      setAgentMcpBusyName("");
-    }
-  }
-
-  function startEditMcpParams(name: string, status: AgentMcpStatusMap[string]) {
-    const specs = getInstalledMcpParamSpecs(name, status);
-    setEditingMcpName(name);
-    setEditingMcpParamValues(getEditableMcpParamValues(status, specs));
-  }
-
-  async function saveMcpParams(name: string, status: AgentMcpStatusMap[string]) {
-    if (!ensureRepoSelected()) return;
-    const specs = getInstalledMcpParamSpecs(name, status);
-    const missing = getMissingMcpRequiredParams(specs, editingMcpParamValues);
-    if (missing.length > 0) {
-      setError(`请填写必填参数：${missing.map((spec) => spec.key).join(", ")}`);
-      return;
-    }
-    const config = buildUpdatedMcpParamConfig(status, editingMcpParamValues);
-    setAgentMcpBusyName(`${name}:update`);
-    setAgentMcpError("");
-    try {
-      await invoke<unknown>("add_opencode_mcp_server", { repoPath, name, config });
-      setAgentMcpStatus((prev) => ({ ...prev, [name]: { ...(config as any), status: "configured" } }));
-      setEditingMcpName("");
-      setEditingMcpParamValues({});
-      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
-      setMessage(`MCP params updated: ${name}`);
-    } catch (e) {
-      const msg = String(e);
-      setAgentMcpError(msg);
-      setError(msg);
-    } finally {
-      setAgentMcpBusyName("");
-    }
-  }
-
-  async function removeAgentMcpServer(name: string) {
-    if (!ensureRepoSelected()) return;
-    const n = name.trim();
-    if (!n) return;
-    setAgentMcpBusyName(`${n}:remove`);
-    setAgentMcpError("");
-    const previousStatus = agentMcpStatus;
-    setAgentMcpStatus((prev) => {
-      const next = { ...prev };
-      delete next[n];
-      return next;
-    });
-    try {
-      const result = await invoke<any>("delete_opencode_mcp_server", { repoPath, name: n });
-      if (result && typeof result === "object" && result.ok === false) {
-        const checked = Array.isArray(result.checked) ? result.checked.join("\n") : "";
-        throw new Error(`未在 Giteam 配置文件中找到 ${n}${checked ? `\n已检查:\n${checked}` : ""}`);
-      }
-      window.setTimeout(() => void refreshAgentMcpStatus(), 250);
-      const detail = result && typeof result === "object"
-        ? [`project:${result.projectDeleted || result.projectFileDeleted ? "yes" : "no"}`, `global:${result.globalDeleted || result.globalFileDeleted ? "yes" : "no"}`, `runtime:${result.apiDeleted ? "yes" : "no"}`].join(" · ")
-        : "removed";
-      setMessage(`MCP removed: ${n} (${detail})`);
-    } catch (e) {
-      const msg = String(e);
-      setAgentMcpStatus(previousStatus);
-      setAgentMcpError(msg);
-      setError(msg);
-    } finally {
-      setAgentMcpBusyName("");
-    }
   }
 
   /**
@@ -4874,8 +4639,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   async function runAgentPrompt() {
     if (!ensureRepoSelected()) return;
     const typedPrompt = agentPromptInput.trim();
-    const mcpPromptHints = agentMcpPromptRefs.map((name) => "use the " + name + " mcp server");
-    const prompt = [typedPrompt, ...mcpPromptHints].filter(Boolean).join("\n\n").trim();
+    const prompt = typedPrompt;
     const attachments = agentImageAttachments;
     if (!prompt && attachments.length === 0) return;
 
@@ -4994,7 +4758,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     scrollToBottom({ force: true });
     recordAgentPromptHistoryEntry(sessionId, prompt);
     setAgentPromptInput("");
-    setAgentMcpPromptRefs([]);
     setAgentImageAttachments([]);
     setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: true }));
     agentRunIdBySessionRef.current[sessionId] = runId;
@@ -5905,10 +5668,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         applyAgentAgent(activeAgentAgent === "build" ? "plan" : "build");
         return;
       }
-      if (MCP_MODULE_ENABLED && trigger === "mcp") {
-        openAgentModulePanel("mcp");
-        return;
-      }
       if (trigger === "workspace") {
         setLeftDrawerOpen(true);
         return;
@@ -5931,21 +5690,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     });
     const trigger = (matched?.trigger || fallback || skill.name).replace(/^\//, "");
     setAgentPromptInput(`/${trigger} `);
-    setAgentSlashOpen(false);
-    requestAnimationFrame(() => {
-      resizeAgentInput();
-      const el = agentInputRef.current;
-      if (!el) return;
-      el.focus();
-      const end = el.value.length;
-      el.setSelectionRange(end, end);
-    });
-  }
-
-  function referenceAgentMcp(name: string) {
-    const mcpName = name.trim();
-    if (!mcpName) return;
-    setAgentMcpPromptRefs((prev) => prev.includes(mcpName) ? prev : [...prev, mcpName]);
     setAgentSlashOpen(false);
     requestAnimationFrame(() => {
       resizeAgentInput();
@@ -7215,6 +6959,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     repoPath,
   ]);
 
+  // 手机端模型开关双向同步（pull 路径）：监听 main.rs 轮询线程 emit 的
+  // mobile-model-state，内容与当前 enabled/hidden 不同时批量 apply。
+  // 手机端 toggle → control server 合并写文件 → 桌面 30s 轮询 emit → 这里 apply
+  // → 触发上面 push useEffect 重算 agentSyncModelRefs 回推手机（availableModels 更新）。
+  // 内容比较天然防循环：apply 后内容一致，下次回声 emit 命中 refSetEquals 跳过 set。
+  useEffect(() => {
+    const unlistenPromise = listen<{
+      enabledModels?: string[] | null;
+      hiddenModels?: string[] | null;
+      updatedAt?: number;
+    }>("mobile-model-state-pulled", (event) => {
+      const payload = event.payload;
+      if (!payload) return;
+      const enabled = new Set<string>(Array.isArray(payload.enabledModels) ? payload.enabledModels : []);
+      const hidden = new Set<string>(Array.isArray(payload.hiddenModels) ? payload.hiddenModels : []);
+      applyAgentModelVisibility(enabled, hidden);
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => { });
+    };
+  }, [applyAgentModelVisibility]);
+
   useEffect(() => {
     if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
     // Load settings after the dialog paints to avoid blocking navigation.
@@ -8362,9 +8128,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               showJumpLatest={false}
               onJumpLatest={jumpAgentToLatest}
               attachments={agentImageAttachments}
-              mcpPromptRefs={agentMcpPromptRefs}
               onRemoveAttachment={(id) => setAgentImageAttachments((prev) => prev.filter((item) => item.id !== id))}
-              onRemoveMcpPromptRef={(name) => setAgentMcpPromptRefs((prev) => prev.filter((item) => item !== name))}
               slashOpen={agentSlashOpen}
               slashSuggestions={agentSlashSuggestions}
               slashActiveIndex={agentSlashActiveIndex}
@@ -8523,7 +8287,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               activeSessionBusy={activeAgentSessionBusy}
               canSubmit={Boolean(
                 (activeAgentModel || "").trim()
-                && (agentPromptInput.trim() || agentMcpPromptRefs.length > 0 || agentImageAttachments.length > 0)
+                && (agentPromptInput.trim() || agentImageAttachments.length > 0)
               )}
               onPrimaryAction={() => {
                 if (activeAgentSessionBusy) {
@@ -8777,46 +8541,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         />
       ) : null}
 
-      {rightPaneTab === "mcp" ? (
-        <AgentMcpMarketPanel
-          rows={agentMcpPanelRows}
-          loading={agentMcpLoading}
-          error={agentMcpError}
-          installedOpen={mcpInstalledOpen}
-          servers={MCP_MARKET_SERVERS}
-          configuredMcpNames={agentMcpRows.map(([name]) => name)}
-          onInstalledOpenChange={setMcpInstalledOpen}
-          onShowCustomAdd={() => setShowMcpAddForm(true)}
-          onRefresh={() => void refreshAgentMcpStatus()}
-          onReferenceMcp={referenceAgentMcp}
-          onAddMcpFromMarket={addAgentMcpServerFromMarket}
-        />
-      ) : null}
-
-      <AgentMcpDialogs
-        showCustomAdd={showMcpAddForm}
-        customName={agentMcpAddForm.name}
-        customJson={agentMcpAddForm.json}
-        customParamValues={agentMcpAddForm.paramValues}
-        busyName={agentMcpBusyName}
-        customParamSpecs={getCustomMcpParamSpecs(agentMcpAddForm.json, agentMcpAddForm.name)}
-        normalizeConfig={normalizeCustomMcpJson}
-        onCloseCustomAdd={() => setShowMcpAddForm(false)}
-        onCustomNameChange={agentMcpAddForm.setName}
-        onCustomJsonChange={agentMcpAddForm.setJson}
-        onCustomParamChange={agentMcpAddForm.setParamValue}
-        onAddCustomMcp={addAgentMcpServer}
-        editingName={editingMcpName}
-        editingStatus={agentMcpStatus[editingMcpName]}
-        editingSpecs={getInstalledMcpParamSpecs(editingMcpName, agentMcpStatus[editingMcpName])}
-        editingTools={getInstalledMcpTools(editingMcpName)}
-        editingParamValues={editingMcpParamValues}
-        onCloseEditing={() => { setEditingMcpName(""); setEditingMcpParamValues({}); }}
-        onEditingParamChange={(key, value) => setEditingMcpParamValues((prev) => ({ ...prev, [key]: value }))}
-        onRemoveEditingMcp={() => removeAgentMcpServer(editingMcpName)}
-        onSaveEditingMcp={() => saveMcpParams(editingMcpName, agentMcpStatus[editingMcpName])}
-      />
-
       {rightPaneTab === "terminal" ? (
         <TerminalPanel
           tabs={terminalTabs}
@@ -8880,7 +8604,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         terminal: appText.terminal,
         remoteRepos: "远程仓库",
         skills: appText.skills,
-        mcp: appText.mcp,
         browser: "浏览器",
       }}
       fileTabLabel={standaloneRightFileTab?.label}
@@ -9770,12 +9493,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             skillsContent={settingsSkillsContent}
             skillsLoading={agentSkillsLoading}
             onRefreshSkills={() => void refreshAgentSkills()}
-            mcpContent={settingsMcpContent}
-            mcpLoading={agentMcpLoading}
-            onRefreshMcp={() => void refreshAgentMcpStatus()}
-            onMcpVisible={() => {
-              if (!agentMcpLoading && !agentMcpLoadedRef.current) scheduleAfterInteraction(() => void refreshAgentMcpStatus(), 120);
-            }}
             onSkillsVisible={() => {
               if (agentSkillsRepoPathRef.current !== repoPath) {
                 agentSkillsRepoPathRef.current = repoPath;
@@ -10201,11 +9918,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           autoAcceptPermissions={agentAutoAcceptPermissions}
           permissionLoading={agentPermissionLoading}
           activePermissions={agentActivePermissions}
-          mcpLoading={agentMcpLoading}
-          mcpError={agentMcpError}
-          mcpBusyName={agentMcpBusyName}
-          mcpRows={agentMcpRows as Array<[string, Record<string, any>]>}
-          mcpAddForm={agentMcpAddForm}
           skillsLoading={agentSkillsLoading}
           skillsError={agentSkillsError}
           skills={agentSkills}
@@ -10236,10 +9948,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }}
           onRefreshPermissions={() => void refreshPendingPermissions()}
           onSendPermissionReply={(requestId, reply) => void sendPermissionReply(requestId, reply)}
-          onRefreshMcp={() => void refreshAgentMcpStatus()}
           onRefreshSkills={() => void refreshAgentSkills()}
-          onAddMcp={() => void addAgentMcpServer()}
-          onRunMcpAction={(name, action) => void runMcpAction(name, action)}
           onSkillInstallScopeChange={setAgentSkillInstallScope}
           onSkillInstallSpecChange={setAgentSkillInstallSpec}
           onSkillSearchQueryChange={setAgentSkillSearchQuery}

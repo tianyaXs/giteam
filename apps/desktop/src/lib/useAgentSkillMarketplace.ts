@@ -67,7 +67,7 @@ function waitForPaint(): Promise<void> {
 }
 
 function localBuiltinSkillSearchTerms(row: AgentSkillSearchResult): string[] {
-  if (String(row.installSpec || "") === "giteam-builtin:opencode-remote-repo") {
+  if (String(row.installSpec || "") === "giteam-builtin:giteam-remote-repo") {
     return ["remote repo", "remote repository", "远程仓库", "远程代码仓库", "远程 repo", "mcp"];
   }
   return [];

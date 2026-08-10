@@ -2,16 +2,14 @@ import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 
-const isWeb = process.env.BUILD_TARGET === "web";
-
 export default defineConfig({
   clearScreen: false,
   plugins: [tailwindcss()],
   build: {
-    outDir: isWeb ? "dist-web" : "dist",
+    outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      input: isWeb ? "web.html" : "index.html",
+      input: "index.html",
       output: {
         manualChunks(id) {
           if (id.includes("node_modules/monaco-editor") || id.includes("node_modules/@monaco-editor")) {

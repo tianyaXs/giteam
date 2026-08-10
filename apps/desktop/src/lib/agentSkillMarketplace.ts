@@ -37,10 +37,10 @@ export type SkillsMarketplaceCategory = {
 
 const ALL_RECOMMENDED_SKILLS: RecommendedSkill[] = [
   {
-    spec: "giteam/opencode-remote-repo@opencode-remote-repo",
-    installSpec: "giteam-builtin:opencode-remote-repo",
+    spec: "giteam/giteam-remote-repo@giteam-remote-repo",
+    installSpec: "giteam-builtin:giteam-remote-repo",
     title: "Remote Repo",
-    source: "giteam/opencode-remote-repo",
+    source: "giteam/giteam-remote-repo",
     installs: "Built-in",
     tone: "Giteam",
     description: "通过 Giteam 远程仓库服务和 remote_repo MCP 使用服务端工作区，不在本地直接读写业务仓库。"
@@ -96,7 +96,7 @@ export const AGENT_RECOMMENDED_SKILLS = ALL_RECOMMENDED_SKILLS.filter(
   // 远程仓库模块下线：隐藏依赖该模块的内置 Remote Repo 推荐 skill
   // （服务未就绪时装了也不可用）。REMOTE_REPO_MODULE_ENABLED 置 true 时自动恢复。
   (skill) => REMOTE_REPO_MODULE_ENABLED
-    || skill.spec !== "giteam/opencode-remote-repo@opencode-remote-repo"
+    || skill.spec !== "giteam/giteam-remote-repo@giteam-remote-repo"
 );
 
 export const SKILLSMP_CATEGORIES: SkillsMarketplaceCategory[] = [

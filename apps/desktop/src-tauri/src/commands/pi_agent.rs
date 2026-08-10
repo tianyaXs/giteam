@@ -176,6 +176,10 @@ pub async fn agent_create_session(
 
 #[tauri::command]
 pub async fn agent_list_sessions() -> Result<Vec<PiSessionSummary>, String> {
+    // 先热合并磁盘 catalog，确保能看到 CLI/手机端新建的会话。
+    service()
+        .refresh_sessions_from_catalog()
+        .map_err(|error| error.to_string())?;
     service()
         .list_sessions()
         .await
