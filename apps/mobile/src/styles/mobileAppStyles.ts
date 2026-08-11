@@ -10,16 +10,17 @@ import { pairingStyles } from "./mobilePairingStyles";
 export const styles = StyleSheet.create({
   gestureRoot: { flex: 1 },
 
-  safe: { flex: 1, backgroundColor: "#1A1A1A" },
+  safe: { flex: 1, backgroundColor: "transparent" },
 
   chatSafe: {
     flex: 1,
-    backgroundColor: "#1A1A1A",
+    backgroundColor: "transparent",
   },
 
   launchScreen: {
     flex: 1,
-    backgroundColor: "#1A1A1A",
+    // 背景交给 GiteamStartupAnimation 跟主题，勿写死深色
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -28,7 +29,7 @@ export const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
     elevation: 9999,
-    backgroundColor: "#1A1A1A",
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
   },

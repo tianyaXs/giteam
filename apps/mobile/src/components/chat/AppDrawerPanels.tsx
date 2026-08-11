@@ -22,7 +22,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
-import { setThemeOverride, useThemeOverride, type ThemeOverride } from '../../features/theme/useThemeOverride';
+import { setThemeOverride, useThemeOverride } from '../../features/theme/useThemeOverride';
 import { SettingsModelsPanel } from '../../features/workspace/ModelManagerScreen';
 import { toText } from '../../lib/text';
 import type { ProjectTreeNode, DrawerSessionRow } from '../../features/chat/useLeftDrawerController';
@@ -667,8 +667,7 @@ export function ConnectionDrawer(props: {
   const p = useDrawerPalette();
   const { colors } = useMobileTheme();
   const override = useThemeOverride();
-  const themeLabel =
-    override === 'light' ? '浅色' : override === 'dark' ? '深色' : '系统';
+  const themeLabel = override === 'light' ? '浅色' : '深色';
   const [language, setLanguage] = React.useState<'zh-CN' | 'en'>('zh-CN');
   const languageLabel = language === 'zh-CN' ? '简体中文' : 'English';
   const [tab, setTab] = React.useState<'general' | 'models'>(settingsTab);
@@ -678,9 +677,7 @@ export function ConnectionDrawer(props: {
   }, [settingsTab]);
 
   const cycleTheme = () => {
-    const order: ThemeOverride[] = ['system', 'light', 'dark'];
-    const idx = order.indexOf(override);
-    setThemeOverride(order[(idx + 1) % order.length]);
+    setThemeOverride(override === 'light' ? 'dark' : 'light');
   };
 
   const cycleLanguage = () => {

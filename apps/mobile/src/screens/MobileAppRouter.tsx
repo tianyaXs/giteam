@@ -1,9 +1,10 @@
 import React from 'react';
-import { View } from 'react-native';
+import { StatusBar, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AppRenderBoundary } from '../components/AppRenderBoundary';
 import { GiteamStartupAnimation } from '../components/GiteamStartupAnimation';
+import { useMobileTheme } from '../features/theme/ThemeProvider';
 import { AuthConnectScreen, DiscoverConnectScreen, ScannerConnectScreen } from './MobileEntryScreens';
 
 export function MobileAppRouter(props: {
@@ -98,10 +99,12 @@ export function MobileAppRouter(props: {
     startupStyles,
     statusText
   } = props;
+  const { colors } = useMobileTheme();
 
   if (!appReady) {
     return (
-      <View style={startupStyles.launchScreen}>
+      <View style={[startupStyles.launchScreen, { backgroundColor: colors.background }]}>
+        <StatusBar barStyle={colors.isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
         <GiteamStartupAnimation animate={false} fontsReady={fontsReady} fontFamily={fontFamily} />
       </View>
     );
