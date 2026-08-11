@@ -1,0 +1,5 @@
+.env
+deploy/local.env
+deploy/k8s/*.generated.yaml
+deploy/k8s/config.local.yaml
+gateway/target/

@@ -134,6 +134,12 @@ export default function App() {
     setPreferHttps,
     pairCode,
     setPairCode,
+    connectionMode,
+    setConnectionMode,
+    accessKey,
+    setAccessKey,
+    deviceId,
+    setDeviceId,
     repoPath,
     setRepoPath,
     token,
@@ -484,6 +490,10 @@ export default function App() {
     scanHitCount,
     lastScanAt,
     onAuthSubmit,
+    onSelectCloudDevice,
+    devicePickerOpen,
+    pendingDevices,
+    setDevicePickerOpen,
     onOpenScanner,
     onPickQrFromAlbum,
     scanQrFromImageUri,
@@ -512,6 +522,9 @@ export default function App() {
     serverUrl,
     serverUrlInput,
     pairCode,
+    connectionMode,
+    accessKey,
+    deviceId,
     pairCodeMapRef,
     closeDiscoverRef,
     discoveredPairRequiredRef,
@@ -523,6 +536,9 @@ export default function App() {
     setServerUrlTouched,
     setPreferHttps,
     setPairCode,
+    setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     setToken,
     setRepoPath,
     setProjects,
@@ -961,6 +977,9 @@ export default function App() {
     serverUrlTouched,
     preferHttps,
     pairCode,
+    connectionMode,
+    accessKey,
+    deviceId,
     repoPath,
     projects,
     token,
@@ -975,6 +994,9 @@ export default function App() {
     setServerUrlTouched,
     setPreferHttps,
     setPairCode,
+    setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     setRepoPath,
     setProjects,
     setToken,
@@ -1516,6 +1538,12 @@ export default function App() {
             onAuthSubmit={() => void onAuthSubmit()}
             onBarcodeScanned={onBarcodeScanned}
             onCancelScanner={onCloseScanner}
+            connectionMode={connectionMode}
+            accessKey={accessKey}
+            devicePickerOpen={devicePickerOpen}
+            pendingDevices={pendingDevices}
+            onChangeConnectionMode={setConnectionMode}
+            onChangeAccessKey={setAccessKey}
             onChangePairCode={setPairCode}
             onChangeServerUrl={onChangeServerUrl}
             onCloseDiscover={onCloseDiscover}
@@ -1530,6 +1558,8 @@ export default function App() {
             onRescanScanner={onScannerRescan}
             onResetAuthStatus={() => setStatus("准备就绪")}
             onScannerReady={onScannerReady}
+            onSelectCloudDevice={(id) => void onSelectCloudDevice(id)}
+            onCloseDevicePicker={() => setDevicePickerOpen(false)}
             pairCode={pairCode}
             pairPromptHostPort={pairPromptHostPort}
             pairPromptOpen={pairPromptOpen}

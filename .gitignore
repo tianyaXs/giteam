@@ -34,3 +34,24 @@ skills-lock.json
 
 # Skills 运行时数据（开发/测试用，不提交）
 /.pi/
+
+# --- Secrets & machine-local deploy (never commit) ---
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.local
+*.local.*
+!**/*.local.example
+!**/*.example
+
+# Cloud relay private ops
+services/cloud/.env
+services/cloud/deploy/local.env
+services/cloud/deploy/k8s/config.local.yaml
+services/cloud/deploy/k8s/*.generated.yaml
+
+# Mobile local cloud defaults (EXPO_PUBLIC_*)
+apps/mobile/.env
+apps/mobile/.env.local
+apps/mobile/.env.production.local

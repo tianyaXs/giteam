@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: giteam-cloud-config
+  labels:
+    app: giteam-cloud
+data:
+  LISTEN_ADDR: "0.0.0.0:8787"
+  STATIC_DIR: "/app/static"
+  # Overridden by apply.sh from deploy/local.env (PUBLIC_BASE_URL)
+  PUBLIC_BASE_URL: "http://127.0.0.1:8787"
+  RUST_LOG: "info,giteam_cloud_gateway=info"

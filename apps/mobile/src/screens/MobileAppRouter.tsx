@@ -28,6 +28,12 @@ export function MobileAppRouter(props: {
   onAuthSubmit: () => void;
   onBarcodeScanned: (event: any) => void;
   onCancelScanner: () => void;
+  connectionMode: 'local' | 'cloud';
+  accessKey: string;
+  devicePickerOpen?: boolean;
+  pendingDevices?: Array<{ id: string; name: string; online: boolean }>;
+  onChangeConnectionMode: (mode: 'local' | 'cloud') => void;
+  onChangeAccessKey: (value: string) => void;
   onChangePairCode: (value: string) => void;
   onChangeServerUrl: (value: string) => void;
   onCloseDiscover: () => void;
@@ -42,6 +48,8 @@ export function MobileAppRouter(props: {
   onRescanScanner: () => void;
   onResetAuthStatus: () => void;
   onScannerReady: () => void;
+  onSelectCloudDevice?: (deviceId: string) => void;
+  onCloseDevicePicker?: () => void;
   pairCode: string;
   pairPromptHostPort: string;
   pairPromptOpen: boolean;
@@ -75,6 +83,12 @@ export function MobileAppRouter(props: {
     onAuthSubmit,
     onBarcodeScanned,
     onCancelScanner,
+    connectionMode,
+    accessKey,
+    devicePickerOpen,
+    pendingDevices,
+    onChangeConnectionMode,
+    onChangeAccessKey,
     onChangePairCode,
     onChangeServerUrl,
     onCloseDiscover,
@@ -89,6 +103,8 @@ export function MobileAppRouter(props: {
     onRescanScanner,
     onResetAuthStatus,
     onScannerReady,
+    onSelectCloudDevice,
+    onCloseDevicePicker,
     pairCode,
     pairPromptHostPort,
     pairPromptOpen,
@@ -161,14 +177,22 @@ export function MobileAppRouter(props: {
           backgroundColor={backgroundColor}
           busy={busy}
           statusText={statusText}
+          connectionMode={connectionMode}
           serverUrlInput={serverUrlInput}
           pairCode={pairCode}
+          accessKey={accessKey}
+          devicePickerOpen={devicePickerOpen}
+          pendingDevices={pendingDevices}
           launchOverlay={launchOverlay}
+          onChangeConnectionMode={onChangeConnectionMode}
           onChangeServerUrl={onChangeServerUrl}
           onChangePairCode={onChangePairCode}
+          onChangeAccessKey={onChangeAccessKey}
           onOpenScanner={onOpenScanner}
           onResetStatus={onResetAuthStatus}
           onSubmit={onAuthSubmit}
+          onSelectCloudDevice={onSelectCloudDevice}
+          onCloseDevicePicker={onCloseDevicePicker}
         />
       </AppRenderBoundary>
       {albumPickerOverlay}

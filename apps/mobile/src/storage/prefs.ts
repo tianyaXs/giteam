@@ -15,6 +15,10 @@ export type Prefs = {
   model: string;
   agent: 'build' | 'plan';
   autoAcceptPermissions: boolean;
+  /** local = LAN control; cloud = relay gateway */
+  connectionMode: 'local' | 'cloud';
+  accessKey: string;
+  deviceId: string;
 };
 
 export const DEFAULT_PREFS: Prefs = {
@@ -28,7 +32,10 @@ export const DEFAULT_PREFS: Prefs = {
   sessionId: '',
   model: '',
   agent: 'build',
-  autoAcceptPermissions: false
+  autoAcceptPermissions: false,
+  connectionMode: 'local',
+  accessKey: '',
+  deviceId: ''
 };
 
 export function loadPrefs(): Prefs {
@@ -48,7 +55,10 @@ export function loadPrefs(): Prefs {
       sessionId: toText(merged.sessionId),
       model: toText(merged.model),
       agent: (merged as any).agent === 'plan' ? 'plan' : 'build',
-      autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions)
+      autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions),
+      connectionMode: (merged as any).connectionMode === 'cloud' ? 'cloud' : 'local',
+      accessKey: toText((merged as any).accessKey),
+      deviceId: toText((merged as any).deviceId)
     };
   } catch {
     return DEFAULT_PREFS;

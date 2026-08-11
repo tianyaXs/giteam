@@ -21,6 +21,9 @@ export function useMobileConnectionFlow(params: {
   serverUrl: string;
   serverUrlInput: string;
   pairCode: string;
+  connectionMode: "local" | "cloud";
+  accessKey: string;
+  deviceId: string;
   pairCodeMapRef: MutableRefObject<Record<string, string>>;
   closeDiscoverRef: MutableRefObject<(() => void) | null>;
   discoveredPairRequiredRef: MutableRefObject<
@@ -34,6 +37,9 @@ export function useMobileConnectionFlow(params: {
   setServerUrlTouched: Dispatch<SetStateAction<boolean>>;
   setPreferHttps: Dispatch<SetStateAction<boolean>>;
   setPairCode: Dispatch<SetStateAction<string>>;
+  setConnectionMode: Dispatch<SetStateAction<"local" | "cloud">>;
+  setAccessKey: Dispatch<SetStateAction<string>>;
+  setDeviceId: Dispatch<SetStateAction<string>>;
   setToken: Dispatch<SetStateAction<string>>;
   setRepoPath: Dispatch<SetStateAction<string>>;
   setProjects: Dispatch<SetStateAction<ProjectOption[]>>;
@@ -48,6 +54,9 @@ export function useMobileConnectionFlow(params: {
     serverUrl,
     serverUrlInput,
     pairCode,
+    connectionMode,
+    accessKey,
+    deviceId,
     pairCodeMapRef,
     closeDiscoverRef,
     discoveredPairRequiredRef,
@@ -59,6 +68,9 @@ export function useMobileConnectionFlow(params: {
     setServerUrlTouched,
     setPreferHttps,
     setPairCode,
+    setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     setToken,
     setRepoPath,
     setProjects,
@@ -73,8 +85,12 @@ export function useMobileConnectionFlow(params: {
     scannerReady,
     scanHitCount,
     lastScanAt,
+    devicePickerOpen,
+    pendingDevices,
+    setDevicePickerOpen,
     connectWithAddressAndCode,
     onAuthSubmit,
+    onSelectCloudDevice,
     onOpenScanner,
     onPickQrFromAlbum,
     scanQrFromImageUri,
@@ -87,6 +103,9 @@ export function useMobileConnectionFlow(params: {
     preferHttps,
     serverUrlInput,
     pairCode,
+    connectionMode,
+    accessKey,
+    deviceId,
     setBusy,
     setStatus,
     setServerUrl,
@@ -95,6 +114,9 @@ export function useMobileConnectionFlow(params: {
     setToken,
     setRepoPath,
     setProjects,
+    setConnectionModeState: setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     pushConnLog,
     refreshProjectsCatalog,
     toProjectOptionsFromPaths,
@@ -153,7 +175,11 @@ export function useMobileConnectionFlow(params: {
     scannerReady,
     scanHitCount,
     lastScanAt,
+    devicePickerOpen,
+    pendingDevices,
+    setDevicePickerOpen,
     onAuthSubmit,
+    onSelectCloudDevice,
     onOpenScanner,
     onPickQrFromAlbum,
     scanQrFromImageUri,

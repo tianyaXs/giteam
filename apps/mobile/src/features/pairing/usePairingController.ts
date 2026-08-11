@@ -1,16 +1,36 @@
 import { scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useRef, useState, type MutableRefObject } from 'react';
-import { Platform, Vibration } from 'react-native';
-import { health, NO_AUTH_TOKEN, pairAuth } from '../../api/controlApi';
+import { Vibration } from 'react-native';
+import {
+  health,
+  NO_AUTH_TOKEN,
+  pairAuth,
+  redeemCloudAccess,
+  type CloudDeviceInfo,
+  type CloudRedeemError
+} from '../../api/controlApi';
+import {
+  setActiveAccessKey,
+  setActiveDeviceId,
+  setConnectionMode
+} from '../../api/connectionContext';
 import type { DiscoveredDevice } from '../../discovery';
 import { toText } from '../../lib/text';
 import { buildConnectionBaseUrlCandidates, normalizeBaseUrlForClient } from '../../lib/url';
+import { getDefaultCloudBaseUrl } from '../../config/cloud';
+
+export { getDefaultCloudBaseUrl };
 
 type PairPayload = {
+  mode?: string;
   baseUrl?: string;
+  cloudBaseUrl?: string;
   pairCode?: string;
   code?: string;
+  accessKey?: string;
+  workspaceId?: string;
+  deviceId?: string;
   authMode?: string;
   repoPath?: string;
   repoPaths?: string[];
@@ -33,6 +53,9 @@ type UsePairingControllerParams = {
   preferHttps: boolean;
   serverUrlInput: string;
   pairCode: string;
+  connectionMode: 'local' | 'cloud';
+  accessKey: string;
+  deviceId: string;
   setBusy: (value: boolean) => void;
   setStatus: (value: string) => void;
   setServerUrl: (value: string) => void;
@@ -41,6 +64,9 @@ type UsePairingControllerParams = {
   setToken: (value: string) => void;
   setRepoPath: (value: string) => void;
   setProjects: (value: ProjectOption[]) => void;
+  setConnectionModeState: (value: 'local' | 'cloud') => void;
+  setAccessKey: (value: string) => void;
+  setDeviceId: (value: string) => void;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
   refreshProjectsCatalog: (opts?: { baseUrl?: string; token?: string; preferredRepoPath?: string }) => Promise<unknown>;
   toProjectOptionsFromPaths: (paths: string[]) => ProjectOption[];
@@ -58,8 +84,13 @@ function parsePairPayload(input: string): PairPayload | null {
     try {
       const url = new URL(text);
       return {
+        mode: url.searchParams.get('mode') || undefined,
         baseUrl: `${url.protocol}//${url.host}`,
+        cloudBaseUrl: url.searchParams.get('cloudBaseUrl') || undefined,
         pairCode: url.searchParams.get('pairCode') || url.searchParams.get('code') || undefined,
+        accessKey: url.searchParams.get('accessKey') || undefined,
+        workspaceId: url.searchParams.get('workspaceId') || undefined,
+        deviceId: url.searchParams.get('deviceId') || undefined,
         repoPath: url.searchParams.get('repoPath') || undefined
       };
     } catch {
@@ -99,10 +130,16 @@ export function usePairingController(params: UsePairingControllerParams) {
     onDiscoveredPairRequiredRef,
     openAlbumPickerForQrScanRef,
     pairCode,
+    accessKey,
+    connectionMode,
+    deviceId,
     pushConnLog,
     refreshProjectsCatalog,
     serverUrlInput,
+    setAccessKey,
     setBusy,
+    setConnectionModeState,
+    setDeviceId,
     setPairCode,
     setProjects,
     setRepoPath,
@@ -117,6 +154,10 @@ export function usePairingController(params: UsePairingControllerParams) {
   const [scannerReady, setScannerReady] = useState(false);
   const [scanHitCount, setScanHitCount] = useState(0);
   const [lastScanAt, setLastScanAt] = useState(0);
+  const [devicePickerOpen, setDevicePickerOpen] = useState(false);
+  const [pendingDevices, setPendingDevices] = useState<CloudDeviceInfo[]>([]);
+  const [pendingCloudBaseUrl, setPendingCloudBaseUrl] = useState('');
+  const [pendingAccessKey, setPendingAccessKey] = useState('');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const scannerLockedRef = useRef(false);
 
@@ -124,6 +165,122 @@ export function usePairingController(params: UsePairingControllerParams) {
     scannerLockedRef.current = value;
     setScannerLocked(value);
   }, []);
+
+  const finishCloudConnect = useCallback(
+    async (args: {
+      cloudBaseUrl: string;
+      accessKey: string;
+      token: string;
+      deviceId: string;
+      preferredRepoPath?: string;
+      payloadRepoPaths?: string[];
+    }) => {
+      const resolvedUrl = normalizeBaseUrlForClient(args.cloudBaseUrl);
+      setConnectionMode('cloud');
+      setConnectionModeState('cloud');
+      setActiveAccessKey(args.accessKey);
+      setActiveDeviceId(args.deviceId);
+      setAccessKey(args.accessKey);
+      setDeviceId(args.deviceId);
+      setServerUrl(resolvedUrl);
+      setServerUrlInput(stripUrlScheme(resolvedUrl));
+      setPairCode('');
+      setToken(args.token);
+      setRepoPath('');
+      if (args.payloadRepoPaths && args.payloadRepoPaths.length > 0) {
+        const fromPayload = toProjectOptionsFromPaths(args.payloadRepoPaths);
+        setProjects(fromPayload);
+        const preferred = toText(args.preferredRepoPath).trim() || fromPayload[0]?.worktree || '';
+        if (preferred) setRepoPath(preferred);
+      } else {
+        await refreshProjectsCatalog({
+          baseUrl: resolvedUrl,
+          token: args.token,
+          preferredRepoPath: args.preferredRepoPath
+        });
+      }
+      Vibration.vibrate([0, 60, 40, 80]);
+      setStatus('云端认证成功，开始新会话');
+      setScannerOpen(false);
+      setDevicePickerOpen(false);
+      onCloseDiscoverRef.current?.();
+    },
+    [
+      onCloseDiscoverRef,
+      refreshProjectsCatalog,
+      setAccessKey,
+      setConnectionModeState,
+      setDeviceId,
+      setPairCode,
+      setProjects,
+      setRepoPath,
+      setServerUrl,
+      setServerUrlInput,
+      setStatus,
+      setToken,
+      toProjectOptionsFromPaths
+    ]
+  );
+
+  const connectWithCloudAccessKey = useCallback(
+    async (
+      cloudBaseUrlInput: string,
+      accessKeyInput: string,
+      deviceIdInput?: string,
+      opts?: ConnectOptions
+    ) => {
+      const cloudBaseUrl = normalizeBaseUrlForClient(
+        toText(cloudBaseUrlInput).trim() || getDefaultCloudBaseUrl()
+      );
+      const key = toText(accessKeyInput).trim();
+      const preferredDeviceId = toText(deviceIdInput || '').trim();
+      if (!key) {
+        setStatus('请填写云端连接密钥');
+        return;
+      }
+      setBusy(true);
+      try {
+        pushConnLog(
+          `cloud redeem url=${cloudBaseUrl} key=yes device=${preferredDeviceId || 'auto'}`
+        );
+        const redeemed = await redeemCloudAccess({
+          cloudBaseUrl,
+          accessKey: key,
+          deviceId: preferredDeviceId || undefined
+        });
+        await finishCloudConnect({
+          cloudBaseUrl,
+          accessKey: key,
+          token: redeemed.token,
+          deviceId: redeemed.deviceId,
+          preferredRepoPath: opts?.preferredRepoPath,
+          payloadRepoPaths: opts?.payloadRepoPaths
+        });
+      } catch (e) {
+        Vibration.vibrate(220);
+        const err = e as CloudRedeemError;
+        const code = toText(err.code);
+        pushConnLog(`cloud redeem error code=${code} ${toText(err)}`, 'error');
+        if (code === 'device_selection_required' && Array.isArray(err.devices) && err.devices.length) {
+          setPendingCloudBaseUrl(cloudBaseUrl);
+          setPendingAccessKey(key);
+          setPendingDevices(err.devices);
+          setDevicePickerOpen(true);
+          setStatus('检测到多台在线设备，请选择一台连接');
+        } else if (code === 'device_offline' || code === 'no_device_online') {
+          setStatus('电脑端未上线，请先在本机执行 giteam cloud link 并保持服务运行');
+        } else if (code === 'invalid_access_key') {
+          setStatus('连接密钥无效，请检查后重试');
+        } else {
+          setStatus(toText(err) || '云端连接失败');
+        }
+        setScannerLockedBoth(false);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [finishCloudConnect, pushConnLog, setBusy, setScannerLockedBoth, setStatus]
+  );
 
   const connectWithAddressAndCode = useCallback(
     async (inputBaseUrl: string, inputCode: string, opts?: ConnectOptions) => {
@@ -158,6 +315,12 @@ export function usePairingController(params: UsePairingControllerParams) {
         if (!ping) {
           throw new Error(lastProbeError || '无法连接到服务地址');
         }
+        // Cloud health (mode=cloud) should go through redeem, not local pair.
+        if (String((ping as any)?.mode || '').toLowerCase() === 'cloud') {
+          setBusy(false);
+          await connectWithCloudAccessKey(resolvedUrl, nextCode || accessKey, deviceId, opts);
+          return;
+        }
         pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
         const serverNoAuth = Boolean((ping as any)?.auth?.noAuth);
         if (!serverNoAuth && !nextCode) {
@@ -170,6 +333,12 @@ export function usePairingController(params: UsePairingControllerParams) {
           const res = await pairAuth(resolvedUrl, nextCode);
           nextToken = toText(res.token).trim();
         }
+        setConnectionMode('local');
+        setConnectionModeState('local');
+        setActiveAccessKey('');
+        setActiveDeviceId('');
+        setAccessKey('');
+        setDeviceId('');
         setServerUrl(resolvedUrl);
         setServerUrlInput(stripUrlScheme(resolvedUrl));
         setPairCode(nextCode);
@@ -214,11 +383,17 @@ export function usePairingController(params: UsePairingControllerParams) {
       }
     },
     [
+      accessKey,
+      connectWithCloudAccessKey,
+      deviceId,
       onCloseDiscoverRef,
       onDiscoveredPairRequiredRef,
       pushConnLog,
       refreshProjectsCatalog,
+      setAccessKey,
       setBusy,
+      setConnectionModeState,
+      setDeviceId,
       setPairCode,
       setProjects,
       setRepoPath,
@@ -243,6 +418,25 @@ export function usePairingController(params: UsePairingControllerParams) {
         setScannerLockedBoth(false);
         return;
       }
+      const payloadMode = String(payload.mode || '').trim().toLowerCase();
+      if (payloadMode === 'cloud' || payload.accessKey) {
+        const cloudBaseUrl =
+          toText(payload.cloudBaseUrl).trim() ||
+          toText(payload.baseUrl).trim() ||
+          getDefaultCloudBaseUrl();
+        const key = toText(payload.accessKey).trim();
+        if (!key) {
+          setStatus('云端二维码缺少连接密钥');
+          setScannerLockedBoth(false);
+          return;
+        }
+        await connectWithCloudAccessKey(cloudBaseUrl, key, toText(payload.deviceId).trim(), {
+          preferredRepoPath: toText(payload.repoPath).trim(),
+          payloadRepoPaths: getRepoPathsFromPairPayload(payload)
+        });
+        return;
+      }
+
       const nextUrlRaw = String(payload.baseUrl || '').trim();
       const nextUrl = normalizeBaseUrlForClient(nextUrlRaw);
       if (isLikelyDevToolUrl(nextUrl)) {
@@ -266,7 +460,7 @@ export function usePairingController(params: UsePairingControllerParams) {
         payloadRepoPaths: nextRepoPaths
       });
     },
-    [connectWithAddressAndCode, pushConnLog, setScannerLockedBoth, setStatus]
+    [connectWithAddressAndCode, connectWithCloudAccessKey, pushConnLog, setScannerLockedBoth, setStatus]
   );
 
   const onOpenScanner = useCallback(async () => {
@@ -362,8 +556,27 @@ export function usePairingController(params: UsePairingControllerParams) {
   );
 
   const onAuthSubmit = useCallback(async () => {
+    if (connectionMode === 'cloud') {
+      await connectWithCloudAccessKey(serverUrlInput || getDefaultCloudBaseUrl(), accessKey || pairCode, deviceId);
+      return;
+    }
     await connectWithAddressAndCode(serverUrlInput, pairCode);
-  }, [connectWithAddressAndCode, pairCode, serverUrlInput]);
+  }, [
+    accessKey,
+    connectWithAddressAndCode,
+    connectWithCloudAccessKey,
+    connectionMode,
+    deviceId,
+    pairCode,
+    serverUrlInput
+  ]);
+
+  const onSelectCloudDevice = useCallback(
+    async (selectedDeviceId: string) => {
+      await connectWithCloudAccessKey(pendingCloudBaseUrl, pendingAccessKey, selectedDeviceId);
+    },
+    [connectWithCloudAccessKey, pendingAccessKey, pendingCloudBaseUrl]
+  );
 
   const onCloseScanner = useCallback(() => {
     setScannerOpen(false);
@@ -388,14 +601,22 @@ export function usePairingController(params: UsePairingControllerParams) {
     setStatus('已重置扫描器，请重新对准二维码');
   }, [setScannerLockedBoth, setStatus]);
 
+  // Keep album picker ref wired for callers that still use it.
+  openAlbumPickerForQrScanRef.current = onPickQrFromAlbum;
+
   return {
     scannerOpen,
     scannerLocked,
     scannerReady,
     scanHitCount,
     lastScanAt,
+    devicePickerOpen,
+    pendingDevices,
+    setDevicePickerOpen,
     connectWithAddressAndCode,
+    connectWithCloudAccessKey,
     onAuthSubmit,
+    onSelectCloudDevice,
     onOpenScanner,
     onPickQrFromAlbum,
     scanQrFromImageUri,

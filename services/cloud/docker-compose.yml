@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-giteam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-giteam}
+      POSTGRES_DB: ${POSTGRES_DB:-giteam_cloud}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-giteam} -d ${POSTGRES_DB:-giteam_cloud}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Single image: Gateway API + Giteam Cloud console (STATIC_DIR)
+  gateway:
+    build:
+      context: ../..
+      dockerfile: services/cloud/Dockerfile
+    image: ${IMAGE:-giteam-cloud:local}
+    ports:
+      - "8787:8787"
+    environment:
+      DATABASE_URL: postgres://giteam:giteam@postgres:5432/giteam_cloud
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-in-production}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token-change-me-in-production}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8787}
+      LISTEN_ADDR: ${LISTEN_ADDR:-0.0.0.0:8787}
+      STATIC_DIR: /app/static
+      RUST_LOG: ${RUST_LOG:-info,giteam_cloud_gateway=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Phase 1: tunnel presence is in-process memory — keep a single replica.
+    deploy:
+      replicas: 1
+    restart: unless-stopped
+
+volumes:
+  pgdata:

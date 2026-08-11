@@ -1,4 +1,5 @@
 import type { HealthResponse, PairAuthResponse } from '../types';
+import { getActiveDeviceId } from './connectionContext';
 export const NO_AUTH_TOKEN = '__NO_AUTH__';
 
 function normalizeBaseUrl(input: string): string {
@@ -12,8 +13,11 @@ const REQUEST_TIMEOUT_MS = 12000;
 
 function authHeaders(token: string): Record<string, string> {
   const tk = String(token || '').trim();
-  if (!tk || tk === NO_AUTH_TOKEN) return {};
-  return { Authorization: `Bearer ${tk}` };
+  const headers: Record<string, string> = {};
+  if (tk && tk !== NO_AUTH_TOKEN) headers.Authorization = `Bearer ${tk}`;
+  const deviceId = getActiveDeviceId();
+  if (deviceId) headers['X-Giteam-Device-Id'] = deviceId;
+  return headers;
 }
 
 function describeNetworkError(err: unknown, timeoutMs?: number): string {
@@ -73,6 +77,84 @@ export async function pairAuth(baseUrlInput: string, code: string): Promise<Pair
   });
   const raw = ensureOk('pair', 'POST', url, result.status, result.ok, result.text);
   return JSON.parse(raw) as PairAuthResponse;
+}
+
+export type CloudDeviceInfo = {
+  id: string;
+  name: string;
+  online: boolean;
+  clientVersion?: string;
+};
+
+export type CloudRedeemResponse = {
+  workspaceId: string;
+  deviceId: string;
+  token: string;
+  tokenType?: string;
+  expiresAt?: number;
+  devices: CloudDeviceInfo[];
+};
+
+export type CloudRedeemError = Error & {
+  code?: string;
+  devices?: CloudDeviceInfo[];
+};
+
+export async function redeemCloudAccess(args: {
+  cloudBaseUrl: string;
+  accessKey: string;
+  deviceId?: string;
+}): Promise<CloudRedeemResponse> {
+  const baseUrl = normalizeBaseUrl(args.cloudBaseUrl);
+  const url = `${baseUrl}/cloud/v1/auth/redeem`;
+  const body: Record<string, string> = { accessKey: args.accessKey.trim() };
+  const deviceId = String(args.deviceId || '').trim();
+  if (deviceId) body.deviceId = deviceId;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!result.ok) {
+    let code = 'redeem_failed';
+    let message = result.text;
+    let devices: CloudDeviceInfo[] | undefined;
+    try {
+      const parsed = JSON.parse(result.text);
+      code = String(parsed?.code || code);
+      message = String(parsed?.message || message);
+      if (Array.isArray(parsed?.devices)) {
+        devices = parsed.devices.map((d: any) => ({
+          id: String(d?.id || '').trim(),
+          name: String(d?.name || '').trim(),
+          online: Boolean(d?.online),
+          clientVersion: String(d?.clientVersion || '').trim() || undefined
+        })).filter((d: CloudDeviceInfo) => d.id);
+      }
+    } catch {
+      // keep raw
+    }
+    const err = new Error(message || `redeem failed: HTTP ${result.status}`) as CloudRedeemError;
+    err.code = code;
+    err.devices = devices;
+    throw err;
+  }
+  const parsed = JSON.parse(result.text);
+  return {
+    workspaceId: String(parsed?.workspaceId || '').trim(),
+    deviceId: String(parsed?.deviceId || '').trim(),
+    token: String(parsed?.token || '').trim(),
+    tokenType: String(parsed?.tokenType || 'Bearer'),
+    expiresAt: typeof parsed?.expiresAt === 'number' ? parsed.expiresAt : undefined,
+    devices: Array.isArray(parsed?.devices)
+      ? parsed.devices.map((d: any) => ({
+          id: String(d?.id || '').trim(),
+          name: String(d?.name || '').trim(),
+          online: Boolean(d?.online),
+          clientVersion: String(d?.clientVersion || '').trim() || undefined
+        })).filter((d: CloudDeviceInfo) => d.id)
+      : []
+  };
 }
 
 export async function getClientRepositories(args: {

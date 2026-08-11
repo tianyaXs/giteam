@@ -3,6 +3,11 @@ import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import { loadPairCodeMap } from '../../storage/pairCodeMap';
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type Prefs } from '../../storage/prefs';
 import { loadSessionCache } from '../../storage/sessionCache';
+import {
+  setActiveAccessKey,
+  setActiveDeviceId,
+  setConnectionMode as setConnectionContextMode
+} from '../../api/connectionContext';
 import { toText } from '../../lib/text';
 
 type ProjectOptionLike = {
@@ -24,6 +29,9 @@ export function useBootstrapPersistence(params: {
   serverUrlTouched: boolean;
   preferHttps: boolean;
   pairCode: string;
+  connectionMode: 'local' | 'cloud';
+  accessKey: string;
+  deviceId: string;
   repoPath: string;
   projects: ProjectOptionLike[];
   token: string;
@@ -38,6 +46,9 @@ export function useBootstrapPersistence(params: {
   setServerUrlTouched: (value: boolean) => void;
   setPreferHttps: (value: boolean) => void;
   setPairCode: (value: string) => void;
+  setConnectionMode: (value: 'local' | 'cloud') => void;
+  setAccessKey: (value: string) => void;
+  setDeviceId: (value: string) => void;
   setRepoPath: (value: string) => void;
   setProjects: (value: any[]) => void;
   setToken: (value: string) => void;
@@ -68,6 +79,9 @@ export function useBootstrapPersistence(params: {
     messagesRef,
     model,
     pairCode,
+    connectionMode,
+    accessKey,
+    deviceId,
     pairCodeMapRef,
     preferHttps,
     projects,
@@ -87,6 +101,9 @@ export function useBootstrapPersistence(params: {
     setMessages,
     setModel,
     setPairCode,
+    setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     setPreferHttps,
     setProjects,
     setRenderedTurns,
@@ -126,6 +143,12 @@ export function useBootstrapPersistence(params: {
         setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
         setPreferHttps(Boolean((prefs as any).preferHttps));
         setPairCode(prefs.pairCode);
+        setConnectionMode(prefs.connectionMode === 'cloud' ? 'cloud' : 'local');
+        setAccessKey(prefs.accessKey || '');
+        setDeviceId(prefs.deviceId || '');
+        setConnectionContextMode(prefs.connectionMode === 'cloud' ? 'cloud' : 'local');
+        setActiveAccessKey(prefs.accessKey || '');
+        setActiveDeviceId(prefs.deviceId || '');
         setRepoPath(prefs.repoPath);
         setProjects(toProjectOptionsFromPaths(prefs.repoPaths || []));
         setToken(prefs.token);
@@ -183,6 +206,9 @@ export function useBootstrapPersistence(params: {
     setMessages,
     setModel,
     setPairCode,
+    setConnectionMode,
+    setAccessKey,
+    setDeviceId,
     setPreferHttps,
     setProjects,
     setRenderedTurns,
@@ -224,6 +250,9 @@ export function useBootstrapPersistence(params: {
         serverUrlTouched,
         preferHttps,
         pairCode,
+        connectionMode,
+        accessKey,
+        deviceId,
         repoPath,
         repoPaths: projects.map((p) => p.worktree),
         token,
@@ -236,8 +265,11 @@ export function useBootstrapPersistence(params: {
       // ignore
     }
   }, [
+    accessKey,
     autoAcceptPermissions,
     composerAgent,
+    connectionMode,
+    deviceId,
     loaded,
     model,
     pairCode,

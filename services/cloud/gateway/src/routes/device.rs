@@ -1,0 +1,258 @@
+use crate::error::{ApiError, ApiResult};
+use crate::ids::{access_key_id, hash_secret, new_id, new_secret};
+use crate::proxy::{lookup_workspace_by_access_key, write_audit};
+use crate::state::AppState;
+use axum::routing::post;
+use axum::{Json, Router};
+use chrono::{Duration, Utc};
+use serde::{Deserialize, Serialize};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/cloud/v1/device/link/begin", post(link_begin))
+        .route("/cloud/v1/device/link/complete", post(link_complete))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkBeginRequest {
+    #[serde(default)]
+    device_name: String,
+    #[serde(default)]
+    client_version: String,
+    /// Join existing workspace when provided.
+    #[serde(default)]
+    access_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QrPayload {
+    mode: &'static str,
+    cloud_base_url: String,
+    workspace_id: String,
+    device_id: String,
+    access_key: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkBeginResponse {
+    workspace_id: String,
+    device_id: String,
+    link_ticket: String,
+    expires_at: i64,
+    access_key: String,
+    qr_payload: QrPayload,
+}
+
+async fn link_begin(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(body): Json<LinkBeginRequest>,
+) -> ApiResult<Json<LinkBeginResponse>> {
+    let device_name = if body.device_name.trim().is_empty() {
+        "giteam-cli".to_string()
+    } else {
+        body.device_name.trim().to_string()
+    };
+    let client_version = body.client_version.trim().to_string();
+
+    let (workspace_id, access_key_plain) = if let Some(key) = body
+        .access_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let ws = lookup_workspace_by_access_key(&state, &key).await?;
+        (ws.id, key)
+    } else {
+        let workspace_id = new_id("ws");
+        let access_key = new_secret("gtm_aks", 24);
+        let aki = access_key_id(&access_key);
+        let hash = hash_secret(&access_key);
+        sqlx::query(
+            r#"
+            INSERT INTO workspaces (id, access_key_hash, access_key_id, status)
+            VALUES ($1, $2, $3, 'active')
+            "#,
+        )
+        .bind(&workspace_id)
+        .bind(&hash)
+        .bind(&aki)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+        write_audit(
+            &state,
+            Some(&workspace_id),
+            "workspace.created",
+            serde_json::json!({}),
+        )
+        .await;
+        (workspace_id, access_key)
+    };
+
+    let device_id = new_id("dev");
+    sqlx::query(
+        r#"
+        INSERT INTO devices (id, workspace_id, name, client_version, status)
+        VALUES ($1, $2, $3, $4, 'pending')
+        "#,
+    )
+    .bind(&device_id)
+    .bind(&workspace_id)
+    .bind(&device_name)
+    .bind(&client_version)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    // First device becomes default if unset.
+    sqlx::query(
+        r#"
+        UPDATE workspaces
+        SET default_device_id = COALESCE(default_device_id, $2)
+        WHERE id = $1
+        "#,
+    )
+    .bind(&workspace_id)
+    .bind(&device_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let link_ticket = new_secret("ltk", 16);
+    let expires_at = Utc::now() + Duration::seconds(state.config.link_ticket_ttl_secs);
+    sqlx::query(
+        r#"
+        INSERT INTO link_tickets (ticket, workspace_id, device_id, expires_at)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(&link_ticket)
+    .bind(&workspace_id)
+    .bind(&device_id)
+    .bind(expires_at)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    write_audit(
+        &state,
+        Some(&workspace_id),
+        "device.link_begin",
+        serde_json::json!({ "deviceId": device_id, "name": device_name }),
+    )
+    .await;
+
+    Ok(Json(LinkBeginResponse {
+        workspace_id: workspace_id.clone(),
+        device_id: device_id.clone(),
+        link_ticket,
+        expires_at: expires_at.timestamp(),
+        access_key: access_key_plain.clone(),
+        qr_payload: QrPayload {
+            mode: "cloud",
+            cloud_base_url: state.config.public_base_url.clone(),
+            workspace_id,
+            device_id,
+            access_key: access_key_plain,
+        },
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkCompleteRequest {
+    link_ticket: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkCompleteResponse {
+    workspace_id: String,
+    device_id: String,
+    device_token: String,
+}
+
+async fn link_complete(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(body): Json<LinkCompleteRequest>,
+) -> ApiResult<Json<LinkCompleteResponse>> {
+    let ticket = body.link_ticket.trim();
+    if ticket.is_empty() {
+        return Err(ApiError::BadRequest("linkTicket required".into()));
+    }
+
+    let row: Option<(String, String, Option<chrono::DateTime<Utc>>, chrono::DateTime<Utc>)> =
+        sqlx::query_as(
+            r#"
+            SELECT workspace_id, device_id, consumed_at, expires_at
+            FROM link_tickets
+            WHERE ticket = $1
+            "#,
+        )
+        .bind(ticket)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let (workspace_id, device_id, consumed_at, expires_at) =
+        row.ok_or_else(|| ApiError::Unauthorized("invalid link ticket".into()))?;
+    if consumed_at.is_some() {
+        return Err(ApiError::Unauthorized("link ticket already used".into()));
+    }
+    if expires_at < Utc::now() {
+        return Err(ApiError::Unauthorized("link ticket expired".into()));
+    }
+
+    let device_token = new_secret("gtm_dev", 24);
+    let token_hash = hash_secret(&device_token);
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+
+    sqlx::query(
+        r#"
+        UPDATE link_tickets SET consumed_at = NOW() WHERE ticket = $1 AND consumed_at IS NULL
+        "#,
+    )
+    .bind(ticket)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    sqlx::query(
+        r#"
+        UPDATE devices
+        SET device_token_hash = $2, status = 'active', last_seen_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(&device_id)
+    .bind(&token_hash)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+
+    write_audit(
+        &state,
+        Some(&workspace_id),
+        "device.link_complete",
+        serde_json::json!({ "deviceId": device_id }),
+    )
+    .await;
+
+    Ok(Json(LinkCompleteResponse {
+        workspace_id,
+        device_id,
+        device_token,
+    }))
+}

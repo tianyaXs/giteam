@@ -2219,7 +2219,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-core"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Switch } from "../ui/switch";
 import { SegmentedControl } from "../ui/segmented";
 import { NavigatorPreview } from "./NavigatorPreview";
+import { CloudRelaySettingsCard } from "./CloudRelaySettingsCard";
 
 type ControlServerSettingsDraft = {
   enabled: boolean;
@@ -1269,6 +1270,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             ) : (
               <SettingsGroup title={text.mobileControl} entries={entriesBySection.mobile} wide />
             )}
+            <CloudRelaySettingsCard />
           </div>
         )
       },

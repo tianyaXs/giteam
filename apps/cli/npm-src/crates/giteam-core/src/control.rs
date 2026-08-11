@@ -387,6 +387,18 @@ fn read_persisted_bearer_token() -> String {
         .unwrap_or_else(generate_token)
 }
 
+/// Bearer used by cloud tunnel when proxying to the local Control Server.
+pub fn loopback_bearer_token() -> Option<String> {
+    let path = control_auth_token_path()?;
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed = serde_json::from_str::<Value>(&raw).ok()?;
+    parsed
+        .get("token")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn write_persisted_bearer_token(token: &str) {
     let Some(path) = control_auth_token_path() else {
         return;

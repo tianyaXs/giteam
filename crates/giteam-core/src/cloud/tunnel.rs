@@ -413,13 +413,18 @@ fn local_control_exchange(
         let lk = k.to_ascii_lowercase();
         if matches!(
             lk.as_str(),
-            "host" | "content-length" | "connection" | "transfer-encoding"
+            "host" | "content-length" | "connection" | "transfer-encoding" | "authorization"
         ) {
             continue;
         }
         req.push_str(k);
         req.push_str(": ");
         req.push_str(v);
+        req.push_str("\r\n");
+    }
+    if let Some(token) = crate::control::loopback_bearer_token() {
+        req.push_str("Authorization: Bearer ");
+        req.push_str(&token);
         req.push_str("\r\n");
     }
     req.push_str("\r\n");

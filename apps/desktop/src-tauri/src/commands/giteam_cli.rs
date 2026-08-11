@@ -414,3 +414,88 @@ pub fn start_managed_mobile_service() {
         let _ = sync_cli_bootstrap_settings();
     }
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLinkStatusView {
+    pub enabled: bool,
+    pub cloud_base_url: String,
+    pub workspace_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub access_key: String,
+    pub tunnel_running: bool,
+}
+
+#[tauri::command]
+pub fn giteam_cloud_status() -> Result<CloudLinkStatusView, String> {
+    let settings = giteam_core::cloud::get_cloud_link_settings();
+    Ok(CloudLinkStatusView {
+        enabled: settings.enabled,
+        cloud_base_url: settings.cloud_base_url,
+        workspace_id: settings.workspace_id,
+        device_id: settings.device_id,
+        device_name: settings.device_name,
+        access_key: settings.access_key,
+        tunnel_running: giteam_core::cloud::tunnel_running(),
+    })
+}
+
+#[tauri::command]
+pub fn giteam_cloud_link(
+    url: Option<String>,
+    access_key: Option<String>,
+    name: Option<String>,
+) -> Result<CloudLinkStatusView, String> {
+    let base = url
+        .unwrap_or_else(|| giteam_core::cloud::DEFAULT_CLOUD_BASE_URL.to_string())
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let device_name = name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "giteam-desktop".to_string());
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let settings = giteam_core::cloud::link_device(
+        &base,
+        &device_name,
+        &version,
+        access_key.as_deref(),
+    )?;
+    let port = control::get_control_server_settings()?.port;
+    let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
+    Ok(CloudLinkStatusView {
+        enabled: settings.enabled,
+        cloud_base_url: settings.cloud_base_url,
+        workspace_id: settings.workspace_id,
+        device_id: settings.device_id,
+        device_name: settings.device_name,
+        access_key: settings.access_key,
+        tunnel_running: giteam_core::cloud::tunnel_running(),
+    })
+}
+
+#[tauri::command]
+pub fn giteam_cloud_unlink() -> Result<CloudLinkStatusView, String> {
+    giteam_core::cloud::stop_cloud_tunnel();
+    let mut settings = giteam_core::cloud::get_cloud_link_settings();
+    settings.enabled = false;
+    settings.device_token.clear();
+    giteam_core::cloud::set_cloud_link_settings(&settings)?;
+    giteam_cloud_status()
+}
+
+#[tauri::command]
+pub fn giteam_cloud_qr_payload() -> Result<serde_json::Value, String> {
+    let settings = giteam_core::cloud::get_cloud_link_settings();
+    if settings.access_key.is_empty() || settings.workspace_id.is_empty() {
+        return Err("not linked; run cloud link first".into());
+    }
+    Ok(serde_json::json!({
+        "mode": "cloud",
+        "cloudBaseUrl": settings.cloud_base_url,
+        "workspaceId": settings.workspace_id,
+        "deviceId": settings.device_id,
+        "accessKey": settings.access_key,
+    }))
+}

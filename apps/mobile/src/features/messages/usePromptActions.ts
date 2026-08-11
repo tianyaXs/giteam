@@ -1,7 +1,8 @@
 import { useCallback, useRef } from 'react';
 import { Vibration } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { pairAuth } from '../../api/controlApi';
+import { pairAuth, redeemCloudAccess } from '../../api/controlApi';
+import { getActiveAccessKey, getConnectionMode, setActiveDeviceId } from '../../api/connectionContext';
 import { createMobileAgentClient } from '../../api/agent/client';
 import { composerAgentSessionOptions } from '../chat/composerAgentOptions';
 import { toText } from '../../lib/text';
@@ -302,16 +303,35 @@ export function usePromptActions(params: UsePromptActionsParams) {
       pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
       // eslint-disable-next-line no-console
       console.error('[onSendPrompt] error:', msg, 'images:', images.length, 'dataUrl lengths:', images.map((i) => i.dataUrl?.length || 0));
-      if (msg.includes('invalid bearer token') && pairCode.trim()) {
-        try {
-          pushConnLog('prompt auto pairAuth retry');
-          const renewed = await pairAuth(serverUrl, pairCode);
-          setToken(renewed.token);
-          pushConnLog('prompt auto pairAuth retry ok');
-          setStatus('已刷新授权，请重试发送');
-        } catch (retryErr) {
-          pushConnLog(`prompt auto pairAuth retry error ${String(retryErr)}`, 'error');
-          setStatus(String(retryErr));
+      if (msg.includes('invalid bearer token') || /token_expired|401/.test(msg)) {
+        if (getConnectionMode() === 'cloud' && (getActiveAccessKey() || pairCode.trim())) {
+          try {
+            pushConnLog('prompt auto cloud redeem retry');
+            const renewed = await redeemCloudAccess({
+              cloudBaseUrl: serverUrl,
+              accessKey: getActiveAccessKey() || pairCode.trim()
+            });
+            setToken(renewed.token);
+            setActiveDeviceId(renewed.deviceId);
+            pushConnLog('prompt auto cloud redeem retry ok');
+            setStatus('已刷新云端授权，请重试发送');
+          } catch (retryErr) {
+            pushConnLog(`prompt auto cloud redeem retry error ${String(retryErr)}`, 'error');
+            setStatus(String(retryErr));
+          }
+        } else if (pairCode.trim()) {
+          try {
+            pushConnLog('prompt auto pairAuth retry');
+            const renewed = await pairAuth(serverUrl, pairCode);
+            setToken(renewed.token);
+            pushConnLog('prompt auto pairAuth retry ok');
+            setStatus('已刷新授权，请重试发送');
+          } catch (retryErr) {
+            pushConnLog(`prompt auto pairAuth retry error ${String(retryErr)}`, 'error');
+            setStatus(String(retryErr));
+          }
+        } else {
+          setStatus(`发送失败: ${msg}`);
         }
       } else {
         setStatus(`发送失败: ${msg}`);

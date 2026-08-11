@@ -1,4 +1,5 @@
 import EventSource from 'react-native-sse';
+import { getActiveDeviceId } from '../connectionContext';
 import { NO_AUTH_TOKEN } from '../controlApi';
 import type {
   AgentEvent,
@@ -19,6 +20,7 @@ import type {
 export type MobileAgentClientConfig = {
   baseUrl: string;
   token: string;
+  deviceId?: string;
 };
 
 const JSON_REQUEST_TIMEOUT_MS = 12000;
@@ -84,9 +86,12 @@ export type MobileAgentClient = {
 export function createMobileAgentClient(config: MobileAgentClientConfig): MobileAgentClient {
   const root = normalizeBaseUrl(config.baseUrl);
   const authHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = {};
     const tk = (config.token || '').trim();
-    if (!tk || tk === NO_AUTH_TOKEN) return {};
-    return { Authorization: `Bearer ${tk}` };
+    if (tk && tk !== NO_AUTH_TOKEN) headers.Authorization = `Bearer ${tk}`;
+    const deviceId = String(config.deviceId || getActiveDeviceId() || '').trim();
+    if (deviceId) headers['X-Giteam-Device-Id'] = deviceId;
+    return headers;
   };
 
   const request = async <T>(

@@ -18,6 +18,9 @@ export function useMobileAppState() {
   const [serverUrlTouched, setServerUrlTouched] = useState(false);
   const [preferHttps, setPreferHttps] = useState(false);
   const [pairCode, setPairCode] = useState("");
+  const [connectionMode, setConnectionMode] = useState<"local" | "cloud">("local");
+  const [accessKey, setAccessKey] = useState("");
+  const [deviceId, setDeviceId] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const [token, setToken] = useState("");
   const [sessionId, setSessionId] = useState("");
@@ -84,6 +87,12 @@ export function useMobileAppState() {
     setPreferHttps,
     pairCode,
     setPairCode,
+    connectionMode,
+    setConnectionMode,
+    accessKey,
+    setAccessKey,
+    deviceId,
+    setDeviceId,
     repoPath,
     setRepoPath,
     token,
