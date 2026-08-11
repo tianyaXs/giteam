@@ -190,6 +190,9 @@ pub struct PiSessionSummary {
     /// 子 agent 的父会话；主会话为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// 触发该子 session 的父 task toolCallId；主会话为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
 }
 
 fn default_session_kind() -> String {
@@ -520,6 +523,7 @@ impl PiAgentService {
             title: None,
             session_kind: session_kind.clone(),
             parent_session_id: parent_session_id.clone(),
+            parent_tool_call_id: parent_tool_call_id.clone(),
         };
         let managed = Arc::new(ManagedSession {
             repo_path,
@@ -589,6 +593,7 @@ impl PiAgentService {
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
             parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -652,6 +657,7 @@ impl PiAgentService {
                 title,
                 session_kind: self.record_session_kind(&session_id),
                 parent_session_id: self.record_parent_session_id(&session_id),
+                parent_tool_call_id: self.record_parent_tool_call_id(&session_id),
             });
         }
         if !titles_to_cache.is_empty() {
@@ -1351,6 +1357,7 @@ impl PiAgentService {
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
             parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -1423,6 +1430,7 @@ impl PiAgentService {
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
             parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -1499,6 +1507,51 @@ impl PiAgentService {
                 .get(session_id)
                 .and_then(|record| record.parent_session_id.clone())
         })
+    }
+
+    fn record_parent_tool_call_id(&self, session_id: &str) -> Option<String> {
+        self.records.lock().ok().and_then(|records| {
+            records
+                .get(session_id)
+                .and_then(|record| record.parent_tool_call_id.clone())
+        })
+    }
+
+    /// 列出某主会话下的子 agent 记录（含 parentToolCallId），供冷启动回填 task 卡。
+    /// 只读 catalog，不必打开子 handle。
+    pub fn list_child_sessions(&self, parent_session_id: &str) -> Vec<PiSessionSummary> {
+        let parent = parent_session_id.trim();
+        if parent.is_empty() {
+            return Vec::new();
+        }
+        let Ok(records) = self.records.lock() else {
+            return Vec::new();
+        };
+        let mut summaries: Vec<PiSessionSummary> = records
+            .values()
+            .filter(|record| {
+                record.session_kind == "subagent"
+                    && record
+                        .parent_session_id
+                        .as_deref()
+                        .map(|id| id == parent)
+                        .unwrap_or(false)
+            })
+            .map(|record| PiSessionSummary {
+                session_id: record.session_id.clone(),
+                repo_path: record.repo_path.clone(),
+                provider: record.provider.clone(),
+                model: record.model.clone(),
+                message_count: 0,
+                updated_at_ms: record.updated_at_ms,
+                title: record.title.clone(),
+                session_kind: record.session_kind.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+                parent_tool_call_id: record.parent_tool_call_id.clone(),
+            })
+            .collect();
+        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        summaries
     }
 
     /// 主会话注入 SubagentHost；子 agent（session_kind=subagent）不注入，禁止再委派。
@@ -2496,6 +2549,7 @@ mod tests {
             title: Some("审查改动".to_string()),
             session_kind: "primary".to_string(),
             parent_session_id: None,
+            parent_tool_call_id: None,
         };
         let value = serde_json::to_value(summary).expect("serialize summary");
         assert_eq!(value["sessionId"], "session-1");

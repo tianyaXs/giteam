@@ -28,9 +28,32 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      # pi_agent_rust 仓库含极深测试路径；Windows MAX_PATH(260) 会在 cargo git checkout 时炸
+      - name: Windows long path workaround
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p /c/c
+          echo "CARGO_HOME=C:/c" >> "$GITHUB_ENV"
+          git config --global core.longpaths true
+          powershell.exe -NoProfile -Command \
+            "New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force | Out-Null"
+          echo "Enabled Windows long paths; CARGO_HOME=C:/c"
+
+      # 必须与仓库 rust-toolchain.toml 一致：若装到 stable 而目录覆盖到 nightly，
+      # hasRustTarget / cargo 会看不到 matrix 里加过的 target（linux-x64 musl 曾因此失败）。
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-07-05
           targets: ${{ matrix.platform.rust_target }}
+      - name: Ensure Rust target installed
+        shell: bash
+        run: |
+          rustup show
+          rustup target add "${{ matrix.platform.rust_target }}"
+          rustup target list --installed | tee /tmp/rust-targets.txt
+          grep -F "${{ matrix.platform.rust_target }}" /tmp/rust-targets.txt
       - name: Install musl tools
         if: matrix.platform.key == 'linux-x64'
         run: |
@@ -52,7 +75,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-05
       - uses: actions/setup-node@v4
         with:
           node-version: 20

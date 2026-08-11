@@ -1361,6 +1361,26 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "GET" && req.path == "/api/v1/agent/child-sessions" {
+        let parent_session_id = req
+            .query
+            .get("parentSessionId")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if parent_session_id.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "parentSessionId is required" }),
+            );
+        }
+        let _ = PiAgentService::global().refresh_sessions_from_catalog();
+        let sessions = PiAgentService::global().list_child_sessions(parent_session_id);
+        return serde_json::to_value(sessions)
+            .map(|value| (200, value))
+            .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() })));
+    }
+
     if req.method == "DELETE" && req.path == "/api/v1/agent/session" {
         let session_id = req
             .query
