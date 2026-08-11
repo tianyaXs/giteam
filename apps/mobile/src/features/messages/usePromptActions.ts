@@ -1,12 +1,9 @@
 import { useCallback } from 'react';
 import { Vibration } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import {
-  abortSession,
-  createSession,
-  pairAuth,
-  sendPrompt
-} from '../../api/controlApi';
+import { pairAuth } from '../../api/controlApi';
+import { createMobileAgentClient } from '../../api/agent/client';
+import { composerAgentSessionOptions } from '../chat/composerAgentOptions';
 import { toText } from '../../lib/text';
 import type { ComposerAttachment } from '../media/types';
 import {
@@ -30,10 +27,10 @@ type UsePromptActionsParams = {
   composerAgent: 'build' | 'plan';
   autoAcceptPermissions: boolean;
   imageAttachments: ComposerAttachment[];
-  imageSendTimeoutMs: number;
   initialSessionLimit: number;
   initialMessageFetchLimit: number;
   sessionIdRef: React.MutableRefObject<string>;
+  sessionActiveRunIdRef: React.MutableRefObject<Record<string, string>>;
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
   sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   pendingPromptSessionRef: React.MutableRefObject<Record<string, { id: string; startedAt: number }>>;
@@ -47,7 +44,7 @@ type UsePromptActionsParams = {
 
   setSessionStatusMap: React.Dispatch<React.SetStateAction<Record<string, SessionStatusInfo>>>;
   setActiveSession: (sessionId: string) => void;
-  startStream: (targetSessionId: string) => void;
+  startStream: (targetSessionId: string, runId?: string) => void;
   stopStream: () => void;
   syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number; tailOnly?: boolean }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
@@ -68,7 +65,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
     composerAgent,
     dropOptimisticUserMessage,
     imageAttachments,
-    imageSendTimeoutMs,
     initialMessageFetchLimit,
     initialSessionLimit,
     model,
@@ -80,6 +76,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     repoPath,
     sentAttachmentCacheRef,
     serverUrl,
+    sessionActiveRunIdRef,
     sessionIdRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
@@ -147,23 +144,29 @@ export function usePromptActions(params: UsePromptActionsParams) {
       log: pushConnLog
     });
     let requestSessionId = '';
+    const client = createMobileAgentClient({ baseUrl: serverUrl, token });
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
       const normalizedModel = model.trim();
-      const requestModel = normalizedModel && normalizedModel.includes('/') ? normalizedModel : undefined;
+      const modelRef = normalizedModel && normalizedModel.includes('/') ? normalizedModel : '';
+      const requestProvider = modelRef ? modelRef.slice(0, modelRef.indexOf('/')) : '';
+      const requestModelId = modelRef ? modelRef.slice(modelRef.indexOf('/') + 1) : '';
       if (!targetSessionId) {
         markMessageSendPerf(perf, 'send.create_session.begin');
         const createStartedAt = performance.now();
-        pushConnLog(`POST session.create model=${requestModel || '(default)'}`);
-        const created = await createSession({
-          baseUrl: serverUrl,
-          token,
+        pushConnLog(`POST agent.session model=${modelRef || '(default)'}`);
+        const agentOptions = composerAgentSessionOptions(composerAgent);
+        const created = await client.createSession({
           repoPath,
-          title: payloadPrompt.slice(0, 24) || '新会话',
-          agent: composerAgent,
-          autoAcceptPermissions
+          ...(requestProvider ? { provider: requestProvider } : {}),
+          ...(requestModelId ? { model: requestModelId } : {}),
+          ...(agentOptions.enabledTools ? { enabledTools: agentOptions.enabledTools } : {}),
+          appendSystemPrompt: agentOptions.appendSystemPrompt
         });
-        targetSessionId = created.id;
+        targetSessionId = created.sessionId;
+        if (autoAcceptPermissions) {
+          void client.setAutoApprove(targetSessionId, true).catch(() => undefined);
+        }
         markMessageSendPerf(perf, 'send.create_session.done', {
           ms: Math.round(performance.now() - createStartedAt),
           sid: targetSessionId
@@ -172,6 +175,19 @@ export function usePromptActions(params: UsePromptActionsParams) {
         bindMessageSendSession(perf, targetSessionId);
       } else {
         bindMessageSendSession(perf, targetSessionId);
+        // Build/Plan 模式热切换：与桌面端一致，prompt 前同步工具白名单与系统提示追加段。
+        const agentOptions = composerAgentSessionOptions(composerAgent);
+        await client
+          .setSessionOptions(targetSessionId, {
+            ...(agentOptions.enabledTools ? { enabledTools: agentOptions.enabledTools } : {}),
+            appendSystemPrompt: agentOptions.appendSystemPrompt
+          })
+          .catch((optionsError) => {
+            pushConnLog(`agent.session-options warn ${String(optionsError)}`, 'info');
+          });
+        if (autoAcceptPermissions) {
+          void client.setAutoApprove(targetSessionId, true).catch(() => undefined);
+        }
       }
       if (optimisticMessage.attachments?.length) {
         sentAttachmentCacheRef.current[targetSessionId] = {
@@ -203,52 +219,42 @@ export function usePromptActions(params: UsePromptActionsParams) {
       };
       requestSessionId = targetSessionId;
       setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'busy' } }));
+      const runId = client.newRunId();
+      sessionActiveRunIdRef.current[targetSessionId] = runId;
       markMessageSendPerf(perf, 'send.stream.start');
-      startStream(targetSessionId);
-      pushConnLog(`POST prompt sid=${targetSessionId} model=${requestModel || '(default)'} images=${images.length}`);
-      images.forEach((img, idx) => {
-        pushConnLog(`  image[${idx}] mime=${img.mime} filename=${img.filename} dataUrlLength=${img.dataUrl?.length || 0}`);
-      });
-      const parts = [
-        { id: `prt_${Date.now()}_text`, type: 'text' as const, text: payloadPrompt },
-        ...images.map((img, idx) => ({
-          id: `prt_${Date.now()}_${idx}`,
-          type: 'file' as const,
-          mime: img.mime,
-          url: img.dataUrl,
-          filename: img.filename
-        }))
-      ];
-      pushConnLog(`sendPrompt start, parts count=${parts.length}, timeout=${images.length > 0 ? imageSendTimeoutMs : 12000}ms`);
+      startStream(targetSessionId, runId);
+      const imagesPayload = images
+        .map((img) => {
+          const dataUrl = toText(img.dataUrl);
+          const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+          if (!match || !match[2]) return null;
+          return { mimeType: img.mime || match[1] || 'image/png', data: match[2] };
+        })
+        .filter(Boolean) as Array<{ mimeType: string; data: string }>;
+      pushConnLog(`POST agent.prompt sid=${targetSessionId} run=${runId} model=${modelRef || '(default)'} images=${imagesPayload.length}`);
       const networkStartedAt = performance.now();
-      markMessageSendPerf(perf, 'send.network.begin', { parts: parts.length });
-      const res = await sendPrompt({
-        baseUrl: serverUrl,
-        token,
-        repoPath,
-        prompt: payloadPrompt,
+      markMessageSendPerf(perf, 'send.network.begin', { images: imagesPayload.length });
+      // prompt 阻塞至 run 完成；流式进度由 SSE（startStream）驱动。
+      const res = await client.prompt({
         sessionId: targetSessionId,
-        model: requestModel,
-        agent: composerAgent,
-        autoAcceptPermissions,
-        parts: parts.length > 0 ? parts : undefined,
-        timeoutMs: images.length > 0 ? imageSendTimeoutMs : undefined
+        runId,
+        prompt: payloadPrompt,
+        images: imagesPayload.length > 0 ? imagesPayload : undefined
       });
       markMessageSendPerf(perf, 'send.network.done', {
         ms: Math.round(performance.now() - networkStartedAt),
-        sid: res.sessionId
+        sid: targetSessionId
       });
-      pushConnLog(`sendPrompt success, sessionId=${res.sessionId}`);
-      // 如果服务端创建了新会话（如 task 事件），不自动切换当前视图，
-      // 保持用户在当前会话页面，避免界面跳转到新会话
+      pushConnLog(`agent.prompt success, sessionId=${targetSessionId} runId=${res.runId}`);
       delete pendingPromptSessionRef.current[targetSessionId];
-      markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: res.sessionId });
+      delete sessionActiveRunIdRef.current[targetSessionId];
+      markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: targetSessionId });
       const syncStartedAt = performance.now();
-      void syncSessionMessages(res.sessionId, {
+      void syncSessionMessages(targetSessionId, {
         limit: Math.max(
           initialSessionLimit,
-          Number(sessionVisibleTurnCountRef.current[res.sessionId] || 0),
-          Number(sessionTotalTurnCountRef.current[res.sessionId] || 0)
+          Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0),
+          Number(sessionTotalTurnCountRef.current[targetSessionId] || 0)
         ),
         tailOnly: true
       })
@@ -268,7 +274,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
           });
         });
       void refreshSessionsFromServer();
-      pushConnLog(`POST prompt ok sid=${res.sessionId}`);
+      pushConnLog(`POST agent.prompt ok sid=${targetSessionId}`);
       setStatus('已发送');
     } catch (e) {
       const currentSessionId = toText(sessionIdRef.current).trim();
@@ -313,7 +319,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
     composerAgent,
     dropOptimisticUserMessage,
     imageAttachments,
-    imageSendTimeoutMs,
     initialMessageFetchLimit,
     initialSessionLimit,
     model,
@@ -353,13 +358,15 @@ export function usePromptActions(params: UsePromptActionsParams) {
     delete pendingPromptSessionRef.current[sid];
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     try {
-      pushConnLog(`POST abort sid=${sid}`);
-      await abortSession({
-        baseUrl: serverUrl,
-        token,
-        repoPath,
-        sessionId: sid
-      });
+      const activeRunId = toText(sessionActiveRunIdRef.current[sid]).trim();
+      if (!activeRunId) {
+        setStatus('当前会话没有进行中的运行');
+        setBusy(false);
+        return;
+      }
+      pushConnLog(`POST agent.abort sid=${sid} run=${activeRunId}`);
+      await createMobileAgentClient({ baseUrl: serverUrl, token }).abort(activeRunId);
+      delete sessionActiveRunIdRef.current[sid];
       setStatus('已请求中断');
       const tailLimit = Math.max(
         initialSessionLimit,
@@ -382,8 +389,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
     initialSessionLimit,
     pendingPromptSessionRef,
     pushConnLog,
-    repoPath,
     serverUrl,
+    sessionActiveRunIdRef,
     sessionIdRef,
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,

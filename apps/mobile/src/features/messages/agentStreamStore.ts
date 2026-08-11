@@ -1,21 +1,16 @@
-import { mergeOpencodeStreamText } from '../../lib/opencodeParts';
+import { mergeAgentStreamText } from '../../lib/agentParts';
 import { toText } from '../../lib/text';
 import { mergeMessageRows } from './turns';
 
 export type RefLike<T> = { current: T };
 
-export type StreamPartEvent =
-  | { kind: 'delta'; payload: unknown }
-  | { kind: 'part'; payload: unknown }
-  | { kind: 'part_removed'; payload: unknown };
-
-/** Ordered part list per message — matches OpenCode Web `part[messageID]` binary insert by id. */
+/** Ordered part list per message — binary insert by part id。 */
 export type StreamPartBucket = {
   order: string[];
   byId: Record<string, any>;
 };
 
-export type OpenCodeStreamStoreRefs = {
+export type AgentStreamStoreRefs = {
   messageRole: RefLike<Record<string, Record<string, string>>>;
   message: RefLike<Record<string, Record<string, any>>>;
   part: RefLike<Record<string, Record<string, StreamPartBucket>>>;
@@ -23,7 +18,6 @@ export type OpenCodeStreamStoreRefs = {
   permission: RefLike<Record<string, any[]>>;
   question: RefLike<Record<string, any[]>>;
   todo: RefLike<Record<string, any[]>>;
-  pendingPartEvents: RefLike<Record<string, Record<string, StreamPartEvent[]>>>;
   rawRows: RefLike<Record<string, any[]>>;
 };
 
@@ -66,7 +60,7 @@ export function mergeStreamPart(prev: any, incoming: any) {
   const prevText = typeof prev?.text === 'string' ? prev.text : '';
   const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
   if (prevText || incomingText) {
-    next.text = mergeOpencodeStreamText(prevText, incomingText);
+    next.text = mergeAgentStreamText(prevText, incomingText);
   }
   return next;
 }
@@ -123,7 +117,7 @@ export function removeStreamPartFromBucket(bucket: StreamPartBucket, partId: str
   return bucket;
 }
 
-export function resetOpenCodeStreamStores(stores: OpenCodeStreamStoreRefs) {
+export function resetAgentStreamStores(stores: AgentStreamStoreRefs) {
   stores.messageRole.current = {};
   stores.message.current = {};
   stores.part.current = {};
@@ -131,7 +125,6 @@ export function resetOpenCodeStreamStores(stores: OpenCodeStreamStoreRefs) {
   stores.permission.current = {};
   stores.question.current = {};
   stores.todo.current = {};
-  stores.pendingPartEvents.current = {};
 }
 
 function sortedUpsert(list: any[] | undefined, item: any, id: string) {
@@ -149,45 +142,45 @@ function removeByRequestId(list: any[] | undefined, requestID: string) {
   return list.filter((item) => toText(item?.id).trim() !== id);
 }
 
-export function setStreamSessionStatus(stores: OpenCodeStreamStoreRefs, sessionID: string, status: any) {
+export function setStreamSessionStatus(stores: AgentStreamStoreRefs, sessionID: string, status: any) {
   const sid = toText(sessionID).trim();
   if (!sid || !status || typeof status !== 'object') return;
   stores.sessionStatus.current[sid] = status;
 }
 
-export function upsertStreamPermission(stores: OpenCodeStreamStoreRefs, permission: any) {
+export function upsertStreamPermission(stores: AgentStreamStoreRefs, permission: any) {
   const sid = toText(permission?.sessionID).trim();
   const id = toText(permission?.id).trim();
   if (!sid || !id) return;
   stores.permission.current[sid] = sortedUpsert(stores.permission.current[sid], permission, id);
 }
 
-export function removeStreamPermission(stores: OpenCodeStreamStoreRefs, sessionID: string, requestID: string) {
+export function removeStreamPermission(stores: AgentStreamStoreRefs, sessionID: string, requestID: string) {
   const sid = toText(sessionID).trim();
   if (!sid) return;
   stores.permission.current[sid] = removeByRequestId(stores.permission.current[sid], requestID);
 }
 
-export function upsertStreamQuestion(stores: OpenCodeStreamStoreRefs, question: any) {
+export function upsertStreamQuestion(stores: AgentStreamStoreRefs, question: any) {
   const sid = toText(question?.sessionID).trim();
   const id = toText(question?.id).trim();
   if (!sid || !id) return;
   stores.question.current[sid] = sortedUpsert(stores.question.current[sid], question, id);
 }
 
-export function removeStreamQuestion(stores: OpenCodeStreamStoreRefs, sessionID: string, requestID: string) {
+export function removeStreamQuestion(stores: AgentStreamStoreRefs, sessionID: string, requestID: string) {
   const sid = toText(sessionID).trim();
   if (!sid) return;
   stores.question.current[sid] = removeByRequestId(stores.question.current[sid], requestID);
 }
 
-export function setStreamTodos(stores: OpenCodeStreamStoreRefs, sessionID: string, todos: any[]) {
+export function setStreamTodos(stores: AgentStreamStoreRefs, sessionID: string, todos: any[]) {
   const sid = toText(sessionID).trim();
   if (!sid) return;
   stores.todo.current[sid] = Array.isArray(todos) ? todos : [];
 }
 
-export function ensureStreamSessionStores(stores: OpenCodeStreamStoreRefs, targetSessionId: string) {
+export function ensureStreamSessionStores(stores: AgentStreamStoreRefs, targetSessionId: string) {
   const sid = toText(targetSessionId).trim();
   if (!sid) return '';
   if (!stores.message.current[sid]) stores.message.current[sid] = {};
@@ -196,7 +189,7 @@ export function ensureStreamSessionStores(stores: OpenCodeStreamStoreRefs, targe
   return sid;
 }
 
-export function composeStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string) {
+export function composeStreamRows(stores: AgentStreamStoreRefs, targetSessionId: string) {
   const sid = toText(targetSessionId).trim();
   const messages = stores.message.current[sid] || {};
   const partsByMessage = stores.part.current[sid] || {};
@@ -214,7 +207,7 @@ export function composeStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
     });
 }
 
-export function publishStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string) {
+export function publishStreamRows(stores: AgentStreamStoreRefs, targetSessionId: string) {
   const sid = toText(targetSessionId).trim();
   if (!sid) return [];
   const composed = composeStreamRows(stores, targetSessionId);
@@ -225,7 +218,7 @@ export function publishStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
   return merged;
 }
 
-function applyRowsToStreamStores(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+function applyRowsToStreamStores(stores: AgentStreamStoreRefs, targetSessionId: string, rows: any[]) {
   const sid = ensureStreamSessionStores(stores, targetSessionId);
   if (!sid || !Array.isArray(rows)) return sid;
   const messageStore = stores.message.current[sid];
@@ -251,7 +244,7 @@ function applyRowsToStreamStores(stores: OpenCodeStreamStoreRefs, targetSessionI
 }
 
 /** Authoritative server snapshot — replaces stream store and raw rows (after prompt / SSE messages). */
-export function replaceStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+export function replaceStreamRows(stores: AgentStreamStoreRefs, targetSessionId: string, rows: any[]) {
   const sid = toText(targetSessionId).trim();
   if (!sid || !Array.isArray(rows)) return stores.rawRows.current[sid] || [];
   stores.message.current[sid] = {};
@@ -263,14 +256,14 @@ export function replaceStreamRows(stores: OpenCodeStreamStoreRefs, targetSession
   return composed;
 }
 
-export function ingestStreamRows(stores: OpenCodeStreamStoreRefs, targetSessionId: string, rows: any[]) {
+export function ingestStreamRows(stores: AgentStreamStoreRefs, targetSessionId: string, rows: any[]) {
   const sid = applyRowsToStreamStores(stores, targetSessionId, rows);
   if (!sid) return publishStreamRows(stores, targetSessionId);
   return publishStreamRows(stores, sid);
 }
 
 export function upsertStreamPartRecord(
-  stores: OpenCodeStreamStoreRefs,
+  stores: AgentStreamStoreRefs,
   targetSessionId: string,
   messageId: string,
   part: any,
@@ -285,7 +278,7 @@ export function upsertStreamPartRecord(
 }
 
 export function removeStreamPartRecord(
-  stores: OpenCodeStreamStoreRefs,
+  stores: AgentStreamStoreRefs,
   targetSessionId: string,
   messageId: string,
   partId: string,
@@ -299,7 +292,7 @@ export function removeStreamPartRecord(
   removeStreamPartFromBucket(bucket, pid);
 }
 
-export function getKnownStreamMessageRole(stores: OpenCodeStreamStoreRefs, targetSessionId: string, messageId: string) {
+export function getKnownStreamMessageRole(stores: AgentStreamStoreRefs, targetSessionId: string, messageId: string) {
   const sid = toText(targetSessionId).trim();
   const mid = toText(messageId).trim();
   if (!sid || !mid) return '';
@@ -313,7 +306,7 @@ export function getKnownStreamMessageRole(stores: OpenCodeStreamStoreRefs, targe
 
 /** Stream deltas/parts must never mutate user messages (avoids typewriter on sent prompts). */
 export function canApplyStreamPartUpdate(
-  stores: OpenCodeStreamStoreRefs,
+  stores: AgentStreamStoreRefs,
   targetSessionId: string,
   messageId: string,
 ) {
@@ -321,14 +314,14 @@ export function canApplyStreamPartUpdate(
 }
 
 export function resolveStreamRewriteRole(
-  stores: OpenCodeStreamStoreRefs,
+  stores: AgentStreamStoreRefs,
   targetSessionId: string,
   messageId: string,
 ): 'user' | 'assistant' {
   return getKnownStreamMessageRole(stores, targetSessionId, messageId) === 'user' ? 'user' : 'assistant';
 }
 
-export function getStoredStreamPart(stores: OpenCodeStreamStoreRefs, targetSessionId: string, messageId: string, partId: string) {
+export function getStoredStreamPart(stores: AgentStreamStoreRefs, targetSessionId: string, messageId: string, partId: string) {
   const sid = toText(targetSessionId).trim();
   const mid = toText(messageId).trim();
   const pid = toText(partId).trim();
@@ -343,7 +336,7 @@ export function resolveStreamPartWriteField(part: any, field: string): string {
 }
 
 export function patchStoredStreamPartDelta(
-  stores: OpenCodeStreamStoreRefs,
+  stores: AgentStreamStoreRefs,
   targetSessionId: string,
   messageId: string,
   partId: string,

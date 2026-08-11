@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { toText } from '../../lib/text';
 import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from '../../types';
-import type { OpenCodeStreamStoreRefs } from '../messages/opencodeStore';
+import type { AgentStreamStoreRefs } from '../messages/agentStreamStore';
 import { conversationHasAssistantAfterUser } from './assistantTurnState';
 
 type StreamDebug = (label: string, payload?: Record<string, unknown>) => void;
@@ -37,7 +37,7 @@ function compactDetail(detail: string): string {
   return '.../' + parts.slice(-2).join('/');
 }
 
-function getExploringState(stores: OpenCodeStreamStoreRefs | undefined, sessionId: string): ExploringState {
+function getExploringState(stores: AgentStreamStoreRefs | undefined, sessionId: string): ExploringState {
   const emptyState: ExploringState = {
     currentActions: [],
     completedCounts: { read: 0, search: 0, list: 0, total: 0 },
@@ -150,7 +150,7 @@ export function useDisplayedTurnsWithThinking(params: {
   renderedTurns: MobileRenderedTurn[];
   sessionWorking: boolean;
   sessionId?: string;
-  getOpenCodeStreamStores?: () => OpenCodeStreamStoreRefs | undefined;
+  getAgentStreamStores?: () => AgentStreamStoreRefs | undefined;
   streamDebug?: StreamDebug;
 }) {
   const {
@@ -159,7 +159,7 @@ export function useDisplayedTurnsWithThinking(params: {
     renderedTurns,
     sessionWorking,
     sessionId,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     streamDebug
   } = params;
 
@@ -179,8 +179,8 @@ export function useDisplayedTurnsWithThinking(params: {
         recentActions: []
       };
     }
-    return getExploringState(getOpenCodeStreamStores?.(), sessionId);
-  }, [sessionWorking, sessionId, getOpenCodeStreamStores, renderedTurns.length, messages.length]);
+    return getExploringState(getAgentStreamStores?.(), sessionId);
+  }, [sessionWorking, sessionId, getAgentStreamStores, renderedTurns.length, messages.length]);
 
   const displayedTurns = useMemo(() => {
     // 不再添加 think item 到 turn 中，避免重复渲染

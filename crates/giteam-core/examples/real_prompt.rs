@@ -108,6 +108,10 @@ fn main() {
         no_session: false,
         thinking: args.thinking.clone(),
         max_tool_iterations: None,
+        browser_controller: None,
+        parent_session_id: None,
+        parent_tool_call_id: None,
+        session_kind: "primary".to_string(),
     };
     let summary = match block_on(service.create_session(config)) {
         Ok(summary) => summary,

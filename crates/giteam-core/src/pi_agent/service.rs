@@ -3,10 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use futures::lock::Mutex as AsyncMutex;
 use pi::sdk::{create_agent_session, AbortHandle, AgentSessionHandle, SessionOptions};
 use thiserror::Error;
@@ -16,11 +17,15 @@ use super::interactions::{InteractionHub, InteractionRunContext, InteractionStor
 use super::provider_sanitizer::{
     ensure_tool_call_id_sanitizer, shorten_tool_call_id, OPENAI_TOOL_CALL_ID_MAX_LEN,
 };
+use super::subagents::{
+    SubagentHost, SubagentSpawnRequest, SubagentSpawnResult,
+};
 use super::tools::GiteamToolFactory;
 use super::{
     ensure_pi_agent_dir_env, AgentEvent, AgentEventEnvelope, AgentInteraction,
-    AgentInteractionReply, AgentMessage, AgentModelInfo, AgentProviderInfo, AgentSessionStatus,
-    CustomProviderInput, PiEventTranslator, PiRuntimeInfo, ProviderCatalog, SecretStore,
+    AgentInteractionReply, AgentMessage, AgentModelInfo, AgentPart, AgentProviderInfo,
+    AgentSessionStatus, CustomProviderInput, PiEventTranslator, PiRuntimeInfo, ProviderCatalog,
+    SecretStore,
 };
 
 pub type AgentEventSink = Arc<dyn Fn(AgentEventEnvelope) + Send + Sync>;
@@ -46,6 +51,12 @@ pub struct PiSessionConfig {
     pub max_tool_iterations: Option<usize>,
     /// 内置浏览器控制器（desktop 注入实现；CLI/control 为 None）。
     pub browser_controller: super::browser_controller::SharedBrowserController,
+    /// 父会话 id（子 agent session 填写）。
+    pub parent_session_id: Option<String>,
+    /// 触发 spawn 的父 tool_call_id。
+    pub parent_tool_call_id: Option<String>,
+    /// `"primary"` | `"subagent"`；默认 primary。
+    pub session_kind: String,
 }
 
 impl std::fmt::Debug for PiSessionConfig {
@@ -65,6 +76,9 @@ impl std::fmt::Debug for PiSessionConfig {
             .field("no_session", &self.no_session)
             .field("thinking", &self.thinking)
             .field("max_tool_iterations", &self.max_tool_iterations)
+            .field("parent_session_id", &self.parent_session_id)
+            .field("parent_tool_call_id", &self.parent_tool_call_id)
+            .field("session_kind", &self.session_kind)
             .finish()
     }
 }
@@ -87,6 +101,9 @@ impl PiSessionConfig {
             thinking: None,
             max_tool_iterations: None,
             browser_controller: None,
+            parent_session_id: None,
+            parent_tool_call_id: None,
+            session_kind: "primary".to_string(),
         }
     }
 
@@ -100,17 +117,18 @@ impl PiSessionConfig {
         // 不覆盖品牌默认 system_prompt；三通道共用此装配，热恢复也生效。
         let memory_appended =
             prepend_project_memory(self.append_system_prompt, &self.repo_path);
-        // 末尾追加 pi skills 注入块：pi 嵌入式 SDK 不会自动加载 skills，必须显式注入。
-        // build_skills_prompt 内部 load_skills 扫 {repo}/.pi/skills + {PI_CODING_AGENT_DIR}/skills，
-        // format_skills_for_prompt 自动过滤 disable-model-invocation；无可见 skill 时返回 None，
-        // append 段保持原样。三通道共用此装配，热恢复 get_session 也带最新 skill 列表。
-        let append_system_prompt =
+        // 子 agent（Hermes skip_context_files）：保留项目记忆，不注入全局 skills 目录，
+        // 避免 ephemeral 任务提示被 skill 清单淹没、拖慢首轮。
+        let append_system_prompt = if self.session_kind == "subagent" {
+            memory_appended
+        } else {
             match (memory_appended, super::skills::build_skills_prompt(&self.repo_path)) {
                 (Some(base), Some(skills)) => Some(format!("{base}\n{skills}")),
                 (Some(base), None) => Some(base),
                 (None, Some(skills)) => Some(skills),
                 (None, None) => None,
-            };
+            }
+        };
         SessionOptions {
             provider: self.provider,
             model: self.model,
@@ -166,6 +184,19 @@ pub struct PiSessionSummary {
     /// 由本服务派生并缓存在 record 中。空会话为 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// `"primary"` | `"subagent"`。
+    #[serde(default = "default_session_kind")]
+    pub session_kind: String,
+    /// 子 agent 的父会话；主会话为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// 触发该子 session 的父 task toolCallId；主会话为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
+}
+
+fn default_session_kind() -> String {
+    "primary".to_string()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -196,6 +227,13 @@ struct PersistedSessionRecord {
     /// 单次 prompt 工具调用上限；持久化以便恢复时回填，旧 catalog 靠 default 兼容。
     #[serde(default)]
     max_tool_iterations: Option<usize>,
+    /// `"primary"` | `"subagent"`；旧 catalog 缺省按 primary。
+    #[serde(default = "default_session_kind")]
+    session_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -256,6 +294,8 @@ pub struct PiAgentService {
     /// 重建丢失导致 browser_use 在热切/恢复后失效（实测缺陷：旧 session 调
     /// browser_use 报「内置浏览器仅在桌面端可用」）。
     browser_controller: Mutex<super::browser_controller::SharedBrowserController>,
+    /// `global()` / `bind_arc` 写入，供 TaskTool 的 SubagentHost 升级回 Arc。
+    self_weak: Mutex<Option<Weak<PiAgentService>>>,
 }
 
 impl Default for PiAgentService {
@@ -268,7 +308,18 @@ impl PiAgentService {
     #[must_use]
     pub fn global() -> &'static Arc<Self> {
         static SERVICE: OnceLock<Arc<PiAgentService>> = OnceLock::new();
-        SERVICE.get_or_init(|| Arc::new(Self::new_with_catalog(true)))
+        SERVICE.get_or_init(|| {
+            let arc = Arc::new(Self::new_with_catalog(true));
+            arc.bind_arc();
+            arc
+        })
+    }
+
+    /// 把 `Arc<Self>` 绑到 `self_weak`，使 TaskTool 能通过 SubagentHost 回调本实例。
+    pub fn bind_arc(self: &Arc<Self>) {
+        if let Ok(mut slot) = self.self_weak.lock() {
+            *slot = Some(Arc::downgrade(self));
+        }
     }
 
     #[must_use]
@@ -293,6 +344,10 @@ impl PiAgentService {
         // 然后 vault 与该目录下的 auth.json 对齐。必须在任何 Pi session 创建前完成。
         let secrets = if load_catalog {
             ensure_pi_agent_dir_env();
+            // Pi 云端默认 HTTP 整请求超时 60s；子 agent 调研/长流式很容易踩中。
+            // 桌面端强制抬到 30 分钟（除非用户显式设置了 PI_HTTP_REQUEST_TIMEOUT_SECS）。
+            // 0 = 不限时。见 pi::http::client::DEFAULT_REMOTE_REQUEST_TIMEOUT_SECS。
+            ensure_agent_http_timeout();
             SecretStore::default_path().map(SecretStore::new)
         } else {
             None
@@ -306,6 +361,7 @@ impl PiAgentService {
             interactions: Arc::new(InteractionStore::new()),
             secrets,
             browser_controller: Mutex::new(None),
+            self_weak: Mutex::new(None),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -433,10 +489,21 @@ impl PiAgentService {
         let append_system_prompt = config.append_system_prompt.clone();
         let thinking = config.thinking.clone();
         let max_tool_iterations = config.max_tool_iterations;
+        let parent_session_id = config.parent_session_id.clone();
+        let parent_tool_call_id = config.parent_tool_call_id.clone();
+        let session_kind = if config.session_kind.trim().is_empty() {
+            "primary".to_string()
+        } else {
+            config.session_kind.clone()
+        };
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(repo_path.clone());
-        let handle = create_agent_session(sdk_options_with_factory(config, &hub))
+        let handle = create_agent_session(sdk_options_with_factory(
+            config,
+            &hub,
+            self.subagent_host_for(&session_kind),
+        ))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
         let state = handle
@@ -454,6 +521,9 @@ impl PiAgentService {
             message_count: state.message_count,
             updated_at_ms: now_ms(),
             title: None,
+            session_kind: session_kind.clone(),
+            parent_session_id: parent_session_id.clone(),
+            parent_tool_call_id: parent_tool_call_id.clone(),
         };
         let managed = Arc::new(ManagedSession {
             repo_path,
@@ -488,6 +558,9 @@ impl PiAgentService {
                 append_system_prompt,
                 thinking,
                 max_tool_iterations,
+                session_kind,
+                parent_session_id,
+                parent_tool_call_id,
             };
             self.records
                 .lock()
@@ -518,6 +591,9 @@ impl PiAgentService {
             message_count: state.message_count,
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
+            session_kind: self.record_session_kind(session_id),
+            parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -550,6 +626,10 @@ impl PiAgentService {
             let session_id = state
                 .session_id
                 .ok_or_else(|| PiAgentError::Sdk("Pi session did not return an id".to_string()))?;
+            // 子 agent 标 kind，不进主列表（UI 靠 subagent.* 事件）。
+            if self.record_session_kind(&session_id) == "subagent" {
+                continue;
+            }
             // 标题派生：pi SessionHeader 无标题字段，取首条用户消息摘要。
             // 派生结果缓存进 record（标题不会变），避免每次列表都全量解析消息。
             let cached_title = self.record_title(&session_id);
@@ -575,6 +655,9 @@ impl PiAgentService {
                 message_count: state.message_count,
                 updated_at_ms: self.record_updated_at_ms(&session_id),
                 title,
+                session_kind: self.record_session_kind(&session_id),
+                parent_session_id: self.record_parent_session_id(&session_id),
+                parent_tool_call_id: self.record_parent_tool_call_id(&session_id),
             });
         }
         if !titles_to_cache.is_empty() {
@@ -666,7 +749,7 @@ impl PiAgentService {
                 return Err(error);
             }
         };
-        // 模型能力分流（对齐 opencode：直传图片、不做文本降级）。
+        // 模型能力分流（直传图片、不做文本降级）。
         // - 支持图片（input 含 Image）→ multimodal 直传 ContentBlock::Image；
         // - 纯文本模型（如 glm-5.2/deepseek）→ 不发 image block（否则 provider HTTP 400），
         //   让模型基于用户文字正常回复。绝不把图片降级成文本，也绝不向前端抛错。
@@ -1008,9 +1091,37 @@ impl PiAgentService {
         };
         run.abort_handle.abort();
         let session_id = run.session_id.clone();
+        let candidates: Vec<(String, String)> = runs
+            .iter()
+            .filter(|(id, _)| *id != run_id)
+            .map(|(id, child)| (id.clone(), child.session_id.clone()))
+            .collect();
         drop(runs);
+
+        // 父 run 暂停时一并中止其子 agent，避免子 session 继续烧配额、回写迟到事件。
+        let mut child_targets: Vec<(String, String)> = Vec::new();
+        for (child_run_id, child_session_id) in candidates {
+            let Some(parent) = self.record_parent_session_id(&child_session_id) else {
+                continue;
+            };
+            if parent == session_id {
+                child_targets.push((child_run_id, child_session_id));
+            }
+        }
+        if let Ok(runs) = self.active_runs.lock() {
+            for (child_run_id, _) in &child_targets {
+                if let Some(child) = runs.get(child_run_id) {
+                    child.abort_handle.abort();
+                }
+            }
+        }
+
         // abort 立即释放该 run 的 pending 交互，等待中的工具按拒绝收尾。
         self.interactions.reject_run(&session_id, run_id, "aborted");
+        for (child_run_id, child_session_id) in child_targets {
+            self.interactions
+                .reject_run(&child_session_id, &child_run_id, "aborted");
+        }
         true
     }
 
@@ -1244,6 +1355,9 @@ impl PiAgentService {
             message_count: state.message_count,
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
+            session_kind: self.record_session_kind(session_id),
+            parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -1314,6 +1428,9 @@ impl PiAgentService {
             message_count: state.message_count,
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
+            session_kind: self.record_session_kind(session_id),
+            parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
         })
     }
 
@@ -1371,6 +1488,267 @@ impl PiAgentService {
         })
     }
 
+    fn record_session_kind(&self, session_id: &str) -> String {
+        self.records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records
+                    .get(session_id)
+                    .map(|record| record.session_kind.clone())
+            })
+            .filter(|kind| !kind.trim().is_empty())
+            .unwrap_or_else(|| "primary".to_string())
+    }
+
+    fn record_parent_session_id(&self, session_id: &str) -> Option<String> {
+        self.records.lock().ok().and_then(|records| {
+            records
+                .get(session_id)
+                .and_then(|record| record.parent_session_id.clone())
+        })
+    }
+
+    fn record_parent_tool_call_id(&self, session_id: &str) -> Option<String> {
+        self.records.lock().ok().and_then(|records| {
+            records
+                .get(session_id)
+                .and_then(|record| record.parent_tool_call_id.clone())
+        })
+    }
+
+    /// 列出某主会话下的子 agent 记录（含 parentToolCallId），供冷启动回填 task 卡。
+    /// 只读 catalog，不必打开子 handle。
+    pub fn list_child_sessions(&self, parent_session_id: &str) -> Vec<PiSessionSummary> {
+        let parent = parent_session_id.trim();
+        if parent.is_empty() {
+            return Vec::new();
+        }
+        let Ok(records) = self.records.lock() else {
+            return Vec::new();
+        };
+        let mut summaries: Vec<PiSessionSummary> = records
+            .values()
+            .filter(|record| {
+                record.session_kind == "subagent"
+                    && record
+                        .parent_session_id
+                        .as_deref()
+                        .map(|id| id == parent)
+                        .unwrap_or(false)
+            })
+            .map(|record| PiSessionSummary {
+                session_id: record.session_id.clone(),
+                repo_path: record.repo_path.clone(),
+                provider: record.provider.clone(),
+                model: record.model.clone(),
+                message_count: 0,
+                updated_at_ms: record.updated_at_ms,
+                title: record.title.clone(),
+                session_kind: record.session_kind.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+                parent_tool_call_id: record.parent_tool_call_id.clone(),
+            })
+            .collect();
+        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        summaries
+    }
+
+    /// 主会话注入 SubagentHost；子 agent（session_kind=subagent）不注入，禁止再委派。
+    fn subagent_host_for(&self, session_kind: &str) -> Option<Arc<dyn SubagentHost>> {
+        if session_kind == "subagent" {
+            return None;
+        }
+        let weak = self
+            .self_weak
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())?;
+        Some(Arc::new(ServiceSubagentHost { weak }))
+    }
+
+    /// 同步 spawn 子 agent：create_session + prompt，投影 subagent.* 到父 run stream。
+    ///
+    /// 不占用 BackgroundTaskRegistry；父 handle 在 tool 执行期间可能仍被 prompt 持锁，
+    /// 本方法只读 parent record / hub.run_context，不锁父 handle。
+    pub async fn run_subagent(
+        &self,
+        request: SubagentSpawnRequest,
+    ) -> Result<SubagentSpawnResult, PiAgentError> {
+        let started = Instant::now();
+        ensure_agent_http_timeout();
+        let definition = super::subagents::resolve(&request.subagent_type)
+            .map_err(PiAgentError::Sdk)?;
+
+        let parent_meta = {
+            let records = self
+                .records
+                .lock()
+                .map_err(|error| PiAgentError::State(error.to_string()))?;
+            let record = records
+                .get(&request.parent_session_id)
+                .ok_or_else(|| {
+                    PiAgentError::SessionNotFound(request.parent_session_id.clone())
+                })?;
+            (
+                record.repo_path.clone(),
+                record.session_dir.clone(),
+                (!record.provider.is_empty()).then_some(record.provider.clone()),
+                (!record.model.is_empty()).then_some(record.model.clone()),
+                record.thinking.clone(),
+            )
+        };
+        let (repo_path, session_dir, provider, model, thinking) = parent_meta;
+
+        let parent_session = self.get_session(&request.parent_session_id).await?;
+        let parent_run = parent_session.hub.run_context().ok_or_else(|| {
+            PiAgentError::Sdk("parent run context unavailable for subagent".to_string())
+        })?;
+
+        let mut config = PiSessionConfig::persistent(repo_path.clone(), session_dir);
+        config.provider = provider;
+        config.model = model;
+        config.thinking = thinking;
+        config.enabled_tools = Some(definition.enabled_tools.clone());
+        // Hermes：子 agent 用 ephemeral 系统提示，不继承主会话 default_system_prompt。
+        let goal = if request.prompt.trim().is_empty() {
+            request.description.clone()
+        } else {
+            request.prompt.clone()
+        };
+        let context = request.context.trim();
+        config.system_prompt = Some(super::subagents::build_child_system_prompt(
+            &definition,
+            &goal,
+            (!context.is_empty()).then_some(context),
+            Some(repo_path.to_string_lossy().as_ref()),
+        ));
+        config.append_system_prompt = None;
+        config.parent_session_id = Some(request.parent_session_id.clone());
+        config.parent_tool_call_id = Some(request.parent_tool_call_id.clone());
+        config.session_kind = "subagent".to_string();
+        config.browser_controller = self.current_browser_controller();
+
+        let child = self.create_session(config).await?;
+        let child_session_id = child.session_id.clone();
+        let child_run_id = format!(
+            "sub-{}-{}",
+            sanitize_run_id_fragment(&request.parent_tool_call_id),
+            now_ms()
+        );
+
+        parent_run.publish(AgentEvent::SubagentStarted {
+            parent_tool_call_id: request.parent_tool_call_id.clone(),
+            child_session_id: child_session_id.clone(),
+            child_run_id: child_run_id.clone(),
+            subagent_type: definition.subagent_type.as_str().to_string(),
+            description: request.description.clone(),
+        });
+
+        let tool_count = Arc::new(AtomicU32::new(0));
+        let project_sink: AgentEventSink = {
+            let parent_run = parent_run.clone();
+            let parent_tool_call_id = request.parent_tool_call_id.clone();
+            let child_session_id = child_session_id.clone();
+            let tool_count = Arc::clone(&tool_count);
+            Arc::new(move |envelope: AgentEventEnvelope| {
+                if let AgentEvent::ToolStarted { tool_name, .. } = &envelope.event {
+                    let count = tool_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    parent_run.publish(AgentEvent::SubagentProgress {
+                        parent_tool_call_id: parent_tool_call_id.clone(),
+                        tool_count: count,
+                        current_tool_name: tool_name.clone(),
+                        elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
+                // 避免把子终态 run.*/session.status 原样当成父终态；仍以 childEvent 投影。
+                parent_run.publish(AgentEvent::SubagentChildEvent {
+                    parent_tool_call_id: parent_tool_call_id.clone(),
+                    child_session_id: child_session_id.clone(),
+                    event: Box::new(envelope.event),
+                });
+            })
+        };
+
+        // Hermes child_timeout_seconds：墙钟硬超时，防止子 HTTP/工具挂死拖垮父 turn。
+        let prompt_future = self.prompt(
+            &child_session_id,
+            &child_run_id,
+            goal,
+            Vec::new(),
+            project_sink,
+        );
+        let result = match super::subagents::child_timeout_secs() {
+            Some(limit) => match tokio::time::timeout(limit, prompt_future).await {
+                Ok(inner) => inner,
+                Err(_) => {
+                    let _ = self.abort(&child_run_id);
+                    let secs = limit.as_secs();
+                    let count = tool_count.load(Ordering::Relaxed);
+                    let message = if count == 0 {
+                        format!(
+                            "Subagent timed out after {secs}s without making progress \
+                             (no tool calls). Check provider connectivity or raise \
+                             GITEAM_SUBAGENT_TIMEOUT_SECS."
+                        )
+                    } else {
+                        format!(
+                            "Subagent timed out after {secs}s after {count} tool call(s). \
+                             Raise GITEAM_SUBAGENT_TIMEOUT_SECS or narrow the task."
+                        )
+                    };
+                    parent_run.publish(AgentEvent::SubagentFailed {
+                        parent_tool_call_id: request.parent_tool_call_id.clone(),
+                        child_session_id: child_session_id.clone(),
+                        error: message.clone(),
+                    });
+                    return Err(PiAgentError::Sdk(message));
+                }
+            },
+            None => prompt_future.await,
+        };
+
+        let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let count = tool_count.load(Ordering::Relaxed);
+
+        match result {
+            Ok(message) => {
+                let summary = assistant_text_summary(&message);
+                parent_run.publish(AgentEvent::SubagentCompleted {
+                    parent_tool_call_id: request.parent_tool_call_id.clone(),
+                    child_session_id: child_session_id.clone(),
+                    summary: summary.clone(),
+                    tool_count: count,
+                    elapsed_ms,
+                });
+                Ok(SubagentSpawnResult {
+                    child_session_id,
+                    child_run_id,
+                    summary,
+                    tool_count: count,
+                    elapsed_ms,
+                })
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let aborted = message.to_ascii_lowercase().contains("abort");
+                if aborted {
+                    parent_run.publish(AgentEvent::SubagentAborted {
+                        parent_tool_call_id: request.parent_tool_call_id.clone(),
+                        child_session_id: child_session_id.clone(),
+                    });
+                } else {
+                    parent_run.publish(AgentEvent::SubagentFailed {
+                        parent_tool_call_id: request.parent_tool_call_id.clone(),
+                        child_session_id: child_session_id.clone(),
+                        error: message.clone(),
+                    });
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn get_session(&self, session_id: &str) -> Result<Arc<ManagedSession>, PiAgentError> {
         if let Some(session) = self
             .sessions
@@ -1399,8 +1777,8 @@ impl PiAgentService {
             repo_path: record.repo_path.clone(),
             session_dir: record.session_dir.clone(),
             session_path: Some(record.session_path.clone()),
-            provider: (!record.provider.is_empty()).then_some(record.provider),
-            model: (!record.model.is_empty()).then_some(record.model),
+            provider: (!record.provider.is_empty()).then_some(record.provider.clone()),
+            model: (!record.model.is_empty()).then_some(record.model.clone()),
             api_key: None,
             // system_prompt 保持 None：品牌默认提示由 into_sdk_options 的
             // default_system_prompt(enabled_tools) 按当前 mode 重算。
@@ -1415,13 +1793,20 @@ impl PiAgentService {
             // controller 不可持久化：从 service 全局缓存取（desktop 启动注入 +
             // create_session 缓存），冷启动恢复 / 热切重建 handle 均复用，不再丢 controller。
             browser_controller: self.current_browser_controller(),
+            parent_session_id: record.parent_session_id.clone(),
+            parent_tool_call_id: record.parent_tool_call_id.clone(),
+            session_kind: record.session_kind.clone(),
         };
         // 恢复 session 时凭据不落盘到 record，统一从 vault 现取注入。
         let config = self.with_secret_fallback(config)?;
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(record.repo_path.clone());
-        let handle = create_agent_session(sdk_options_with_factory(config, &hub))
+        let handle = create_agent_session(sdk_options_with_factory(
+            config,
+            &hub,
+            self.subagent_host_for(&record.session_kind),
+        ))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
         let state = handle
@@ -1474,6 +1859,44 @@ impl PiAgentService {
         fs::write(&tmp, payload).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
         fs::rename(&tmp, path).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
         Ok(())
+    }
+
+    /// 外部进程（CLI 控制服务）可能并发新建/更新会话。这里做原子读取并
+    /// 合并到内存，保证 desktop/手机端运行中也能看到新会话。
+    pub fn refresh_sessions_from_catalog(&self) -> Result<bool, PiAgentError> {
+        let Some(path) = self.catalog_path.as_ref() else {
+            return Ok(false);
+        };
+        let disk_records = load_catalog_records(Some(path));
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?;
+        let mut dirty = false;
+        for (session_id, disk) in disk_records {
+            match records.get_mut(&session_id) {
+                Some(existing) => {
+                    if existing.updated_at_ms < disk.updated_at_ms {
+                        *existing = disk;
+                        dirty = true;
+                    }
+                }
+                None => {
+                    records.insert(session_id, disk);
+                    dirty = true;
+                }
+            }
+        }
+        if dirty {
+            let mut values: Vec<_> = records.values().cloned().collect();
+            values.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+            let payload = serde_json::to_vec_pretty(&values)
+                .map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+            let tmp = path.with_extension("json.tmp");
+            fs::write(&tmp, payload).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+            fs::rename(&tmp, path).map_err(|error| PiAgentError::Persistence(error.to_string()))?;
+        }
+        Ok(dirty)
     }
 
     fn register_run(
@@ -1581,12 +2004,13 @@ fn mime_from_image_path(path: &str) -> String {
 }
 
 /// 装配带审批门禁的 SessionOptions：GiteamToolFactory 包装写/执行类工具，
-/// 并按 enabled_tools 决定是否追加 question 工具。
+/// 并按 enabled_tools 决定是否追加 question/task 等工具。
 /// 后台任务日志落在会话目录 background-tasks/ 下；no_session 模式传 None
 /// （registry 回落到临时目录），避免向磁盘写会话侧产物。
 fn sdk_options_with_factory(
     config: PiSessionConfig,
     hub: &Arc<InteractionHub>,
+    subagent_host: Option<Arc<dyn SubagentHost>>,
 ) -> pi::sdk::SessionOptions {
     let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
     let browser_controller = config.browser_controller.clone();
@@ -1595,10 +2019,76 @@ fn sdk_options_with_factory(
         config.enabled_tools.as_deref(),
         background_log_dir,
         browser_controller,
+        subagent_host,
     );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));
     options
+}
+
+struct ServiceSubagentHost {
+    weak: Weak<PiAgentService>,
+}
+
+#[async_trait]
+impl SubagentHost for ServiceSubagentHost {
+    async fn run_subagent(
+        &self,
+        request: SubagentSpawnRequest,
+    ) -> Result<SubagentSpawnResult, String> {
+        let service = self
+            .weak
+            .upgrade()
+            .ok_or_else(|| "agent service dropped".to_string())?;
+        service
+            .run_subagent(request)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn assistant_text_summary(message: &AgentMessage) -> String {
+    let text = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            AgentPart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        "(subagent finished with no text summary)".to_string()
+    } else {
+        text
+    }
+}
+
+/// Pi 云端默认整请求超时 60s，对子 agent 调研不够。未显式配置环境变量时抬到 30 分钟。
+fn ensure_agent_http_timeout() {
+    if std::env::var_os(pi::http::client::REQUEST_TIMEOUT_ENV).is_none() {
+        pi::http::client::set_request_timeout_override(1800);
+    }
+}
+
+fn sanitize_run_id_fragment(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "call".to_string()
+    } else {
+        cleaned.chars().take(48).collect()
+    }
 }
 
 fn now_ms() -> u64 {
@@ -2031,6 +2521,9 @@ mod tests {
             append_system_prompt: None,
             thinking: None,
             max_tool_iterations: None,
+            session_kind: "primary".to_string(),
+            parent_session_id: None,
+            parent_tool_call_id: None,
         };
         fs::write(&path, serde_json::to_vec(&vec![record]).expect("serialize catalog"))
             .expect("write catalog");
@@ -2054,6 +2547,9 @@ mod tests {
             message_count: 2,
             updated_at_ms: 1_700_000_000_000,
             title: Some("审查改动".to_string()),
+            session_kind: "primary".to_string(),
+            parent_session_id: None,
+            parent_tool_call_id: None,
         };
         let value = serde_json::to_value(summary).expect("serialize summary");
         assert_eq!(value["sessionId"], "session-1");
@@ -2061,6 +2557,7 @@ mod tests {
         assert_eq!(value["messageCount"], 2);
         assert_eq!(value["updatedAtMs"], 1_700_000_000_000_u64);
         assert_eq!(value["title"], "审查改动");
+        assert_eq!(value["sessionKind"], "primary");
         assert!(value.get("session_id").is_none());
     }
 

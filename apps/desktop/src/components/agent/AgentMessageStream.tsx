@@ -19,6 +19,11 @@ import type {
 import type { AppText } from "../../lib/generalSettings";
 import { useHighlightKeyword } from "../../lib/highlightKeyword";
 import { getAttachmentBadgeLabel, isImageAttachment } from "../../lib/imageAttachments";
+import {
+  extractTaskDescription,
+  dedupeVisibleSubagentTaskParts,
+  resolveTaskCardTitle
+} from "../../lib/subagentRun";
 import { cn } from "../../lib/utils";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
@@ -27,6 +32,52 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/colla
 import { Skeleton } from "../ui/skeleton";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
+import { SubagentRunCard } from "./SubagentRunCard";
+
+function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
+  return String((part as { type?: string } | null)?.type || "") === "toolCall"
+    && String((part as { toolName?: string } | null)?.toolName || "") === "task";
+}
+
+function renderTimelineToolPart(options: {
+  timelineKey: string;
+  part: AgentDetailedPart;
+  listItem?: boolean;
+  siblingParts?: AgentDetailedPart[];
+  settled?: boolean;
+  shellToolPartsExpanded: boolean;
+  editToolPartsExpanded: boolean;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+  onOpenToolFile: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
+}) {
+  if (isTaskToolPart(options.part)) {
+    return (
+      <SubagentRunCard
+        key={options.timelineKey}
+        part={options.part}
+        listItem={options.listItem}
+        siblingParts={options.siblingParts}
+        settled={options.settled}
+        onOpenTaskSession={options.onOpenTaskSession}
+        onOpenToolFile={options.onOpenToolFile}
+        onOpenBrowserUrl={options.onOpenBrowserUrl}
+      />
+    );
+  }
+  return (
+    <AgentExecutionPartView
+      key={options.timelineKey}
+      part={options.part}
+      listItem={options.listItem}
+      shellToolPartsExpanded={options.shellToolPartsExpanded}
+      editToolPartsExpanded={options.editToolPartsExpanded}
+      onOpenTaskSession={options.onOpenTaskSession}
+      onOpenToolFile={options.onOpenToolFile}
+      onOpenBrowserUrl={options.onOpenBrowserUrl}
+    />
+  );
+}
 
 type AgentPreviewImage = {
   uri: string;
@@ -59,7 +110,7 @@ const COLLAPSE_CHAR_LIMIT = 420;
 
 type AgentDisplayTimelineGroup =
   | AgentAssistantRenderGroup
-  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser"; parts: AgentDetailedPart[] };
+  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser" | "task"; parts: AgentDetailedPart[] };
 
 function formatContextCount(count: number, noun: string): string {
   return count > 0 ? `${count}次${noun}` : "";
@@ -104,13 +155,27 @@ function ActivityStatus({
   );
 }
 
-function ThinkingPlaceholder() {
+function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
+  // todowrite 只驱动右侧进度卡、不进主时间线；有进度时主区不应继续写「思考中」，
+  // 否则用户会以为卡住，而右侧已在推进。
+  const activeTodo =
+    (todoItems || []).find((item) => item.status === "in_progress")
+    || (todoItems || []).find((item) => item.status === "pending")
+    || null;
+  const hasTodos = (todoItems || []).length > 0;
+  const label = hasTodos ? "执行中" : "思考中";
+  const doneLabel = hasTodos ? "已执行" : "已思考";
   // py-2.5(10px) 与 ReasoningGroup 收起态的标签基准对齐（其外层 py-1 + Button py-1.5 = 10px，
   // 组件高 40px）。无 part 占位 → reasoning 到达时 hasTimeline 翻 true，占位换成 ReasoningGroup；
   // 基准对齐后标签 y 与 item 高度都不变，消除「思考内容出现后整行下移」的跳变。
   return (
-    <div className="flex w-full items-center justify-start gap-2 py-2.5" aria-live="polite" aria-label="思考中">
-      <ActivityStatus active activeLabel="思考中" doneLabel="已思考" className="text-sm" />
+    <div className="flex w-full min-w-0 items-center justify-start gap-2 py-2.5" aria-live="polite" aria-label={label}>
+      <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
+      {activeTodo ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          {activeTodo.content}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -217,11 +282,12 @@ function getToolName(part: AgentDetailedPart): string {
   return String((part as any)?.toolName || "").trim();
 }
 
-function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "" {
+function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "task" | "" {
   if (group.kind !== "part") return "";
   const type = String((group.part as any)?.type || "");
   if (type !== "toolCall") return "";
   const tool = getToolName(group.part);
+  if (tool === "task") return "task";
   if (tool === "bash" || tool === "bash_output" || tool === "kill_shell") return "shell";
   if (tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch") return "edit";
   if (tool === "web_fetch" || tool === "web_search") return "web";
@@ -256,7 +322,7 @@ function rowMatchesMessageId(row: AgentMessageRenderRow, messageId: string): boo
 
 function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentDisplayTimelineGroup[] {
   const out: AgentDisplayTimelineGroup[] = [];
-  let pendingKind: "shell" | "edit" | "web" | "browser" | "" = "";
+  let pendingKind: "shell" | "edit" | "web" | "browser" | "task" | "" = "";
   let pending: AgentAssistantRenderGroup[] = [];
 
   const flush = () => {
@@ -472,46 +538,86 @@ function ToolBatchGroup({
   const shell = group.batchKind === "shell";
   const web = group.batchKind === "web";
   const browser = group.batchKind === "browser";
-  const noun = shell ? "条命令" : web ? "次" : browser ? "次" : "个文件";
-  const label = shell
-    ? (running ? "运行中" : "已运行")
-    : web
-      ? (running ? "联网中" : "联网")
-      : browser
-        ? (running ? "浏览中" : "已浏览")
-        : (running ? "编辑中" : "已编辑");
+  const task = group.batchKind === "task";
+  // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
+  const activeLabel = task
+    ? "执行中"
+    : shell
+      ? "运行中"
+      : web
+        ? "联网中"
+        : browser
+          ? "浏览中"
+          : "编辑中";
+  const doneLabel = task
+    ? "已完成"
+    : shell
+      ? "已运行"
+      : web
+        ? "联网"
+        : browser
+          ? "已浏览"
+          : "已编辑";
+  const noun = task ? "个子任务" : shell ? "条命令" : web ? "次" : browser ? "次" : "个文件";
+  const resolvedOpen = open;
+
+  // 只显示真实子 agent 行，并去掉父壳/空壳造成的重复卡。
+  const visibleTaskParts = task
+    ? dedupeVisibleSubagentTaskParts(group.parts)
+    : group.parts;
+  if (task && visibleTaskParts.length === 0) return null;
+
+  // 子任务组摘要：运行中显示当前活跃标题，完成态显示计数即可。
+  const taskDetail = (() => {
+    if (!task) return "";
+    const runningPart = visibleTaskParts.find((part) => {
+      const status = String((part as { status?: string }).status || "").toLowerCase();
+      const sub = String((part as { subagentStatus?: string }).subagentStatus || "").toLowerCase();
+      return status === "running" || status === "pending" || sub === "running" || sub === "pending";
+    });
+    if (!runningPart || !running) return "";
+    return resolveTaskCardTitle(runningPart, group.parts) || extractTaskDescription(runningPart);
+  })();
 
   return (
-    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
+    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={resolvedOpen} onOpenChange={onOpenChange}>
       <CollapsibleTrigger asChild>
         <Button className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
           <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-            <ActivityStatus active={running} activeLabel={label} doneLabel={label} className="text-sm" />
+            <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
             <span className="inline-grid shrink-0 grid-cols-1 grid-rows-1 text-xs font-medium text-muted-foreground">
               <span className="invisible col-start-1 row-start-1 tabular-nums" aria-hidden>
                 99 {noun}
               </span>
               <span className="col-start-1 row-start-1 tabular-nums">
-                {group.parts.length} {noun}
+                {visibleTaskParts.length} {noun}
               </span>
             </span>
+            {taskDetail ? (
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
+            ) : null}
           </span>
         </Button>
       </CollapsibleTrigger>
-      <AnimatedCollapsibleContent open={open}>
-        <div className="flex flex-col gap-1 pb-2 pl-3">
-          {group.parts.map((part, partIndex) => (
-            <AgentExecutionPartView
-              key={`${timelineKey}:${String((part as { id?: string }).id || partIndex)}`}
-              part={part}
-              listItem
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-              onOpenBrowserUrl={onOpenBrowserUrl}
-            />
-          ))}
+      <AnimatedCollapsibleContent open={resolvedOpen}>
+        {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
+        <div className={cn("pb-1.5 pl-3", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
+          <div className="flex flex-col gap-0.5">
+            {visibleTaskParts.map((part, partIndex) => (
+              renderTimelineToolPart({
+                timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
+                part,
+                listItem: true,
+                siblingParts: group.parts,
+                settled: forceInactive,
+                shellToolPartsExpanded,
+                editToolPartsExpanded,
+                onOpenTaskSession,
+                onOpenToolFile,
+                onOpenBrowserUrl
+              })
+            ))}
+          </div>
         </div>
       </AnimatedCollapsibleContent>
     </Collapsible>
@@ -576,15 +682,15 @@ function ContextGroup({
       <AnimatedCollapsibleContent open={open}>
         <div className="flex flex-col gap-0.5 pb-1.5 pl-3">
           {group.parts.map((part, partIndex) => (
-            <AgentExecutionPartView
-              key={`${timelineKey}:${String((part as { id?: string }).id || partIndex)}`}
-              part={part}
-              listItem
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-            />
+            renderTimelineToolPart({
+              timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
+              part,
+              listItem: true,
+              shellToolPartsExpanded,
+              editToolPartsExpanded,
+              onOpenTaskSession,
+              onOpenToolFile
+            })
           ))}
         </div>
       </AnimatedCollapsibleContent>
@@ -754,10 +860,12 @@ function AssistantTimeline({
     <div className="flex min-w-0 max-w-full flex-col gap-1 overflow-hidden">
       {displayTimelineGroups.map((group, index) => {
         const timelineKey = stableGroupKeys[index];
-        const isOpen = timelineOpenState[timelineKey] ?? false;
-        const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
         // 非流式、或后方已有更新组（含「曾出现过」的防回退判定）→ 强制已完成态
         const forceInactive = !isStreaming || index !== lastGroupIndex || demotedGroupKeys.has(timelineKey);
+        // 子任务批组运行中默认展开（对齐 Explored 下列表可见）；结束后仍可折叠
+        const isOpen = timelineOpenState[timelineKey]
+          ?? (group.kind === "tool-batch" && group.batchKind === "task" && !forceInactive);
+        const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
 
         if (group.kind === "tool-batch") {
           return (
@@ -837,16 +945,14 @@ function AssistantTimeline({
           );
         }
 
-        return (
-          <AgentExecutionPartView
-            key={timelineKey}
-            part={group.part}
-            shellToolPartsExpanded={shellToolPartsExpanded}
-            editToolPartsExpanded={editToolPartsExpanded}
-            onOpenTaskSession={onOpenTaskSession}
-            onOpenToolFile={onOpenToolFile}
-          />
-        );
+        return renderTimelineToolPart({
+          timelineKey,
+          part: group.part,
+          shellToolPartsExpanded,
+          editToolPartsExpanded,
+          onOpenTaskSession,
+          onOpenToolFile
+        });
       })}
     </div>
   );
@@ -981,7 +1087,8 @@ function AssistantMessage({
     fallbackReply,
     detailsError,
     errorMessage,
-    renderParts
+    renderParts,
+    todoItems
   } = row;
 
   return (
@@ -1004,7 +1111,7 @@ function AssistantMessage({
       ) : fallbackReply ? (
         <AssistantTextBlock text={fallbackReply} streaming={isStreaming} renderMarkdown={renderMarkdown} />
       ) : isStreaming && !errorMessage ? (
-        <ThinkingPlaceholder />
+        <ThinkingPlaceholder todoItems={todoItems} />
       ) : null}
       {detailsError ? (
         <div className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1">
@@ -1027,6 +1134,95 @@ function AssistantMessage({
 
 function renderPartsHasFailure(parts: AgentDetailedPart[]): boolean {
   return parts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure");
+}
+
+function isPauseFailureText(text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  return /^(已暂停|已中止|aborted)$/i.test(value) || /中止|暂停|已停止|abort/i.test(value);
+}
+
+function isFailureOnlyAssistantRow(row: AgentMessageRenderRow): boolean {
+  if (!row.isAssistant) return false;
+  if (row.fallbackReply.trim()) return false;
+  const substantive = row.renderParts.some((part) => {
+    const type = String((part as { type?: string }).type || "");
+    return type !== "runtime.failure" && type !== "runtime.retry" && type !== "turn-boundary";
+  });
+  if (substantive) return false;
+  return Boolean(row.errorMessage.trim() || renderPartsHasFailure(row.renderParts));
+}
+
+/** 同一次暂停产生的多条「运行失败/已暂停」空气泡并入上一条 assistant，只留一条终态。 */
+function collapseDuplicateFailureRows(
+  rows: AgentMessageRenderRow[],
+  showReasoningSummaries: boolean
+): AgentMessageRenderRow[] {
+  const out: AgentMessageRenderRow[] = [];
+  for (const row of rows) {
+    const last = out[out.length - 1];
+    if (!row.isAssistant || !last?.isAssistant) {
+      out.push(row);
+      continue;
+    }
+
+    const rowFailureOnly = isFailureOnlyAssistantRow(row);
+    const lastFailureOnly = isFailureOnlyAssistantRow(last);
+
+    const rebuild = (target: AgentMessageRenderRow) => {
+      target.timelineGroups = buildDisplayTimelineGroups(
+        buildAgentAssistantRenderGroups(target.renderParts),
+        showReasoningSummaries
+      );
+      target.hasTimeline = target.timelineGroups.length > 0;
+      target.fallbackReply = (
+        buildAgentReplyMarkdownFromParts(target.renderParts) ||
+        target.msg.content ||
+        ""
+      ).trim();
+      if (renderPartsHasFailure(target.renderParts)) {
+        target.errorMessage = "";
+      }
+    };
+
+    if (rowFailureOnly && last.isAssistant) {
+      const failureText = row.errorMessage || last.errorMessage || "已暂停";
+      last.renderParts = coalesceRuntimeParts(
+        dedupeAgentToolParts([...last.renderParts, ...row.renderParts])
+      );
+      last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+      if (!renderPartsHasFailure(last.renderParts) && failureText) {
+        last.errorMessage = last.errorMessage || failureText;
+      }
+      rebuild(last);
+      continue;
+    }
+
+    if (lastFailureOnly && (row.hasTimeline || row.fallbackReply || rowFailureOnly)) {
+      const failureText = last.errorMessage || row.errorMessage || "已暂停";
+      row.renderParts = coalesceRuntimeParts(
+        dedupeAgentToolParts([...last.renderParts, ...row.renderParts])
+      );
+      row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+      row.isStreaming = last.isStreaming || row.isStreaming;
+      row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
+      row.stableKey = last.stableKey;
+      row.msg = {
+        ...row.msg,
+        id: `${last.msg.id}:${row.msg.id}`,
+        error: row.msg.error || last.msg.error
+      };
+      if (!renderPartsHasFailure(row.renderParts) && failureText) {
+        row.errorMessage = row.errorMessage || failureText;
+      }
+      rebuild(row);
+      out[out.length - 1] = row;
+      continue;
+    }
+
+    out.push(row);
+  }
+  return out;
 }
 
 /** 同一轮里多次 runtime.retry 只保留最后一条；failure 最多一条，挂到末尾。 */
@@ -1124,22 +1320,26 @@ function AgentErrorMessage({ message }: { message: string }) {
   const [open, setOpen] = useState(false);
   const text = message.trim();
   if (!text) return null;
+  const paused = /^(已暂停|已中止|aborted)$/i.test(text) || /中止|暂停|已停止|abort/i.test(text);
+  const label = paused ? "已暂停" : "运行失败";
   const preview =
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) || text;
-  const long = text.length > 96 || text.includes("\n");
+    paused
+      ? ""
+      : text
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) || text;
+  const long = !paused && (text.length > 96 || text.includes("\n"));
 
   const header = (
     <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
       <ActivityStatus
         active={false}
-        activeLabel="运行失败"
-        doneLabel="运行失败"
+        activeLabel={label}
+        doneLabel={label}
         className="text-sm text-destructive"
       />
-      {!open ? (
+      {!open && preview ? (
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
       ) : null}
     </span>
@@ -1424,8 +1624,18 @@ export function AgentMessageStream({
   });
   const mergedRenderRows = renderRows.reduce<AgentMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
-    if (row.isAssistant && last?.isAssistant && !last.errorMessage && !row.errorMessage) {
+    const pauseMerge =
+      row.isAssistant
+      && last?.isAssistant
+      && (
+        isPauseFailureText(last.errorMessage)
+        || isPauseFailureText(row.errorMessage)
+        || isFailureOnlyAssistantRow(last)
+        || isFailureOnlyAssistantRow(row)
+      );
+    if (row.isAssistant && last?.isAssistant && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
       const rebuildTimeline = (target: AgentMessageRenderRow) => {
+        target.renderParts = coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts));
         target.timelineGroups = buildDisplayTimelineGroups(
           buildAgentAssistantRenderGroups(target.renderParts),
           showReasoningSummaries
@@ -1436,29 +1646,44 @@ export function AgentMessageStream({
           target.msg.content ||
           ""
         ).trim();
+        if (renderPartsHasFailure(target.renderParts)) {
+          target.errorMessage = "";
+        } else {
+          target.errorMessage = target.errorMessage || last.errorMessage || row.errorMessage;
+        }
         target.contextOnly =
           target.timelineGroups.length > 0 &&
           target.timelineGroups.every((group) => group.kind === "context") &&
           !target.fallbackReply;
       };
-      if (isEmptyAssistantPlaceholder(last)) {
+      if (isEmptyAssistantPlaceholder(last) || isFailureOnlyAssistantRow(last)) {
         row.isStreaming = last.isStreaming || row.isStreaming;
         row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
         row.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         row.detailsLoading = last.detailsLoading || row.detailsLoading;
         row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
         row.stableKey = last.stableKey;
-        row.msg = { ...row.msg, id: `${last.msg.id}:${row.msg.id}` };
+        row.errorMessage = row.errorMessage || last.errorMessage;
+        row.msg = {
+          ...row.msg,
+          id: `${last.msg.id}:${row.msg.id}`,
+          error: row.msg.error || last.msg.error
+        };
         rebuildTimeline(row);
         out[out.length - 1] = row;
         return out;
       }
-      if (isEmptyAssistantPlaceholder(row)) {
+      if (isEmptyAssistantPlaceholder(row) || isFailureOnlyAssistantRow(row)) {
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
         last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         if (row.todoItems.length > 0) last.todoItems = row.todoItems;
-        last.msg = { ...last.msg, id: `${last.msg.id}:${row.msg.id}` };
+        last.errorMessage = last.errorMessage || row.errorMessage;
+        last.msg = {
+          ...last.msg,
+          id: `${last.msg.id}:${row.msg.id}`,
+          error: last.msg.error || row.msg.error
+        };
         rebuildTimeline(last);
         return out;
       }
@@ -1466,7 +1691,7 @@ export function AgentMessageStream({
       // 两边都已有正文时不合并，避免两轮完整答复粘成一条。
       // 合并时按 toolCallId 去重：下一回合 tool 常在 message.started 前误写入上一回合，
       // 不去重会在过程中虚高（3/1/7），结束后 history 对账才回到 2/1/4。
-      if (last.fallbackReply && row.fallbackReply) {
+      if (last.fallbackReply && row.fallbackReply && !pauseMerge) {
         out.push(row);
         return out;
       }
@@ -1475,11 +1700,13 @@ export function AgentMessageStream({
       last.isStreaming = last.isStreaming || row.isStreaming;
       last.detailsLoading = last.detailsLoading || row.detailsLoading;
       last.detailsError = last.detailsError || row.detailsError;
+      last.errorMessage = last.errorMessage || row.errorMessage;
       if (row.todoItems.length > 0) last.todoItems = row.todoItems;
       last.msg = {
         ...last.msg,
         id: `${last.msg.id}:${row.msg.id}`,
-        content: row.msg.content || last.msg.content
+        content: row.msg.content || last.msg.content,
+        error: last.msg.error || row.msg.error
       };
       rebuildTimeline(last);
       return out;
@@ -1487,11 +1714,14 @@ export function AgentMessageStream({
     out.push(row);
     return out;
   }, []);
-  const visibleRenderRows = mergedRenderRows.filter((row) => {
-    if (!isEmptyAssistantPlaceholder(row)) return true;
-    // 仅当前流式等待首包时保留空占位；loading/历史空行一律丢掉，避免多余「思考中」
-    return row.isStreaming;
-  });
+  const visibleRenderRows = collapseDuplicateFailureRows(
+    mergedRenderRows.filter((row) => {
+      if (!isEmptyAssistantPlaceholder(row)) return true;
+      // 仅当前流式等待首包时保留空占位；loading/历史空行一律丢掉，避免多余「思考中」
+      return row.isStreaming;
+    }),
+    showReasoningSummaries
+  );
 
   // 导航条数据：每行一个 marker（角色 + 首行预览），跳转沿用原始下标。
   const allNavigatorMarkers: NavigatorMarker[] = visibleRenderRows.map((row, index) => ({

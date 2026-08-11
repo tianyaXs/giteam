@@ -1,181 +1,111 @@
 import React, { useMemo } from 'react';
-import { Animated } from 'react-native';
-import { LeftDrawerPanel, RightDrawerPanel } from '../../components/chat/NotebookDrawers';
-
-type ProjectOption = {
-  worktree: string;
-  name: string;
-};
-
-type SessionRow = {
-  id: string;
-  title: string;
-  preview: string;
-  timeLabel: string;
-  active: boolean;
-  status: 'idle' | 'busy' | 'retry';
-};
-
-type QuickSkillRef = {
-  key: string;
-  name: string;
-  subtitle: string;
-  itemCount: number;
-};
-
-type QuickMcpRef = {
-  key: string;
-  name: string;
-  subtitle: string;
-  state: string;
-};
-
-type NotebookColors = {
-  left: string;
-  right: string;
-  paper: string;
-  text: string;
-  muted: string;
-  faint: string;
-  line: string;
-  ink: string;
-};
+import { ConnectionDrawer, SessionListDrawer } from '../../components/chat/AppDrawerPanels';
+import type { DrawerSessionRow, ProjectTreeNode } from './useLeftDrawerController';
 
 export function useNotebookDrawerRenderers(params: {
-  styles: Record<string, any>;
-  notebookColors: NotebookColors;
-  leftDrawerPulse: Animated.Value;
-  rightDrawerPulse: Animated.Value;
   currentWorkspaceName: string;
-  workspaceSwitcherOpen: boolean;
-  availableProjects: ProjectOption[];
-  repoPath: string;
   sessionSearch: string;
-  leftDrawerSessionRows: SessionRow[];
-  showMoreSessions: boolean;
+  projectTrees: ProjectTreeNode[];
+  searchSessionRows: DrawerSessionRow[];
   isSessionListEmpty: boolean;
   serverUrl: string;
   token: string;
-  noAuthToken: string;
-  pairCode: string;
-  extensionsLoading: boolean;
-  visibleQuickSkillRefs: QuickSkillRef[];
-  visibleQuickMcpRefs: QuickMcpRef[];
-  onToggleWorkspaceSwitcher: () => void;
+  settingsTab: 'general' | 'models';
+  onPressProject: (worktree: string, hasSessions: boolean) => void;
   onNewSession: () => void;
-  onSelectProject: (worktree: string, active: boolean) => void;
   onChangeSessionSearch: (value: string) => void;
-  onSelectSession: (sessionId: string, active: boolean) => void;
-  onShowMoreSessions: () => void;
-  onInsertQuickReference: (value: string) => void;
+  onSelectSession: (sessionId: string, worktree: string, active: boolean) => void;
+  onShowMoreSessions: (worktree: string) => void;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
+  onOpenDrawerFromSettings?: () => void;
   onResetAuth: () => void;
+  autoAcceptPermissions: boolean;
+  onToggleAutoAccept: () => void;
+  onModelsChanged: () => void;
 }) {
   const {
-    availableProjects,
+    autoAcceptPermissions,
     currentWorkspaceName,
-    extensionsLoading,
     isSessionListEmpty,
-    leftDrawerPulse,
-    leftDrawerSessionRows,
-    noAuthToken,
-    notebookColors,
     onChangeSessionSearch,
-    onInsertQuickReference,
+    onCloseSettings,
+    onModelsChanged,
     onNewSession,
+    onOpenDrawerFromSettings,
+    onOpenSettings,
     onResetAuth,
-    onSelectProject,
+    onToggleAutoAccept,
+    onPressProject,
     onSelectSession,
     onShowMoreSessions,
-    onToggleWorkspaceSwitcher,
-    pairCode,
-    repoPath,
-    rightDrawerPulse,
+    projectTrees,
+    searchSessionRows,
     serverUrl,
     sessionSearch,
-    showMoreSessions,
-    styles,
-    token,
-    visibleQuickMcpRefs,
-    visibleQuickSkillRefs,
-    workspaceSwitcherOpen
+    settingsTab,
+    token
   } = params;
 
-  const leftDrawer = useMemo(() => (
-    <LeftDrawerPanel
-      styles={styles}
-      colors={notebookColors}
-      pulse={leftDrawerPulse}
-      currentWorkspaceName={currentWorkspaceName}
-      workspaceSwitcherOpen={workspaceSwitcherOpen}
-      availableProjects={availableProjects}
-      repoPath={repoPath}
-      sessionSearch={sessionSearch}
-      sessionRows={leftDrawerSessionRows}
-      showMoreButton={showMoreSessions}
-      isEmpty={isSessionListEmpty}
-      onToggleWorkspaceSwitcher={onToggleWorkspaceSwitcher}
-      onNewSession={onNewSession}
-      onSelectProject={onSelectProject}
-      onChangeSessionSearch={onChangeSessionSearch}
-      onSelectSession={onSelectSession}
-      onShowMore={onShowMoreSessions}
-    />
-  ), [
-    availableProjects,
-    currentWorkspaceName,
-    isSessionListEmpty,
-    leftDrawerPulse,
-    leftDrawerSessionRows,
-    notebookColors,
-    onChangeSessionSearch,
-    onNewSession,
-    onSelectProject,
-    onSelectSession,
-    onShowMoreSessions,
-    onToggleWorkspaceSwitcher,
-    repoPath,
-    sessionSearch,
-    showMoreSessions,
-    styles,
-    workspaceSwitcherOpen
-  ]);
+  const leftDrawer = useMemo(
+    () => (
+      <SessionListDrawer
+        sessionSearch={sessionSearch}
+        projectTrees={projectTrees}
+        searchSessionRows={searchSessionRows}
+        isEmpty={isSessionListEmpty}
+        currentWorkspaceName={currentWorkspaceName}
+        onPressProject={onPressProject}
+        onNewSession={onNewSession}
+        onChangeSessionSearch={onChangeSessionSearch}
+        onSelectSession={onSelectSession}
+        onShowMore={onShowMoreSessions}
+        onOpenSettings={onOpenSettings}
+      />
+    ),
+    [
+      currentWorkspaceName,
+      isSessionListEmpty,
+      onChangeSessionSearch,
+      onNewSession,
+      onOpenSettings,
+      onPressProject,
+      onSelectSession,
+      onShowMoreSessions,
+      projectTrees,
+      searchSessionRows,
+      sessionSearch
+    ]
+  );
 
-  const rightDrawer = useMemo(() => (
-    <RightDrawerPanel
-      styles={styles}
-      colors={notebookColors}
-      pulse={rightDrawerPulse}
-      currentWorkspaceName={currentWorkspaceName}
-      serverUrl={serverUrl}
-      repoPath={repoPath}
-      token={token}
-      noAuthToken={noAuthToken}
-      pairCode={pairCode}
-      extensionsLoading={extensionsLoading}
-      visibleQuickSkillRefs={visibleQuickSkillRefs}
-      visibleQuickMcpRefs={visibleQuickMcpRefs}
-      onInsertQuickReference={onInsertQuickReference}
-      onResetAuth={onResetAuth}
-    />
-  ), [
-    currentWorkspaceName,
-    extensionsLoading,
-    noAuthToken,
-    notebookColors,
-    onInsertQuickReference,
-    onResetAuth,
-    pairCode,
-    repoPath,
-    rightDrawerPulse,
-    serverUrl,
-    styles,
-    token,
-    visibleQuickMcpRefs,
-    visibleQuickSkillRefs
-  ]);
+  const rightDrawer = useMemo(
+    () => (
+      <ConnectionDrawer
+        currentWorkspaceName={currentWorkspaceName}
+        serverUrl={serverUrl}
+        token={token}
+        settingsTab={settingsTab}
+        onClose={onCloseSettings}
+        onOpenDrawer={onOpenDrawerFromSettings}
+        onResetAuth={onResetAuth}
+        autoAcceptPermissions={autoAcceptPermissions}
+        onToggleAutoAccept={onToggleAutoAccept}
+        onModelsChanged={onModelsChanged}
+      />
+    ),
+    [
+      autoAcceptPermissions,
+      currentWorkspaceName,
+      onCloseSettings,
+      onModelsChanged,
+      onOpenDrawerFromSettings,
+      onResetAuth,
+      onToggleAutoAccept,
+      serverUrl,
+      settingsTab,
+      token
+    ]
+  );
 
-  return {
-    leftDrawer,
-    rightDrawer
-  };
+  return { leftDrawer, rightDrawer };
 }

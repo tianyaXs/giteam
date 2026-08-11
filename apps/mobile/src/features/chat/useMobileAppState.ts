@@ -49,9 +49,6 @@ export function useMobileAppState() {
   const [expandedThinkCards, setExpandedThinkCards] = useState<Set<string>>(
     new Set(),
   );
-  const [notebookTheme, setNotebookTheme] = useState<"paper" | "slate">(
-    "paper",
-  );
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [sessionNextCursor, setSessionNextCursor] = useState<
     Record<string, string>
@@ -125,8 +122,6 @@ export function useMobileAppState() {
     setStreaming,
     expandedThinkCards,
     setExpandedThinkCards,
-    notebookTheme,
-    setNotebookTheme,
     sessions,
     setSessions,
     sessionNextCursor,

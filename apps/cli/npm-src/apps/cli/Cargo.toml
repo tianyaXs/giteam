@@ -1,6 +1,6 @@
 [package]
 name = "giteam-cli"
-version = "0.1.33"
+version = "0.1.34"
 edition = "2021"
 
 [[bin]]
@@ -13,3 +13,7 @@ ctrlc = "3"
 giteam-core = { path = "../../crates/giteam-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[patch.crates-io]
+# Windows HTTPS 出站修复（asupersync#35），见 apps/desktop/src-tauri/Cargo.toml 注释。
+asupersync = { git = "https://github.com/tianyaXs/asupersync-1", branch = "fix/windows-connect-completion-v0.3.9" }

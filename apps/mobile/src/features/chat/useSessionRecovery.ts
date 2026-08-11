@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import { AppState } from 'react-native';
-import { getSessionStatus } from '../../api/controlApi';
+import { createMobileAgentClient } from '../../api/agent/client';
 import { toText } from '../../lib/text';
 import type { SessionStatusInfo } from '../../types';
 
@@ -52,15 +52,17 @@ export function useSessionRecovery(params: {
     if (!authed || !serverUrl || !repoPath) return undefined;
     const epoch = sessionStatusEpochRef.current;
     try {
-      const next = await getSessionStatus({
-        baseUrl: serverUrl,
-        token,
-        repoPath
-      });
+      // pi_agent 无全量状态端点：以待裁决交互推断 waitingForInput，
+      // 运行中状态由 SSE session.status 事件驱动写入本地 map。
+      const client = createMobileAgentClient({ baseUrl: serverUrl, token });
+      const interactions = sid ? await client.listInteractions(sid).catch(() => []) : [];
       if (epoch !== sessionStatusEpochRef.current) return undefined;
-      setSessionStatusMap(next);
+      const next: SessionStatusInfo = interactions.length > 0 ? { type: 'busy' } : { type: 'idle' };
+      if (sid) {
+        setSessionStatusMap((prev) => ({ ...prev, [sid]: prev[sid]?.type === 'busy' && interactions.length === 0 ? prev[sid] : next }));
+      }
       if (!sid) return undefined;
-      return next[sid] || { type: 'idle' as const };
+      return next;
     } catch {
       return undefined;
     }
@@ -93,7 +95,7 @@ export function useSessionRecovery(params: {
           fetchLimit: initialMessageFetchLimit
         });
         void syncSessionStatus(sid).then((info) => {
-          if (info?.type === 'busy' || info?.type === 'retry') {
+          if (info?.type === 'busy') {
             setStatus('服务端仍在处理，正在接回流式输出...');
             startStream(sid);
           } else {

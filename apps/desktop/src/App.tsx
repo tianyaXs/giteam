@@ -310,6 +310,12 @@ import {
   agentProvidersToServerState
 } from "./lib/agent/providerState";
 import { extractToolDetails, extractToolOutputText } from "./lib/agent/toolPresentation";
+import {
+  applySubagentChildEventToPart,
+  enrichTaskToolPart,
+  extractTaskDescriptionFromParentInput,
+  parseIndexedParentToolCallId
+} from "./lib/subagentRun";
 import { IS_TAURI, invoke, listen } from "./lib/platform";
 import { runReviewForCommit } from "./lib/reviewOrchestrator";
 import {
@@ -545,6 +551,7 @@ function buildToolPart(options: {
     if (details) part.details = details;
   }
   if (options.status === "error") part.isError = true;
+  if (options.toolName === "task") return enrichTaskToolPart(part);
   return part;
 }
 
@@ -624,6 +631,119 @@ function agentMessageToDetailedMessage(
     },
     parts: detailParts
   };
+}
+
+/** 子会话 messages → 嵌套 timeline（跳过 todowrite）。 */
+function buildTaskTimelineFromChildMessages(messages: AgentMessage[]): AgentDetailedPart[] {
+  const toolResults = agentToolResultsByCallId(messages);
+  const timeline: AgentDetailedPart[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.parts) {
+      if (part.type !== "toolCall" || !part.toolCallId) continue;
+      if (String(part.toolName || "").trim() === "todowrite") continue;
+      const result = toolResults.get(part.toolCallId);
+      timeline.push(
+        buildToolPart({
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          status: result ? (result.isError ? "error" : "completed") : "completed",
+          input: part.input,
+          output: result?.output
+        })
+      );
+    }
+  }
+  return timeline;
+}
+
+/**
+ * 冷启动：用 catalog 子会话回填 task 的 childSessionId / timeline。
+ * abort 时父 JSONL 往往没有 details.childSessionId，导致 UI 把卡滤空。
+ */
+async function hydrateTaskPartsFromChildSessions(
+  parentSessionId: string,
+  detailsById: Record<string, AgentDetailedMessage>
+): Promise<Record<string, AgentDetailedMessage>> {
+  let children: AgentSessionSummary[] = [];
+  try {
+    children = await agentClient.listChildSessions(parentSessionId);
+  } catch {
+    return detailsById;
+  }
+  if (!children.length) return detailsById;
+
+  const byToolCallId = new Map<string, AgentSessionSummary>();
+  for (const child of children) {
+    const toolCallId = String(child.parentToolCallId || "").trim();
+    if (!toolCallId) continue;
+    // 同 toolCall 多次 spawn 时保留最新（updatedAtMs 更大）。
+    const existing = byToolCallId.get(toolCallId);
+    if (!existing || Number(child.updatedAtMs || 0) >= Number(existing.updatedAtMs || 0)) {
+      byToolCallId.set(toolCallId, child);
+    }
+  }
+  if (byToolCallId.size === 0) return detailsById;
+
+  const timelineCache = new Map<string, AgentDetailedPart[]>();
+  const loadTimeline = async (childSessionId: string): Promise<AgentDetailedPart[]> => {
+    const cached = timelineCache.get(childSessionId);
+    if (cached) return cached;
+    try {
+      const messages = await agentClient.getMessages(childSessionId);
+      const timeline = buildTaskTimelineFromChildMessages(messages);
+      timelineCache.set(childSessionId, timeline);
+      return timeline;
+    } catch {
+      timelineCache.set(childSessionId, []);
+      return [];
+    }
+  };
+
+  const next: Record<string, AgentDetailedMessage> = { ...detailsById };
+  for (const [messageId, detail] of Object.entries(detailsById)) {
+    const parts = Array.isArray(detail.parts) ? detail.parts : [];
+    let changed = false;
+    const nextParts: AgentDetailedPart[] = [];
+    for (const part of parts) {
+      if (String((part as { toolName?: string }).toolName || "").trim() !== "task") {
+        nextParts.push(part);
+        continue;
+      }
+      const toolCallId = String(
+        (part as { toolCallId?: string }).toolCallId || (part as { id?: string }).id || ""
+      ).trim();
+      const child = toolCallId ? byToolCallId.get(toolCallId) : undefined;
+      if (!child) {
+        nextParts.push(enrichTaskToolPart(part));
+        continue;
+      }
+      const existingChild = String((part as { childSessionId?: string }).childSessionId || "").trim();
+      const existingTimeline = Array.isArray((part as { timeline?: AgentDetailedPart[] }).timeline)
+        ? (part as { timeline: AgentDetailedPart[] }).timeline
+        : [];
+      const childSessionId = existingChild || String(child.sessionId || "").trim();
+      let timeline = existingTimeline;
+      if (childSessionId && timeline.length === 0) {
+        timeline = await loadTimeline(childSessionId);
+      }
+      const enriched = enrichTaskToolPart({
+        ...part,
+        childSessionId,
+        toolCount: Number((part as { toolCount?: number }).toolCount || 0) || timeline.length,
+        timeline,
+        subagentStatus:
+          String((part as { subagentStatus?: string }).subagentStatus || "").trim()
+          || (Boolean((part as { isError?: boolean }).isError) ? "aborted" : "completed")
+      });
+      nextParts.push(enriched);
+      changed = true;
+    }
+    if (changed) {
+      next[messageId] = { ...detail, parts: nextParts };
+    }
+  }
+  return next;
 }
 
 type TauriDragWindow = {
@@ -1261,7 +1381,7 @@ export function App() {
     { id: "builtin-new", trigger: "new", title: "New session", description: "开始一个新会话", source: "builtin" },
     { id: "builtin-compact", trigger: "compact", title: "Compact", description: "压缩当前会话上下文", source: "builtin" },
     { id: "builtin-model", trigger: "model", title: "Model", description: "切换当前模型", source: "builtin" },
-    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "切换 agent", source: "builtin" },
+    { id: "builtin-agent", trigger: "agent", title: "Agent", description: "规划请让助手使用 task(plan)", source: "builtin" },
     { id: "builtin-open", trigger: "open", title: "Open", description: "搜索文件、命令和会话", source: "builtin" },
     { id: "builtin-terminal", trigger: "terminal", title: "Terminal", description: "打开或聚焦终端", source: "builtin" },
     { id: "builtin-workspace", trigger: "workspace", title: "Workspace", description: "在侧边栏启用或禁用多个工作区", source: "builtin" },
@@ -2306,39 +2426,8 @@ export function App() {
     }
   }
 
-  function applyAgentAgent(agentName: string) {
-    const name = normalizeComposerAgentName(agentName);
-    const previous = activeAgentAgent;
-    // 只影响用户当前选中的会话；未选中时改 draft（发送时 createPersistedAgentSession 硬切）。
-    // 不用 ensureActiveAgentSession：它会自动落到 agentSessions[0]，误热切未选中会话。
-    const sid = activeAgentSessionId.trim();
-    if (sid) {
-      setAgentSessionAgent((prev) => ({ ...prev, [sid]: name }));
-      // 已有会话：热切后端工具集 + 系统提示（重建 handle，保留 sessionId 与对话历史），
-      // 使切换在当前会话立即硬生效，而非仅加软约束前缀。
-      const opts = composerAgentSessionOptions(name);
-      void agentClient
-        .setSessionOptions(sid, {
-          enabledTools: opts.enabledTools,
-          appendSystemPrompt: opts.appendSystemPrompt
-        })
-        .catch((error) => {
-          // 生成中(ensure_not_running)或其他失败：回退 UI 到切换前 + 提示重试。
-          setAgentSessionAgent((prev) =>
-            prev[sid] === name ? { ...prev, [sid]: previous } : prev
-          );
-          setError(`切换模式未生效：${String(error)}`);
-          setMessage("模式切换失败，请停止生成后重试");
-        });
-    } else {
-      setAgentDraftAgent(name);
-    }
-    saveLocalString(AGENT_COMPOSER_SELECTION_KEY, name);
-    setMessage(
-      name === "plan"
-        ? "已切换到 Plan：当前会话工具集已切为只读规划"
-        : "已切换到 Build：当前会话可完整改代码与执行命令"
-    );
+  function applyAgentAgent(_agentName: string) {
+    // Plan/Build 模式已由 task(plan) 子 agent 替代。
   }
 
   async function applyAgentThinkingLevel(level: AgentThinkingLevel) {
@@ -2895,7 +2984,25 @@ export function App() {
       for (const message of agentMessages) {
         detailsById[message.id] = agentMessageToDetailedMessage(message, toolResults);
       }
-      setAgentDetailsByMessageId((prev) => ({ ...prev, ...detailsById }));
+      // 冷启动回填：abort 的 task 往往没有 childSessionId，靠 catalog 子会话补上并恢复 timeline。
+      const hydratedDetailsById = await hydrateTaskPartsFromChildSessions(id, detailsById);
+      setAgentDetailsByMessageId((prev) => {
+        const next = { ...prev };
+        for (const [messageId, detail] of Object.entries(hydratedDetailsById)) {
+          const existing = prev[messageId];
+          const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
+          const incomingParts = Array.isArray(detail.parts) ? detail.parts : [];
+          const liveParts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
+          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）。
+          // 有 live 或已有更丰富 details 时不要用瘦 history 盖掉。
+          if (liveParts.length > 0 || existingParts.length > incomingParts.length) {
+            if (!existing) next[messageId] = detail;
+            continue;
+          }
+          next[messageId] = detail;
+        }
+        return next;
+      });
       const currentSession = agentSessions.find((s) => s.id === id);
       const baseMapped = agentMessages
         .map(agentMessageToChatMessage)
@@ -4814,17 +4921,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (!mapped) return;
       updateAgentSessionById(sessionId, (session) => {
         const current = session.messages.find((item) => item.id === localId);
+        // 手动暂停后 history replace 常不带 error；保留本地已写入的「已暂停」，避免被冲掉后又由 finalize 再塞一条。
+        const preservedError = String(current?.error || mapped.error || "").trim();
         if (
           current &&
           current.content === mapped.content &&
-          !current.error &&
-          !mapped.error
+          String(current.error || "").trim() === preservedError
         ) {
           return session;
         }
         return {
           ...session,
-          messages: session.messages.map((item) => item.id === localId ? { ...mapped, id: localId } : item),
+          messages: session.messages.map((item) =>
+            item.id === localId
+              ? { ...mapped, id: localId, ...(preservedError ? { error: preservedError } : {}) }
+              : item
+          ),
           updatedAt: Date.now()
         };
       });
@@ -4842,13 +4954,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           .map((part) => String((part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || "").trim())
           .filter(Boolean);
         const finalToolIds = finalTools.map((part) => part.toolCallId);
+        const finalToolIdSet = new Set(finalToolIds);
+        const liveToolIdSet = new Set(liveToolIds);
+        // 批并行子卡 id 为 parent:index，不会进 history message.parts；多出来的 live 子卡不算「不一致」。
+        const liveOnlyIds = liveToolIds.filter((id) => !finalToolIdSet.has(id));
+        const liveOnlyAreSubagentChildren = liveOnlyIds.every((id) => {
+          const indexed = parseIndexedParentToolCallId(id);
+          return Boolean(indexed && finalToolIdSet.has(indexed.parentId));
+        });
         // 工具集合（按 id，不要求顺序）已与完成态一致时，只就地补正文/思考，
         // 避免按 history block 顺序整段重建导致 timeline remount、列表闪一下。
-        const liveToolIdSet = new Set(liveToolIds);
         const toolsMatch =
-          liveToolIds.length === finalToolIds.length &&
-          finalToolIds.every((id) => liveToolIdSet.has(id));
-        if (toolsMatch && current.length > 0) {
+          finalToolIds.every((id) => liveToolIdSet.has(id))
+          && (liveToolIds.length === finalToolIds.length || liveOnlyAreSubagentChildren)
+          && current.length > 0;
+        if (toolsMatch) {
           let changed = false;
           const finalTextBlocks = message.parts.filter(
             (part): part is Extract<AgentPart, { type: "text" }> =>
@@ -4955,6 +5075,26 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }
           }
         });
+        // 保留 history 没有的 live 工具：批并行子卡（parent:index）、以及中止前已投影的过程态。
+        // 否则暂停后 message.completed 按 history 重建会把整段子任务时间线清掉。
+        for (const part of current) {
+          const type = String((part as { type?: string }).type || "");
+          if (type !== "toolCall") continue;
+          const id = String((part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || "").trim();
+          if (!id || finalToolIdSet.has(id)) continue;
+          if (next.some((item) => String((item as { id?: string }).id || (item as { toolCallId?: string }).toolCallId || "").trim() === id)) {
+            continue;
+          }
+          const indexed = parseIndexedParentToolCallId(id);
+          if (indexed && finalToolIdSet.has(indexed.parentId)) {
+            next.push(part);
+            continue;
+          }
+          // 中止时 history 可能比 live 少工具：仍保留已有 toolName 的 live 卡，避免「全丢」。
+          if (String((part as { toolName?: string }).toolName || "").trim()) {
+            next.push(part);
+          }
+        }
         // 保留流式期写入的重试/失败事件（history message.parts 不含这些 ephemeral 类型）
         for (const part of current) {
           const type = String((part as { type?: string }).type || "");
@@ -5136,7 +5276,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             for (const key of [...pendingReasoningStream.keys()]) {
               if (key === completedId || key.startsWith(`${completedId}::`)) pendingReasoningStream.delete(key);
             }
-            replaceAssistantMessage(event.message);
+            // 已 finalize（含手动暂停）后不再按 history 重建 live，否则会冲掉已落盘的子卡/时间线。
+            replaceAssistantMessage(event.message, { rebuildLive: !finalized });
             if (completedId) frozenAssistantMessageIds.add(completedId);
           }
           break;
@@ -5343,8 +5484,161 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }
           break;
         }
-        case "run.failed":
+        case "subagent.started": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          if (!toolCallId) break;
+          const indexed = parseIndexedParentToolCallId(toolCallId);
+          let description = String(event.description || "").trim();
+          if (!description && indexed) {
+            const siblings =
+              agentLivePartsByServerMessageIdRef.current[currentServerAssistantId.trim()] || [];
+            const parent = siblings.find((candidate) => {
+              const id = String(
+                (candidate as { toolCallId?: string }).toolCallId
+                  || (candidate as { id?: string }).id
+                  || ""
+              ).trim();
+              return id === indexed.parentId;
+            });
+            description = extractTaskDescriptionFromParentInput(parent, indexed.index);
+          }
+          // 不写 timeline: []，避免 started 晚于 childEvent 时清空已投影的工具步骤。
+          updateToolPart(currentServerAssistantId, enrichTaskToolPart({
+            id: toolCallId,
+            type: "toolCall",
+            toolCallId,
+            toolName: "task",
+            status: "running",
+            subagentStatus: "running",
+            childSessionId: event.childSessionId,
+            childRunId: event.childRunId,
+            subagentType: event.subagentType,
+            startedAtMs: Date.now(),
+            ...(description ? { description } : {})
+          }));
+          break;
+        }
+        case "subagent.progress": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          if (!toolCallId) break;
+          // 只写进度字段；标题等由既有 part / enrich 保留，避免空 description 冲掉。
+          updateToolPart(currentServerAssistantId, enrichTaskToolPart({
+            id: toolCallId,
+            type: "toolCall",
+            toolCallId,
+            toolName: "task",
+            status: "running",
+            subagentStatus: "running",
+            toolCount: event.toolCount,
+            currentToolName: event.currentToolName,
+            elapsedMs: event.elapsedMs
+          }));
+          break;
+        }
+        case "subagent.childEvent": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          const nested = event.event;
+          if (!toolCallId || !nested) break;
+          commitAgentLiveParts((prev) => {
+            const mid = currentServerAssistantId.trim();
+            if (!mid) return prev;
+            const list = prev[mid] || [];
+            const idx = list.findIndex((p) => String((p as any).id || "") === toolCallId || String((p as any).toolCallId || "") === toolCallId);
+            if (idx < 0) {
+              const indexed = parseIndexedParentToolCallId(toolCallId);
+              let description = "";
+              if (indexed) {
+                const parent = list.find((candidate) => {
+                  const id = String(
+                    (candidate as { toolCallId?: string }).toolCallId
+                      || (candidate as { id?: string }).id
+                      || ""
+                  ).trim();
+                  return id === indexed.parentId;
+                });
+                description = extractTaskDescriptionFromParentInput(parent, indexed.index);
+              }
+              const seeded = enrichTaskToolPart({
+                id: toolCallId,
+                type: "toolCall",
+                toolCallId,
+                toolName: "task",
+                status: "running",
+                subagentStatus: "running",
+                childSessionId: event.childSessionId,
+                timeline: [],
+                ...(description ? { description } : {})
+              });
+              return {
+                ...prev,
+                [mid]: [...list, applySubagentChildEventToPart(seeded, nested)]
+              };
+            }
+            const next = list.slice();
+            next[idx] = applySubagentChildEventToPart(next[idx], nested);
+            return { ...prev, [mid]: next };
+          });
+          scrollToBottom();
+          break;
+        }
+        case "subagent.completed": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          if (!toolCallId) break;
+          updateToolPart(currentServerAssistantId, enrichTaskToolPart({
+            id: toolCallId,
+            type: "toolCall",
+            toolCallId,
+            toolName: "task",
+            status: "completed",
+            subagentStatus: "completed",
+            childSessionId: event.childSessionId,
+            summary: event.summary,
+            output: event.summary,
+            toolCount: event.toolCount,
+            elapsedMs: event.elapsedMs,
+            currentToolName: ""
+          }));
+          break;
+        }
+        case "subagent.failed": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          if (!toolCallId) break;
+          updateToolPart(currentServerAssistantId, enrichTaskToolPart({
+            id: toolCallId,
+            type: "toolCall",
+            toolCallId,
+            toolName: "task",
+            status: "error",
+            subagentStatus: "failed",
+            childSessionId: event.childSessionId,
+            isError: true,
+            summary: event.error,
+            output: event.error
+          }));
+          break;
+        }
+        case "subagent.aborted": {
+          const toolCallId = String(event.parentToolCallId || "").trim();
+          if (!toolCallId) break;
+          updateToolPart(currentServerAssistantId, enrichTaskToolPart({
+            id: toolCallId,
+            type: "toolCall",
+            toolCallId,
+            toolName: "task",
+            status: "error",
+            subagentStatus: "aborted",
+            childSessionId: event.childSessionId,
+            isError: true,
+            summary: "子任务已中止",
+            output: "子任务已中止"
+          }));
+          break;
+        }
+        case "run.failed": {
           cancelStreamBatch();
+          const rawError = String(event.error || "").trim();
+          const aborted = /abort/i.test(rawError) || /中止|暂停|已停止/.test(rawError);
+          const failureText = aborted ? "已暂停" : (rawError || "agent run failed");
           // 先清 busy，再写 error，避免「运行失败」横幅与「运行中 N / 停止键」同框。
           setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
           setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
@@ -5360,25 +5654,33 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             upsertAgentLivePart(currentServerAssistantId, {
               id: "runtime.failure",
               type: "runtime.failure",
-              error: event.error || "unknown error",
+              error: failureText,
               status: "error"
             });
           }
+          // 保留已有正文；暂停不应把 content 清空成空白气泡。
           updateAgentSessionById(sessionId, (session) => ({
             ...session,
             messages: session.messages.map((item) =>
               item.id === currentLocalAssistantId
-                ? { ...item, content: "", error: event.error || "unknown error" }
+                ? { ...item, error: failureText }
                 : item
             ),
             updatedAt: Date.now()
           }));
-          void finalize(event.error || "agent run failed");
+          void finalize(failureText);
           break;
+        }
         case "session.status":
           if (event.status === "idle" || event.status === "aborted" || event.status === "failed") {
             cancelStreamBatch();
-            void finalize(event.error || (event.status === "aborted" ? "Run aborted" : undefined));
+            // abort 已由 run.failed 写入唯一 failure；此处只收口，避免再叠一条「已暂停」。
+            if (event.status === "aborted" && finalized) break;
+            void finalize(
+              event.status === "aborted"
+                ? "已暂停"
+                : event.error || (event.status === "failed" ? "agent run failed" : undefined)
+            );
           }
           break;
         case "run.completed":
@@ -5413,6 +5715,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         const settleStatus = failure ? "error" : "completed";
         const settledLiveByServerId: Record<string, AgentDetailedPart[]> = {};
         const liveSnapshot = agentLivePartsByServerMessageIdRef.current;
+        // 失败横幅只挂到主消息键，避免多回合 messageId 各插一条 runtime.failure → UI 重复「运行失败」。
+        const primaryFailureMid = (() => {
+          const preferred = currentServerAssistantId.trim();
+          if (preferred && liveMessageIds.has(preferred)) return preferred;
+          let bestId = "";
+          let bestScore = -1;
+          for (const mid of liveMessageIds) {
+            const parts = liveSnapshot[mid];
+            if (!Array.isArray(parts)) continue;
+            const score = parts.length;
+            if (score > bestScore) {
+              bestScore = score;
+              bestId = mid;
+            }
+          }
+          return bestId;
+        })();
         for (const mid of liveMessageIds) {
           const parts = liveSnapshot[mid];
           if (!Array.isArray(parts) || parts.length === 0) continue;
@@ -5442,15 +5761,26 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 } as AgentDetailedPart;
               }
             }
+            // 非主消息上的失败行去掉，防止多键各留一条。
+            if (failure && type === "runtime.failure" && mid !== primaryFailureMid) {
+              return null;
+            }
             return part;
-          });
-          if (failure && !nextParts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure")) {
+          }).filter(Boolean) as AgentDetailedPart[];
+          if (
+            failure
+            && mid === primaryFailureMid
+            && !nextParts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure")
+          ) {
+            const aborted =
+              /abort/i.test(failure)
+              || /中止|暂停|已停止/.test(failure);
             nextParts = [
               ...nextParts,
               {
                 id: "runtime.failure",
                 type: "runtime.failure",
-                error: failure,
+                error: aborted ? "已暂停" : failure,
                 status: "error"
               } as AgentDetailedPart
             ];
@@ -5464,6 +5794,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             const next = { ...prev };
             for (const [mid, parts] of Object.entries(settledLiveByServerId)) {
               next[mid] = parts;
+              // 同时挂到 local assistant id，避免暂停后只剩 local 键、server live 查不到而整段空白。
+              const localId = localAssistantByMessageId.get(mid);
+              if (localId) next[localId] = parts;
+            }
+            if (currentLocalAssistantId) {
+              const preferred =
+                settledLiveByServerId[currentServerAssistantId.trim()]
+                || Object.values(settledLiveByServerId)[0];
+              if (preferred) next[currentLocalAssistantId] = preferred;
             }
             return next;
           });
@@ -5518,32 +5857,35 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             break;
           }
           if (failure) {
-            const lastAssistantIndex = [...messages]
-              .map((item, index) => ({ item, index }))
-              .reverse()
-              .find(({ item }) => item.role === "assistant")
-              ?.index;
-            if (lastAssistantIndex != null && !(messages[lastAssistantIndex]?.content || "").trim()) {
-              if (messages[lastAssistantIndex].error !== failure) {
-                messages[lastAssistantIndex] = {
-                  ...messages[lastAssistantIndex],
-                  content: "",
+            // 只在已有 assistant 上落一次 error；禁止再 push 新气泡（否则会叠多条「运行失败 已暂停」）。
+            const targetIndex = (() => {
+              const byCurrent = messages.findIndex((item) => item.id === currentLocalAssistantId);
+              if (byCurrent >= 0) return byCurrent;
+              return [...messages]
+                .map((item, index) => ({ item, index }))
+                .reverse()
+                .find(({ item }) => item.role === "assistant")
+                ?.index;
+            })();
+            if (targetIndex != null && targetIndex >= 0) {
+              if (messages[targetIndex].error !== failure) {
+                messages[targetIndex] = {
+                  ...messages[targetIndex],
                   error: failure
                 };
                 changed = true;
               }
-            } else if (
-              !messages.some(
-                (item) => item.role === "assistant" && Boolean(item.error?.trim())
-              )
-            ) {
-              messages.push({
-                id: currentLocalAssistantId,
-                role: "assistant",
-                content: "",
-                error: failure
-              });
-              changed = true;
+              // 同轮其它空 assistant 上的重复 error 清掉，避免多行横幅。
+              for (let index = 0; index < messages.length; index += 1) {
+                if (index === targetIndex) continue;
+                const item = messages[index];
+                if (item?.role !== "assistant") continue;
+                if (!item.error?.trim()) continue;
+                if (!(item.content || "").trim() && localAssistantIds.includes(item.id)) {
+                  messages[index] = { ...item, error: undefined };
+                  changed = true;
+                }
+              }
             }
           } else {
             for (const localId of localAssistantIds) {
@@ -5665,7 +6007,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         return;
       }
       if (trigger === "agent") {
-        applyAgentAgent(activeAgentAgent === "build" ? "plan" : "build");
+        setMessage("规划请让助手使用 task(plan)");
         return;
       }
       if (trigger === "workspace") {
@@ -7217,8 +7559,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (msg.role !== "assistant") return true;
       if (msg.error?.trim() || /^Run failed\s*\n/i.test(msg.content || "")) return true;
       if ((msg.content || "").trim()) return true;
-      const detail = agentDetailsByMessageId[msg.id];
-      const loading = agentDetailsLoadingByMessageId[msg.id];
+      const mappedServerMid = (agentServerMessageIdByLocalId[msg.id] || "").trim();
+      const liveParts =
+        (mappedServerMid && (agentLivePartsByServerMessageId[mappedServerMid] || []))
+        || agentLivePartsByServerMessageId[msg.id]
+        || [];
+      if (liveParts.length > 0) return true;
+      const detail = agentDetailsByMessageId[msg.id] || (mappedServerMid ? agentDetailsByMessageId[mappedServerMid] : undefined);
+      const loading = agentDetailsLoadingByMessageId[msg.id] || (mappedServerMid ? agentDetailsLoadingByMessageId[mappedServerMid] : false);
       if (detail === undefined || loading) return true;
       // 保留：当前正在流式输出的消息，或已经有内容的非流式消息
       if (msg.id === streamingId && running) return true;
@@ -7226,7 +7574,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (detail && Array.isArray(detail.parts) && detail.parts.length > 0) return true;
       return false;
     });
-  }, [agentMessages, activeAgentStreamingAssistantId, activeAgentSessionBusy, agentDetailsByMessageId, agentDetailsLoadingByMessageId]);
+  }, [
+    agentMessages,
+    activeAgentStreamingAssistantId,
+    activeAgentSessionBusy,
+    agentDetailsByMessageId,
+    agentDetailsLoadingByMessageId,
+    agentLivePartsByServerMessageId,
+    agentServerMessageIdByLocalId
+  ]);
 
   const agentActiveTodos = useMemo(() => {
     const visible = agentMessages;

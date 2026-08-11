@@ -53,7 +53,7 @@ pub struct AgentSkillSourceGroupEntry {
     pub source_group: String,
 }
 
-// ── 内置 skill（复用 opencode-remote-repo 资源；不 git mv，避免动 opencode.rs 引入回归） ──
+// ── 内置 skill（giteam-remote-repo） ──
 
 struct BuiltinAgentSkillFile {
     path: &'static str,
@@ -69,53 +69,53 @@ struct BuiltinAgentSkill {
 const REMOTE_REPO_SKILL_FILES: &[BuiltinAgentSkillFile] = &[
     BuiltinAgentSkillFile {
         path: "SKILL.md",
-        contents: include_str!("../../resources/opencode-skills/opencode-remote-repo/SKILL.md"),
+        contents: include_str!("../../resources/agent-skills/giteam-remote-repo/SKILL.md"),
     },
     BuiltinAgentSkillFile {
         path: "giteam.json",
-        contents: include_str!("../../resources/opencode-skills/opencode-remote-repo/giteam.json"),
+        contents: include_str!("../../resources/agent-skills/giteam-remote-repo/giteam.json"),
     },
     BuiltinAgentSkillFile {
         path: "agents/openai.yaml",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/agents/openai.yaml"
+            "../../resources/agent-skills/giteam-remote-repo/agents/openai.yaml"
         ),
     },
     BuiltinAgentSkillFile {
         path: "references/api.md",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/references/api.md"
+            "../../resources/agent-skills/giteam-remote-repo/references/api.md"
         ),
     },
     BuiltinAgentSkillFile {
         path: "references/mcp-tools.md",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/references/mcp-tools.md"
+            "../../resources/agent-skills/giteam-remote-repo/references/mcp-tools.md"
         ),
     },
     BuiltinAgentSkillFile {
         path: "scripts/remote_repo_client.py",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/scripts/remote_repo_client.py"
+            "../../resources/agent-skills/giteam-remote-repo/scripts/remote_repo_client.py"
         ),
     },
     BuiltinAgentSkillFile {
         path: "mcp/giteam_mcp_launcher.py",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/mcp/giteam_mcp_launcher.py"
+            "../../resources/agent-skills/giteam-remote-repo/mcp/giteam_mcp_launcher.py"
         ),
     },
     BuiltinAgentSkillFile {
         path: "mcp/mcp_server.py",
         contents: include_str!(
-            "../../resources/opencode-skills/opencode-remote-repo/mcp/mcp_server.py"
+            "../../resources/agent-skills/giteam-remote-repo/mcp/mcp_server.py"
         ),
     },
 ];
 
 pub const BUILTIN_AGENT_SKILLS: &[BuiltinAgentSkill] = &[BuiltinAgentSkill {
-    id: "opencode-remote-repo",
-    name: "opencode-remote-repo",
+    id: "giteam-remote-repo",
+    name: "giteam-remote-repo",
     files: REMOTE_REPO_SKILL_FILES,
 }];
 
@@ -316,7 +316,7 @@ pub fn remove_installed_agent_skills_by_path(
     .map_err(|e| format!("serialize removal result failed: {e}"))
 }
 
-// ── source group（与 opencode.rs 同构；文件名改 pi-skill-source-groups.json） ──
+// ── source group（文件名 pi-skill-source-groups.json） ──
 
 /// 全局 source group 文件：放在 Giteam 数据目录（与 pi-agent 数据同级）。
 fn agent_skill_source_groups_global_path() -> Option<PathBuf> {
@@ -493,9 +493,9 @@ mod tests {
     #[test]
     fn install_builtin_writes_all_files_to_pi_dir() {
         let repo = temp_repo("builtin-install");
-        let skill = find_builtin_agent_skill("opencode-remote-repo").unwrap();
+        let skill = find_builtin_agent_skill("giteam-remote-repo").unwrap();
         let target = write_builtin_agent_skill(repo.to_str().unwrap(), skill, false).unwrap();
-        assert_eq!(target, repo.join(".pi/skills/opencode-remote-repo"));
+        assert_eq!(target, repo.join(".pi/skills/giteam-remote-repo"));
         for rel in [
             "SKILL.md",
             "giteam.json",
@@ -515,9 +515,9 @@ mod tests {
     fn builtin_global_targets_pi_agent_skills_subdir() {
         // global 目标目录走 {PI_CODING_AGENT_DIR}/skills/<name>；此处只验证尾部相对结构。
         let repo = temp_repo("builtin-global");
-        let skill = find_builtin_agent_skill("opencode-remote-repo").unwrap();
+        let skill = find_builtin_agent_skill("giteam-remote-repo").unwrap();
         let target = builtin_agent_skill_target_dir(repo.to_str().unwrap(), skill, true).unwrap();
-        assert!(target.ends_with("skills/opencode-remote-repo"));
+        assert!(target.ends_with("skills/giteam-remote-repo"));
         let _ = fs::remove_dir_all(repo);
     }
 

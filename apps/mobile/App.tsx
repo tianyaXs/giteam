@@ -1,12 +1,12 @@
 import { CameraView } from "expo-camera";
-import { useFonts } from "expo-font";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import {
-  NO_AUTH_TOKEN
-} from "./src/api/controlApi";
+import { NO_AUTH_TOKEN } from "./src/api/controlApi";
+import { interactionToQuestionRequest } from "./src/api/agent/bridge";
+import { createMobileAgentClient } from "./src/api/agent/client";
+import type { AgentInteraction } from "./src/api/agent/types";
 import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
 import { AlbumPickerOverlay } from "./src/components/chat/MediaOverlays";
 import { MobileLaunchOverlay } from "./src/components/chat/MobileLaunchOverlay";
@@ -19,7 +19,6 @@ import {
   CHAT_BOTTOM_PROXIMITY,
   CHAT_LIST_BOTTOM_AIR,
   COMPOSER_MODE_OPTIONS,
-  IMAGE_SEND_TIMEOUT_MS,
   INITIAL_CELL_LIMIT,
   INITIAL_MESSAGE_FETCH_LIMIT,
   INITIAL_SESSION_LIMIT,
@@ -49,6 +48,7 @@ import { useChatWorkspaceEvents } from "./src/features/chat/useChatWorkspaceEven
 import { useChatWorkspacePanelProps } from "./src/features/chat/useChatWorkspacePanelProps";
 import { useComposerPresentationState } from "./src/features/chat/useComposerPresentationState";
 import { useConnectionLogger } from "./src/features/chat/useConnectionLogger";
+import { useMobileThinkingLevel } from "./src/features/chat/useMobileThinkingLevel";
 import { useDisplayedTurnsWithThinking } from "./src/features/chat/useDisplayedTurnsWithThinking";
 import { useDrawerPulseState } from "./src/features/chat/useDrawerPulseState";
 import { useGlobalErrorLogger } from "./src/features/chat/useGlobalErrorLogger";
@@ -85,29 +85,24 @@ import { usePromptActions } from "./src/features/messages/usePromptActions";
 import { useSessionMessageSync } from "./src/features/messages/useSessionMessageSync";
 import { useTurnWindowController } from "./src/features/messages/useTurnWindowController";
 import { useQuestionController } from "./src/features/questions/useQuestionController";
-import { useOpenCodeStreamRuntime } from "./src/features/stream/useOpenCodeStreamRuntime";
-import { useStreamManager } from "./src/features/stream/useStreamManager";
+import { useAgentStreamRuntime } from "./src/features/stream/useAgentStreamRuntime";
+import { useAgentStreamManager } from "./src/features/stream/useAgentStreamManager";
 import {
-  extractModelOptionsFromConfig,
-  normalizeMcpStatusMap,
   projectNameFromPath,
   sanitizeProjectOptions,
   stripUrlScheme,
   toProjectOptionsFromPaths,
 } from "./src/features/workspace/catalogUtils";
+import {
+  removeStreamQuestion,
+  upsertStreamQuestion,
+} from "./src/features/messages/agentStreamStore";
 import { useWorkspaceCatalogController } from "./src/features/workspace/useWorkspaceCatalogController";
 import { toText } from "./src/lib/text";
 import { formatClock } from "./src/lib/time";
 import { MobileAppRouter } from "./src/screens/MobileAppRouter";
 import { styles } from "./src/styles/mobileAppStyles";
-import {
-  FONT_DISPLAY_SERIF,
-  FONT_MIXED_BODY_REGULAR,
-  FONT_TEXT_SERIF,
-  FONT_TEXT_SERIF_SEMIBOLD,
-  FONT_UI_MEDIUM,
-  FONT_UI_REGULAR,
-} from "./src/styles/mobileFonts";
+import { FONT_DISPLAY_SERIF, FONT_MIXED_BODY_REGULAR } from "./src/styles/mobileFonts";
 
 // keys + storage moved to src/storage/*
 
@@ -118,13 +113,8 @@ const CameraViewCompat: any = CameraView;
 // prefs + discover cache moved to src/storage/*
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
-    [FONT_DISPLAY_SERIF]: require("./assets/fonts/GalaxieCopernicus-Book.otf"),
-    [FONT_TEXT_SERIF]: require("./assets/fonts/TestTiemposText-Regular.otf"),
-    [FONT_TEXT_SERIF_SEMIBOLD]: require("./assets/fonts/TestTiemposText-Semibold.otf"),
-    [FONT_UI_REGULAR]: require("./assets/fonts/StyreneA-Regular-Trial-BF63f6cbd970ee9.otf"),
-    [FONT_UI_MEDIUM]: require("./assets/fonts/StyreneA-Medium-Trial-BF63f6cbdb24b6d.otf"),
-  });
+  // paper 主题字体已移除，统一系统字体，无需异步加载。
+  const fontsLoaded = true;
   const { width: windowWidth } = useWindowDimensions();
   const {
     loaded,
@@ -181,8 +171,6 @@ export default function App() {
     setStreaming,
     expandedThinkCards,
     setExpandedThinkCards,
-    notebookTheme,
-    setNotebookTheme,
     sessions,
     setSessions,
     sessionNextCursor,
@@ -193,8 +181,6 @@ export default function App() {
     setSessionHistoryRetryHint,
     loadingOlder,
     setLoadingOlder,
-    sessionDisplayedCount,
-    setSessionDisplayedCount,
     inputDockHeight,
     setInputDockHeight,
     streamTodoCard,
@@ -219,20 +205,11 @@ export default function App() {
     sentAttachmentCacheRef,
     pendingPromptSessionRef,
     renderRegressionRetryRef,
-    streamMessageRoleRef,
-    streamMessageStoreRef,
-    streamPartStoreRef,
-    streamSessionStatusStoreRef,
-    streamPermissionStoreRef,
-    streamQuestionStoreRef,
-    streamTodoStoreRef,
-    streamPendingPartEventsRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
     streamRunIdRef,
     streamRenderTimerRef,
-    streamTypewriterTimerRef,
-    streamTypewriterQueueRef,
+    sessionActiveRunIdRef,
     sessionStatusEpochRef,
     busySinceRef,
     appStateRef,
@@ -242,7 +219,7 @@ export default function App() {
     sessionMessageSyncRef,
     applyTurnWindowRef,
     sessionRecoveryRef,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     applyTurnWindow,
   } = useMobileAppRefs();
   const openAlbumPickerForQrScanRef = React.useRef<(() => Promise<void>) | undefined>(undefined);
@@ -293,7 +270,6 @@ export default function App() {
     resetListInteractionState,
     guardHistoryLoad,
     anchorSessionToLatest,
-    getMaintainVisibleContentPosition,
     markFollowLatest,
     pauseFollowLatest,
     isViewportNearLatest,
@@ -322,17 +298,12 @@ export default function App() {
     publishStreamRows,
     recordStreamMessageRoles,
     renderStreamWindow,
-    resetOpenCodeStreamStores,
-  } = useOpenCodeStreamRuntime({
+    scheduleStreamRender,
+    resetAgentStreamStores,
+  } = useAgentStreamRuntime({
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     sessionIdRef,
-    streamMessageRoleRef,
-    streamMessageStoreRef,
-    streamPartStoreRef,
-    streamPendingPartEventsRef,
     streamRenderTimerRef,
-    streamTypewriterTimerRef,
-    streamTypewriterQueueRef,
     messageContentHRef,
     messageViewportHRef,
     messageScrollYRef,
@@ -340,7 +311,7 @@ export default function App() {
     forceScrollToLatestUntilRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     applyTurnWindow,
     scrollToLatest,
     streamDebug,
@@ -350,14 +321,13 @@ export default function App() {
     activeQuestionRequest,
     dismissedQuestions,
     expandedTimelineQuestions,
-    extractQuestionRequests,
     handleQuestionDismiss,
     handleQuestionReply,
     handleTimelineQuestionToggle,
     handleTimelineTabChange,
-    persistQuestionDismissal,
     questionRequests,
     questionSubmitState,
+    refreshQuestionRequestsFromStore,
     resetTimelineQuestionState,
     setDismissedQuestions,
     setQuestionRequests,
@@ -373,7 +343,7 @@ export default function App() {
     sessionStatusMap,
     sessionIdRef,
     sessionRawMapRef,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     pushConnLog,
     setStatus,
     startStream,
@@ -383,30 +353,56 @@ export default function App() {
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
   });
 
+  const handleAgentInteractionRequested = useCallback(
+    (interaction: AgentInteraction) => {
+      if (interaction.kind === "question") {
+        const request = interactionToQuestionRequest(interaction);
+        if (request && !dismissedQuestions.has(request.id)) {
+          upsertStreamQuestion(getAgentStreamStores(), request);
+          refreshQuestionRequestsFromStore(interaction.sessionId);
+        }
+        return;
+      }
+      // permission：手机端沿用自动接受策略（服务端 autoApprove），这里仅记录日志。
+      pushConnLog(
+        `interaction.permission tool=${interaction.tool} risk=${interaction.risk}`,
+      );
+    },
+    [
+      dismissedQuestions,
+      getAgentStreamStores,
+      pushConnLog,
+      refreshQuestionRequestsFromStore,
+    ],
+  );
+
+  const handleAgentInteractionResolved = useCallback(
+    (interactionId: string) => {
+      const sid = sessionIdRef.current;
+      if (sid) removeStreamQuestion(getAgentStreamStores(), sid, interactionId);
+      setQuestionRequests((prev) =>
+        prev.filter((row) => row.id !== interactionId),
+      );
+    },
+    [getAgentStreamStores, sessionIdRef, setQuestionRequests],
+  );
+
   const { startStream: startStreamManager, stopStream: stopStreamManager } =
-    useStreamManager({
+    useAgentStreamManager({
       authed,
       serverUrl,
-      repoPath,
       token,
       pairCode,
-      NO_AUTH_TOKEN,
       sessionIdRef,
       streamRef,
       streamRunIdRef,
       streamSessionRef,
+      sessionActiveRunIdRef,
       sessionStatusEpochRef,
       streamRenderTimerRef,
-      streamTypewriterTimerRef,
-      streamTypewriterQueueRef,
-      messageContentHRef,
-      messageViewportHRef,
-      messageScrollYRef,
-      messageUserScrollingRef,
-      forceScrollToLatestUntilRef,
       sessionVisibleTurnCountRef,
       sessionTotalTurnCountRef,
-      getOpenCodeStreamStores,
+      getAgentStreamStores,
       pushConnLog,
       streamDebug,
       setStreaming,
@@ -414,16 +410,14 @@ export default function App() {
       setToken,
       setSessionStatusMap,
       setStreamTodoCard,
-      setQuestionRequests,
-      setDismissedQuestions,
       applyTurnWindow,
-      scrollToLatest,
       syncSessionMessages,
       syncSessionStatus,
-      extractQuestionRequests,
       buildLiveTodoCard,
-      saveQuestionDismissal: persistQuestionDismissal,
-      dismissedQuestions,
+      onInteractionRequested: handleAgentInteractionRequested,
+      onInteractionResolved: handleAgentInteractionResolved,
+      renderStreamWindow,
+      scheduleStreamRender,
     });
   streamManagerHandleRef.current = {
     startStream: startStreamManager,
@@ -481,7 +475,7 @@ export default function App() {
   }, [sessionId]);
 
   const statusText = toText(status);
-  const notebookColors = useNotebookColors(notebookTheme);
+  const notebookColors = useNotebookColors();
   const {
     scannerOpen,
     scannerLocked,
@@ -668,7 +662,6 @@ export default function App() {
     setModelOptions,
     setModel,
     setInstalledSkills,
-    setInstalledMcpServers,
     setExtensionsLoading,
     setStatus,
     pushConnLog,
@@ -676,8 +669,6 @@ export default function App() {
     triggerRightPulse,
     stableSortSessionItems,
     isPlaceholderSessionTitle,
-    extractModelOptionsFromConfig,
-    normalizeMcpStatusMap,
     sanitizeProjectOptions,
     projectNameFromPath,
   });
@@ -723,9 +714,6 @@ export default function App() {
     recentImagesLoading,
     recentImagesLoadingMore,
     recentImagesHasNext,
-    composerPickerOpen,
-    openComposerPicker,
-    closeComposerPicker,
     actionIconAnim,
     attachmentToggleAnim,
     attachmentPanelStyle,
@@ -787,16 +775,26 @@ export default function App() {
   }, [openAlbumPickerForQrScan]);
 
   const chatWorkspaceRef = useRef<ChatWorkspaceScreenHandle>(null);
-  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'general' | 'models'>('general');
   const closeDrawer = useCallback(() => {
     chatWorkspaceRef.current?.closeDrawer();
   }, []);
-  const toggleWorkspaceSwitcher = useCallback(() => {
-    setWorkspaceSwitcherOpen((value) => !value);
+  const openSettingsDrawer = useCallback((tab: 'general' | 'models' = 'general') => {
+    setSettingsTab(tab);
+    chatWorkspaceRef.current?.openSettings();
   }, []);
+  const closeSettings = useCallback(() => {
+    chatWorkspaceRef.current?.closeSettings();
+  }, []);
+  const openDrawerFromSettings = useCallback(() => {
+    chatWorkspaceRef.current?.openDrawer('left');
+  }, []);
+  const handleToggleAutoAccept = useCallback(() => {
+    setAutoAcceptPermissions((value) => !value);
+  }, [setAutoAcceptPermissions]);
   const handleBeforeOpenNotebookDrawer = useCallback(() => {
-    closeComposerPicker();
-  }, [closeComposerPicker]);
+    // 浮层自管 open/close：其全屏 overlay 拦截点击，开启时无法触发抽屉按钮。
+  }, []);
   const handleLeftNotebookDrawerOpen = useCallback(() => {
     void InteractionManager.runAfterInteractions(() => {
       void refreshProjectsCatalog();
@@ -809,7 +807,7 @@ export default function App() {
     });
   }, [refreshInstalledExtensions]);
   const handleNotebookDrawerCloseSettled = useCallback(() => {
-    setWorkspaceSwitcherOpen(false);
+    // no-op：项目树展开态由左抽屉 controller 自管
   }, []);
 
   const { displayedTurns, showThinkingPlaceholder, exploringState } = useDisplayedTurnsWithThinking({
@@ -818,7 +816,7 @@ export default function App() {
     renderedTurns,
     sessionWorking,
     sessionId,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     streamDebug,
   });
 
@@ -963,7 +961,6 @@ export default function App() {
     model,
     composerAgent,
     autoAcceptPermissions,
-    notebookTheme,
     setLoaded,
     setStatus,
     setServerUrl,
@@ -977,7 +974,6 @@ export default function App() {
     setSessionId,
     setComposerAgent,
     setAutoAcceptPermissions,
-    setNotebookTheme,
     setMessages,
     setRenderedTurns,
     setStartupSessionHydrating,
@@ -1023,7 +1019,6 @@ export default function App() {
     setSessionSwitchingTo,
     ingestStreamRows,
     replaceStreamRows,
-    streamTypewriterQueueRef,
     recordStreamMessageRoles,
     applyTurnWindow,
     syncSessionStatus,
@@ -1046,7 +1041,7 @@ export default function App() {
     renderRegressionRetryRef,
     sessionMessageSyncRef,
     stopStream,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     bumpOptimisticVersion,
     setActiveSession,
     setToken,
@@ -1076,7 +1071,7 @@ export default function App() {
     stableSortSessionItems,
     projectNameFromPath,
     stopStream,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     bumpOptimisticVersion,
     refreshModelCatalog,
     refreshSessionsFromServer,
@@ -1106,10 +1101,10 @@ export default function App() {
   });
   const {
     currentWorkspaceName,
-    availableProjects,
-    currentWorkspaceSessions,
-    leftDrawerSessionRows,
-    handleDrawerProjectSelect,
+    projectTrees,
+    searchSessionRows,
+    isSessionListEmpty,
+    handlePressProject,
     handleDrawerSessionSelect,
     handleNewSession,
     handleShowMoreSessions,
@@ -1119,9 +1114,9 @@ export default function App() {
     projectsRefCurrent: projectsRef.current,
     repoPath,
     sessions,
+    sessionCacheRef,
     sessionSearch,
     sessionStatusMap,
-    sessionDisplayedCount,
     sessionId,
     messages,
     sessionRawMapRef,
@@ -1134,13 +1129,11 @@ export default function App() {
     formatSessionTimestamp,
     stopStream,
     closeDrawer,
-    setWorkspaceSwitcherOpen,
     setMessages,
     setRenderedTurns,
     setSessionNextCursor,
     setSessionHasMore,
     setSessionSearch,
-    setSessionDisplayedCount,
     setSessionSwitchingTo,
     onNewSession,
     onSwitchProject,
@@ -1172,10 +1165,10 @@ export default function App() {
     composerAgent,
     autoAcceptPermissions,
     imageAttachments,
-    imageSendTimeoutMs: IMAGE_SEND_TIMEOUT_MS,
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     sessionIdRef,
+    sessionActiveRunIdRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
     pendingPromptSessionRef,
@@ -1206,6 +1199,23 @@ export default function App() {
       modeOptions: COMPOSER_MODE_OPTIONS,
     },
   );
+  const { thinkingLevel, setThinkingLevel } = useMobileThinkingLevel({
+    sessionId,
+    serverUrl,
+    token,
+  });
+  // 切模型时同步到服务端已有会话（agentClient.setModel 全工程首次接线）。
+  // ref="provider/modelId" → setModel(sessionId, provider, modelId)。
+  const handlePersistSessionModel = useCallback(async (sid: string, modelRef: string) => {
+    const slash = modelRef.indexOf("/");
+    if (slash <= 0 || !serverUrl) return;
+    try {
+      await createMobileAgentClient({ baseUrl: serverUrl, token })
+        .setModel(sid, modelRef.slice(0, slash), modelRef.slice(slash + 1));
+    } catch {
+      // 静默：本地已切换，服务端同步失败不阻塞 UI
+    }
+  }, [serverUrl, token]);
   const {
     handleAbortPrompt,
     handleCaptureCamera,
@@ -1221,8 +1231,9 @@ export default function App() {
     handleSendPrompt,
     handleThinkCardToggle,
   } = useChatUiActions({
+    sessionId,
+    onPersistSessionModel: handlePersistSessionModel,
     inputDockHeight,
-    closeComposerPicker,
     copyMessageText,
     onSendPrompt,
     onAbort,
@@ -1277,10 +1288,6 @@ export default function App() {
     styles,
     thinkingPulse
   });
-  const maintainVisibleContentPosition = useMemo(
-    () => getMaintainVisibleContentPosition(loadingOlder),
-    [followLatest, getMaintainVisibleContentPosition, listRevealReady, loadingOlder]
-  );
   const {
     handleWorkspaceContentSizeChange,
     handleWorkspaceListLayout,
@@ -1291,12 +1298,15 @@ export default function App() {
     loadingOlder,
     onMessageListScroll,
   });
+  // 模型开关已并入设置「模型」Tab；选择器「管理模型开关」跳转到该 Tab。
   const {
     albumPickerProps,
-    composerPickerProps,
     composerProps,
     handleClosePreviewImage,
   } = useChatWorkspacePanelProps({
+    onOpenModelManager: () => {
+      openSettingsDrawer('models');
+    },
     actionIconAnim,
     albumImages,
     albumImagesLoading,
@@ -1310,14 +1320,11 @@ export default function App() {
     attachmentPanelStyle,
     attachmentPanelVisible,
     attachmentToggleAnim,
-    autoAcceptPermissions,
     canAbortNow,
     canSendNow,
     closeAlbumPicker,
-    closeComposerPicker,
     composerAgent,
     composerModeOptions,
-    composerPickerOpen,
     confirmAlbumSelection,
     handleAbortPrompt,
     handleCaptureCamera,
@@ -1342,7 +1349,6 @@ export default function App() {
     model,
     modelOptions,
     notebookColors,
-    openComposerPicker,
     prompt,
     recentImages,
     recentImagesHasNext,
@@ -1351,44 +1357,42 @@ export default function App() {
     recentScrollerHeight,
     selectedMediaAlbumId,
     selectMediaAlbum,
-    setAutoAcceptPermissions,
     setPreviewImage,
     slashActiveIndex,
     slashOpen,
     slashSuggestions,
     styles,
+    thinkingLevel,
+    onThinkingLevelChange: setThinkingLevel,
     toggleAlbumImage,
   });
-  const { leftDrawer, rightDrawer } = useNotebookDrawerRenderers({
-    styles,
-    notebookColors,
-    leftDrawerPulse,
-    rightDrawerPulse,
+  const { leftDrawer, rightDrawer: settingsContent } = useNotebookDrawerRenderers({
     currentWorkspaceName,
-    workspaceSwitcherOpen,
-    availableProjects,
-    repoPath,
     sessionSearch,
-    leftDrawerSessionRows,
-    showMoreSessions:
-      !sessionSearch.trim() &&
-      currentWorkspaceSessions.length > sessionDisplayedCount,
-    isSessionListEmpty: currentWorkspaceSessions.length === 0,
+    projectTrees,
+    searchSessionRows,
+    isSessionListEmpty,
     serverUrl,
     token,
-    noAuthToken: NO_AUTH_TOKEN,
-    pairCode,
-    extensionsLoading,
-    visibleQuickSkillRefs,
-    visibleQuickMcpRefs,
-    onToggleWorkspaceSwitcher: toggleWorkspaceSwitcher,
-    onNewSession: handleNewSession,
-    onSelectProject: handleDrawerProjectSelect,
+    settingsTab,
+    onPressProject: handlePressProject,
+    onNewSession: () => {
+      closeSettings();
+      handleNewSession();
+    },
     onChangeSessionSearch,
-    onSelectSession: handleDrawerSessionSelect,
+    onSelectSession: (sessionId, worktree, active) => {
+      closeSettings();
+      handleDrawerSessionSelect(sessionId, worktree, active);
+    },
     onShowMoreSessions: handleShowMoreSessions,
-    onInsertQuickReference: insertQuickReference,
+    onOpenSettings: () => openSettingsDrawer('general'),
+    onCloseSettings: closeSettings,
+    onOpenDrawerFromSettings: openDrawerFromSettings,
     onResetAuth,
+    autoAcceptPermissions,
+    onToggleAutoAccept: handleToggleAutoAccept,
+    onModelsChanged: refreshModelCatalog,
   });
 
   const launchOverlay = (
@@ -1412,8 +1416,12 @@ export default function App() {
       onOpenLeftDrawer={handleLeftNotebookDrawerOpen}
       onOpenRightDrawer={handleRightNotebookDrawerOpen}
       onDrawerCloseSettled={handleNotebookDrawerCloseSettled}
+      onNewSession={() => {
+        closeSettings();
+        handleNewSession();
+      }}
       leftDrawer={leftDrawer}
-      rightDrawer={rightDrawer}
+      settingsContent={settingsContent}
       showNotebookSessionTitle={showNotebookSessionTitle}
       currentSessionTitle={currentSessionTitle}
       showStreamTopGlow={showStreamTopGlow}
@@ -1445,7 +1453,6 @@ export default function App() {
       historyProgressWidth={historyProgressWidth}
       listRevealReady={listRevealReady}
       showLatestJump={showLatestJump}
-      maintainVisibleContentPosition={maintainVisibleContentPosition}
       onJumpToLatest={jumpToLatest}
       suppressFloatingDocks={suppressFloatingDocks || loadingOlder}
       latestTodoCard={latestTodoCard}
@@ -1470,7 +1477,6 @@ export default function App() {
       composerProps={composerProps}
       previewImage={previewImage}
       onClosePreviewImage={handleClosePreviewImage}
-      composerPickerProps={composerPickerProps}
     />
   );
 
@@ -1482,53 +1488,53 @@ export default function App() {
     <SafeAreaProvider>
       <KeyboardProvider>
         <MobileAppRouter
-          albumPickerOverlay={albumPickerOverlay}
-          appReady={appReady}
-          authed={authed}
-          backgroundColor={notebookColors.shell}
-          busy={busy}
-          CameraViewCompat={CameraViewCompat}
-          chatScreen={chatScreen}
-          connectProgressScaleX={connectProgressScaleX}
-          connectingDiscoverId={connectingDiscoverId}
-          discoverDeviceRows={discoverDeviceRows}
-          discoverOpen={discoverOpen}
-          discoveringUi={discoveringUi}
-          fontsReady={fontsLoaded}
-          fontFamily={FONT_DISPLAY_SERIF}
-          gestureRootStyle={styles.gestureRoot}
-          launchOverlay={launchOverlay}
-          lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
-          onAuthSubmit={() => void onAuthSubmit()}
-          onBarcodeScanned={onBarcodeScanned}
-          onCancelScanner={onCloseScanner}
-          onChangePairCode={setPairCode}
-          onChangeServerUrl={onChangeServerUrl}
-          onCloseDiscover={onCloseDiscover}
-          onConnectDiscoverPress={onConnectDiscoverPress}
-          onMountScannerError={onScannerMountError}
-          onOpenScanner={onOpenScanner}
-          onPairPromptCancel={cancelPairPrompt}
-          onPairPromptChange={setPairPromptValue}
-          onPairPromptConfirm={confirmPairPrompt}
-          onPickQrFromAlbum={() => void onPickQrFromAlbum()}
-          onRescanDiscover={() => void startDiscover()}
-          onRescanScanner={onScannerRescan}
-          onResetAuthStatus={() => setStatus("准备就绪")}
-          onScannerReady={onScannerReady}
-          pairCode={pairCode}
-          pairPromptHostPort={pairPromptHostPort}
-          pairPromptOpen={pairPromptOpen}
-          pairPromptValue={pairPromptValue}
-          safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
-          scanHitCount={scanHitCount}
-          scannerLocked={scannerLocked}
-          scannerOpen={scannerOpen}
-          scannerReady={scannerReady}
-          serverUrlInput={serverUrlInput}
-          startupStyles={styles}
-          statusText={statusText}
-        />
+            albumPickerOverlay={albumPickerOverlay}
+            appReady={appReady}
+            authed={authed}
+            backgroundColor={notebookColors.shell}
+            busy={busy}
+            CameraViewCompat={CameraViewCompat}
+            chatScreen={chatScreen}
+            connectProgressScaleX={connectProgressScaleX}
+            connectingDiscoverId={connectingDiscoverId}
+            discoverDeviceRows={discoverDeviceRows}
+            discoverOpen={discoverOpen}
+            discoveringUi={discoveringUi}
+            fontsReady={fontsLoaded}
+            fontFamily={FONT_DISPLAY_SERIF}
+            gestureRootStyle={styles.gestureRoot}
+            launchOverlay={launchOverlay}
+            lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
+            onAuthSubmit={() => void onAuthSubmit()}
+            onBarcodeScanned={onBarcodeScanned}
+            onCancelScanner={onCloseScanner}
+            onChangePairCode={setPairCode}
+            onChangeServerUrl={onChangeServerUrl}
+            onCloseDiscover={onCloseDiscover}
+            onConnectDiscoverPress={onConnectDiscoverPress}
+            onMountScannerError={onScannerMountError}
+            onOpenScanner={onOpenScanner}
+            onPairPromptCancel={cancelPairPrompt}
+            onPairPromptChange={setPairPromptValue}
+            onPairPromptConfirm={confirmPairPrompt}
+            onPickQrFromAlbum={() => void onPickQrFromAlbum()}
+            onRescanDiscover={() => void startDiscover()}
+            onRescanScanner={onScannerRescan}
+            onResetAuthStatus={() => setStatus("准备就绪")}
+            onScannerReady={onScannerReady}
+            pairCode={pairCode}
+            pairPromptHostPort={pairPromptHostPort}
+            pairPromptOpen={pairPromptOpen}
+            pairPromptValue={pairPromptValue}
+            safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
+            scanHitCount={scanHitCount}
+            scannerLocked={scannerLocked}
+            scannerOpen={scannerOpen}
+            scannerReady={scannerReady}
+            serverUrlInput={serverUrlInput}
+            startupStyles={styles}
+            statusText={statusText}
+          />
       </KeyboardProvider>
     </SafeAreaProvider>
   );

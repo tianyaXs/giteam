@@ -6,7 +6,7 @@ export const cliRoot = join(__dirname, '..');
 export const repositoryUrl = 'git+https://github.com/tianyaXs/giteam.git';
 export const homepageUrl = 'https://github.com/tianyaXs/giteam#readme';
 export const bugsUrl = 'https://github.com/tianyaXs/giteam/issues';
-export const packageKeywords = ['giteam', 'cli', 'tauri', 'opencode', 'lan'];
+export const packageKeywords = ['giteam', 'cli', 'tauri', 'agent', 'lan'];
 export const packageAuthor = 'giteam Contributors';
 
 export const platformMatrix = {

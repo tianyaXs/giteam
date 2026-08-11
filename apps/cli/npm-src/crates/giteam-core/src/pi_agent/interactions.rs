@@ -48,14 +48,20 @@ pub enum InteractionRisk {
     Read,
     Write,
     Execute,
+    /// 网络访问（web_fetch/web_search）：抓取外部数据进 context，首次审批、
+    /// 按 `always_rule_key` 域名/后端粒度放行（见 `.giteam/permissions.json`）。
+    Network,
 }
 
 impl InteractionRisk {
     #[must_use]
     pub fn for_tool(tool: &str) -> Self {
         match tool {
-            "read" | "grep" | "find" | "ls" => Self::Read,
-            "bash" => Self::Execute,
+            // task：启动子 session 本身不写盘（子内写操作仍走 Approval）。
+            "read" | "grep" | "find" | "ls" | "bash_output" | "task" | "todowrite"
+            | "question" => Self::Read,
+            "bash" | "kill_shell" => Self::Execute,
+            "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,
         }
     }
@@ -71,6 +77,7 @@ impl InteractionRisk {
             Self::Read => "read",
             Self::Write => "write",
             Self::Execute => "execute",
+            Self::Network => "network",
         }
     }
 }
@@ -80,14 +87,35 @@ impl InteractionRisk {
 /// 否则同任务里每次不同命令/路径都会反复弹窗。
 #[must_use]
 pub fn always_rule_key(tool: &str, input: &Value) -> String {
-    let target = match tool {
-        "bash" => input.get("command").and_then(Value::as_str),
-        _ => input.get("path").and_then(Value::as_str),
+    let target: Option<String> = match tool {
+        "bash" => input.get("command").and_then(Value::as_str).map(str::to_string),
+        // web_fetch 按域名粒度：同站点一次「总是允许」覆盖后续页面。
+        "web_fetch" => input.get("url").and_then(Value::as_str).and_then(url_host),
+        // web_search 按后端粒度：搜索无固定目标，同一后端一次放行后续查询。
+        "web_search" => Some(web_search_backend()),
+        // browser_use 按域名粒度：navigate 有 url 时同站点一次放行后续操作；
+        // click/type 等无 url 的操作退化为工具名粒度（同会话内 always 放行）。
+        "browser_use" => input.get("url").and_then(Value::as_str).and_then(url_host),
+        _ => input.get("path").and_then(Value::as_str).map(str::to_string),
     };
-    match target {
-        Some(target) if !target.is_empty() => format!("{tool}:{target}"),
-        _ => tool.to_string(),
+    match target.filter(|target| !target.is_empty()) {
+        Some(target) => format!("{tool}:{target}"),
+        None => tool.to_string(),
     }
+}
+
+/// 当前 web_search 后端（默认 duckduckgo；可经 `GITEAM_WEB_SEARCH_BACKEND` 覆盖）。
+#[must_use]
+pub fn web_search_backend() -> String {
+    std::env::var("GITEAM_WEB_SEARCH_BACKEND").unwrap_or_else(|_| "duckduckgo".to_string())
+}
+
+/// 极简 URL host 提取（审批键用；只取主机名小写化，忽略端口/路径）。
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let host = after_scheme.split(['/', ':', '?', '#']).next()?;
+    let host = host.trim();
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 #[derive(Default)]
@@ -106,6 +134,8 @@ pub struct InteractionHub {
     policy: Mutex<ApprovalPolicy>,
     /// 本会话被 read 工具读取过的文件（canonicalize 后），EditGuardTool 据此放行 edit。
     read_files: Mutex<HashSet<PathBuf>>,
+    /// 会话所在仓库（绑定后加载/写入 `.giteam/permissions.json`）；None 时持久化规则不可用。
+    repo_path: Mutex<Option<PathBuf>>,
 }
 
 impl InteractionHub {
@@ -116,6 +146,7 @@ impl InteractionHub {
             run: Mutex::new(None),
             policy: Mutex::new(ApprovalPolicy::default()),
             read_files: Mutex::new(HashSet::new()),
+            repo_path: Mutex::new(None),
         }
     }
 
@@ -166,6 +197,34 @@ impl InteractionHub {
             if !policy.always_rules.contains(&tool.to_string()) {
                 policy.always_rules.push(tool.to_string());
             }
+        }
+    }
+
+    /// 绑定会话所在仓库并加载项目级权限规则（`.giteam/permissions.json`）。
+    /// service 创建/恢复 hub 后调用一次，使持久化规则随会话生效（跨重启）。
+    pub fn set_repo_path(&self, repo_path: PathBuf) {
+        let rules = super::permissions::load_allow_rules(&repo_path);
+        if let Ok(mut policy) = self.policy.lock() {
+            for rule in rules {
+                if !policy.always_rules.contains(&rule) {
+                    policy.always_rules.push(rule);
+                }
+            }
+        }
+        if let Ok(mut path) = self.repo_path.lock() {
+            *path = Some(repo_path);
+        }
+    }
+
+    /// 把「总是允许」的细粒度规则持久化到项目文件（跨会话/重启再生效）。
+    /// 持久化失败仅记录、不影响本次执行（审批已通过，下次失败再弹窗）。
+    pub fn persist_allow(&self, tool: &str, input: &Value) {
+        let key = always_rule_key(tool, input);
+        let Some(repo_path) = self.repo_path.lock().ok().and_then(|path| path.clone()) else {
+            return;
+        };
+        if let Err(error) = super::permissions::append_allow_rule(&repo_path, &key) {
+            eprintln!("giteam: persist allow rule failed ({key}): {error}");
         }
     }
 
@@ -638,6 +697,19 @@ mod tests {
             "write:/tmp/a.txt"
         );
         assert_eq!(always_rule_key("webfetch", &serde_json::json!({})), "webfetch");
+        // web_fetch 细粒度按域名（忽略端口/路径）。
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({"url": "https://doc.rust-lang.org/book/"})),
+            "web_fetch:doc.rust-lang.org"
+        );
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({"url": "http://EXAMPLE.com:8080/x?q=1"})),
+            "web_fetch:example.com"
+        );
+        assert_eq!(
+            always_rule_key("web_fetch", &serde_json::json!({})),
+            "web_fetch"
+        );
     }
 
     #[test]
@@ -654,8 +726,13 @@ mod tests {
     fn risk_classification_defaults_fail_closed() {
         assert!(!InteractionRisk::for_tool("read").requires_approval());
         assert!(!InteractionRisk::for_tool("grep").requires_approval());
+        assert!(!InteractionRisk::for_tool("task").requires_approval());
+        assert_eq!(InteractionRisk::for_tool("task"), InteractionRisk::Read);
         assert!(InteractionRisk::for_tool("write").requires_approval());
         assert_eq!(InteractionRisk::for_tool("bash"), InteractionRisk::Execute);
+        assert_eq!(InteractionRisk::for_tool("web_fetch"), InteractionRisk::Network);
+        assert_eq!(InteractionRisk::for_tool("web_search"), InteractionRisk::Network);
+        assert!(InteractionRisk::for_tool("web_fetch").requires_approval());
         assert!(InteractionRisk::for_tool("unknown_tool").requires_approval());
     }
 

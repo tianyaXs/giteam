@@ -1,7 +1,7 @@
 import { useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { getActiveSessionSwitchTrace, markSessionSwitchPerfForSid } from '../chat/sessionSwitchPerf';
 import { markMessageSendPerfForSession } from './messageSendPerf';
-import { getMessages } from '../../api/controlApi';
+import { getAgentMessageRows } from '../../api/agent/bridge';
 import { toText } from '../../lib/text';
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
 import type { SessionStatusInfo } from '../../types';
@@ -86,7 +86,6 @@ export function useSessionMessageSync<Cell>(params: {
   pauseFollowLatest?: () => void;
   isViewportNearLatest?: () => boolean;
   restoreSessionViewport?: (sessionId: string) => void;
-  streamTypewriterQueueRef?: MutableRefObject<Record<string, unknown>>;
   streamDebug?: (label: string, payload?: Record<string, unknown>) => void;
 }) {
   const {
@@ -124,7 +123,6 @@ export function useSessionMessageSync<Cell>(params: {
     setStatus,
     setStreaming,
     streamDebug,
-    streamTypewriterQueueRef,
     syncSessionStatus,
     token,
     visibleCellCountRef
@@ -246,14 +244,11 @@ export function useSessionMessageSync<Cell>(params: {
           const res = await fetchWithRetry({
             fetchLimit,
             hasBeforeCursor: !!before,
-            fetchPage: (limit) =>
-              getMessages({
+            fetchPage: () =>
+              getAgentMessageRows({
                 baseUrl: serverUrl,
                 token,
-                repoPath,
-                sessionId: targetSessionId,
-                limit,
-                before: before || undefined
+                sessionId: targetSessionId
               }),
             onRetry: ({ limit, error }) => {
               pushConnLog(`GET messages retry sid=${targetSessionId} limit=${limit}${before ? ' before=cursor' : ''} cause=${String(error)}`, 'error');
@@ -272,13 +267,6 @@ export function useSessionMessageSync<Cell>(params: {
           }
           const prevRaw = sessionRawMapRef.current[targetSessionId] || [];
           const authoritativeTail = !before && opts?.reason === 'tailOnly';
-          if (authoritativeTail && streamTypewriterQueueRef?.current) {
-            const prefix = `${targetSessionId}:`;
-            const queue = streamTypewriterQueueRef.current;
-            for (const key of Object.keys(queue)) {
-              if (key.startsWith(prefix)) delete queue[key];
-            }
-          }
           let merged: any[];
           if (authoritativeTail) {
             if (prevRaw.length > 0) {
@@ -693,7 +681,7 @@ export function useSessionMessageSync<Cell>(params: {
             if (!lastTurn) return false;
             return lastTurn.items.some((item: any) => {
               if (item.kind === 'think') return !!toText(item.card?.text).trim();
-              if (item.kind === 'context' || item.kind === 'event') return true;
+              if (item.kind === 'context' || item.kind === 'event' || item.kind === 'toolBatch') return true;
               if (item.kind === 'chat' && item.message?.role === 'assistant') {
                 return !!toText(item.message.text).trim();
               }
@@ -822,7 +810,6 @@ export function useSessionMessageSync<Cell>(params: {
     displayedTurnCellsRef,
     ingestStreamRows,
     replaceStreamRows,
-    streamTypewriterQueueRef,
     initialSessionLimit,
     loadingOlder,
     olderMessageFetchLimit,

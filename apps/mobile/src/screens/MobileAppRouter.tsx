@@ -175,7 +175,7 @@ export function MobileAppRouter(props: {
 
   return (
     <GestureHandlerRootView style={gestureRootStyle}>
-      <SafeAreaView style={safeStyle}>
+      <SafeAreaView style={safeStyle} edges={['top', 'left', 'right']}>
         <AppRenderBoundary name="chat-screen" styles={startupStyles}>
           {chatScreen}
         </AppRenderBoundary>

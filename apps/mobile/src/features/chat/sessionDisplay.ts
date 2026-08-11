@@ -13,6 +13,23 @@ export function summarizePreview(messages: MobileChatMessage[]): string {
   return user ? user.text.slice(0, 42) : '新会话';
 }
 
+/** 会话列表预览净化：去掉 system 注入块、markdown 语法与多余空白。 */
+export function cleanSessionPreview(input: string): string {
+  let text = toText(input);
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+  text = text.replace(/<\/?system[^>]*>/g, '');
+  text = text.replace(/```[\s\S]*?```/g, ' ');
+  text = text.replace(/`([^`]*)`/g, '$1');
+  text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');
+  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+  text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  text = text.replace(/\*\*([^*]*)\*\*/g, '$1');
+  text = text.replace(/\*([^*]*)\*/g, '$1');
+  text = text.replace(/^\s*[-*+]\s+/gm, '');
+  text = text.replace(/^\s*>\s?/gm, '');
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export function isPlaceholderSessionTitle(input: string): boolean {
   const text = toText(input).trim();
   return !text || text === '新会话' || text === '新建线程' || text === 'New session' || text === 'newsession';

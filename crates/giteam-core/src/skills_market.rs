@@ -1,5 +1,5 @@
-//! skills.sh / SkillsMP HTTP helpers（与 OpenCode 运行时无关）。
-//! 从 `opencode.rs` 迁出，供桌面 pi agent 与桌面 RPC 复用。
+//! skills.sh / SkillsMP HTTP helpers。
+//! 供桌面 pi agent 的 skill 市场功能使用。
 
 use super::command_runner;
 use serde_json::Value;

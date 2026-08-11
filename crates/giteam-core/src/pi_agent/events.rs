@@ -144,6 +144,67 @@ pub enum AgentEvent {
         #[serde(default)]
         automatic: bool,
     },
+    /// 子 agent 已创建并开始跑（父 stream；勿仅靠 tool.progress 文本）。
+    #[serde(rename = "subagent.started")]
+    SubagentStarted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        #[serde(rename = "childRunId")]
+        child_run_id: String,
+        #[serde(rename = "subagentType")]
+        subagent_type: String,
+        description: String,
+    },
+    /// 子 agent 进度（工具调用计数等）。
+    #[serde(rename = "subagent.progress")]
+    SubagentProgress {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "toolCount")]
+        tool_count: u32,
+        #[serde(rename = "currentToolName")]
+        current_tool_name: String,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    /// 子 session 原始事件投影到父 stream（递归用 Box）。
+    #[serde(rename = "subagent.childEvent")]
+    SubagentChildEvent {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        event: Box<AgentEvent>,
+    },
+    #[serde(rename = "subagent.completed")]
+    SubagentCompleted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        summary: String,
+        #[serde(rename = "toolCount")]
+        tool_count: u32,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    #[serde(rename = "subagent.failed")]
+    SubagentFailed {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        error: String,
+    },
+    #[serde(rename = "subagent.aborted")]
+    SubagentAborted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+    },
 }
 
 pub type EventSubscriberKey = (String, String);

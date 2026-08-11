@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Giteam 原生记忆文件名（优先）。
 const GITEAM_MEMORY_FILE: &str = "GITEAM.md";
-/// 业界通用回退文件名（codex / opencode AGENTS.md 约定）。
+/// 业界通用回退文件名（AGENTS.md 约定）。
 const AGENTS_MEMORY_FILE: &str = "AGENTS.md";
 
 /// 从 `repo_path` 起向上逐级目录查找项目记忆文件：

@@ -1,62 +1,19 @@
-import { useEffect, useState } from 'react';
-import { getOpencodeCommands } from '../../api/controlApi';
-import { toText } from '../../lib/text';
-
-export type OpencodeSlashCommand = {
+export type AgentSlashCommand = {
   id: string;
   trigger: string;
   title: string;
   description?: string;
-  source: 'builtin' | 'command' | 'skill' | 'mcp';
+  source: 'builtin' | 'command' | 'skill';
 };
 
-export function useSlashCommandCatalog(params: {
+/**
+ * pi_agent 控制面暂未暴露 slash command 列表路由；远端目录恒为空，
+ * 仅保留 hook 形态以维持调用方结构，本地内置命令由 useComposerUiController 提供。
+ */
+export function useSlashCommandCatalog(_params: {
   repoPath: string;
   serverUrl: string;
   token: string;
-}) {
-  const { repoPath, serverUrl, token } = params;
-  const [slashCommands, setSlashCommands] = useState<OpencodeSlashCommand[]>([]);
-
-  useEffect(() => {
-    const repo = toText(repoPath).trim();
-    if (!repo || !serverUrl || !token) {
-      setSlashCommands([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const rows = await getOpencodeCommands({ baseUrl: serverUrl, token, repoPath: repo });
-        if (cancelled) return;
-        const commands: OpencodeSlashCommand[] = (Array.isArray(rows) ? rows : [])
-          .map((item: any): OpencodeSlashCommand | null => {
-            const name = String(item?.name || item?.command || item?.id || '').replace(/^\//, '').trim();
-            if (!name) return null;
-            const sourceRaw = String(item?.source || item?.type || 'command').toLowerCase();
-            const source: OpencodeSlashCommand['source'] = sourceRaw.includes('skill')
-              ? 'skill'
-              : sourceRaw.includes('mcp')
-                ? 'mcp'
-                : 'command';
-            return {
-              id: `opencode-${source}-${name}`,
-              trigger: name,
-              title: String(item?.title || item?.description || name),
-              description: String(item?.description || ''),
-              source
-            };
-          })
-          .filter(Boolean) as OpencodeSlashCommand[];
-        setSlashCommands(commands);
-      } catch {
-        setSlashCommands([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [repoPath, serverUrl, token]);
-
-  return slashCommands;
+}): AgentSlashCommand[] {
+  return [];
 }

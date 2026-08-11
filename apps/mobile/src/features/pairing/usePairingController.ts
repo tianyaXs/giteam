@@ -270,11 +270,6 @@ export function usePairingController(params: UsePairingControllerParams) {
   );
 
   const onOpenScanner = useCallback(async () => {
-    if (Platform.OS === 'web') {
-      pushConnLog('open scanner on web blocked');
-      setStatus('Web 端暂不支持扫码，请在手机端使用扫码连接');
-      return;
-    }
     if (!cameraPermission?.granted) {
       const req = await requestCameraPermission();
       if (!req.granted) {

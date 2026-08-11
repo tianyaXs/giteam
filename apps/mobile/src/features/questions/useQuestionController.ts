@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getPendingQuestions, rejectQuestion, replyQuestion } from '../../api/controlApi';
+import { createMobileAgentClient } from '../../api/agent/client';
+import { interactionToQuestionRequest } from '../../api/agent/bridge';
 import { toText } from '../../lib/text';
 import { loadQuestionDismissals, saveQuestionDismissal } from '../../storage/questionDismissals';
-import type { OpenCodeStreamStoreRefs } from '../messages/opencodeStore';
-import { upsertStreamQuestion } from '../messages/opencodeStore';
+import type { AgentStreamStoreRefs } from '../messages/agentStreamStore';
+import { upsertStreamQuestion } from '../messages/agentStreamStore';
 import type { QuestionRequest, SessionStatusInfo } from '../../types';
 
 function sameQuestionIdSet(a: QuestionRequest[], b: QuestionRequest[]) {
@@ -39,10 +40,10 @@ type UseQuestionControllerParams = {
   sessionStatusMap: Record<string, SessionStatusInfo>;
   sessionIdRef: React.MutableRefObject<string>;
   sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
-  getOpenCodeStreamStores: () => OpenCodeStreamStoreRefs;
+  getAgentStreamStores: () => AgentStreamStoreRefs;
   pushConnLog: (message: string, level?: 'error' | 'info') => void;
   setStatus: (value: string | ((prev: string) => string)) => void;
-  startStream: (targetSessionId: string) => void;
+  startStream: (targetSessionId: string, runId?: string) => void;
   syncSessionMessages: (
     targetSessionId: string,
     opts?: { limit?: number; fetchLimit?: number; loadingOlder?: boolean; before?: string; anchorStableKey?: string; forceVisibleCount?: number }
@@ -62,7 +63,7 @@ export function useQuestionController({
   sessionStatusMap,
   sessionIdRef,
   sessionRawMapRef,
-  getOpenCodeStreamStores,
+  getAgentStreamStores,
   pushConnLog,
   setStatus,
   startStream,
@@ -129,7 +130,7 @@ export function useQuestionController({
 
   const refreshQuestionRequestsFromStore = useCallback((targetSessionId: string) => {
     const sid = toText(targetSessionId).trim();
-    const live = (getOpenCodeStreamStores().question.current[sid] || []) as QuestionRequest[];
+    const live = (getAgentStreamStores().question.current[sid] || []) as QuestionRequest[];
     const fromParts = extractQuestionRequests(sessionRawMapRef.current[sid] || [], sid);
     const merged = new Map<string, QuestionRequest>();
     [...fromParts, ...live].forEach((req) => {
@@ -138,7 +139,7 @@ export function useQuestionController({
     });
     const nextRows = [...merged.values()];
     setQuestionRequests((prev) => (sameQuestionIdSet(prev, nextRows) ? prev : nextRows));
-  }, [dismissedQuestions, extractQuestionRequests, getOpenCodeStreamStores, sessionRawMapRef]);
+  }, [dismissedQuestions, extractQuestionRequests, getAgentStreamStores, sessionRawMapRef]);
 
   const dismissQuestionRequest = useCallback((requestId: string, targetSessionId: string = sessionIdRef.current) => {
     const id = toText(requestId).trim();
@@ -169,32 +170,21 @@ export function useQuestionController({
       return;
     }
     const run = (async () => {
-      const shouldFullRefresh = Date.now() - (questionListLastFullRefreshRef.current[sid] || 0) > 15000;
       try {
-        const requests = await getPendingQuestions({
-          baseUrl: serverUrl,
-          token,
-          repoPath,
-          sessionId: sid,
-          cachedOnly: !shouldFullRefresh
-        });
-        if (shouldFullRefresh) {
-          questionListLastFullRefreshRef.current[sid] = Date.now();
-        }
+        const interactions = await createMobileAgentClient({ baseUrl: serverUrl, token }).listInteractions(sid);
+        const requests = interactions
+          .map((interaction) => interactionToQuestionRequest(interaction))
+          .filter(Boolean) as QuestionRequest[];
+        questionListLastFullRefreshRef.current[sid] = Date.now();
         if (requests.length > 0) {
-          pushConnLog(`question.list ok${shouldFullRefresh ? '' : ' cached'} count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
+          pushConnLog(`interaction.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
         }
         delete questionListBackoffRef.current[sid];
-        requests.forEach((req) => upsertStreamQuestion(getOpenCodeStreamStores(), req));
+        requests.forEach((req) => upsertStreamQuestion(getAgentStreamStores(), req));
         const deduped = new Map<string, QuestionRequest>();
         for (const req of requests) {
-          if (req.sessionID !== sid || dismissedQuestions.has(req.id)) continue;
-          const tool: { messageID?: string; callID?: string } = req.tool || {};
-          const key = tool.callID || tool.messageID || req.id;
-          const existing = deduped.get(key);
-          if (!existing || (req.id.startsWith('que_') && !existing.id.startsWith('que_'))) {
-            deduped.set(key, req);
-          }
+          if (dismissedQuestions.has(req.id)) continue;
+          deduped.set(req.id, req);
         }
         const liveIds = new Set([...deduped.values()].map((req) => req.id));
         refreshQuestionRequestsFromStore(sid);
@@ -206,7 +196,7 @@ export function useQuestionController({
           return Object.keys(next).length === Object.keys(prev).length ? prev : next;
         });
       } catch (e) {
-        pushConnLog(`question.list error ${String(e)}`, 'error');
+        pushConnLog(`interaction.list error ${String(e)}`, 'error');
         const failures = Math.min(5, (questionListBackoffRef.current[sid]?.failures || 0) + 1);
         questionListBackoffRef.current[sid] = {
           failures,
@@ -225,7 +215,7 @@ export function useQuestionController({
     }
   }, [
     dismissedQuestions,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     pushConnLog,
     refreshQuestionRequestsFromStore,
     repoPath,
@@ -260,16 +250,11 @@ export function useQuestionController({
     const sid = toText(sessionIdRef.current).trim();
     setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitting' } }));
     setStatus('正在提交答案...');
-    void replyQuestion({
-      baseUrl: serverUrl,
-      token,
-      repoPath,
-      requestId,
-      answers
-    })
+    void createMobileAgentClient({ baseUrl: serverUrl, token })
+      .replyInteraction(requestId, { decision: 'answers', answers })
       .then(() => {
         setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'submitted' } }));
-        pushConnLog(`question.reply ok ${requestId}`);
+        pushConnLog(`interaction.reply ok ${requestId}`);
         setStatus('答案已提交');
         setTimeout(() => {
           setQuestionRequests((prev) => prev.filter((row) => row.id !== requestId));
@@ -285,7 +270,7 @@ export function useQuestionController({
         }
       })
       .catch((e) => {
-        pushConnLog(`question.reply error ${requestId} ${String(e)}`, 'error');
+        pushConnLog(`interaction.reply error ${requestId} ${String(e)}`, 'error');
         setStatus(`问题提交失败: ${String(e)}`);
         setQuestionSubmitState((prev) => ({ ...prev, [requestId]: { status: 'failed', error: String(e) } }));
       });
@@ -307,13 +292,10 @@ export function useQuestionController({
   const handleQuestionDismiss = useCallback((requestId: string) => {
     setQuestionRequests((prev) => prev.filter((r) => r.id !== requestId));
     dismissQuestionRequest(requestId);
-    void rejectQuestion({
-      baseUrl: serverUrl,
-      token,
-      repoPath,
-      requestId
-    });
-  }, [dismissQuestionRequest, repoPath, serverUrl, token]);
+    void createMobileAgentClient({ baseUrl: serverUrl, token })
+      .replyInteraction(requestId, { decision: 'cancel' })
+      .catch(() => undefined);
+  }, [dismissQuestionRequest, serverUrl, token]);
 
   useEffect(() => {
     const sid = toText(sessionId).trim();

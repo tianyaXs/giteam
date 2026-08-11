@@ -11,6 +11,7 @@ mod providers;
 mod secrets;
 mod service;
 mod skills;
+mod subagents;
 mod tools;
 mod types;
 
@@ -31,6 +32,11 @@ pub use secrets::{
 pub use service::{
     AgentEventReceiver, AgentEventSink, PiAgentError, PiAgentService, PiSessionConfig,
     PiSessionSummary,
+};
+pub use subagents::{
+    build_child_system_prompt, child_timeout_secs, resolve as resolve_subagent_type,
+    SubagentDefinition, SubagentHost, SubagentSpawnRequest, SubagentSpawnResult, SubagentType,
+    DEFAULT_CHILD_TIMEOUT_SECS, MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
 };
 pub use skills::{
     build_skills_prompt, install_builtin_agent_skill, list_installed_agent_skills,

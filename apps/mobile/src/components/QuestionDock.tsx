@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import type { QuestionRequest, QuestionAnswer } from "../types";
 import { useQuestionDockController } from "../features/questions/useQuestionDockController";
+import { useMobileTheme } from "../features/theme/ThemeProvider";
 
 interface QuestionDockProps {
   request: QuestionRequest;
@@ -23,6 +24,7 @@ interface QuestionDockProps {
 
 export function QuestionDock({ request, onReply, onDismiss, disabledReason, submitState = 'idle', submitError }: QuestionDockProps) {
   const { height: windowHeight } = useWindowDimensions();
+  const { colors } = useMobileTheme();
   const locked = !!disabledReason || submitState === 'submitting' || submitState === 'submitted';
   const {
     allowCustom,
@@ -58,6 +60,272 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
   const denseOptions = options.length + (allowCustom ? 1 : 0) >= 5;
   const maxDockHeight = Math.max(360, Math.round(windowHeight * 0.68));
   const maxBodyHeight = Math.max(230, Math.round(windowHeight * 0.48));
+
+  // ChatGPT 中性色板：容器/选项用 card 与 sidebar 分层，选中态统一用 primary 克制绿做点缀
+  // （radio/checkbox/已答 tab/主按钮），替代原 GitHub-dark 蓝绿。跟随系统明暗。
+  const styles = useMemo(() => StyleSheet.create({
+    container: {
+      backgroundColor: colors.card,
+      borderRadius: 12,
+      marginHorizontal: 12,
+      marginBottom: 12,
+      ...Platform.select({
+        ios: {
+          shadowColor: "#000000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: colors.isDark ? 0.4 : 0.08,
+          shadowRadius: 8,
+        },
+        android: {
+          elevation: 3,
+        },
+        web: {
+          boxShadow: colors.isDark ? "0 2px 12px rgba(0,0,0,0.45)" : "0 2px 12px rgba(0,0,0,0.08)",
+        },
+      }),
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    titleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
+    title: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: colors.text,
+    },
+    tabs: {
+      flexDirection: "row",
+      gap: 6,
+    },
+    tab: {
+      width: 7,
+      height: 7,
+      borderRadius: 3.5,
+      backgroundColor: colors.muted,
+    },
+    tabActive: {
+      backgroundColor: colors.primary,
+    },
+    tabAnswered: {
+      backgroundColor: colors.primary,
+    },
+    toggle: {
+      fontSize: 12,
+      color: colors.muted,
+    },
+    body: {},
+    bodyContent: {
+      padding: 14,
+      paddingBottom: 10,
+    },
+    questionHeader: {
+      marginBottom: 8,
+    },
+    headerText: {
+      fontSize: 12,
+      color: colors.muted,
+      marginBottom: 4,
+    },
+    questionText: {
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.text,
+      lineHeight: 22,
+    },
+    hint: {
+      fontSize: 12,
+      color: colors.muted,
+      marginBottom: 12,
+    },
+    options: {
+      gap: 6,
+    },
+    option: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 10,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      backgroundColor: colors.sidebar,
+    },
+    optionCompact: {
+      alignItems: "center",
+      paddingVertical: 7,
+      paddingHorizontal: 10,
+      gap: 8,
+    },
+    optionSelected: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primarySoft,
+    },
+    optionDisabled: {
+      opacity: 0.62,
+    },
+    optionPicked: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primarySoft,
+    },
+    optionCustom: {
+      // no extra styles
+    },
+    optionRadio: {
+      marginTop: 1,
+    },
+    radio: {
+      width: 18,
+      height: 18,
+      borderWidth: 1.5,
+      borderColor: colors.muted,
+      borderRadius: 9,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.card,
+    },
+    radioChecked: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary,
+    },
+    radioDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: colors.primaryText,
+    },
+    checkbox: {
+      width: 18,
+      height: 18,
+      borderWidth: 1.5,
+      borderColor: colors.muted,
+      borderRadius: 5,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.card,
+    },
+    checkboxChecked: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary,
+    },
+    checkmark: {
+      color: colors.primaryText,
+      fontSize: 11,
+      fontWeight: "700",
+      lineHeight: 14,
+    },
+    optionContent: {
+      flex: 1,
+    },
+    optionLabel: {
+      fontSize: 14,
+      fontWeight: "500",
+      color: colors.text,
+      lineHeight: 20,
+    },
+    optionDesc: {
+      fontSize: 12,
+      color: colors.muted,
+      marginTop: 2,
+      lineHeight: 18,
+    },
+    customInput: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+      fontSize: 14,
+      color: colors.text,
+      backgroundColor: colors.card,
+    },
+    footer: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+    },
+    btnPrimary: {
+      backgroundColor: colors.primary,
+      paddingVertical: 8,
+      paddingHorizontal: 16,
+      borderRadius: 6,
+    },
+    btnPrimaryText: {
+      color: colors.primaryText,
+      fontSize: 14,
+      fontWeight: "600",
+    },
+    btnSecondary: {
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+    },
+    btnSecondaryText: {
+      color: colors.muted,
+      fontSize: 14,
+    },
+    btnDisabled: {
+      opacity: 0.4,
+    },
+    confirmTitle: {
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.text,
+      marginBottom: 10,
+    },
+    confirmItem: {
+      padding: 10,
+      backgroundColor: colors.sidebar,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+      marginBottom: 8,
+    },
+    confirmQ: {
+      fontSize: 12,
+      color: colors.muted,
+      marginBottom: 4,
+    },
+    confirmA: {
+      fontSize: 14,
+      color: colors.text,
+      fontWeight: "500",
+    },
+    confirmEmpty: {
+      color: colors.danger,
+      fontStyle: "italic",
+    },
+    confirmEdit: { color: colors.muted, fontSize: 11, marginTop: 6 },
+    disabledReason: {
+      color: colors.muted,
+      fontSize: 12,
+      lineHeight: 18,
+      textAlign: "right",
+      flexShrink: 1,
+    },
+    submitState: {
+      color: colors.muted,
+      fontSize: 12,
+      lineHeight: 18,
+      textAlign: "right",
+      flexShrink: 1,
+    },
+    retryWrap: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1 },
+    submitError: { color: colors.danger, fontSize: 12, flexShrink: 1, maxWidth: 180 },
+  }), [colors]);
 
   if (questions.length === 0) return null;
 
@@ -218,7 +486,7 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
                             onBlur={handleCustomSubmit}
                             autoFocus
                             placeholder="输入你的答案..."
-                            placeholderTextColor="#9da5b4"
+                            placeholderTextColor={colors.muted}
                           />
                         ) : (
                           <>
@@ -287,269 +555,5 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason, subm
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    backgroundColor: "#ffffff",
-    borderRadius: 12,
-    marginHorizontal: 12,
-    marginBottom: 12,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 3,
-      },
-      web: {
-        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-      },
-    }),
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e5e5",
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  title: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#1e1e1e",
-  },
-  tabs: {
-    flexDirection: "row",
-    gap: 6,
-  },
-  tab: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: "#c0c0c0",
-  },
-  tabActive: {
-    backgroundColor: "#243447",
-  },
-  tabAnswered: {
-    backgroundColor: "#2da44e",
-  },
-  toggle: {
-    fontSize: 12,
-    color: "#9da5b4",
-  },
-  body: {},
-  bodyContent: {
-    padding: 14,
-    paddingBottom: 10,
-  },
-  questionHeader: {
-    marginBottom: 8,
-  },
-  headerText: {
-    fontSize: 12,
-    color: "#9da5b4",
-    marginBottom: 4,
-  },
-  questionText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1e1e1e",
-    lineHeight: 22,
-  },
-  hint: {
-    fontSize: 12,
-    color: "#9da5b4",
-    marginBottom: 12,
-  },
-  options: {
-    gap: 6,
-  },
-  option: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "#e5e5e5",
-    borderRadius: 8,
-    backgroundColor: "#fafafa",
-  },
-  optionCompact: {
-    alignItems: "center",
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    gap: 8,
-  },
-  optionSelected: {
-    borderColor: "#243447",
-    backgroundColor: "rgba(36, 52, 71, 0.08)",
-  },
-  optionDisabled: {
-    opacity: 0.62,
-  },
-  optionPicked: {
-    borderColor: "#2da44e",
-    backgroundColor: "rgba(45, 164, 78, 0.06)",
-  },
-  optionCustom: {
-    // no extra styles
-  },
-  optionRadio: {
-    marginTop: 1,
-  },
-  radio: {
-    width: 18,
-    height: 18,
-    borderWidth: 1.5,
-    borderColor: "#b8c1cf",
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#fff",
-  },
-  radioChecked: {
-    borderColor: "#243447",
-    backgroundColor: "#fff",
-  },
-  radioDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: "#243447",
-  },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderWidth: 1.5,
-    borderColor: "#b8c1cf",
-    borderRadius: 5,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#fff",
-  },
-  checkboxChecked: {
-    borderColor: "#243447",
-    backgroundColor: "rgba(36, 52, 71, 0.08)",
-  },
-  checkmark: {
-    color: "#243447",
-    fontSize: 11,
-    fontWeight: "700",
-    lineHeight: 14,
-  },
-  optionContent: {
-    flex: 1,
-  },
-  optionLabel: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#1e1e1e",
-    lineHeight: 20,
-  },
-  optionDesc: {
-    fontSize: 12,
-    color: "#9da5b4",
-    marginTop: 2,
-    lineHeight: 18,
-  },
-  customInput: {
-    borderWidth: 1,
-    borderColor: "#e5e5e5",
-    borderRadius: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    fontSize: 14,
-    color: "#1e1e1e",
-    backgroundColor: "#fff",
-  },
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#e5e5e5",
-  },
-  btnPrimary: {
-    backgroundColor: "#1e1e1e",
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
-  },
-  btnPrimaryText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  btnSecondary: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  btnSecondaryText: {
-    color: "#666",
-    fontSize: 14,
-  },
-  btnDisabled: {
-    opacity: 0.4,
-  },
-  confirmTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1e1e1e",
-    marginBottom: 10,
-  },
-  confirmItem: {
-    padding: 10,
-    backgroundColor: "#fafafa",
-    borderWidth: 1,
-    borderColor: "#e5e5e5",
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  confirmQ: {
-    fontSize: 12,
-    color: "#9da5b4",
-    marginBottom: 4,
-  },
-  confirmA: {
-    fontSize: 14,
-    color: "#1e1e1e",
-    fontWeight: "500",
-  },
-  confirmEmpty: {
-    color: "#cf6679",
-    fontStyle: "italic",
-  },
-  confirmEdit: { color: "#607287", fontSize: 11, marginTop: 6 },
-  disabledReason: {
-    color: "#9da5b4",
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: "right",
-    flexShrink: 1,
-  },
-  submitState: {
-    color: "#607287",
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: "right",
-    flexShrink: 1,
-  },
-  retryWrap: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1 },
-  submitError: { color: "#cf6679", fontSize: 12, flexShrink: 1, maxWidth: 180 },
-});
 
 export default QuestionDock;

@@ -1,6 +1,6 @@
-import { mergeOpencodeStreamText } from '../../lib/opencodeParts';
-import { parseConversation } from '../../messageParser';
-import type { MobileChatMessage, MobileRenderedTurn, MobileTimelineItem } from '../../types';
+import { mergeAgentStreamText } from '../../lib/agentParts';
+import { parseConversation } from '../../timelineParser';
+import type { MobileChatMessage, MobileEventCard, MobileRenderedTurn, MobileTimelineItem } from '../../types';
 
 export type RawMessageRow = Record<string, any>;
 
@@ -29,7 +29,7 @@ export function rowId(row: RawMessageRow): string {
   return toText(row?.info?.id);
 }
 
-/** 与 opencode 分页 cursor 一致：base64url({ id, time }) */
+/** 历史分页 cursor 兼容格式：base64url({ id, time })；新 agent API 已改为全量拉取。 */
 export function encodeHistoryPageCursor(row: RawMessageRow): string {
   const id = rowId(row);
   const time = rowCreatedAt(row);
@@ -97,7 +97,7 @@ function mergeMessagePart(prev: any, incoming: any): any {
   const prevText = typeof prev?.text === 'string' ? prev.text : '';
   const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
   if (prevText || incomingText) {
-    next.text = mergeOpencodeStreamText(prevText, incomingText);
+    next.text = mergeAgentStreamText(prevText, incomingText);
   }
   return next;
 }
@@ -140,6 +140,7 @@ function timelineStableKey(item: MobileTimelineItem): string {
   if (item.kind === 'question') return `question:${toText(item.question.id)}`;
   if (item.kind === 'divider') return `divider:${toText(item.divider.id)}`;
   if (item.kind === 'error') return `error:${toText(item.error.id)}`;
+  if (item.kind === 'toolBatch') return `toolBatch:${toText(item.batch.id)}`;
   return `context:${toText(item.context.id)}`;
 }
 
@@ -159,7 +160,15 @@ function itemSignature(item: MobileTimelineItem): string {
   }
   if (item.kind === 'divider') return `${timelineStableKey(item)}:${toText(item.divider.label)}`;
   if (item.kind === 'error') return `${timelineStableKey(item)}:${toText(item.error.code)}:${toText(item.error.text).length}`;
-  const tools = Array.isArray(item.context.tools) ? item.context.tools.map((tool) => tool.id).join(',') : '';
+  if (item.kind === 'toolBatch') {
+    const events = Array.isArray(item.batch.events)
+      ? item.batch.events
+          .map((event: MobileEventCard) => `${event.id}:${toText(event.status)}:${toText(event.detail).length}:${toText(event.output).length}`)
+          .join(',')
+      : '';
+    return `${timelineStableKey(item)}:${toText(item.batch.status)}:${events}`;
+  }
+  const tools = Array.isArray(item.context.tools) ? item.context.tools.map((tool: MobileEventCard) => tool.id).join(',') : '';
   return `${timelineStableKey(item)}:${toText(item.context.summary).length}:${tools}`;
 }
 

@@ -13,16 +13,10 @@ const require = createRequire(import.meta.url);
 const args = process.argv.slice(2);
 
 const run = (command, commandArgs, label = command) => {
-  const childEnv = { ...process.env };
-  const packagedWebAssets = join(root, 'web-assets');
-  if (!childEnv.GITEAM_WEB_DIST && existsSync(packagedWebAssets)) {
-    childEnv.GITEAM_WEB_DIST = packagedWebAssets;
-  }
-
   const child = spawn(command, commandArgs, {
     cwd: root,
     stdio: 'inherit',
-    env: childEnv
+    env: { ...process.env }
   });
 
   child.on('exit', (code, signal) => {

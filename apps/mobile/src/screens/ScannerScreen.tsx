@@ -62,7 +62,7 @@ export function ScannerScreen(props: {
               onPress={onPickFromAlbum}
             >
               <View style={styles.scannerAlbumBtnGlass}>
-                <Feather name="image" size={20} color="#ffffff" />
+                <Feather name="image" size={20} color="#252526" />
               </View>
             </Pressable>
           </View>

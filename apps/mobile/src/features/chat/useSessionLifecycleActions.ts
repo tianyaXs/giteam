@@ -11,7 +11,7 @@ export function useSessionLifecycleActions(params: {
   renderRegressionRetryRef: React.MutableRefObject<Record<string, number>>;
   sessionMessageSyncRef: React.MutableRefObject<{ resetMessageSyncState: () => void } | null>;
   stopStream: () => void;
-  resetOpenCodeStreamStores: () => void;
+  resetAgentStreamStores: () => void;
   bumpOptimisticVersion: () => void;
   setActiveSession: (sessionId: string) => void;
   setToken: (value: string) => void;
@@ -32,7 +32,7 @@ export function useSessionLifecycleActions(params: {
     optimisticUserIdAliasRef,
     pushConnLog,
     renderRegressionRetryRef,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     sessionIdRef,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,
@@ -112,7 +112,7 @@ export function useSessionLifecycleActions(params: {
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
-    resetOpenCodeStreamStores();
+    resetAgentStreamStores();
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     renderRegressionRetryRef.current = {};
@@ -126,7 +126,7 @@ export function useSessionLifecycleActions(params: {
     optimisticUserIdAliasRef,
     pushConnLog,
     renderRegressionRetryRef,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,
     sessionRawMapRef,

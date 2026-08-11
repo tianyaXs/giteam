@@ -329,6 +329,7 @@ fn main() {
             commands::pi_agent::agent_runtime_info,
             commands::pi_agent::agent_create_session,
             commands::pi_agent::agent_list_sessions,
+            commands::pi_agent::agent_list_child_sessions,
             commands::pi_agent::agent_get_session,
             commands::pi_agent::agent_get_session_messages,
             commands::pi_agent::agent_prompt,

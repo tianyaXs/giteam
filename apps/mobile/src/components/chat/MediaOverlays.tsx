@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import React from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from 'react-native';
-import { FlashList } from '@shopify/flash-list';
+import { LegendList } from '@legendapp/list/react-native';
 
 type AlbumImageItem = {
   id: string;
@@ -67,11 +67,11 @@ export function AlbumPickerOverlay(props: {
       <View style={isQrScan ? styles.qrAlbumSheet : styles.albumSheet}>
         <View style={styles.albumHeaderRow}>
           <Pressable style={isQrScan ? styles.qrAlbumCloseBtn : styles.albumHeaderBtn} onPress={onClose}>
-            {isQrScan ? <Feather name="x" size={26} color="#ffffff" /> : <Text style={styles.albumHeaderBtnText}>取消</Text>}
+            {isQrScan ? <Feather name="x" size={26} color="#252526" /> : <Text style={styles.albumHeaderBtnText}>取消</Text>}
           </Pressable>
           <View style={isQrScan ? styles.qrAlbumTitleWrap : null}>
             <Text style={isQrScan ? styles.qrAlbumTitle : styles.albumTitle}>{isQrScan ? '图片和视频' : '相册'}</Text>
-            {isQrScan ? <Feather name="chevron-down" size={18} color="#ffffff" /> : null}
+            {isQrScan ? <Feather name="chevron-down" size={18} color="#252526" /> : null}
           </View>
           <Pressable
             style={[
@@ -118,9 +118,10 @@ export function AlbumPickerOverlay(props: {
         ) : albumImages.length === 0 ? (
           <Text style={styles.albumEmptyText}>暂无照片</Text>
         ) : (
-          <FlashList
+          <LegendList
             data={albumImages}
             numColumns={isQrScan ? 4 : 3}
+            estimatedItemSize={120}
             keyExtractor={(item) => item.id}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={isQrScan ? styles.qrAlbumGrid : styles.albumGrid}

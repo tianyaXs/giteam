@@ -123,6 +123,10 @@ pub enum AgentEvent {
         phase: String,
         attempt: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_attempts: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         success: Option<bool>,
         error: Option<String>,
     },
@@ -139,6 +143,67 @@ pub enum AgentEvent {
         resolution: String,
         #[serde(default)]
         automatic: bool,
+    },
+    /// 子 agent 已创建并开始跑（父 stream；勿仅靠 tool.progress 文本）。
+    #[serde(rename = "subagent.started")]
+    SubagentStarted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        #[serde(rename = "childRunId")]
+        child_run_id: String,
+        #[serde(rename = "subagentType")]
+        subagent_type: String,
+        description: String,
+    },
+    /// 子 agent 进度（工具调用计数等）。
+    #[serde(rename = "subagent.progress")]
+    SubagentProgress {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "toolCount")]
+        tool_count: u32,
+        #[serde(rename = "currentToolName")]
+        current_tool_name: String,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    /// 子 session 原始事件投影到父 stream（递归用 Box）。
+    #[serde(rename = "subagent.childEvent")]
+    SubagentChildEvent {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        event: Box<AgentEvent>,
+    },
+    #[serde(rename = "subagent.completed")]
+    SubagentCompleted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        summary: String,
+        #[serde(rename = "toolCount")]
+        tool_count: u32,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    #[serde(rename = "subagent.failed")]
+    SubagentFailed {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
+        error: String,
+    },
+    #[serde(rename = "subagent.aborted")]
+    SubagentAborted {
+        #[serde(rename = "parentToolCallId")]
+        parent_tool_call_id: String,
+        #[serde(rename = "childSessionId")]
+        child_session_id: String,
     },
 }
 
@@ -260,6 +325,11 @@ impl PiEventTranslator {
                     } => {
                         let (tool_call_id, tool_name) =
                             tool_call_identity(&partial, content_index);
+                        // 流式早期可能只有 name、尚无 id；空 id 若落到前端会 makeId()
+                        // 造出幽灵工具，过程中「已运行 N 条」虚高，结束后 history 对账又变少。
+                        if tool_call_id.trim().is_empty() {
+                            return None;
+                        }
                         Some(AgentEvent::ToolCallStarted {
                             tool_call_id,
                             tool_name,
@@ -271,6 +341,9 @@ impl PiEventTranslator {
                         partial,
                     } => {
                         let (tool_call_id, _) = tool_call_identity(&partial, content_index);
+                        if tool_call_id.trim().is_empty() {
+                            return None;
+                        }
                         Some(AgentEvent::ToolCallDelta {
                             tool_call_id,
                             delta,
@@ -327,11 +400,14 @@ impl PiEventTranslator {
             }
             pi::sdk::AgentEvent::AutoRetryStart {
                 attempt,
+                max_attempts,
+                delay_ms,
                 error_message,
-                ..
             } => Some(AgentEvent::Retry {
                 phase: "started".to_string(),
                 attempt,
+                max_attempts: Some(max_attempts),
+                delay_ms: Some(delay_ms),
                 success: None,
                 error: Some(error_message),
             }),
@@ -342,6 +418,8 @@ impl PiEventTranslator {
             } => Some(AgentEvent::Retry {
                 phase: "completed".to_string(),
                 attempt,
+                max_attempts: None,
+                delay_ms: None,
                 success: Some(success),
                 error: final_error,
             }),

@@ -15,13 +15,6 @@ export type ChatViewportSnapshot = {
   updatedAt: number;
 };
 
-export type ChatMaintainVisibleContentPosition = {
-  startRenderingFromBottom: boolean;
-  autoscrollToBottomThreshold?: number;
-  autoscrollToTopThreshold?: number;
-  animateAutoScrollToBottom?: boolean;
-};
-
 export function useChatListController<Cell extends { id?: string }>(props: {
   initialCellLimit: number;
   chatBottomProximity: number;
@@ -327,24 +320,6 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     scrollToLatest(true);
   }, [markFollowLatest, scrollToLatest]);
 
-  const getMaintainVisibleContentPosition = useCallback((loadingOlder: boolean): ChatMaintainVisibleContentPosition => {
-    const config: ChatMaintainVisibleContentPosition = {
-      startRenderingFromBottom: true,
-      animateAutoScrollToBottom: false
-    };
-    if (loadingOlder) {
-      config.autoscrollToTopThreshold = 0.12;
-    } else if (
-      followLatest
-      && listRevealReady
-      && !messageUserScrollingRef.current
-      && getVisibleDistanceFromBottom() <= chatBottomProximity
-    ) {
-      config.autoscrollToBottomThreshold = 0.12;
-    }
-    return config;
-  }, [chatBottomProximity, followLatest, getVisibleDistanceFromBottom, listRevealReady]);
-
   const prepareCellLayoutAdjustment = useCallback((cellId: string, previousHeight: number) => {
     const key = String(cellId || '').trim();
     if (!key || !Number.isFinite(previousHeight) || previousHeight <= 0) {
@@ -581,7 +556,6 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     resetListInteractionState,
     guardHistoryLoad,
     anchorSessionToLatest,
-    getMaintainVisibleContentPosition,
     shouldSuppressLoadOlder,
     suppressLoadOlderUntilRef,
     historyPaginationReadyRef

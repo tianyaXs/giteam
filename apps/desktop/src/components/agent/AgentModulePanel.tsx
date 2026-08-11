@@ -161,6 +161,10 @@ function SkillScopeBadge({ scope, children }: { scope?: string; children?: React
 function AgentsSection(props: AgentModulePanelProps) {
   return (
     <div className="flex flex-col gap-3">
+      <ModuleEmpty
+        title="使用 task(plan) 委派规划"
+        description="Build/Plan 模式切换已移除。需要规划时，请让助手调用 task(plan) 子 agent。"
+      />
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <Input className="h-10 rounded-lg" placeholder="搜索 agent" value={props.agentSearch} onChange={(event) => props.onAgentSearchChange(event.target.value)} />
         <Button variant="outline" size="sm" onClick={props.onRefreshAgents} disabled={props.agentsLoading}>刷新</Button>
@@ -171,9 +175,7 @@ function AgentsSection(props: AgentModulePanelProps) {
         {props.visibleAgents.map((agent) => (
           <Card key={agent.name} className={cn("rounded-lg shadow-none transition-colors", agent.name === props.activeAgent && "border-primary/40 bg-primary/5")}>
             <CardContent className="grid gap-3 p-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_auto] md:items-center">
-              <Button variant="ghost" className="h-auto min-w-0 justify-start p-0 text-left hover:bg-transparent" onClick={() => props.onApplyAgent(agent.name)}>
-                <strong className="truncate text-sm font-semibold">@{agent.name}</strong>
-              </Button>
+              <strong className="truncate text-sm font-semibold">@{agent.name}</strong>
               <span className="truncate text-sm text-muted-foreground">{agent.description || agent.mode || "agent"}</span>
               <div className="flex flex-wrap gap-1.5">
                 <Badge variant="secondary" className="normal-case tracking-normal">{agent.mode || "all"}</Badge>

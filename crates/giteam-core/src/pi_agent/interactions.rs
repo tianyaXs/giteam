@@ -57,7 +57,9 @@ impl InteractionRisk {
     #[must_use]
     pub fn for_tool(tool: &str) -> Self {
         match tool {
-            "read" | "grep" | "find" | "ls" | "bash_output" => Self::Read,
+            // task：启动子 session 本身不写盘（子内写操作仍走 Approval）。
+            "read" | "grep" | "find" | "ls" | "bash_output" | "task" | "todowrite"
+            | "question" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
             "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,
@@ -724,6 +726,8 @@ mod tests {
     fn risk_classification_defaults_fail_closed() {
         assert!(!InteractionRisk::for_tool("read").requires_approval());
         assert!(!InteractionRisk::for_tool("grep").requires_approval());
+        assert!(!InteractionRisk::for_tool("task").requires_approval());
+        assert_eq!(InteractionRisk::for_tool("task"), InteractionRisk::Read);
         assert!(InteractionRisk::for_tool("write").requires_approval());
         assert_eq!(InteractionRisk::for_tool("bash"), InteractionRisk::Execute);
         assert_eq!(InteractionRisk::for_tool("web_fetch"), InteractionRisk::Network);

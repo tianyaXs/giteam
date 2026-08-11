@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import type { ComponentProps, Dispatch, SetStateAction } from 'react';
-import type { ChatComposer, ComposerPickerSheet } from '../../components/chat/ChatComposer';
+import type { ChatComposer } from '../../components/chat/ChatComposer';
 import type { AlbumPickerOverlay } from '../../components/chat/MediaOverlays';
 import type { ComposerAttachment, RecentImageItem } from '../media/types';
 import type { ModelOption } from '../workspace/catalogUtils';
@@ -8,8 +8,14 @@ import type { ModelOption } from '../workspace/catalogUtils';
 type ComposerAgentName = 'build' | 'plan';
 type ChatComposerProps = ComponentProps<typeof ChatComposer>;
 type AlbumPickerProps = ComponentProps<typeof AlbumPickerOverlay>;
-type ComposerPickerProps = ComponentProps<typeof ComposerPickerSheet>;
 
+/**
+ * 组装 composer / 相册选择器 props。
+ *
+ * 阶段 3 重构后：模型选择改为 ChatComposer 内嵌的 ModelPickerPopover（自管 open/close），
+ * 故不再有 composerPickerProps；模式（build/plan）与模型回调直接进 composerProps。
+ * 自动批准已上移到右侧设置抽屉（useNotebookDrawerRenderers → ConnectionDrawer）。
+ */
 export function useChatWorkspacePanelProps(params: {
   actionIconAnim: ChatComposerProps['actionIconAnim'];
   albumImages: AlbumPickerProps['albumImages'];
@@ -24,14 +30,11 @@ export function useChatWorkspacePanelProps(params: {
   attachmentPanelStyle: any;
   attachmentPanelVisible: boolean;
   attachmentToggleAnim: ChatComposerProps['attachmentToggleAnim'];
-  autoAcceptPermissions: boolean;
   canAbortNow: boolean;
   canSendNow: boolean;
   closeAlbumPicker: () => void;
-  closeComposerPicker: () => void;
   composerAgent: ComposerAgentName;
   composerModeOptions: Array<{ key: ComposerAgentName; label: string }>;
-  composerPickerOpen: boolean;
   handleAbortPrompt: () => void;
   handleCaptureCamera: () => void;
   handleComposerHeight: (height: number) => void;
@@ -55,7 +58,7 @@ export function useChatWorkspacePanelProps(params: {
   model: string;
   modelOptions: ModelOption[];
   notebookColors: { left: string };
-  openComposerPicker: () => void;
+  onOpenModelManager: () => void;
   prompt: string;
   recentImages: RecentImageItem[];
   recentImagesHasNext: boolean;
@@ -64,12 +67,13 @@ export function useChatWorkspacePanelProps(params: {
   recentScrollerHeight: number;
   selectedMediaAlbumId: string;
   selectMediaAlbum: (albumId: string) => void;
-  setAutoAcceptPermissions: Dispatch<SetStateAction<boolean>>;
   setPreviewImage: Dispatch<SetStateAction<{ uri: string; filename?: string } | null>>;
   slashActiveIndex: number;
   slashOpen: boolean;
   slashSuggestions: ChatComposerProps['slashSuggestions'];
   styles: Record<string, any>;
+  thinkingLevel: ChatComposerProps['thinkingLevel'];
+  onThinkingLevelChange: ChatComposerProps['onThinkingLevelChange'];
   toggleAlbumImage: (imageId: string) => void;
   confirmAlbumSelection: () => Promise<void>;
 }) {
@@ -87,14 +91,11 @@ export function useChatWorkspacePanelProps(params: {
     attachmentPanelStyle,
     attachmentPanelVisible,
     attachmentToggleAnim,
-    autoAcceptPermissions,
     canAbortNow,
     canSendNow,
     closeAlbumPicker,
-    closeComposerPicker,
     composerAgent,
     composerModeOptions,
-    composerPickerOpen,
     confirmAlbumSelection,
     handleAbortPrompt,
     handleCaptureCamera,
@@ -119,7 +120,7 @@ export function useChatWorkspacePanelProps(params: {
     model,
     modelOptions,
     notebookColors,
-    openComposerPicker,
+    onOpenModelManager,
     prompt,
     recentImages,
     recentImagesHasNext,
@@ -128,12 +129,13 @@ export function useChatWorkspacePanelProps(params: {
     recentScrollerHeight,
     selectedMediaAlbumId,
     selectMediaAlbum,
-    setAutoAcceptPermissions,
     setPreviewImage,
     slashActiveIndex,
     slashOpen,
     slashSuggestions,
     styles,
+    thinkingLevel,
+    onThinkingLevelChange,
     toggleAlbumImage
   } = params;
 
@@ -149,10 +151,6 @@ export function useChatWorkspacePanelProps(params: {
     setPreviewImage(null);
   }, [setPreviewImage]);
 
-  const handleToggleAutoAccept = useCallback(() => {
-    setAutoAcceptPermissions((value) => !value);
-  }, [setAutoAcceptPermissions]);
-
   const composerProps = useMemo<ChatComposerProps>(() => ({
     styles,
     prompt,
@@ -163,6 +161,13 @@ export function useChatWorkspacePanelProps(params: {
     attachmentPanelStyle,
     actionIconAnim,
     inputModelLabel,
+    composerModeOptions,
+    composerAgent,
+    modelOptions,
+    selectedModel: model,
+    onSelectMode: handleComposerPickerMode,
+    onSelectModel: handleComposerPickerModel,
+    onOpenModelManager,
     canSendNow,
     canAbortNow,
     slashOpen,
@@ -180,7 +185,6 @@ export function useChatWorkspacePanelProps(params: {
     onDismissAttachmentPanel: handleDismissAttachmentPanel,
     onOpenAttachmentPreview: handleOpenPreviewImage,
     onRemoveAttachment: handleRemoveAttachment,
-    onOpenComposerPicker: openComposerPicker,
     onAbort: handleAbortPrompt,
     onSend: handleSendPrompt,
     onSelectSlash: handleSlashSelect,
@@ -188,7 +192,9 @@ export function useChatWorkspacePanelProps(params: {
     onOpenAlbumPicker: handleOpenAlbumPicker,
     onPickFile: handlePickAttachmentFile,
     onRecentScroll: maybeLoadMoreRecentImages,
-    onAttachRecentImage: handleAttachRecentImage
+    onAttachRecentImage: handleAttachRecentImage,
+    thinkingLevel,
+    onThinkingLevelChange
   }), [
     actionIconAnim,
     attachmentMenuOpen,
@@ -197,10 +203,14 @@ export function useChatWorkspacePanelProps(params: {
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
+    composerAgent,
+    composerModeOptions,
     handleAbortPrompt,
     handleAttachRecentImage,
     handleCaptureCamera,
     handleComposerHeight,
+    handleComposerPickerMode,
+    handleComposerPickerModel,
     handleDismissAttachmentPanel,
     handleOpenAlbumPicker,
     handleOpenPreviewImage,
@@ -214,7 +224,10 @@ export function useChatWorkspacePanelProps(params: {
     inputModelLabel,
     keyboardInset,
     maybeLoadMoreRecentImages,
-    openComposerPicker,
+    model,
+    modelOptions,
+    onOpenModelManager,
+    onThinkingLevelChange,
     prompt,
     recentImages,
     recentImagesHasNext,
@@ -224,7 +237,8 @@ export function useChatWorkspacePanelProps(params: {
     slashActiveIndex,
     slashOpen,
     slashSuggestions,
-    styles
+    styles,
+    thinkingLevel
   ]);
 
   const albumPickerProps = useMemo<AlbumPickerProps>(() => ({
@@ -261,37 +275,11 @@ export function useChatWorkspacePanelProps(params: {
     toggleAlbumImage
   ]);
 
-  const composerPickerProps = useMemo<ComposerPickerProps>(() => ({
-    styles,
-    open: composerPickerOpen,
-    backgroundColor: notebookColors.left,
-    composerModeOptions,
-    composerAgent,
-    autoAcceptPermissions,
-    modelOptions,
-    selectedModel: model,
-    onClose: closeComposerPicker,
-    onSelectMode: handleComposerPickerMode,
-    onToggleAutoAccept: handleToggleAutoAccept,
-    onSelectModel: handleComposerPickerModel
-  }), [
-    autoAcceptPermissions,
-    closeComposerPicker,
-    composerAgent,
-    composerModeOptions,
-    composerPickerOpen,
-    handleComposerPickerMode,
-    handleComposerPickerModel,
-    handleToggleAutoAccept,
-    model,
-    modelOptions,
-    notebookColors.left,
-    styles
-  ]);
+  // notebookColors 目前仅留作扩展占位（旧 composerPickerProps 曾用 left 作背景色）。
+  void notebookColors;
 
   return {
     albumPickerProps,
-    composerPickerProps,
     composerProps,
     handleClosePreviewImage
   };

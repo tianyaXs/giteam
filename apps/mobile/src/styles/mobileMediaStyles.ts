@@ -29,7 +29,7 @@ export const mediaStyles = {
     bottom: 0,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#252526",
     paddingTop: 10,
     paddingHorizontal: 12,
     paddingBottom: 18,
@@ -61,11 +61,11 @@ export const mediaStyles = {
 
   albumHeaderBtnDisabled: { opacity: 0.45 },
 
-  albumHeaderBtnText: { color: "#1f2937", fontSize: 15, fontWeight: "700" },
+  albumHeaderBtnText: { color: "#d4d4d4", fontSize: 15, fontWeight: "700" },
 
-  albumHeaderBtnTextDisabled: { color: "#94a3b8" },
+  albumHeaderBtnTextDisabled: { color: "#9da5b4" },
 
-  albumTitle: { color: "#111827", fontSize: 17, fontWeight: "800" },
+  albumTitle: { color: "#d4d4d4", fontSize: 17, fontWeight: "800" },
 
   qrAlbumCloseBtn: {
     width: 60,
@@ -82,11 +82,11 @@ export const mediaStyles = {
     paddingHorizontal: 18,
     height: 48,
     borderRadius: 999,
-    backgroundColor: "#3b3b3b",
+    backgroundColor: "#d4d4d4",
   },
 
   qrAlbumTitle: {
-    color: "#ffffff",
+    color: "#252526",
     fontSize: 16,
     fontWeight: "800",
   },
@@ -99,11 +99,11 @@ export const mediaStyles = {
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 16,
-    backgroundColor: "#3b3b3b",
+    backgroundColor: "#d4d4d4",
   },
 
   qrAlbumConfirmText: {
-    color: "#ffffff",
+    color: "#252526",
     fontSize: 16,
     fontWeight: "700",
   },
@@ -127,22 +127,22 @@ export const mediaStyles = {
     paddingHorizontal: 12,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#f8fafc",
+    borderColor: "#3c3c3c",
+    backgroundColor: "#1e1e1e",
     alignItems: "center",
     justifyContent: "center",
   },
 
-  albumPickerChipActive: { backgroundColor: "#111827", borderColor: "#111827" },
+  albumPickerChipActive: { backgroundColor: "#d4d4d4", borderColor: "#d4d4d4" },
 
   albumPickerChipText: {
     maxWidth: 160,
-    color: "#64748b",
+    color: "#9da5b4",
     fontSize: 13,
     fontWeight: "700",
   },
 
-  albumPickerChipTextActive: { color: "#ffffff" },
+  albumPickerChipTextActive: { color: "#252526" },
 
   qrAlbumPickerChip: {
     display: "none",
@@ -167,7 +167,7 @@ export const mediaStyles = {
     gap: 10,
   },
 
-  albumLoadingText: { color: "#64748b", fontSize: 13 },
+  albumLoadingText: { color: "#9da5b4", fontSize: 13 },
 
   albumGrid: { paddingTop: 8, paddingBottom: 18 },
 
@@ -191,7 +191,7 @@ export const mediaStyles = {
     aspectRatio: 1,
     borderRadius: 10,
     overflow: "hidden",
-    backgroundColor: "#eef2f7",
+    backgroundColor: "#222325",
   },
 
   qrAlbumThumbCard: {
@@ -214,10 +214,10 @@ export const mediaStyles = {
     justifyContent: "center",
     backgroundColor: "rgba(15,23,42,0.34)",
     borderWidth: 1.5,
-    borderColor: "#ffffff",
+    borderColor: "#252526",
   },
 
-  albumSelectBadgeOn: { backgroundColor: "#1f2937" },
+  albumSelectBadgeOn: { backgroundColor: "#d4d4d4" },
 
   qrAlbumSelectBadge: {
     position: "absolute",
@@ -230,22 +230,22 @@ export const mediaStyles = {
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 2,
-    borderColor: "#ffffff",
+    borderColor: "#252526",
   },
 
   qrAlbumSelectBadgeOn: {
     backgroundColor: "rgba(255,255,255,0.22)",
   },
 
-  albumSelectText: { color: "#ffffff", fontSize: 12, fontWeight: "800" },
+  albumSelectText: { color: "#252526", fontSize: 12, fontWeight: "800" },
 
-  albumSelectTextOn: { color: "#ffffff" },
+  albumSelectTextOn: { color: "#252526" },
 
   albumEmptyText: {
     width: "100%",
     paddingVertical: 40,
     textAlign: "center",
-    color: "#94a3b8",
+    color: "#9da5b4",
     fontSize: 14,
   },
 
@@ -259,14 +259,14 @@ export const mediaStyles = {
 
   imagePreviewBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15,23,42,0.72)",
+    backgroundColor: "rgba(0,0,0,0.72)",
   },
 
   imagePreviewCard: {
     width: "92%",
     maxHeight: "86%",
     borderRadius: 18,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#252526",
     padding: 12,
     gap: 10,
   },
@@ -282,23 +282,23 @@ export const mediaStyles = {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#f1f5f9",
+    backgroundColor: "#1e1e1e",
   },
 
-  imagePreviewButtonText: { color: "#1f2937", fontSize: 13, fontWeight: "600" },
+  imagePreviewButtonText: { color: "#d4d4d4", fontSize: 13, fontWeight: "600" },
 
   imagePreviewImage: {
     width: "100%",
     height: 520,
     borderRadius: 12,
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#1e1e1e",
   },
 
   photoCameraScreen: {
     flex: 1,
     width: "100%",
     height: "100%",
-    backgroundColor: "#000",
+    backgroundColor: "#d4d4d4",
   },
 
   photoCameraOverlay: {
@@ -309,7 +309,7 @@ export const mediaStyles = {
     bottom: 0,
     zIndex: 9998,
     elevation: 9998,
-    backgroundColor: "#000",
+    backgroundColor: "#d4d4d4",
   },
 
   photoCameraView: {
@@ -338,14 +338,14 @@ export const mediaStyles = {
     justifyContent: "center",
   },
 
-  photoCameraText: { color: "#ffffff", fontSize: 16, fontWeight: "600" },
+  photoCameraText: { color: "#252526", fontSize: 16, fontWeight: "600" },
 
   photoCameraShutter: {
     width: 72,
     height: 72,
     borderRadius: 999,
     borderWidth: 4,
-    borderColor: "#ffffff",
+    borderColor: "#252526",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -356,18 +356,18 @@ export const mediaStyles = {
     width: 54,
     height: 54,
     borderRadius: 999,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#252526",
   },
 
   cameraBtn: {
-    width: 34,
-    height: 34,
+    width: 40,
+    height: 40,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f7f1e6",
-    borderWidth: 1,
-    borderColor: "#e7dccb",
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    borderColor: "transparent",
   },
 
   cameraBtnTxt: { fontSize: 16 },

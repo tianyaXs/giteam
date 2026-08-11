@@ -1,5 +1,5 @@
 //! 打印 Pi SDK 内置 provider/model catalog（Giteam 后端视角），用于核对
-//! "配置里到底加载的是哪套供应商"。不触碰任何 opencode 数据。
+//! "配置里到底加载的是哪套供应商"。不触碰任何用户会话数据。
 //!
 //! 用法：cargo run --example list_providers
 

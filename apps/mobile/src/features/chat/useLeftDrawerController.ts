@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   abortSessionSwitchPerf,
   finishSessionSwitchPerf,
@@ -6,8 +6,12 @@ import {
   startSessionSwitchPerf
 } from './sessionSwitchPerf';
 import { loadChatSnapshot } from '../../storage/chatSnapshot';
+import { normalizeWorkspacePath } from '../../lib/path';
 import { toText } from '../../lib/text';
+import { cleanSessionPreview } from './sessionDisplay';
 import type { SessionStatusInfo } from '../../types';
+
+const DEFAULT_DISPLAY_COUNT = 10;
 
 const waitForDrawerReturnFrame = () =>
   new Promise<void>((resolve) => {
@@ -30,13 +34,28 @@ type ProjectOptionLike = {
   name: string;
 };
 
-type SessionRow = {
+export type DrawerSessionRow = {
   id: string;
   active: boolean;
   title: string;
   preview: string;
   timeLabel: string;
+  updatedAt: number;
   status: SessionStatusInfo['type'];
+  worktree: string;
+};
+
+export type ProjectTreeNode = {
+  id: string;
+  worktree: string;
+  name: string;
+  expanded: boolean;
+  isCurrent: boolean;
+  /** 是否有可展开的会话；空项目点目录即选中当前项目 */
+  hasSessions: boolean;
+  sessions: DrawerSessionRow[];
+  totalCount: number;
+  showMore: boolean;
 };
 
 export function useLeftDrawerController(props: {
@@ -44,9 +63,9 @@ export function useLeftDrawerController(props: {
   projectsRefCurrent: ProjectOptionLike[];
   repoPath: string;
   sessions: SessionItemLike[];
+  sessionCacheRef: React.MutableRefObject<Record<string, SessionItemLike[]>>;
   sessionSearch: string;
   sessionStatusMap: Record<string, SessionStatusInfo>;
-  sessionDisplayedCount: number;
   sessionId: string;
   messages: any[];
   sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
@@ -59,16 +78,14 @@ export function useLeftDrawerController(props: {
   formatSessionTimestamp: (value?: number) => string;
   stopStream: () => void;
   closeDrawer: () => void;
-  setWorkspaceSwitcherOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   setMessages: (value: any[]) => void;
   setRenderedTurns: (value: any[]) => void;
   setSessionNextCursor: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setSessionHasMore: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   setSessionSearch: (value: string) => void;
-  setSessionDisplayedCount: (value: number | ((prev: number) => number)) => void;
   setSessionSwitchingTo: (value: string | ((prev: string) => string)) => void;
   onNewSession: () => void;
-  onSwitchProject: (worktree: string) => Promise<void>;
+  onSwitchProject: (worktree: string, opts?: { activateSessionId?: string | null }) => Promise<void>;
   setActiveSession: (sessionId: string) => void;
   syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
@@ -96,7 +113,7 @@ export function useLeftDrawerController(props: {
     renderedTurnsRef,
     repoPath,
     sanitizeProjectOptions,
-    sessionDisplayedCount,
+    sessionCacheRef,
     sessionId,
     sessionIdRef,
     sessionStatusMap,
@@ -110,15 +127,24 @@ export function useLeftDrawerController(props: {
     setRenderedTurns,
     setSessionHasMore,
     setSessionNextCursor,
-    setSessionDisplayedCount,
     setSessionSearch,
     setSessionSwitchingTo,
-    setWorkspaceSwitcherOpen,
     startStream,
     stopStream,
     syncSessionStatus,
-    syncSessionMessages,
+    syncSessionMessages
   } = props;
+
+  const [expandedProjectPaths, setExpandedProjectPaths] = useState<string[]>([]);
+  const [displayCountByRepo, setDisplayCountByRepo] = useState<Record<string, number>>({});
+
+  const currentRepoKey = useMemo(() => normalizeWorkspacePath(repoPath), [repoPath]);
+
+  // 当前有会话的项目始终展开；空项目不展开。
+  useEffect(() => {
+    if (!currentRepoKey) return;
+    setExpandedProjectPaths((prev) => (prev.includes(currentRepoKey) ? prev : [...prev, currentRepoKey]));
+  }, [currentRepoKey]);
 
   const reconnectRunningSession = useCallback(async (targetSessionId: string) => {
     try {
@@ -133,7 +159,7 @@ export function useLeftDrawerController(props: {
   }, [sessionIdRef, startStream, syncSessionStatus]);
 
   const currentWorkspaceName = useMemo(
-    () => (repoPath ? projectNameFromPath(repoPath) : '选择工作空间'),
+    () => (repoPath ? projectNameFromPath(repoPath) : ''),
     [projectNameFromPath, repoPath]
   );
 
@@ -145,45 +171,129 @@ export function useLeftDrawerController(props: {
     return current ? sanitizeProjectOptions([{ id: current, worktree: current, name: projectNameFromPath(current) }]) : [];
   }, [projectNameFromPath, projects, projectsRefCurrent, repoPath, sanitizeProjectOptions]);
 
-  const currentWorkspaceSessions = useMemo(() => {
-    const q = sessionSearch.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter((s) => {
-      const title = toText(s.title).toLowerCase();
-      const preview = toText(s.preview).toLowerCase();
-      return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
-    });
-  }, [sessionSearch, sessions]);
+  const sessionsForWorktree = useCallback(
+    (worktree: string): SessionItemLike[] => {
+      const key = normalizeWorkspacePath(worktree);
+      if (key && key === currentRepoKey) return sessions;
+      return (
+        sessionCacheRef.current[key] ||
+        sessionCacheRef.current[toText(worktree).trim()] ||
+        []
+      );
+    },
+    [currentRepoKey, sessionCacheRef, sessions]
+  );
 
-  const leftDrawerSessionRows = useMemo<SessionRow[]>(() => {
-    const source = currentWorkspaceSessions.slice(0, sessionSearch.trim() ? currentWorkspaceSessions.length : sessionDisplayedCount);
-    return source.map((session) => ({
+  const toSessionRow = useCallback(
+    (session: SessionItemLike, worktree: string): DrawerSessionRow => ({
       id: session.id,
       active: session.id === sessionId,
       title: pickSessionDisplayTitle(session, session.id === sessionId ? messages : undefined),
-      preview: toText(session.preview).trim(),
+      preview: cleanSessionPreview(session.preview),
       timeLabel: formatSessionTimestamp(session.updatedAt || session.createdAt),
-      status: sessionStatusMap[session.id]?.type || 'idle'
-    }));
+      updatedAt: Number(session.updatedAt || session.createdAt || 0),
+      status: sessionStatusMap[session.id]?.type || 'idle',
+      worktree
+    }),
+    [formatSessionTimestamp, messages, pickSessionDisplayTitle, sessionId, sessionStatusMap]
+  );
+
+  const projectTrees = useMemo<ProjectTreeNode[]>(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    return availableProjects.map((project) => {
+      const key = normalizeWorkspacePath(project.worktree);
+      const all = sessionsForWorktree(project.worktree);
+      const filtered = !q
+        ? all
+        : all.filter((s) => {
+            const title = toText(s.title).toLowerCase();
+            const preview = toText(s.preview).toLowerCase();
+            return title.includes(q) || preview.includes(q) || s.id.toLowerCase().includes(q);
+          });
+      const limit = q ? filtered.length : displayCountByRepo[key] || DEFAULT_DISPLAY_COUNT;
+      const visible = filtered.slice(0, limit);
+      const hasSessions = filtered.length > 0;
+      // 当前项目有会话 → 始终展开；空项目永不展开；其它有会话项目可手动展开
+      const expanded = !hasSessions ? false : q ? true : key === currentRepoKey || expandedProjectPaths.includes(key);
+      return {
+        id: project.id || project.worktree,
+        worktree: project.worktree,
+        name: project.name,
+        expanded,
+        isCurrent: key === currentRepoKey,
+        hasSessions,
+        sessions: visible.map((s) => toSessionRow(s, project.worktree)),
+        totalCount: filtered.length,
+        showMore: !q && filtered.length > visible.length
+      };
+    });
   }, [
-    currentWorkspaceSessions,
-    formatSessionTimestamp,
-    messages,
-    pickSessionDisplayTitle,
-    sessionDisplayedCount,
-    sessionId,
-    sessionStatusMap,
-    sessionSearch
+    availableProjects,
+    currentRepoKey,
+    displayCountByRepo,
+    expandedProjectPaths,
+    sessionSearch,
+    sessionsForWorktree,
+    toSessionRow
   ]);
 
-  const handleDrawerProjectSelect = useCallback((worktree: string, active: boolean) => {
-    setWorkspaceSwitcherOpen(false);
-    if (active) return;
-    closeDrawer();
-    void onSwitchProject(worktree);
-  }, [closeDrawer, onSwitchProject, setWorkspaceSwitcherOpen]);
+  const searchSessionRows = useMemo<DrawerSessionRow[]>(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    if (!q) return [];
+    const rows: DrawerSessionRow[] = [];
+    for (const project of availableProjects) {
+      for (const session of sessionsForWorktree(project.worktree)) {
+        const title = toText(session.title).toLowerCase();
+        const preview = toText(session.preview).toLowerCase();
+        if (title.includes(q) || preview.includes(q) || session.id.toLowerCase().includes(q)) {
+          rows.push(toSessionRow(session, project.worktree));
+        }
+      }
+    }
+    return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [availableProjects, sessionSearch, sessionsForWorktree, toSessionRow]);
 
-  const handleDrawerSessionSelect = useCallback((targetSessionId: string, active: boolean) => {
+  const handleToggleProject = useCallback((worktree: string) => {
+    const key = normalizeWorkspacePath(worktree);
+    if (!key) return;
+    // 当前项目保持展开，不允许收起
+    if (key === currentRepoKey) return;
+    setExpandedProjectPaths((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
+  }, [currentRepoKey]);
+
+  /** 空项目：点目录即切换当前项目（进入该项目空草稿）。 */
+  const handleSelectProject = useCallback(
+    (worktree: string) => {
+      const targetRepo = toText(worktree).trim();
+      if (!targetRepo) return;
+      const key = normalizeWorkspacePath(targetRepo);
+      if (key && key === currentRepoKey) return;
+      void (async () => {
+        try {
+          stopStream();
+          await onSwitchProject(targetRepo, { activateSessionId: null });
+          setExpandedProjectPaths((prev) => (prev.includes(key) ? prev : [...prev, key]));
+        } catch {
+          // switch is best-effort; status line already reports failures upstream
+        }
+      })();
+    },
+    [currentRepoKey, onSwitchProject, stopStream]
+  );
+
+  /** 点项目行：有会话 → 展开/收起预览；无会话 → 选为当前项目。 */
+  const handlePressProject = useCallback(
+    (worktree: string, hasSessions: boolean) => {
+      if (hasSessions) {
+        handleToggleProject(worktree);
+        return;
+      }
+      handleSelectProject(worktree);
+    },
+    [handleSelectProject, handleToggleProject]
+  );
+
+  const handleDrawerSessionSelect = useCallback((targetSessionId: string, worktree: string, active: boolean) => {
     if (active) {
       closeDrawer();
       return;
@@ -195,118 +305,132 @@ export function useLeftDrawerController(props: {
         log: pushConnLog
       });
       try {
-      const stopStartedAt = performance.now();
-      stopStream();
-      markSessionSwitchPerf(perf, 'drawer.stop_stream', {
-        ms: Math.round(performance.now() - stopStartedAt)
-      });
-
-      // 优化4: 如果内存已有缓存，跳过 snapshot_disk
-      const hasMemoryCache = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
-      let snapshot: ReturnType<typeof loadChatSnapshot> = null;
-      let snapshotRawRows: any[] = [];
-      let snapshotRenderedTurns: any[] = [];
-
-      if (!hasMemoryCache) {
-        const repo = toText(repoPath).trim();
-        const snapshotStartedAt = performance.now();
-        snapshot = repo ? (() => { try { return loadChatSnapshot(repo, targetSessionId); } catch { return null; } })() : null;
-        snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
-        snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
-        markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
-          ms: Math.round(performance.now() - snapshotStartedAt),
-          rawRows: snapshotRawRows.length,
-          renderedTurns: snapshotRenderedTurns.length,
-          hasSnapshot: snapshot ? 1 : 0
+        const stopStartedAt = performance.now();
+        stopStream();
+        markSessionSwitchPerf(perf, 'drawer.stop_stream', {
+          ms: Math.round(performance.now() - stopStartedAt)
         });
-        if (snapshotRawRows.length > 0) {
-          const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
-          // 修复：totalTurnCount 应该使用快照中的值，而不是和 visibleTurnCount 取 max
-          // 如果快照中没有 totalTurnCount，则使用 visibleTurnCount 作为回退
-          const totalTurnCount = Math.max(0, Number(snapshot?.totalTurnCount || visibleTurnCount));
-          sessionRawMapRef.current[targetSessionId] = snapshotRawRows;
-          sessionVisibleTurnCountRef.current[targetSessionId] = visibleTurnCount;
-          sessionTotalTurnCountRef.current[targetSessionId] = totalTurnCount;
-          setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: toText(snapshot?.nextCursor).trim() }));
-          setSessionHasMore((prev) => ({
-            ...prev,
-            [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
-          }));
-          markSessionSwitchPerf(perf, 'drawer.snapshot_inject_memory', { rawRows: snapshotRawRows.length });
+
+        const targetRepo = toText(worktree).trim();
+        const needProjectSwitch =
+          normalizeWorkspacePath(targetRepo) !== normalizeWorkspacePath(repoPath);
+
+        if (needProjectSwitch && targetRepo) {
+          markSessionSwitchPerf(perf, 'drawer.switch_project.begin');
+          await onSwitchProject(targetRepo, { activateSessionId: null });
+          markSessionSwitchPerf(perf, 'drawer.switch_project.done');
         }
-      } else {
-        markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
-          ms: 0,
-          rawRows: 0,
-          renderedTurns: 0,
-          hasSnapshot: 0,
-          skipped: 'memory_cache'
-        });
-      }
 
-      const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
-      markSessionSwitchPerf(perf, 'drawer.set_active_session.call', { hasCachedRows: hasCachedRows ? 1 : 0 });
+        const hasMemoryCache = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
+        let snapshot: ReturnType<typeof loadChatSnapshot> = null;
+        let snapshotRawRows: any[] = [];
+        let snapshotRenderedTurns: any[] = [];
 
-      // 优化2: 预加载消息 - 在 setActiveSession 前就开始 fetch
-      let prefetchPromise: Promise<any> | null = null;
-      if (!hasCachedRows && !snapshot) {
-        prefetchPromise = syncSessionMessages(targetSessionId, {
-          limit: initialSessionLimit,
-          fetchLimit: initialMessageFetchLimit
-        }).catch(() => undefined);
-      }
-
-      closeDrawer();
-      markSessionSwitchPerf(perf, 'drawer.close_requested');
-      await waitForDrawerReturnFrame();
-
-      const activateStartedAt = performance.now();
-      setActiveSession(targetSessionId);
-      markSessionSwitchPerf(perf, 'drawer.set_active_session.returned', {
-        ms: Math.round(performance.now() - activateStartedAt)
-      });
-
-      if (!hasCachedRows) {
-        if (snapshot && sessionIdRef.current === targetSessionId) {
-          const snapshotUiStartedAt = performance.now();
-          setMessages(snapshot.messages);
-          setRenderedTurns(snapshot.renderedTurns);
-          messagesRef.current = snapshot.messages;
-          renderedTurnsRef.current = snapshot.renderedTurns;
-          setSessionSwitchingTo('');
-          markSessionSwitchPerf(perf, 'drawer.snapshot_messages_fast', {
-            ms: Math.round(performance.now() - snapshotUiStartedAt),
-            messages: snapshot.messages.length,
-            turns: snapshot.renderedTurns.length
+        if (!hasMemoryCache) {
+          const repo = normalizeWorkspacePath(targetRepo || repoPath);
+          const snapshotStartedAt = performance.now();
+          snapshot = repo
+            ? (() => {
+                try {
+                  return loadChatSnapshot(repo, targetSessionId);
+                } catch {
+                  return null;
+                }
+              })()
+            : null;
+          snapshotRawRows = Array.isArray(snapshot?.rawRows) ? snapshot.rawRows : [];
+          snapshotRenderedTurns = Array.isArray(snapshot?.renderedTurns) ? snapshot.renderedTurns : [];
+          markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
+            ms: Math.round(performance.now() - snapshotStartedAt),
+            rawRows: snapshotRawRows.length,
+            renderedTurns: snapshotRenderedTurns.length,
+            hasSnapshot: snapshot ? 1 : 0
           });
-          finishSessionSwitchPerf(perf, 'snapshot_messages_fast');
-          void reconnectRunningSession(targetSessionId);
-          return;
-        }
-        if (prefetchPromise) {
-          markSessionSwitchPerf(perf, 'drawer.sync.await_begin', { source: 'prefetch' });
-          const syncStartedAt = performance.now();
-          await prefetchPromise;
-          markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
-            ms: Math.round(performance.now() - syncStartedAt)
-          });
-          finishSessionSwitchPerf(perf, 'sync_network_prefetch');
+          if (snapshotRawRows.length > 0) {
+            const visibleTurnCount = Math.max(0, Number(snapshot?.visibleTurnCount || snapshotRenderedTurns.length || 0));
+            const totalTurnCount = Math.max(0, Number(snapshot?.totalTurnCount || visibleTurnCount));
+            sessionRawMapRef.current[targetSessionId] = snapshotRawRows;
+            sessionVisibleTurnCountRef.current[targetSessionId] = visibleTurnCount;
+            sessionTotalTurnCountRef.current[targetSessionId] = totalTurnCount;
+            setSessionNextCursor((prev) => ({ ...prev, [targetSessionId]: toText(snapshot?.nextCursor).trim() }));
+            setSessionHasMore((prev) => ({
+              ...prev,
+              [targetSessionId]: !!toText(snapshot?.nextCursor).trim() || totalTurnCount > visibleTurnCount
+            }));
+            markSessionSwitchPerf(perf, 'drawer.snapshot_inject_memory', { rawRows: snapshotRawRows.length });
+          }
         } else {
-          markSessionSwitchPerf(perf, 'drawer.sync.await_begin');
-          const syncStartedAt = performance.now();
-          await syncSessionMessages(targetSessionId, {
+          markSessionSwitchPerf(perf, 'drawer.snapshot_disk', {
+            ms: 0,
+            rawRows: 0,
+            renderedTurns: 0,
+            hasSnapshot: 0,
+            skipped: 'memory_cache'
+          });
+        }
+
+        const hasCachedRows = (sessionRawMapRef.current[targetSessionId] || []).length > 0;
+        markSessionSwitchPerf(perf, 'drawer.set_active_session.call', { hasCachedRows: hasCachedRows ? 1 : 0 });
+
+        let prefetchPromise: Promise<any> | null = null;
+        if (!hasCachedRows && !snapshot) {
+          prefetchPromise = syncSessionMessages(targetSessionId, {
             limit: initialSessionLimit,
             fetchLimit: initialMessageFetchLimit
           }).catch(() => undefined);
-          markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
-            ms: Math.round(performance.now() - syncStartedAt)
-          });
-          finishSessionSwitchPerf(perf, 'sync_network');
         }
-      } else {
-        finishSessionSwitchPerf(perf, 'memory_cache');
-      }
-      void reconnectRunningSession(targetSessionId);
+
+        closeDrawer();
+        markSessionSwitchPerf(perf, 'drawer.close_requested');
+        await waitForDrawerReturnFrame();
+
+        const activateStartedAt = performance.now();
+        setActiveSession(targetSessionId);
+        markSessionSwitchPerf(perf, 'drawer.set_active_session.returned', {
+          ms: Math.round(performance.now() - activateStartedAt)
+        });
+
+        if (!hasCachedRows) {
+          if (snapshot && sessionIdRef.current === targetSessionId) {
+            const snapshotUiStartedAt = performance.now();
+            setMessages(snapshot.messages);
+            setRenderedTurns(snapshot.renderedTurns);
+            messagesRef.current = snapshot.messages;
+            renderedTurnsRef.current = snapshot.renderedTurns;
+            setSessionSwitchingTo('');
+            markSessionSwitchPerf(perf, 'drawer.snapshot_messages_fast', {
+              ms: Math.round(performance.now() - snapshotUiStartedAt),
+              messages: snapshot.messages.length,
+              turns: snapshot.renderedTurns.length
+            });
+            finishSessionSwitchPerf(perf, 'snapshot_messages_fast');
+            void reconnectRunningSession(targetSessionId);
+            return;
+          }
+          if (prefetchPromise) {
+            markSessionSwitchPerf(perf, 'drawer.sync.await_begin', { source: 'prefetch' });
+            const syncStartedAt = performance.now();
+            await prefetchPromise;
+            markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
+              ms: Math.round(performance.now() - syncStartedAt)
+            });
+            finishSessionSwitchPerf(perf, 'sync_network_prefetch');
+          } else {
+            markSessionSwitchPerf(perf, 'drawer.sync.await_begin');
+            const syncStartedAt = performance.now();
+            await syncSessionMessages(targetSessionId, {
+              limit: initialSessionLimit,
+              fetchLimit: initialMessageFetchLimit
+            }).catch(() => undefined);
+            markSessionSwitchPerf(perf, 'drawer.sync.await_done', {
+              ms: Math.round(performance.now() - syncStartedAt)
+            });
+            finishSessionSwitchPerf(perf, 'sync_network');
+          }
+        } else {
+          finishSessionSwitchPerf(perf, 'memory_cache');
+        }
+        void reconnectRunningSession(targetSessionId);
       } catch (error) {
         abortSessionSwitchPerf(perf, String(error));
         throw error;
@@ -317,6 +441,7 @@ export function useLeftDrawerController(props: {
     initialMessageFetchLimit,
     initialSessionLimit,
     messagesRef,
+    onSwitchProject,
     pushConnLog,
     reconnectRunningSession,
     renderedTurnsRef,
@@ -340,18 +465,32 @@ export function useLeftDrawerController(props: {
     closeDrawer();
   }, [closeDrawer, onNewSession]);
 
-  const handleShowMoreSessions = useCallback(() => {
-    setSessionDisplayedCount((p) => Math.min(Number(p) + 5, currentWorkspaceSessions.length));
-  }, [currentWorkspaceSessions.length, setSessionDisplayedCount]);
+  const handleShowMoreSessions = useCallback((worktree: string) => {
+    const key = normalizeWorkspacePath(worktree);
+    if (!key) return;
+    setDisplayCountByRepo((prev) => {
+      const current = prev[key] || DEFAULT_DISPLAY_COUNT;
+      const total = sessionsForWorktree(worktree).length;
+      return { ...prev, [key]: Math.min(current + 8, total) };
+    });
+  }, [sessionsForWorktree]);
+
+  const isSessionListEmpty = useMemo(() => {
+    if (sessionSearch.trim()) return searchSessionRows.length === 0;
+    return projectTrees.every((p) => p.totalCount === 0);
+  }, [projectTrees, searchSessionRows.length, sessionSearch]);
 
   return {
     currentWorkspaceName,
     availableProjects,
-    currentWorkspaceSessions,
-    leftDrawerSessionRows,
+    projectTrees,
+    searchSessionRows,
     sessionSearch,
     repoPath,
-    handleDrawerProjectSelect,
+    isSessionListEmpty,
+    handleToggleProject,
+    handlePressProject,
+    handleSelectProject,
     handleDrawerSessionSelect,
     handleNewSession,
     handleShowMoreSessions,

@@ -38,6 +38,11 @@ export type AgentSessionSummary = {
   updatedAtMs: number;
   /** 首条用户消息派生的标题；空会话缺省。 */
   title?: string;
+  /** `"primary"` | `"subagent"`。 */
+  sessionKind?: string;
+  parentSessionId?: string;
+  /** 子 agent 对应的父 task toolCallId。 */
+  parentToolCallId?: string;
 };
 
 export type AgentModelCost = {
@@ -183,6 +188,18 @@ export type AgentEvent = {
     id?: string;
     resolution?: string;
     automatic?: boolean;
+    /** subagent.* */
+    parentToolCallId?: string;
+    childSessionId?: string;
+    childRunId?: string;
+    subagentType?: string;
+    description?: string;
+    toolCount?: number;
+    currentToolName?: string;
+    elapsedMs?: number;
+    summary?: string;
+    /** subagent.childEvent 内嵌的子事件。 */
+    event?: AgentEvent["event"];
   };
 };
 
@@ -233,6 +250,8 @@ export type AgentClient = {
   runtimeInfo(): Promise<AgentRuntimeInfo>;
   createSession(input: CreateAgentSessionInput): Promise<AgentSessionSummary>;
   listSessions(): Promise<AgentSessionSummary[]>;
+  /** 某主会话下的子 agent（含 parentToolCallId），冷启动回填 task 卡用。 */
+  listChildSessions(parentSessionId: string): Promise<AgentSessionSummary[]>;
   getSession(sessionId: string): Promise<AgentSessionSummary>;
   getMessages(sessionId: string): Promise<AgentMessage[]>;
   prompt(input: PromptAgentInput): Promise<AgentPromptResult>;
@@ -303,6 +322,8 @@ function createTauriAgentClient(): AgentClient {
     runtimeInfo: () => invoke<AgentRuntimeInfo>("agent_runtime_info"),
     createSession: (input) => invoke<AgentSessionSummary>("agent_create_session", { request: input }),
     listSessions: () => invoke<AgentSessionSummary[]>("agent_list_sessions"),
+    listChildSessions: (parentSessionId) =>
+      invoke<AgentSessionSummary[]>("agent_list_child_sessions", { parentSessionId }),
     getSession: (sessionId) => invoke<AgentSessionSummary>("agent_get_session", { sessionId }),
     getMessages: (sessionId) => invoke<AgentMessage[]>("agent_get_session_messages", { sessionId }),
     prompt: (input) => invoke<AgentPromptResult>("agent_prompt", { request: withRunId(input) }),
@@ -390,6 +411,10 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       body: JSON.stringify(input),
     }),
     listSessions: () => request<AgentSessionSummary[]>("/api/v1/agent/session"),
+    listChildSessions: (parentSessionId) =>
+      request<AgentSessionSummary[]>(
+        `/api/v1/agent/child-sessions?parentSessionId=${encodeURIComponent(parentSessionId)}`
+      ),
     getSession: (sessionId) => request<AgentSessionSummary>(`/api/v1/agent/session?sessionId=${encodeURIComponent(sessionId)}`),
     getMessages: (sessionId) => request<AgentMessage[]>(`/api/v1/agent/messages?sessionId=${encodeURIComponent(sessionId)}`),
     prompt: (input) => request<AgentPromptResult>("/api/v1/agent/prompt", {

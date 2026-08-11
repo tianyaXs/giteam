@@ -13,15 +13,19 @@
 1. `cd apps/mobile`
 2. `npm install`
 3. Mobile app: `npm run start`
-4. Web debug window (LAN): `npm run web:debug`
-   - open `http://<your-computer-ip>:19007`
 
 ## Fallback
 If camera scanning is unavailable, paste QR payload JSON into the fallback textarea and tap `Apply & Authorize`.
 
 ## Endpoints used
+- `GET /api/v1/health`
 - `POST /api/v1/auth/pair`
-- `POST /api/v1/opencode/prompt`
-- `GET /api/v1/opencode/stream`
-- `GET /api/v1/opencode/messages`
-- `POST /api/v1/opencode/abort`
+- `GET /api/v1/repository/list`
+- `POST /api/v1/agent/session`（创建会话）/ `GET /api/v1/agent/session`（列出/查询会话）
+- `GET /api/v1/agent/messages?sessionId=…`（消息历史）
+- `POST /api/v1/agent/prompt`（发送消息）
+- `POST /api/v1/agent/abort`（中止运行）
+- `GET /api/v1/agent/stream?sessionId=…&runId=…`（SSE 事件流）
+- `GET /api/v1/agent/interactions` / `POST /api/v1/agent/interaction/reply`（交互问答）
+- `POST /api/v1/agent/auto-approve` / `POST /api/v1/agent/model` / `POST /api/v1/agent/session-options`
+- `GET /api/v1/agent/providers` / `GET /api/v1/agent/models`

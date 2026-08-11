@@ -1,5 +1,3 @@
-export type ComposerAgentName = "build" | "plan";
-
 /** UI / 存储用档位；发给 Pi 时经 `toPiThinkingLevel` 映射。 */
 export type AgentThinkingLevel =
   | "auto"
@@ -23,6 +21,13 @@ export type AgentModelThinkingCapability = {
   supportsXhigh?: boolean;
 };
 
+/**
+ * @deprecated Plan/Build 模式切换已由 `task(subagent_type=plan)` 子 agent 替代。
+ * 保留类型仅兼容旧 localStorage；新会话不再注入模式白名单。
+ */
+export type ComposerAgentName = "build" | "plan";
+
+/** @deprecated 见 ComposerAgentName */
 export const AGENT_COMPOSER_AGENT_OPTIONS: Array<{
   name: ComposerAgentName;
   label: string;
@@ -47,7 +52,7 @@ export const AGENT_THINKING_LEVELS: Array<{
   { value: "xhigh", label: "极高", shortLabel: "极高", description: "最强" }
 ];
 
-/** Plan 模式：只读探索 + 提问/待办 + 网络查阅；禁止写文件与执行命令。 */
+/** @deprecated 规划白名单已迁到后端 `subagents::PLAN_ENABLED_TOOLS`。 */
 export const PLAN_ENABLED_TOOLS = [
   "read",
   "grep",
@@ -58,20 +63,6 @@ export const PLAN_ENABLED_TOOLS = [
   "web_fetch",
   "web_search"
 ] as const;
-
-const BUILD_MODE_APPEND = [
-  "# Agent mode: Build",
-  "You are in Build mode. Implement, modify, and debug the codebase.",
-  "Prefer the smallest correct change. Use write/edit/bash when needed to finish the task."
-].join("\n");
-
-const PLAN_MODE_APPEND = [
-  "# Agent mode: Plan",
-  "You are in Plan mode. Explore the codebase and produce a clear, actionable plan.",
-  "Do NOT modify, edit, or delete files. Do NOT run mutating shell commands (installs, builds that write artifacts, git writes, etc.).",
-  "Use read/search tools and ask clarifying questions when requirements are ambiguous.",
-  "End with a concrete implementation plan the user can approve before switching to Build."
-].join("\n");
 
 export function isComposerAgentName(value: string): value is ComposerAgentName {
   return value === "build" || value === "plan";
@@ -135,19 +126,15 @@ export function toPiThinkingLevel(
   return clamped;
 }
 
-export function composerAgentSessionOptions(agent: ComposerAgentName): {
+/**
+ * 主会话始终全工具。规划通过 `task(subagent_type=plan)` 子 agent 完成，
+ * 不再向 create/setSessionOptions 注入 Plan 白名单。
+ */
+export function composerAgentSessionOptions(_agent?: ComposerAgentName): {
   enabledTools?: string[];
-  appendSystemPrompt: string;
+  appendSystemPrompt?: string;
 } {
-  if (agent === "plan") {
-    return {
-      enabledTools: [...PLAN_ENABLED_TOOLS],
-      appendSystemPrompt: PLAN_MODE_APPEND
-    };
-  }
-  return {
-    appendSystemPrompt: BUILD_MODE_APPEND
-  };
+  return {};
 }
 
 export function allowAllPermissionRules(): AgentPermissionRule[] {

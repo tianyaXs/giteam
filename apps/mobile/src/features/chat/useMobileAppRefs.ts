@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import { AppState } from "react-native";
-import EventSource from "react-native-sse";
 import type { DiscoveredDevice } from "../../discovery";
 import type {
   MobileChatMessage,
@@ -8,10 +7,7 @@ import type {
   QuestionRequest,
   SessionStatusInfo,
 } from "../../types";
-import type {
-  OpenCodeStreamStoreRefs,
-  StreamPartEvent,
-} from "../messages/opencodeStore";
+import type { AgentStreamStoreRefs } from "../messages/agentStreamStore";
 import type { OptimisticUserMessage } from "../messages/useOptimisticUserMessages";
 import type { ModelOption, ProjectOption } from "../workspace/catalogUtils";
 import { INITIAL_SESSION_LIMIT, type SessionItem } from "./mobileAppConfig";
@@ -46,9 +42,10 @@ type SessionRecoveryRefValue = {
 };
 
 export function useMobileAppRefs() {
-  const streamRef = useRef<EventSource | null>(null);
+  const streamRef = useRef<{ close: () => void } | null>(null);
   const sessionIdRef = useRef("");
   const streamSessionRef = useRef("");
+  const sessionActiveRunIdRef = useRef<Record<string, string>>({});
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
   const messagesRef = useRef<MobileChatMessage[]>([]);
@@ -84,7 +81,7 @@ export function useMobileAppRefs() {
   );
   const streamMessageStoreRef = useRef<Record<string, Record<string, any>>>({});
   const streamPartStoreRef = useRef<
-    Record<string, Record<string, import('../messages/opencodeStore').StreamPartBucket>>
+    Record<string, Record<string, import('../messages/agentStreamStore').StreamPartBucket>>
   >({});
   const streamSessionStatusStoreRef = useRef<Record<string, SessionStatusInfo>>(
     {},
@@ -92,30 +89,12 @@ export function useMobileAppRefs() {
   const streamPermissionStoreRef = useRef<Record<string, any[]>>({});
   const streamQuestionStoreRef = useRef<Record<string, QuestionRequest[]>>({});
   const streamTodoStoreRef = useRef<Record<string, any[]>>({});
-  const streamPendingPartEventsRef = useRef<
-    Record<string, Record<string, StreamPartEvent[]>>
-  >({});
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
   const streamRunIdRef = useRef(0);
   const streamRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const streamTypewriterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const streamTypewriterQueueRef = useRef<
-    Record<
-      string,
-      {
-        sid: string;
-        messageId: string;
-        partId: string;
-        field: string;
-        text: string;
-      }
-    >
-  >({});
   const sessionStatusEpochRef = useRef(0);
   const busySinceRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
@@ -140,7 +119,7 @@ export function useMobileAppRefs() {
   }));
   const sessionRecoveryRef = useRef<SessionRecoveryRefValue | null>(null);
 
-  function getOpenCodeStreamStores(): OpenCodeStreamStoreRefs {
+  function getAgentStreamStores(): AgentStreamStoreRefs {
     return {
       messageRole: streamMessageRoleRef,
       message: streamMessageStoreRef,
@@ -149,7 +128,6 @@ export function useMobileAppRefs() {
       permission: streamPermissionStoreRef,
       question: streamQuestionStoreRef,
       todo: streamTodoStoreRef,
-      pendingPartEvents: streamPendingPartEventsRef,
       rawRows: sessionRawMapRef,
     };
   }
@@ -170,6 +148,7 @@ export function useMobileAppRefs() {
     streamRef,
     sessionIdRef,
     streamSessionRef,
+    sessionActiveRunIdRef,
     projectsRef,
     sessionsRef,
     messagesRef,
@@ -190,13 +169,10 @@ export function useMobileAppRefs() {
     streamPermissionStoreRef,
     streamQuestionStoreRef,
     streamTodoStoreRef,
-    streamPendingPartEventsRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
     streamRunIdRef,
     streamRenderTimerRef,
-    streamTypewriterTimerRef,
-    streamTypewriterQueueRef,
     sessionStatusEpochRef,
     busySinceRef,
     appStateRef,
@@ -206,7 +182,7 @@ export function useMobileAppRefs() {
     sessionMessageSyncRef,
     applyTurnWindowRef,
     sessionRecoveryRef,
-    getOpenCodeStreamStores,
+    getAgentStreamStores,
     applyTurnWindow,
   };
 }

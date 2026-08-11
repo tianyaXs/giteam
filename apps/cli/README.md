@@ -29,12 +29,6 @@ giteam --version
 
 ## 快速开始
 
-直接启动 Web UI：
-
-```bash
-npx giteam web
-```
-
 第一次安装后，推荐先跑一遍初始化检查：
 
 ```bash
@@ -46,7 +40,7 @@ giteam init
 - 检查依赖
 - 按需安装缺失依赖
 - 导入一个本地 Git 项目
-- 配置 OpenCode provider / model
+- 配置 agent provider / model
 - 启动服务或接入系统托管
 
 如果希望自动安装缺失依赖：
@@ -74,7 +68,7 @@ CLI 目前分成几类职责：
 - `init`：检查本机运行环境，必要时自动安装缺失依赖
 - `plugin`：单独检查、安装、更新、卸载依赖项
 - `pair-code`：查看或刷新移动端配对码
-- `config`：查看和修改控制服务 / OpenCode 配置
+- `config`：查看和修改控制服务配置
 - `doctor`：执行更偏仓库和运行环境层面的综合诊断
 
 ## 常用命令
@@ -120,7 +114,7 @@ giteam logs --follow
 - 默认只检查，不修改系统
 - `--install-missing` 会尝试安装缺失依赖
 - `--interactive` 可强制进入交互流程
-- `--with git,opencode` 可只处理指定插件
+- `--with git,giteam` 可只处理指定插件
 
 ### `plugin`
 
@@ -128,7 +122,7 @@ giteam logs --follow
 
 ```bash
 giteam plugin list
-giteam plugin check opencode
+giteam plugin check giteam
 giteam plugin install giteam
 giteam plugin uninstall giteam
 giteam plugin update giteam
@@ -138,7 +132,6 @@ giteam plugin update giteam
 
 - `git`
 - `entire`
-- `opencode`
 - `giteam`
 
 ### `service serve`
@@ -216,7 +209,7 @@ giteam service uninstall
 
 ### `config`
 
-查看或更新控制服务与 OpenCode 相关配置。
+查看或更新控制服务相关配置。
 
 常用字段示例：
 
@@ -224,14 +217,13 @@ giteam service uninstall
 - `--host` / `--port`：监听地址与端口
 - `--public-base-url`：对外公告的公网/局域网基础 URL（可选）
 - `--pair-code-ttl-mode`：验证码有效期策略
-- `--opencode-port`：OpenCode 服务端口
 - `--repo-path`：与仓库路径相关的设置（如传入）
 
 ### `doctor`
 
-运行时自检：配置、端口、依赖（`git` / `cargo` / `npm` / `opencode` 等）与可选的 OpenCode 预热。
+运行时自检：配置、端口、依赖（`git` / `cargo` / `npm` 等）与可选的 agent 运行时预热。
 
-默认不主动拉起 OpenCode；仅当传入 `--warmup` 时才会做预热类检查。
+默认不主动拉起 agent 运行时；仅当传入 `--warmup` 时才会做预热类检查。
 
 ## 仓库内本地运行（开发/调试）
 

@@ -1,4 +1,3 @@
-use super::desktop_rpc;
 use super::pi_agent::{
     AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink, AgentInteractionReply,
     CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
@@ -6,12 +5,12 @@ use super::pi_agent::{
 use futures::executor::block_on;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -134,6 +133,14 @@ struct PiControlSetThinkingRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PiControlSetSessionOptionsRequest {
+    session_id: String,
+    enabled_tools: Option<Vec<String>>,
+    append_system_prompt: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PiControlInteractionReplyRequest {
     interaction_id: String,
     reply: AgentInteractionReply,
@@ -147,8 +154,8 @@ struct PiControlAutoApproveRequest {
     enabled: bool,
 }
 
-fn pi_session_dir(repo_path: &str) -> PathBuf {
-    PathBuf::from(repo_path).join(".giteam").join("pi-sessions")
+fn pi_session_dir(repo_path: &str) -> Result<PathBuf, String> {
+    crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path)).map_err(|error| error.to_string())
 }
 
 fn pi_error_response(error: PiAgentError) -> (u16, Value) {
@@ -172,11 +179,6 @@ fn pi_error_response(error: PiAgentError) -> (u16, Value) {
 static CONTROL_RUNTIME: OnceLock<Mutex<Option<ControlRuntime>>> = OnceLock::new();
 static CONTROL_PAIR_STATE: OnceLock<Mutex<PairState>> = OnceLock::new();
 static CONTROL_BEARER_TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
-static WEB_STATIC_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-
-fn web_static_dir_cell() -> &'static Mutex<Option<PathBuf>> {
-    WEB_STATIC_DIR.get_or_init(|| Mutex::new(None))
-}
 
 fn runtime_cell() -> &'static Mutex<Option<ControlRuntime>> {
     CONTROL_RUNTIME.get_or_init(|| Mutex::new(None))
@@ -269,9 +271,65 @@ fn write_mobile_model_state(value: &Value) -> Result<(), String> {
     fs::write(path, text).map_err(|e| format!("write model state failed: {e}"))
 }
 
+/// 读取桌面端推送的模型启用状态。文件缺失/空时返回 `Value::Null`，
+/// 供手机端判断后回退到 `listProviders`。
+fn read_mobile_model_state() -> Result<Value, String> {
+    let Some(path) = mobile_model_state_path() else {
+        return Ok(Value::Null);
+    };
+    if !path.exists() {
+        return Ok(Value::Null);
+    }
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Ok(Value::Null),
+    };
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| format!("parse model state failed: {e}"))
+}
+
+/// 手机端写回模型开关变更：合并 enabled/hidden 进现有 state 文件并刷新
+/// updatedAt。availableModels 等其他字段保留——桌面端轮询/聚焦拉取后会
+/// 基于 enabled/hidden 重算 availableModels 再 push 回来（手机下次刷新读到）。
+/// 文件缺失/空（桌面从未 push）时以空对象初始化，避免手机首改写崩。
+fn apply_mobile_model_visibility(
+    enabled: Option<&Value>,
+    hidden: Option<&Value>,
+) -> Result<Value, String> {
+    let mut state = match read_mobile_model_state() {
+        Ok(Value::Null) | Err(_) => Value::Object(Default::default()),
+        Ok(v) => v,
+    };
+    let obj = state
+        .as_object_mut()
+        .ok_or_else(|| "model state is not an object".to_string())?;
+    if let Some(e) = enabled {
+        obj.insert("enabledModels".to_string(), e.clone());
+    }
+    if let Some(h) = hidden {
+        obj.insert("hiddenModels".to_string(), h.clone());
+    }
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    obj.insert("updatedAt".to_string(), Value::from(now_ms));
+    write_mobile_model_state(&state)?;
+    Ok(state)
+}
+
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn set_mobile_model_state_from_desktop(state: Value) -> Result<(), String> {
     write_mobile_model_state(&state)
+}
+
+/// 桌面端读取 mobile-model-state.json：供 main.rs 轮询线程与前端 invoke 共用。
+/// 文件缺失/空返回 Value::Null。
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+pub fn get_mobile_model_state_for_desktop() -> Result<Value, String> {
+    read_mobile_model_state()
 }
 
 fn control_auth_token_path() -> Option<PathBuf> {
@@ -861,114 +919,6 @@ fn write_http_no_content(stream: &mut TcpStream, status: u16) -> Result<(), Stri
         .map_err(|e| format!("write response failed: {e}"))
 }
 
-fn guess_content_type(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("html") => "text/html",
-        Some("js") => "application/javascript",
-        Some("mjs") => "application/javascript",
-        Some("css") => "text/css",
-        Some("json") => "application/json",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("svg") => "image/svg+xml",
-        Some("ico") => "image/x-icon",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("ttf") => "font/ttf",
-        Some("otf") => "font/otf",
-        Some("wasm") => "application/wasm",
-        _ => "application/octet-stream",
-    }
-}
-
-fn write_http_file(
-    stream: &mut TcpStream,
-    status: u16,
-    content_type: &str,
-    body: &[u8],
-) -> Result<(), String> {
-    let reason = match status {
-        200 => "OK",
-        404 => "Not Found",
-        _ => "OK",
-    };
-    let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
-        status, reason, content_type, body.len()
-    );
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-    write_stream_all(stream, head.as_bytes(), "write file headers")?;
-    write_stream_all(stream, body, "write file body")?;
-    stream
-        .flush()
-        .map_err(|e| format!("write file response failed: {e}"))
-}
-
-fn serve_static_file(stream: &mut TcpStream, req: &HttpRequest) -> bool {
-    let static_dir = match web_static_dir_cell().lock() {
-        Ok(guard) => guard.clone(),
-        Err(_) => None,
-    };
-    let Some(static_dir) = static_dir.as_ref() else {
-        return false;
-    };
-    // Only serve GET requests for static files
-    if req.method != "GET" {
-        return false;
-    }
-    // Don't serve API routes as static files
-    if req.path.starts_with("/api/") {
-        return false;
-    }
-
-    let sanitized = req.path.trim_start_matches('/').replace("..", "");
-    let file_path = if sanitized.is_empty() || sanitized.ends_with('/') {
-        static_dir.join("index.html")
-    } else {
-        static_dir.join(&sanitized)
-    };
-
-    // Security: ensure the resolved path is within static_dir
-    let canonical_file = match std::fs::canonicalize(&file_path) {
-        Ok(p) => p,
-        Err(_) => {
-            // File doesn't exist; try SPA fallback
-            let index_path = static_dir.join("index.html");
-            if let Ok(bytes) = std::fs::read(&index_path) {
-                let ct = guess_content_type(&index_path);
-                let _ = write_http_file(stream, 200, ct, &bytes);
-                return true;
-            }
-            return false;
-        }
-    };
-    let Ok(canonical_dir) = std::fs::canonicalize(static_dir) else {
-        return false;
-    };
-    if !canonical_file.starts_with(&canonical_dir) {
-        return false;
-    }
-
-    if canonical_file.is_file() {
-        if let Ok(bytes) = std::fs::read(&canonical_file) {
-            let ct = guess_content_type(&canonical_file);
-            let _ = write_http_file(stream, 200, ct, &bytes);
-            return true;
-        }
-    }
-
-    // Directory or missing file: SPA fallback
-    let index_path = static_dir.join("index.html");
-    if let Ok(bytes) = std::fs::read(&index_path) {
-        let ct = guess_content_type(&index_path);
-        let _ = write_http_file(stream, 200, ct, &bytes);
-        return true;
-    }
-
-    false
-}
-
 fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,Accept,Cache-Control,Pragma,Last-Event-ID,X-Requested-With\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -1030,64 +980,6 @@ fn parse_body_json(req: &HttpRequest) -> Result<Value, String> {
         return Ok(Value::Object(Default::default()));
     }
     serde_json::from_slice::<Value>(&req.body).map_err(|e| format!("invalid json body: {e}"))
-}
-
-fn summarize_rpc_log_value(value: &Value, depth: usize) -> Value {
-    if depth >= 2 {
-        return match value {
-            Value::Array(arr) => Value::String(format!("[array:{}]", arr.len())),
-            Value::Object(_) => Value::String("[object]".to_string()),
-            _ => value.clone(),
-        };
-    }
-    match value {
-        Value::Array(arr) => Value::Array(
-            arr.iter()
-                .take(6)
-                .map(|item| summarize_rpc_log_value(item, depth + 1))
-                .collect(),
-        ),
-        Value::Object(map) => {
-            let mut out = Map::new();
-            for (key, raw) in map {
-                let lower = key.to_lowercase();
-                if lower.contains("key")
-                    || lower.contains("token")
-                    || lower.contains("secret")
-                    || lower.contains("password")
-                {
-                    out.insert(key.clone(), Value::String("[redacted]".to_string()));
-                    continue;
-                }
-                if matches!(lower.as_str(), "prompt" | "message" | "log" | "output") {
-                    if let Some(text) = raw.as_str() {
-                        let short = if text.chars().count() > 160 {
-                            format!("{}…", text.chars().take(160).collect::<String>())
-                        } else {
-                            text.to_string()
-                        };
-                        out.insert(key.clone(), Value::String(short));
-                        continue;
-                    }
-                }
-                out.insert(key.clone(), summarize_rpc_log_value(raw, depth + 1));
-            }
-            Value::Object(out)
-        }
-        Value::String(text) => {
-            if text.chars().count() > 160 {
-                Value::String(format!("{}…", text.chars().take(160).collect::<String>()))
-            } else {
-                Value::String(text.clone())
-            }
-        }
-        _ => value.clone(),
-    }
-}
-
-fn summarize_desktop_rpc_args(args: &Value) -> String {
-    serde_json::to_string(&summarize_rpc_log_value(args, 0))
-        .unwrap_or_else(|_| "\"[unserializable args]\"".to_string())
 }
 
 fn handle_agent_events_sse(mut stream: TcpStream, req: &HttpRequest) {
@@ -1255,6 +1147,19 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    // 手机端读取桌面端推送的模型启用状态。手机不在 loopback，故用 bearer token
+    // 鉴权（ensure_authorized），而非 ensure_loopback。文件缺失返回 null，
+    // 客户端回退到 GET /api/v1/agent/providers。
+    if req.method == "GET" && req.path == "/api/v1/admin/mobile/model-state" {
+        if let Err(e) = ensure_authorized(&req) {
+            return (401, serde_json::json!({ "error": e }));
+        }
+        return match read_mobile_model_state() {
+            Ok(value) => (200, value),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
     if req.method == "PUT" && req.path == "/api/v1/admin/mobile/model-state" {
         if let Err(resp) = ensure_loopback(remote_ip, "admin.mobile.model-state") {
             return resp;
@@ -1265,6 +1170,23 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
         return match write_mobile_model_state(&raw) {
             Ok(_) => (200, serde_json::json!({ "ok": true })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    // 手机端写回模型开关变更（双向同步：手机 toggle → 合并进 state → 桌面
+    // 轮询/聚焦拉取重算 availableModels 再 push 回来）。手机不在 loopback，
+    // 用 bearer token 鉴权（与 GET 同），而非 ensure_loopback。
+    if req.method == "PUT" && req.path == "/api/v1/admin/mobile/model-visibility" {
+        if let Err(e) = ensure_authorized(&req) {
+            return (401, serde_json::json!({ "error": e }));
+        }
+        let raw = match parse_body_json(&req) {
+            Ok(v) => v,
+            Err(e) => return (400, serde_json::json!({ "error": e })),
+        };
+        return match apply_mobile_model_visibility(raw.get("enabledModels"), raw.get("hiddenModels")) {
+            Ok(state) => (200, state),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
     }
@@ -1307,8 +1229,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     }
 
     let settings = read_control_server_settings();
-    let is_desktop_rpc = req.method == "POST" && req.path == "/api/v1/desktop/rpc";
-    if !settings.enabled && !is_desktop_rpc {
+    if !settings.enabled {
         return (
             503,
             serde_json::json!({
@@ -1369,10 +1290,13 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if repo_path.is_empty() {
             return (400, serde_json::json!({ "error": "repoPath is required" }));
         }
-        let session_dir = request
-            .session_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| pi_session_dir(repo_path.as_str()));
+        let session_dir = match request.session_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => match pi_session_dir(repo_path.as_str()) {
+                Ok(dir) => dir,
+                Err(error) => return (500, serde_json::json!({ "error": error })),
+            },
+        };
         if let Err(error) = fs::create_dir_all(&session_dir) {
             return (
                 500,
@@ -1398,6 +1322,11 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             no_session: request.no_session.unwrap_or(false),
             thinking: None,
             max_tool_iterations: request.max_tool_iterations,
+            // HTTP/CLI 路径无桌面端内置浏览器，browser_use 不可用。
+            browser_controller: None,
+            parent_session_id: None,
+            parent_tool_call_id: None,
+            session_kind: "primary".to_string(),
         };
         return match block_on(PiAgentService::global().create_session(config)) {
             Ok(summary) => serde_json::to_value(summary)
@@ -1559,6 +1488,110 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    if req.method == "DELETE" && req.path == "/api/v1/agent/provider" {
+        let provider = req
+            .query
+            .get("provider")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if provider.is_empty() {
+            return (400, serde_json::json!({ "error": "provider is required" }));
+        }
+        return match PiAgentService::global().remove_custom_provider(provider) {
+            Ok(removed) => (200, serde_json::json!({ "removed": removed })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/provider/openai-compatible" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let base_url = raw
+            .get("baseUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let api_key = raw
+            .get("apiKey")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let name = raw
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let provider = raw
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if base_url.is_empty() || api_key.is_empty() || name.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "name, baseUrl and apiKey are required" }),
+            );
+        }
+        return match PiAgentService::global().connect_openai_compatible(
+            &base_url,
+            &api_key,
+            &name,
+            provider.as_deref(),
+        ) {
+            Ok((provider_id, added)) => (
+                200,
+                serde_json::json!({ "provider": provider_id, "name": name, "added": added }),
+            ),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/provider/endpoint" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let provider = raw
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let base_url = raw
+            .get("baseUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let api = raw
+            .get("api")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if provider.is_empty() || base_url.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "provider and baseUrl are required" }),
+            );
+        }
+        return match PiAgentService::global().update_provider_endpoint(
+            &provider,
+            &base_url,
+            api.as_deref(),
+        ) {
+            Ok(()) => (200, serde_json::json!({ "ok": true })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
     if req.method == "POST" && req.path == "/api/v1/agent/provider/refresh" {
         let raw = match parse_body_json(&req) {
             Ok(value) => value,
@@ -1704,6 +1737,32 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
+    // Build/Plan 模式热切：重建 session handle，保留 session_id 与 jsonl 历史，
+    // 仅按新 enabledTools/appendSystemPrompt 更换工具集与系统提示。
+    if req.method == "POST" && req.path == "/api/v1/agent/session-options" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let request: PiControlSetSessionOptionsRequest = match serde_json::from_value(raw) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error.to_string() })),
+        };
+        if request.session_id.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "sessionId is required" }));
+        }
+        return match block_on(PiAgentService::global().set_session_options(
+            request.session_id.as_str(),
+            request.enabled_tools,
+            request.append_system_prompt,
+        )) {
+            Ok(summary) => serde_json::to_value(summary)
+                .map(|value| (200, value))
+                .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
     // PR6：审批/提问交互。pending 只含脱敏输入，回复走首响应胜出语义。
     if req.method == "GET" && req.path == "/api/v1/agent/interactions" {
         let session_id = req
@@ -1762,47 +1821,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
-    // OpenCode HTTP API 已下线；手机端请改用 /api/v1/agent/**（后续重构）。
-    if req.path == "/api/v1/opencode"
-        || req.path.starts_with("/api/v1/opencode/")
-    {
-        return (
-            410,
-            serde_json::json!({
-                "error": "OpenCode API removed. Use /api/v1/agent/** instead.",
-                "code": "opencode_removed"
-            }),
-        );
-    }
-
     if req.method == "GET" && req.path == "/api/v1/repository/list" {
         return match read_client_repositories() {
             Ok(rows) => (200, Value::Array(rows)),
             Err(e) => (500, serde_json::json!({ "error": e })),
-        };
-    }
-
-    // Desktop RPC endpoint (used by giteam web)
-    if req.method == "POST" && req.path == "/api/v1/desktop/rpc" {
-        let raw = match parse_body_json(&req) {
-            Ok(v) => v,
-            Err(e) => return (400, serde_json::json!({ "error": e })),
-        };
-        let command = raw.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        let args = raw
-            .get("args")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let args_summary = summarize_desktop_rpc_args(&args);
-        return match desktop_rpc::handle_desktop_rpc(command, args) {
-            Ok(v) => (200, v),
-            Err(e) => {
-                eprintln!(
-                    "[desktop-rpc] command failed command={} args={} error={}",
-                    command, args_summary, e
-                );
-                (500, serde_json::json!({ "error": e }))
-            }
         };
     }
 
@@ -1816,18 +1838,6 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
     let _ = stream.set_nonblocking(false);
     let response = match read_http_request(&mut stream) {
         Ok(req) => {
-            // Try static file serving first (for giteam web)
-            if serve_static_file(&mut stream, &req) {
-                return;
-            }
-            if req.method == "GET" && req.path == "/api/v1/opencode/stream" {
-                let body = serde_json::json!({
-                    "error": "OpenCode stream removed. Use /api/v1/agent/stream instead.",
-                    "code": "opencode_removed"
-                });
-                let _ = write_http_json(&mut stream, 410, &body);
-                return;
-            }
             if req.method == "GET" && req.path == "/api/v1/agent/stream" {
                 handle_agent_events_sse(stream, &req);
                 return;
@@ -1882,19 +1892,6 @@ pub fn stop_control_server() {
             }
         }
     }
-}
-
-pub fn set_web_static_dir(dir: Option<PathBuf>) {
-    if let Ok(mut guard) = web_static_dir_cell().lock() {
-        *guard = dir;
-    }
-}
-
-pub fn is_web_static_mode() -> bool {
-    web_static_dir_cell()
-        .lock()
-        .map(|guard| guard.is_some())
-        .unwrap_or(false)
 }
 
 pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {

@@ -1,13 +1,7 @@
 import { useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import {
-  getClientRepositories,
-  getCurrentProject,
-  getInstalledOpencodeSkills,
-  getOpencodeConfig,
-  getOpencodeMcpStatus,
-  getProjects,
-  getSessions
-} from '../../api/controlApi';
+import { getClientRepositories } from '../../api/controlApi';
+import { createMobileAgentClient } from '../../api/agent/client';
+import { normalizeWorkspacePath } from '../../lib/path';
 import { toText } from '../../lib/text';
 import { saveSessionCache } from '../../storage/sessionCache';
 
@@ -46,7 +40,6 @@ export function useWorkspaceCatalogController(params: {
   setModelOptions: Dispatch<SetStateAction<ModelOption[]>>;
   setModel: Dispatch<SetStateAction<string>>;
   setInstalledSkills: Dispatch<SetStateAction<any[]>>;
-  setInstalledMcpServers: Dispatch<SetStateAction<Array<{ name: string; status: any }>>>;
   setExtensionsLoading: Dispatch<SetStateAction<boolean>>;
   setStatus: (value: string | ((prev: string) => string)) => void;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
@@ -54,17 +47,13 @@ export function useWorkspaceCatalogController(params: {
   triggerRightPulse: () => void;
   stableSortSessionItems: (items: SessionItem[]) => SessionItem[];
   isPlaceholderSessionTitle: (value: string) => boolean;
-  extractModelOptionsFromConfig: (raw: any) => ModelOption[];
-  normalizeMcpStatusMap: (raw: any) => Record<string, any>;
   sanitizeProjectOptions: (items: ProjectOption[]) => ProjectOption[];
   projectNameFromPath: (path: string) => string;
 }) {
   const {
     authed,
-    extractModelOptionsFromConfig,
     isPlaceholderSessionTitle,
     modelOptionsRef,
-    normalizeMcpStatusMap,
     projectNameFromPath,
     projectsRef,
     pushConnLog,
@@ -74,7 +63,6 @@ export function useWorkspaceCatalogController(params: {
     sessionCacheRef,
     sessionsRef,
     setExtensionsLoading,
-    setInstalledMcpServers,
     setInstalledSkills,
     setModel,
     setModelOptions,
@@ -89,6 +77,8 @@ export function useWorkspaceCatalogController(params: {
   } = params;
 
   return useMemo(() => {
+    const agentClient = () => createMobileAgentClient({ baseUrl: serverUrl, token });
+
     const setSessionsWithCacheMerge = (repo: string, next: SessionItem[], prev: SessionItem[]): SessionItem[] => {
       const prevTitleMap = new Map(prev.map((x) => [x.id, x.title]));
       const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
@@ -110,43 +100,21 @@ export function useWorkspaceCatalogController(params: {
 
     const refreshInstalledExtensions = async () => {
       const repo = toText(repoPath).trim();
-      if (!authed || !repo || !serverUrl || !token) {
-        console.log('[extensions] skip: no auth', { authed, repo: !!repo, serverUrl: !!serverUrl, token: !!token });
-        return;
-      }
+      if (!authed || !repo || !serverUrl || !token) return;
       setExtensionsLoading(true);
       try {
-        console.log('[extensions] fetching...');
-        const [skills, mcp, cfg] = await Promise.all([
-          getInstalledOpencodeSkills({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
-            console.log('[extensions] skills error:', err);
-            return [];
-          }),
-          getOpencodeMcpStatus({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
-            console.log('[extensions] mcp error:', err);
-            return {};
-          }),
-          getOpencodeConfig({ baseUrl: serverUrl, token, repoPath: repo }).catch((err: unknown) => {
-            console.log('[extensions] config error:', err);
-            return {};
-          })
-        ]);
-        const statusMap = {
-          ...normalizeMcpStatusMap(cfg),
-          ...normalizeMcpStatusMap(mcp)
-        };
-        setInstalledSkills(Array.isArray(skills) ? skills : []);
-        setInstalledMcpServers(Object.entries(statusMap).map(([name, status]) => ({ name, status })));
+        // pi_agent 控制面暂无 skills 列表路由；MCP 已从产品中移除。
+        setInstalledSkills([]);
       } finally {
         setExtensionsLoading(false);
       }
     };
 
     const refreshSessionsFromServer = async (targetRepoPath?: string) => {
-      const repo = toText(targetRepoPath || repoPath).trim();
+      const repo = normalizeWorkspacePath(targetRepoPath || repoPath);
       if (!authed || !repo) return [] as SessionItem[];
-      const cached = sessionCacheRef.current[repo];
-      if (cached && cached.length > 0) {
+      const cached = sessionCacheRef.current[repo] || sessionCacheRef.current[toText(targetRepoPath || repoPath).trim()];
+      if (cached && cached.length > 0 && normalizeWorkspacePath(repoPath) === repo) {
         const normalizedCached = stableSortSessionItems(cached);
         const prevIds = new Set(sessionsRef.current.map((x) => x.id));
         const hasNew = normalizedCached.some((x) => !prevIds.has(x.id));
@@ -155,28 +123,39 @@ export function useWorkspaceCatalogController(params: {
         if (hasNew) triggerLeftPulse();
       }
       try {
-        pushConnLog(`GET sessions repo=${repo}`);
-        const rows = await getSessions({
-          baseUrl: serverUrl,
-          token,
-          repoPath: repo,
-          limit: 200
-        });
-        pushConnLog(`GET sessions ok count=${rows.length}`);
-        const nextSessions = stableSortSessionItems(
-          rows.map((s) => {
-            const createdAt = Number(s.createdAt || 0) || 0;
-            const updatedAt = Number(s.updatedAt || 0) || createdAt;
-            return {
-              id: s.id,
-              title: s.title || '新会话',
-              preview: '',
-              updatedAt,
-              createdAt
-            };
-          })
-        );
-        const merged = setSessionsWithCacheMerge(repo, nextSessions, sessionsRef.current);
+        pushConnLog(`GET agent.sessions repo=${repo}`);
+        const rows = await agentClient().listSessions();
+        // 一次全量 list，按 repoPath 分桶写入 cache（对齐桌面侧栏多项目展开）。
+        const bucket: Record<string, SessionItem[]> = {};
+        for (const s of rows) {
+          const key = normalizeWorkspacePath(s.repoPath);
+          if (!key) continue;
+          const updatedAt = Number(s.updatedAtMs || 0) || 0;
+          (bucket[key] ||= []).push({
+            id: s.sessionId,
+            title: toText(s.title) || '新会话',
+            preview: '',
+            updatedAt,
+            createdAt: updatedAt
+          });
+        }
+        const nextCache: Record<string, SessionItem[]> = { ...sessionCacheRef.current };
+        for (const [key, items] of Object.entries(bucket)) {
+          nextCache[key] = stableSortSessionItems(items);
+        }
+        // 当前请求的 repo 即使为空也写空数组，避免残留旧缓存误导「无会话」。
+        if (!nextCache[repo]) nextCache[repo] = [];
+        sessionCacheRef.current = nextCache;
+        try {
+          saveSessionCache(sessionCacheRef.current);
+        } catch {
+          // ignore
+        }
+        const nextSessions = nextCache[repo] || [];
+        pushConnLog(`GET agent.sessions ok count=${nextSessions.length} repos=${Object.keys(bucket).length}`);
+        const prevForMerge =
+          normalizeWorkspacePath(repoPath) === repo ? sessionsRef.current : sessionCacheRef.current[repo] || [];
+        const merged = setSessionsWithCacheMerge(repo, nextSessions, prevForMerge);
         sessionsRef.current = merged;
         sessionCacheRef.current = { ...sessionCacheRef.current, [repo]: merged };
         try {
@@ -186,36 +165,121 @@ export function useWorkspaceCatalogController(params: {
         }
         return merged;
       } catch (e) {
-        pushConnLog(`GET sessions error ${String(e)}`, 'error');
+        pushConnLog(`GET agent.sessions error ${String(e)}`, 'error');
         setStatus((prev) => (prev.includes('sessions failed') ? prev : `会话同步失败: ${String(e)}`));
         return sessionsRef.current;
       }
     };
 
+    const applyModelOptions = (options: ModelOption[], source: string) => {
+      const prevIds = new Set(modelOptionsRef.current.map((x) => x.id));
+      const hasNew = options.some((x) => !prevIds.has(x.id));
+      setModelOptions(options);
+      setModel((prev) => {
+        const current = prev.trim();
+        if (current && options.some((x) => x.id === current)) return prev;
+        return options[0]?.id || prev;
+      });
+      pushConnLog(`${source} ok models=${options.length}`);
+      if (hasNew) triggerRightPulse();
+    };
+
+    const refreshModelCatalogFromProviders = async (): Promise<ModelOption[]> => {
+      pushConnLog('GET agent.providers');
+      const providers = await agentClient().listProviders();
+      const options: ModelOption[] = [];
+      for (const provider of providers) {
+        const models = Array.isArray(provider.models) ? provider.models : [];
+        for (const model of models) {
+          if (!model.hasCredential) continue;
+          const id = `${provider.provider}/${model.modelId}`;
+          options.push({
+            id,
+            label: toText(model.name) || model.modelId,
+            provider: provider.provider
+          });
+        }
+      }
+      return options;
+    };
+
+    const toModelOption = (ref: string, labelById: Map<string, string>): ModelOption | null => {
+      const id = toText(ref).trim();
+      if (!id.includes('/')) return null;
+      const slash = id.indexOf('/');
+      const provider = id.slice(0, slash);
+      const modelId = id.slice(slash + 1);
+      return {
+        id,
+        label: labelById.get(id) || modelId,
+        provider
+      };
+    };
+
     const refreshModelCatalog = async (targetRepoPath?: string) => {
       const repo = toText(targetRepoPath || repoPath).trim();
       if (!authed || !repo || !serverUrl) return;
+      // Composer 只展示「开关已开启」的模型，绝不回退成 listProviders 全量。
+      // 显示名仍可从 providers / modelLabels 取。
+      let providerOptions: ModelOption[] = [];
       try {
-        pushConnLog(`GET config repo=${repo}`);
-        const cfg = await getOpencodeConfig({ baseUrl: serverUrl, token, repoPath: repo });
-        const options = extractModelOptionsFromConfig(cfg);
-        const prevIds = new Set(modelOptionsRef.current.map((x) => x.id));
-        const hasNew = options.some((x) => !prevIds.has(x.id));
-        setModelOptions(options);
-        const configured = String(cfg?.model || '').trim();
-        const mobileActive = String(cfg?.giteamMobileModelState?.activeModel || '').trim();
-        const preferred = mobileActive && mobileActive.includes('/') ? mobileActive : configured;
-        if (preferred && preferred.includes('/')) {
-          setModel((prev) => {
-            const p = prev.trim();
-            if (!p || !p.includes('/')) return preferred;
-            return p;
-          });
-        }
-        pushConnLog(`GET config ok models=${options.length}`);
-        if (hasNew) triggerRightPulse();
+        providerOptions = await refreshModelCatalogFromProviders();
       } catch (e) {
-        pushConnLog(`GET config warn ${String(e)}`, 'info');
+        pushConnLog(`GET agent.providers warn ${String(e)}`, 'info');
+      }
+      const labelById = new Map<string, string>();
+      for (const opt of providerOptions) labelById.set(opt.id, opt.label);
+      const connectedIds = new Set(providerOptions.map((opt) => opt.id));
+
+      try {
+        const state = await agentClient().getMobileModelState();
+        if (!state) {
+          pushConnLog('mobile-model-state missing; composer models empty', 'info');
+          applyModelOptions([], 'GET mobile-model-state');
+          return;
+        }
+
+        const labels =
+          state.modelLabels && typeof state.modelLabels === 'object' ? state.modelLabels : {};
+        for (const [ref, label] of Object.entries(labels as Record<string, string>)) {
+          const name = toText(label).trim();
+          if (name) labelById.set(toText(ref), name);
+        }
+
+        const hiddenSet = new Set(
+          (Array.isArray(state.hiddenModels) ? state.hiddenModels : []).map((x) => toText(x).trim()).filter(Boolean)
+        );
+        const enabledList = Array.isArray(state.enabledModels)
+          ? state.enabledModels.map((x) => toText(x).trim()).filter((ref) => ref.includes('/'))
+          : null;
+        const availableList = (Array.isArray(state.availableModels) ? state.availableModels : [])
+          .map((x) => toText(x).trim())
+          .filter((ref) => ref.includes('/'));
+
+        let refs: string[] = [];
+        if (enabledList) {
+          const enabledSet = new Set(enabledList);
+          // 桌面推送的 availableModels ∩ 本地开关；并并入刚打开、桌面尚未回推的项
+          if (availableList.length > 0) {
+            refs = availableList.filter((ref) => enabledSet.has(ref) && !hiddenSet.has(ref));
+          }
+          for (const ref of enabledList) {
+            if (hiddenSet.has(ref) || refs.includes(ref)) continue;
+            // 已连接才进选择器；桌面尚未回推 available 时靠 providers 校验
+            if (connectedIds.size === 0 || connectedIds.has(ref)) refs.push(ref);
+          }
+        } else {
+          // 旧桌面未写 enabledModels：仅信 availableModels，仍不回退全量
+          refs = availableList.filter((ref) => !hiddenSet.has(ref));
+        }
+
+        const options = refs
+          .map((ref) => toModelOption(ref, labelById))
+          .filter((opt): opt is ModelOption => !!opt);
+        applyModelOptions(options, 'GET mobile-model-state');
+      } catch (e) {
+        pushConnLog(`GET mobile-model-state warn ${String(e)}; composer models empty`, 'info');
+        applyModelOptions([], 'GET mobile-model-state');
       }
     };
 
@@ -226,37 +290,13 @@ export function useWorkspaceCatalogController(params: {
       try {
         pushConnLog('GET repository list');
         const rows = await getClientRepositories({ baseUrl: base, token: tk });
-        let nextProjects = sanitizeProjectOptions(
+        const nextProjects = sanitizeProjectOptions(
           rows.map((x) => ({
             id: x.id || x.path,
             worktree: x.path,
             name: toText(x.name) || projectNameFromPath(x.path)
           }))
         );
-        if (nextProjects.length === 0) {
-          pushConnLog('GET repository list empty, fallback to opencode project APIs');
-          const [current, all] = await Promise.all([
-            getCurrentProject({ baseUrl: base, token: tk }).catch(() => null),
-            getProjects({ baseUrl: base, token: tk }).catch(() => [])
-          ]);
-          const merged = new Map<string, ProjectOption>();
-          if (current?.worktree) {
-            merged.set(current.worktree, {
-              id: current.id || current.worktree,
-              worktree: current.worktree,
-              name: projectNameFromPath(current.worktree)
-            });
-          }
-          for (const p of all) {
-            if (!p.worktree) continue;
-            merged.set(p.worktree, {
-              id: p.id || p.worktree,
-              worktree: p.worktree,
-              name: projectNameFromPath(p.worktree)
-            });
-          }
-          nextProjects = sanitizeProjectOptions([...merged.values()]);
-        }
         const prevIds = new Set(projectsRef.current.map((x) => x.id));
         const hasNew = nextProjects.some((x) => !prevIds.has(x.id));
         setProjects(nextProjects);
@@ -271,37 +311,6 @@ export function useWorkspaceCatalogController(params: {
         if (hasNew) triggerLeftPulse();
       } catch (e) {
         pushConnLog(`GET repository list error ${String(e)}`, 'error');
-        try {
-          pushConnLog('GET repository list fallback(after error) to opencode project APIs');
-          const [current, all] = await Promise.all([
-            getCurrentProject({ baseUrl: base, token: tk }).catch(() => null),
-            getProjects({ baseUrl: base, token: tk }).catch(() => [])
-          ]);
-          const merged = new Map<string, ProjectOption>();
-          if (current?.worktree) {
-            merged.set(current.worktree, {
-              id: current.id || current.worktree,
-              worktree: current.worktree,
-              name: projectNameFromPath(current.worktree)
-            });
-          }
-          for (const p of all) {
-            if (!p.worktree) continue;
-            merged.set(p.worktree, {
-              id: p.id || p.worktree,
-              worktree: p.worktree,
-              name: projectNameFromPath(p.worktree)
-            });
-          }
-          const fallbackProjects = sanitizeProjectOptions([...merged.values()]);
-          if (fallbackProjects.length > 0) {
-            setProjects(fallbackProjects);
-            if (!toText(repoPath).trim()) setRepoPath(fallbackProjects[0].worktree);
-            pushConnLog(`fallback project APIs ok count=${fallbackProjects.length}`);
-          }
-        } catch (fallbackErr) {
-          pushConnLog(`fallback project APIs error ${String(fallbackErr)}`, 'error');
-        }
       }
     };
 
@@ -313,10 +322,8 @@ export function useWorkspaceCatalogController(params: {
     };
   }, [
     authed,
-    extractModelOptionsFromConfig,
     isPlaceholderSessionTitle,
     modelOptionsRef,
-    normalizeMcpStatusMap,
     projectNameFromPath,
     projectsRef,
     pushConnLog,
@@ -326,7 +333,6 @@ export function useWorkspaceCatalogController(params: {
     sessionCacheRef,
     sessionsRef,
     setExtensionsLoading,
-    setInstalledMcpServers,
     setInstalledSkills,
     setModel,
     setModelOptions,

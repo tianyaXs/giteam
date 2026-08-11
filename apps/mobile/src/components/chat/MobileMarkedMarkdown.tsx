@@ -1,24 +1,26 @@
 import React, { memo } from 'react';
 import { type TextStyle, type ViewStyle } from 'react-native';
-import { StreamdownText } from 'react-native-streamdown';
-import type { LinkPressEvent, MarkdownStyle } from 'react-native-enriched-markdown';
+import Markdown from 'react-native-markdown-display';
 
+/** 纯 JS Markdown 渲染（react-native-markdown-display），不依赖原生模块，
+ *  保证解析稳定；样式由调用方按主题生成。 */
 export const MobileMarkedMarkdown = memo(function MobileMarkedMarkdown(props: {
   value: string;
-  styles: MarkdownStyle;
+  styles: Record<string, any>;
   containerStyle?: ViewStyle | TextStyle;
   streaming: boolean;
-  onLinkPress?: (event: LinkPressEvent) => void | Promise<void>;
+  onLinkPress?: (event: { url?: string }) => void | Promise<void>;
 }) {
-  const { containerStyle, onLinkPress, styles, value } = props;
-
+  const { onLinkPress, styles, value } = props;
   return (
-    <StreamdownText
-      containerStyle={containerStyle as any}
-      markdown={value}
-      markdownStyle={styles}
-      onLinkPress={onLinkPress}
-      selectable
-    />
+    <Markdown
+      style={styles as any}
+      onLinkPress={(url) => {
+        void onLinkPress?.({ url });
+        return false;
+      }}
+    >
+      {value}
+    </Markdown>
   );
 });

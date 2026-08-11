@@ -1,15 +1,15 @@
 import React, { useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { Drawer } from 'react-native-drawer-layout';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
-import { ChatComposer, ComposerPickerSheet } from './ChatComposer';
+import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Reanimated, { useAnimatedStyle } from 'react-native-reanimated';
+import { useMobileTheme } from '../../features/theme/ThemeProvider';
+import { QuestionDock } from '../QuestionDock';
+import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
+import { ChatConversationStage } from './ChatConversationStage';
 import { ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoCardView } from './MobileTurnCell';
-import { QuestionDock } from '../QuestionDock';
-import { ChatConversationStage } from './ChatConversationStage';
-import { NotebookGearGlyph, NotebookListGlyph } from './NotebookNavGlyphs';
-import type { ChatMaintainVisibleContentPosition } from '../../features/chat/useChatListController';
-
 type NotebookColors = {
   shell: string;
   main: string;
@@ -19,17 +19,21 @@ type NotebookColors = {
   faint: string;
   line: string;
   paper: string;
+  ink: string;
 };
 
 type QuestionRequestLike = {
   id: string;
 };
 
-type NotebookPanel = 'left' | 'right' | '';
+type NotebookPanel = 'left' | '';
+type MainRoute = 'chat' | 'settings';
 
 export type ChatWorkspaceScreenHandle = {
   closeDrawer: () => void;
   openDrawer: (side: 'left' | 'right') => void;
+  openSettings: () => void;
+  closeSettings: () => void;
 };
 
 type ChatWorkspaceScreenProps = {
@@ -40,10 +44,11 @@ type ChatWorkspaceScreenProps = {
   notebookColors: NotebookColors;
   onBeforeOpenDrawer?: () => void;
   onOpenLeftDrawer: () => void;
-  onOpenRightDrawer: () => void;
+  onOpenRightDrawer?: () => void;
   onDrawerCloseSettled?: () => void;
+  onNewSession?: () => void;
   leftDrawer: React.ReactNode;
-  rightDrawer: React.ReactNode;
+  settingsContent: React.ReactNode;
   showNotebookSessionTitle: boolean;
   currentSessionTitle: string;
   showStreamTopGlow: boolean;
@@ -73,7 +78,6 @@ type ChatWorkspaceScreenProps = {
   historyProgressWidth: `${number}%`;
   showLatestJump: boolean;
   listRevealReady: boolean;
-  maintainVisibleContentPosition: ChatMaintainVisibleContentPosition;
   onJumpToLatest: () => void;
   suppressFloatingDocks: boolean;
   latestTodoCard: any | null;
@@ -90,14 +94,12 @@ type ChatWorkspaceScreenProps = {
   composerProps: React.ComponentProps<typeof ChatComposer>;
   previewImage: { uri: string; filename?: string } | null;
   onClosePreviewImage: () => void;
-  composerPickerProps: React.ComponentProps<typeof ComposerPickerSheet>;
 };
 
 export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, ChatWorkspaceScreenProps>(function ChatWorkspaceScreen(props, ref) {
   const {
     activeQuestionRequest,
     chatViewabilityConfig,
-    composerPickerProps,
     composerProps,
     currentSessionTitle,
     chatListMountKey,
@@ -106,12 +108,10 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     displayedTurnCells,
     historyProgressWidth,
     inputDockHeight,
-    keyboardInset,
     latestTodoCard,
     leftDrawer,
     loadingOlder,
     shouldSuppressLoadOlder,
-    maintainVisibleContentPosition,
     messageBottomInset,
     messageScrollRef,
     notebookColors,
@@ -119,6 +119,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     onOpenLeftDrawer,
     onOpenRightDrawer,
     onDrawerCloseSettled,
+    onNewSession,
     onChatViewableItemsChanged,
     onClosePreviewImage,
     onContentSizeChange,
@@ -140,7 +141,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     questionSubmitState,
     renderedTurnsLength,
     renderTurnCell,
-    rightDrawer,
+    settingsContent,
     sessionHistoryRetryHintText,
     sessionId,
     listRevealReady,
@@ -154,9 +155,23 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     todoDockCollapsed,
     windowWidth
   } = props;
+  const { colors: themeColors } = useMobileTheme();
+  const themeDark = themeColors.isDark;
   const [activeNotebookPanel, setActiveNotebookPanel] = useState<NotebookPanel>('');
+  const [mainRoute, setMainRoute] = useState<MainRoute>('chat');
   const activeNotebookPanelRef = useRef<NotebookPanel>('');
   const openNotifiedPanelRef = useRef<NotebookPanel>('');
+  const composerRef = useRef<ChatComposerHandle>(null);
+  // 与 KeyboardStickyView 同源：同一帧键盘 height，列表抬升才和输入框同步
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
+  const listKeyboardAvoidStyle = useAnimatedStyle(() => {
+    const lift = -keyboardHeight.value;
+    return { marginBottom: lift > 0 ? lift : 0 };
+  }, [keyboardHeight]);
+
+  const dismissComposer = useCallback(() => {
+    composerRef.current?.collapse();
+  }, []);
 
   const setNotebookPanel = useCallback((next: NotebookPanel) => {
     activeNotebookPanelRef.current = next;
@@ -168,12 +183,28 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     setNotebookPanel('');
   }, [setNotebookPanel]);
 
+  const requestOpenSettings = useCallback(() => {
+    Keyboard.dismiss();
+    // swift-chat：设置是抽屉导航的兄弟主屏，关掉侧栏后切入设置页
+    setNotebookPanel('');
+    setMainRoute('settings');
+    onOpenRightDrawer?.();
+  }, [onOpenRightDrawer, setNotebookPanel]);
+
+  const requestCloseSettings = useCallback(() => {
+    setMainRoute('chat');
+  }, []);
+
   const requestOpenDrawer = useCallback((side: 'left' | 'right') => {
-    if (activeNotebookPanelRef.current === side) return;
+    if (side === 'right') {
+      requestOpenSettings();
+      return;
+    }
+    if (activeNotebookPanelRef.current === 'left') return;
     Keyboard.dismiss();
     onBeforeOpenDrawer?.();
-    setNotebookPanel(side);
-  }, [onBeforeOpenDrawer, setNotebookPanel]);
+    setNotebookPanel('left');
+  }, [onBeforeOpenDrawer, requestOpenSettings, setNotebookPanel]);
 
   const handleLeftDrawerOpen = useCallback(() => {
     setNotebookPanel('left');
@@ -183,23 +214,8 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     }
   }, [onOpenLeftDrawer, setNotebookPanel]);
 
-  const handleRightDrawerOpen = useCallback(() => {
-    setNotebookPanel('right');
-    if (openNotifiedPanelRef.current !== 'right') {
-      openNotifiedPanelRef.current = 'right';
-      onOpenRightDrawer();
-    }
-  }, [onOpenRightDrawer, setNotebookPanel]);
-
   const handleLeftDrawerClose = useCallback(() => {
     if (activeNotebookPanelRef.current === 'left') {
-      openNotifiedPanelRef.current = '';
-      setNotebookPanel('');
-    }
-  }, [setNotebookPanel]);
-
-  const handleRightDrawerClose = useCallback(() => {
-    if (activeNotebookPanelRef.current === 'right') {
       openNotifiedPanelRef.current = '';
       setNotebookPanel('');
     }
@@ -210,12 +226,17 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   }, [onDrawerCloseSettled]);
 
   useImperativeHandle(ref, () => ({
-    closeDrawer: requestCloseDrawer,
-    openDrawer: requestOpenDrawer
-  }), [requestCloseDrawer, requestOpenDrawer]);
+    closeDrawer: () => {
+      requestCloseDrawer();
+      requestCloseSettings();
+    },
+    openDrawer: requestOpenDrawer,
+    openSettings: requestOpenSettings,
+    closeSettings: requestCloseSettings
+  }), [requestCloseDrawer, requestCloseSettings, requestOpenDrawer, requestOpenSettings]);
 
   const drawerWidth = useMemo(
-    () => Math.round(windowWidth > 434 ? 300 : windowWidth * 0.83),
+    () => Math.round(Math.min(windowWidth * 0.9, windowWidth - 36)),
     [windowWidth]
   );
   const compactSessionTitle = useMemo(() => {
@@ -224,30 +245,33 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     return `${title.slice(0, 18).trimEnd()}...`;
   }, [currentSessionTitle]);
   const renderLeftDrawerContent = React.useCallback(
-    () => <View style={styles.slideDrawerContent}>{leftDrawer}</View>,
-    [leftDrawer, styles.slideDrawerContent]
-  );
-  const renderRightDrawerContent = React.useCallback(
-    () => <View style={styles.slideDrawerContent}>{rightDrawer}</View>,
-    [rightDrawer, styles.slideDrawerContent]
+    () => (
+      <View style={[styles.slideDrawerContent, { height: '100%', width: drawerWidth }]}>
+        {leftDrawer}
+      </View>
+    ),
+    [drawerWidth, leftDrawer, styles.slideDrawerContent]
   );
 
   const mainContent = (
     <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main }]}>
-      <StatusBar barStyle="dark-content" backgroundColor={notebookColors.shell} />
-      <View style={[styles.topBar, { backgroundColor: notebookColors.main }]}>
-        <View style={styles.topSideSlot}>
-          <Pressable
-            accessibilityLabel="打开左侧面板"
-            hitSlop={10}
-            onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
-            style={styles.topNavButton}
-          >
-            <Animated.View style={activeNotebookPanel === 'left' ? styles.topNavGlyphActive : styles.topNavGlyph}>
-              <NotebookListGlyph color={activeNotebookPanel === 'left' ? '#1f4e86' : '#2f2922'} />
-            </Animated.View>
-          </Pressable>
-        </View>
+      <StatusBar barStyle={themeDark ? 'light-content' : 'dark-content'} backgroundColor={notebookColors.shell} />
+      <View style={[styles.topBar, { backgroundColor: notebookColors.main, borderBottomColor: notebookColors.line }]}>
+        <Pressable
+          accessibilityLabel="打开左侧面板"
+          hitSlop={8}
+          onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
+          style={[
+            styles.topNavButton,
+            { backgroundColor: themeDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }
+          ]}
+        >
+          <Feather
+            name="menu"
+            size={18}
+            color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
+          />
+        </Pressable>
         <View style={styles.topBrand}>
           {showNotebookSessionTitle ? (
             <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>
@@ -255,25 +279,21 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             </Text>
           ) : null}
         </View>
-        <View style={styles.topSideSlotRight}>
-          <Pressable
-            accessibilityLabel="打开右侧面板"
-            hitSlop={10}
-            onPress={activeNotebookPanel === 'right' ? requestCloseDrawer : () => requestOpenDrawer('right')}
-            style={styles.topNavButton}
-          >
-            <Animated.View style={activeNotebookPanel === 'right' ? styles.topNavGlyphActive : styles.topNavGlyph}>
-              <NotebookGearGlyph color={activeNotebookPanel === 'right' ? '#1f4e86' : '#2f2922'} />
-            </Animated.View>
-          </Pressable>
-        </View>
+        <Pressable
+          accessibilityLabel="新建会话"
+          hitSlop={8}
+          onPress={() => onNewSession?.()}
+          style={[
+            styles.topNavButton,
+            { backgroundColor: themeDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }
+          ]}
+        >
+          <Feather name="edit" size={16} color={notebookColors.text} />
+        </Pressable>
       </View>
-      <KeyboardAvoidingView
-        behavior="padding"
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 48}
-        style={styles.keyboardAwareContent}
-      >
-        <Animated.View style={styles.chatStageViewport}>
+      {/* 输入条 StickyView + 列表 marginBottom 均跟 reanimated 键盘 height，同帧同步 */}
+      <View style={styles.keyboardAwareContent}>
+        <Reanimated.View style={[styles.chatStageViewport, listKeyboardAvoidStyle]}>
           <ChatConversationStage
             styles={styles}
             windowWidth={windowWidth}
@@ -305,8 +325,10 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             historyProgressWidth={historyProgressWidth}
             listRevealReady={listRevealReady}
             showLatestJump={showLatestJump}
-            maintainVisibleContentPosition={maintainVisibleContentPosition}
             onJumpToLatest={onJumpToLatest}
+            hasEnabledModels={(composerProps.modelOptions?.length || 0) > 0}
+            onOpenModelSettings={composerProps.onOpenModelManager}
+            onBlankPress={dismissComposer}
           />
           {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
             <View
@@ -317,7 +339,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
                   position: 'absolute',
                   left: 0,
                   right: 0,
-                  bottom: Math.max(104, inputDockHeight + keyboardInset + 14),
+                  bottom: Math.max(104, inputDockHeight + 14),
                   zIndex: 30
                 }
               ]}
@@ -344,9 +366,18 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
               />
             </View>
           ) : null}
-        </Animated.View>
-        <ChatComposer {...composerProps} />
-      </KeyboardAvoidingView>
+        </Reanimated.View>
+        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+          <ChatComposer ref={composerRef} {...composerProps} />
+        </KeyboardStickyView>
+      </View>
+    </View>
+  );
+
+  const settingsPage = (
+    <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main, flex: 1 }]}>
+      <StatusBar barStyle={themeDark ? 'light-content' : 'dark-content'} backgroundColor={notebookColors.shell} />
+      {settingsContent}
     </View>
   );
 
@@ -355,7 +386,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
       <View style={[styles.notebookShell, { backgroundColor: notebookColors.shell }]}>
         <Drawer
           drawerPosition="left"
-          drawerStyle={[styles.slideDrawerSurface, { width: drawerWidth, backgroundColor: notebookColors.left }]}
+          drawerStyle={[styles.slideDrawerSurface, { width: drawerWidth, backgroundColor: themeDark ? '#1B1B1D' : '#FFFFFF' }]}
           drawerType="slide"
           keyboardDismissMode="on-drag"
           onClose={handleLeftDrawerClose}
@@ -367,30 +398,10 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           renderDrawerContent={renderLeftDrawerContent}
           swipeEdgeWidth={42}
         >
-          <Drawer
-            drawerPosition="right"
-            drawerStyle={[
-              styles.slideDrawerSurface,
-              styles.slideDrawerSurfaceRight,
-              { width: drawerWidth, backgroundColor: notebookColors.left }
-            ]}
-            drawerType="slide"
-            keyboardDismissMode="on-drag"
-            onClose={handleRightDrawerClose}
-            onOpen={handleRightDrawerOpen}
-            onTransitionEnd={handleDrawerTransitionEnd}
-            open={activeNotebookPanel === 'right'}
-            overlayAccessibilityLabel="关闭右侧面板"
-            overlayStyle={styles.slideDrawerOverlay}
-            renderDrawerContent={renderRightDrawerContent}
-            swipeEdgeWidth={42}
-          >
-            {mainContent}
-          </Drawer>
+          {mainRoute === 'settings' ? settingsPage : mainContent}
         </Drawer>
       </View>
       <ImagePreviewOverlay styles={styles} image={previewImage} onClose={onClosePreviewImage} />
-      <ComposerPickerSheet {...composerPickerProps} />
     </>
   );
 });

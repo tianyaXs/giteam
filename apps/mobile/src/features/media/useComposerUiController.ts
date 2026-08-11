@@ -25,7 +25,6 @@ export function useComposerUiController(props: {
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [attachmentPanelVisible, setAttachmentPanelVisible] = useState(false);
-  const [composerPickerOpen, setComposerPickerOpen] = useState(false);
   const [recentImages, setRecentImages] = useState<RecentImageItem[]>([]);
   const [recentImagesLoading, setRecentImagesLoading] = useState(false);
   const [recentImagesLoadingMore, setRecentImagesLoadingMore] = useState(false);
@@ -118,14 +117,6 @@ export function useComposerUiController(props: {
 
   const handleDismissAttachmentPanel = useCallback(() => {
     setAttachmentMenuOpen(false);
-  }, []);
-
-  const openComposerPicker = useCallback(() => {
-    setComposerPickerOpen(true);
-  }, []);
-
-  const closeComposerPicker = useCallback(() => {
-    setComposerPickerOpen(false);
   }, []);
 
   const mediaAssetsToRecentItems = useCallback((assets: MediaLibrary.Asset[]): RecentImageItem[] => {
@@ -235,9 +226,6 @@ export function useComposerUiController(props: {
     recentImagesLoading,
     recentImagesLoadingMore,
     recentImagesHasNext,
-    composerPickerOpen,
-    openComposerPicker,
-    closeComposerPicker,
     actionIconAnim,
     attachmentToggleAnim,
     attachmentPanelStyle,

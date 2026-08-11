@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { normalizeWorkspacePath } from '../../lib/path';
 import { toText } from '../../lib/text';
 
 type SessionItemLike = {
@@ -23,7 +24,7 @@ export function useProjectSwitchAction(params: {
   stableSortSessionItems: (items: SessionItemLike[]) => SessionItemLike[];
   projectNameFromPath: (worktree: string) => string;
   stopStream: () => void;
-  resetOpenCodeStreamStores: () => void;
+  resetAgentStreamStores: () => void;
   bumpOptimisticVersion: () => void;
   refreshModelCatalog: (targetRepoPath?: string) => Promise<void>;
   refreshSessionsFromServer: (targetRepoPath?: string) => Promise<SessionItemLike[]>;
@@ -46,7 +47,7 @@ export function useProjectSwitchAction(params: {
     refreshSessionsFromServer,
     renderRegressionRetryRef,
     repoPath,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     sessionCacheRef,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,
@@ -68,12 +69,20 @@ export function useProjectSwitchAction(params: {
     stopStream
   } = params;
 
-  return useCallback(async (nextRepoPath: string) => {
-    const next = toText(nextRepoPath).trim();
+  return useCallback(async (nextRepoPath: string, opts?: { activateSessionId?: string | null }) => {
+    const next = normalizeWorkspacePath(nextRepoPath) || toText(nextRepoPath).trim();
     if (!next) return;
-    const current = toText(repoPath).trim();
-    if (current === next) return;
-    const cachedNextSessions = stableSortSessionItems(sessionCacheRef.current[next] || []);
+    const current = normalizeWorkspacePath(repoPath) || toText(repoPath).trim();
+    if (current === next) {
+      const preferred = opts?.activateSessionId;
+      if (typeof preferred === 'string' && preferred.trim()) {
+        setActiveSession(preferred.trim());
+      }
+      return;
+    }
+    const cachedNextSessions = stableSortSessionItems(
+      sessionCacheRef.current[next] || sessionCacheRef.current[toText(nextRepoPath).trim()] || []
+    );
     stopStream();
     setStartupSessionHydrating(false);
     sessionsRef.current = cachedNextSessions;
@@ -88,7 +97,7 @@ export function useProjectSwitchAction(params: {
     sessionRawMapRef.current = {};
     sessionOptimisticUserMapRef.current = {};
     optimisticUserIdAliasRef.current = {};
-    resetOpenCodeStreamStores();
+    resetAgentStreamStores();
     sessionVisibleTurnCountRef.current = {};
     sessionTotalTurnCountRef.current = {};
     renderRegressionRetryRef.current = {};
@@ -97,9 +106,20 @@ export function useProjectSwitchAction(params: {
     setStatus(`已切换项目: ${projectNameFromPath(next)}`);
     await refreshModelCatalog(next);
     const nextSessions = await refreshSessionsFromServer(next);
+    const preferred = opts?.activateSessionId;
+    if (preferred === null) {
+      // 调用方稍后自行激活会话（抽屉点选跨项目会话）。
+      return;
+    }
+    if (typeof preferred === 'string' && preferred.trim()) {
+      const hit = preferred.trim();
+      if (nextSessions.some((s) => s.id === hit) || cachedNextSessions.some((s) => s.id === hit)) {
+        setActiveSession(hit);
+        return;
+      }
+    }
     if (nextSessions.length > 0) {
-      const latest = nextSessions[0];
-      setActiveSession(latest.id);
+      setActiveSession(nextSessions[0].id);
     }
   }, [
     bumpOptimisticVersion,
@@ -109,7 +129,7 @@ export function useProjectSwitchAction(params: {
     refreshSessionsFromServer,
     renderRegressionRetryRef,
     repoPath,
-    resetOpenCodeStreamStores,
+    resetAgentStreamStores,
     sessionCacheRef,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,

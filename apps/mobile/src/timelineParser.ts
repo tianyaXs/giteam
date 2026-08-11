@@ -1,10 +1,12 @@
 import {
-  buildOpencodeAssistantRenderGroups,
-  isOpencodeRenderablePart,
+  agentSearchDetail,
+  buildAgentAssistantRenderGroups,
+  isAgentContextTool,
+  isAgentRenderablePart,
   mergeAssistantTextChunks,
-  summarizeOpencodeContextProgress,
-  summarizeOpencodeContextToolCounts
-} from './lib/opencodeParts';
+  summarizeAgentContextProgress,
+  summarizeAgentContextToolCounts
+} from './lib/agentParts';
 import type {
   MobileChatMessage,
   MobileContextCard,
@@ -80,27 +82,26 @@ function hasCompactionPart(parts: any[]): boolean {
 }
 
 function toolMode(tool: string): string {
-  if (tool === 'read' || tool === 'list' || tool === 'glob' || tool === 'grep') return '读取';
+  if (tool === 'read' || tool === 'list' || tool === 'ls' || tool === 'glob' || tool === 'grep') return '读取';
+  if (tool === 'find' || tool === 'search') return '搜索';
   if (tool === 'write' || tool === 'edit' || tool === 'apply_patch') return '写入';
-  if (tool === 'bash') return '命令';
-  if (tool === 'search') return '搜索';
+  // bash 不再挂「命令」模式标签，由终端块直接呈现
   return '';
 }
 
-function toolDetail(input: any): string {
+function toolDetail(tool: string, input: any): string {
+  if (tool === 'bash') {
+    return normalizeText(input?.command) || normalizeText(input?.description);
+  }
+  const searchTool = tool === 'grep' || tool === 'find' || tool === 'glob' || tool === 'search';
+  if (searchTool) {
+    return agentSearchDetail(input || {});
+  }
   return normalizeText(input?.description)
     || normalizeText(input?.filePath)
-    || readableSearchPattern(input?.pattern)
     || normalizeText(input?.query)
     || normalizeText(input?.url)
     || normalizeText(input?.path);
-}
-
-function readableSearchPattern(pattern: unknown): string {
-  return normalizeText(pattern)
-    .replace(/\\\./g, '.')
-    .replace(/\\\//g, '/')
-    .replace(/\\-/g, '-');
 }
 
 function compactPath(input: string): string {
@@ -269,7 +270,7 @@ function toolOutputText(state: any): string {
 }
 
 function isContextTool(tool: string): boolean {
-  return tool === 'read' || tool === 'glob' || tool === 'grep' || tool === 'list';
+  return isAgentContextTool(tool);
 }
 
 
@@ -367,6 +368,9 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
   const state = part?.state || {};
   const status = normalizeText(state?.status).toLowerCase();
   const outputText = toolOutputText(state);
+  const errorText =
+    normalizeText(state?.error)
+    || (status === 'error' || status === 'failed' ? outputText : '');
   const showOutput = !isContextTool(tool) && !!outputText && (status === 'error' || tool === 'bash');
   const output = showOutput ? outputText : '';
   const metadata = state?.metadata || part?.metadata || {};
@@ -377,19 +381,29 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
     const m = outputText.match(/task_id:\\s*(ses[^\\s)]+)/i);
     return normalizeText(m?.[1] || '');
   })();
-  const taskSubagent = normalizeText(state?.input?.subagent_type);
+  const taskSubagent = normalizeText(state?.input?.subagent_type) || normalizeText(metadata?.subagentType);
+  const taskDescription =
+    normalizeText(metadata?.description)
+    || normalizeText(state?.input?.description)
+    || normalizeText(metadata?.summary);
   const fileDiff = normalizeEditFileDiff(tool, state, metadata);
   const patchFiles = tool === 'apply_patch' ? normalizePatchFiles(metadata) : undefined;
+  const primaryDetail =
+    (tool === 'task' ? taskDescription : '') ||
+    writeSummary ||
+    (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : '') ||
+    (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || '')} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : '') ||
+    summarizeWriteTool(tool, state?.input) ||
+    (tool === 'apply_patch' ? summarizePatchOutput(outputText) : '') ||
+    toolDetail(tool, state?.input);
+  // 探索类失败时不把整段 error dump 当主输出；摘要行展示精简错误。
+  const detail =
+    primaryDetail ||
+    (errorText ? errorText.replace(/^Error:\s*/i, '').trim() : '');
   return {
     id,
     title: tool,
-    detail:
-      writeSummary ||
-      (fileDiff ? `${compactPath(fileDiff.file)} · +${fileDiff.additions} -${fileDiff.deletions}` : '') ||
-      (patchFiles?.length === 1 ? `${compactPath(patchFiles[0]?.relativePath || '')} · +${patchFiles[0]?.additions || 0} -${patchFiles[0]?.deletions || 0}` : '') ||
-      summarizeWriteTool(tool, state?.input) ||
-      (tool === 'apply_patch' ? summarizePatchOutput(outputText) : '') ||
-      toolDetail(state?.input),
+    detail,
     mode: toolMode(tool),
     status,
     meta: tool === 'bash'
@@ -397,7 +411,7 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
       : normalizeText(state?.input?.path || state?.input?.filePath || metadata?.path || metadata?.filePath),
     fileDiff,
     patchFiles,
-    output,
+    output: tool === 'task' ? (normalizeText(metadata?.summary) || outputText) : output,
     taskSessionId,
     taskSubagent,
     createdAt
@@ -412,8 +426,8 @@ function mergeAdjacentContextItems(items: MobileTimelineItem[]): MobileTimelineI
       const tools = [...(prev.context.tools || []), ...(item.context.tools || [])];
       const counts = {
         read: tools.filter((tool) => normalizeText(tool.title) === 'read').length,
-        search: tools.filter((tool) => ['grep', 'glob', 'search'].includes(normalizeText(tool.title))).length,
-        list: tools.filter((tool) => normalizeText(tool.title) === 'list').length
+        search: tools.filter((tool) => ['grep', 'glob', 'search', 'find'].includes(normalizeText(tool.title))).length,
+        list: tools.filter((tool) => ['list', 'ls'].includes(normalizeText(tool.title))).length
       };
       merged[merged.length - 1] = {
         ...prev,
@@ -432,6 +446,65 @@ function mergeAdjacentContextItems(items: MobileTimelineItem[]): MobileTimelineI
     merged.push(item);
   }
   return merged;
+}
+
+/** 与桌面端 getBatchKind 对齐：判定单个工具事件属于哪个批组。 */
+function eventBatchKind(tool: string): 'shell' | 'edit' | 'web' | 'browser' | '' {
+  const t = normalizeText(tool).toLowerCase();
+  if (t === 'bash' || t === 'bash_output' || t === 'kill_shell') return 'shell';
+  if (t === 'write' || t === 'edit' || t === 'hashline_edit' || t === 'apply_patch') return 'edit';
+  if (t === 'web_fetch' || t === 'web_search') return 'web';
+  if (t === 'browser_use') return 'browser';
+  return '';
+}
+
+/** 与桌面端 buildBatchedTimelineGroups 对齐：相邻同类工具合并为一个批组（含单条），
+ *  其他时间线项（chat/think/todo/question/error/context）作为批次边界。 */
+function batchAdjacentToolEvents(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const out: MobileTimelineItem[] = [];
+  let pendingKind: '' | 'shell' | 'edit' | 'web' | 'browser' = '';
+  let pending: Array<Extract<MobileTimelineItem, { kind: 'event' }>> = [];
+
+  const flush = () => {
+    if (!pending.length || !pendingKind) return;
+    const first = pending[0];
+    const anyRunning = pending.some((row) => {
+      const s = normalizeText(row.event.status).toLowerCase();
+      return s === 'running' || s === 'pending';
+    });
+    out.push({
+      kind: 'toolBatch',
+      createdAt: first.createdAt,
+      batch: {
+        id: `batch:${pendingKind}:${first.event.id}`,
+        batchKind: pendingKind,
+        events: pending.map((row) => row.event),
+        status: anyRunning ? 'running' : 'completed',
+        createdAt: first.createdAt
+      }
+    });
+    pendingKind = '';
+    pending = [];
+  };
+
+  for (const item of items) {
+    if (item.kind !== 'event') {
+      flush();
+      out.push(item);
+      continue;
+    }
+    const kind = eventBatchKind(item.event.title);
+    if (!kind) {
+      flush();
+      out.push(item);
+      continue;
+    }
+    if (pendingKind && pendingKind !== kind) flush();
+    pendingKind = kind;
+    pending.push(item);
+  }
+  flush();
+  return out;
 }
 
 export function parseConversation(raw: unknown): ParsedConversation {
@@ -514,7 +587,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
       hasAssistantRenderable = true;
       hasError = true;
     }
-    const renderParts = parts.filter((p: any) => isOpencodeRenderablePart(p, true));
+    const renderParts = parts.filter((p: any) => isAgentRenderablePart(p, true));
     let groupIndex = 0;
     let assistantTextRun: string[] = [];
     const flushAssistantTextRun = (partCreatedAt: number) => {
@@ -536,7 +609,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
       });
       hasAssistantRenderable = true;
     };
-    for (const group of buildOpencodeAssistantRenderGroups(renderParts)) {
+    for (const group of buildAgentAssistantRenderGroups(renderParts)) {
       const partCreatedAt = createdAt + groupIndex;
       groupIndex += 1;
 
@@ -544,8 +617,8 @@ export function parseConversation(raw: unknown): ParsedConversation {
         flushAssistantTextRun(partCreatedAt);
         const batch = group.parts;
         const firstId = normalizeText((batch[0] as any)?.id) || `${id}:ctx`;
-        const counts = summarizeOpencodeContextToolCounts(batch);
-        const progress = summarizeOpencodeContextProgress(batch);
+        const counts = summarizeAgentContextToolCounts(batch);
+        const progress = summarizeAgentContextProgress(batch);
         const summary = summarizeContextCounts(counts) || '已收集上下文';
         const tools: MobileEventCard[] = batch.map((bp: any, bidx: number) => {
           const bid = normalizeText(bp?.id) || `${firstId}:ctx:${bidx}`;
@@ -673,7 +746,7 @@ export function parseConversation(raw: unknown): ParsedConversation {
     timeline.push(item);
   }
 
-  const normalizedTimeline = mergeAdjacentContextItems(timeline);
+  const normalizedTimeline = batchAdjacentToolEvents(mergeAdjacentContextItems(timeline));
 
   if (!hasAssistantRenderable && sizeLimitSyntheticCount > 0) {
     const userOnly = normalizedTimeline.filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat' && t.message.role === 'user');

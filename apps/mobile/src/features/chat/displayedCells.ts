@@ -12,6 +12,7 @@ function timelineItemKey(item: MobileTimelineItem, index: number): string {
   if (item.kind === 'chat') return `chat:${toText(item.message.id) || index}`;
   if (item.kind === 'think') return `think:${toText(item.card.id) || index}`;
   if (item.kind === 'event') return `event:${toText(item.event.id) || index}`;
+  if (item.kind === 'toolBatch') return `toolBatch:${toText(item.batch.id) || index}`;
   if (item.kind === 'context') return `context:${toText(item.context.id) || index}`;
   if (item.kind === 'todo') return `todo:${toText(item.todo.id) || index}`;
   if (item.kind === 'question') return `question:${toText(item.question.id) || index}`;

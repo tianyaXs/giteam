@@ -12,7 +12,6 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import appIconMarkUrl from "../../assets/app-icon-mark.png";
 import {
-  AGENT_COMPOSER_AGENT_OPTIONS,
   shortModelLabel,
   thinkingLevelMeta,
   type AgentThinkingLevel,
@@ -166,10 +165,6 @@ type ComposerConfigButtonProps = {
   hasConfiguredModel: boolean;
   modelPickerSearch: string;
   onModelPickerSearchChange: (value: string) => void;
-  activeAgent: ComposerAgentName | string;
-  onApplyAgent: (agentName: string) => void;
-  /** 生成中禁用模式切换：热切需重建 handle，不能在运行中进行。 */
-  activeSessionBusy?: boolean;
   modelValueLabel: string;
   activeThinkingLevel: AgentThinkingLevel;
   thinkingLevelOptions: AgentThinkingLevel[];
@@ -372,10 +367,6 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
   const updateOpen = (open: boolean) => {
     if (open !== props.showModelPicker) props.onToggleModelPicker();
   };
-  const agentLabel =
-    AGENT_COMPOSER_AGENT_OPTIONS.find((agent) => agent.name === props.activeAgent)?.label
-    || props.activeAgent
-    || "Build";
   const rowClass =
     "h-8 justify-between gap-2 rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground";
   const valueClass = "min-w-0 flex-1 truncate text-right text-muted-foreground";
@@ -390,8 +381,8 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
               "hover:bg-muted/70 hover:text-foreground",
               "focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
             )}
-            aria-label={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
-            title={props.hasConfiguredModel ? "配置模式、模型与推理强度" : props.labels.configureModels}
+            aria-label={props.hasConfiguredModel ? "配置模型与推理强度" : props.labels.configureModels}
+            title={props.hasConfiguredModel ? "配置模型与推理强度" : props.labels.configureModels}
             variant="ghost"
           >
             <span className="min-w-0 truncate">{props.configSummaryLabel}</span>
@@ -405,34 +396,6 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
           collisionPadding={12}
           className="w-[240px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
         >
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className={rowClass}>
-              <span className="shrink-0">模式</span>
-              <span className={valueClass}>{agentLabel}</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent
-              sideOffset={6}
-              className="w-[120px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
-            >
-              <DropdownMenuGroup>
-                {AGENT_COMPOSER_AGENT_OPTIONS.map((agent) => (
-                  <DropdownMenuItem
-                    key={agent.name}
-                    disabled={props.activeSessionBusy}
-                    className={cn(
-                      "h-8 justify-between gap-2 rounded-xl px-2.5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
-                      props.activeAgent === agent.name && "bg-muted text-foreground"
-                    )}
-                    onSelect={() => props.onApplyAgent(agent.name)}
-                  >
-                    <span className="text-[13px] font-medium leading-5">{agent.label}</span>
-                    {props.activeAgent === agent.name ? <CheckIcon width={14} height={14} /> : null}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuGroup>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-
           {props.hasConfiguredModel ? (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger className={rowClass}>
@@ -644,8 +607,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     onToggleModelPicker,
     modelPickerSearch,
     onModelPickerSearchChange,
-    activeAgent,
-    onApplyAgent,
+    activeAgent: _activeAgent,
+    onApplyAgent: _onApplyAgent,
     activeThinkingLevel,
     thinkingLevelOptions,
     onApplyThinkingLevel,
@@ -770,9 +733,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     hasConfiguredModel,
     modelPickerSearch,
     onModelPickerSearchChange,
-    activeAgent,
-    onApplyAgent,
-    activeSessionBusy,
     modelValueLabel,
     activeThinkingLevel,
     thinkingLevelOptions,

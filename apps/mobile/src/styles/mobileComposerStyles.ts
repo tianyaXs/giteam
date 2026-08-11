@@ -24,11 +24,11 @@ export const composerStyles = {
     alignItems: "flex-start",
     justifyContent: "center",
     paddingLeft: 18,
-    backgroundColor: "#eef5ee",
+    backgroundColor: "#2d2d2d",
   },
 
   todoSwipeHintText: {
-    color: "#3a8f82",
+    color: "#10A37F",
     fontSize: 12,
     lineHeight: 16,
     fontWeight: "800",
@@ -42,12 +42,12 @@ export const composerStyles = {
   todoDockCompact: {
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(65,54,38,0.10)",
-    backgroundColor: "#fffdf7",
+    borderColor: "#3c3c3c",
+    backgroundColor: "#252526",
     paddingVertical: 12,
     paddingHorizontal: 14,
     gap: 10,
-    shadowColor: "#503c1e",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.08,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
@@ -57,12 +57,12 @@ export const composerStyles = {
   todoDock: {
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(65,54,38,0.10)",
-    backgroundColor: "#fffdf7",
+    borderColor: "#3c3c3c",
+    backgroundColor: "#252526",
     paddingVertical: 12,
     paddingHorizontal: 14,
     gap: 10,
-    shadowColor: "#503c1e",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.07,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
@@ -70,24 +70,24 @@ export const composerStyles = {
   },
 
   inputDock: {
-    marginHorizontal: 12,
-    marginBottom: 10,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "rgba(65,54,38,0.10)",
-    backgroundColor: "#fffdf7",
-    minHeight: 92,
-    paddingLeft: 14,
-    paddingRight: 12,
-    paddingTop: 12,
-    paddingBottom: 10,
+    marginHorizontal: 16,
+    marginBottom: 0,
+    borderRadius: 28,
+    borderWidth: 0,
+    borderColor: "transparent",
+    backgroundColor: "#FFFFFF",
+    minHeight: 54,
+    paddingLeft: 4,
+    paddingRight: 4,
+    paddingTop: 4,
+    paddingBottom: 4,
     flexDirection: "column",
     alignItems: "stretch",
-    gap: 10,
-    shadowColor: "#503c1e",
-    shadowOpacity: 0.07,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
+    gap: 0,
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
     elevation: 3,
     zIndex: 3,
   },
@@ -102,7 +102,94 @@ export const composerStyles = {
 
   inputRow: { flexDirection: "row", alignItems: "center", gap: 8 },
 
-  inputToolbar: { flexDirection: "row", alignItems: "center", gap: 10 },
+  inputToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 0,
+    minHeight: 52,
+    paddingVertical: 0,
+  },
+
+  /** 双区 dock：左输入区 + 右模型区（默认收起） */
+  inputZones: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 44,
+    borderRadius: 22,
+    backgroundColor: "transparent",
+    padding: 3,
+    position: "relative",
+  },
+
+  inputZoneOuter: {
+    width: "50%",
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+
+  inputZone: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 6,
+    minHeight: 38,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    overflow: "hidden",
+  },
+
+  inputZoneExpanded: {
+    flex: 1,
+  },
+
+  modelZoneOuter: {
+    width: "50%",
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+
+  modelZone: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    minHeight: 38,
+    borderRadius: 18,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+
+  modelZoneDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    marginVertical: 10,
+    opacity: 0.35,
+  },
+
+  modelZoneIconShell: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  modelZoneLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 17,
+    flexShrink: 1,
+    fontFamily: FONT_UI_MEDIUM,
+    maxWidth: 90,
+  },
+
+  modelZoneChevron: {
+    marginLeft: -2,
+    opacity: 0.7,
+  },
 
   inputToolbarSpacer: { flex: 1 },
 
@@ -114,15 +201,15 @@ export const composerStyles = {
     paddingRight: 14,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "#f1eadf",
+    backgroundColor: "#2d2d2d",
     borderWidth: 1,
-    borderColor: "#ded6ca",
+    borderColor: "#3c3c3c",
   },
 
   autoToggleActive: {
-    backgroundColor: "#e7f2ee",
-    borderColor: "#c8ded7",
-    shadowColor: "#3a8f82",
+    backgroundColor: "#2d2d2d",
+    borderColor: "#3c3c3c",
+    shadowColor: "#10A37F",
     shadowOpacity: 0.12,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 4 },
@@ -135,42 +222,43 @@ export const composerStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#fffdf7",
+    backgroundColor: "#252526",
     borderWidth: 1.5,
-    borderColor: "#d8cec0",
+    borderColor: "#3c3c3c",
   },
 
   autoToggleText: {
-    color: "#7c766c",
+    color: "#9da5b4",
     fontSize: 13,
     fontWeight: "700",
     letterSpacing: 0.2,
   },
 
-  autoToggleTextActive: { color: "#2f7f74" },
+  autoToggleTextActive: { color: "#10A37F" },
 
   autoToggleKnob: {
     width: 8,
     height: 8,
     borderRadius: 999,
-    backgroundColor: "#a69d8e",
+    backgroundColor: "#9da5b4",
   },
 
-  autoToggleKnobActive: { backgroundColor: "#3a8f82" },
+  autoToggleKnobActive: { backgroundColor: "#10A37F" },
 
   inputMain: {
-    minHeight: 30,
-    maxHeight: 96,
-    paddingTop: Platform.OS === "android" ? 3 : 1,
-    paddingBottom: Platform.OS === "android" ? 3 : 1,
+    flex: 1,
+    minHeight: 52,
+    maxHeight: 120,
+    paddingTop: Platform.OS === "ios" ? 15 : 14,
+    paddingBottom: Platform.OS === "ios" ? 15 : 14,
     paddingHorizontal: 8,
-    color: "#24211d",
+    margin: 0,
+    color: "#1A1A1F",
     fontSize: 16,
     lineHeight: 22,
-    textAlignVertical: "top",
+    textAlignVertical: "center",
     fontFamily: FONT_UI_REGULAR,
     includeFontPadding: false,
-    ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as any) : {}),
   },
 
   actionBtnStop: {
@@ -179,27 +267,29 @@ export const composerStyles = {
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#ece8df",
+    backgroundColor: "#2d2d2d",
   },
 
   actionBtnSend: {
-    width: 38,
-    height: 38,
+    width: 32,
+    height: 32,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#24211d",
+    backgroundColor: "#10A37F",
+    marginLeft: 2,
   },
 
   actionBtnDisabled: {
-    width: 38,
-    height: 38,
+    width: 32,
+    height: 32,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "transparent",
+    backgroundColor: "#E8E8ED",
     borderWidth: 0,
     borderColor: "transparent",
+    marginLeft: 2,
   },
 
   accessPill: { flexDirection: "row", alignItems: "center", gap: 6 },
@@ -213,14 +303,14 @@ export const composerStyles = {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#f1eadf",
+    backgroundColor: "#2d2d2d",
     flexShrink: 1,
     minWidth: 0,
     maxWidth: 170,
   },
 
   modelMiniText: {
-    color: "#3a352e",
+    color: "#d4d4d4",
     fontSize: 13,
     fontWeight: "700",
     lineHeight: 17,
@@ -228,9 +318,9 @@ export const composerStyles = {
     fontFamily: FONT_UI_MEDIUM,
   },
 
-  actionBtnStopTxt: { color: "#7c766c", fontSize: 12, fontWeight: "700" },
+  actionBtnStopTxt: { color: "#9da5b4", fontSize: 12, fontWeight: "700" },
 
-  actionBtnSendTxt: { color: "#fff", fontSize: 18, fontWeight: "700" },
+  actionBtnSendTxt: { color: "#252526", fontSize: 18, fontWeight: "700" },
 
   actionBtnGhost: {
     width: 36,
@@ -238,13 +328,13 @@ export const composerStyles = {
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f4efe6",
+    backgroundColor: "#2d2d2d",
     borderWidth: 1,
-    borderColor: "#ddd4c5",
+    borderColor: "#3c3c3c",
   },
 
   actionBtnGhostTxt: {
-    color: "#24211d",
+    color: "#d4d4d4",
     fontSize: 22,
     lineHeight: 22,
     fontWeight: "500",
@@ -252,10 +342,10 @@ export const composerStyles = {
 
   slashPopover: {
     marginTop: 8,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#252526",
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#e7edf5",
+    borderColor: "#2d2d2d",
     overflow: "hidden",
     maxHeight: 320,
     shadowColor: "#c8d2df",
@@ -272,7 +362,7 @@ export const composerStyles = {
     paddingVertical: 12,
   },
 
-  slashItemActive: { backgroundColor: "#f2f6fb" },
+  slashItemActive: { backgroundColor: "#222325" },
 
   slashItemMain: { flex: 1, minWidth: 0, gap: 2 },
 
@@ -283,13 +373,13 @@ export const composerStyles = {
     gap: 8,
   },
 
-  slashTrigger: { color: "#1f2937", fontSize: 15, fontWeight: "600" },
+  slashTrigger: { color: "#d4d4d4", fontSize: 15, fontWeight: "600" },
 
-  slashTitle: { color: "#475569", fontSize: 13 },
+  slashTitle: { color: "#9da5b4", fontSize: 13 },
 
-  slashDesc: { color: "#94a3b8", fontSize: 12 },
+  slashDesc: { color: "#9da5b4", fontSize: 12 },
 
-  slashSource: { color: "#94a3b8", fontSize: 11, textTransform: "uppercase" },
+  slashSource: { color: "#9da5b4", fontSize: 11, textTransform: "uppercase" },
 
   attachmentScroller: {
     maxHeight: 70,
@@ -310,11 +400,11 @@ export const composerStyles = {
     width: 62,
     height: 62,
     borderRadius: 12,
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#1e1e1e",
     borderWidth: 1,
     borderColor: "#d7dee8",
     overflow: "hidden",
-    shadowColor: "#334155",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.08,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
@@ -328,12 +418,12 @@ export const composerStyles = {
     alignItems: "center",
     justifyContent: "center",
     gap: 3,
-    backgroundColor: "rgba(15,23,42,0.58)",
+    backgroundColor: "rgba(0,0,0,0.58)",
   },
 
   attachmentStateFailed: { backgroundColor: "rgba(185,28,28,0.68)" },
 
-  attachmentStateText: { color: "#ffffff", fontSize: 10, fontWeight: "700" },
+  attachmentStateText: { color: "#252526", fontSize: 10, fontWeight: "700" },
 
   attachmentChip: {},
 
@@ -348,13 +438,13 @@ export const composerStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(15,23,42,0.72)",
+    backgroundColor: "rgba(0,0,0,0.72)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.7)",
   },
 
   attachmentRemoveTxt: {
-    color: "#ffffff",
+    color: "#252526",
     fontSize: 14,
     lineHeight: 14,
     fontWeight: "700",
@@ -366,13 +456,13 @@ export const composerStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f1f5f9",
+    backgroundColor: "#1e1e1e",
     borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderColor: "#3c3c3c",
   },
 
   imagePickBtnTxt: {
-    color: "#334155",
+    color: "#d4d4d4",
     fontSize: 18,
     fontWeight: "600",
     lineHeight: 20,
@@ -390,8 +480,8 @@ export const composerStyles = {
     minHeight: 88,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#e7edf5",
-    backgroundColor: "#ffffff",
+    borderColor: "#2d2d2d",
+    backgroundColor: "#252526",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -405,16 +495,16 @@ export const composerStyles = {
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#1e1e1e",
     borderWidth: 1,
-    borderColor: "#e7edf5",
+    borderColor: "#2d2d2d",
   },
 
-  attachmentMenuLabel: { color: "#334155", fontSize: 14, fontWeight: "500" },
+  attachmentMenuLabel: { color: "#d4d4d4", fontSize: 14, fontWeight: "500" },
 
   recentHeaderRow: { flexDirection: "row", alignItems: "center" },
 
-  recentHeaderTitle: { color: "#64748b", fontSize: 13, fontWeight: "500" },
+  recentHeaderTitle: { color: "#9da5b4", fontSize: 13, fontWeight: "500" },
 
   recentScroller: { maxHeight: 300 },
 
@@ -433,22 +523,22 @@ export const composerStyles = {
     aspectRatio: 1,
     borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#f1f5f9",
+    backgroundColor: "#1e1e1e",
   },
 
   recentLoadingState: {
     width: "100%",
     minHeight: 74,
     borderRadius: 14,
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#1e1e1e",
     borderWidth: 1,
-    borderColor: "#edf2f7",
+    borderColor: "#2d2d2d",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
 
-  recentLoadingText: { color: "#64748b", fontSize: 12, fontWeight: "500" },
+  recentLoadingText: { color: "#9da5b4", fontSize: 12, fontWeight: "500" },
 
   recentThumbImage: { width: "100%", height: "100%" },
 
@@ -466,19 +556,19 @@ export const composerStyles = {
     justifyContent: "center",
   },
 
-  recentLoadHintText: { color: "#94a3b8", fontSize: 11, fontWeight: "600" },
+  recentLoadHintText: { color: "#9da5b4", fontSize: 11, fontWeight: "600" },
 
   recentEmptyState: {
     width: "100%",
     minHeight: 80,
     borderRadius: 12,
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#1e1e1e",
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
   },
 
-  recentEmptyText: { color: "#94a3b8", fontSize: 12 },
+  recentEmptyText: { color: "#9da5b4", fontSize: 12 },
 
   quickPanelGrid: {
     gap: 12,
@@ -490,7 +580,7 @@ export const composerStyles = {
     paddingVertical: 15,
     paddingHorizontal: 15,
     gap: 12,
-    shadowColor: "#503c1e",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.05,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 4 },
@@ -509,8 +599,8 @@ export const composerStyles = {
     flexBasis: "47%",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(65,54,38,0.10)",
-    backgroundColor: "#fffdf7",
+    borderColor: "#3c3c3c",
+    backgroundColor: "#252526",
     paddingVertical: 11,
     paddingHorizontal: 12,
     gap: 5,
@@ -524,7 +614,7 @@ export const composerStyles = {
 
   quickRefChipTitle: {
     flex: 1,
-    color: "#25231d",
+    color: "#d4d4d4",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "800",
@@ -532,7 +622,7 @@ export const composerStyles = {
   },
 
   quickRefChipSub: {
-    color: "#7c766c",
+    color: "#9da5b4",
     fontSize: 11,
     lineHeight: 15,
     fontFamily: FONT_TEXT_SERIF,
@@ -540,12 +630,12 @@ export const composerStyles = {
 
   quickPanelHint: {
     alignSelf: "flex-start",
-    color: "#6f6657",
+    color: "#9da5b4",
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "700",
     fontFamily: FONT_UI_MEDIUM,
-    backgroundColor: "#f4efe6",
+    backgroundColor: "#2d2d2d",
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -563,14 +653,14 @@ export const composerStyles = {
   },
 
   composerPickerSheet: {
-    backgroundColor: "#f7f3ea",
+    backgroundColor: "#1e1e1e",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 34,
     maxHeight: "80%",
-    shadowColor: "#503c1e",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.14,
     shadowRadius: 24,
     shadowOffset: { width: 0, height: -8 },
@@ -585,7 +675,7 @@ export const composerStyles = {
   },
 
   composerPickerTitle: {
-    color: "#24211d",
+    color: "#d4d4d4",
     fontSize: 22,
     lineHeight: 28,
     fontWeight: "800",
@@ -596,7 +686,7 @@ export const composerStyles = {
     width: 32,
     height: 32,
     borderRadius: 999,
-    backgroundColor: "#ece8df",
+    backgroundColor: "#2d2d2d",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -605,7 +695,7 @@ export const composerStyles = {
     flexDirection: "row",
     padding: 4,
     borderRadius: 999,
-    backgroundColor: "#f3f5f8",
+    backgroundColor: "#1e1e1e",
     gap: 6,
     marginBottom: 16,
   },
@@ -624,8 +714,8 @@ export const composerStyles = {
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: "#ffffff",
-    shadowColor: "#0f172a",
+    backgroundColor: "#252526",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.08,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
@@ -634,7 +724,7 @@ export const composerStyles = {
     justifyContent: "center",
   },
 
-  composerPickerChipText: { color: "#7c8798", fontSize: 14, fontWeight: "700" },
+  composerPickerChipText: { color: "#9da5b4", fontSize: 14, fontWeight: "700" },
 
   composerPickerChipTextActive: { color: "#182131" },
 
@@ -647,7 +737,7 @@ export const composerStyles = {
     borderRadius: 16,
     backgroundColor: "rgba(255,253,247,0.62)",
     borderWidth: 1,
-    borderColor: "rgba(65,54,38,0.08)",
+    borderColor: "#3c3c3c",
     marginBottom: 8,
   },
 
@@ -656,7 +746,7 @@ export const composerStyles = {
     alignItems: "center",
     padding: 14,
     borderRadius: 16,
-    backgroundColor: "#f0e9dc",
+    backgroundColor: "#2d2d2d",
     borderWidth: 1,
     borderColor: "rgba(65,54,38,0.16)",
     marginBottom: 8,
@@ -665,7 +755,7 @@ export const composerStyles = {
   composerPickerItemMain: { flex: 1, gap: 4 },
 
   composerPickerItemTitle: {
-    color: "#24211d",
+    color: "#d4d4d4",
     fontSize: 15,
     lineHeight: 20,
     fontWeight: "600",
@@ -673,7 +763,7 @@ export const composerStyles = {
   },
 
   composerPickerItemTitleActive: {
-    color: "#24211d",
+    color: "#d4d4d4",
     fontSize: 15,
     lineHeight: 20,
     fontWeight: "800",
@@ -681,7 +771,7 @@ export const composerStyles = {
   },
 
   composerPickerItemSub: {
-    color: "#7c766c",
+    color: "#9da5b4",
     fontSize: 12,
     lineHeight: 16,
     fontFamily: HANDWRITTEN_TEXT_FONT,
@@ -691,7 +781,7 @@ export const composerStyles = {
     width: 28,
     height: 28,
     borderRadius: 999,
-    backgroundColor: "#ece8df",
+    backgroundColor: "#2d2d2d",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -699,7 +789,7 @@ export const composerStyles = {
   composerPickerSection: { marginBottom: 8 },
 
   composerPickerSectionTitle: {
-    color: "#9a9182",
+    color: "#9da5b4",
     fontSize: 12,
     fontWeight: "800",
     marginBottom: 8,
@@ -720,21 +810,21 @@ export const composerStyles = {
     marginBottom: 6,
   },
 
-  composerPickerRowActive: { backgroundColor: "#f0e9dc" },
+  composerPickerRowActive: { backgroundColor: "#2d2d2d" },
 
   composerPickerRowText: {
-    color: "#5d5345",
+    color: "#9da5b4",
     fontSize: 16,
     lineHeight: 21,
     fontWeight: "600",
     fontFamily: HANDWRITTEN_TEXT_FONT,
   },
 
-  composerPickerRowTextActive: { color: "#24211d", fontWeight: "800" },
+  composerPickerRowTextActive: { color: "#d4d4d4", fontWeight: "800" },
 
   composerPickerDivider: {
     height: 1,
-    backgroundColor: "rgba(65,54,38,0.10)",
+    backgroundColor: "#3c3c3c",
     marginVertical: 8,
   },
 
@@ -742,19 +832,19 @@ export const composerStyles = {
     width: 48,
     height: 28,
     borderRadius: 999,
-    backgroundColor: "#ece8df",
+    backgroundColor: "#2d2d2d",
     padding: 3,
     justifyContent: "center",
   },
 
-  composerPickerSwitchActive: { backgroundColor: "#d8cec0" },
+  composerPickerSwitchActive: { backgroundColor: "#3c3c3c" },
 
   composerPickerSwitchThumb: {
     width: 22,
     height: 22,
     borderRadius: 999,
-    backgroundColor: "#fffdf7",
-    shadowColor: "#503c1e",
+    backgroundColor: "#252526",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.1,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 2 },

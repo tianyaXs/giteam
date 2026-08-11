@@ -11,36 +11,93 @@ import {
   Text,
   View
 } from 'react-native';
-import type { MarkdownStyle } from 'react-native-enriched-markdown';
-import { toText } from '../../lib/text';
-import type { MobileEventCard, MobileQuestionCard, MobileRenderedTurn, MobileTodoCard } from '../../types';
+import Reanimated, {
+  Easing as ReEasing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming
+} from 'react-native-reanimated';
 import type { TurnCellInteractionState } from '../../features/chat/useInteractiveTurnCells';
-import { FONT_MIXED_BODY_MEDIUM } from '../../styles/mobileFonts';
+import { useMobileTheme } from '../../features/theme/ThemeProvider';
+import { toText } from '../../lib/text';
+import type { MobileEventCard, MobileQuestionCard, MobileRenderedTurn, MobileTodoCard, MobileToolBatchCard } from '../../types';
 import { MobileMarkedMarkdown } from './MobileMarkedMarkdown';
 import { buildMobileDiffRows } from './mobileDiff';
+import { AnimatedCollapsibleContent } from '../AccordionBody';
 
-const CODE_SEGMENT_RE = /(```[\s\S]*?```|`[^`\n]+`)/g;
+/** 已播过入场的气泡，避免列表回收重复播放 */
+const enteredBubbleKeys = new Set<string>();
+const ENTER_FRESH_MS = 6000;
 
-function escapeUnderscoresInPaths(input: string) {
-  return input
-    .split(CODE_SEGMENT_RE)
-    .map((segment, index) => {
-      if (index % 2 === 1) return segment;
-      return segment.replace(
-        /(^|[\s([{>"'「『（，,：:;—-])((?:\.?[A-Za-z0-9][A-Za-z0-9._-]*)(?:[\\/][A-Za-z0-9._-]+)+(?::\d+(?::\d+)?)?)/gm,
-        (full, prefix, token) => {
-          if (!token.includes('_')) return full;
-          return `${prefix}${token.replace(/_/g, '\\_')}`;
-        }
-      );
-    })
-    .join('');
+function takeBubbleEnter(key: string, createdAt: number): boolean {
+  const id = toText(key).trim();
+  if (!id) return false;
+  if (enteredBubbleKeys.has(id)) return false;
+  const age = Date.now() - (Number(createdAt) || 0);
+  if (age > ENTER_FRESH_MS) {
+    enteredBubbleKeys.add(id);
+    return false;
+  }
+  enteredBubbleKeys.add(id);
+  if (enteredBubbleKeys.size > 400) {
+    const drop = enteredBubbleKeys.size - 280;
+    let i = 0;
+    for (const k of enteredBubbleKeys) {
+      enteredBubbleKeys.delete(k);
+      i += 1;
+      if (i >= drop) break;
+    }
+  }
+  return true;
+}
+
+/**
+ * 自下短距上移 + 淡入。
+ * 不用 layout `entering`：列表里常会先画出终态再播。
+ * playKey 只用 message id（勿拼 turn.id）：乐观消息落库后 turn.id 会变，否则会重播入场抖一下。
+ */
+function BubbleEnter(props: {
+  playKey: string;
+  createdAt: number;
+  variant: 'user' | 'assistant';
+  children: React.ReactNode;
+}) {
+  const { playKey, createdAt, variant, children } = props;
+  const decisionRef = useRef<{ key: string; play: boolean } | null>(null);
+  if (!decisionRef.current || decisionRef.current.key !== playKey) {
+    decisionRef.current = { key: playKey, play: takeBubbleEnter(playKey, createdAt) };
+  }
+  const shouldPlay = decisionRef.current.play;
+  const distance = variant === 'user' ? 14 : 12;
+  const duration = variant === 'user' ? 240 : 280;
+  const progress = useSharedValue(shouldPlay ? 0 : 1);
+  const startedRef = useRef(false);
+
+  useEffect(() => {
+    if (!shouldPlay || startedRef.current) return;
+    startedRef.current = true;
+    progress.value = withTiming(1, {
+      duration,
+      easing: ReEasing.out(ReEasing.cubic)
+    });
+  }, [duration, progress, shouldPlay]);
+
+  const style = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    transform: [{ translateY: (1 - progress.value) * distance }]
+  }));
+
+  // 静态 opacity 兜住首帧；之后以 animated style 为准（数组后项覆盖）
+  return (
+    <Reanimated.View style={[{ opacity: shouldPlay ? 0 : 1 }, style]}>
+      {children}
+    </Reanimated.View>
+  );
 }
 
 function normalizeMarkdownForMobile(input: string) {
   const trimmed = toText(input);
-  const withoutListIndent = trimmed.replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
-  return escapeUnderscoresInPaths(withoutListIndent);
+  return trimmed.replace(/^[ \t]{2,}(?=(?:\*\*|#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/gm, '');
 }
 
 function normalizeReasoningText(input: string) {
@@ -72,96 +129,96 @@ function MarkdownMessage(props: {
   streaming: boolean;
 }) {
   const { bodyFontFamily, streaming, styles, text, tone } = props;
+  const { colors } = useMobileTheme();
   const src = normalizeMarkdownForMobile(text);
   const flowAnim = useRef(new Animated.Value(streaming ? 0 : 1)).current;
   const isUser = tone === 'user';
   const isThink = tone === 'think';
-  const textColor = isUser ? '#fffaf2' : isThink ? '#746b5e' : '#24211d';
-  const mutedColor = isUser ? '#eadfce' : isThink ? '#8d826f' : '#6f6a61';
-  const headingColor = isUser ? '#ffffff' : isThink ? '#5f5749' : '#211e19';
-  const codeBg = isUser ? 'rgba(38, 35, 29, 0.34)' : isThink ? '#eee8dc' : '#f1ede5';
-  const inlineCodeColor = isUser ? '#fffaf2' : isThink ? '#6b6459' : '#667168';
-  const codeColor = isUser ? '#fffaf2' : '#355c4e';
-  const markdownStyles = useMemo<MarkdownStyle>(
+  const textColor = isUser ? colors.primaryText : isThink ? colors.muted : colors.text;
+  const mutedColor = isUser ? `${colors.primaryText}B3` : colors.muted;
+  const headingColor = isUser ? colors.primaryText : colors.text;
+  const codeBg = isUser ? `${colors.primaryText}2E` : colors.sidebar;
+  const inlineCodeColor = isUser ? colors.primaryText : isThink ? colors.muted : colors.primary;
+  const codeColor = isUser ? colors.primaryText : colors.primary;
+  const monoFamily = Platform.OS === 'android' ? 'monospace' : 'Menlo';
+  const markdownStyles = useMemo<Record<string, any>>(
     () => ({
-      paragraph: {
+      body: {
         color: textColor,
         fontSize: isThink ? 14 : 15,
         lineHeight: isThink ? 21 : 23,
-        fontFamily: bodyFontFamily,
-        marginTop: 0,
-        marginBottom: isThink ? 10 : 12
+        fontFamily: bodyFontFamily
       },
-      strong: { color: headingColor, fontWeight: 'bold', fontFamily: bodyFontFamily },
+      paragraph: { marginTop: 0, marginBottom: isThink ? 8 : 10 },
+      strong: { color: headingColor, fontWeight: '700', fontFamily: bodyFontFamily },
       em: { color: mutedColor, fontStyle: 'italic', fontFamily: bodyFontFamily },
-      link: { color: isUser ? '#bfdbfe' : '#2d7f95', underline: true, fontFamily: bodyFontFamily },
-      h1: { color: headingColor, fontSize: 28, lineHeight: 34, fontWeight: '700', marginTop: 20, marginBottom: 10, fontFamily: bodyFontFamily },
-      h2: { color: headingColor, fontSize: 24, lineHeight: 30, fontWeight: '700', marginTop: 18, marginBottom: 10, fontFamily: bodyFontFamily },
-      h3: { color: headingColor, fontSize: 20, lineHeight: 26, fontWeight: '700', marginTop: 16, marginBottom: 8, fontFamily: bodyFontFamily },
-      h4: { color: headingColor, fontSize: 18, lineHeight: 24, fontWeight: '700', marginTop: 14, marginBottom: 8, fontFamily: bodyFontFamily },
-      h5: { color: headingColor, fontSize: 17, lineHeight: 23, fontWeight: '700', marginTop: 12, marginBottom: 7, fontFamily: bodyFontFamily },
-      h6: { color: mutedColor, fontSize: 16, lineHeight: 22, fontWeight: '700', marginTop: 12, marginBottom: 7, fontFamily: bodyFontFamily },
-      list: {
-        color: textColor,
-        fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 21 : 23,
-        fontFamily: bodyFontFamily,
-        marginTop: 0,
-        marginBottom: 12,
-        marginLeft: 6,
-        gapWidth: 8,
-        bulletColor: mutedColor,
-        markerColor: mutedColor
+      s: { textDecorationLine: 'line-through' },
+      link: {
+        color: isUser ? colors.primaryText : colors.primary,
+        textDecorationLine: 'underline',
+        fontFamily: bodyFontFamily
       },
-      code: {
+      heading1: { color: headingColor, fontSize: 24, lineHeight: 30, fontWeight: '700', marginTop: 14, marginBottom: 8, fontFamily: bodyFontFamily },
+      heading2: { color: headingColor, fontSize: 20, lineHeight: 26, fontWeight: '700', marginTop: 12, marginBottom: 7, fontFamily: bodyFontFamily },
+      heading3: { color: headingColor, fontSize: 17, lineHeight: 23, fontWeight: '700', marginTop: 10, marginBottom: 6, fontFamily: bodyFontFamily },
+      heading4: { color: headingColor, fontSize: 16, lineHeight: 22, fontWeight: '700', marginTop: 8, marginBottom: 5, fontFamily: bodyFontFamily },
+      heading5: { color: mutedColor, fontSize: 15, lineHeight: 21, fontWeight: '700', marginTop: 8, marginBottom: 4, fontFamily: bodyFontFamily },
+      heading6: { color: mutedColor, fontSize: 14, lineHeight: 20, fontWeight: '700', marginTop: 8, marginBottom: 4, fontFamily: bodyFontFamily },
+      bullet_list: { marginTop: 2, marginBottom: isThink ? 8 : 10 },
+      ordered_list: { marginTop: 2, marginBottom: isThink ? 8 : 10 },
+      list_item: { marginTop: 2, marginBottom: 2 },
+      bullet_list_icon: { color: colors.primary, fontSize: isThink ? 14 : 15, lineHeight: isThink ? 21 : 23 },
+      ordered_list_icon: { color: colors.primary, fontSize: isThink ? 14 : 15, lineHeight: isThink ? 21 : 23, fontFamily: bodyFontFamily },
+      code_inline: {
         color: inlineCodeColor,
-        backgroundColor: 'transparent',
-        borderColor: 'transparent',
+        backgroundColor: codeBg,
+        borderRadius: 4,
         fontSize: 12.5,
-        fontFamily: FONT_MIXED_BODY_MEDIUM
+        fontFamily: monoFamily,
+        paddingHorizontal: 4
       },
-      codeBlock: {
+      code_block: {
         color: codeColor,
         backgroundColor: codeBg,
-        borderColor: codeBg,
-        borderRadius: 8,
-        padding: 10,
+        borderRadius: 10,
+        padding: 12,
         marginTop: 2,
         marginBottom: 10,
         fontSize: 12.5,
-        lineHeight: 20,
-        fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo'
+        lineHeight: 19,
+        fontFamily: monoFamily
+      },
+      fence: {
+        color: codeColor,
+        backgroundColor: codeBg,
+        borderRadius: 10,
+        padding: 12,
+        marginTop: 2,
+        marginBottom: 10,
+        fontSize: 12.5,
+        lineHeight: 19,
+        fontFamily: monoFamily,
+        borderWidth: 0
       },
       blockquote: {
-        color: textColor,
-        backgroundColor: isUser ? 'rgba(38, 35, 29, 0.18)' : '#f7f3eb',
-        borderColor: isUser ? '#eadfce' : '#c9b99f',
-        borderWidth: 2,
-        marginTop: 8,
-        marginBottom: 12,
-        gapWidth: 10
+        backgroundColor: isUser ? `${colors.primaryText}1F` : colors.card,
+        borderLeftWidth: 3,
+        borderLeftColor: isUser ? colors.primaryText : colors.primary,
+        paddingHorizontal: 12,
+        paddingVertical: 2,
+        marginTop: 4,
+        marginBottom: 10,
+        borderRadius: 4
       },
-      thematicBreak: {
-        color: isUser ? 'rgba(234,223,206,0.35)' : '#ded6ca',
-        height: 1,
-        marginTop: 14,
-        marginBottom: 14
-      },
-      table: {
-        color: textColor,
-        fontSize: isThink ? 14 : 15,
-        lineHeight: isThink ? 21 : 23,
-        headerTextColor: headingColor,
-        borderColor: isUser ? 'rgba(234,223,206,0.35)' : '#ddd4c5',
-        borderWidth: 1,
-        borderRadius: 8,
-        cellPaddingHorizontal: 8,
-        cellPaddingVertical: 8,
-        rowEvenBackgroundColor: isUser ? 'rgba(255,255,255,0.04)' : '#fbf8f2',
-        rowOddBackgroundColor: isUser ? 'rgba(255,255,255,0.02)' : '#f6f0e6'
-      }
+      hr: { backgroundColor: colors.border, height: 1, marginTop: 10, marginBottom: 10 },
+      table: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, marginTop: 4, marginBottom: 10 },
+      thead: { backgroundColor: isUser ? `${colors.primaryText}1A` : colors.card },
+      th: { color: headingColor, fontWeight: '700', padding: 7, borderColor: colors.border },
+      td: { color: textColor, padding: 7, borderColor: colors.border },
+      tr: { borderBottomWidth: 1, borderColor: colors.border },
+      image: { borderRadius: 10, marginTop: 4, marginBottom: 8 }
     }),
-    [bodyFontFamily, codeBg, codeColor, headingColor, inlineCodeColor, isThink, isUser, mutedColor, textColor]
+    [bodyFontFamily, codeBg, codeColor, colors, headingColor, inlineCodeColor, isThink, isUser, monoFamily, mutedColor, textColor]
   );
 
   useEffect(() => {
@@ -198,7 +255,6 @@ function MarkdownMessage(props: {
         }}
       >
         <MobileMarkedMarkdown
-          containerStyle={styles.streamdownTextContainer}
           streaming={streaming}
           styles={markdownStyles}
           value={src}
@@ -277,22 +333,13 @@ function writeEventActionLabel(event: MobileEventCard) {
 function toolLabel(tool: string) {
   const normalized = toText(tool).toLowerCase();
   if (normalized === 'read') return '读取';
-  if (normalized === 'grep' || normalized === 'glob' || normalized === 'search') return '搜索';
-  if (normalized === 'list') return '列出';
+  if (normalized === 'grep' || normalized === 'glob' || normalized === 'search' || normalized === 'find') return '搜索';
+  if (normalized === 'list' || normalized === 'ls') return '列出';
   if (normalized === 'write') return '写入';
   if (normalized === 'edit') return '编辑';
   if (normalized === 'apply_patch' || normalized === 'patch') return 'Patch';
   if (normalized === 'bash') return 'bash';
   return normalized || '工具';
-}
-
-function Chevron(props: { expanded: boolean; styles: Record<string, any> }) {
-  return (
-    <View style={[props.styles.disclosureChevron, props.expanded && props.styles.disclosureChevronExpanded]}>
-      <View style={props.styles.disclosureChevronLineLeft} />
-      <View style={props.styles.disclosureChevronLineRight} />
-    </View>
-  );
 }
 
 function ToolActivityRow(props: {
@@ -392,7 +439,6 @@ function ExploringStatusPill(props: {
   const { status, styles, currentActions = [], completedActions = [], onToggleExpand, isExpanded = false } = props;
   const isRunning = status.title === '探索中';
   const pulseAnim = useRef(new Animated.Value(0)).current;
-  const rotateAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
 
   useEffect(() => {
     if (!isRunning) {
@@ -410,21 +456,6 @@ function ExploringStatusPill(props: {
     loop.start();
     return () => loop.stop();
   }, [isRunning, pulseAnim]);
-
-  useEffect(() => {
-    if (isRunning) return;
-    Animated.timing(rotateAnim, {
-      toValue: isExpanded ? 1 : 0,
-      duration: 200,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [isExpanded, isRunning, rotateAnim]);
-
-  const chevronRotate = rotateAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '90deg'],
-  });
 
   const allActions = [...currentActions, ...completedActions];
 
@@ -463,11 +494,6 @@ function ExploringStatusPill(props: {
           <View style={styles.exploringStatusTitleWrap}>
             <Text style={styles.exploringStatusTitle}>{status.title}</Text>
           </View>
-          {allActions.length > 0 ? (
-            <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
-              <Chevron expanded={false} styles={styles} />
-            </Animated.View>
-          ) : null}
         </View>
         <Text style={styles.exploringStatusText} numberOfLines={1} ellipsizeMode="tail">
           {status.summary}
@@ -484,20 +510,22 @@ function ExploringStatusPill(props: {
         ) : null}
       </Pressable>
 
-      {isExpanded && allActions.length > 0 && (
-        <View style={styles.exploringStatusListCard}>
-          {allActions.map((action, index) => (
-            <ToolActivityRow
-              key={`${action.tool}-${index}`}
-              detail={action.detail}
-              status={action.status}
-              styles={styles}
-              subtle
-              tool={action.tool}
-            />
-          ))}
-        </View>
-      )}
+      {allActions.length > 0 ? (
+        <AnimatedCollapsibleContent open={isExpanded}>
+          <View style={styles.exploringStatusListCard}>
+            {allActions.map((action, index) => (
+              <ToolActivityRow
+                key={`${action.tool}-${index}`}
+                detail={action.detail}
+                status={action.status}
+                styles={styles}
+                subtle
+                tool={action.tool}
+              />
+            ))}
+          </View>
+        </AnimatedCollapsibleContent>
+      ) : null}
     </View>
   );
 }
@@ -524,91 +552,30 @@ function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed
   return <View style={pulse ? styles.todoStatusPending : styles.todoStatusPending} />;
 }
 
-function ThinkPreviewLines(props: { styles: Record<string, any>; text: string; active: boolean }) {
-  const { active, styles } = props;
-  const lines = toText(props.text)
-    .split(/\r?\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const visible = lines.length ? lines.slice(-6) : ['正在整理上下文...', '分析可执行步骤...', '准备生成回复...'];
+function ThinkPreviewLines(props: {
+  styles: Record<string, any>;
+  text: string;
+  active: boolean;
+  mutedColor: string;
+  textColor: string;
+}) {
+  const { active, styles, mutedColor, textColor } = props;
   const hasContent = toText(props.text).trim().length > 0;
-  const steps = active ? visible.slice(-3) : visible.slice(-2);
-  const [lineIndex, setLineIndex] = useState(Math.max(0, visible.length - 1));
-  const lineAnim = useRef(new Animated.Value(1)).current;
-  const dotAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    setLineIndex(Math.max(0, visible.length - 1));
-  }, [props.text, visible.length]);
-
-  useEffect(() => {
-    if (!active) {
-      dotAnim.stopAnimation();
-      dotAnim.setValue(0);
-      return;
-    }
-    dotAnim.setValue(0);
-    const loop = Animated.loop(
-      Animated.timing(dotAnim, {
-        toValue: 1,
-        duration: 960,
-        easing: Easing.inOut(Easing.quad),
-        useNativeDriver: true
-      })
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [active, dotAnim]);
-
-  const currentLine = active ? visible[Math.min(lineIndex, visible.length - 1)] || '正在整理思路...' : '已完成思考';
-  const dotScaleA = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.72, 1.22, 0.82, 0.72] });
-  const dotScaleB = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.82, 0.72, 1.22, 0.82] });
-  const dotScaleC = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [1.12, 0.82, 0.72, 1.12] });
-  const dotOpacityA = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.45, 1, 0.55, 0.45] });
-  const dotOpacityB = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0.55, 0.45, 1, 0.55] });
-  const dotOpacityC = dotAnim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [1, 0.55, 0.45, 1] });
+  const label = active ? (hasContent ? '思考中' : '正在思考…') : '已完成思考';
 
   return (
     <View style={styles.thinkFlowRow}>
-      <View style={styles.thinkFlowIconShell}>
-        <Text style={styles.thinkFlowIconText}>G</Text>
-      </View>
-      <View style={styles.thinkFlowContent}>
-        <View style={hasContent ? styles.thinkFlowPill : styles.thinkFlowPillWaiting}>
-          {active || !hasContent ? (
-            <View style={styles.thinkFlowDots}>
-              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityA, transform: [{ scale: dotScaleA }] }]} />
-              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityB, transform: [{ scale: dotScaleB }] }]} />
-              <Animated.View style={[styles.thinkFlowDot, { opacity: dotOpacityC, transform: [{ scale: dotScaleC }] }]} />
-            </View>
-          ) : null}
-          {hasContent ? (
-            <Animated.Text
-              numberOfLines={1}
-              style={[
-                styles.thinkFlowLine,
-                {
-                  opacity: lineAnim,
-                  transform: [{ translateY: lineAnim.interpolate({ inputRange: [0, 1], outputRange: [7, 0] }) }]
-                }
-              ]}
-            >
-              {currentLine}
-            </Animated.Text>
-          ) : null}
-        </View>
-        {hasContent ? (
-          <Animated.View style={[styles.thinkFlowSteps, { opacity: lineAnim }]}>
-            {steps.map((step, index) => (
-              <View key={`${index}:${step}`} style={styles.thinkFlowStepRow}>
-                <View style={index === steps.length - 1 && active ? styles.thinkFlowStepDotLive : styles.thinkFlowStepDot} />
-                <Text numberOfLines={1} style={styles.thinkFlowStepText}>
-                  {step}
-                </Text>
-              </View>
-            ))}
-          </Animated.View>
+      <View style={[styles.thinkFlowPill, { borderColor: 'transparent', backgroundColor: 'transparent' }]}>
+        {active ? (
+          <View style={styles.thinkFlowDots}>
+            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.55 }]} />
+            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.8 }]} />
+            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 1 }]} />
+          </View>
         ) : null}
+        <Text numberOfLines={1} style={[styles.thinkFlowLine, { color: textColor }]}>
+          {label}
+        </Text>
       </View>
     </View>
   );
@@ -820,7 +787,6 @@ const QuestionTimelineCard = React.memo(function QuestionTimelineCard(props: {
           </View>
           <View style={styles.questionTimelineHeadRight}>
             <Text style={styles.questionTimelineBadge}>{statusLabel}</Text>
-            {!canReply ? <Text style={styles.questionTimelineToggle}>{expanded ? '▲' : '▼'}</Text> : null}
           </View>
         </Pressable>
         {canReply ? (
@@ -887,6 +853,266 @@ const QuestionTimelineCard = React.memo(function QuestionTimelineCard(props: {
   );
 });
 
+function EventCardView(props: {
+  styles: Record<string, any>;
+  event: MobileEventCard;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { event, expanded, onToggle, styles } = props;
+  const status = toText(event.status).toLowerCase();
+  const isRunning = status === 'running' || status === 'pending';
+  const title = toText(event.title || 'Event');
+  const mode = toText(event.mode);
+  const eventDetail = toText(event.detail);
+  const detail = toText(event.detail || event.mode || event.status || '工具执行完成');
+  const isWriteEvent = mode === '写入' || mode.toLowerCase() === 'write' || title === 'apply_patch';
+  const isShellEvent = title.toLowerCase() === 'bash' || mode.toLowerCase() === 'bash' || mode === '命令';
+  const isTaskEvent = title.toLowerCase() === 'task' || !!toText((event as any).taskSessionId) || !!toText((event as any).taskSubagent);
+  const eventMeta = toText(event.meta);
+  const eventOutput = toText(event.output);
+  const eventFileDiff = event.fileDiff;
+  const eventPatchFiles = Array.isArray(event.patchFiles) ? event.patchFiles : [];
+  const eventExpandable =
+    isShellEvent
+    || isWriteEvent
+    || isTaskEvent
+    || !!eventOutput
+    || detail.length > 56
+    || eventMeta.length > 0
+    || !!eventFileDiff
+    || eventPatchFiles.length > 0;
+
+  if (isTaskEvent) {
+    const subagent = toText((event as any).taskSubagent) || 'plan';
+    const description = toText(event.detail) || toText(event.mode) || '子任务';
+    const sessionHint = toText((event as any).taskSessionId);
+    return (
+      <View style={styles.eventWrap}>
+        <Pressable disabled={!eventExpandable} onPress={onToggle} style={styles.eventCard}>
+          <View style={styles.eventHead}>
+            <Text style={styles.eventTitle}>{`Task · ${subagent}`}</Text>
+            <Text style={styles.eventMode}>{isRunning ? '运行中' : status === 'error' ? '失败' : '完成'}</Text>
+          </View>
+          <Text numberOfLines={2} style={styles.eventDetail}>{description}</Text>
+        </Pressable>
+        <AnimatedCollapsibleContent open={expanded}>
+          <View style={styles.eventExpandBody}>
+            {sessionHint ? <Text style={styles.eventMeta}>{`session ${sessionHint.slice(0, 12)}…`}</Text> : null}
+            {eventOutput ? <Text style={styles.eventOutput}>{eventOutput}</Text> : null}
+          </View>
+        </AnimatedCollapsibleContent>
+      </View>
+    );
+  }
+
+  // bash：不展示 bash/命令 标签，直接用终端块呈现命令与输出
+  if (isShellEvent) {
+    const command = toText(event.meta) || toText(event.detail);
+    const isError = status === 'error' || status === 'failed';
+    return (
+      <View style={styles.eventWrap}>
+        <Pressable disabled={!eventExpandable} onPress={onToggle} style={styles.bashTerminalWrap}>
+          <View
+            style={[
+              styles.bashTerminalCard,
+              isError ? styles.bashTerminalCardError : null,
+              isRunning ? styles.bashTerminalCardRun : null
+            ]}
+          >
+            {command ? (
+              <Text style={styles.bashTerminalCommand} numberOfLines={expanded ? undefined : 3}>
+                <Text style={styles.bashTerminalDollar}>{'$ '}</Text>
+                {command}
+              </Text>
+            ) : (
+              <Text style={styles.bashTerminalCommand}>{isRunning ? '运行中…' : 'bash'}</Text>
+            )}
+            {!expanded && eventOutput ? (
+              <Text numberOfLines={3} style={[styles.bashTerminalOutput, isError ? styles.bashTerminalOutputError : null]}>
+                {eventOutput}
+              </Text>
+            ) : null}
+            <AnimatedCollapsibleContent open={expanded && !!eventOutput}>
+              <Text style={[styles.bashTerminalOutput, isError ? styles.bashTerminalOutputError : null]}>
+                {eventOutput}
+              </Text>
+            </AnimatedCollapsibleContent>
+          </View>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const cardStyle = isWriteEvent
+    ? styles.writeEventCard
+    : styles.eventCard;
+
+  const titleStyle = isWriteEvent
+    ? styles.writeEventTitle
+    : styles.eventTitle;
+
+  const detailStyle = isWriteEvent
+    ? styles.writeEventDetail
+    : styles.eventDetail;
+
+  const outputStyle = isWriteEvent
+    ? styles.writeEventOutput
+    : styles.eventOutput;
+
+  if (isWriteEvent) {
+    const writeTitle = writeEventActionLabel(event);
+    const writeSummary = summarizeWriteEvent(event);
+    const pathText = writeSummary?.file || eventMeta || eventDetail;
+    const pathParts = splitDisplayPath(pathText);
+    const hasStructuredDiff = !!eventFileDiff || eventPatchFiles.length > 0;
+    const writeMeta = !hasStructuredDiff && eventMeta && eventMeta !== pathText ? eventMeta : '';
+    const writeDetail = !hasStructuredDiff && !writeSummary && eventDetail && eventDetail !== pathText ? eventDetail : '';
+
+    return (
+      <View style={styles.eventWrap}>
+        <Pressable
+          disabled={!eventExpandable}
+          onPress={onToggle}
+          style={cardStyle}
+        >
+          <View style={styles.writeEventHead}>
+            <View style={styles.writeEventHeadMain}>
+              <Text style={titleStyle}>{writeTitle}</Text>
+              {pathParts.filename ? (
+                <Text numberOfLines={1} style={styles.writeEventFile}>
+                  {pathParts.filename}
+                </Text>
+              ) : null}
+              {pathParts.directory ? (
+                <Text ellipsizeMode="head" numberOfLines={1} style={styles.writeEventDirectory}>
+                  {pathParts.directory}
+                </Text>
+              ) : null}
+            </View>
+            {writeSummary ? <Text style={styles.writeEventAdd}>{`+${writeSummary.additions}`}</Text> : null}
+            {writeSummary ? <Text style={styles.writeEventDel}>{`-${writeSummary.deletions}`}</Text> : null}
+          </View>
+          {!writeSummary && eventDetail ? (
+            <Text numberOfLines={1} style={detailStyle}>
+              {eventDetail}
+            </Text>
+          ) : null}
+          {eventOutput && !expanded ? (
+            <Text numberOfLines={3} style={outputStyle}>
+              {eventOutput}
+            </Text>
+          ) : null}
+        </Pressable>
+        <AnimatedCollapsibleContent open={expanded}>
+          <View style={styles.eventExpandBody}>
+            {writeMeta ? <Text style={styles.eventMeta}>{writeMeta}</Text> : null}
+            {writeDetail ? <Text style={detailStyle}>{writeDetail}</Text> : null}
+            {eventFileDiff ? (
+              <EventDiffBlock
+                additions={eventFileDiff.additions}
+                deletions={eventFileDiff.deletions}
+                before={eventFileDiff.before}
+                after={eventFileDiff.after}
+                patch={eventFileDiff.patch}
+                path={eventFileDiff.file}
+                showHeader={false}
+                styles={styles}
+              />
+            ) : null}
+            {!eventFileDiff && eventPatchFiles.length > 0 ? (
+              <View style={styles.eventDiffList}>
+                {eventPatchFiles.map((file) => (
+                  <EventDiffBlock
+                    key={`${event.id}:${file.relativePath}`}
+                    additions={file.additions}
+                    deletions={file.deletions}
+                    patch={file.patch}
+                    path={file.relativePath}
+                    showHeader={eventPatchFiles.length > 1}
+                    styles={styles}
+                  />
+                ))}
+              </View>
+            ) : null}
+            {eventOutput ? <Text style={outputStyle}>{eventOutput}</Text> : null}
+          </View>
+        </AnimatedCollapsibleContent>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.eventWrap}>
+      <Pressable
+        disabled={!eventExpandable}
+        onPress={onToggle}
+        style={cardStyle}
+      >
+        <View style={styles.eventHead}>
+          <Text style={titleStyle}>{toolLabel(title)}</Text>
+          {mode ? <Text style={styles.eventMode}>{mode}</Text> : null}
+        </View>
+        <Text numberOfLines={2} style={detailStyle}>{detail}</Text>
+        {eventOutput && !expanded ? <Text numberOfLines={3} style={outputStyle}>{eventOutput}</Text> : null}
+      </Pressable>
+      <AnimatedCollapsibleContent open={expanded}>
+        <View style={styles.eventExpandBody}>
+          {eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}
+          {eventOutput ? <Text style={outputStyle}>{eventOutput}</Text> : null}
+        </View>
+      </AnimatedCollapsibleContent>
+    </View>
+  );
+}
+
+/** 与桌面端 ToolBatchGroup 对齐：相邻同类工具收成一个可折叠批组，标签用
+ *  「已运行 N 条命令 / 已编辑 N 个文件 / 联网 N 次 / 已浏览 N 次」。 */
+function ToolBatchCardView(props: {
+  styles: Record<string, any>;
+  batch: MobileToolBatchCard;
+  expanded: boolean;
+  onToggle: () => void;
+  expandedEventIds: Record<string, boolean>;
+  onToggleEvent: (eventId: string) => void;
+}) {
+  const { batch, expanded, expandedEventIds, onToggle, onToggleEvent, styles } = props;
+  const running = batch.status === 'running';
+  const shell = batch.batchKind === 'shell';
+  const web = batch.batchKind === 'web';
+  const browser = batch.batchKind === 'browser';
+  const noun = shell ? '条命令' : web ? '次' : browser ? '次' : '个文件';
+  const label = shell
+    ? (running ? '运行中' : '已运行')
+    : web
+      ? (running ? '联网中' : '联网')
+      : browser
+        ? (running ? '浏览中' : '已浏览')
+        : (running ? '编辑中' : '已编辑');
+
+  return (
+    <View style={styles.toolBatchWrap}>
+      <Pressable style={styles.toolBatchHead} onPress={onToggle}>
+        <Text style={running ? styles.toolBatchLabelActive : styles.toolBatchLabel}>{label}</Text>
+        <Text style={styles.toolBatchCount}>{`${batch.events.length} ${noun}`}</Text>
+      </Pressable>
+      <AnimatedCollapsibleContent open={expanded}>
+        <View style={styles.toolBatchList}>
+          {batch.events.map((event) => (
+            <EventCardView
+              key={event.id}
+              styles={styles}
+              event={event}
+              expanded={!!expandedEventIds[event.id]}
+              onToggle={() => onToggleEvent(event.id)}
+            />
+          ))}
+        </View>
+      </AnimatedCollapsibleContent>
+    </View>
+  );
+}
+
 export const MobileTurnCell = React.memo(
   function MobileTurnCell(props: {
     bodyFontFamily: string;
@@ -940,8 +1166,10 @@ export const MobileTurnCell = React.memo(
       turn
     } = props;
     const [isExploringExpanded, setIsExploringExpanded] = useState(false);
+    const { colors } = useMobileTheme();
     const [expandedContextIds, setExpandedContextIds] = useState<Record<string, boolean>>({});
     const [expandedEventIds, setExpandedEventIds] = useState<Record<string, boolean>>({});
+    const [expandedBatchIds, setExpandedBatchIds] = useState<Record<string, boolean>>({});
     const measuredHeightRef = useRef(0);
     const toggleLocalExpansion = useCallback((apply: () => void) => {
       onBeforeLocalLayoutChange();
@@ -960,23 +1188,48 @@ export const MobileTurnCell = React.memo(
         }}
       >
         {turn.userMessage ? (
-          <View style={styles.bubbleUserWrap}>
-            <Pressable style={styles.bubbleUser} onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))} delayLongPress={280}>
-              <UserAttachmentStrip attachments={turn.userMessage.attachments} onOpen={onOpenImage} onCopy={onCopyImage} styles={styles} />
-              {toText(turn.userMessage.text).trim() ? <Text style={styles.bubbleUserText}>{toText(turn.userMessage.text || '...')}</Text> : null}
-            </Pressable>
-          </View>
+          <BubbleEnter
+            key={`user:${turn.userMessage.id}`}
+            playKey={`user:${turn.userMessage.id}`}
+            createdAt={turn.createdAt}
+            variant="user"
+          >
+            <View style={styles.bubbleUserWrap}>
+              <Pressable
+                style={[
+                  styles.bubbleUser,
+                  {
+                    // ChatGPT 风格：用户消息中性浅灰气泡（右下角留小尖角），不用品牌绿大面积铺色。
+                    backgroundColor: colors.isDark ? colors.card : colors.sidebar,
+                    borderBottomRightRadius: 6
+                  }
+                ]}
+                onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))}
+                delayLongPress={280}
+              >
+                <UserAttachmentStrip attachments={turn.userMessage.attachments} onOpen={onOpenImage} onCopy={onCopyImage} styles={styles} />
+                {toText(turn.userMessage.text).trim() ? <Text style={[styles.bubbleUserText, { color: colors.text }]}>{toText(turn.userMessage.text || '...')}</Text> : null}
+              </Pressable>
+            </View>
+          </BubbleEnter>
         ) : null}
         {turn.items.map((item) => {
           if (item.kind === 'chat') {
             const m = item.message;
             if (m.role === 'user') return null;
             return (
-              <View key={m.id} style={styles.bubbleAssistantWrap}>
-                <Pressable style={styles.bubbleAssistant} onLongPress={() => onCopyMessage(toText(m.text))} delayLongPress={280}>
-                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(m.text || '...'), 'assistant', streaming && isLastTurn)}</View>
-                </Pressable>
-              </View>
+              <BubbleEnter
+                key={m.id}
+                playKey={`assistant:${m.id}`}
+                createdAt={Number(m.createdAt || turn.createdAt)}
+                variant="assistant"
+              >
+                <View style={styles.bubbleAssistantWrap}>
+                  <Pressable style={styles.bubbleAssistant} onLongPress={() => onCopyMessage(toText(m.text))} delayLongPress={280}>
+                    <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(m.text || '...'), 'assistant', streaming && isLastTurn)}</View>
+                  </Pressable>
+                </View>
+              </BubbleEnter>
             );
           }
           if (item.kind === 'context') {
@@ -994,7 +1247,6 @@ export const MobileTurnCell = React.memo(
                         <View style={styles.contextInlineSummaryRow}>
                           <Text style={styles.contextInlineTitle}>{toText(item.context.title || '已探索')}</Text>
                           <Text style={styles.contextSummary}>{toText(item.context.summary || '已收集上下文')}</Text>
-                          {tools.length > 0 ? <Chevron expanded={expanded} styles={styles} /> : null}
                         </View>
                         {toText(item.context.detail) ? (
                           <Text numberOfLines={1} style={styles.contextDetail}>
@@ -1004,157 +1256,47 @@ export const MobileTurnCell = React.memo(
                       </View>
                     </View>
                   </Pressable>
-                  {expanded && tools.length > 0 ? (
-                    <View style={styles.contextTools}>
-                      {tools.map((tool) => (
-                        <ToolActivityRow
-                          key={tool.id}
-                          detail={toText(tool.detail || tool.meta || tool.mode || tool.status || '执行完成')}
-                          status={toText(tool.status)}
-                          styles={styles}
-                          tool={toText(tool.title || 'tool')}
-                        />
-                      ))}
-                    </View>
+                  {tools.length > 0 ? (
+                    <AnimatedCollapsibleContent open={expanded}>
+                      <View style={styles.contextTools}>
+                        {tools.map((tool) => (
+                          <ToolActivityRow
+                            key={tool.id}
+                            detail={toText(tool.detail || tool.meta || tool.mode || tool.status || '执行完成')}
+                            status={toText(tool.status)}
+                            styles={styles}
+                            tool={toText(tool.title || 'tool')}
+                          />
+                        ))}
+                      </View>
+                    </AnimatedCollapsibleContent>
                   ) : null}
                 </View>
               </View>
             );
           }
           if (item.kind === 'event') {
-            const status = toText(item.event.status).toLowerCase();
-            const isRunning = status === 'running' || status === 'pending';
-            const title = toText(item.event.title || 'Event');
-            const mode = toText(item.event.mode);
-            const eventDetail = toText(item.event.detail);
-            const detail = toText(item.event.detail || item.event.mode || item.event.status || '工具执行完成');
-            const isWriteEvent = mode === '写入' || mode.toLowerCase() === 'write' || title === 'apply_patch';
-            const isShellEvent = title.toLowerCase() === 'bash' || mode.toLowerCase() === 'bash' || mode === '命令';
-            const isExpanded = !!expandedEventIds[item.event.id];
-            const eventMeta = toText(item.event.meta);
-            const eventOutput = toText(item.event.output);
-            const eventFileDiff = item.event.fileDiff;
-            const eventPatchFiles = Array.isArray(item.event.patchFiles) ? item.event.patchFiles : [];
-            const eventExpandable = isShellEvent || isWriteEvent || !!eventOutput || detail.length > 56 || eventMeta.length > 0 || !!eventFileDiff || eventPatchFiles.length > 0;
-            
-            const cardStyle = isWriteEvent 
-              ? styles.writeEventCard 
-              : isShellEvent 
-                ? [styles.eventCard, styles.bashEventCard] 
-                : styles.eventCard;
-            
-            const dotStyle = isWriteEvent
-              ? (isRunning ? styles.writeEventDotRun : styles.writeEventDot)
-              : isShellEvent
-                ? (isRunning ? styles.bashEventDotRun : styles.bashEventDot)
-                : (isRunning ? styles.eventDotRun : styles.eventDot);
-            
-            const titleStyle = isWriteEvent
-              ? styles.writeEventTitle
-              : [styles.eventTitle, isShellEvent && styles.bashEventTitle];
-            
-            const detailStyle = isWriteEvent
-              ? styles.writeEventDetail
-              : [styles.eventDetail, isShellEvent && styles.bashEventDetail];
-            
-            const outputStyle = isWriteEvent
-              ? styles.writeEventOutput
-              : [styles.eventOutput, isShellEvent && styles.bashEventOutput];
-            
-            if (isWriteEvent) {
-              const writeTitle = writeEventActionLabel(item.event);
-              const writeSummary = summarizeWriteEvent(item.event);
-              const pathText = writeSummary?.file || eventMeta || eventDetail;
-              const pathParts = splitDisplayPath(pathText);
-              const hasStructuredDiff = !!eventFileDiff || eventPatchFiles.length > 0;
-              const writeMeta = !hasStructuredDiff && eventMeta && eventMeta !== pathText ? eventMeta : '';
-              const writeDetail = !hasStructuredDiff && !writeSummary && eventDetail && eventDetail !== pathText ? eventDetail : '';
-              
-              return (
-                <View key={item.event.id} style={styles.eventWrap}>
-                  <Pressable
-                    disabled={!eventExpandable}
-                    onPress={() => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] })))}
-                    style={cardStyle}
-                  >
-                    <View style={styles.writeEventHead}>
-                      <View style={styles.writeEventHeadMain}>
-                        <Text style={titleStyle}>{writeTitle}</Text>
-                        {pathParts.filename ? (
-                          <Text numberOfLines={1} style={styles.writeEventFile}>
-                            {pathParts.filename}
-                          </Text>
-                        ) : null}
-                        {pathParts.directory ? (
-                          <Text ellipsizeMode="head" numberOfLines={1} style={styles.writeEventDirectory}>
-                            {pathParts.directory}
-                          </Text>
-                        ) : null}
-                      </View>
-                      {writeSummary ? <Text style={styles.writeEventAdd}>{`+${writeSummary.additions}`}</Text> : null}
-                      {writeSummary ? <Text style={styles.writeEventDel}>{`-${writeSummary.deletions}`}</Text> : null}
-                    </View>
-                    {!writeSummary && eventDetail ? (
-                      <Text numberOfLines={isExpanded ? 0 : 1} style={detailStyle}>
-                        {eventDetail}
-                      </Text>
-                    ) : null}
-                    {isExpanded && writeMeta ? <Text style={styles.eventMeta}>{writeMeta}</Text> : null}
-                    {isExpanded && writeDetail ? <Text style={detailStyle}>{writeDetail}</Text> : null}
-                    {isExpanded && eventFileDiff ? (
-                      <EventDiffBlock
-                        additions={eventFileDiff.additions}
-                        deletions={eventFileDiff.deletions}
-                        before={eventFileDiff.before}
-                        after={eventFileDiff.after}
-                        patch={eventFileDiff.patch}
-                        path={eventFileDiff.file}
-                        showHeader={false}
-                        styles={styles}
-                      />
-                    ) : null}
-                    {isExpanded && !eventFileDiff && eventPatchFiles.length > 0 ? (
-                      <View style={styles.eventDiffList}>
-                        {eventPatchFiles.map((file) => (
-                          <EventDiffBlock
-                            key={`${item.event.id}:${file.relativePath}`}
-                            additions={file.additions}
-                            deletions={file.deletions}
-                            patch={file.patch}
-                            path={file.relativePath}
-                            showHeader={eventPatchFiles.length > 1}
-                            styles={styles}
-                          />
-                        ))}
-                      </View>
-                    ) : null}
-                    {eventOutput ? (
-                      <Text numberOfLines={isExpanded ? 0 : 3} style={outputStyle}>
-                        {eventOutput}
-                      </Text>
-                    ) : null}
-                  </Pressable>
-                </View>
-              );
-            }
-            
             return (
-              <View key={item.event.id} style={styles.eventWrap}>
-                <Pressable
-                  disabled={!eventExpandable}
-                  onPress={() => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] })))}
-                  style={cardStyle}
-                >
-                  <View style={styles.eventHead}>
-                    {isShellEvent ? <View style={dotStyle} /> : null}
-                    <Text style={titleStyle}>{toolLabel(title)}</Text>
-                    {!isShellEvent && mode ? <Text style={styles.eventMode}>{mode}</Text> : null}
-                  </View>
-                  <Text numberOfLines={isExpanded ? 0 : 2} style={detailStyle}>{detail}</Text>
-                  {isExpanded && eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}
-                  {eventOutput ? <Text numberOfLines={isExpanded ? 0 : 3} style={outputStyle}>{eventOutput}</Text> : null}
-                </Pressable>
-              </View>
+              <EventCardView
+                key={item.event.id}
+                styles={styles}
+                event={item.event}
+                expanded={!!expandedEventIds[item.event.id]}
+                onToggle={() => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [item.event.id]: !prev[item.event.id] })))}
+              />
+            );
+          }
+          if (item.kind === 'toolBatch') {
+            return (
+              <ToolBatchCardView
+                key={item.batch.id}
+                styles={styles}
+                batch={item.batch}
+                expanded={!!expandedBatchIds[item.batch.id]}
+                onToggle={() => toggleLocalExpansion(() => setExpandedBatchIds((prev) => ({ ...prev, [item.batch.id]: !prev[item.batch.id] })))}
+                expandedEventIds={expandedEventIds}
+                onToggleEvent={(eventId) => toggleLocalExpansion(() => setExpandedEventIds((prev) => ({ ...prev, [eventId]: !prev[eventId] })))}
+              />
             );
           }
           if (item.kind === 'question') {
@@ -1210,19 +1352,40 @@ export const MobileTurnCell = React.memo(
             const contentText = normalizeReasoningText(card.text);
             return (
               <View key={card.id} style={styles.thinkWrap}>
-                <Pressable style={isThinkExpanded ? styles.thinkCardExpanded : styles.thinkCard} onPress={() => onToggleThinkCard(card.id)}>
+                <Pressable
+                  style={
+                    isThinkExpanded
+                      ? [styles.thinkCardExpanded, { backgroundColor: colors.isDark ? colors.card : colors.sidebar }]
+                      : styles.thinkCard
+                  }
+                  onPress={() => onToggleThinkCard(card.id)}
+                >
                   {isThinkExpanded ? (
-                    <>
-                      <View style={styles.thinkExpandedHead}>
-                        <Text style={styles.thinkExpandedTitle}>过程详情</Text>
-                        <Text style={styles.thinkToggleText}>收起</Text>
-                      </View>
-                      <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, contentText, 'think', streaming && isLastTurn && !card.finished)}</View>
-                    </>
+                    <View style={styles.thinkExpandedHead}>
+                      <Text style={[styles.thinkExpandedTitle, { color: colors.muted }]}>思考过程</Text>
+                      <Text style={[styles.thinkToggleText, { color: colors.muted }]}>收起</Text>
+                    </View>
                   ) : (
-                    <ThinkPreviewLines active={streaming && isLastTurn && !card.finished} styles={styles} text={contentText} />
+                    <ThinkPreviewLines
+                      active={streaming && isLastTurn && !card.finished}
+                      styles={styles}
+                      text={contentText}
+                      mutedColor={colors.muted}
+                      textColor={colors.muted}
+                    />
                   )}
                 </Pressable>
+                <AnimatedCollapsibleContent open={isThinkExpanded}>
+                  <View
+                    style={[
+                      styles.bubbleContent,
+                      styles.thinkExpandBody,
+                      { backgroundColor: colors.isDark ? colors.card : colors.sidebar }
+                    ]}
+                  >
+                    {renderMarkdown(styles, bodyFontFamily, contentText, 'think', streaming && isLastTurn && !card.finished)}
+                  </View>
+                </AnimatedCollapsibleContent>
               </View>
             );
           }

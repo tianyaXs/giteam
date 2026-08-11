@@ -4,7 +4,6 @@ import type { ComposerAttachment } from '../media/types';
 
 export function useChatUiActions(params: {
   inputDockHeight: number;
-  closeComposerPicker: () => void;
   copyMessageText: (text: string) => Promise<void>;
   onSendPrompt: (customPrompt?: string) => Promise<void>;
   onAbort: () => Promise<void>;
@@ -18,10 +17,12 @@ export function useChatUiActions(params: {
   setAttachmentMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setComposerAgent: (value: 'build' | 'plan') => void;
   setModel: (value: string) => void;
+  sessionId: string;
+  /** 切模型时同步到服务端已有会话（ref="provider/modelId"）。 */
+  onPersistSessionModel: (sessionId: string, modelRef: string) => void;
 }) {
   const {
     captureWithCamera,
-    closeComposerPicker,
     copyMessageText,
     inputDockHeight,
     onAbort,
@@ -34,7 +35,9 @@ export function useChatUiActions(params: {
     setImageAttachments,
     setInputDockHeight,
     setModel,
-    setPreviewImage
+    setPreviewImage,
+    sessionId,
+    onPersistSessionModel
   } = params;
 
   const handleOpenPreviewImage = useCallback((img: { uri: string; filename?: string }) => {
@@ -93,10 +96,14 @@ export function useChatUiActions(params: {
     setComposerAgent(mode);
   }, [setComposerAgent]);
 
+  // 选模型回调：ModelPickerPopover 选中后自管关闭浮层，这里只切模型 + 同步服务端已有会话。
   const handleComposerPickerModel = useCallback((id: string) => {
-    setModel(toText(id));
-    closeComposerPicker();
-  }, [closeComposerPicker, setModel]);
+    const ref = toText(id);
+    setModel(ref);
+    // 同步到服务端已有会话（新会话由 createSession 用当前 model）。
+    const sid = toText(sessionId).trim();
+    if (sid) onPersistSessionModel(sid, ref);
+  }, [onPersistSessionModel, sessionId, setModel]);
 
   return {
     handleAbortPrompt,

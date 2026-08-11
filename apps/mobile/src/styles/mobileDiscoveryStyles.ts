@@ -10,7 +10,7 @@ export const discoveryStyles = {
     justifyContent: "flex-start",
   },
 
-  discoverSafe: { flex: 1, backgroundColor: "#f2f6fb" },
+  discoverSafe: { flex: 1, backgroundColor: "#222325" },
 
   discoverTitle: {
     color: "#2b394b",
@@ -40,7 +40,7 @@ export const discoveryStyles = {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#e7eef8",
+    backgroundColor: "#2d2d2d",
     borderWidth: 1,
     borderColor: "#d2deee",
   },
@@ -68,34 +68,34 @@ export const discoveryStyles = {
     marginBottom: 12,
   },
 
-  discoverListMetaText: { color: "#64748b", fontSize: 12, fontWeight: "600" },
+  discoverListMetaText: { color: "#9da5b4", fontSize: 12, fontWeight: "600" },
 
   discoverRescanBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 12,
-    backgroundColor: "#111827",
+    backgroundColor: "#d4d4d4",
   },
 
-  discoverRescanTxt: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
+  discoverRescanTxt: { color: "#252526", fontSize: 12, fontWeight: "700" },
 
   discoverList: { flex: 1 },
 
   discoverListContent: { paddingBottom: 24, gap: 10 },
 
-  discoverListEmpty: { color: "#94a3b8", fontSize: 12, marginTop: 10 },
+  discoverListEmpty: { color: "#9da5b4", fontSize: 12, marginTop: 10 },
 
   discoverListItem: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.35)",
-    backgroundColor: "#ffffff",
+    borderColor: "rgba(60,60,60,0.6)",
+    backgroundColor: "#252526",
     paddingHorizontal: 12,
     paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    shadowColor: "#0f172a",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.06,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 8 },
@@ -112,28 +112,28 @@ export const discoveryStyles = {
 
   discoverListItemText: { flex: 1 },
 
-  discoverListItemTitle: { color: "#111827", fontSize: 13, fontWeight: "700" },
+  discoverListItemTitle: { color: "#d4d4d4", fontSize: 13, fontWeight: "700" },
 
-  discoverListItemSub: { color: "#64748b", fontSize: 12, marginTop: 2 },
+  discoverListItemSub: { color: "#9da5b4", fontSize: 12, marginTop: 2 },
 
   discoverListConnectBtn: {
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 14,
-    backgroundColor: "#111827",
+    backgroundColor: "#d4d4d4",
   },
 
-  discoverListConnectTxt: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
+  discoverListConnectTxt: { color: "#252526", fontSize: 13, fontWeight: "700" },
 
   discoverListConnectBtnOff: {
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 14,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: "#3c3c3c",
   },
 
   discoverListConnectTxtOff: {
-    color: "#64748b",
+    color: "#9da5b4",
     fontSize: 13,
     fontWeight: "700",
   },
@@ -192,7 +192,7 @@ export const discoveryStyles = {
     height: 84,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(15,23,42,0.58)",
+    borderColor: "rgba(0,0,0,0.58)",
   },
 
   senseCenterRippleSoft: {
@@ -213,8 +213,8 @@ export const discoveryStyles = {
     height: 28,
     borderRadius: 5,
     borderWidth: 1.3,
-    borderColor: "#111827",
-    backgroundColor: "#111827",
+    borderColor: "#d4d4d4",
+    backgroundColor: "#d4d4d4",
     alignItems: "center",
     paddingTop: 3,
   },
@@ -239,7 +239,7 @@ export const discoveryStyles = {
     width: 36,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#0f172a",
+    backgroundColor: "#d4d4d4",
     borderWidth: 1,
     borderColor: "#0b1220",
     alignItems: "center",
@@ -258,7 +258,7 @@ export const discoveryStyles = {
     alignItems: "center",
     justifyContent: "center",
     paddingTop: 3,
-    shadowColor: "#0f172a",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.32,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 },
@@ -269,7 +269,7 @@ export const discoveryStyles = {
     width: 36,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#6b7280",
+    backgroundColor: "#9da5b4",
     borderWidth: 1,
     borderColor: "#4b5563",
     alignItems: "center",
@@ -282,9 +282,9 @@ export const discoveryStyles = {
     width: 38,
     height: 40,
     borderRadius: 13,
-    backgroundColor: "#64748b",
+    backgroundColor: "#9da5b4",
     borderWidth: 1,
-    borderColor: "#475569",
+    borderColor: "#9da5b4",
     alignItems: "center",
     justifyContent: "center",
     paddingTop: 3,
@@ -294,12 +294,12 @@ export const discoveryStyles = {
     width: 22,
     height: 2.8,
     borderRadius: 2,
-    backgroundColor: "#475569",
+    backgroundColor: "#9da5b4",
     marginBottom: 2,
   },
 
   senseDeviceGlyph: {
-    color: "#e2e8f0",
+    color: "#3c3c3c",
     fontSize: 10,
     fontWeight: "700",
     lineHeight: 11,
@@ -320,12 +320,12 @@ export const discoveryStyles = {
     width: "88%",
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.35)",
-    backgroundColor: "#ffffff",
+    borderColor: "rgba(60,60,60,0.6)",
+    backgroundColor: "#252526",
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 6,
-    shadowColor: "#0f172a",
+    shadowColor: "#d4d4d4",
     shadowOpacity: 0.08,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 10 },
@@ -345,22 +345,22 @@ export const discoveryStyles = {
     width: 8,
     height: 8,
     borderRadius: 999,
-    backgroundColor: "#94a3b8",
+    backgroundColor: "#9da5b4",
   },
 
   discoverDeviceCardTitle: {
-    color: "#111827",
+    color: "#d4d4d4",
     fontSize: 13,
     fontWeight: "700",
   },
 
-  discoverDeviceCardSub: { color: "#64748b", fontSize: 12 },
+  discoverDeviceCardSub: { color: "#9da5b4", fontSize: 12 },
 
   discoverDeviceProgressTrack: {
     marginTop: 2,
     height: 6,
     borderRadius: 999,
-    backgroundColor: "#eef2f7",
+    backgroundColor: "#222325",
     overflow: "hidden",
   },
 
@@ -373,7 +373,7 @@ export const discoveryStyles = {
   },
 
   discoverDeviceProgressText: {
-    color: "#475569",
+    color: "#9da5b4",
     fontSize: 12,
     fontWeight: "600",
   },
@@ -384,7 +384,7 @@ export const discoveryStyles = {
     minWidth: 112,
     height: 34,
     borderRadius: 14,
-    backgroundColor: "#111827",
+    backgroundColor: "#d4d4d4",
     alignItems: "center",
     justifyContent: "center",
     marginLeft: "auto",
@@ -394,14 +394,14 @@ export const discoveryStyles = {
     minWidth: 112,
     height: 34,
     borderRadius: 14,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: "#3c3c3c",
     alignItems: "center",
     justifyContent: "center",
     marginLeft: "auto",
   },
 
   discoverCardConnectText: {
-    color: "#ffffff",
+    color: "#252526",
     fontSize: 13,
     fontWeight: "700",
   },
@@ -622,7 +622,7 @@ export const discoveryStyles = {
     borderRadius: 999,
     backgroundColor: "#6ed3ff",
     borderWidth: 1.5,
-    borderColor: "#f4f9ff",
+    borderColor: "#1e1e1e",
     alignItems: "flex-start",
     justifyContent: "flex-start",
     shadowColor: "#63d6ff",
@@ -724,7 +724,7 @@ export const discoveryStyles = {
     borderColor: "#cfdaea",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f6f9fe",
+    backgroundColor: "#1e1e1e",
   },
 
   discoverCloseTxt: {

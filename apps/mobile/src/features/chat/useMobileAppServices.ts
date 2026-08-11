@@ -40,7 +40,7 @@ type SessionRecoveryHandle = {
 };
 
 type StreamManagerHandle = {
-  startStream: (targetSessionId: string) => void;
+  startStream: (targetSessionId: string, runId?: string) => void;
   stopStream: () => void;
 };
 
@@ -61,8 +61,8 @@ export function useMobileAppServices(params: {
   const streamManagerHandleRef = useRef<StreamManagerHandle | null>(null);
   const workspaceCatalogHandleRef = useRef<WorkspaceCatalogHandle | null>(null);
 
-  const startStream = useCallback((targetSessionId: string) => {
-    streamManagerHandleRef.current?.startStream(targetSessionId);
+  const startStream = useCallback((targetSessionId: string, runId?: string) => {
+    streamManagerHandleRef.current?.startStream(targetSessionId, runId);
   }, []);
 
   const stopStream = useCallback(() => {

@@ -2600,6 +2600,7 @@ dependencies = [
  "tauri",
  "thiserror 2.0.18",
  "tiny_http",
+ "tokio",
  "urlencoding",
  "uuid",
  "wait-timeout",

@@ -31,7 +31,6 @@ export function useBootstrapPersistence(params: {
   model: string;
   composerAgent: 'build' | 'plan';
   autoAcceptPermissions: boolean;
-  notebookTheme: 'paper' | 'slate';
   setLoaded: (value: boolean) => void;
   setStatus: (value: string) => void;
   setServerUrl: (value: string) => void;
@@ -45,7 +44,6 @@ export function useBootstrapPersistence(params: {
   setSessionId: (value: string) => void;
   setComposerAgent: (value: 'build' | 'plan') => void;
   setAutoAcceptPermissions: (value: boolean) => void;
-  setNotebookTheme: (value: 'paper' | 'slate') => void;
   setMessages: (value: any[]) => void;
   setRenderedTurns: (value: any[]) => void;
   setStartupSessionHydrating: (value: boolean) => void;
@@ -69,7 +67,6 @@ export function useBootstrapPersistence(params: {
     loaded,
     messagesRef,
     model,
-    notebookTheme,
     pairCode,
     pairCodeMapRef,
     preferHttps,
@@ -89,7 +86,6 @@ export function useBootstrapPersistence(params: {
     setLoaded,
     setMessages,
     setModel,
-    setNotebookTheme,
     setPairCode,
     setPreferHttps,
     setProjects,
@@ -137,7 +133,6 @@ export function useBootstrapPersistence(params: {
         sessionIdRef.current = prefs.sessionId;
         setComposerAgent(prefs.agent || 'build');
         setAutoAcceptPermissions(Boolean((prefs as any).autoAcceptPermissions));
-        setNotebookTheme(prefs.notebookTheme || 'paper');
         if (cachedChat) {
           const sid = toText(prefs.sessionId).trim();
           const rawRows = Array.isArray(cachedChat.rawRows) ? cachedChat.rawRows : [];
@@ -187,7 +182,6 @@ export function useBootstrapPersistence(params: {
     setLoaded,
     setMessages,
     setModel,
-    setNotebookTheme,
     setPairCode,
     setPreferHttps,
     setProjects,
@@ -236,8 +230,7 @@ export function useBootstrapPersistence(params: {
         sessionId,
         model,
         agent: composerAgent,
-        autoAcceptPermissions,
-        notebookTheme
+        autoAcceptPermissions
       } as Prefs);
     } catch {
       // ignore
@@ -247,7 +240,6 @@ export function useBootstrapPersistence(params: {
     composerAgent,
     loaded,
     model,
-    notebookTheme,
     pairCode,
     preferHttps,
     projects,

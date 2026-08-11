@@ -3,30 +3,24 @@ export type PairAuthResponse = {
   tokenType: string;
 };
 
-export type PromptResponse = {
-  accepted: boolean;
-  sessionId: string;
-};
-
-export type HealthResponse = {
-  ok: boolean;
-  opencodeServiceBase?: string;
-  service?: {
-    enabled: boolean;
-    host: string;
-    port: number;
-  };
-};
-
+/** 手机端本地会话状态（由 pi_agent session.status 事件映射而来）。 */
 export type SessionStatusInfo =
   | { type: 'idle' }
   | { type: 'busy' }
   | { type: 'retry'; attempt: number; message: string; next: number };
 
-export type SseEvent = {
-  event: string;
-  data: string;
-  at: number;
+export type HealthResponse = {
+  ok: boolean;
+  service?: {
+    enabled: boolean;
+    host: string;
+    port: number;
+  };
+  auth?: {
+    pairCodeTtlMode?: string;
+    noAuth?: boolean;
+  };
+  agentRuntime?: unknown;
 };
 
 export type MobileChatMessage = {
@@ -90,6 +84,15 @@ export type MobileContextCard = {
   status?: 'running' | 'completed';
   createdAt?: number;
   tools: MobileEventCard[];
+};
+
+/** 与桌面端 ToolBatchGroup 对齐：相邻同类工具合并成一个可折叠批组。 */
+export type MobileToolBatchCard = {
+  id: string;
+  batchKind: 'shell' | 'edit' | 'web' | 'browser';
+  events: MobileEventCard[];
+  status: 'running' | 'completed';
+  createdAt?: number;
 };
 
 export type MobileTodoItem = {
@@ -171,6 +174,11 @@ export type MobileTimelineItem =
       kind: 'event';
       createdAt: number;
       event: MobileEventCard;
+    }
+  | {
+      kind: 'toolBatch';
+      createdAt: number;
+      batch: MobileToolBatchCard;
     }
   | {
       kind: 'context';

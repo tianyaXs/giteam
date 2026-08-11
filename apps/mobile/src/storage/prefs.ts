@@ -15,7 +15,6 @@ export type Prefs = {
   model: string;
   agent: 'build' | 'plan';
   autoAcceptPermissions: boolean;
-  notebookTheme: 'paper' | 'slate';
 };
 
 export const DEFAULT_PREFS: Prefs = {
@@ -29,8 +28,7 @@ export const DEFAULT_PREFS: Prefs = {
   sessionId: '',
   model: '',
   agent: 'build',
-  autoAcceptPermissions: false,
-  notebookTheme: 'paper'
+  autoAcceptPermissions: false
 };
 
 export function loadPrefs(): Prefs {
@@ -50,8 +48,7 @@ export function loadPrefs(): Prefs {
       sessionId: toText(merged.sessionId),
       model: toText(merged.model),
       agent: (merged as any).agent === 'plan' ? 'plan' : 'build',
-      autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions),
-      notebookTheme: (merged as any).notebookTheme === 'slate' ? 'slate' : 'paper'
+      autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions)
     };
   } catch {
     return DEFAULT_PREFS;

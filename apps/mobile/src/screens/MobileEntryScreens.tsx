@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StatusBar, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useMobileTheme } from '../features/theme/ThemeProvider';
 import { DiscoverListScreen, type DiscoverListRow } from './DiscoverListScreen';
 import { ScannerScreen } from './ScannerScreen';
 
@@ -152,8 +153,9 @@ function buildGuideText(props: {
 function FlowingGuide(props: {
   styles: Record<string, any>;
   text: string;
+  textColor?: string;
 }) {
-  const { styles, text } = props;
+  const { styles, text, textColor } = props;
   const [displayed, setDisplayed] = useState(text);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -180,7 +182,7 @@ function FlowingGuide(props: {
 
   return (
     <View style={styles.authGuideWrap}>
-      <Text style={styles.authSub}>{displayed}</Text>
+      <Text style={[styles.authSub, textColor ? { color: textColor } : null]}>{displayed}</Text>
     </View>
   );
 }
@@ -200,7 +202,6 @@ export function AuthConnectScreen(props: {
   onSubmit: () => void;
 }) {
   const {
-    backgroundColor,
     busy,
     launchOverlay,
     onChangePairCode,
@@ -214,6 +215,7 @@ export function AuthConnectScreen(props: {
     styles,
   } = props;
   const [focusedField, setFocusedField] = useState<'server' | 'code' | null>(null);
+  const { colors } = useMobileTheme();
   const guideText = buildGuideText({
     busy,
     focusedField,
@@ -223,25 +225,38 @@ export function AuthConnectScreen(props: {
   });
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor }]}>
-      <StatusBar barStyle="dark-content" backgroundColor={backgroundColor} translucent={false} />
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
+      <StatusBar
+        barStyle={colors.isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.background}
+        translucent={false}
+      />
       <ScrollView style={styles.authScroll} contentContainerStyle={styles.authContainerCenter} keyboardShouldPersistTaps="handled">
         <View style={styles.authPageFrame}>
           <View style={styles.authHeroPanel}>
-            <View style={styles.authHeroOrb} />
+            <View style={[styles.authHeroOrb, { backgroundColor: colors.primarySoft }]} />
             <View style={styles.authFormWrap}>
               <View style={styles.authHeroCopy}>
-                <Text style={styles.authKicker}>Remote AI Assistant</Text>
-                <Text style={styles.authTitle}>Giteam</Text>
-                <FlowingGuide styles={styles} text={guideText} />
+                <Text style={[styles.authKicker, { color: colors.primary }]}>Remote AI Assistant</Text>
+                <Text style={[styles.authTitle, { color: colors.text }]}>Giteam</Text>
+                <FlowingGuide styles={styles} text={guideText} textColor={colors.muted} />
               </View>
 
-              <View style={styles.authCard}>
+              <View
+                style={[
+                  styles.authCard,
+                  {
+                    backgroundColor: colors.card,
+                    borderColor: colors.border,
+                    shadowColor: colors.primary
+                  }
+                ]}
+              >
                 <View style={styles.authFieldGroup}>
-                  <Text style={styles.authFieldLabel}>服务地址</Text>
-                  <View style={styles.authUrlRow}>
+                  <Text style={[styles.authFieldLabel, { color: colors.muted }]}>服务地址</Text>
+                  <View style={[styles.authUrlRow, { backgroundColor: colors.sidebar, borderColor: colors.border }]}>
                     <TextInput
-                      style={styles.authInputUrl}
+                      style={[styles.authInputUrl, { color: colors.text }]}
                       value={serverUrlInput}
                       onChangeText={(value) => {
                         onResetStatus();
@@ -251,23 +266,26 @@ export function AuthConnectScreen(props: {
                       onBlur={() => setFocusedField((prev) => (prev === 'server' ? null : prev))}
                       autoCapitalize="none"
                       placeholder="输入服务地址"
-                      placeholderTextColor="#9aa6b6"
+                      placeholderTextColor={colors.muted}
                     />
-                    <Pressable style={styles.authScanInlineBtn} onPress={onOpenScanner}>
+                    <Pressable
+                      style={[styles.authScanInlineBtn, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                      onPress={onOpenScanner}
+                    >
                       <View style={styles.authScanIconFrame}>
-                        <View style={styles.authScanIconLt} />
-                        <View style={styles.authScanIconRt} />
-                        <View style={styles.authScanIconLb} />
-                        <View style={styles.authScanIconRb} />
+                        <View style={[styles.authScanIconLt, { borderColor: colors.primaryText }]} />
+                        <View style={[styles.authScanIconRt, { borderColor: colors.primaryText }]} />
+                        <View style={[styles.authScanIconLb, { borderColor: colors.primaryText }]} />
+                        <View style={[styles.authScanIconRb, { borderColor: colors.primaryText }]} />
                       </View>
                     </Pressable>
                   </View>
                 </View>
 
                 <View style={styles.authFieldGroup}>
-                  <Text style={styles.authFieldLabel}>验证码</Text>
+                  <Text style={[styles.authFieldLabel, { color: colors.muted }]}>验证码</Text>
                   <TextInput
-                    style={styles.authInput}
+                    style={[styles.authInput, { color: colors.text, backgroundColor: colors.sidebar, borderColor: colors.border }]}
                     value={pairCode}
                     onChangeText={(value) => {
                       onResetStatus();
@@ -278,13 +296,19 @@ export function AuthConnectScreen(props: {
                     autoCapitalize="none"
                     keyboardType="number-pad"
                     placeholder="输入验证码，免授权模式可留空"
-                    placeholderTextColor="#9aa6b6"
+                    placeholderTextColor={colors.muted}
                   />
                 </View>
 
                 <View style={styles.authActionRow}>
-                  <Pressable style={styles.authConnectBtn} onPress={onSubmit} disabled={busy}>
-                    <Text style={styles.authConnectBtnText}>{busy ? '连接中…' : '连接远程助手'}</Text>
+                  <Pressable
+                    style={[styles.authConnectBtn, { backgroundColor: colors.primary }]}
+                    onPress={onSubmit}
+                    disabled={busy}
+                  >
+                    <Text style={[styles.authConnectBtnText, { color: colors.primaryText }]}>
+                      {busy ? '连接中…' : '连接远程助手'}
+                    </Text>
                   </Pressable>
                 </View>
               </View>

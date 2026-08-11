@@ -313,6 +313,7 @@ export function AgentExecutionPartView({
   shellToolPartsExpanded,
   editToolPartsExpanded,
   listItem = false,
+  onOpenTaskSession: _onOpenTaskSession,
   onOpenToolFile,
   onOpenBrowserUrl
 }: AgentExecutionPartViewProps) {
@@ -325,6 +326,8 @@ export function AgentExecutionPartView({
 
   const tool = String((part as any).toolName || "tool");
   if (tool === "todowrite") return null;
+  // task 由 AgentMessageStream 路由到 SubagentRunCard。
+  if (tool === "task") return null;
 
   const status = String((part as any).status || "").trim().toLowerCase();
   const running = status === "running" || status === "pending" || status === "deciding";

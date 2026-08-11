@@ -5,6 +5,7 @@ export function turnHasAssistantRenderableContent(turn: MobileRenderedTurn): boo
   return turn.items.some((item) => {
     if (item.kind === 'think') return !!toText(item.card?.text).trim();
     if (item.kind === 'context') return true;
+    if (item.kind === 'toolBatch') return true;
     if (item.kind === 'event' || item.kind === 'todo' || item.kind === 'question') return true;
     if (item.kind === 'chat' && item.message.role === 'assistant') {
       return !!toText(item.message.text).trim();

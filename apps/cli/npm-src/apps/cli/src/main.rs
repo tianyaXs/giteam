@@ -124,18 +124,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    #[command(
-        about = "Start web server serving the desktop UI in a browser",
-        long_about = "Start the giteam control server with static file serving for the web UI. Opens the desktop application in any browser without requiring Tauri."
-    )]
-    Web {
-        #[arg(long, default_value = "0.0.0.0")]
-        host: String,
-        #[arg(long, default_value_t = 5100)]
-        port: u16,
-        #[arg(long, help = "Path to the built web assets directory")]
-        dist: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1185,23 +1173,41 @@ fn build_path_env() -> String {
 }
 
 fn resolve_posix_shell_path() -> String {
-    [
-        std::env::var("SHELL").ok(),
-        Some("/bin/bash".to_string()),
-        Some("/usr/bin/bash".to_string()),
-        Some("/bin/sh".to_string()),
-        Some("/usr/bin/sh".to_string()),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|item| item.trim().to_string())
-    .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
-    .unwrap_or_else(|| "/bin/sh".to_string())
+    #[cfg(unix)]
+    {
+        [
+            std::env::var("SHELL").ok(),
+            Some("/bin/bash".to_string()),
+            Some("/usr/bin/bash".to_string()),
+            Some("/bin/sh".to_string()),
+            Some("/usr/bin/sh".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|item| item.trim().to_string())
+        .find(|item| !item.is_empty() && std::path::Path::new(item).exists())
+        .unwrap_or_else(|| "/bin/sh".to_string())
+    }
+    #[cfg(windows)]
+    {
+        // Windows 无 POSIX shell：依赖体检（git/gh --version 等简单命令）用 cmd.exe 跑。
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "/bin/sh".to_string()
+    }
 }
 
 fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, String), String> {
     let shell = resolve_posix_shell_path();
     let mut cmd = Command::new(shell.as_str());
+    #[cfg(windows)]
+    cmd.args(["/C", script]);
+    #[cfg(not(windows))]
     cmd.args(["-lc", script]);
     cmd.env("PATH", build_path_env());
     cmd.stdin(Stdio::null());
@@ -1624,7 +1630,7 @@ fn choose_project_for_setup() -> Result<Option<String>, String> {
 
     print_wizard_header(
         "Step 3/5 · Project Import",
-        "Choose a Git repository for OpenCode model configuration. This project can be saved for later reuse.",
+        "Choose a Git repository for agent model configuration. This project can be saved for later reuse.",
         &["Runtime Check", "Dependency Install"],
     );
 
@@ -1772,7 +1778,7 @@ fn run_init_interactive(selected: Vec<PluginName>) -> Result<(), String> {
         println!("Imported project: skipped in this run");
     }
     println!(
-        "OpenCode model: {}",
+        "Agent model: {}",
         outcome
             .configured_model
             .clone()
@@ -2656,87 +2662,6 @@ fn serve(warmup: bool, json: bool, no_banner: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn run_web(host: String, port: u16, dist: Option<PathBuf>) -> Result<(), String> {
-    // Resolve dist directory
-    let dist_dir = if let Some(d) = dist {
-        d
-    } else {
-        // Prefer the npm launcher-provided path, then fall back to local dev paths.
-        let mut candidates = Vec::new();
-        if let Some(env_dist) = std::env::var_os("GITEAM_WEB_DIST") {
-            candidates.push(PathBuf::from(env_dist));
-        }
-        candidates.extend([
-            PathBuf::from("web-assets"),
-            PathBuf::from("apps/desktop/dist-web"),
-            PathBuf::from("dist-web"),
-            PathBuf::from("../apps/desktop/dist-web"),
-            PathBuf::from("../../apps/desktop/dist-web"),
-        ]);
-        let mut found = None;
-        for candidate in &candidates {
-            if candidate.exists() && candidate.join("index.html").exists() {
-                found = Some(candidate.clone());
-                break;
-            }
-        }
-        found.ok_or_else(|| {
-            "Could not find web assets directory. Build the frontend first with: cd apps/desktop && npm run build:web\n\
-             Or specify the path with --dist".to_string()
-        })?
-    };
-
-    if !dist_dir.exists() {
-        return Err(format!(
-            "Web assets directory does not exist: {}",
-            dist_dir.display()
-        ));
-    }
-    if !dist_dir.join("index.html").exists() {
-        return Err(format!("No index.html found in: {}", dist_dir.display()));
-    }
-
-    // Configure a temporary control-server override for web mode.
-    let mut settings = control::get_control_server_settings()?;
-    settings.enabled = true;
-    settings.host = host.trim().to_string();
-    settings.port = port;
-    settings.pair_code_ttl_mode = "none".to_string();
-
-    // Set static web directory
-    control::set_web_static_dir(Some(std::fs::canonicalize(&dist_dir).unwrap_or(dist_dir)));
-
-    // Touch the in-process Pi runtime in background; no child agent process is started.
-    thread::spawn(|| {
-        warmup_agent_runtime();
-    });
-
-    control::start_control_server_with_settings(settings)?;
-
-    let info = control::get_control_access_info()?;
-    eprintln!("giteam web server running:");
-    for url in &info.local_urls {
-        eprintln!("  http://{}", url.trim_start_matches("http://"));
-    }
-    eprintln!("press Ctrl+C to stop");
-
-    let running = Arc::new(AtomicBool::new(true));
-    let signal = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        signal.store(false, Ordering::Relaxed);
-    })
-    .map_err(|e| format!("failed to install Ctrl+C handler: {e}"))?;
-
-    while running.load(Ordering::Relaxed) {
-        thread::sleep(Duration::from_millis(250));
-    }
-
-    control::stop_control_server();
-    control::set_web_static_dir(None);
-    shutdown_agent_runtime();
-    Ok(())
-}
-
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command.unwrap_or(Commands::Serve {
@@ -2808,7 +2733,6 @@ fn main() {
             warmup,
             json,
         } => run_doctor(repo_path, warmup, json),
-        Commands::Web { host, port, dist } => run_web(host, port, dist),
     };
 
     if let Err(err) = result {

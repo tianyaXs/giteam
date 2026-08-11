@@ -10,6 +10,7 @@ mod browser_use;
 mod shell_resolver;
 mod edit_guard;
 mod question;
+mod task;
 mod todo;
 mod web;
 
@@ -20,17 +21,19 @@ use pi::sdk::{default_tool_registry, Config, Tool, ToolFactory, ToolRegistry};
 
 use super::browser_controller::SharedBrowserController;
 use super::interactions::{InteractionHub, InteractionRisk};
+use super::subagents::SubagentHost;
 
 pub use approval::ApprovalTool;
 pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, KillShellTool};
 pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
+pub use task::TaskTool;
 pub use todo::TodoTool;
 pub use web::{WebFetchTool, WebSearchTool};
 
 /// 基于 pi `default_tool_registry` 装配，写/执行类工具包装 ApprovalTool；
-/// question/todowrite 与后台三件套（bash/bash_output/kill_shell）不是 pi 内置工具，按启用情况追加。
+/// question/todowrite/task 与后台三件套（bash/bash_output/kill_shell）不是 pi 内置工具，按启用情况追加。
 pub struct GiteamToolFactory {
     hub: Arc<InteractionHub>,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "question" 时为 true。
@@ -43,10 +46,15 @@ pub struct GiteamToolFactory {
     web_search_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "browser_use" 时为 true。
     browser_use_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "task" 时为 true；
+    /// 实际注册还需要 `subagent_host`（子 agent 默认不注入 host，故不注册 task）。
+    task_enabled: bool,
     /// 内置浏览器控制器；desktop 注入实现，CLI/control 为 None。
     browser_controller: SharedBrowserController,
     /// 后台任务日志目录（会话目录下）；no_session 模式为 None（落临时目录）。
     session_dir: Option<PathBuf>,
+    /// 子 agent 宿主；主会话注入，plan 子会话为 None（禁止再委派）。
+    subagent_host: Option<Arc<dyn SubagentHost>>,
 }
 
 impl GiteamToolFactory {
@@ -56,6 +64,7 @@ impl GiteamToolFactory {
         enabled_tools: Option<&[String]>,
         session_dir: Option<PathBuf>,
         browser_controller: SharedBrowserController,
+        subagent_host: Option<Arc<dyn SubagentHost>>,
     ) -> Self {
         let question_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
@@ -67,6 +76,8 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
         let browser_use_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
+        let task_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
         Self {
             hub,
             question_enabled,
@@ -74,8 +85,10 @@ impl GiteamToolFactory {
             web_fetch_enabled,
             web_search_enabled,
             browser_use_enabled,
+            task_enabled,
             browser_controller,
             session_dir,
+            subagent_host,
         }
     }
 }
@@ -90,6 +103,7 @@ impl ToolFactory for GiteamToolFactory {
         let wants_web_fetch = enabled.contains(&"web_fetch");
         let wants_web_search = enabled.contains(&"web_search");
         let wants_browser_use = enabled.contains(&"browser_use");
+        let wants_task = enabled.contains(&"task");
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
@@ -97,7 +111,7 @@ impl ToolFactory for GiteamToolFactory {
                 !matches!(
                     *name,
                     "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
-                        | "web_fetch" | "web_search" | "browser_use"
+                        | "web_fetch" | "web_search" | "browser_use" | "task"
                 )
             })
             .collect();
@@ -154,6 +168,11 @@ impl ToolFactory for GiteamToolFactory {
         if self.browser_use_enabled || wants_browser_use {
             registry.push(wrap(Box::new(BrowserUseTool::new(self.browser_controller.clone()))));
         }
+        // task：主会话全量或显式启用，且有 SubagentHost；子 agent 白名单不含 task / host=None。
+        if (self.task_enabled || wants_task) && self.subagent_host.is_some() {
+            let host = Arc::clone(self.subagent_host.as_ref().expect("checked above"));
+            registry.push(Box::new(TaskTool::new(Arc::clone(&self.hub), host)));
+        }
         registry
     }
 }
@@ -162,10 +181,32 @@ impl ToolFactory for GiteamToolFactory {
 mod tests {
     use super::*;
     use crate::pi_agent::interactions::InteractionStore;
+    use crate::pi_agent::subagents::{
+        SubagentHost, SubagentSpawnRequest, SubagentSpawnResult, PLAN_ENABLED_TOOLS,
+    };
+    use async_trait::async_trait;
+
+    struct StubSubagentHost;
+
+    #[async_trait]
+    impl SubagentHost for StubSubagentHost {
+        async fn run_subagent(
+            &self,
+            _request: SubagentSpawnRequest,
+        ) -> std::result::Result<SubagentSpawnResult, String> {
+            Err("stub".to_string())
+        }
+    }
 
     fn make_factory(enabled_tools: Option<&[String]>) -> GiteamToolFactory {
         let hub = Arc::new(InteractionHub::new(Arc::new(InteractionStore::new())));
-        GiteamToolFactory::new(hub, enabled_tools, None)
+        GiteamToolFactory::new(hub, enabled_tools, None, None, None)
+    }
+
+    fn make_factory_with_host(enabled_tools: Option<&[String]>) -> GiteamToolFactory {
+        let hub = Arc::new(InteractionHub::new(Arc::new(InteractionStore::new())));
+        let host: Arc<dyn SubagentHost> = Arc::new(StubSubagentHost);
+        GiteamToolFactory::new(hub, enabled_tools, None, None, Some(host))
     }
 
     fn tool_names(registry: &ToolRegistry) -> Vec<String> {
@@ -209,5 +250,47 @@ mod tests {
         assert!(!names.contains(&"bash".to_string()));
         assert!(!names.contains(&"bash_output".to_string()));
         assert!(!names.contains(&"kill_shell".to_string()));
+    }
+
+    #[test]
+    fn factory_full_tools_registers_task_when_host_present() {
+        let factory = make_factory_with_host(None);
+        let enabled: Vec<&str> = super::super::prompt::ALL_BUILTIN_TOOLS.to_vec();
+        let cwd = std::env::temp_dir();
+        let registry = factory.create_tool_registry(&enabled, &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(names.contains(&"task".to_string()), "{names:?}");
+        assert!(!InteractionRisk::for_tool("task").requires_approval());
+    }
+
+    #[test]
+    fn factory_plan_whitelist_omits_task() {
+        let enabled_tools: Vec<String> = PLAN_ENABLED_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        // 即便误传 host，plan 白名单也不含 task → 不注册。
+        let factory = make_factory_with_host(Some(&enabled_tools));
+        let enabled: Vec<&str> = enabled_tools.iter().map(String::as_str).collect();
+        let cwd = std::env::temp_dir();
+        let registry = factory.create_tool_registry(&enabled, &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"task".to_string()), "{names:?}");
+        for name in PLAN_ENABLED_TOOLS {
+            assert!(
+                names.contains(&(*name).to_string()),
+                "missing {name} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn factory_omits_task_without_host() {
+        let factory = make_factory(None);
+        let enabled: Vec<&str> = super::super::prompt::ALL_BUILTIN_TOOLS.to_vec();
+        let cwd = std::env::temp_dir();
+        let registry = factory.create_tool_registry(&enabled, &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"task".to_string()), "{names:?}");
     }
 }

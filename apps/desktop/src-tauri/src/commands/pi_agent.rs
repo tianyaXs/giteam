@@ -167,6 +167,9 @@ pub async fn agent_create_session(
         thinking: request.thinking,
         max_tool_iterations: request.max_tool_iterations,
         browser_controller: Some(super::browser_controller::desktop_browser_controller(app)),
+        parent_session_id: None,
+        parent_tool_call_id: None,
+        session_kind: "primary".to_string(),
     };
     service()
         .create_session(config)
@@ -184,6 +187,14 @@ pub async fn agent_list_sessions() -> Result<Vec<PiSessionSummary>, String> {
         .list_sessions()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_list_child_sessions(parent_session_id: String) -> Result<Vec<PiSessionSummary>, String> {
+    service()
+        .refresh_sessions_from_catalog()
+        .map_err(|error| error.to_string())?;
+    Ok(service().list_child_sessions(&parent_session_id))
 }
 
 #[tauri::command]
