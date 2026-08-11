@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   abortSessionSwitchPerf,
   finishSessionSwitchPerf,
@@ -11,7 +11,7 @@ import { toText } from '../../lib/text';
 import { cleanSessionPreview } from './sessionDisplay';
 import type { SessionStatusInfo } from '../../types';
 
-const DEFAULT_DISPLAY_COUNT = 10;
+const DEFAULT_DISPLAY_COUNT = 3;
 
 const waitForDrawerReturnFrame = () =>
   new Promise<void>((resolve) => {
@@ -188,19 +188,34 @@ export function useLeftDrawerController(props: {
     (session: SessionItemLike, worktree: string): DrawerSessionRow => ({
       id: session.id,
       active: session.id === sessionId,
-      title: pickSessionDisplayTitle(session, session.id === sessionId ? messages : undefined),
+      title: pickSessionDisplayTitle(
+        session,
+        session.id === sessionId ? messagesRef.current : undefined
+      ),
       preview: cleanSessionPreview(session.preview),
       timeLabel: formatSessionTimestamp(session.updatedAt || session.createdAt),
       updatedAt: Number(session.updatedAt || session.createdAt || 0),
       status: sessionStatusMap[session.id]?.type || 'idle',
       worktree
     }),
-    [formatSessionTimestamp, messages, pickSessionDisplayTitle, sessionId, sessionStatusMap]
+    [formatSessionTimestamp, messagesRef, pickSessionDisplayTitle, sessionId, sessionStatusMap]
   );
+
+  const activeSessionTitleHint = useMemo(() => {
+    if (!sessionId) return '';
+    const current = sessions.find((s) => s.id === sessionId);
+    if (!current) return '';
+    return pickSessionDisplayTitle(current, messages);
+  }, [messages, pickSessionDisplayTitle, sessionId, sessions]);
+
+  const prevProjectTreesRef = useRef<ProjectTreeNode[]>([]);
 
   const projectTrees = useMemo<ProjectTreeNode[]>(() => {
     const q = sessionSearch.trim().toLowerCase();
-    return availableProjects.map((project) => {
+    const prevByKey = new Map(
+      prevProjectTreesRef.current.map((p) => [normalizeWorkspacePath(p.worktree), p])
+    );
+    const nextTrees = availableProjects.map((project) => {
       const key = normalizeWorkspacePath(project.worktree);
       const all = sessionsForWorktree(project.worktree);
       const filtered = !q
@@ -215,6 +230,45 @@ export function useLeftDrawerController(props: {
       const hasSessions = filtered.length > 0;
       // 当前项目有会话 → 始终展开；空项目永不展开；其它有会话项目可手动展开
       const expanded = !hasSessions ? false : q ? true : key === currentRepoKey || expandedProjectPaths.includes(key);
+      const prev = prevByKey.get(key);
+      const prevSessionsById = new Map((prev?.sessions || []).map((s) => [s.id, s]));
+      const nextSessions = visible.map((s) => {
+        const row = toSessionRow(s, project.worktree);
+        const prevRow = prevSessionsById.get(s.id);
+        if (
+          prevRow &&
+          prevRow.active === row.active &&
+          prevRow.title === row.title &&
+          prevRow.preview === row.preview &&
+          prevRow.timeLabel === row.timeLabel &&
+          prevRow.status === row.status &&
+          prevRow.worktree === row.worktree
+        ) {
+          return prevRow;
+        }
+        return row;
+      });
+      const sessions =
+        prev &&
+        prev.sessions.length === nextSessions.length &&
+        prev.sessions.every((s, i) => s === nextSessions[i])
+          ? prev.sessions
+          : nextSessions;
+
+      if (
+        prev &&
+        prev.id === (project.id || project.worktree) &&
+        prev.name === project.name &&
+        prev.expanded === expanded &&
+        prev.isCurrent === (key === currentRepoKey) &&
+        prev.hasSessions === hasSessions &&
+        prev.totalCount === filtered.length &&
+        prev.showMore === (!q && filtered.length > visible.length) &&
+        prev.sessions === sessions
+      ) {
+        return prev;
+      }
+
       return {
         id: project.id || project.worktree,
         worktree: project.worktree,
@@ -222,12 +276,15 @@ export function useLeftDrawerController(props: {
         expanded,
         isCurrent: key === currentRepoKey,
         hasSessions,
-        sessions: visible.map((s) => toSessionRow(s, project.worktree)),
+        sessions,
         totalCount: filtered.length,
         showMore: !q && filtered.length > visible.length
       };
     });
+    prevProjectTreesRef.current = nextTrees;
+    return nextTrees;
   }, [
+    activeSessionTitleHint,
     availableProjects,
     currentRepoKey,
     displayCountByRepo,
@@ -469,9 +526,9 @@ export function useLeftDrawerController(props: {
     const key = normalizeWorkspacePath(worktree);
     if (!key) return;
     setDisplayCountByRepo((prev) => {
-      const current = prev[key] || DEFAULT_DISPLAY_COUNT;
-      const total = sessionsForWorktree(worktree).length;
-      return { ...prev, [key]: Math.min(current + 8, total) };
+      const total = Math.max(sessionsForWorktree(worktree).length, DEFAULT_DISPLAY_COUNT);
+      // 一次展开完整列表
+      return { ...prev, [key]: total };
     });
   }, [sessionsForWorktree]);
 

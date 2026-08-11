@@ -13,13 +13,12 @@ type SlashCommandLike = {
 
 export function useComposerUiController(props: {
   windowWidth: number;
-  busy: boolean;
   sessionWorking: boolean;
   imageAttachments: ComposerAttachment[];
   slashCommands: SlashCommandLike[];
   setStatus: (message: string) => void;
 }) {
-  const { busy, imageAttachments, sessionWorking, setStatus, slashCommands, windowWidth } = props;
+  const { imageAttachments, sessionWorking, setStatus, slashCommands, windowWidth } = props;
   const [prompt, setPrompt] = useState('');
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -72,9 +71,12 @@ export function useComposerUiController(props: {
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
   const imageQueueBusy = imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading');
   const imageQueueFailed = imageAttachments.some((img) => img.status === 'failed');
+  // 发送按钮可点态只看「有没有可发内容」；勿绑全局 busy。
+  // busy 会在建会话/发请求短暂为 true，绑上会导致输入后按钮仍是灰的（偶发）。
+  // 中止同理：会话在跑且输入为空时显示停止，busy 只在 onAbort 内做互斥。
   const composerWillAbort = sessionWorking && !hasSendAction;
-  const canSendNow = !busy && hasSendAction && !imageQueueBusy && !imageQueueFailed;
-  const canAbortNow = !busy && composerWillAbort;
+  const canSendNow = hasSendAction && !imageQueueBusy && !imageQueueFailed;
+  const canAbortNow = composerWillAbort;
 
   const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
   const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || 1) / 4)));

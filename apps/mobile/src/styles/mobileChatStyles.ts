@@ -90,12 +90,12 @@ export const chatStyles = {
   topSideSlot: { alignItems: "center", justifyContent: "center", zIndex: 25 },
   topSideSlotRight: { alignItems: "center", justifyContent: "center", zIndex: 25 },
   topNavButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.05)",
+    backgroundColor: "transparent",
     position: "relative",
   },
   topNavGlyph: {

@@ -79,7 +79,24 @@ export function useWorkspaceCatalogController(params: {
   return useMemo(() => {
     const agentClient = () => createMobileAgentClient({ baseUrl: serverUrl, token });
 
-    const setSessionsWithCacheMerge = (repo: string, next: SessionItem[], prev: SessionItem[]): SessionItem[] => {
+    const sessionListFingerprint = (items: SessionItem[]) =>
+      items
+        .map((s) => `${s.id}\0${toText(s.title)}\0${Number(s.updatedAt) || 0}\0${toText(s.preview)}`)
+        .join('\n');
+
+    const projectListFingerprint = (items: ProjectOption[]) =>
+      items.map((p) => `${p.id}\0${p.worktree}\0${toText(p.name)}`).join('\n');
+
+    const setSessionsIfChanged = (next: SessionItem[]) => {
+      if (sessionListFingerprint(sessionsRef.current) === sessionListFingerprint(next)) {
+        return false;
+      }
+      sessionsRef.current = next;
+      setSessions(next);
+      return true;
+    };
+
+    const setSessionsWithCacheMerge = (repo: string, next: SessionItem[], prev: SessionItem[]): { merged: SessionItem[]; changed: boolean } => {
       const prevTitleMap = new Map(prev.map((x) => [x.id, x.title]));
       const previewMap = new Map(prev.map((x) => [x.id, x.preview]));
       const merged = stableSortSessionItems(
@@ -94,8 +111,7 @@ export function useWorkspaceCatalogController(params: {
           createdAt: s.createdAt
         }))
       );
-      setSessions(merged);
-      return merged;
+      return { merged, changed: setSessionsIfChanged(merged) };
     };
 
     const refreshInstalledExtensions = async () => {
@@ -118,8 +134,7 @@ export function useWorkspaceCatalogController(params: {
         const normalizedCached = stableSortSessionItems(cached);
         const prevIds = new Set(sessionsRef.current.map((x) => x.id));
         const hasNew = normalizedCached.some((x) => !prevIds.has(x.id));
-        sessionsRef.current = normalizedCached;
-        setSessions(normalizedCached);
+        setSessionsIfChanged(normalizedCached);
         if (hasNew) triggerLeftPulse();
       }
       try {
@@ -140,24 +155,37 @@ export function useWorkspaceCatalogController(params: {
           });
         }
         const nextCache: Record<string, SessionItem[]> = { ...sessionCacheRef.current };
+        let cacheChanged = false;
         for (const [key, items] of Object.entries(bucket)) {
-          nextCache[key] = stableSortSessionItems(items);
+          const sorted = stableSortSessionItems(items);
+          if (sessionListFingerprint(nextCache[key] || []) !== sessionListFingerprint(sorted)) {
+            nextCache[key] = sorted;
+            cacheChanged = true;
+          }
         }
         // 当前请求的 repo 即使为空也写空数组，避免残留旧缓存误导「无会话」。
-        if (!nextCache[repo]) nextCache[repo] = [];
-        sessionCacheRef.current = nextCache;
-        try {
-          saveSessionCache(sessionCacheRef.current);
-        } catch {
-          // ignore
+        if (!nextCache[repo]) {
+          nextCache[repo] = [];
+          cacheChanged = true;
+        }
+        if (cacheChanged) {
+          sessionCacheRef.current = nextCache;
+          try {
+            saveSessionCache(sessionCacheRef.current);
+          } catch {
+            // ignore
+          }
         }
         const nextSessions = nextCache[repo] || [];
         pushConnLog(`GET agent.sessions ok count=${nextSessions.length} repos=${Object.keys(bucket).length}`);
         const prevForMerge =
           normalizeWorkspacePath(repoPath) === repo ? sessionsRef.current : sessionCacheRef.current[repo] || [];
-        const merged = setSessionsWithCacheMerge(repo, nextSessions, prevForMerge);
-        sessionsRef.current = merged;
+        const { merged, changed } = setSessionsWithCacheMerge(repo, nextSessions, prevForMerge);
         sessionCacheRef.current = { ...sessionCacheRef.current, [repo]: merged };
+        // 当前仓未变但其它项目 cache 变了：仍触发一次轻量更新，让抽屉树重读 cache
+        if (!changed && cacheChanged) {
+          setSessions((prev) => prev.slice());
+        }
         try {
           saveSessionCache(sessionCacheRef.current);
         } catch {
@@ -299,7 +327,10 @@ export function useWorkspaceCatalogController(params: {
         );
         const prevIds = new Set(projectsRef.current.map((x) => x.id));
         const hasNew = nextProjects.some((x) => !prevIds.has(x.id));
-        setProjects(nextProjects);
+        if (projectListFingerprint(projectsRef.current) !== projectListFingerprint(nextProjects)) {
+          projectsRef.current = nextProjects;
+          setProjects(nextProjects);
+        }
         const currentRepo = toText(repoPath).trim();
         let nextRepo = toText(opts?.preferredRepoPath).trim();
         if (nextRepo && !nextProjects.some((p) => p.worktree === nextRepo)) nextRepo = '';

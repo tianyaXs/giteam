@@ -36,9 +36,10 @@ export function useTurnWindowController(params: {
   summarizePreview: (messages: MobileChatMessage[]) => string;
   stableSortSessionItems: (items: SessionItemLike[]) => SessionItemLike[];
   losesRenderedAssistant: (prev: MobileChatMessage[], next: MobileChatMessage[]) => boolean;
+  losesLatestUserMessage: (prev: MobileChatMessage[], next: MobileChatMessage[]) => boolean;
   sharesSessionMessageContext: (prev: MobileChatMessage[], next: MobileChatMessage[]) => boolean;
   assistantTextWeight: (messages: MobileChatMessage[]) => number;
-  reconcileOptimisticUserMessages: (targetSessionId: string, messages: MobileChatMessage[]) => any[];
+  reconcileOptimisticUserMessages: (targetSessionId: string, messages: MobileChatMessage[], renderedTurns?: MobileRenderedTurn[]) => any[];
   stabilizeServerUserTurnIds: (targetSessionId: string, rendered: any) => any;
   overlayOptimisticTurns: (rendered: any, optimistic: any[]) => any;
   setMessages: (value: MobileChatMessage[]) => void;
@@ -50,6 +51,7 @@ export function useTurnWindowController(params: {
     assistantTextWeight,
     initialMessageFetchLimit,
     initialSessionLimit,
+    losesLatestUserMessage,
     losesRenderedAssistant,
     sharesSessionMessageContext,
     messagesRef,
@@ -102,7 +104,11 @@ export function useTurnWindowController(params: {
     const storeRows = publishStreamRows(targetSessionId);
     const merged = storeRows.length > 0 ? storeRows : (Array.isArray(sessionRawMapRef.current[targetSessionId]) ? sessionRawMapRef.current[targetSessionId] : []);
     const baseRendered = buildTurnWindow(merged, visibleTurnCount);
-    const optimistic = reconcileOptimisticUserMessages(targetSessionId, baseRendered.chatMessages);
+    const optimistic = reconcileOptimisticUserMessages(
+      targetSessionId,
+      baseRendered.chatMessages,
+      baseRendered.renderedTurns
+    );
     const stableBaseRendered = stabilizeServerUserTurnIds(targetSessionId, baseRendered);
     const rendered = overlayOptimisticTurns(stableBaseRendered, optimistic);
     markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.build_ready', {
@@ -141,9 +147,12 @@ export function useTurnWindowController(params: {
     if (
       targetSessionId === sessionIdRef.current &&
       sameSessionContext &&
-      losesRenderedAssistant(prevMessages, nextMessages)
+      (losesRenderedAssistant(prevMessages, nextMessages) || losesLatestUserMessage(prevMessages, nextMessages))
     ) {
-      pushConnLog(`render guard sid=${targetSessionId} reason=assistant regression prev=${assistantTextWeight(prevMessages)} next=${assistantTextWeight(nextMessages)}`);
+      const reason = losesLatestUserMessage(prevMessages, nextMessages) ? 'user regression' : 'assistant regression';
+      pushConnLog(
+        `render guard sid=${targetSessionId} reason=${reason} prevA=${assistantTextWeight(prevMessages)} nextA=${assistantTextWeight(nextMessages)}`
+      );
       nextMessages = prevMessages;
       nextTurns = renderedTurnsRef.current;
       const lastRetryAt = renderRegressionRetryRef.current[targetSessionId] || 0;
@@ -170,7 +179,6 @@ export function useTurnWindowController(params: {
       return [...prev.slice(0, -1), nextLast];
     };
     if (targetSessionId !== sessionIdRef.current) {
-      console.log(`[DEBUG] applyTurnWindow stale session skip: target=${targetSessionId} current=${sessionIdRef.current}`);
       upsertSession(targetSessionId, nextMessages);
       const hiddenInCache = rendered.totalTurnCount > rendered.visibleTurnCount;
       const nextCursor = toText(nextCursorHint ?? sessionNextCursor[targetSessionId]).trim();
@@ -181,7 +189,6 @@ export function useTurnWindowController(params: {
       });
       return rendered;
     }
-    console.log(`[DEBUG] applyTurnWindow commit UI: target=${targetSessionId} turns=${nextTurns.length} messages=${nextMessages.length}`);
     setMessages(nextMessages);
     setRenderedTurns(commitRenderedTurns);
     markSessionSwitchPerfForSid(targetSessionId, 'applyTurnWindow.commit_ui', {
@@ -232,6 +239,7 @@ export function useTurnWindowController(params: {
     assistantTextWeight,
     initialMessageFetchLimit,
     initialSessionLimit,
+    losesLatestUserMessage,
     losesRenderedAssistant,
     sharesSessionMessageContext,
     messagesRef,

@@ -91,8 +91,21 @@ export function AccordionBody(props: CollapsibleProps) {
               if (h <= 0) return;
               const prev = measuredHeight.value;
               const firstMeasure = prev <= 0;
+              if (!firstMeasure) {
+                if (Math.abs(h - prev) <= 1) return;
+                // 「加载更多」等：已展开时高度顺滑生长/收缩，形成下滑揭示
+                if (openRef.current && progress.value > 0.95) {
+                  measuredHeight.value = withTiming(h, {
+                    duration: Math.min(420, Math.max(220, Math.abs(h - prev) * 2.2)),
+                    easing: Easing.out(Easing.cubic)
+                  });
+                } else {
+                  measuredHeight.value = h;
+                }
+                return;
+              }
               measuredHeight.value = h;
-              if (openRef.current && firstMeasure) {
+              if (openRef.current) {
                 // 挂载时已是展开（如抽屉重挂载）：直接对齐高度，勿从 0 再播展开动画
                 if (progress.value > 0.5) {
                   progress.value = 1;

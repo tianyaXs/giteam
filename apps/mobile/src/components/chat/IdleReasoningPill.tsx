@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { StyleSheet, Text, Vibration } from 'react-native';
+import { StyleSheet, Text, Vibration, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -26,10 +27,18 @@ type IdleReasoningPillProps = {
   thinkingLevel: MobileThinkingLevel;
   onThinkingLevelChange: (level: MobileThinkingLevel) => void;
   onOpenInput: () => void;
+  /** 压缩为图标态时：点击恢复待机比例，不展开输入 */
+  onRestoreStandby?: () => void;
+  /** 长按进入 / 离开推理强度调节 */
+  onScrubbingChange?: (scrubbing: boolean) => void;
   height: number;
   borderRadius: number;
   /** 展开输入时为 false：暂停粒子，组件保持挂载以便收回不卡顿 */
   active?: boolean;
+  /** 模型区展开后左侧压成消息图标 */
+  compact?: boolean;
+  /** 父级量好的目标宽度（Reanimated 宽度动画下 onLayout 不可靠） */
+  layoutWidth?: number;
 };
 
 const STEP_PX = 42;
@@ -45,19 +54,24 @@ function intensityAt(index: number): number {
 
 /**
  * 待机输入胶囊：短按展开输入；长按后横滑调节推理强度。
- * 粒子场带游走波律动；松手回到待输入文案，底色随强度渐变。
+ * compact 时显示消息图标，点击恢复双按钮比例。
  */
-export function IdleReasoningPill(props: IdleReasoningPillProps) {
+export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: IdleReasoningPillProps) {
   const {
     isDark,
     thinkingLevel,
     onThinkingLevelChange,
     onOpenInput,
+    onRestoreStandby,
+    onScrubbingChange,
     height,
     borderRadius,
-    active = true
+    active = true,
+    compact = false,
+    layoutWidth = 0
   } = props;
   const [pillW, setPillW] = useState(0);
+  const particleWidth = Math.max(pillW, layoutWidth);
   const [scrubLevel, setScrubLevel] = useState(thinkingLevel);
   const [scrubbingUi, setScrubbingUi] = useState(false);
   /** 手势是否真正进入过 scrub，避免 Exclusive 失败时 onFinalize 误取消 */
@@ -97,9 +111,10 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
     (index: number) => {
       setScrubbingUi(true);
       setScrubLevel(thinkingLevelAt(index));
+      onScrubbingChange?.(true);
       buzz();
     },
-    [buzz]
+    [buzz, onScrubbingChange]
   );
 
   const updateScrub = useCallback(
@@ -119,20 +134,22 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
       const level = thinkingLevelAt(index);
       setScrubbingUi(false);
       setScrubLevel(level);
+      onScrubbingChange?.(false);
       onThinkingLevelChange(level);
     },
-    [onThinkingLevelChange]
+    [onScrubbingChange, onThinkingLevelChange]
   );
 
   const cancelScrub = useCallback(() => {
     setScrubbingUi(false);
     setScrubLevel(thinkingLevel);
+    onScrubbingChange?.(false);
     intensity.value = withTiming(INTENSITIES[thinkingIndex(thinkingLevel)], { duration: 220 });
-  }, [intensity, thinkingLevel]);
+  }, [intensity, onScrubbingChange, thinkingLevel]);
 
   const scrubGesture = useMemo(() => {
     return Gesture.Pan()
-      .enabled(active)
+      .enabled(active && !compact)
       .activateAfterLongPress(320)
       .activeOffsetX([-6, 6])
       .failOffsetY([-22, 22])
@@ -184,6 +201,7 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
     active,
     baseIndex,
     cancelScrub,
+    compact,
     endScrub,
     enterScrub,
     intensity,
@@ -200,9 +218,13 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
       .maxDuration(280)
       .onEnd(() => {
         'worklet';
+        if (compact) {
+          if (onRestoreStandby) runOnJS(onRestoreStandby)();
+          return;
+        }
         runOnJS(onOpenInput)();
       });
-  }, [active, onOpenInput]);
+  }, [active, compact, onOpenInput, onRestoreStandby]);
 
   // 长按横滑优先；未激活 pan 时才认短按
   const composed = useMemo(
@@ -238,8 +260,9 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
             height,
             borderRadius,
             justifyContent: 'center',
-            paddingHorizontal: 18,
-            overflow: 'hidden'
+            paddingHorizontal: compact ? 0 : 18,
+            overflow: 'hidden',
+            alignItems: compact ? 'center' : 'stretch'
           },
           pillStyle
         ]}
@@ -248,36 +271,48 @@ export function IdleReasoningPill(props: IdleReasoningPillProps) {
           if (w > 0 && w !== pillW) setPillW(w);
         }}
         accessibilityRole="button"
-        accessibilityLabel={`开始聊天，当前推理${meta.label}。长按左右滑动可调节推理强度`}
+        accessibilityLabel={
+          compact
+            ? '恢复输入与模型按钮比例'
+            : `开始聊天，当前推理${meta.label}。长按左右滑动可调节推理强度`
+        }
       >
-        <ReasoningParticleField
-          intensity={intensity}
-          scrubbing={scrubbing}
-          width={pillW}
-          height={height}
-          borderRadius={borderRadius}
-          isDark={isDark}
-          active={active}
-        />
+        {!compact ? (
+          <>
+            <ReasoningParticleField
+              intensity={intensity}
+              scrubbing={scrubbing}
+              width={particleWidth}
+              height={height}
+              borderRadius={borderRadius}
+              isDark={isDark}
+              active={active && !compact}
+            />
 
-        <Animated.View style={[styles.labelWrap, labelStyle]} pointerEvents="none">
-          <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '500', color: palette.fg }}>
-            询问任何问题
-          </Text>
-        </Animated.View>
+            <Animated.View style={[styles.labelWrap, labelStyle]} pointerEvents="none">
+              <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '500', color: palette.fg }}>
+                询问任何问题
+              </Text>
+            </Animated.View>
 
-        <Animated.View style={[styles.scrubWrap, scrubLabelStyle]} pointerEvents="none">
-          <Text style={{ fontSize: 11, fontWeight: '600', color: palette.label, opacity: 0.7, letterSpacing: 0.6 }}>
-            推理强度
-          </Text>
-          <Text style={{ fontSize: 20, fontWeight: '700', color: palette.label, marginTop: 2 }}>
-            {meta.shortLabel}
-          </Text>
-        </Animated.View>
+            <Animated.View style={[styles.scrubWrap, scrubLabelStyle]} pointerEvents="none">
+              <Text style={{ fontSize: 11, fontWeight: '600', color: palette.label, opacity: 0.7, letterSpacing: 0.6 }}>
+                推理强度
+              </Text>
+              <Text style={{ fontSize: 20, fontWeight: '700', color: palette.label, marginTop: 2 }}>
+                {meta.shortLabel}
+              </Text>
+            </Animated.View>
+          </>
+        ) : (
+          <View style={styles.iconWrap} pointerEvents="none">
+            <Feather name="message-circle" size={22} color={palette.fg} />
+          </View>
+        )}
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 const styles = StyleSheet.create({
   labelWrap: {
@@ -286,6 +321,12 @@ const styles = StyleSheet.create({
   scrubWrap: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 3,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  iconWrap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 4,
     alignItems: 'center',
     justifyContent: 'center'
   }

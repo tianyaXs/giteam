@@ -1,5 +1,5 @@
 import { Feather } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated as RNAnimated,
@@ -14,19 +14,37 @@ import {
   TextInput,
   View
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, {
+  Easing as ReEasing,
+  Extrapolation,
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming
+} from 'react-native-reanimated';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 import { toText } from '../../lib/text';
 import { ProviderIcon } from '../ProviderIcon';
 import { IdleReasoningPill } from './IdleReasoningPill';
+import { ComposerSendDragHandle } from './ComposerSendDragHandle';
 import { ModelPickerPopover } from './ModelPickerPopover';
 import type { MobileThinkingLevel } from './thinkingLevels';
 
 /**
- * 待机：左粒子胶囊（短按展开 / 长按横滑调推理强度）+ 右供应商图标。
- * 点聊天 → 输入条向右展开占满，右侧图标宽度动画收回。
- * 点图标 → 轻薄菜单切换已开启模型。
+ * 待机：左粒子胶囊 + 右模型圆钮（仅新会话默认）。
+ * 有内容的会话默认保持输入框；点空白不收回；输入框左滑可回到待机双钮。
  */
+
+function shortModelLabel(label: string): string {
+  const raw = toText(label).trim();
+  if (!raw) return '模型';
+  const s = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw;
+  return s.length > 18 ? `${s.slice(0, 16)}…` : s;
+}
 
 type ComposerAttachment = {
   id: string;
@@ -68,9 +86,28 @@ const H_INSET = 16;
 const BTN_GAP = 10;
 const BTN_HEIGHT = 52;
 const BTN_RADIUS = 26;
-/** 右侧仅供应商图标 */
-const MODEL_BTN_WIDTH = 48;
-const EXPAND_MS = 280;
+/** 圆形图标钮边长：与行高一致，避免压成椭圆 */
+const MODEL_BTN_WIDTH = BTN_HEIGHT;
+/** 无可用模型时右侧「进入设置」最小宽度 */
+const SETUP_BTN_WIDTH = 108;
+/** 仅 opacity/transform，可走原生驱动 */
+const EXPAND_MS = 260;
+
+const IDLE_LAYER_STYLE = {
+  ...StyleSheet.absoluteFillObject,
+  zIndex: 1
+} as const;
+
+/** 输入条表面样式（不用 absoluteFill 铺底色，避免 Android 重挂载后圆角失效） */
+const DOCK_SURFACE_STYLE = {
+  flex: 1,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  paddingHorizontal: 6,
+  borderRadius: BTN_RADIUS,
+  overflow: 'hidden' as const,
+  borderWidth: StyleSheet.hairlineWidth
+};
 
 export type ChatComposerHandle = {
   collapse: () => void;
@@ -120,6 +157,10 @@ type ChatComposerProps = {
   onAttachRecentImage: (item: RecentImageItem) => void;
   thinkingLevel?: MobileThinkingLevel;
   onThinkingLevelChange?: (level: MobileThinkingLevel) => void;
+  /** 当前会话 id：切换时重置默认态 */
+  sessionId?: string;
+  /** 会话已有消息：默认保持输入框，点空白不回到待机 */
+  hasConversationContent?: boolean;
 };
 
 const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposerImpl(
@@ -166,44 +207,140 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     slashSuggestions,
     styles,
     thinkingLevel = 'medium',
-    onThinkingLevelChange
+    onThinkingLevelChange,
+    sessionId = '',
+    hasConversationContent = false
   } = props;
 
   const { colors } = useMobileTheme();
   const insets = useSafeAreaInsets();
-  // StickyView 已贴键盘顶；弹起时收掉 Home Indicator 边距，避免输入条悬空
+  // Sticky 已改为整页 KeyboardAvoidingView；弹起时收掉 Home Indicator 边距，避免输入条悬空
   const bottomPad = keyboardInset > 0 ? 8 : Math.max(10, insets.bottom);
   const sendActive = canSendNow || canAbortNow;
 
   const hasPrompt = toText(prompt).trim().length > 0;
   const hasModels = modelOptions.length > 0;
+  const idleRightBtnW = hasModels ? MODEL_BTN_WIDTH : SETUP_BTN_WIDTH;
+  const idleRightBtnWSv = useSharedValue(idleRightBtnW);
   const inputRef = useRef<TextInput>(null);
   const modelBtnRef = useRef<View>(null);
   // 仅用户点「聊天」后才展开；避免 Fast Refresh / 误 focus 卡住展开态把右侧模型藏掉
   const [composerOpen, setComposerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelAnchor, setModelAnchor] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const expandAnim = useRef(new RNAnimated.Value(0)).current;
+  /** 右侧模型区已向左展开 */
+  const [modelFocus, setModelFocus] = useState(false);
+  /** 长按推理强度调节中 */
+  const [scrubbing, setScrubbing] = useState(false);
+  /** 待机行总宽（React state：粒子场 / 布局；shared：宽度动画） */
+  const [idleRowWidth, setIdleRowWidth] = useState(0);
+  const lastLayoutHRef = useRef(0);
+  const idleRowW = useSharedValue(0);
+  /** 0=待机比例，1=模型区展开 */
+  const modelSplit = useSharedValue(0);
+  /** 0=正常，1=左胶囊铺满遮住模型 */
+  const scrubCover = useSharedValue(0);
+  /** 输入框左滑位移（跟手，负值向左）；0=输入盖满，-w=待机全显 */
+  const swipeX = useSharedValue(0);
+  /** 1=输入层挂载中（用滑动遮盖），0=仅待机 */
+  const dockMode = useSharedValue(0);
   const promptRef = useRef(prompt);
   promptRef.current = prompt;
   /** 收起中：避免 blur + keyboardHide 双触发打两次动画 */
   const closingRef = useRef(false);
   /** openInput 后等 TextInput 挂载再 focus，避免 ref 仍为空导致键盘不弹 */
   const pendingFocusRef = useRef(false);
+  /** 用户在有内容会话上手动左滑进入待机；避免 hydration 又拉回输入框 */
+  const userChoseIdleRef = useRef(false);
 
-  const idle = !composerOpen && !hasPrompt;
+  const idle = !composerOpen && !hasPrompt && !canAbortNow;
+  const keepDockOpen = hasPrompt || canAbortNow;
   const selectedOption = modelOptions.find((m) => m.id === selectedModel.trim());
   const providerId = toText(selectedOption?.provider || selectedModel).trim() || 'synthetic';
+  const modelDisplayLabel = shortModelLabel(toText(inputModelLabel || selectedOption?.label || selectedModel));
   const modelA11y = hasModels
-    ? `当前模型：${toText(inputModelLabel || selectedOption?.label || selectedModel)}，点击切换`
-    : '打开模型设置';
+    ? modelFocus
+      ? `当前模型：${modelDisplayLabel}，再次点击打开模型菜单，长按进入模型设置`
+      : `当前模型：${modelDisplayLabel}，点击展开，长按进入模型设置`
+    : '进入设置，开启模型';
+
+  useEffect(() => {
+    idleRightBtnWSv.value = hasModels ? MODEL_BTN_WIDTH : SETUP_BTN_WIDTH;
+  }, [hasModels, idleRightBtnWSv]);
+
+  useEffect(() => {
+    if (!hasModels) setModelFocus(false);
+  }, [hasModels]);
+
+  useEffect(() => {
+    modelSplit.value = withTiming(modelFocus ? 1 : 0, {
+      duration: EXPAND_MS,
+      easing: ReEasing.out(ReEasing.cubic)
+    });
+  }, [modelFocus, modelSplit]);
+
+  useEffect(() => {
+    scrubCover.value = withTiming(scrubbing ? 1 : 0, {
+      duration: EXPAND_MS,
+      easing: ReEasing.out(ReEasing.cubic)
+    });
+  }, [scrubCover, scrubbing]);
+
+  const resetIdleBalance = useCallback(() => {
+    setModelFocus(false);
+    setScrubbing(false);
+    setModelPickerOpen(false);
+    modelSplit.value = 0;
+    scrubCover.value = 0;
+  }, [modelSplit, scrubCover]);
+
+  const applySessionComposerDefault = useCallback(
+    (withContent: boolean) => {
+      closingRef.current = false;
+      userChoseIdleRef.current = false;
+      resetIdleBalance();
+      swipeX.value = 0;
+      Keyboard.dismiss();
+      if (withContent) {
+        pendingFocusRef.current = false;
+        dockMode.value = 1;
+        setComposerOpen(true);
+      } else {
+        pendingFocusRef.current = false;
+        dockMode.value = 0;
+        setComposerOpen(false);
+      }
+    },
+    [dockMode, resetIdleBalance, swipeX]
+  );
+
+  const handleThinkingLevelChange = useCallback(
+    (level: MobileThinkingLevel) => {
+      onThinkingLevelChange?.(level);
+    },
+    [onThinkingLevelChange]
+  );
+
+  const handleSelectModel = useCallback(
+    (id: string) => {
+      onSelectModel?.(id);
+    },
+    [onSelectModel]
+  );
+
+  const handleOpenModelManager = useCallback(() => {
+    onOpenModelManager?.();
+  }, [onOpenModelManager]);
+
+  const closeModelPicker = useCallback(() => {
+    setModelPickerOpen(false);
+  }, []);
 
   // 左浅右深对比（浅色：灰底聊天 / 黑底图标；深色：深灰聊天 / 白底图标）
   const modelBg = colors.isDark ? '#FFFFFF' : '#1A1A1F';
   const modelIconColor = colors.isDark ? '#1A1A1F' : '#FFFFFF';
   // 展开态：干净中性底 + 细边框层次
   const dockBg = colors.isDark ? '#2A2A2E' : '#FFFFFF';
-  const dockBorder = colors.isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)';
   const sendBg = canAbortNow
     ? colors.text
     : canSendNow
@@ -217,31 +354,38 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
       ? (colors.isDark ? '#1A1A1F' : '#FFFFFF')
       : colors.muted;
 
-  const runExpand = useCallback(
-    (open: boolean, onDone?: () => void) => {
-      RNAnimated.timing(expandAnim, {
-        toValue: open ? 1 : 0,
-        duration: EXPAND_MS,
-        easing: open ? Easing.out(Easing.cubic) : Easing.inOut(Easing.cubic),
-        useNativeDriver: false
-      }).start(({ finished }) => {
-        if (finished) onDone?.();
-      });
-    },
-    [expandAnim]
-  );
-
   const focusInput = useCallback(() => {
     inputRef.current?.focus();
   }, []);
 
   const openInput = useCallback(() => {
     closingRef.current = false;
-    setModelPickerOpen(false);
+    userChoseIdleRef.current = false;
+    resetIdleBalance();
+    const w = Math.max(160, idleRowW.value > 0 ? idleRowW.value : idleRowWidth || 320);
+    // 从左侧滑入遮盖待机（与左滑回待机对称）
+    swipeX.value = -w;
+    dockMode.value = 1;
     pendingFocusRef.current = true;
     setComposerOpen(true);
-    runExpand(true);
-  }, [runExpand]);
+    swipeX.value = withTiming(0, {
+      duration: 300,
+      easing: ReEasing.out(ReEasing.cubic)
+    });
+  }, [dockMode, idleRowW, idleRowWidth, resetIdleBalance, swipeX]);
+
+  const onScrubbingChange = useCallback((next: boolean) => {
+    if (next) {
+      setModelFocus(false);
+      setModelPickerOpen(false);
+    }
+    setScrubbing(next);
+  }, []);
+
+  const restoreIdleStandby = useCallback(() => {
+    setModelPickerOpen(false);
+    setModelFocus(false);
+  }, []);
 
   // TextInput 仅在展开层挂载后才能 focus
   useEffect(() => {
@@ -256,41 +400,106 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   }, [composerOpen, focusInput]);
 
   const closeInput = useCallback(
-    (mode: 'animate' | 'snap' = 'animate') => {
+    (mode: 'animate' | 'snap' = 'animate', opts?: { force?: boolean }) => {
+      // 等待回复（停止按钮态）：即使键盘收起 / 点空白也不回到待机胶囊
+      if (canAbortNow) return;
       if (toText(promptRef.current).trim()) return;
-      if (closingRef.current) {
-        // 已在收起：仅允许 snap 打断（极端情况）
-        if (mode === 'snap') {
-          expandAnim.stopAnimation();
-          expandAnim.setValue(0);
-          setComposerOpen(false);
+      // 有内容会话：仅左滑（force）可回待机；点空白 / 失焦 / 收键盘不收回
+      if (!opts?.force && hasConversationContent) return;
+      const finish = () => {
+        // 先切 dockMode：待机层立刻满不透明，避免 swipeX 归零时闪一下
+        dockMode.value = 0;
+        setComposerOpen(false);
+        // 输入层卸掉后再归零位移，否则会瞬移回中再卸载
+        requestAnimationFrame(() => {
+          swipeX.value = 0;
           closingRef.current = false;
-        }
+          resetIdleBalance();
+        });
+      };
+      if (closingRef.current) {
+        if (mode === 'snap') finish();
         return;
       }
       closingRef.current = true;
       setModelPickerOpen(false);
-      const finish = () => {
-        setComposerOpen(false);
-        closingRef.current = false;
-      };
       if (mode === 'snap') {
-        expandAnim.stopAnimation();
-        expandAnim.setValue(0);
         finish();
         return;
       }
-      // 与展开对称：先播收回过渡，再卸下输入层
-      runExpand(false, finish);
+      // 向左滑出，露出待机（与进入时右滑遮盖对称）
+      const w = Math.max(160, idleRowW.value > 0 ? idleRowW.value : 320);
+      swipeX.value = withTiming(
+        -w,
+        { duration: 280, easing: ReEasing.out(ReEasing.cubic) },
+        (finished) => {
+          if (finished) runOnJS(finish)();
+        }
+      );
     },
-    [expandAnim, runExpand]
+    [canAbortNow, dockMode, hasConversationContent, idleRowW, resetIdleBalance, swipeX]
+  );
+
+  const commitSwipeToIdle = useCallback(() => {
+    if (canAbortNow) return;
+    if (toText(promptRef.current).trim()) return;
+    userChoseIdleRef.current = true;
+    // 不在此处 Keyboard.dismiss：滑完再收键盘会整页再抬一次，像「刷新」
+    closeInput('snap', { force: true });
+  }, [canAbortNow, closeInput]);
+
+  const canSwipeToIdle = (composerOpen || keepDockOpen) && !canAbortNow && !hasPrompt;
+  const showIdleOrb = canSwipeToIdle;
+
+  const dockSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(canSwipeToIdle)
+        .activeOffsetX([-12, 12])
+        .failOffsetY([-16, 16])
+        .onUpdate((evt) => {
+          'worklet';
+          // 仅向左跟手；向右橡皮筋轻微阻尼
+          if (evt.translationX <= 0) {
+            swipeX.value = evt.translationX;
+          } else {
+            swipeX.value = evt.translationX * 0.12;
+          }
+        })
+        .onEnd((evt) => {
+          'worklet';
+          const w = Math.max(160, idleRowW.value);
+          const distance = Math.max(0, -swipeX.value);
+          const threshold = w * 0.28;
+          const fling = evt.velocityX < -550;
+          if (distance > threshold || fling) {
+            swipeX.value = withTiming(
+              -w,
+              { duration: 240, easing: ReEasing.out(ReEasing.cubic) },
+              (finished) => {
+                if (finished) runOnJS(commitSwipeToIdle)();
+              }
+            );
+          } else {
+            swipeX.value = withSpring(0, { damping: 22, stiffness: 260, mass: 0.85 });
+          }
+        })
+        .onFinalize((_evt, success) => {
+          'worklet';
+          // 手势被打断且尚未越过半程时收回
+          if (!success) {
+            const w = Math.max(160, idleRowW.value);
+            if (swipeX.value > -w * 0.45) {
+              swipeX.value = withSpring(0, { damping: 22, stiffness: 260, mass: 0.85 });
+            }
+          }
+        }),
+    [canSwipeToIdle, commitSwipeToIdle, idleRowW, swipeX]
   );
 
   const openModelPicker = useCallback(() => {
     Keyboard.dismiss();
-    if (composerOpen && !toText(promptRef.current).trim()) {
-      closeInput('animate');
-    }
+    // 仅新会话待机态下点模型时，不需要收起输入框
     const show = (anchor: { x: number; y: number; width: number; height: number } | null) => {
       setModelAnchor(anchor);
       setModelPickerOpen(true);
@@ -308,7 +517,33 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
         show(null);
       }
     });
-  }, [closeInput, composerOpen]);
+  }, []);
+
+  /** 待机：有模型 → 展开后再弹菜单；无模型 → 直接进设置；长按 → 模型开关设置 */
+  const onIdleModelPress = useCallback(() => {
+    if (scrubbing) return;
+    Keyboard.dismiss();
+    if (!hasModels) {
+      setModelFocus(false);
+      setModelPickerOpen(false);
+      onOpenModelManager?.();
+      return;
+    }
+    if (!modelFocus) {
+      setModelPickerOpen(false);
+      setModelFocus(true);
+      return;
+    }
+    openModelPicker();
+  }, [hasModels, modelFocus, onOpenModelManager, openModelPicker, scrubbing]);
+
+  const onIdleModelLongPress = useCallback(() => {
+    if (scrubbing) return;
+    Keyboard.dismiss();
+    setModelFocus(false);
+    setModelPickerOpen(false);
+    onOpenModelManager?.();
+  }, [onOpenModelManager, scrubbing]);
 
   useImperativeHandle(
     ref,
@@ -317,70 +552,273 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
         Keyboard.dismiss();
         onDismissAttachmentPanel();
         if (toText(promptRef.current).trim()) return;
+        // 有内容会话：点空白只收键盘，不回待机
         closeInput('animate');
       }
     }),
     [closeInput, onDismissAttachmentPanel]
   );
 
-  // 挂载时强制回到待机双按钮（清掉 Fast Refresh 残留的展开态 / 键盘）
+  // 切换会话：新会话 → 待机双钮；有内容 → 输入框（不自动弹键盘）
   useEffect(() => {
-    expandAnim.setValue(0);
-    setComposerOpen(false);
-    Keyboard.dismiss();
-  }, [expandAnim]);
+    applySessionComposerDefault(hasConversationContent);
+    // 仅随会话切换重置；内容异步到达由下方 hydration 处理
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
+  // 历史异步灌入：有内容且用户未主动待机时，升为输入框
   useEffect(() => {
-    if (hasPrompt) {
+    if (!hasConversationContent) return;
+    if (userChoseIdleRef.current) return;
+    if (composerOpen || keepDockOpen) return;
+    pendingFocusRef.current = false;
+    swipeX.value = 0;
+    dockMode.value = 1;
+    setComposerOpen(true);
+  }, [composerOpen, dockMode, hasConversationContent, keepDockOpen, swipeX]);
+
+  const wasAbortingRef = useRef(false);
+  useEffect(() => {
+    if (hasPrompt || canAbortNow) {
       closingRef.current = false;
+      userChoseIdleRef.current = false;
+      swipeX.value = 0;
+      dockMode.value = 1;
       setComposerOpen(true);
-      expandAnim.setValue(1);
+      wasAbortingRef.current = canAbortNow;
+      return;
     }
-  }, [hasPrompt, expandAnim]);
+    // 等待结束下降沿：新会话可收回；有内容会话保持输入框
+    if (wasAbortingRef.current && !canAbortNow && !hasPrompt) {
+      wasAbortingRef.current = false;
+      if (!hasConversationContent) closeInput('animate');
+      return;
+    }
+    wasAbortingRef.current = false;
+  }, [hasPrompt, canAbortNow, closeInput, hasConversationContent, dockMode, swipeX]);
 
   useEffect(() => {
-    // 键盘收起时走同一套收回动画（勿 snap，否则没有过渡）
+    // 键盘收起：仅新会话（无内容）回到待机；有内容会话保持输入框
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const sub = Keyboard.addListener(hideEvent, () => {
+      if (canAbortNow) return;
       if (!toText(promptRef.current).trim()) closeInput('animate');
     });
     return () => sub.remove();
-  }, [closeInput]);
+  }, [canAbortNow, closeInput]);
 
-  const idleLayerStyle = {
-    ...StyleSheet.absoluteFillObject,
-    opacity: expandAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [1, 0]
-    }),
-    zIndex: idle ? 2 : 0
-  };
-  const dockLayerStyle = {
-    flex: 1,
-    height: BTN_HEIGHT,
-    opacity: hasPrompt
-      ? 1
-      : expandAnim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, 1]
-        })
-  };
+  // 两侧始终用明确 width（勿用 flex：Reanimated 会残留 flex:1 把右侧挤没）
+  const leftSlotStyle = useAnimatedStyle(() => {
+    const row = idleRowW.value;
+    if (row <= 0) return { width: 0, opacity: 0 };
+    const rightIdle = idleRightBtnWSv.value;
+    const standbyLeft = Math.max(MODEL_BTN_WIDTH, row - BTN_GAP - rightIdle);
+    const standby = interpolate(modelSplit.value, [0, 1], [standbyLeft, MODEL_BTN_WIDTH], Extrapolation.CLAMP);
+    const width = interpolate(scrubCover.value, [0, 1], [standby, row], Extrapolation.CLAMP);
+    return { width, opacity: 1 };
+  });
 
-  const modelSlotStyle = {
-    width: expandAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [MODEL_BTN_WIDTH, 0]
-    }),
-    marginLeft: expandAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [BTN_GAP, 0]
-    }),
-    opacity: expandAnim.interpolate({
-      inputRange: [0, 0.55, 1],
-      outputRange: [1, 0.2, 0]
-    }),
-    overflow: 'hidden' as const
-  };
+  const rightSlotStyle = useAnimatedStyle(() => {
+    const row = idleRowW.value;
+    if (row <= 0) return { width: 0, marginLeft: 0, opacity: 0 };
+    const rightIdle = idleRightBtnWSv.value;
+    const focusRight = Math.max(MODEL_BTN_WIDTH, row - BTN_GAP - MODEL_BTN_WIDTH);
+    const standby = interpolate(modelSplit.value, [0, 1], [rightIdle, focusRight], Extrapolation.CLAMP);
+    const width = interpolate(scrubCover.value, [0, 1], [standby, 0], Extrapolation.CLAMP);
+    const marginLeft = interpolate(scrubCover.value, [0, 1], [BTN_GAP, 0], Extrapolation.CLAMP);
+    const opacity = interpolate(scrubCover.value, [0, 0.55, 1], [1, 0.35, 0], Extrapolation.CLAMP);
+    return { width, marginLeft, opacity };
+  });
+
+  const modelLabelStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(modelSplit.value, [0, 0.45, 1], [0, 0, 1], Extrapolation.CLAMP);
+    const translateX = interpolate(modelSplit.value, [0, 1], [8, 0], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateX }]
+    };
+  });
+
+  // 左滑揭示待机 / 点击后右滑进入输入：共用 swipeX
+  const idleBaseStyle = useAnimatedStyle(() => {
+    const w = Math.max(160, idleRowW.value);
+    const peek = interpolate(-swipeX.value, [0, w * 0.22, w * 0.55], [0, 0.55, 1], Extrapolation.CLAMP);
+    const inDock = dockMode.value > 0.5;
+    return {
+      opacity: inDock ? peek : 1,
+      transform: [{ scale: inDock ? 0.94 + peek * 0.06 : 1 }]
+    };
+  });
+
+  const dockFollowStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: swipeX.value }],
+    opacity: interpolate(
+      -swipeX.value,
+      [0, Math.max(160, idleRowW.value) * 0.55],
+      [1, 0.82],
+      Extrapolation.CLAMP
+    )
+  }));
+
+  const showDock = composerOpen || keepDockOpen;
+
+  const dockShadowOuter = useMemo(
+    () =>
+      showDock
+        ? Platform.select({
+            ios: {
+              shadowColor: '#000',
+              shadowOpacity: colors.isDark ? 0.5 : 0.12,
+              shadowRadius: 24,
+              shadowOffset: { width: 0, height: 10 }
+            },
+            android: {},
+            default: {}
+          })
+        : null,
+    [colors.isDark, showDock]
+  );
+
+  const dockShadowInner = useMemo(
+    () =>
+      showDock
+        ? Platform.select({
+            ios: {
+              shadowColor: '#000',
+              shadowOpacity: colors.isDark ? 0.35 : 0.1,
+              shadowRadius: 6,
+              shadowOffset: { width: 0, height: 2 }
+            },
+            android: { elevation: 12 },
+            default: {}
+          })
+        : null,
+    [colors.isDark, showDock]
+  );
+
+  const reportLayoutHeight = useCallback(
+    (h: number) => {
+      if (h <= 0) return;
+      if (Math.abs(h - lastLayoutHRef.current) <= 1) return;
+      lastLayoutHRef.current = h;
+      onLayoutHeight(h);
+    },
+    [onLayoutHeight]
+  );
+
+  const idleRow = (
+    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+      <Reanimated.View style={[{ height: BTN_HEIGHT, overflow: 'hidden', justifyContent: 'center' }, leftSlotStyle]}>
+        <IdleReasoningPill
+          isDark={colors.isDark}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={handleThinkingLevelChange}
+          onOpenInput={openInput}
+          onRestoreStandby={restoreIdleStandby}
+          onScrubbingChange={onScrubbingChange}
+          height={BTN_HEIGHT}
+          borderRadius={BTN_RADIUS}
+          active={idle}
+          compact={modelFocus && !scrubbing}
+          layoutWidth={
+            scrubbing
+              ? idleRowWidth
+              : modelFocus
+                ? MODEL_BTN_WIDTH
+                : Math.max(0, idleRowWidth - BTN_GAP - idleRightBtnW)
+          }
+        />
+      </Reanimated.View>
+
+      <Reanimated.View
+        style={[
+          {
+            height: BTN_HEIGHT,
+            overflow: 'hidden',
+            justifyContent: 'center',
+            alignItems: 'center'
+          },
+          rightSlotStyle
+        ]}
+        pointerEvents={scrubbing ? 'none' : 'auto'}
+      >
+        <View
+          ref={modelBtnRef}
+          collapsable={false}
+          style={{
+            width: '100%',
+            height: BTN_HEIGHT,
+            borderRadius: BTN_RADIUS,
+            backgroundColor: modelBg,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: hasModels && modelFocus ? 14 : hasModels ? 0 : 12,
+            overflow: 'hidden'
+          }}
+        >
+          <Pressable
+            onPress={onIdleModelPress}
+            onLongPress={onIdleModelLongPress}
+            delayLongPress={380}
+            hitSlop={8}
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: hasModels && modelFocus ? 'flex-start' : 'center',
+              gap: hasModels && modelFocus ? 8 : 0,
+              minHeight: BTN_HEIGHT
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={modelA11y}
+            accessibilityHint="长按进入模型开关设置"
+          >
+            {hasModels ? (
+              <>
+                <ProviderIcon
+                  providerId={providerId}
+                  size={26}
+                  color={modelIconColor}
+                  backgroundColor="transparent"
+                  padded={false}
+                />
+                {modelFocus ? (
+                  <Reanimated.View style={[{ flexShrink: 1, minWidth: 0 }, modelLabelStyle]}>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        fontSize: 14,
+                        fontWeight: '600',
+                        color: modelIconColor,
+                        includeFontPadding: false
+                      }}
+                    >
+                      {modelDisplayLabel}
+                    </Text>
+                  </Reanimated.View>
+                ) : null}
+              </>
+            ) : (
+              <Text
+                numberOfLines={1}
+                style={{
+                  fontSize: 13,
+                  fontWeight: '600',
+                  color: modelIconColor,
+                  includeFontPadding: false,
+                  textAlign: 'center'
+                }}
+              >
+                进入设置
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </Reanimated.View>
+    </View>
+  );
+
   return (
     <>
       {attachmentPanelVisible ? <Pressable style={styles.attachmentBackdrop} onPress={onDismissAttachmentPanel} /> : null}
@@ -392,7 +830,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
         }}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
-          if (h > 0) onLayoutHeight(h);
+          reportLayoutHeight(h);
         }}
       >
         {imageAttachments.length > 0 ? (
@@ -420,177 +858,151 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
           </ScrollView>
         ) : null}
 
-        {/* 左输入 / 右图标；展开时图标宽度动画收回 */}
+        {/* 外层投影（不可 overflow:hidden）；内层裁圆角。collapsable=false 防止 Android 优化掉裁切层 */}
         <View
-          style={{
-            flexDirection: 'row',
-            flexWrap: 'nowrap',
-            alignItems: 'center',
-            width: '100%',
-            minHeight: BTN_HEIGHT
-          }}
+          collapsable={false}
+          style={[
+            {
+              borderRadius: BTN_RADIUS,
+              backgroundColor: showDock ? dockBg : 'transparent'
+            },
+            dockShadowOuter,
+            dockShadowInner
+          ]}
         >
-          <View style={{ flex: 1, height: BTN_HEIGHT }}>
-            {/* 待机层常驻（无正文时）：与展开层用 expandAnim 交叉淡化，收起也有过渡 */}
-            {!hasPrompt ? (
-              <RNAnimated.View
-                style={idleLayerStyle}
-                pointerEvents={idle ? 'auto' : 'none'}
-              >
-                <IdleReasoningPill
-                  isDark={colors.isDark}
-                  thinkingLevel={thinkingLevel}
-                  onThinkingLevelChange={(level) => onThinkingLevelChange?.(level)}
-                  onOpenInput={openInput}
-                  height={BTN_HEIGHT}
-                  borderRadius={BTN_RADIUS}
-                  active={idle}
-                />
-              </RNAnimated.View>
-            ) : null}
+          <View
+            collapsable={false}
+            style={{
+              width: '100%',
+              height: BTN_HEIGHT,
+              position: 'relative',
+              borderRadius: BTN_RADIUS,
+              overflow: 'hidden',
+              backgroundColor: showDock ? dockBg : 'transparent'
+            }}
+            onLayout={(evt) => {
+              const w = Math.ceil(evt.nativeEvent.layout.width);
+              if (w > 0) {
+                idleRowW.value = w;
+                if (w !== idleRowWidth) setIdleRowWidth(w);
+              }
+            }}
+          >
+          <Reanimated.View
+            style={[IDLE_LAYER_STYLE, idleBaseStyle]}
+            pointerEvents={idle ? 'auto' : 'none'}
+          >
+            {idleRow}
+          </Reanimated.View>
 
-            {composerOpen || hasPrompt ? (
-              <RNAnimated.View
+          {showDock ? (
+            <GestureDetector gesture={dockSwipeGesture}>
+              <Reanimated.View
+                collapsable={false}
                 style={[
-                  dockLayerStyle,
+                  StyleSheet.absoluteFillObject,
                   {
+                    zIndex: 3,
                     borderRadius: BTN_RADIUS,
-                    backgroundColor: dockBg,
-                    borderWidth: StyleSheet.hairlineWidth,
-                    borderColor: dockBorder,
-                    paddingHorizontal: 6,
-                    flexDirection: 'row',
-                    alignItems: 'center',
                     overflow: 'hidden',
-                    ...Platform.select({
-                      ios: {
-                        shadowColor: '#000',
-                        shadowOpacity: colors.isDark ? 0.28 : 0.06,
-                        shadowRadius: 10,
-                        shadowOffset: { width: 0, height: 3 }
-                      },
-                      android: {
-                        elevation: 2
-                      },
-                      default: {}
-                    })
-                  }
+                    backgroundColor: dockBg
+                  },
+                  dockFollowStyle
                 ]}
               >
-                <Pressable style={styles.cameraBtn} onPress={onToggleAttachmentMenu} hitSlop={8}>
-                  <RNAnimated.View
-                    style={{
-                      transform: [
-                        {
-                          rotate: attachmentToggleAnim.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['0deg', '45deg']
-                          })
-                        }
-                      ]
-                    }}
-                  >
-                    <Feather name={attachmentMenuOpen ? 'x' : 'plus'} size={22} color={colors.text} />
-                  </RNAnimated.View>
-                </Pressable>
-
-                <TextInput
-                  ref={inputRef}
+                <View
+                  collapsable={false}
                   style={[
-                    styles.inputMain,
+                    DOCK_SURFACE_STYLE,
                     {
-                      color: colors.text,
-                      flex: 1,
-                      minHeight: 44,
-                      maxHeight: 44,
-                      paddingTop: Platform.OS === 'ios' ? 12 : 10,
-                      paddingBottom: Platform.OS === 'ios' ? 12 : 10,
-                      paddingHorizontal: 8,
-                      backgroundColor: 'transparent'
+                      backgroundColor: dockBg,
+                      borderColor: colors.isDark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.1)'
                     }
                   ]}
-                  value={toText(prompt)}
-                  onChangeText={onPromptChange}
-                  placeholder="询问任何问题"
-                  placeholderTextColor={colors.muted}
-                  multiline={false}
-                  onFocus={() => {
-                    closingRef.current = false;
-                    setComposerOpen(true);
-                    runExpand(true);
-                  }}
-                  onBlur={() => {
-                    if (!toText(promptRef.current).trim()) closeInput('animate');
-                  }}
-                />
-
-                <Pressable
-                  style={[sendActive ? styles.actionBtnSend : styles.actionBtnDisabled, { backgroundColor: sendBg }]}
-                  onPress={() => {
-                    if (canAbortNow) {
-                      onAbort();
-                      return;
-                    }
-                    if (!canSendNow) return;
-                    onSend();
-                  }}
-                  disabled={!sendActive}
+                  pointerEvents={showDock ? 'auto' : 'none'}
                 >
-                  <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                    <Feather name={canAbortNow ? 'square' : 'arrow-up'} size={canAbortNow ? 14 : 18} color={sendIcon} />
-                  </RNAnimated.View>
-                </Pressable>
-              </RNAnimated.View>
-            ) : null}
-          </View>
+                  <Pressable style={styles.cameraBtn} onPress={onToggleAttachmentMenu} hitSlop={8}>
+                    <RNAnimated.View
+                      style={{
+                        transform: [
+                          {
+                            rotate: attachmentToggleAnim.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: ['0deg', '45deg']
+                            })
+                          }
+                        ]
+                      }}
+                    >
+                      <Feather name={attachmentMenuOpen ? 'x' : 'plus'} size={22} color={colors.text} />
+                    </RNAnimated.View>
+                  </Pressable>
 
-          <RNAnimated.View
-            pointerEvents={idle ? 'auto' : 'none'}
-            style={[
-              modelSlotStyle,
-              {
-                height: BTN_HEIGHT,
-                justifyContent: 'center',
-                flexGrow: 0,
-                flexShrink: 0
-              }
-            ]}
-          >
-            <View
-              ref={modelBtnRef}
-              collapsable={false}
-              style={{
-                width: MODEL_BTN_WIDTH,
-                height: MODEL_BTN_WIDTH,
-                borderRadius: MODEL_BTN_WIDTH / 2,
-                backgroundColor: modelBg,
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden'
-              }}
-            >
-              <Pressable
-                onPress={openModelPicker}
-                hitSlop={8}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  alignItems: 'center',
-                  justifyContent: 'center'
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={modelA11y}
-              >
-                <ProviderIcon
-                  providerId={providerId}
-                  size={26}
-                  color={modelIconColor}
-                  backgroundColor="transparent"
-                  padded={false}
-                />
-              </Pressable>
-            </View>
-          </RNAnimated.View>
+                  <TextInput
+                    ref={inputRef}
+                    style={[
+                      styles.inputMain,
+                      {
+                        color: colors.text,
+                        flex: 1,
+                        minHeight: 44,
+                        maxHeight: 44,
+                        paddingTop: Platform.OS === 'ios' ? 12 : 10,
+                        paddingBottom: Platform.OS === 'ios' ? 12 : 10,
+                        paddingHorizontal: 8,
+                        backgroundColor: 'transparent'
+                      }
+                    ]}
+                    value={toText(prompt)}
+                    onChangeText={onPromptChange}
+                    placeholder="询问任何问题"
+                    placeholderTextColor={colors.muted}
+                    multiline={false}
+                    onFocus={() => {
+                      closingRef.current = false;
+                      userChoseIdleRef.current = false;
+                      swipeX.value = 0;
+                      dockMode.value = 1;
+                      resetIdleBalance();
+                      setComposerOpen(true);
+                    }}
+                    onBlur={() => {
+                      if (!toText(promptRef.current).trim()) closeInput('animate');
+                    }}
+                  />
+
+                  {showIdleOrb ? (
+                    <ComposerSendDragHandle
+                      enabled={showIdleOrb}
+                      backgroundColor={sendBg}
+                      iconColor={sendIcon}
+                      swipeX={swipeX}
+                      rowWidth={idleRowW}
+                      onCommitIdle={commitSwipeToIdle}
+                    />
+                  ) : (
+                    <Pressable
+                      style={[sendActive ? styles.actionBtnSend : styles.actionBtnDisabled, { backgroundColor: sendBg }]}
+                      onPress={() => {
+                        if (canAbortNow) {
+                          onAbort();
+                          return;
+                        }
+                        if (!canSendNow) return;
+                        onSend();
+                      }}
+                      disabled={!sendActive}
+                    >
+                      <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
+                        <Feather name={canAbortNow ? 'square' : 'arrow-up'} size={canAbortNow ? 14 : 18} color={sendIcon} />
+                      </RNAnimated.View>
+                    </Pressable>
+                  )}
+                </View>
+              </Reanimated.View>
+            </GestureDetector>
+          ) : null}
+          </View>
         </View>
 
         {slashOpen && slashSuggestions.length > 0 ? (
@@ -706,11 +1118,13 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
         inputModelLabel={inputModelLabel || selectedModel}
         modelOptions={modelOptions}
         selectedModel={selectedModel}
-        onSelectModel={(id) => onSelectModel?.(id)}
-        onOpenModelManager={() => onOpenModelManager?.()}
+        onSelectModel={handleSelectModel}
+        onOpenModelManager={handleOpenModelManager}
         open={modelPickerOpen}
-        onClose={() => setModelPickerOpen(false)}
+        onClose={closeModelPicker}
         anchor={modelAnchor}
+        surfaceColor={modelBg}
+        contentColor={modelIconColor}
       />
     </>
   );

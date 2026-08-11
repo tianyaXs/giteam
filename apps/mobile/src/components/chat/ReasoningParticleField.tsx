@@ -41,8 +41,9 @@ function hash01(n: number): number {
 
 function buildParticles(): ParticleSeed[] {
   const list: ParticleSeed[] = [];
-  const cols = 14;
-  const rows = 6;
+  // 手机端：约 32 粒足够，原 84 粒每帧驱动过重
+  const cols = 8;
+  const rows = 4;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const i = row * cols + col;
@@ -51,7 +52,7 @@ function buildParticles(): ParticleSeed[] {
       const ax = 0.34 + (col / Math.max(1, cols - 1)) * 0.62 + jitterX;
       const ay = 0.16 + (row / Math.max(1, rows - 1)) * 0.68 + jitterY;
       const roll = hash01(i * 9.3);
-      const kind: ParticleSeed['kind'] = roll > 0.9 ? 'glow' : roll > 0.74 ? 'spark' : 'dot';
+      const kind: ParticleSeed['kind'] = roll > 0.88 ? 'glow' : roll > 0.7 ? 'spark' : 'dot';
       list.push({
         key: `p-${i}`,
         ax: Math.min(0.96, Math.max(0.3, ax)),
@@ -68,6 +69,17 @@ function buildParticles(): ParticleSeed[] {
 }
 
 const PARTICLES = buildParticles();
+const BASE_MESH_POINTS = [
+  [0.0, 0.0],
+  [0.5, 0.0],
+  [1.0, 0.0],
+  [0.0, 0.5],
+  [0.55, 0.45],
+  [1.0, 0.5],
+  [0.0, 1.0],
+  [0.5, 1.0],
+  [1.0, 1.0]
+];
 
 /** 与 IdleReasoningPill 底色同系的统一色雾（随强度变，九格同色免左右断裂） */
 function meshColorsFor(intensity: number, isDark: boolean): string[] {
@@ -90,20 +102,6 @@ function meshColorsFor(intensity: number, isDark: boolean): string[] {
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
-}
-
-function baseMeshPoints(): number[][] {
-  return [
-    [0.0, 0.0],
-    [0.5, 0.0],
-    [1.0, 0.0],
-    [0.0, 0.5],
-    [0.55, 0.45],
-    [1.0, 0.5],
-    [0.0, 1.0],
-    [0.5, 1.0],
-    [1.0, 1.0]
-  ];
 }
 
 /** 强度 → 角速度（档位差要明显） */
@@ -183,10 +181,11 @@ function MeshAura(props: {
 }) {
   const { intensity, scrubbing, isDark, active } = props;
   const [meshColors, setMeshColors] = useState(() => meshColorsFor(intensity.value, isDark));
-  const [meshPoints, setMeshPoints] = useState(baseMeshPoints);
+  const [meshPoints, setMeshPoints] = useState(() => BASE_MESH_POINTS.map((p) => [...p]));
   const meshPhaseRef = useRef(0);
   const lastTsRef = useRef(Date.now());
   const lastColorKey = useRef('');
+  const atBaseRef = useRef(true);
 
   useEffect(() => {
     if (!active) return;
@@ -198,7 +197,7 @@ function MeshAura(props: {
       if (key === lastColorKey.current) return;
       lastColorKey.current = key;
       setMeshColors(meshColorsFor(t, isDark));
-    }, 120);
+    }, 180);
     return () => {
       mounted = false;
       clearInterval(id);
@@ -212,19 +211,30 @@ function MeshAura(props: {
     lastTsRef.current = Date.now();
     const tick = () => {
       if (!mounted) return;
+      const scrub = scrubbing.value;
+      // 非调节态：停在基点，避免 MeshGradient 每帧 React 重绘
+      if (scrub < 0.04) {
+        if (!atBaseRef.current) {
+          atBaseRef.current = true;
+          setMeshPoints(BASE_MESH_POINTS.map((p) => [...p]));
+        }
+        timer = setTimeout(tick, 280) as unknown as number;
+        return;
+      }
+      atBaseRef.current = false;
       const now = Date.now();
       const dt = Math.min(0.08, (now - lastTsRef.current) / 1000);
       lastTsRef.current = now;
-      meshPhaseRef.current += dt * speedMulAt(intensity.value, scrubbing.value);
+      meshPhaseRef.current += dt * speedMulAt(intensity.value, scrub);
       const s = meshPhaseRef.current;
       const amp = 0.014;
       setMeshPoints(
-        baseMeshPoints().map(([x, y], i) => [
+        BASE_MESH_POINTS.map(([x, y], i) => [
           clamp01(x + Math.sin(s * (0.55 + i * 0.07) + i) * amp),
           clamp01(y + Math.cos(s * (0.45 + i * 0.05) + i * 0.7) * amp)
         ])
       );
-      timer = setTimeout(tick, 140) as unknown as number;
+      timer = setTimeout(tick, 160) as unknown as number;
     };
     tick();
     return () => {
@@ -245,7 +255,7 @@ function MeshAura(props: {
   );
 }
 
-function SoftParticle(props: {
+const SoftParticle = React.memo(function SoftParticle(props: {
   seed: ParticleSeed;
   width: number;
   height: number;
@@ -329,7 +339,7 @@ function SoftParticle(props: {
       ]}
     />
   );
-}
+});
 
 function softEdge(v: number, lo: number, hi: number): number {
   'worklet';

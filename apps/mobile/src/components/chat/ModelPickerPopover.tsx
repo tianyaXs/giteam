@@ -8,7 +8,6 @@ import {
   Text,
   View
 } from 'react-native';
-import { Feather } from '@expo/vector-icons';
 import Animated, {
   Easing,
   Extrapolation,
@@ -24,7 +23,7 @@ import { toText } from '../../lib/text';
 import { closeModalAfterAnimation } from '../../lib/modalClose';
 
 /**
- * 轻薄模型菜单：锚定图标按钮右上，列出已开启模型。
+ * 模型菜单：与展开后的模型选择器同宽、同色，向上弹出（无缩小感）。
  */
 type ModelOption = { id: string; label: string; provider: string };
 
@@ -32,14 +31,15 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 const OPEN_MS = 220;
 const CLOSE_MS = 160;
-const MENU_WIDTH = 196;
-const MENU_MAX_HEIGHT = Math.min(240, SCREEN_HEIGHT * 0.38);
+const FALLBACK_MENU_WIDTH = 220;
+const MENU_MAX_HEIGHT = Math.min(280, SCREEN_HEIGHT * 0.42);
+const MENU_RADIUS = 26;
 
 function shortModelLabel(label: string): string {
   const raw = toText(label).trim();
   if (!raw) return '模型';
   const s = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw;
-  return s.length > 22 ? `${s.slice(0, 20)}…` : s;
+  return s.length > 28 ? `${s.slice(0, 26)}…` : s;
 }
 
 export function ModelPickerPopover(props: {
@@ -47,22 +47,33 @@ export function ModelPickerPopover(props: {
   modelOptions: ModelOption[];
   selectedModel: string;
   onSelectModel: (id: string) => void;
-  onOpenModelManager: () => void;
+  onOpenModelManager?: () => void;
   open: boolean;
   onClose: () => void;
   anchor?: { x: number; y: number; width: number; height: number } | null;
+  /** 与模型选择器同色底 */
+  surfaceColor?: string;
+  /** 与模型选择器图标/文字同色 */
+  contentColor?: string;
 }) {
   const {
     modelOptions,
     selectedModel,
     onSelectModel,
-    onOpenModelManager,
     open,
     onClose,
-    anchor
+    anchor,
+    surfaceColor,
+    contentColor
   } = props;
   const { colors } = useMobileTheme();
   const progress = useSharedValue(0);
+
+  const menuWidth = useMemo(() => {
+    const w = Math.round(Number(anchor?.width || 0));
+    if (w >= 48) return w;
+    return FALLBACK_MENU_WIDTH;
+  }, [anchor]);
 
   const menuRight = useMemo(() => {
     if (!anchor) return 16;
@@ -71,7 +82,7 @@ export function ModelPickerPopover(props: {
 
   const menuBottom = useMemo(() => {
     if (!anchor) return 96;
-    return Math.max(10, SCREEN_HEIGHT - anchor.y + 6);
+    return Math.max(10, SCREEN_HEIGHT - anchor.y + 8);
   }, [anchor]);
 
   const startOpen = useCallback(() => {
@@ -111,32 +122,24 @@ export function ModelPickerPopover(props: {
     [onSelectModel, startClose, onClose]
   );
 
-  const handleManager = useCallback(() => {
-    closeModalAfterAnimation(startClose, onClose, CLOSE_MS, () => {
-      onOpenModelManager();
-    });
-  }, [onOpenModelManager, startClose, onClose]);
-
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0, 1], [0, 1], Extrapolation.CLAMP)
   }));
 
+  // 仅上移 + 淡入，不做 scale 缩小感
   const menuStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(progress.value, [0, 0.15, 1], [0, 1, 1], Extrapolation.CLAMP),
+    opacity: interpolate(progress.value, [0, 0.2, 1], [0, 1, 1], Extrapolation.CLAMP),
     transform: [
       {
-        translateY: interpolate(progress.value, [0, 1], [10, 0], Extrapolation.CLAMP)
-      },
-      {
-        scale: interpolate(progress.value, [0, 1], [0.96, 1], Extrapolation.CLAMP)
+        translateY: interpolate(progress.value, [0, 1], [12, 0], Extrapolation.CLAMP)
       }
     ]
   }));
 
-  const sheetBg = colors.isDark ? 'rgba(40,40,44,0.96)' : 'rgba(255,255,255,0.97)';
-  const borderColor = colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.07)';
-  const activeBg = colors.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.045)';
-  const iconColor = colors.isDark ? '#F2F2F2' : '#171717';
+  const sheetBg = surfaceColor || (colors.isDark ? '#FFFFFF' : '#1A1A1F');
+  const fg = contentColor || (colors.isDark ? '#1A1A1F' : '#FFFFFF');
+  const mutedFg = colors.isDark ? 'rgba(26,26,31,0.55)' : 'rgba(255,255,255,0.55)';
+  const activeBg = colors.isDark ? 'rgba(26,26,31,0.08)' : 'rgba(255,255,255,0.12)';
 
   if (!open) return null;
 
@@ -152,23 +155,16 @@ export function ModelPickerPopover(props: {
             styles.menu,
             menuStyle,
             {
-              width: MENU_WIDTH,
+              width: menuWidth,
               right: menuRight,
               bottom: menuBottom,
               backgroundColor: sheetBg,
-              borderColor
+              borderRadius: MENU_RADIUS
             }
           ]}
         >
-          <View style={styles.header}>
-            <Text style={[styles.headerTitle, { color: colors.muted }]}>已开启</Text>
-            <Pressable onPress={handleManager} hitSlop={10} accessibilityLabel="管理模型开关">
-              <Feather name="settings" size={12} color={colors.muted} />
-            </Pressable>
-          </View>
-
           <ScrollView
-            style={{ maxHeight: MENU_MAX_HEIGHT - 28 }}
+            style={{ maxHeight: MENU_MAX_HEIGHT }}
             contentContainerStyle={styles.listContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
@@ -186,21 +182,22 @@ export function ModelPickerPopover(props: {
                 >
                   <ProviderIcon
                     providerId={opt.provider || opt.id}
-                    size={13}
-                    color={iconColor}
+                    size={18}
+                    color={fg}
                     backgroundColor="transparent"
+                    padded={false}
                   />
-                  <Text numberOfLines={1} style={[styles.itemTitle, { color: colors.text }]}>
+                  <Text numberOfLines={1} style={[styles.itemTitle, { color: fg }]}>
                     {shortModelLabel(opt.label || opt.id)}
                   </Text>
-                  {active ? <View style={[styles.dot, { backgroundColor: colors.text }]} /> : null}
+                  {active ? <View style={[styles.dot, { backgroundColor: fg }]} /> : null}
                 </Pressable>
               );
             })}
             {modelOptions.length === 0 ? (
-              <Pressable onPress={handleManager} style={styles.emptyWrap}>
-                <Text style={[styles.empty, { color: colors.muted }]}>去开启模型</Text>
-              </Pressable>
+              <View style={styles.emptyWrap}>
+                <Text style={[styles.empty, { color: mutedFg }]}>暂无可用模型</Text>
+              </View>
             ) : null}
           </ScrollView>
         </Animated.View>
@@ -219,60 +216,45 @@ const styles = StyleSheet.create({
   },
   menu: {
     position: 'absolute',
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingTop: 4,
-    paddingBottom: 4,
+    paddingTop: 6,
+    paddingBottom: 6,
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    minHeight: 24
-  },
-  headerTitle: {
-    fontSize: 10,
-    fontWeight: '600',
-    letterSpacing: 0.3
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8
   },
   listContent: {
-    paddingHorizontal: 4,
-    gap: 1
+    paddingHorizontal: 6,
+    gap: 2
   },
   item: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderRadius: 10,
-    minHeight: 36
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+    borderRadius: 16,
+    minHeight: 44
   },
   itemTitle: {
     flex: 1,
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '600',
     includeFontPadding: false
   },
   dot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5
+    width: 6,
+    height: 6,
+    borderRadius: 3
   },
   emptyWrap: {
-    paddingVertical: 14,
+    paddingVertical: 16,
     alignItems: 'center'
   },
   empty: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '500'
   }
 });

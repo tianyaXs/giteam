@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -63,47 +63,83 @@ export function SettingsModelsPanel(props: {
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [busyRef, setBusyRef] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const lastFetchAtRef = useRef(0);
 
   const client = useMemo(
     () => createMobileAgentClient({ baseUrl: serverUrl, token }),
     [serverUrl, token]
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { force?: boolean }) => {
     if (!serverUrl) return;
-    setLoading(true);
-    try {
-      const [providers, state] = await Promise.all([
-        client.listProviders().catch(() => [] as AgentProviderInfo[]),
-        client.getMobileModelState().catch(() => null)
-      ]);
-      const grouped = new Map<string, GroupedModel[]>();
-      for (const p of (providers as AgentProviderInfo[]) || []) {
-        if (!p.hasCredential) continue;
-        if (!grouped.has(p.provider)) grouped.set(p.provider, []);
-        const arr = grouped.get(p.provider)!;
-        for (const m of Array.isArray(p.models) ? p.models : []) {
-          arr.push({
-            ref: `${p.provider}/${m.modelId}`,
-            label: toText(m.name) || m.modelId
-          });
+    // 已有缓存时允许静默刷新，但短间隔内不重复打接口
+    const hasCache = groupsRef.current.length > 0;
+    const now = Date.now();
+    if (!opts?.force && hasCache && now - lastFetchAtRef.current < 8_000) return;
+    if (inflightRef.current) return inflightRef.current;
+
+    const run = (async () => {
+      // 仅首次（无列表）展示整页 loading；有缓存时原地刷新，不闪白
+      if (!hasCache) setLoading(true);
+      try {
+        const [providers, state] = await Promise.all([
+          client.listProviders().catch(() => [] as AgentProviderInfo[]),
+          client.getMobileModelState().catch(() => null)
+        ]);
+        const grouped = new Map<string, GroupedModel[]>();
+        for (const p of (providers as AgentProviderInfo[]) || []) {
+          if (!p.hasCredential) continue;
+          if (!grouped.has(p.provider)) grouped.set(p.provider, []);
+          const arr = grouped.get(p.provider)!;
+          for (const m of Array.isArray(p.models) ? p.models : []) {
+            arr.push({
+              ref: `${p.provider}/${m.modelId}`,
+              label: toText(m.name) || m.modelId
+            });
+          }
         }
+        const nextGroups = Array.from(grouped.entries()).map(([key, models]) => ({ key, models }));
+        setGroups(nextGroups);
+        // 保留已展开项；去掉已不存在的供应商 key
+        setExpanded((prev) => {
+          if (prev.size === 0) return prev;
+          const keys = new Set(nextGroups.map((g) => g.key));
+          const next = new Set<string>();
+          for (const k of prev) if (keys.has(k)) next.add(k);
+          return next;
+        });
+        const s = (state || {}) as MobileModelState;
+        setEnabled(new Set(Array.isArray(s.enabledModels) ? s.enabledModels : []));
+        setHidden(new Set(Array.isArray(s.hiddenModels) ? s.hiddenModels : []));
+        lastFetchAtRef.current = Date.now();
+      } catch {
+        // 保留旧数据
+      } finally {
+        setLoading(false);
       }
-      setGroups(Array.from(grouped.entries()).map(([key, models]) => ({ key, models })));
-      setExpanded(new Set());
-      const s = (state || {}) as MobileModelState;
-      setEnabled(new Set(Array.isArray(s.enabledModels) ? s.enabledModels : []));
-      setHidden(new Set(Array.isArray(s.hiddenModels) ? s.hiddenModels : []));
-    } catch {
-      // 保留旧数据
-    } finally {
-      setLoading(false);
-    }
+    })();
+
+    inflightRef.current = run.finally(() => {
+      inflightRef.current = null;
+    });
+    return inflightRef.current;
   }, [client, serverUrl]);
 
   useEffect(() => {
     if (active) void load();
   }, [active, load]);
+
+  // 服务端切换时清空缓存，下次进入再拉
+  useEffect(() => {
+    setGroups([]);
+    setEnabled(new Set());
+    setHidden(new Set());
+    setExpanded(new Set());
+    lastFetchAtRef.current = 0;
+  }, [serverUrl, token]);
 
   const toggleExpand = useCallback((key: string) => {
     setExpanded((prev) => {

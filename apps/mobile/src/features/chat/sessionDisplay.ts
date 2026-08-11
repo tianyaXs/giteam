@@ -84,3 +84,19 @@ export function losesRenderedAssistant(prev: MobileChatMessage[], next: MobileCh
   const nextTailAssistant = next.slice(nextLastUserIndex + 1).some((m) => m.role === 'assistant' && toText(m.text));
   return prevTailAssistant && !nextTailAssistant;
 }
+
+/** 最新用户气泡从 prev 消失（常见于乐观层被摘掉而权威 user 尚未进窗口）。 */
+export function losesLatestUserMessage(prev: MobileChatMessage[], next: MobileChatMessage[]): boolean {
+  const prevUsers = prev.filter((m) => m.role === 'user' && toText(m.text).trim());
+  const nextUsers = next.filter((m) => m.role === 'user' && toText(m.text).trim());
+  if (prevUsers.length === 0) return false;
+  const prevLast = prevUsers[prevUsers.length - 1]!;
+  const prevText = toText(prevLast.text).trim();
+  if (!prevText) return false;
+  // 同 id 或同文案（乐观 → 权威替换）都算仍在
+  const stillThere = nextUsers.some((m) => {
+    const text = toText(m.text).trim();
+    return m.id === prevLast.id || text === prevText;
+  });
+  return !stillThere;
+}

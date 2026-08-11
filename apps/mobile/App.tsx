@@ -31,6 +31,7 @@ import {
   assistantTextWeight,
   formatSessionTimestamp,
   isPlaceholderSessionTitle,
+  losesLatestUserMessage,
   losesRenderedAssistant,
   pickSessionDisplayTitle,
   sharesSessionMessageContext,
@@ -549,6 +550,7 @@ export default function App() {
     sessionIdRef,
     sessionOptimisticUserMapRef,
     optimisticUserIdAliasRef,
+    pendingPromptSessionRef,
     sentAttachmentCacheRef,
     forceScrollToLatestUntilRef,
     markFollowLatest,
@@ -577,6 +579,7 @@ export default function App() {
     pushConnLog,
     summarizePreview,
     stableSortSessionItems,
+    losesLatestUserMessage,
     losesRenderedAssistant,
     sharesSessionMessageContext,
     assistantTextWeight,
@@ -727,7 +730,6 @@ export default function App() {
     maybeLoadMoreRecentImages,
   } = useComposerUiController({
     windowWidth,
-    busy,
     sessionWorking,
     imageAttachments,
     slashCommands,
@@ -795,8 +797,13 @@ export default function App() {
   const handleBeforeOpenNotebookDrawer = useCallback(() => {
     // 浮层自管 open/close：其全屏 overlay 拦截点击，开启时无法触发抽屉按钮。
   }, []);
+  const leftDrawerRefreshAtRef = useRef(0);
   const handleLeftNotebookDrawerOpen = useCallback(() => {
     void InteractionManager.runAfterInteractions(() => {
+      const now = Date.now();
+      // 允许后台刷新，但短间隔内跳过，避免打开抽屉时整表闪一下
+      if (now - leftDrawerRefreshAtRef.current < 8_000) return;
+      leftDrawerRefreshAtRef.current = now;
       void refreshProjectsCatalog();
       void refreshSessionsFromServer();
     });
@@ -1307,6 +1314,8 @@ export default function App() {
     onOpenModelManager: () => {
       openSettingsDrawer('models');
     },
+    hasConversationContent: messages.length > 0 || renderedTurns.length > 0,
+    sessionId,
     actionIconAnim,
     albumImages,
     albumImagesLoading,
@@ -1410,7 +1419,6 @@ export default function App() {
       styles={styles}
       windowWidth={windowWidth}
       inputDockHeight={inputDockHeight}
-      keyboardInset={keyboardInset}
       notebookColors={notebookColors}
       onBeforeOpenDrawer={handleBeforeOpenNotebookDrawer}
       onOpenLeftDrawer={handleLeftNotebookDrawerOpen}

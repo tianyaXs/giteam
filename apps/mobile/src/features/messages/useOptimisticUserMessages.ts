@@ -27,6 +27,7 @@ export function useOptimisticUserMessages(params: {
   sessionIdRef: MutableRefObject<string>;
   sessionOptimisticUserMapRef: MutableRefObject<Record<string, OptimisticUserMessage[]>>;
   optimisticUserIdAliasRef: MutableRefObject<Record<string, Record<string, string>>>;
+  pendingPromptSessionRef: MutableRefObject<Record<string, { id: string; startedAt: number }>>;
   sentAttachmentCacheRef: MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   forceScrollToLatestUntilRef: MutableRefObject<number>;
   markFollowLatest: (durationMs?: number) => void;
@@ -98,13 +99,20 @@ export function useOptimisticUserMessages(params: {
   );
 
   const reconcileOptimisticUserMessages = useCallback(
-    (targetSessionId: string, chatMessages: MobileChatMessage[]) => {
+    (targetSessionId: string, chatMessages: MobileChatMessage[], renderedTurns?: MobileRenderedTurn[]) => {
       const sid = toText(targetSessionId).trim();
       const optimistic = Array.isArray(sessionOptimisticUserMapRef.current[sid]) ? sessionOptimisticUserMapRef.current[sid] : [];
       if (!sid || optimistic.length === 0) return optimistic;
       const serverUsers = chatMessages.filter((item) => item.role === 'user' && !!toText(item.text));
+      const turns = Array.isArray(renderedTurns) ? renderedTurns : [];
+      const visibleUserTexts = new Set(
+        turns
+          .map((turn) => toText(turn.userMessage?.text).trim())
+          .filter(Boolean)
+      );
       const usedIds = new Set<string>();
       const remaining: OptimisticUserMessage[] = [];
+      let changed = false;
       for (const local of optimistic) {
         const text = toText(local.text);
         const localTextTrimmed = text.trim();
@@ -112,7 +120,7 @@ export function useOptimisticUserMessages(params: {
           if (serverText === text) return true;
           const serverTextTrimmed = serverText.trim();
           if (!serverTextTrimmed || !localTextTrimmed) return false;
-          return serverTextTrimmed.startsWith(localTextTrimmed) || localTextTrimmed.startsWith(serverTextTrimmed);
+          return serverTextTrimmed === localTextTrimmed;
         };
         const matched =
           serverUsers.find((item) => {
@@ -124,27 +132,14 @@ export function useOptimisticUserMessages(params: {
             if (serverCreatedAt < local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS) return false;
             if (serverCreatedAt > local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS) return false;
             return true;
-          }) ||
-          serverUsers
-            .filter((item) => {
-              if (usedIds.has(item.id)) return false;
-              const serverText = toText(item.text);
-              if (!matchesOptimisticText(serverText)) return false;
-              if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
-              const serverCreatedAt = Number(item.createdAt || 0) || 0;
-              return serverCreatedAt >= local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS &&
-                serverCreatedAt <= local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS;
-            })
-            .sort((a, b) => {
-              const da = Math.abs((Number(a.createdAt || 0) || 0) - local.createdAt);
-              const db = Math.abs((Number(b.createdAt || 0) || 0) - local.createdAt);
-              return da - db;
-            })[0];
+          }) || null;
         if (matched) {
-          optimisticUserIdAliasRef.current[sid] = {
-            ...(optimisticUserIdAliasRef.current[sid] || {}),
-            [matched.id]: local.id
-          };
+          // 权威已到但窗口未画出：先写 alias，仍保留乐观层；可见后再摘，避免双气泡 / 工具挂错轮。
+          const aliasPrev = optimisticUserIdAliasRef.current[sid] || {};
+          if (aliasPrev[matched.id] !== local.id) {
+            optimisticUserIdAliasRef.current[sid] = { ...aliasPrev, [matched.id]: local.id };
+            changed = true;
+          }
           if (local.attachments?.length) {
             sentAttachmentCacheRef.current[sid] = {
               ...(sentAttachmentCacheRef.current[sid] || {}),
@@ -154,11 +149,15 @@ export function useOptimisticUserMessages(params: {
             };
           }
           usedIds.add(matched.id);
+          if (localTextTrimmed && !visibleUserTexts.has(localTextTrimmed)) {
+            remaining.push(local);
+            continue;
+          }
           continue;
         }
         remaining.push(local);
       }
-      if (remaining.length === optimistic.length) return optimistic;
+      if (remaining.length === optimistic.length && !changed) return optimistic;
       if (remaining.length > 0) sessionOptimisticUserMapRef.current[sid] = remaining;
       else delete sessionOptimisticUserMapRef.current[sid];
       bumpOptimisticVersion();
@@ -207,11 +206,22 @@ export function useOptimisticUserMessages(params: {
       const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
       const existingTurnIds = new Set(nextTurns.map((turn) => turn.id));
       const existingMessageIds = new Set(nextMessages.map((message) => message.id));
+      const existingUserTexts = new Set(
+        nextTurns
+          .map((turn) => toText(turn.userMessage?.text).trim())
+          .filter(Boolean)
+      );
+      const alias = optimisticUserIdAliasRef.current[toText(sessionIdRef.current).trim()] || {};
+      const aliasedLocalIds = new Set(Object.values(alias));
       const pending = optimistic.length > 1 ? [optimistic[optimistic.length - 1]!] : optimistic;
       let appended = 0;
       for (const item of pending) {
         const turnId = `turn:optimistic:${item.id}`;
+        const text = toText(item.text).trim();
+        // 权威气泡已在窗口（同 id / 同文案 / 已 alias），勿再叠乐观层
         if (existingTurnIds.has(turnId)) continue;
+        if (aliasedLocalIds.has(item.id) && text && existingUserTexts.has(text)) continue;
+        if (text && existingUserTexts.has(text)) continue;
         if (!existingMessageIds.has(item.id)) {
           nextMessages.push({
             id: item.id,
@@ -230,6 +240,7 @@ export function useOptimisticUserMessages(params: {
           signature: `optimistic:${item.id}:${item.text.length}:${item.attachments?.length || 0}`
         });
         existingTurnIds.add(turnId);
+        if (text) existingUserTexts.add(text);
         appended += 1;
       }
       if (appended === 0) {
@@ -253,7 +264,7 @@ export function useOptimisticUserMessages(params: {
         hasUserTurn: true
       };
     },
-    [sessionIdRef]
+    [optimisticUserIdAliasRef, sessionIdRef]
   );
 
   const appendOptimisticTurnAndStick = useCallback(

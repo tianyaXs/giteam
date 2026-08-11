@@ -89,13 +89,38 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
 
   const startStream = useCallback((targetSessionId: string, explicitRunId?: string) => {
     const d = getDeps();
-    stopStream();
-    if (!d.authed || !d.serverUrl || !targetSessionId) return;
+    if (!d.authed || !d.serverUrl || !targetSessionId) {
+      stopStream();
+      return;
+    }
     const runId = toText(explicitRunId).trim() || toText(d.sessionActiveRunIdRef.current[targetSessionId]).trim();
     if (!runId) {
       d.pushConnLog(`SSE skip sid=${targetSessionId} reason=no-active-run`);
       return;
     }
+
+    // 同 session + 同 run 重连（锁屏恢复）：只换 SSE，勿掏空 message/part store，避免列表大闪。
+    const prevSid = toText(d.streamSessionRef.current).trim();
+    const prevRun = toText(d.sessionActiveRunIdRef.current[targetSessionId]).trim();
+    const softReconnect = prevSid === targetSessionId && prevRun === runId;
+
+    d.streamRunIdRef.current += 1;
+    d.sessionStatusEpochRef.current += 1;
+    if (d.streamRef.current) {
+      d.pushConnLog(softReconnect ? 'SSE reconnect (keep stores)' : 'SSE close');
+      d.streamRef.current.close();
+      d.streamRef.current = null;
+    }
+    if (d.streamRenderTimerRef.current) {
+      clearTimeout(d.streamRenderTimerRef.current);
+      d.streamRenderTimerRef.current = null;
+    }
+    if (!softReconnect) {
+      storeResetAgentStreamStores(d.getAgentStreamStores());
+      d.setStreamTodoCard(null);
+    }
+    d.setStreaming(false);
+
     d.sessionActiveRunIdRef.current[targetSessionId] = runId;
     const streamRunId = d.streamRunIdRef.current;
     d.streamSessionRef.current = targetSessionId;

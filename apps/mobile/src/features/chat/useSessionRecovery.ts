@@ -84,9 +84,7 @@ export function useSessionRecovery(params: {
       }
       const pending = pendingPromptSessionRef.current[sid];
       const busyForMs = busySinceRef.current ? Date.now() - busySinceRef.current : 0;
-      if (pending && Date.now() - pending.startedAt > 15000) {
-        delete pendingPromptSessionRef.current[sid];
-      }
+      // 勿在恢复时过早清 pending：prompt 会阻塞到整轮结束，长工具/子 agent 常超过 15s。
       if (busyForMs > 8000 || pending || streaming) {
         setStatus('正在恢复会话状态...');
         setBusy(false);

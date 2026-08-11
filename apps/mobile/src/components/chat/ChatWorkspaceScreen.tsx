@@ -2,8 +2,7 @@ import React, { useCallback, useImperativeHandle, useMemo, useRef, useState } fr
 import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Drawer } from 'react-native-drawer-layout';
-import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
-import Reanimated, { useAnimatedStyle } from 'react-native-reanimated';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 import { QuestionDock } from '../QuestionDock';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
@@ -40,7 +39,6 @@ type ChatWorkspaceScreenProps = {
   styles: Record<string, any>;
   windowWidth: number;
   inputDockHeight: number;
-  keyboardInset: number;
   notebookColors: NotebookColors;
   onBeforeOpenDrawer?: () => void;
   onOpenLeftDrawer: () => void;
@@ -162,12 +160,6 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   const activeNotebookPanelRef = useRef<NotebookPanel>('');
   const openNotifiedPanelRef = useRef<NotebookPanel>('');
   const composerRef = useRef<ChatComposerHandle>(null);
-  // 与 KeyboardStickyView 同源：同一帧键盘 height，列表抬升才和输入框同步
-  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
-  const listKeyboardAvoidStyle = useAnimatedStyle(() => {
-    const lift = -keyboardHeight.value;
-    return { marginBottom: lift > 0 ? lift : 0 };
-  }, [keyboardHeight]);
 
   const dismissComposer = useCallback(() => {
     composerRef.current?.collapse();
@@ -261,14 +253,11 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           accessibilityLabel="打开左侧面板"
           hitSlop={8}
           onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
-          style={[
-            styles.topNavButton,
-            { backgroundColor: themeDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }
-          ]}
+          style={styles.topNavButton}
         >
           <Feather
             name="menu"
-            size={18}
+            size={22}
             color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
           />
         </Pressable>
@@ -283,17 +272,18 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           accessibilityLabel="新建会话"
           hitSlop={8}
           onPress={() => onNewSession?.()}
-          style={[
-            styles.topNavButton,
-            { backgroundColor: themeDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }
-          ]}
+          style={styles.topNavButton}
         >
-          <Feather name="edit" size={16} color={notebookColors.text} />
+          <Feather name="edit" size={20} color={notebookColors.text} />
         </Pressable>
       </View>
-      {/* 输入条 StickyView + 列表 marginBottom 均跟 reanimated 键盘 height，同帧同步 */}
-      <View style={styles.keyboardAwareContent}>
-        <Reanimated.View style={[styles.chatStageViewport, listKeyboardAvoidStyle]}>
+      {/* 整块内容区 + 输入框一起被键盘顶起（比 Sticky 分轨更稳） */}
+      <KeyboardAvoidingView
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 48}
+        style={styles.keyboardAwareContent}
+      >
+        <Animated.View style={styles.chatStageViewport}>
           <ChatConversationStage
             styles={styles}
             windowWidth={windowWidth}
@@ -339,7 +329,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
                   position: 'absolute',
                   left: 0,
                   right: 0,
-                  bottom: Math.max(104, inputDockHeight + 14),
+                  bottom: 16,
                   zIndex: 30
                 }
               ]}
@@ -366,11 +356,9 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
               />
             </View>
           ) : null}
-        </Reanimated.View>
-        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
-          <ChatComposer ref={composerRef} {...composerProps} />
-        </KeyboardStickyView>
-      </View>
+        </Animated.View>
+        <ChatComposer ref={composerRef} {...composerProps} />
+      </KeyboardAvoidingView>
     </View>
   );
 
@@ -398,7 +386,19 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           renderDrawerContent={renderLeftDrawerContent}
           swipeEdgeWidth={42}
         >
-          {mainRoute === 'settings' ? settingsPage : mainContent}
+          {/* 聊天 / 设置互切时都不卸载，避免 Composer 圆角丢失、模型列表闪重载 */}
+          <View
+            style={{ flex: 1, display: mainRoute === 'chat' ? 'flex' : 'none' }}
+            pointerEvents={mainRoute === 'chat' ? 'auto' : 'none'}
+          >
+            {mainContent}
+          </View>
+          <View
+            style={{ flex: 1, display: mainRoute === 'settings' ? 'flex' : 'none' }}
+            pointerEvents={mainRoute === 'settings' ? 'auto' : 'none'}
+          >
+            {settingsPage}
+          </View>
         </Drawer>
       </View>
       <ImagePreviewOverlay styles={styles} image={previewImage} onClose={onClosePreviewImage} />

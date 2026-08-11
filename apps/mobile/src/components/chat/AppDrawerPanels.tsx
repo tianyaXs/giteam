@@ -170,7 +170,7 @@ function StatusDot(props: { color: string; pulsing?: boolean; size?: number }) {
   );
 }
 
-function SessionRowView(props: {
+const SessionRowView = React.memo(function SessionRowView(props: {
   session: DrawerSessionRow;
   palette: DrawerPalette;
   indent?: boolean;
@@ -217,7 +217,7 @@ function SessionRowView(props: {
       </View>
     </HoverRow>
   );
-}
+});
 
 function truncateProjectLabel(name: string, max = 12): string {
   const raw = toText(name).trim();
@@ -511,7 +511,7 @@ export function SessionListDrawer(props: {
               // 有会话时只标会话选中，避免目录+会话双重高亮；空项目才用目录选中态
               const projectRowActive = project.isCurrent && !hasSessions;
               return (
-                <View key={project.id}>
+                <View key={project.worktree || project.id}>
                   <HoverRow
                     active={projectRowActive}
                     hoverColor={p.hover}
@@ -571,7 +571,7 @@ export function SessionListDrawer(props: {
                     <AccordionBody open={project.expanded}>
                       {project.sessions.map((session) => (
                         <SessionRowView
-                          key={session.id}
+                          key={`${session.worktree}:${session.id}`}
                           session={session}
                           palette={p}
                           indent
@@ -586,7 +586,7 @@ export function SessionListDrawer(props: {
                           onPress={() => onShowMore(project.worktree)}
                         >
                           <View style={{ alignItems: 'flex-start', paddingVertical: 10, paddingLeft: 48 }}>
-                            <RNText style={{ fontSize: 14, fontWeight: '500', color: p.sub }}>查看更多</RNText>
+                            <RNText style={{ fontSize: 14, fontWeight: '500', color: p.sub }}>加载更多</RNText>
                           </View>
                         </HoverRow>
                       ) : null}
@@ -687,7 +687,6 @@ export function ConnectionDrawer(props: {
   const pageBg = colors.background;
   const cardBg = colors.card;
   const divider = colors.border;
-  const headerBtnBg = colors.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)';
 
   return (
     <View style={{ flex: 1, backgroundColor: pageBg }}>
@@ -705,15 +704,13 @@ export function ConnectionDrawer(props: {
           hitSlop={8}
           accessibilityLabel="打开左侧面板"
           style={{
-            width: 36,
-            height: 36,
-            borderRadius: 18,
-            backgroundColor: headerBtnBg,
+            width: 40,
+            height: 40,
             alignItems: 'center',
             justifyContent: 'center'
           }}
         >
-          <Feather name="menu" size={18} color={p.text} />
+          <Feather name="menu" size={22} color={p.text} />
         </Pressable>
         <RNText
           style={{
@@ -783,7 +780,10 @@ export function ConnectionDrawer(props: {
         })}
       </View>
 
-      {tab === 'general' ? (
+      <View
+        style={{ flex: 1, display: tab === 'general' ? 'flex' : 'none' }}
+        pointerEvents={tab === 'general' ? 'auto' : 'none'}
+      >
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{
@@ -865,14 +865,19 @@ export function ConnectionDrawer(props: {
             </RNText>
           </Pressable>
         </ScrollView>
-      ) : (
+      </View>
+
+      <View
+        style={{ flex: 1, display: tab === 'models' ? 'flex' : 'none' }}
+        pointerEvents={tab === 'models' ? 'auto' : 'none'}
+      >
         <SettingsModelsPanel
           active={tab === 'models'}
           serverUrl={serverUrl}
           token={token}
           onChanged={() => onModelsChanged?.()}
         />
-      )}
+      </View>
     </View>
   );
 }

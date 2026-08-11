@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { Vibration } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { pairAuth } from '../../api/controlApi';
@@ -96,9 +96,16 @@ export function usePromptActions(params: UsePromptActionsParams) {
     upsertOptimisticUserMessage
   } = params;
 
+  const sendInFlightRef = useRef(false);
+  const abortInFlightRef = useRef(false);
+
   const onSendPrompt = useCallback(async (customPrompt?: string) => {
     const payloadPrompt = (customPrompt ?? prompt).trim();
     const images = imageAttachments.filter((img) => img.status !== 'failed');
+    if (sendInFlightRef.current) {
+      setStatus('正在发送中，请稍候');
+      return;
+    }
     if (!authed) {
       setStatus('请先授权');
       return;
@@ -119,6 +126,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('有图片处理失败，请删除后重试');
       return;
     }
+    sendInFlightRef.current = true;
     setBusy(true);
     if (images.length > 0) {
       setImageAttachments((prev) => prev.map((img) => ({ ...img, status: 'uploading', statusText: '发送中' })));
@@ -246,7 +254,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
         sid: targetSessionId
       });
       pushConnLog(`agent.prompt success, sessionId=${targetSessionId} runId=${res.runId}`);
-      delete pendingPromptSessionRef.current[targetSessionId];
+      // pending 保留到 tail sync 结束，避免中间 applyTurnWindow 过早摘掉乐观气泡
       delete sessionActiveRunIdRef.current[targetSessionId];
       markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: targetSessionId });
       const syncStartedAt = performance.now();
@@ -310,6 +318,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       }
       abortMessageSendPerf(perf, msg);
     } finally {
+      sendInFlightRef.current = false;
       setBusy(false);
     }
   }, [
@@ -353,6 +362,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('没有可中断的会话');
       return;
     }
+    if (abortInFlightRef.current) return;
+    abortInFlightRef.current = true;
     setBusy(true);
     stopStream();
     delete pendingPromptSessionRef.current[sid];
@@ -361,7 +372,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
       const activeRunId = toText(sessionActiveRunIdRef.current[sid]).trim();
       if (!activeRunId) {
         setStatus('当前会话没有进行中的运行');
-        setBusy(false);
         return;
       }
       pushConnLog(`POST agent.abort sid=${sid} run=${activeRunId}`);
@@ -381,6 +391,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       pushConnLog(`POST abort error ${String(e)}`, 'error');
       setStatus(String(e));
     } finally {
+      abortInFlightRef.current = false;
       setBusy(false);
     }
   }, [

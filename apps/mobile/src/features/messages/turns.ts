@@ -68,6 +68,15 @@ function mergeMessageRow(prev: RawMessageRow | undefined, incoming: RawMessageRo
   if (!prev) return incoming;
   const prevParts = Array.isArray(prev?.parts) ? prev.parts : [];
   const incomingParts = Array.isArray(incoming?.parts) ? incoming.parts : [];
+  // 禁止用空 parts 覆盖已有内容（锁屏恢复 / tailOnly 合并时会出现空 assistant stub）
+  if (incomingParts.length === 0 && prevParts.length > 0) {
+    return {
+      ...prev,
+      ...incoming,
+      info: { ...(prev.info || {}), ...(incoming.info || {}) },
+      parts: prevParts
+    };
+  }
   if (prevParts.length === 0 || incomingParts.length === 0) {
     return { ...prev, ...incoming, info: { ...(prev.info || {}), ...(incoming.info || {}) } };
   }

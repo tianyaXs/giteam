@@ -59,6 +59,8 @@ export function useChatWorkspacePanelProps(params: {
   modelOptions: ModelOption[];
   notebookColors: { left: string };
   onOpenModelManager: () => void;
+  hasConversationContent: boolean;
+  sessionId: string;
   prompt: string;
   recentImages: RecentImageItem[];
   recentImagesHasNext: boolean;
@@ -121,6 +123,8 @@ export function useChatWorkspacePanelProps(params: {
     modelOptions,
     notebookColors,
     onOpenModelManager,
+    hasConversationContent,
+    sessionId,
     prompt,
     recentImages,
     recentImagesHasNext,
@@ -168,6 +172,8 @@ export function useChatWorkspacePanelProps(params: {
     onSelectMode: handleComposerPickerMode,
     onSelectModel: handleComposerPickerModel,
     onOpenModelManager,
+    sessionId,
+    hasConversationContent,
     canSendNow,
     canAbortNow,
     slashOpen,
@@ -220,6 +226,7 @@ export function useChatWorkspacePanelProps(params: {
     handleSendPrompt,
     handleSlashSelect,
     handleToggleAttachmentMenu,
+    hasConversationContent,
     imageAttachments,
     inputModelLabel,
     keyboardInset,
@@ -234,6 +241,7 @@ export function useChatWorkspacePanelProps(params: {
     recentImagesLoading,
     recentImagesLoadingMore,
     recentScrollerHeight,
+    sessionId,
     slashActiveIndex,
     slashOpen,
     slashSuggestions,
