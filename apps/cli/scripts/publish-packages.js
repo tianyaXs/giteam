@@ -202,7 +202,7 @@ function writeReleaseState(state) {
 }
 
 function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}${os.EOL}`);
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}${EOL}`);
 }
 
 function replaceFile(path, pattern, replacement) {

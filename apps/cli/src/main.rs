@@ -2,6 +2,7 @@ mod doctor;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use giteam_core::pi_agent::PiAgentService;
+use giteam_core::cloud;
 use giteam_core::control;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -112,6 +113,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Manage cloud relay link (remote mobile access)")]
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommands,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
@@ -121,6 +127,36 @@ enum Commands {
         repo_path: Option<String>,
         #[arg(long)]
         warmup: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CloudCommands {
+    #[command(about = "Link this machine to the cloud gateway")]
+    Link {
+        #[arg(long, help = "Cloud gateway base URL")]
+        url: Option<String>,
+        #[arg(long = "access-key", help = "Join an existing workspace")]
+        access_key: Option<String>,
+        #[arg(long, help = "Device display name")]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Show cloud link status")]
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Disable cloud link and stop tunnel")]
+    Unlink {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Print mobile QR payload JSON for cloud pairing")]
+    Qr {
         #[arg(long)]
         json: bool,
     },
@@ -179,6 +215,10 @@ enum ServiceCommands {
     },
     #[command(about = "Reconcile stale service registrations and old binaries")]
     Reconcile,
+    #[command(
+        about = "Ensure managed service uses the current CLI (rewrite path / reload binary if needed)"
+    )]
+    Ensure,
     #[command(about = "Install the service into the OS service manager")]
     Install,
     #[command(about = "Remove the service from the OS service manager")]
@@ -779,7 +819,10 @@ fn service_doctor_report() -> Result<ServiceDoctorReport, String> {
             level: "warning".to_string(),
             code: "MANAGER_POINTS_TO_OLD_BINARY".to_string(),
             message: "service manager definition points to a different giteam binary than the current CLI".to_string(),
-            suggestion: Some("Reinstall the managed service with `giteam service install` after upgrading the CLI.".to_string()),
+            suggestion: Some(
+                "Upgrade already installed? New CLI auto-fixes via `giteam service ensure` (also runs on npm postinstall)."
+                    .to_string(),
+            ),
         });
     }
 
@@ -815,6 +858,7 @@ fn service_doctor_report() -> Result<ServiceDoctorReport, String> {
 }
 
 fn print_service_doctor(json: bool) -> Result<(), String> {
+    auto_ensure_managed_service();
     let report = service_doctor_report()?;
     if json {
         return print_json(&report);
@@ -861,6 +905,8 @@ fn write_launchd_plist() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe failed: {e}"))?;
     let out = log_file_path()?;
     let err = log_file_path()?;
+    // 固定工作目录到 app support，避免 npm postinstall 时 cwd 落在将被替换的 package 目录
+    let workdir = ensure_app_support_dir()?;
     let content = format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -885,7 +931,7 @@ fn write_launchd_plist() -> Result<PathBuf, String> {
         ),
         label = xml_escape(service_label()),
         exe = xml_escape(exe.to_string_lossy().as_ref()),
-        workdir = xml_escape(std::env::current_dir().map_err(|e| format!("resolve current dir failed: {e}"))?.to_string_lossy().as_ref()),
+        workdir = xml_escape(workdir.to_string_lossy().as_ref()),
         stdout = xml_escape(out.to_string_lossy().as_ref()),
         stderr = xml_escape(err.to_string_lossy().as_ref()),
     );
@@ -900,8 +946,7 @@ fn write_systemd_unit() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe failed: {e}"))?;
     let out = log_file_path()?;
     let err = log_file_path()?;
-    let workdir =
-        std::env::current_dir().map_err(|e| format!("resolve current dir failed: {e}"))?;
+    let workdir = ensure_app_support_dir()?;
     let content = format!(
         concat!(
             "[Unit]\n",
@@ -932,7 +977,11 @@ fn service_install() -> Result<(), String> {
     if !existing.supported {
         return Err(manager_unsupported_error(&existing));
     }
-    if existing.installed && existing.loaded && existing.enabled {
+    let already_current = existing.installed
+        && existing.loaded
+        && existing.enabled
+        && matches!(existing.definition_matches_cli, Some(true));
+    if already_current {
         println!("{} is already installed and enabled", service_label());
         print_service_manager_summary(&existing);
         return Ok(());
@@ -1129,6 +1178,161 @@ fn service_reconcile() -> Result<(), String> {
     println!("reconciled service manager state");
     print_service_manager_summary(&refreshed);
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceEnsureAction {
+    Skipped,
+    AlreadyCurrent,
+    Reconciled,
+    Reloaded,
+}
+
+fn ensured_cli_version_path() -> Result<PathBuf, String> {
+    Ok(ensure_app_support_dir()?.join("last_ensured_cli_version"))
+}
+
+fn read_ensured_cli_version() -> Option<String> {
+    let path = ensured_cli_version_path().ok()?;
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn write_ensured_cli_version(version: &str) -> Result<(), String> {
+    let path = ensured_cli_version_path()?;
+    fs::write(&path, format!("{version}\n"))
+        .map_err(|e| format!("write ensured cli version failed: {e}"))
+}
+
+fn running_service_version(port: u16) -> Option<String> {
+    let health = fetch_health(port)?;
+    health
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn service_kick_reload() -> Result<(), String> {
+    let manager = service_manager_status()?;
+    if !manager.supported {
+        return Err(manager_unsupported_error(&manager));
+    }
+    if cfg!(target_os = "macos") {
+        let domain = launchctl_domain()?;
+        let target = format!("{}/{}", domain, service_label());
+        // -k：先杀掉旧进程再拉起，确保加载磁盘上的新二进制
+        let (ok, _, err) = run_launchctl(&["kickstart", "-k", target.as_str()])?;
+        if !ok {
+            // kickstart 失败时回退到 rewrite + bootstrap
+            let _ = service_uninstall();
+            service_install()?;
+            if !err.trim().is_empty() {
+                eprintln!("launchctl kickstart warning: {}", err.trim());
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        let (ok, _, err) = run_systemctl(&["restart", service_label()])?;
+        if !ok {
+            return Err(format!("systemctl restart failed: {}", err.trim()));
+        }
+    } else {
+        return Err(manager_unsupported_error(&manager));
+    }
+    Ok(())
+}
+
+/// 若用户曾安装过托管服务：路径漂移则 reconcile；同路径升级则 reload。
+/// 未安装过则 no-op（不会偷偷装上）。
+fn service_ensure(verbose: bool) -> Result<ServiceEnsureAction, String> {
+    if std::env::var_os("GITEAM_SKIP_SERVICE_ENSURE").is_some() {
+        return Ok(ServiceEnsureAction::Skipped);
+    }
+
+    let manager = service_manager_status()?;
+    if !manager.supported {
+        return Ok(ServiceEnsureAction::Skipped);
+    }
+
+    let tracked = manager.definition_exists
+        || manager.installed
+        || manager.enabled
+        || manager.loaded;
+    if !tracked {
+        return Ok(ServiceEnsureAction::Skipped);
+    }
+
+    let cli_ver = env!("CARGO_PKG_VERSION");
+    let path_stale = matches!(manager.definition_matches_cli, Some(false));
+
+    if path_stale {
+        if verbose {
+            println!(
+                "service ensure: managed definition points to a different binary; reconciling…"
+            );
+        }
+        service_reconcile()?;
+        let _ = write_ensured_cli_version(cli_ver);
+        return Ok(ServiceEnsureAction::Reconciled);
+    }
+
+    let control = control::get_control_server_settings()?;
+    let running_ver = running_service_version(control.port);
+    let stamp = read_ensured_cli_version();
+    let version_drift = match (&running_ver, &stamp) {
+        (Some(rv), _) if rv != cli_ver => true,
+        (_, Some(s)) if s != cli_ver => manager.loaded || manager.installed,
+        (_, None) if manager.loaded || service_running(control.port) => true,
+        _ => false,
+    };
+
+    if version_drift {
+        if verbose {
+            println!(
+                "service ensure: reloading managed service to pick up CLI {cli_ver}…"
+            );
+        }
+        if manager.loaded || manager.installed || manager.enabled {
+            service_kick_reload()?;
+        } else {
+            service_install()?;
+        }
+        let _ = write_ensured_cli_version(cli_ver);
+        return Ok(ServiceEnsureAction::Reloaded);
+    }
+
+    let _ = write_ensured_cli_version(cli_ver);
+    if verbose {
+        println!("service ensure: managed service already matches CLI {cli_ver}");
+        print_service_manager_summary(&service_manager_status()?);
+    }
+    Ok(ServiceEnsureAction::AlreadyCurrent)
+}
+
+fn auto_ensure_managed_service() {
+    match service_ensure(false) {
+        Ok(ServiceEnsureAction::Reconciled) => {
+            eprintln!(
+                "giteam: managed service definition updated to current CLI ({})",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        Ok(ServiceEnsureAction::Reloaded) => {
+            eprintln!(
+                "giteam: managed service reloaded onto CLI {}",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("giteam: service ensure skipped: {err}");
+        }
+    }
 }
 
 fn now_unix_secs() -> u64 {
@@ -2207,6 +2411,7 @@ fn print_banner() {
 }
 
 fn print_status(json: bool) -> Result<(), String> {
+    auto_ensure_managed_service();
     let view = StatusView {
         control: resolved_control_access_info()?,
         runtime: runtime_view()?,
@@ -2269,7 +2474,9 @@ fn print_status(json: bool) -> Result<(), String> {
         println!("service_note: {}", note);
     }
     if matches!(view.manager.definition_matches_cli, Some(false)) {
-        println!("service_warning: managed service points to an older binary; run `giteam service reconcile`");
+        println!(
+            "service_warning: managed service still points to an older binary; run `giteam service ensure`"
+        );
     }
     if !view.control.no_auth {
         println!("pair_code: {}", view.control.pair_code);
@@ -2288,6 +2495,7 @@ fn print_status(json: bool) -> Result<(), String> {
 }
 
 fn print_pair_code(refresh: bool, json: bool) -> Result<(), String> {
+    auto_ensure_managed_service();
     let pair = resolved_pair_code(refresh)?;
     if json {
         return print_json(&pair);
@@ -2617,6 +2825,19 @@ fn run_service_command(command: ServiceCommands) -> Result<(), String> {
         ServiceCommands::Status { json } => print_status(json),
         ServiceCommands::Doctor { json } => print_service_doctor(json),
         ServiceCommands::Reconcile => service_reconcile(),
+        ServiceCommands::Ensure => {
+            let action = service_ensure(true)?;
+            if matches!(
+                action,
+                ServiceEnsureAction::Skipped | ServiceEnsureAction::AlreadyCurrent
+            ) {
+                // verbose path already printed details when AlreadyCurrent
+                if action == ServiceEnsureAction::Skipped {
+                    println!("service ensure: no managed service registration found");
+                }
+            }
+            Ok(())
+        }
         ServiceCommands::Install => service_install(),
         ServiceCommands::Uninstall => service_uninstall(),
         ServiceCommands::Enable => service_enable(),
@@ -2660,6 +2881,113 @@ fn serve(warmup: bool, json: bool, no_banner: bool) -> Result<(), String> {
     control::stop_control_server();
     shutdown_agent_runtime();
     Ok(())
+}
+
+fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
+    match command {
+        CloudCommands::Link {
+            url,
+            access_key,
+            name,
+            json,
+        } => {
+            let base = url
+                .unwrap_or_else(|| cloud::DEFAULT_CLOUD_BASE_URL.to_string())
+                .trim()
+                .trim_end_matches('/')
+                .to_string();
+            let device_name = name.unwrap_or_else(|| {
+                std::env::var("HOST")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "giteam-cli".to_string())
+            });
+            let version = env!("CARGO_PKG_VERSION").to_string();
+            let settings = cloud::link_device(
+                &base,
+                &device_name,
+                &version,
+                access_key.as_deref(),
+            )?;
+            let port = control::get_control_server_settings()?.port;
+            let _ = cloud::start_cloud_tunnel_background(port);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&settings).unwrap_or_default());
+            } else {
+                println!("cloud linked");
+                println!("  cloud_base_url: {}", settings.cloud_base_url);
+                println!("  workspace_id:   {}", settings.workspace_id);
+                println!("  device_id:      {}", settings.device_id);
+                println!("  access_key:     {}", settings.access_key);
+                println!("  tunnel:         {}", if cloud::tunnel_running() { "starting/running" } else { "not running (start control service)" });
+                println!();
+                println!("Mobile QR payload:");
+                let qr = serde_json::json!({
+                    "mode": "cloud",
+                    "cloudBaseUrl": settings.cloud_base_url,
+                    "workspaceId": settings.workspace_id,
+                    "deviceId": settings.device_id,
+                    "accessKey": settings.access_key,
+                });
+                println!("{}", serde_json::to_string_pretty(&qr).unwrap_or_default());
+            }
+            Ok(())
+        }
+        CloudCommands::Status { json } => {
+            let settings = cloud::get_cloud_link_settings();
+            let running = cloud::tunnel_running();
+            if json {
+                let view = serde_json::json!({
+                    "enabled": settings.enabled,
+                    "cloudBaseUrl": settings.cloud_base_url,
+                    "workspaceId": settings.workspace_id,
+                    "deviceId": settings.device_id,
+                    "deviceName": settings.device_name,
+                    "tunnelRunning": running,
+                    "hasAccessKey": !settings.access_key.is_empty(),
+                });
+                println!("{}", serde_json::to_string_pretty(&view).unwrap_or_default());
+            } else {
+                println!("enabled: {}", settings.enabled);
+                println!("cloud_base_url: {}", settings.cloud_base_url);
+                println!("workspace_id: {}", settings.workspace_id);
+                println!("device_id: {}", settings.device_id);
+                println!("device_name: {}", settings.device_name);
+                println!("tunnel_running: {}", running);
+                if !settings.access_key.is_empty() {
+                    println!("access_key: {}", settings.access_key);
+                }
+            }
+            Ok(())
+        }
+        CloudCommands::Unlink { json } => {
+            cloud::stop_cloud_tunnel();
+            let mut settings = cloud::get_cloud_link_settings();
+            settings.enabled = false;
+            settings.device_token.clear();
+            cloud::set_cloud_link_settings(&settings)?;
+            if json {
+                println!("{{\"ok\":true}}");
+            } else {
+                println!("cloud unlinked (device token cleared, tunnel stopped)");
+            }
+            Ok(())
+        }
+        CloudCommands::Qr { json: _json } => {
+            let settings = cloud::get_cloud_link_settings();
+            if settings.access_key.is_empty() || settings.workspace_id.is_empty() {
+                return Err("not linked; run `giteam cloud link` first".into());
+            }
+            let qr = serde_json::json!({
+                "mode": "cloud",
+                "cloudBaseUrl": settings.cloud_base_url,
+                "workspaceId": settings.workspace_id,
+                "deviceId": settings.device_id,
+                "accessKey": settings.access_key,
+            });
+            println!("{}", serde_json::to_string_pretty(&qr).unwrap_or_default());
+            Ok(())
+        }
+    }
 }
 
 fn main() {
@@ -2724,6 +3052,7 @@ fn main() {
             PluginCommands::Update { name } => run_plugin_action(name, "update"),
         },
         Commands::PairCode { refresh, json } => print_pair_code(refresh, json),
+        Commands::Cloud { command } => run_cloud_command(command),
         Commands::Config { command } => match command {
             ConfigCommands::Get { json } => print_config(json),
             ConfigCommands::Set(args) => update_config(args),

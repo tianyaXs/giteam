@@ -1,6 +1,6 @@
 use super::pi_agent::{
-    AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink, AgentInteractionReply,
-    CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
+    default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
+    AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
 };
 use futures::executor::block_on;
 use rusqlite::Connection;
@@ -591,97 +591,20 @@ fn verify_pair_code(code: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn candidate_client_db_paths() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    // 1) Prefer the CLI-compatible config path first so web + desktop RPC read
-    // the same repository database.
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let h = home.trim();
-            if !h.is_empty() {
-                out.push(
-                    PathBuf::from(h)
-                        .join("Library")
-                        .join("Application Support")
-                        .join("giteam")
-                        .join("client.db"),
-                );
-            }
-        }
-    }
-    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-        let p = xdg_config_home.trim();
-        if !p.is_empty() {
-            out.push(PathBuf::from(p).join("giteam").join("client.db"));
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let h = home.trim();
-        if !h.is_empty() {
-            out.push(
-                PathBuf::from(h)
-                    .join(".config")
-                    .join("giteam")
-                    .join("client.db"),
-            );
-        }
-    }
-
-    // 2) Legacy app-data locations.
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let h = home.trim();
-            if !h.is_empty() {
-                out.push(
-                    PathBuf::from(h)
-                        .join("Library")
-                        .join("Application Support")
-                        .join("io.giteam.desktop")
-                        .join(".giteam")
-                        .join("client.db"),
-                );
-            }
-        }
-    }
-    // 3) Then prefer the same app-data root used by control settings/auth files.
-    if let Some(cfg) = control_server_settings_path() {
-        if let Some(parent) = cfg.parent() {
-            out.push(parent.join(".giteam").join("client.db"));
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let h = home.trim();
-            if !h.is_empty() {
-                out.push(
-                    PathBuf::from(h)
-                        .join("Library")
-                        .join("Application Support")
-                        .join("giteam")
-                        .join(".giteam")
-                        .join("client.db"),
-                );
-            }
-        }
-    }
-    // 4) Last-resort fallback: workspace-local legacy db.
-    if let Ok(cwd) = std::env::current_dir() {
-        out.push(cwd.join(".giteam").join("client.db"));
-    }
-    out
+fn client_db_path() -> Option<PathBuf> {
+    // 与桌面端同一权威根：只读 ~/.giteam/client.db（或 $GITEAM_HOME/client.db）。
+    // 不再回退 Application Support / XDG / cwd，避免多库分裂（桌面 9、CLI 7）。
+    default_data_dir().map(|dir| dir.join("client.db"))
 }
 
 fn read_client_repositories() -> Result<Vec<Value>, String> {
-    let db = candidate_client_db_paths()
-        .into_iter()
-        .find(|p| p.exists() && p.is_file());
-    let Some(path) = db else {
+    let Some(path) = client_db_path() else {
         return Ok(Vec::new());
     };
-    let conn = Connection::open(path).map_err(|e| format!("open client db failed: {e}"))?;
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open(&path).map_err(|e| format!("open client db failed: {e}"))?;
     let mut stmt = conn
         .prepare(
             "SELECT id, path, name, added_at
@@ -878,6 +801,25 @@ fn write_stream_all(stream: &mut TcpStream, bytes: &[u8], label: &str) -> Result
         }
     }
     Ok(())
+}
+
+fn is_benign_client_disconnect(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("connection closed")
+        || lower.contains("broken pipe")
+        || lower.contains("connection reset")
+        || lower.contains("connection aborted")
+        || lower.contains("not connected")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+}
+
+fn log_write_failure(status: u16, err: &str) {
+    // 手机端局域网扫描会短超时 abort；对端已断开后再回写必然 Broken pipe，属噪音。
+    if is_benign_client_disconnect(err) {
+        return;
+    }
+    eprintln!("[control] write {status} failed: {err}");
 }
 
 fn write_http_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<(), String> {
@@ -1086,6 +1028,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             200,
             serde_json::json!({
                 "ok": true,
+                "version": env!("CARGO_PKG_VERSION"),
                 "service": {
                     "enabled": settings.enabled,
                     "host": settings.host,
@@ -1864,16 +1807,20 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
             }
             handle_api_request(req, remote_ip)
         }
-        Err(e) => (400, serde_json::json!({ "error": e })),
+        Err(e) => {
+            // 对端在读完请求前就断开（发现探测 abort / 端口探测），无需再回 400。
+            if is_benign_client_disconnect(&e) {
+                return;
+            }
+            (400, serde_json::json!({ "error": e }))
+        }
     };
     if response.0 == 204 {
         if let Err(e) = write_http_no_content(&mut stream, 204) {
-            eprintln!("[control] write 204 failed: {}", e);
+            log_write_failure(204, &e);
         }
-    } else {
-        if let Err(e) = write_http_json(&mut stream, response.0, &response.1) {
-            eprintln!("[control] write {} failed: {}", response.0, e);
-        }
+    } else if let Err(e) = write_http_json(&mut stream, response.0, &response.1) {
+        log_write_failure(response.0, &e);
     }
 }
 
@@ -1904,6 +1851,7 @@ fn run_control_server_loop(
 }
 
 pub fn stop_control_server() {
+    crate::cloud::stop_cloud_tunnel();
     if let Ok(mut guard) = runtime_cell().lock() {
         if let Some(mut rt) = guard.take() {
             rt.stop.store(true, Ordering::Relaxed);
@@ -1928,6 +1876,9 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
                 && current.settings.public_base_url == settings.public_base_url
                 && current.settings.pair_code_ttl_mode == settings.pair_code_ttl_mode
             {
+                let port = settings.port;
+                drop(guard);
+                let _ = crate::cloud::start_cloud_tunnel_background(port);
                 return Ok(());
             }
         }
@@ -1946,6 +1897,7 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
         let cfg_for_thread = settings.clone();
+        let port = settings.port;
         let join = thread::spawn(move || {
             run_control_server_loop(cfg_for_thread, listener, stop_for_thread)
         });
@@ -1954,6 +1906,8 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
             join: Some(join),
             settings,
         });
+        drop(guard);
+        let _ = crate::cloud::start_cloud_tunnel_background(port);
         return Ok(());
     }
     Err("failed to lock control runtime".to_string())

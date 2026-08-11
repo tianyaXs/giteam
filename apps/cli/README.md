@@ -199,9 +199,18 @@ giteam service install
 giteam service enable
 giteam service disable
 giteam service uninstall
+giteam service ensure
+giteam service reconcile
 ```
 
 这些命令已做幂等处理，重复执行不会造成明显副作用。
+
+`npm install -g giteam@latest` 的 `postinstall` 会在本机已有托管服务时自动执行 `service ensure`：
+
+- 定义里的二进制路径与当前 CLI 不一致 → 重写并重新挂载（等同 reconcile）
+- 路径一致但进程仍是旧版本 → `kickstart` / `restart` 加载新二进制
+
+日常执行 `giteam status` / `giteam doctor` / `giteam pair-code` 时也会自动补一次。一般无需再手动 reconcile。
 
 ### `pair-code`
 
