@@ -101,6 +101,9 @@ jobs:
 
       - name: Build frontend (typecheck + vite)
         working-directory: apps/desktop
+        env:
+          # Packaged 「云端」default must be the public Gateway, not loopback.
+          VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
         run: npm run build
 
       - name: Build and publish
@@ -110,6 +113,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri

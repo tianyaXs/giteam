@@ -81,7 +81,10 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
   const [renameError, setRenameError] = useState("");
   const [copiedKeyId, setCopiedKeyId] = useState("");
 
-  const baseUrl = mode === "cloud" ? defaultCloud : privateUrl.trim().replace(/\/$/, "");
+  const baseUrl =
+    mode === "cloud"
+      ? (status?.cloudBaseUrl || defaultCloud).replace(/\/$/, "")
+      : privateUrl.trim().replace(/\/$/, "");
 
   const refresh = useCallback(async () => {
     try {
