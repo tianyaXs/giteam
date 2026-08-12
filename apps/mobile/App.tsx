@@ -631,7 +631,6 @@ export default function App() {
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     loaded,
-    projectsLength: projects.length,
     refreshModelCatalog,
     refreshProjectsCatalog,
     refreshSessionsFromServer,

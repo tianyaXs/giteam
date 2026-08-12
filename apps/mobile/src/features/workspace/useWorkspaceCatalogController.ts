@@ -351,13 +351,19 @@ export function useWorkspaceCatalogController(params: {
         let nextRepo = toText(opts?.preferredRepoPath).trim();
         if (nextRepo && !nextProjects.some((p) => p.worktree === nextRepo)) nextRepo = '';
         if (!nextRepo && currentRepo && nextProjects.some((p) => p.worktree === currentRepo)) nextRepo = currentRepo;
-        if (!nextRepo && !currentRepo && nextProjects.length > 0) nextRepo = nextProjects[0].worktree;
+        if (!nextRepo && nextProjects.length > 0) nextRepo = nextProjects[0].worktree;
         if (nextRepo && nextRepo !== currentRepo) setRepoPath(nextRepo);
+        if (!nextRepo) {
+          setRepoPath('');
+          setModelCatalogStatus('error');
+          setStatus('未获取到可用工作空间：请在桌面端打开至少一个仓库后重试');
+        }
         pushConnLog(`GET repository list ok count=${nextProjects.length}`);
-        if (nextProjects.length === 0) setStatus('未获取到可用工作空间，请检查桌面端仓库列表');
         if (hasNew) triggerLeftPulse();
       } catch (e) {
         pushConnLog(`GET repository list error ${String(e)}`, 'error');
+        setModelCatalogStatus('error');
+        setStatus(`工作区同步失败: ${String(e)}`);
       }
     };
 

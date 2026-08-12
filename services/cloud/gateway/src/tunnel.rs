@@ -132,6 +132,10 @@ impl TunnelHub {
         self.devices.read().await.len()
     }
 
+    pub async fn online_device_ids(&self) -> Vec<String> {
+        self.devices.read().await.keys().cloned().collect()
+    }
+
     pub async fn register(
         &self,
         workspace_id: String,

@@ -57,34 +57,36 @@ async fn redeem(
         .filter(|s| !s.is_empty());
 
     let selected = if let Some(did) = requested {
-        devices
+        let found = devices
             .iter()
             .find(|d| d.id == did)
-            .ok_or_else(|| ApiError::BadRequest("deviceId not in workspace".into()))?
-            .id
-            .clone()
+            .ok_or_else(|| ApiError::BadRequest("deviceId not in workspace".into()))?;
+        if !found.online {
+            return Err(ApiError::Unavailable {
+                code: "device_offline".into(),
+                message: "requested device is offline".into(),
+            });
+        }
+        found.id.clone()
     } else {
         let online: Vec<_> = devices.iter().filter(|d| d.online).collect();
+        if online.is_empty() {
+            return Err(ApiError::Unavailable {
+                code: "no_device_online".into(),
+                message: "no desktop device online".into(),
+            });
+        }
         if online.len() == 1 {
             online[0].id.clone()
         } else if let Some(default_id) = ws.default_device_id.as_ref() {
-            if devices.iter().any(|d| &d.id == default_id) {
-                default_id.clone()
-            } else if online.is_empty() && devices.len() == 1 {
-                devices[0].id.clone()
-            } else if online.len() > 1 {
-                return Err(crate::error::selection_required(
-                    serde_json::to_value(&devices).unwrap_or_default(),
-                ));
-            } else if devices.len() == 1 {
-                devices[0].id.clone()
+            // Only prefer default when that device is currently online.
+            if let Some(dev) = online.iter().find(|d| &d.id == default_id) {
+                dev.id.clone()
             } else {
                 return Err(crate::error::selection_required(
                     serde_json::to_value(&devices).unwrap_or_default(),
                 ));
             }
-        } else if devices.len() == 1 {
-            devices[0].id.clone()
         } else {
             return Err(crate::error::selection_required(
                 serde_json::to_value(&devices).unwrap_or_default(),

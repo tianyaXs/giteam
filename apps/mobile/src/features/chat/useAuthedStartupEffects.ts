@@ -6,7 +6,6 @@ export function useAuthedStartupEffects(params: {
   initialMessageFetchLimit: number;
   initialSessionLimit: number;
   loaded: boolean;
-  projectsLength: number;
   refreshModelCatalog: () => Promise<void>;
   refreshProjectsCatalog: () => Promise<void>;
   refreshSessionsFromServer: () => Promise<any>;
@@ -29,7 +28,6 @@ export function useAuthedStartupEffects(params: {
     initialMessageFetchLimit,
     initialSessionLimit,
     loaded,
-    projectsLength,
     refreshModelCatalog,
     refreshProjectsCatalog,
     refreshSessionsFromServer,
@@ -125,7 +123,9 @@ export function useAuthedStartupEffects(params: {
   }, [authed, loaded, repoPath, serverUrl, token]);
 
   useEffect(() => {
-    if (!loaded || !authed || !serverUrl || projectsLength > 0) return;
+    if (!loaded || !authed || !serverUrl || !token) return;
+    // 认证刚完成或 token 轮换后始终拉一次仓库列表。
+    // 不能用 projectsLength>0 跳过：重连时可能留下旧 projects 但 repoPath 已被清空。
     void actionsRef.current.refreshProjectsCatalog();
-  }, [authed, loaded, projectsLength, serverUrl, token]);
+  }, [authed, loaded, serverUrl, token]);
 }

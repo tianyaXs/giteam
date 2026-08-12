@@ -36,10 +36,30 @@ export async function adminFetch<T>(path: string, init?: RequestInit): Promise<T
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
 
+export function buildQuery(params: Record<string, string | number | undefined | null>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+export type PageResponse<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
 export type Metrics = {
   workspaceCount: number;
   deviceCount: number;
   onlineDeviceCount: number;
+  revokedDeviceCount?: number;
+  disabledWorkspaceCount?: number;
+  auditEventCount24h?: number;
 };
 
 export type AdminDevice = {
@@ -74,4 +94,12 @@ export type WorkspaceDetail = {
   accessKeyId: string;
   defaultDeviceId?: string | null;
   devices: WorkspaceDevice[];
+};
+
+export type AuditEvent = {
+  id: number;
+  workspaceId?: string | null;
+  eventType: string;
+  metaJson: unknown;
+  createdAt: string;
 };

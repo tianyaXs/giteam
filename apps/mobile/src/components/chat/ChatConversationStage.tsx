@@ -159,9 +159,9 @@ function ChatConversationStageImpl(props: {
           <View style={styles.blankHero} pointerEvents="box-none">
             {modelCatalogStatus === 'error' ? (
               <>
-                <Text style={[styles.blankTitle, { color: colors.text }]}>模型配置加载失败</Text>
+                <Text style={[styles.blankTitle, { color: colors.text }]}>连接未完成</Text>
                 <Text style={[styles.blankSub, { color: notebookColors.muted }]}>
-                  请检查与桌面端的连接后重试，或打开
+                  工作区或模型配置同步失败。请确认桌面端中继在线、已打开仓库后重试，或打开
                   <Text
                     onPress={(e) => {
                       e?.stopPropagation?.();
@@ -177,7 +177,7 @@ function ChatConversationStageImpl(props: {
                   >
                     设置
                   </Text>
-                  查看模型开关
+                  查看详情
                 </Text>
               </>
             ) : modelCatalogStatus === 'idle' || modelCatalogStatus === 'loading' ? (

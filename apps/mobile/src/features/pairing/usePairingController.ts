@@ -197,6 +197,9 @@ export function usePairingController(params: UsePairingControllerParams) {
       setServerUrlInput(stripUrlScheme(resolvedUrl));
       setPairCode('');
       setToken(args.token);
+      // 必须先清掉旧工作区，否则 repoPath 为空但 projects 仍有值时，
+      // 启动副作用会跳过仓库列表刷新，界面会一直停在「正在连接」。
+      setProjects([]);
       setRepoPath('');
       if (args.payloadRepoPaths && args.payloadRepoPaths.length > 0) {
         const fromPayload = toProjectOptionsFromPaths(args.payloadRepoPaths);
@@ -294,8 +297,17 @@ export function usePairingController(params: UsePairingControllerParams) {
           offlineErr.devices = redeemed.devices;
           throw offlineErr;
         }
+        // 必须与 JWT 内 deviceId 一致，否则桌面显示已连接但代理打到错误设备。
         const selectedOnline =
-          onlineDevices.find((d) => d.id === redeemed.deviceId) || onlineDevices[0];
+          onlineDevices.find((d) => d.id === redeemed.deviceId) || null;
+        if (!selectedOnline) {
+          const mismatch = new Error(
+            '云端返回的设备已离线，请关闭二维码后重开再扫一次'
+          ) as CloudRedeemError;
+          mismatch.code = 'device_offline';
+          mismatch.devices = redeemed.devices;
+          throw mismatch;
+        }
         await finishCloudConnect({
           cloudBaseUrl,
           accessKey: key,
@@ -396,6 +408,7 @@ export function usePairingController(params: UsePairingControllerParams) {
         setServerUrlInput(stripUrlScheme(resolvedUrl));
         setPairCode(nextCode);
         setToken(nextToken);
+        setProjects([]);
         setRepoPath('');
         if (opts?.payloadRepoPaths && opts.payloadRepoPaths.length > 0) {
           const fromPayload = toProjectOptionsFromPaths(opts.payloadRepoPaths);
