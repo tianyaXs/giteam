@@ -154,6 +154,8 @@ export default function App() {
     setAutoAcceptPermissions,
     modelOptions,
     setModelOptions,
+    modelCatalogStatus,
+    setModelCatalogStatus,
     installedSkills,
     setInstalledSkills,
     installedMcpServers,
@@ -679,6 +681,7 @@ export default function App() {
     setProjects,
     setRepoPath,
     setModelOptions,
+    setModelCatalogStatus,
     setModel,
     setInstalledSkills,
     setExtensionsLoading,
@@ -740,6 +743,7 @@ export default function App() {
     canSendNow,
     canAbortNow,
     handlePromptChange,
+    clearPromptAfterSend,
     handleSlashSelect,
     handleToggleAttachmentMenu,
     handleDismissAttachmentPanel,
@@ -1083,6 +1087,8 @@ export default function App() {
     setSessionHasMore,
     setSessionHistoryRetryHint,
     setStartupSessionHydrating,
+    setModelCatalogStatus,
+    setModelOptions,
     setStatus,
     pushConnLog,
   });
@@ -1206,6 +1212,7 @@ export default function App() {
     setBusy,
     setToken,
     setPrompt,
+    clearPromptAfterSend,
     setSlashOpen,
     setImageAttachments,
     setSessionStatusMap,
@@ -1505,6 +1512,7 @@ export default function App() {
       onReplyQuestion={handleQuestionReply}
       onDismissQuestion={handleQuestionDismiss}
       composerProps={composerProps}
+      modelCatalogStatus={modelCatalogStatus}
       previewImage={previewImage}
       onClosePreviewImage={handleClosePreviewImage}
     />

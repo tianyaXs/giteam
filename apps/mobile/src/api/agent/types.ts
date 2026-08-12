@@ -32,7 +32,21 @@ export type AgentSessionSummary = {
   updatedAtMs: number;
   /** 首条用户消息派生的标题；空会话缺省。 */
   title?: string;
+  /** `"primary"` | `"subagent"`。 */
+  sessionKind?: string;
+  /** 子 agent 的父会话；主会话缺省。 */
+  parentSessionId?: string;
+  /** 子 agent 对应的父 task toolCallId。 */
+  parentToolCallId?: string;
 };
+
+/** 主会话列表用：排除 task/subagent 子会话。 */
+export function isPrimaryAgentSession(summary: Pick<AgentSessionSummary, 'sessionKind' | 'parentSessionId'>): boolean {
+  const kind = String(summary.sessionKind || '').trim().toLowerCase();
+  if (kind === 'subagent') return false;
+  if (String(summary.parentSessionId || '').trim()) return false;
+  return true;
+}
 
 export type AgentModelCost = {
   input: number;

@@ -1,6 +1,7 @@
 import { useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { getClientRepositories } from '../../api/controlApi';
 import { createMobileAgentClient } from '../../api/agent/client';
+import { isPrimaryAgentSession } from '../../api/agent/types';
 import { normalizeWorkspacePath } from '../../lib/path';
 import { toText } from '../../lib/text';
 import { saveSessionCache } from '../../storage/sessionCache';
@@ -38,6 +39,7 @@ export function useWorkspaceCatalogController(params: {
   setProjects: Dispatch<SetStateAction<ProjectOption[]>>;
   setRepoPath: Dispatch<SetStateAction<string>>;
   setModelOptions: Dispatch<SetStateAction<ModelOption[]>>;
+  setModelCatalogStatus: Dispatch<SetStateAction<'idle' | 'loading' | 'ready' | 'error'>>;
   setModel: Dispatch<SetStateAction<string>>;
   setInstalledSkills: Dispatch<SetStateAction<any[]>>;
   setExtensionsLoading: Dispatch<SetStateAction<boolean>>;
@@ -65,6 +67,7 @@ export function useWorkspaceCatalogController(params: {
     setExtensionsLoading,
     setInstalledSkills,
     setModel,
+    setModelCatalogStatus,
     setModelOptions,
     setProjects,
     setRepoPath,
@@ -141,8 +144,10 @@ export function useWorkspaceCatalogController(params: {
         pushConnLog(`GET agent.sessions repo=${repo}`);
         const rows = await agentClient().listSessions();
         // 一次全量 list，按 repoPath 分桶写入 cache（对齐桌面侧栏多项目展开）。
+        // 子任务 / subagent 会话不进主列表（后端也会滤；此处再挡一层防旧 CLI / 缓存）。
         const bucket: Record<string, SessionItem[]> = {};
         for (const s of rows) {
+          if (!isPrimaryAgentSession(s)) continue;
           const key = normalizeWorkspacePath(s.repoPath);
           if (!key) continue;
           const updatedAt = Number(s.updatedAtMs || 0) || 0;
@@ -248,19 +253,12 @@ export function useWorkspaceCatalogController(params: {
       const repo = toText(targetRepoPath || repoPath).trim();
       if (!authed || !repo || !serverUrl) return;
       // Composer 只展示「开关已开启」的模型，绝不回退成 listProviders 全量。
-      // 显示名仍可从 providers / modelLabels 取。
-      let providerOptions: ModelOption[] = [];
-      try {
-        providerOptions = await refreshModelCatalogFromProviders();
-      } catch (e) {
-        pushConnLog(`GET agent.providers warn ${String(e)}`, 'info');
-      }
+      // 先拉轻量 mobile-model-state（~0.2s），providers 全量（可达数秒/数百 KB）只作标签补全，后台跑。
+      setModelCatalogStatus('loading');
       const labelById = new Map<string, string>();
-      for (const opt of providerOptions) labelById.set(opt.id, opt.label);
-      const connectedIds = new Set(providerOptions.map((opt) => opt.id));
+      let connectedIds = new Set<string>();
 
-      try {
-        const state = await agentClient().getMobileModelState();
+      const applyFromState = (state: Awaited<ReturnType<ReturnType<typeof agentClient>['getMobileModelState']>>) => {
         if (!state) {
           pushConnLog('mobile-model-state missing; composer models empty', 'info');
           applyModelOptions([], 'GET mobile-model-state');
@@ -287,17 +285,15 @@ export function useWorkspaceCatalogController(params: {
         let refs: string[] = [];
         if (enabledList) {
           const enabledSet = new Set(enabledList);
-          // 桌面推送的 availableModels ∩ 本地开关；并并入刚打开、桌面尚未回推的项
           if (availableList.length > 0) {
             refs = availableList.filter((ref) => enabledSet.has(ref) && !hiddenSet.has(ref));
           }
           for (const ref of enabledList) {
             if (hiddenSet.has(ref) || refs.includes(ref)) continue;
-            // 已连接才进选择器；桌面尚未回推 available 时靠 providers 校验
+            // providers 尚未返回时放行 enabled；有 connectedIds 后再收紧
             if (connectedIds.size === 0 || connectedIds.has(ref)) refs.push(ref);
           }
         } else {
-          // 旧桌面未写 enabledModels：仅信 availableModels，仍不回退全量
           refs = availableList.filter((ref) => !hiddenSet.has(ref));
         }
 
@@ -305,10 +301,30 @@ export function useWorkspaceCatalogController(params: {
           .map((ref) => toModelOption(ref, labelById))
           .filter((opt): opt is ModelOption => !!opt);
         applyModelOptions(options, 'GET mobile-model-state');
+      };
+
+      try {
+        const state = await agentClient().getMobileModelState();
+        applyFromState(state);
+        setModelCatalogStatus('ready');
       } catch (e) {
         pushConnLog(`GET mobile-model-state warn ${String(e)}; composer models empty`, 'info');
         applyModelOptions([], 'GET mobile-model-state');
+        setModelCatalogStatus('error');
       }
+
+      // 后台补全 providers 标签，并在有凭证集合后收紧 enabled 列表
+      void (async () => {
+        try {
+          const providerOptions = await refreshModelCatalogFromProviders();
+          for (const opt of providerOptions) labelById.set(opt.id, opt.label);
+          connectedIds = new Set(providerOptions.map((opt) => opt.id));
+          const state = await agentClient().getMobileModelState();
+          applyFromState(state);
+        } catch (e) {
+          pushConnLog(`GET agent.providers warn ${String(e)}`, 'info');
+        }
+      })();
     };
 
     const refreshProjectsCatalog = async (opts?: { baseUrl?: string; token?: string; preferredRepoPath?: string }) => {
@@ -366,6 +382,7 @@ export function useWorkspaceCatalogController(params: {
     setExtensionsLoading,
     setInstalledSkills,
     setModel,
+    setModelCatalogStatus,
     setModelOptions,
     setProjects,
     setRepoPath,

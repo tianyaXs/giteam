@@ -24,6 +24,8 @@ export function useSessionLifecycleActions(params: {
   setSessionHasMore: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   setSessionHistoryRetryHint: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setStartupSessionHydrating: (value: boolean) => void;
+  setModelCatalogStatus?: (value: 'idle' | 'loading' | 'ready' | 'error') => void;
+  setModelOptions?: (value: any[]) => void;
   setStatus: (value: string) => void;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
 }) {
@@ -41,6 +43,8 @@ export function useSessionLifecycleActions(params: {
     sessionVisibleTurnCountRef,
     setActiveSession,
     setMessages,
+    setModelCatalogStatus,
+    setModelOptions,
     setPairCode,
     setProjects,
     setRenderedTurns,
@@ -119,6 +123,8 @@ export function useSessionLifecycleActions(params: {
     sessionMessageSyncRef.current?.resetMessageSyncState();
     bumpOptimisticVersion();
     setStartupSessionHydrating(false);
+    setModelCatalogStatus?.('idle');
+    setModelOptions?.([]);
     setStatus('已退出授权');
     pushConnLog('reset auth');
   }, [
@@ -134,6 +140,8 @@ export function useSessionLifecycleActions(params: {
     sessionVisibleTurnCountRef,
     setActiveSession,
     setMessages,
+    setModelCatalogStatus,
+    setModelOptions,
     setPairCode,
     setProjects,
     setRenderedTurns,

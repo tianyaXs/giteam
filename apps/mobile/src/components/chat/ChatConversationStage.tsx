@@ -53,6 +53,8 @@ function ChatConversationStageImpl(props: {
   listRevealReady: boolean;
   onJumpToLatest: () => void;
   hasEnabledModels?: boolean;
+  /** idle/loading：连接中；error：拉取失败；ready：可判断是否有模型 */
+  modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   onOpenModelSettings?: () => void;
   /** 点击空白 / 开始滚列表时收回输入框 */
   onBlankPress?: () => void;
@@ -68,6 +70,7 @@ function ChatConversationStageImpl(props: {
     loadingOlder,
     messageBottomInset,
     messageScrollRef,
+    modelCatalogStatus = 'ready',
     notebookColors,
     onBlankPress,
     onChatViewableItemsChanged,
@@ -154,7 +157,37 @@ function ChatConversationStageImpl(props: {
           accessibilityLabel="收起输入框"
         >
           <View style={styles.blankHero} pointerEvents="box-none">
-            {!hasEnabledModels ? (
+            {modelCatalogStatus === 'error' ? (
+              <>
+                <Text style={[styles.blankTitle, { color: colors.text }]}>模型配置加载失败</Text>
+                <Text style={[styles.blankSub, { color: notebookColors.muted }]}>
+                  请检查与桌面端的连接后重试，或打开
+                  <Text
+                    onPress={(e) => {
+                      e?.stopPropagation?.();
+                      onOpenModelSettings?.();
+                    }}
+                    style={{
+                      color: settingsLinkColor,
+                      fontWeight: '700',
+                      textDecorationLine: 'underline'
+                    }}
+                    accessibilityRole="link"
+                    accessibilityLabel="打开模型设置"
+                  >
+                    设置
+                  </Text>
+                  查看模型开关
+                </Text>
+              </>
+            ) : modelCatalogStatus === 'idle' || modelCatalogStatus === 'loading' ? (
+              <>
+                <Text style={[styles.blankTitle, { color: colors.text }]}>正在连接…</Text>
+                <Text style={[styles.blankSub, { color: notebookColors.muted }]}>
+                  正在获取工作区与模型配置，请稍候
+                </Text>
+              </>
+            ) : !hasEnabledModels ? (
               <>
                 <Text style={[styles.blankTitle, { color: colors.text }]}>先开启一个模型</Text>
                 <Text style={[styles.blankSub, { color: notebookColors.muted }]}>

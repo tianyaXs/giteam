@@ -90,6 +90,8 @@ type ChatWorkspaceScreenProps = {
   onReplyQuestion: (requestId: string, answers: string[][]) => void;
   onDismissQuestion: (requestId: string) => void;
   composerProps: React.ComponentProps<typeof ChatComposer>;
+  /** idle/loading 时空会话不提示「去配置模型」 */
+  modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   previewImage: { uri: string; filename?: string } | null;
   onClosePreviewImage: () => void;
 };
@@ -112,6 +114,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     shouldSuppressLoadOlder,
     messageBottomInset,
     messageScrollRef,
+    modelCatalogStatus = 'idle',
     notebookColors,
     onBeforeOpenDrawer,
     onOpenLeftDrawer,
@@ -317,6 +320,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             showLatestJump={showLatestJump}
             onJumpToLatest={onJumpToLatest}
             hasEnabledModels={(composerProps.modelOptions?.length || 0) > 0}
+            modelCatalogStatus={modelCatalogStatus}
             onOpenModelSettings={composerProps.onOpenModelManager}
             onBlankPress={dismissComposer}
           />

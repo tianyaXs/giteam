@@ -4,17 +4,15 @@ import { Feather } from '@expo/vector-icons';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
-  interpolateColor,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming
 } from 'react-native-reanimated';
-import { ReasoningParticleField } from './ReasoningParticleField';
+import { IdlePillAuraField } from './IdlePillAuraField';
 import {
-  IDLE_BG_STOPS_DARK,
-  IDLE_BG_STOPS_LIGHT,
   IDLE_INTENSITY_STOPS,
+  THINKING_LEVEL_MAX,
   idlePillColors,
   MobileThinkingLevel,
   thinkingIndex,
@@ -42,19 +40,17 @@ type IdleReasoningPillProps = {
 };
 
 const STEP_PX = 42;
-/** worklet 可读的强度表，与 MOBILE_THINKING_LEVELS 对齐 */
-const INTENSITIES = [0, 0.18, 0.36, 0.55, 0.78, 1];
-const LEVEL_MAX = INTENSITIES.length - 1;
 
 function intensityAt(index: number): number {
   'worklet';
-  const i = Math.max(0, Math.min(LEVEL_MAX, Math.round(index)));
-  return INTENSITIES[i];
+  const i = Math.max(0, Math.min(THINKING_LEVEL_MAX, Math.round(index)));
+  return IDLE_INTENSITY_STOPS[i];
 }
 
 /**
  * 待机输入胶囊：短按展开输入；长按后横滑调节推理强度。
  * compact 时显示消息图标，点击恢复双按钮比例。
+ * 底色/光效由 IdlePillAuraField 绘制；待机无 dock 投影，轮廓靠自身描边。
  */
 export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: IdleReasoningPillProps) {
   const {
@@ -87,7 +83,7 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
     const idx = thinkingIndex(thinkingLevel);
     baseIndex.value = idx;
     if (scrubbingUi) return;
-    intensity.value = withTiming(INTENSITIES[idx], {
+    intensity.value = withTiming(IDLE_INTENSITY_STOPS[idx], {
       duration: 320,
       easing: Easing.out(Easing.cubic)
     });
@@ -144,7 +140,7 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
     setScrubbingUi(false);
     setScrubLevel(thinkingLevel);
     onScrubbingChange?.(false);
-    intensity.value = withTiming(INTENSITIES[thinkingIndex(thinkingLevel)], { duration: 220 });
+    intensity.value = withTiming(IDLE_INTENSITY_STOPS[thinkingIndex(thinkingLevel)], { duration: 220 });
   }, [intensity, onScrubbingChange, thinkingLevel]);
 
   const scrubGesture = useMemo(() => {
@@ -166,7 +162,10 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
       .onUpdate((evt) => {
         'worklet';
         if (scrubArmed.value < 1) return;
-        const next = Math.max(0, Math.min(LEVEL_MAX, startIndex.value + evt.translationX / STEP_PX));
+        const next = Math.max(
+          0,
+          Math.min(THINKING_LEVEL_MAX, startIndex.value + evt.translationX / STEP_PX)
+        );
         const rounded = Math.round(next);
         if (rounded !== liveIndex.value) {
           liveIndex.value = rounded;
@@ -174,9 +173,10 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
           runOnJS(updateScrub)(rounded);
         } else {
           const a = Math.floor(next);
-          const b = Math.min(LEVEL_MAX, a + 1);
+          const b = Math.min(THINKING_LEVEL_MAX, a + 1);
           const t = next - a;
-          intensity.value = INTENSITIES[a] + (INTENSITIES[b] - INTENSITIES[a]) * t;
+          intensity.value =
+            IDLE_INTENSITY_STOPS[a] + (IDLE_INTENSITY_STOPS[b] - IDLE_INTENSITY_STOPS[a]) * t;
         }
       })
       .onEnd(() => {
@@ -232,13 +232,6 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
     [scrubGesture, tapGesture]
   );
 
-  const pillStyle = useAnimatedStyle(() => {
-    const stops = isDark ? IDLE_BG_STOPS_DARK : IDLE_BG_STOPS_LIGHT;
-    return {
-      backgroundColor: interpolateColor(intensity.value, IDLE_INTENSITY_STOPS, stops)
-    };
-  });
-
   const labelStyle = useAnimatedStyle(() => ({
     opacity: 1 - scrubbing.value,
     transform: [{ translateX: scrubbing.value * -6 }]
@@ -250,6 +243,18 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
   }));
 
   const meta = thinkingMeta(scrubbingUi ? scrubLevel : thinkingLevel);
+
+  // compact：实心底；展开：透明底交给光效层，淡描边勾轮廓（待机无 dock 投影；overflow 会裁掉自阴影故不用）
+  const shellStyle = compact
+    ? {
+        backgroundColor: palette.bg,
+        borderWidth: 0
+      }
+    : {
+        backgroundColor: 'transparent' as const,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: isDark ? 'rgba(255,255,255,0.14)' : 'rgba(60,80,110,0.16)'
+      };
 
   return (
     <GestureDetector gesture={composed}>
@@ -264,7 +269,7 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
             overflow: 'hidden',
             alignItems: compact ? 'center' : 'stretch'
           },
-          pillStyle
+          shellStyle
         ]}
         onLayout={(evt) => {
           const w = Math.ceil(evt.nativeEvent.layout.width);
@@ -279,7 +284,7 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
       >
         {!compact ? (
           <>
-            <ReasoningParticleField
+            <IdlePillAuraField
               intensity={intensity}
               scrubbing={scrubbing}
               width={particleWidth}
@@ -288,7 +293,6 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
               isDark={isDark}
               active={active && !compact}
             />
-
             <Animated.View style={[styles.labelWrap, labelStyle]} pointerEvents="none">
               <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: '500', color: palette.fg }}>
                 询问任何问题

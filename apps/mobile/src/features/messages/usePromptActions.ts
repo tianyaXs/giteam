@@ -40,6 +40,8 @@ type UsePromptActionsParams = {
   setBusy: (value: boolean | ((prev: boolean) => boolean)) => void;
   setToken: (value: string) => void;
   setPrompt: (value: string | ((prev: string) => string)) => void;
+  /** 发送成功路径：立刻清空并抑制 IME 回填 */
+  clearPromptAfterSend: (sentText?: string) => void;
   setSlashOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   setImageAttachments: (value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => void;
 
@@ -62,6 +64,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     appendOptimisticTurnAndStick,
     authed,
     autoAcceptPermissions,
+    clearPromptAfterSend,
     clearSessionOptimisticMessages,
     composerAgent,
     dropOptimisticUserMessage,
@@ -127,6 +130,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('有图片处理失败，请删除后重试');
       return;
     }
+    // 校验通过后立刻清空输入，避免异步建会话/中文 IME 回填导致「发出去了字还在」
+    clearPromptAfterSend(payloadPrompt);
     sendInFlightRef.current = true;
     setBusy(true);
     if (images.length > 0) {
@@ -219,7 +224,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
       markMessageSendPerf(perf, 'send.list_window.append_done', {
         ms: Math.round(performance.now() - listStartedAt)
       });
-      setPrompt('');
       setSlashOpen(false);
       setImageAttachments([]);
       pendingPromptSessionRef.current[targetSessionId] = {
@@ -345,6 +349,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
     appendOptimisticTurnAndStick,
     authed,
     autoAcceptPermissions,
+    clearPromptAfterSend,
+    clearSessionOptimisticMessages,
     composerAgent,
     dropOptimisticUserMessage,
     imageAttachments,

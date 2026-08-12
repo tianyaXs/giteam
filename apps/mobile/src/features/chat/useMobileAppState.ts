@@ -29,6 +29,10 @@ export function useMobileAppState() {
     useState<ComposerAgentName>("build");
   const [autoAcceptPermissions, setAutoAcceptPermissions] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  /** idle=未拉过；loading=连接中；ready=已拿到 model-state；error=请求失败 */
+  const [modelCatalogStatus, setModelCatalogStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const [installedSkills, setInstalledSkills] = useState<any[]>([]);
   const [installedMcpServers, setInstalledMcpServers] = useState<
     Array<{ name: string; status: any }>
@@ -107,6 +111,8 @@ export function useMobileAppState() {
     setAutoAcceptPermissions,
     modelOptions,
     setModelOptions,
+    modelCatalogStatus,
+    setModelCatalogStatus,
     installedSkills,
     setInstalledSkills,
     installedMcpServers,

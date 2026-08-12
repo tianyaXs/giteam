@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
+import { toText } from '../../lib/text';
 import type { ComposerAttachment, RecentImageItem } from './types';
 
 type SlashCommandLike = {
@@ -22,6 +23,8 @@ export function useComposerUiController(props: {
   const [prompt, setPrompt] = useState('');
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const suppressPromptChangeUntilRef = useRef(0);
+  const lastClearedPromptRef = useRef('');
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [attachmentPanelVisible, setAttachmentPanelVisible] = useState(false);
   const [recentImages, setRecentImages] = useState<RecentImageItem[]>([]);
@@ -100,7 +103,25 @@ export function useComposerUiController(props: {
     ]
   } as const;
 
+  const clearPromptAfterSend = useCallback((sentText?: string) => {
+    const cleared = toText(sentText).trim();
+    lastClearedPromptRef.current = cleared;
+    // 仅挡住 IME 回填同一段；合法重输不同内容会立刻放行
+    suppressPromptChangeUntilRef.current = Date.now() + 320;
+    setPrompt('');
+    setSlashOpen(false);
+    setSlashActiveIndex(0);
+  }, []);
+
   const handlePromptChange = useCallback((value: string) => {
+    // 发送后短窗内忽略 IME 回填的同一段文字，避免「发出去了字还在」
+    if (Date.now() < suppressPromptChangeUntilRef.current) {
+      const next = toText(value).trim();
+      if (!next || next === lastClearedPromptRef.current) {
+        return;
+      }
+      suppressPromptChangeUntilRef.current = 0;
+    }
     if (attachmentMenuOpen) setAttachmentMenuOpen(false);
     setPrompt(value);
     const isSlash = /^\//.test(value) && !value.includes(' ');
@@ -235,6 +256,7 @@ export function useComposerUiController(props: {
     canSendNow,
     canAbortNow,
     handlePromptChange,
+    clearPromptAfterSend,
     handleSlashSelect,
     handleToggleAttachmentMenu,
     handleDismissAttachmentPanel,

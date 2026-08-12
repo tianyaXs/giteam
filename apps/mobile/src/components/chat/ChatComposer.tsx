@@ -858,7 +858,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
           </ScrollView>
         ) : null}
 
-        {/* 外层投影（不可 overflow:hidden）；内层裁圆角。collapsable=false 防止 Android 优化掉裁切层 */}
+        {/* 外层投影（不可 overflow:hidden）；内层裁圆角。仅输入态铺底+投影，避免待机两钮被连成一块 */}
         <View
           collapsable={false}
           style={[
@@ -989,6 +989,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                           return;
                         }
                         if (!canSendNow) return;
+                        inputRef.current?.blur();
                         onSend();
                       }}
                       disabled={!sendActive}
@@ -1115,11 +1116,9 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
       </View>
 
       <ModelPickerPopover
-        inputModelLabel={inputModelLabel || selectedModel}
         modelOptions={modelOptions}
         selectedModel={selectedModel}
         onSelectModel={handleSelectModel}
-        onOpenModelManager={handleOpenModelManager}
         open={modelPickerOpen}
         onClose={closeModelPicker}
         anchor={modelAnchor}
