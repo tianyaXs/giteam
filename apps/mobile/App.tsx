@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { NO_AUTH_TOKEN } from "./src/api/controlApi";
+import { NO_AUTH_TOKEN, cloudHeartbeat } from "./src/api/controlApi";
 import { interactionToQuestionRequest } from "./src/api/agent/bridge";
 import { createMobileAgentClient } from "./src/api/agent/client";
 import { setCloudSessionInvalidationHandler } from "./src/api/agent/errors";
@@ -1102,6 +1102,26 @@ export default function App() {
     });
     return () => setCloudSessionInvalidationHandler(null);
   }, [onResetAuth, pushConnLog]);
+
+  useEffect(() => {
+    if (!authed || connectionMode !== "cloud") return;
+    const base = String(serverUrl || "").trim();
+    const tk = String(token || "").trim();
+    if (!base || !tk || tk === NO_AUTH_TOKEN) return;
+    let cancelled = false;
+    const beat = () => {
+      if (cancelled) return;
+      void cloudHeartbeat({ cloudBaseUrl: base, token: tk }).catch((e) => {
+        pushConnLog(`cloud heartbeat warn ${String(e)}`, "info");
+      });
+    };
+    beat();
+    const timer = setInterval(beat, 25000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [authed, connectionMode, serverUrl, token, pushConnLog]);
 
   const onSwitchProject = useProjectSwitchAction({
     repoPath,

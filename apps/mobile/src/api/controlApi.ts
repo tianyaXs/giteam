@@ -104,12 +104,15 @@ export async function redeemCloudAccess(args: {
   cloudBaseUrl: string;
   accessKey: string;
   deviceId?: string;
+  clientName?: string;
 }): Promise<CloudRedeemResponse> {
   const baseUrl = normalizeBaseUrl(args.cloudBaseUrl);
   const url = `${baseUrl}/cloud/v1/auth/redeem`;
   const body: Record<string, string> = { accessKey: args.accessKey.trim() };
   const deviceId = String(args.deviceId || '').trim();
   if (deviceId) body.deviceId = deviceId;
+  const clientName = String(args.clientName || '').trim();
+  if (clientName) body.clientName = clientName;
   const result = await fetchTextWithTrace(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -155,6 +158,32 @@ export async function redeemCloudAccess(args: {
         })).filter((d: CloudDeviceInfo) => d.id)
       : []
   };
+}
+
+export async function cloudHeartbeat(args: {
+  cloudBaseUrl: string;
+  token: string;
+}): Promise<void> {
+  const baseUrl = normalizeBaseUrl(args.cloudBaseUrl);
+  const url = `${baseUrl}/cloud/v1/auth/heartbeat`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      ...authHeaders(args.token)
+    }
+  });
+  if (!result.ok) {
+    const err = new Error(`heartbeat failed: HTTP ${result.status}`) as CloudRedeemError;
+    try {
+      const parsed = JSON.parse(result.text);
+      err.code = String(parsed?.code || '');
+      err.message = String(parsed?.message || err.message);
+    } catch {
+      // keep
+    }
+    throw err;
+  }
 }
 
 export async function getClientRepositories(args: {

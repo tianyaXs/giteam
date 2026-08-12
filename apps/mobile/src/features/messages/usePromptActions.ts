@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { Vibration } from 'react-native';
+import { Platform, Vibration } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { pairAuth, redeemCloudAccess } from '../../api/controlApi';
 import { getActiveAccessKey, getConnectionMode, setActiveDeviceId } from '../../api/connectionContext';
@@ -313,7 +313,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
             pushConnLog('prompt auto cloud redeem retry');
             const renewed = await redeemCloudAccess({
               cloudBaseUrl: serverUrl,
-              accessKey: getActiveAccessKey() || pairCode.trim()
+              accessKey: getActiveAccessKey() || pairCode.trim(),
+              clientName: Platform.OS === 'ios' ? 'iPhone' : Platform.OS === 'android' ? 'Android' : '移动设备'
             });
             setToken(renewed.token);
             setActiveDeviceId(renewed.deviceId);

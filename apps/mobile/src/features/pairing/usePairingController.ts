@@ -1,7 +1,7 @@
 import { scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useRef, useState, type MutableRefObject } from 'react';
-import { Vibration } from 'react-native';
+import { Platform, Vibration } from 'react-native';
 import {
   health,
   NO_AUTH_TOKEN,
@@ -26,6 +26,12 @@ import { getDefaultCloudBaseUrl } from '../../config/cloud';
 import type { ConnectionMode } from '../../lib/connectionMode';
 
 export { getDefaultCloudBaseUrl };
+
+function defaultMobileClientName(): string {
+  if (Platform.OS === 'ios') return 'iPhone';
+  if (Platform.OS === 'android') return 'Android';
+  return '移动设备';
+}
 
 type PairPayload = {
   mode?: string;
@@ -254,7 +260,8 @@ export function usePairingController(params: UsePairingControllerParams) {
           redeemed = await redeemCloudAccess({
             cloudBaseUrl,
             accessKey: key,
-            deviceId: preferredDeviceId || undefined
+            deviceId: preferredDeviceId || undefined,
+            clientName: defaultMobileClientName()
           });
         } catch (firstErr) {
           // 本地/二维码里的 deviceId 可能属于旧 workspace；清掉后让网关自动选在线设备。
@@ -271,7 +278,8 @@ export function usePairingController(params: UsePairingControllerParams) {
             setDeviceId('');
             redeemed = await redeemCloudAccess({
               cloudBaseUrl,
-              accessKey: key
+              accessKey: key,
+              clientName: defaultMobileClientName()
             });
           } else {
             throw firstErr;
