@@ -4,6 +4,8 @@
 
 规格：`docs/superpowers/specs/2026-08-11-cloud-relay-mobile-control-design.md`
 
+**交给运维部署请看：** [`deploy/OPS-DEPLOY.md`](./deploy/OPS-DEPLOY.md)
+
 ## 私密配置（必读）
 
 生产公网入口、私有镜像仓库、JWT / Admin Token **不得写入公开仓库**。
