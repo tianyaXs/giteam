@@ -259,34 +259,19 @@ fn start_managed_giteam_service() -> Result<(), String> {
     let settings = load_cli_bootstrap_settings()?;
     if !settings.enabled {
         stop_managed_giteam_service();
-        control::stop_control_server();
+        let _ = run_giteam_cli(&["service", "stop", "--json"]);
         return Ok(());
     }
     if service_is_reachable(settings.port) {
         return Ok(());
     }
-    let binary = resolve_giteam_binary()?;
+    // 清掉桌面旧版直接 spawn 的子进程；真正拉起走 CLI service start，
+    // 以便已启用 launchd/systemd 时由 OS 托管独占端口（避免与自启双开抢 4100）。
     stop_managed_giteam_service();
-    control::stop_control_server();
-    let mut cmd = Command::new(binary);
-    cmd.arg("serve")
-        .env("PATH", build_path_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn giteam CLI service: {e}"))?;
-    if let Ok(mut guard) = runtime_cell().lock() {
-        *guard = Some(GiteamCliRuntime { child });
-    }
+    run_giteam_cli(&["service", "start", "--json"])?;
     if let Err(e) = wait_for_service_port(settings.port) {
         stop_managed_giteam_service();
+        let _ = run_giteam_cli(&["service", "stop", "--json"]);
         return Err(e);
     }
     Ok(())

@@ -939,6 +939,8 @@ fn write_launchd_plist() -> Result<PathBuf, String> {
             "  </array>\n",
             "  <key>RunAtLoad</key>\n  <true/>\n",
             "  <key>KeepAlive</key>\n  <true/>\n",
+            // 绑定失败时避免 KeepAlive 无间隔狂重试占满日志 / CPU
+            "  <key>ThrottleInterval</key>\n  <integer>10</integer>\n",
             "  <key>WorkingDirectory</key>\n  <string>{workdir}</string>\n",
             "  <key>StandardOutPath</key>\n  <string>{stdout}</string>\n",
             "  <key>StandardErrorPath</key>\n  <string>{stderr}</string>\n",
@@ -1003,9 +1005,15 @@ fn service_install() -> Result<(), String> {
         return Ok(());
     }
     if cfg!(target_os = "macos") {
+        let control = control::get_control_server_settings()?;
+        let _ = free_control_port(control.port);
         let plist = write_launchd_plist()?;
         let domain = launchctl_domain()?;
+        let target = format!("{}/{}", domain, service_label());
+        let _ = run_launchctl(&["enable", target.as_str()]);
         let _ = run_launchctl(&["bootout", domain.as_str(), plist.to_string_lossy().as_ref()]);
+        thread::sleep(Duration::from_millis(200));
+        let _ = free_control_port(control.port);
         let (ok, _, err) = run_launchctl(&[
             "bootstrap",
             domain.as_str(),
@@ -1014,7 +1022,7 @@ fn service_install() -> Result<(), String> {
         if !ok {
             return Err(format!("launchctl bootstrap failed: {}", err.trim()));
         }
-        let _ = run_launchctl(&["enable", format!("{}/{}", domain, service_label()).as_str()]);
+        let _ = run_launchctl(&["enable", target.as_str()]);
         println!("installed {} via launchd", service_label());
     } else if cfg!(target_os = "linux") {
         let unit = write_systemd_unit()?;
@@ -1147,30 +1155,10 @@ fn service_disable() -> Result<(), String> {
     Ok(())
 }
 
-fn kill_processes_matching(pattern: &str) -> Result<(), String> {
-    let output = Command::new("pgrep")
-        .args(["-f", pattern])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("pgrep failed: {e}"))?;
-    if !output.status.success() {
-        return Ok(());
-    }
-    let current_pid = std::process::id();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(pid) = line.trim().parse::<u32>() else {
-            continue;
-        };
-        if pid == current_pid {
-            continue;
-        }
-        let _ = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
-    }
-    Ok(())
+fn kill_processes_matching(_pattern: &str) -> Result<(), String> {
+    // 保留兼容入口；实际清理统一走 free_control_port，避免错误的 giteam-cli 模式匹配。
+    let port = control::get_control_server_settings()?.port;
+    free_control_port(port)
 }
 
 fn service_reconcile() -> Result<(), String> {
@@ -1179,17 +1167,19 @@ fn service_reconcile() -> Result<(), String> {
         return Err(manager_unsupported_error(&manager));
     }
 
-    let had_manager = manager.installed || manager.enabled || manager.loaded;
-    if had_manager {
-        let _ = service_uninstall();
+    let tracked = manager.definition_exists
+        || manager.installed
+        || manager.enabled
+        || manager.loaded;
+    if !tracked {
+        println!("{} has no managed registration to reconcile", service_label());
+        print_service_manager_summary(&manager);
+        return Ok(());
     }
 
-    kill_processes_matching("giteam-cli")?;
-
-    if matches!(manager.definition_matches_cli, Some(false)) || had_manager {
-        service_install()?;
-    }
-
+    // 禁止「先 uninstall 再 install」：bootstrap 一旦失败会丢掉 LaunchAgent，自启彻底没了。
+    // 统一走 kick_reload：清端口 → 重写定义 → bootout/bootstrap（或 systemd restart）。
+    service_kick_reload()?;
     let refreshed = service_manager_status()?;
     println!("reconciled service manager state");
     print_service_manager_summary(&refreshed);
@@ -1239,26 +1229,62 @@ fn service_kick_reload() -> Result<(), String> {
     if !manager.supported {
         return Err(manager_unsupported_error(&manager));
     }
+    let control = control::get_control_server_settings()?;
+    // 先清掉 managed/background 或失败重试残留，再让 launchd/systemd 独占端口
+    free_control_port(control.port)?;
+
     if cfg!(target_os = "macos") {
+        // 刷新 plist（二进制路径 + ThrottleInterval），再 bootout/bootstrap 清掉 thrash 状态
+        let plist = write_launchd_plist()?;
         let domain = launchctl_domain()?;
         let target = format!("{}/{}", domain, service_label());
-        // -k：先杀掉旧进程再拉起，确保加载磁盘上的新二进制
-        let (ok, _, err) = run_launchctl(&["kickstart", "-k", target.as_str()])?;
+        // disable 过的 label 会 bootstrap 失败（Input/output error），先 enable
+        let _ = run_launchctl(&["enable", target.as_str()]);
+        let _ = run_launchctl(&["bootout", domain.as_str(), plist.to_string_lossy().as_ref()]);
+        thread::sleep(Duration::from_millis(250));
+        // bootout 后可能还有孤儿占口
+        let _ = free_control_port(control.port);
+        let (ok, _, err) = run_launchctl(&[
+            "bootstrap",
+            domain.as_str(),
+            plist.to_string_lossy().as_ref(),
+        ])?;
         if !ok {
-            // kickstart 失败时回退到 rewrite + bootstrap
-            let _ = service_uninstall();
-            service_install()?;
-            if !err.trim().is_empty() {
-                eprintln!("launchctl kickstart warning: {}", err.trim());
+            let (ok2, _, err2) = run_launchctl(&["kickstart", "-k", target.as_str()])?;
+            if !ok2 {
+                return Err(format!(
+                    "launchctl reload failed: {} {}",
+                    err.trim(),
+                    err2.trim()
+                ));
             }
         }
+        let _ = run_launchctl(&["enable", target.as_str()]);
     } else if cfg!(target_os = "linux") {
+        let _ = write_systemd_unit()?;
+        let (ok_reload, _, err_reload) = run_systemctl(&["daemon-reload"])?;
+        if !ok_reload {
+            return Err(format!(
+                "systemctl daemon-reload failed: {}",
+                err_reload.trim()
+            ));
+        }
         let (ok, _, err) = run_systemctl(&["restart", service_label()])?;
         if !ok {
             return Err(format!("systemctl restart failed: {}", err.trim()));
         }
     } else {
         return Err(manager_unsupported_error(&manager));
+    }
+
+    if !wait_for_running(control.port, START_TIMEOUT_MS) {
+        return Err(format!(
+            "managed service did not become healthy on port {} after reload; check {}",
+            control.port,
+            log_file_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "(log path unavailable)".to_string())
+        ));
     }
     Ok(())
 }
@@ -1300,10 +1326,30 @@ fn service_ensure(verbose: bool) -> Result<ServiceEnsureAction, String> {
     let control = control::get_control_server_settings()?;
     let running_ver = running_service_version(control.port);
     let stamp = read_ensured_cli_version();
+
+    // 已在跑当前版本：只写 stamp，绝不能 reload（否则 serve→status→ensure 会杀掉自己）。
+    if running_ver.as_deref() == Some(cli_ver) {
+        let _ = write_ensured_cli_version(cli_ver);
+        if verbose {
+            println!("service ensure: managed service already matches CLI {cli_ver}");
+            print_service_manager_summary(&service_manager_status()?);
+        }
+        return Ok(ServiceEnsureAction::AlreadyCurrent);
+    }
+
+    // 仅在「版本真变了」或「该托管却没在跑」时 reload。
+    // 旧逻辑在 stamp=None 时只要 loaded 就 drift，会在首次 serve 自毁循环。
     let version_drift = match (&running_ver, &stamp) {
         (Some(rv), _) if rv != cli_ver => true,
-        (_, Some(s)) if s != cli_ver => manager.loaded || manager.installed,
-        (_, None) if manager.loaded || service_running(control.port) => true,
+        (None, Some(s)) if s != cli_ver => manager.loaded || manager.installed || manager.enabled,
+        (None, Some(_)) => {
+            // stamp 已是当前版本，但进程挂了 → 拉起来
+            !service_running(control.port) && (manager.loaded || manager.installed)
+        }
+        (None, None) => {
+            // 从未 ensure：若定义存在却没在听端口，做一次拉起；已在听则只盖 stamp
+            !service_running(control.port) && (manager.loaded || manager.installed || manager.enabled)
+        }
         _ => false,
     };
 
@@ -2256,20 +2302,77 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 fn find_pid_by_port(port: u16) -> Option<u32> {
+    find_pids_by_port(port).into_iter().next()
+}
+
+fn find_pids_by_port(port: u16) -> Vec<u32> {
     let output = Command::new("lsof")
         .arg("-ti")
         .arg(format!("tcp:{port}"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
     if !output.status.success() {
-        return None;
+        return Vec::new();
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.trim().parse::<u32>().ok())
+    let current_pid = std::process::id();
+    let mut pids = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        if pid != current_pid && !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// 升级 / reload 前释放控制口：停掉 pid 文件进程，并清掉仍占端口的孤儿实例。
+/// 避免「managed/background」与 launchd KeepAlive 双开抢 4100。
+fn free_control_port(port: u16) -> Result<(), String> {
+    if let Some(state) = read_pid_state() {
+        if pid_is_alive(state.pid) {
+            let _ = signal_pid(state.pid, false);
+            if !wait_for_stopped(port, STOP_TIMEOUT_MS) && pid_is_alive(state.pid) {
+                let _ = signal_pid(state.pid, true);
+                let _ = wait_for_stopped(port, STOP_TIMEOUT_MS / 2);
+            }
+        }
+        clear_pid_file_if_matches(state.pid);
+        if let Ok(path) = pid_file_path() {
+            if !pid_is_alive(state.pid) {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    for round in 0..2 {
+        let pids = find_pids_by_port(port);
+        if pids.is_empty() {
+            return Ok(());
+        }
+        for pid in pids {
+            let _ = signal_pid(pid, round > 0);
+        }
+        let _ = wait_for_stopped(port, STOP_TIMEOUT_MS / 2);
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    if !find_pids_by_port(port).is_empty() {
+        return Err(format!(
+            "control port {port} is still in use after cleanup; stop conflicting process and retry"
+        ));
+    }
+    Ok(())
+}
+
+fn os_managed_service_registered(manager: &ServiceManagerStatus) -> bool {
+    manager.supported
+        && (manager.definition_exists || manager.installed || manager.loaded || manager.enabled)
 }
 
 fn service_addr(port: u16) -> SocketAddr {
@@ -2440,7 +2543,11 @@ fn print_status(json: bool) -> Result<(), String> {
     println!(
         "mode: {}",
         if view.runtime.running {
-            if view.runtime.pid_alive {
+            if os_managed_service_registered(&view.manager)
+                && (view.manager.loaded || view.manager.installed)
+            {
+                "os-managed"
+            } else if view.runtime.pid_alive {
                 "managed/background"
             } else {
                 "external"
@@ -2641,6 +2748,42 @@ fn open_log_append() -> Result<File, String> {
 
 fn start_background(warmup: bool, json: bool) -> Result<(), String> {
     let settings = ensure_enabled()?;
+    let manager = service_manager_status()?;
+
+    // 已安装 OS 自启时，禁止再 spawn 第二份 managed/background，否则升级必抢端口。
+    if os_managed_service_registered(&manager) {
+        if service_running(settings.port) {
+            let running_ver = running_service_version(settings.port);
+            let cli_ver = env!("CARGO_PKG_VERSION");
+            if running_ver.as_deref() == Some(cli_ver) {
+                let view = StartStopView {
+                    ok: true,
+                    action: "start".to_string(),
+                    message: format!(
+                        "giteam control server already running on port {} via {}",
+                        settings.port, manager.kind
+                    ),
+                    runtime: runtime_view()?,
+                };
+                return print_start_stop(&view, json);
+            }
+        }
+        if !json {
+            print_banner();
+        }
+        service_kick_reload()?;
+        let view = StartStopView {
+            ok: true,
+            action: "start".to_string(),
+            message: format!(
+                "giteam control server started via {} on port {}",
+                manager.kind, settings.port
+            ),
+            runtime: runtime_view()?,
+        };
+        return print_start_stop(&view, json);
+    }
+
     if service_running(settings.port) {
         let view = StartStopView {
             ok: true,
@@ -2724,13 +2867,40 @@ fn signal_pid(pid: u32, force: bool) -> Result<(), String> {
 
 fn stop_background(force: bool, json: bool) -> Result<(), String> {
     let settings = control::get_control_server_settings()?;
+    let manager = service_manager_status()?;
+
+    // OS 自启开启时 KeepAlive 会立刻拉回；stop 改为 unload（保留 plist，下次 start/ensure 可恢复）
+    if os_managed_service_registered(&manager) && (manager.loaded || manager.installed) {
+        if cfg!(target_os = "macos") {
+            let plist = launchd_plist_path()?;
+            let domain = launchctl_domain()?;
+            let _ = run_launchctl(&["bootout", domain.as_str(), plist.to_string_lossy().as_ref()]);
+        } else if cfg!(target_os = "linux") {
+            let _ = run_systemctl(&["stop", service_label()]);
+        }
+        let _ = free_control_port(settings.port);
+        let view = StartStopView {
+            ok: true,
+            action: "stop".to_string(),
+            message: format!(
+                "giteam control server stopped (unloaded {}); run start/ensure to bring it back",
+                manager.kind
+            ),
+            runtime: runtime_view()?,
+        };
+        return print_start_stop(&view, json);
+    }
+
     let runtime = runtime_view()?;
     let Some(pid) = runtime.pid else {
+        if force {
+            let _ = free_control_port(settings.port);
+        }
         let view = StartStopView {
             ok: true,
             action: "stop".to_string(),
             message: "giteam control server is not tracked by pid file".to_string(),
-            runtime,
+            runtime: runtime_view()?,
         };
         return print_start_stop(&view, json);
     };
@@ -2757,6 +2927,9 @@ fn stop_background(force: bool, json: bool) -> Result<(), String> {
         ));
     }
     clear_pid_file_if_matches(pid);
+    if force {
+        let _ = free_control_port(settings.port);
+    }
     let view = StartStopView {
         ok: true,
         action: "stop".to_string(),
@@ -2877,8 +3050,17 @@ fn serve(warmup: bool, json: bool, no_banner: bool) -> Result<(), String> {
         });
     }
     control::start_control_server()?;
-    print_status(json)?;
-    if !json {
+    // 禁止在 serve 进程内走 print_status→auto_ensure：ensure/reload 会 bootout 掉自己。
+    // 盖上版本戳，让后续 CLI ensure 认作已对齐。
+    let _ = write_ensured_cli_version(env!("CARGO_PKG_VERSION"));
+    if json {
+        let view = StatusView {
+            control: resolved_control_access_info()?,
+            runtime: runtime_view()?,
+            manager: service_manager_status()?,
+        };
+        print_json(&view)?;
+    } else if !no_banner {
         eprintln!("giteam control server running, press Ctrl+C to stop");
         eprintln!("logs: {}", log_file_path()?.display());
     }

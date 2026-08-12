@@ -219,6 +219,32 @@ pub fn remember_access_key(
     settings.workspace_id = workspace_id.to_string();
 }
 
+/// Rename a key in the local vault. Does not call the server.
+pub fn rename_access_key_local(key_id_or_secret: &str, name: &str) -> Result<CloudLinkSettings, String> {
+    let needle = key_id_or_secret.trim();
+    let display = name.trim();
+    if needle.is_empty() {
+        return Err("key id required".into());
+    }
+    if display.is_empty() {
+        return Err("name required".into());
+    }
+    let mut settings = get_cloud_link_settings();
+    let Some(existing) = settings
+        .access_keys
+        .iter_mut()
+        .find(|k| k.id == needle || k.access_key == needle)
+    else {
+        return Err("key not found".into());
+    };
+    existing.name = display.to_string();
+    if settings.access_key == existing.access_key {
+        settings.key_name = display.to_string();
+    }
+    set_cloud_link_settings(&settings)?;
+    Ok(settings)
+}
+
 /// Remove a key from the local vault. Does not call the server.
 pub fn forget_access_key_local(key_id_or_secret: &str) -> Result<CloudLinkSettings, String> {
     let mut settings = get_cloud_link_settings();
