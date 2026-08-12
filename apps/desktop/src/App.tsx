@@ -37,6 +37,7 @@ import {
 } from "./components/agent/AgentSkillsPanels";
 import { MobileControlDialog } from "./components/settings/MobileControlDialog";
 import { MobilePairQrDialog } from "./components/settings/MobilePairQrDialog";
+import { listCloudMobileClients } from "./lib/cloudLink";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
@@ -842,6 +843,7 @@ export function App() {
   );
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
   const [showMobilePairQr, setShowMobilePairQr] = useState(false);
+  const [mobileClientConnected, setMobileClientConnected] = useState(false);
   const [showAgentApiDialog, setShowAgentApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [runtimeStartupChecking, setRuntimeStartupChecking] = useState(true);
@@ -7337,6 +7339,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [showMobileControlDialog, settingsMobileVisible, showMobilePairQr, runtimeStatus.giteam.installed]);
 
   useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const rows = await listCloudMobileClients();
+        if (!cancelled) setMobileClientConnected(Array.isArray(rows) && rows.length > 0);
+      } catch {
+        if (!cancelled) setMobileClientConnected(false);
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
     if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
 
@@ -8358,6 +8378,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         setShowSettings(true);
       }}
       onOpenMobilePairQr={() => setShowMobilePairQr(true)}
+      mobileClientConnected={mobileClientConnected}
       remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
       onOpenRemoteRepos={openRemoteRepoInspector}
     />

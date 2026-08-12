@@ -581,3 +581,38 @@ pub fn giteam_cloud_qr_payload() -> Result<serde_json::Value, String> {
         "accessKey": settings.access_key,
     }))
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileClientView {
+    pub jti: String,
+    pub workspace_id: String,
+    pub device_id: String,
+    pub client_name: String,
+    pub connected_at: i64,
+    pub last_seen_at: i64,
+    pub expires_at: i64,
+}
+
+#[tauri::command]
+pub fn giteam_cloud_list_clients() -> Result<Vec<MobileClientView>, String> {
+    let rows = giteam_core::cloud::list_mobile_clients()?;
+    Ok(rows
+        .into_iter()
+        .map(|c| MobileClientView {
+            jti: c.jti,
+            workspace_id: c.workspace_id,
+            device_id: c.device_id,
+            client_name: c.client_name,
+            connected_at: c.connected_at,
+            last_seen_at: c.last_seen_at,
+            expires_at: c.expires_at,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn giteam_cloud_disconnect_client(jti: String) -> Result<bool, String> {
+    giteam_core::cloud::disconnect_mobile_client(&jti)?;
+    Ok(true)
+}

@@ -452,6 +452,8 @@ fn main() {
             commands::giteam_cli::giteam_cloud_rename_key,
             commands::giteam_cli::giteam_cloud_use_key,
             commands::giteam_cli::giteam_cloud_qr_payload,
+            commands::giteam_cli::giteam_cloud_list_clients,
+            commands::giteam_cli::giteam_cloud_disconnect_client,
             commands::control::set_mobile_model_state_from_desktop,
             commands::control::get_mobile_model_state_for_desktop,
             commands::watch::start_git_worktree_watcher,

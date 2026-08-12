@@ -93,3 +93,21 @@ export async function useCloudKey(accessKey: string): Promise<CloudLinkStatus> {
 export async function getCloudQrPayload(): Promise<CloudQrPayload> {
   return invoke<CloudQrPayload>("giteam_cloud_qr_payload");
 }
+
+export type MobileClientSession = {
+  jti: string;
+  workspaceId: string;
+  deviceId: string;
+  clientName: string;
+  connectedAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+};
+
+export async function listCloudMobileClients(): Promise<MobileClientSession[]> {
+  return invoke<MobileClientSession[]>("giteam_cloud_list_clients");
+}
+
+export async function disconnectCloudMobileClient(jti: string): Promise<boolean> {
+  return invoke<boolean>("giteam_cloud_disconnect_client", { jti });
+}

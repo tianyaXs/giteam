@@ -108,6 +108,7 @@ type DesktopSidebarProps = {
   onOpenRightPane: (tab: RightPaneTab) => void;
   onOpenSettings: () => void;
   onOpenMobilePairQr: () => void;
+  mobileClientConnected?: boolean;
   remoteRepoActive: boolean;
   onOpenRemoteRepos: () => void;
 };
@@ -239,6 +240,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     onOpenRightPane,
     onOpenSettings,
     onOpenMobilePairQr,
+    mobileClientConnected = false,
     remoteRepoActive,
     onOpenRemoteRepos,
   } = props;
@@ -394,15 +396,20 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             </SidebarMenuButton>
             <SidebarMenuAction
               type="button"
-              title="手机扫码连接"
-              aria-label="手机扫码连接"
+              title={mobileClientConnected ? "手机已连接" : "连接你的手机"}
+              aria-label={mobileClientConnected ? "手机已连接" : "连接你的手机"}
               className="right-1.5 top-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
                 onOpenMobilePairQr();
               }}
             >
-              <Smartphone className="size-[16px]" strokeWidth={1.75} />
+              <span className="relative inline-flex">
+                <Smartphone className="size-[16px]" strokeWidth={1.75} />
+                {mobileClientConnected ? (
+                  <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500 ring-2 ring-sidebar" />
+                ) : null}
+              </span>
             </SidebarMenuAction>
           </SidebarMenuItem>
         </SidebarMenu>
