@@ -46,8 +46,12 @@ pub fn is_allowed_path(method: &Method, path: &str) -> bool {
     if path_only == "/api/v1/repository/list" && *method == Method::GET {
         return true;
     }
-    // Mobile model catalog over cloud relay (read-only).
+    // Mobile model catalog over cloud relay.
     if path_only == "/api/v1/admin/mobile/model-state" && *method == Method::GET {
+        return true;
+    }
+    // Mobile model toggles (enabled/hidden) — write path for bidirectional sync.
+    if path_only == "/api/v1/admin/mobile/model-visibility" && *method == Method::PUT {
         return true;
     }
     if path_only.starts_with("/api/v1/agent/") {

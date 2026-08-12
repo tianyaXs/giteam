@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -16,6 +17,7 @@ import {
   getDefaultCloudBaseUrl,
   linkCloud,
   renameCloudKey,
+  resolveReachableCloudBaseUrl,
   useCloudKey,
   type CloudAccessKeyRecord,
   type CloudLinkStatus,
@@ -79,6 +81,8 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
   const [pendingRename, setPendingRename] = useState<CloudAccessKeyRecord | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState("");
+  const [pairQrUrl, setPairQrUrl] = useState("");
+  const [copiedKeyId, setCopiedKeyId] = useState("");
 
   const baseUrl = mode === "cloud" ? defaultCloud : privateUrl.trim().replace(/\/$/, "");
 
@@ -124,6 +128,52 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
       return cloudUrls.has(u);
     });
   }, [status?.accessKeys, status?.cloudBaseUrl, mode, privateUrl, defaultCloud]);
+
+  const activeKey = useMemo(
+    () => keys.find((k) => k.active) || null,
+    [keys]
+  );
+
+  const cloudPairPayload = useMemo(() => {
+    if (!activeKey?.accessKey) return "";
+    const cloudBaseUrl = resolveReachableCloudBaseUrl(
+      activeKey.cloudBaseUrl || baseUrl || status?.cloudBaseUrl || "",
+      defaultCloud
+    );
+    const workspaceId = activeKey.workspaceId || status?.workspaceId || "";
+    if (!cloudBaseUrl || !workspaceId) return "";
+    return JSON.stringify({
+      mode: "cloud",
+      cloudBaseUrl,
+      workspaceId,
+      accessKey: activeKey.accessKey,
+    });
+  }, [activeKey, baseUrl, defaultCloud, status?.cloudBaseUrl, status?.workspaceId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!active || !cloudPairPayload) {
+      setPairQrUrl("");
+      return () => {
+        cancelled = true;
+      };
+    }
+    void QRCode.toDataURL(cloudPairPayload, {
+      margin: 1,
+      width: 240,
+      errorCorrectionLevel: "M",
+      color: { dark: "#111111", light: "#ffffff" },
+    })
+      .then((url) => {
+        if (!cancelled) setPairQrUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setPairQrUrl("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, cloudPairPayload]);
 
   function openCreateDialog() {
     setNewKeyName("");
@@ -211,22 +261,22 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
     }
   }
 
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold text-foreground">API Keys</h3>
-        <Button
-          size="sm"
-          variant="contrast"
-          className="h-8 gap-1"
-          disabled={busy}
-          onClick={openCreateDialog}
-        >
-          <PlusIcon className="size-4" />
-          新建 API Key
-        </Button>
-      </div>
+  async function onCopyKey(key: CloudAccessKeyRecord) {
+    const value = key.accessKey.trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKeyId(key.id);
+      window.setTimeout(() => {
+        setCopiedKeyId((prev) => (prev === key.id ? "" : prev));
+      }, 1600);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
+  return (
+    <div className="flex flex-col gap-5">
       {mode === "private" ? (
         <label className="flex max-w-xl items-center gap-3">
           <span className="shrink-0 text-[13px] font-medium text-foreground">服务地址</span>
@@ -242,6 +292,32 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
           />
         </label>
       ) : null}
+
+      <div className="flex justify-center sm:justify-start">
+        <div className="flex size-36 items-center justify-center rounded-lg border border-border bg-background p-3">
+          {pairQrUrl ? (
+            <img className="size-full rounded-md object-contain" src={pairQrUrl} alt="Cloud pair QR code" />
+          ) : (
+            <div className="px-2 text-center text-[13px] leading-5 text-muted-foreground">
+              {activeKey ? "生成中…" : "创建后可扫码"}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-base font-semibold text-foreground">API Keys</h3>
+        <Button
+          size="sm"
+          variant="contrast"
+          className="h-8 gap-1"
+          disabled={busy}
+          onClick={openCreateDialog}
+        >
+          <PlusIcon className="size-4" />
+          新建 API Key
+        </Button>
+      </div>
 
       <div className="w-full overflow-x-auto">
         <table className="w-full border-collapse text-left text-[13px]">
@@ -285,11 +361,11 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
                   <td className="px-2 py-3 font-mono text-[12px] text-muted-foreground">
                     <button
                       type="button"
-                      className="break-all text-left hover:text-foreground"
-                      title="点击复制"
-                      onClick={() => void navigator.clipboard.writeText(k.accessKey)}
+                      className="max-w-[280px] break-all text-left hover:text-foreground"
+                      title="点击复制密钥"
+                      onClick={() => void onCopyKey(k)}
                     >
-                      {k.accessKey || "—"}
+                      {copiedKeyId === k.id ? "已复制" : k.accessKey || "—"}
                     </button>
                   </td>
                   <td className="px-2 py-3 whitespace-nowrap">

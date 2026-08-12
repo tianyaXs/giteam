@@ -37,6 +37,22 @@ export function getDefaultCloudBaseUrl(): string {
   return (fromEnv || "http://127.0.0.1:8787").replace(/\/$/, "");
 }
 
+const INTERNAL_CLOUD_HOSTS = new Set(["giteam-cloud", "giteam-cloud-gateway", "localhost", "127.0.0.1"]);
+
+/** Prefer public default when server/QR embeds an unreachable cluster URL. */
+export function resolveReachableCloudBaseUrl(candidate: string, fallback = getDefaultCloudBaseUrl()): string {
+  const raw = String(candidate || "").trim().replace(/\/$/, "");
+  const fb = String(fallback || "").trim().replace(/\/$/, "");
+  if (!raw) return fb;
+  try {
+    const host = new URL(raw.startsWith("http") ? raw : `http://${raw}`).hostname.toLowerCase();
+    if (INTERNAL_CLOUD_HOSTS.has(host)) return fb || raw;
+  } catch {
+    return fb || raw;
+  }
+  return raw;
+}
+
 export async function getCloudStatus(): Promise<CloudLinkStatus> {
   return invoke<CloudLinkStatus>("giteam_cloud_status");
 }

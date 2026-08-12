@@ -17,7 +17,11 @@ import {
 } from '../../api/connectionContext';
 import type { DiscoveredDevice } from '../../discovery';
 import { toText } from '../../lib/text';
-import { buildConnectionBaseUrlCandidates, normalizeBaseUrlForClient } from '../../lib/url';
+import {
+  buildConnectionBaseUrlCandidates,
+  normalizeBaseUrlForClient,
+  resolveReachableCloudBaseUrl
+} from '../../lib/url';
 import { getDefaultCloudBaseUrl } from '../../config/cloud';
 import type { ConnectionMode } from '../../lib/connectionMode';
 
@@ -230,8 +234,9 @@ export function usePairingController(params: UsePairingControllerParams) {
       deviceIdInput?: string,
       opts?: ConnectOptions
     ) => {
-      const cloudBaseUrl = normalizeBaseUrlForClient(
-        toText(cloudBaseUrlInput).trim() || getDefaultCloudBaseUrl()
+      const cloudBaseUrl = resolveReachableCloudBaseUrl(
+        toText(cloudBaseUrlInput).trim() || getDefaultCloudBaseUrl(),
+        getDefaultCloudBaseUrl()
       );
       const key = toText(accessKeyInput).trim();
       const preferredDeviceId = toText(deviceIdInput || '').trim();
@@ -244,16 +249,50 @@ export function usePairingController(params: UsePairingControllerParams) {
         pushConnLog(
           `cloud redeem url=${cloudBaseUrl} key=yes device=${preferredDeviceId || 'auto'}`
         );
-        const redeemed = await redeemCloudAccess({
-          cloudBaseUrl,
-          accessKey: key,
-          deviceId: preferredDeviceId || undefined
-        });
+        let redeemed;
+        try {
+          redeemed = await redeemCloudAccess({
+            cloudBaseUrl,
+            accessKey: key,
+            deviceId: preferredDeviceId || undefined
+          });
+        } catch (firstErr) {
+          // 本地/二维码里的 deviceId 可能属于旧 workspace；清掉后让网关自动选在线设备。
+          const first = firstErr as CloudRedeemError;
+          const hint = `${toText(first.code)} ${toText(first)}`;
+          if (
+            preferredDeviceId &&
+            /deviceId not in workspace|device not in workspace/i.test(hint)
+          ) {
+            pushConnLog(
+              `cloud redeem stale deviceId=${preferredDeviceId}; retry auto-select`,
+              'info'
+            );
+            setDeviceId('');
+            redeemed = await redeemCloudAccess({
+              cloudBaseUrl,
+              accessKey: key
+            });
+          } else {
+            throw firstErr;
+          }
+        }
+        const onlineDevices = (redeemed.devices || []).filter((d) => d.online);
+        if (onlineDevices.length === 0) {
+          const offlineErr = new Error(
+            '电脑端云端中继未连接：请在桌面端设置 → 服务确认「中继已连接」后再试'
+          ) as CloudRedeemError;
+          offlineErr.code = 'no_device_online';
+          offlineErr.devices = redeemed.devices;
+          throw offlineErr;
+        }
+        const selectedOnline =
+          onlineDevices.find((d) => d.id === redeemed.deviceId) || onlineDevices[0];
         await finishCloudConnect({
           cloudBaseUrl,
           accessKey: key,
           token: redeemed.token,
-          deviceId: redeemed.deviceId,
+          deviceId: selectedOnline.id,
           preferredRepoPath: opts?.preferredRepoPath,
           payloadRepoPaths: opts?.payloadRepoPaths
         });
@@ -269,9 +308,13 @@ export function usePairingController(params: UsePairingControllerParams) {
           setDevicePickerOpen(true);
           setStatus('检测到多台在线设备，请选择一台连接');
         } else if (code === 'device_offline' || code === 'no_device_online') {
-          setStatus('电脑端未上线，请先在本机执行 giteam cloud link 并保持服务运行');
+          setStatus(
+            '电脑端云端中继未连接：请在桌面端设置 → 服务确认「中继已连接」，并确认用的是同一把 Key'
+          );
         } else if (code === 'invalid_access_key') {
           setStatus('连接密钥无效，请检查后重试');
+        } else if (/deviceId not in workspace|device not in workspace/i.test(toText(err))) {
+          setStatus('设备记录已失效，请重新扫码或只用密钥连接');
         } else {
           setStatus(toText(err) || '云端连接失败');
         }
@@ -280,7 +323,7 @@ export function usePairingController(params: UsePairingControllerParams) {
         setBusy(false);
       }
     },
-    [finishCloudConnect, pushConnLog, setBusy, setScannerLockedBoth, setStatus]
+    [finishCloudConnect, pushConnLog, setBusy, setDeviceId, setScannerLockedBoth, setStatus]
   );
 
   const connectWithAddressAndCode = useCallback(
@@ -319,7 +362,8 @@ export function usePairingController(params: UsePairingControllerParams) {
         // Cloud health (mode=cloud) should go through redeem, not local pair.
         if (String((ping as any)?.mode || '').toLowerCase() === 'cloud') {
           setBusy(false);
-          await connectWithCloudAccessKey(resolvedUrl, nextCode || accessKey, deviceId, opts);
+          // 探测到云端入口时同样不传本地缓存 deviceId，避免跨 workspace 报错
+          await connectWithCloudAccessKey(resolvedUrl, nextCode || accessKey, '', opts);
           return;
         }
         pushConnLog(`health ok service=${toText((ping as any)?.service?.host)}:${toText((ping as any)?.service?.port)}`);
@@ -387,7 +431,6 @@ export function usePairingController(params: UsePairingControllerParams) {
       accessKey,
       connectionMode,
       connectWithCloudAccessKey,
-      deviceId,
       onCloseDiscoverRef,
       onDiscoveredPairRequiredRef,
       pushConnLog,
@@ -422,17 +465,20 @@ export function usePairingController(params: UsePairingControllerParams) {
       }
       const payloadMode = String(payload.mode || '').trim().toLowerCase();
       if (payloadMode === 'cloud' || payload.accessKey) {
-        const cloudBaseUrl =
+        const cloudBaseUrl = resolveReachableCloudBaseUrl(
           toText(payload.cloudBaseUrl).trim() ||
-          toText(payload.baseUrl).trim() ||
-          getDefaultCloudBaseUrl();
+            toText(payload.baseUrl).trim() ||
+            getDefaultCloudBaseUrl(),
+          getDefaultCloudBaseUrl()
+        );
         const key = toText(payload.accessKey).trim();
         if (!key) {
           setStatus('云端二维码缺少连接密钥');
           setScannerLockedBoth(false);
           return;
         }
-        await connectWithCloudAccessKey(cloudBaseUrl, key, toText(payload.deviceId).trim(), {
+        // 不传 QR 里的 deviceId：集群 QR 常带离线/陈旧设备，交给 redeem 自动选在线桌面
+        await connectWithCloudAccessKey(cloudBaseUrl, key, '', {
           preferredRepoPath: toText(payload.repoPath).trim(),
           payloadRepoPaths: getRepoPathsFromPairPayload(payload)
         });
@@ -559,7 +605,8 @@ export function usePairingController(params: UsePairingControllerParams) {
 
   const onAuthSubmit = useCallback(async () => {
     if (connectionMode === 'cloud') {
-      await connectWithCloudAccessKey(getDefaultCloudBaseUrl(), accessKey || pairCode, deviceId);
+      // 手填密钥不要带本地缓存的旧 deviceId（常属于别的 workspace → device not in workspace）
+      await connectWithCloudAccessKey(getDefaultCloudBaseUrl(), accessKey || pairCode, '');
       return;
     }
     if (connectionMode === 'local' && !toText(serverUrlInput).trim()) {
@@ -572,7 +619,6 @@ export function usePairingController(params: UsePairingControllerParams) {
     connectWithAddressAndCode,
     connectWithCloudAccessKey,
     connectionMode,
-    deviceId,
     pairCode,
     serverUrlInput,
     setStatus

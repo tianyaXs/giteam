@@ -11,6 +11,7 @@ import {
   PencilLine,
   Search,
   Settings,
+  Smartphone,
   Sparkles,
   SquarePen,
   SquareTerminal,
@@ -106,6 +107,7 @@ type DesktopSidebarProps = {
   rightModules: Record<RightPaneTab, boolean>;
   onOpenRightPane: (tab: RightPaneTab) => void;
   onOpenSettings: () => void;
+  onOpenMobilePairQr: () => void;
   remoteRepoActive: boolean;
   onOpenRemoteRepos: () => void;
 };
@@ -236,6 +238,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     rightModules,
     onOpenRightPane,
     onOpenSettings,
+    onOpenMobilePairQr,
     remoteRepoActive,
     onOpenRemoteRepos,
   } = props;
@@ -384,11 +387,23 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
       <SidebarFooter className="shrink-0 p-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="default" className="h-9 text-sm [&>svg]:size-[18px]" onClick={onOpenSettings}>
+            <SidebarMenuButton size="default" className="h-9 pr-10 text-sm [&>svg]:size-[18px]" onClick={onOpenSettings}>
               <Settings />
               <span className="truncate">{text.settings}</span>
               <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
             </SidebarMenuButton>
+            <SidebarMenuAction
+              type="button"
+              title="手机扫码连接"
+              aria-label="手机扫码连接"
+              className="right-1.5 top-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenMobilePairQr();
+              }}
+            >
+              <Smartphone className="size-[16px]" strokeWidth={1.75} />
+            </SidebarMenuAction>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

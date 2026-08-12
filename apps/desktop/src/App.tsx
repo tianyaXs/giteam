@@ -36,6 +36,7 @@ import {
   AgentSkillsMarketPanel
 } from "./components/agent/AgentSkillsPanels";
 import { MobileControlDialog } from "./components/settings/MobileControlDialog";
+import { MobilePairQrDialog } from "./components/settings/MobilePairQrDialog";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
 import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
@@ -840,6 +841,7 @@ export function App() {
     [generalSettings.language]
   );
   const [showMobileControlDialog, setShowMobileControlDialog] = useState(false);
+  const [showMobilePairQr, setShowMobilePairQr] = useState(false);
   const [showAgentApiDialog, setShowAgentApiDialog] = useState(false);
   const [showEnvSetup, setShowEnvSetup] = useState(false);
   const [runtimeStartupChecking, setRuntimeStartupChecking] = useState(true);
@@ -7327,15 +7329,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [applyAgentModelVisibility]);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
     // Load settings after the dialog paints to avoid blocking navigation.
     window.setTimeout(() => {
       void loadControlServerSettings();
     }, 0);
-  }, [showMobileControlDialog, settingsMobileVisible, runtimeStatus.giteam.installed]);
+  }, [showMobileControlDialog, settingsMobileVisible, showMobilePairQr, runtimeStatus.giteam.installed]);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || settingsMobileVisible) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
     if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
 
     const token = ++controlMobilePollTokenRef.current;
@@ -7367,6 +7369,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [
     showMobileControlDialog,
     settingsMobileVisible,
+    showMobilePairQr,
     runtimeStatus.giteam.installed,
     controlSettingsLoaded,
     controlServerSettings.enabled
@@ -8354,6 +8357,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         setSettingsInitialSection("general");
         setShowSettings(true);
       }}
+      onOpenMobilePairQr={() => setShowMobilePairQr(true)}
       remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
       onOpenRemoteRepos={openRemoteRepoInspector}
     />
@@ -9987,6 +9991,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onCopiedUrl={() => setMessage("Control server URL copied")}
           />
         ) : null}
+
+        <MobilePairQrDialog
+          open={showMobilePairQr}
+          onOpenChange={setShowMobilePairQr}
+          localQrUrl={controlPairQrUrl}
+          localBaseUrl={controlBaseUrl}
+          localPairCode={controlPairCode}
+          localEnabled={controlServiceEnabled}
+          localNoAuth={controlAuthNoAuth}
+          onOpenServiceSettings={() => {
+            setSettingsInitialSection("mobile");
+            setShowSettings(true);
+          }}
+        />
 
         {showSkillsmpSettings ? (
           <Dialog open onOpenChange={(open) => {

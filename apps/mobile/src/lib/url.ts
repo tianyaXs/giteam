@@ -1,3 +1,6 @@
+/** Cluster-internal hostnames that phones / laptop tunnels cannot resolve. */
+const INTERNAL_CLOUD_HOSTS = new Set(['giteam-cloud', 'giteam-cloud-gateway', 'localhost', '127.0.0.1']);
+
 export function normalizeBaseUrlForClient(rawBaseUrl: string, opts?: { defaultScheme?: 'http' | 'https' }): string {
   let raw = rawBaseUrl.trim();
   if (!raw) return '';
@@ -10,6 +13,23 @@ export function normalizeBaseUrlForClient(rawBaseUrl: string, opts?: { defaultSc
   } catch {
     return raw;
   }
+}
+
+/** Prefer public default when QR/server embeds an unreachable cluster URL. */
+export function resolveReachableCloudBaseUrl(
+  candidate: string,
+  fallbackPublicUrl: string
+): string {
+  const normalized = normalizeBaseUrlForClient(candidate);
+  const fallback = normalizeBaseUrlForClient(fallbackPublicUrl);
+  if (!normalized) return fallback;
+  try {
+    const host = new URL(normalized).hostname.toLowerCase();
+    if (INTERNAL_CLOUD_HOSTS.has(host)) return fallback || normalized;
+  } catch {
+    return fallback || normalized;
+  }
+  return normalized;
 }
 
 export function buildConnectionBaseUrlCandidates(rawBaseUrl: string): string[] {

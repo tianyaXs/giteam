@@ -6,14 +6,12 @@ export type AgentApiError = Error & {
   body?: unknown;
 };
 
+/** Only hard auth failures should force logout. Device/tunnel offline is recoverable. */
 const CLOUD_SESSION_INVALID_CODES = new Set([
-  'no_device_online',
-  'device_offline',
   'token_expired',
   'token_revoked',
   'unauthorized',
-  'invalid_access_key',
-  'tunnel_timeout'
+  'invalid_access_key'
 ]);
 
 export function createAgentApiError(
@@ -54,28 +52,17 @@ export function isCloudSessionInvalidError(error: unknown): boolean {
   const code = getAgentApiErrorCode(error);
   if (code && CLOUD_SESSION_INVALID_CODES.has(code)) return true;
   const status = getAgentApiErrorStatus(error);
-  if (status === 401) return true;
-  if (status === 503 && (code === 'no_device_online' || code === 'device_offline' || !code)) {
-    // Gateway 503 without code still usually means tunnel/device unavailable in cloud mode.
-    return code === 'no_device_online' || code === 'device_offline';
-  }
-  if (status === 504) return true;
-  return false;
+  // 401 = auth dead. 503/504 device/tunnel offline should stay logged in with an error toast.
+  return status === 401;
 }
 
 export function cloudSessionInvalidReason(error: unknown): string {
   const code = getAgentApiErrorCode(error);
-  if (code === 'no_device_online' || code === 'device_offline') {
-    return '电脑端云端隧道已离线，请确认桌面已 Link 后再连接';
-  }
   if (code === 'token_expired' || code === 'token_revoked' || code === 'unauthorized') {
     return '云端授权已失效，请重新连接';
   }
   if (code === 'invalid_access_key') {
     return '连接密钥无效，请重新填写';
-  }
-  if (code === 'tunnel_timeout' || getAgentApiErrorStatus(error) === 504) {
-    return '云端隧道超时，请重新连接';
   }
   return '云端连接已失效，请重新登录';
 }
