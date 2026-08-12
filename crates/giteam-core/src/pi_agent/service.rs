@@ -626,8 +626,9 @@ impl PiAgentService {
             let session_id = state
                 .session_id
                 .ok_or_else(|| PiAgentError::Sdk("Pi session did not return an id".to_string()))?;
-            // 子 agent 标 kind，不进主列表（UI 靠 subagent.* 事件）。
-            if self.record_session_kind(&session_id) == "subagent" {
+            // 子 agent：靠 kind 或 parent 标记排除，不进主列表（UI 靠 subagent.* 事件）。
+            let kind = self.record_session_kind(&session_id);
+            if kind == "subagent" || self.record_parent_session_id(&session_id).is_some() {
                 continue;
             }
             // 标题派生：pi SessionHeader 无标题字段，取首条用户消息摘要。

@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
@@ -1283,6 +1284,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             parent_tool_call_id: None,
             session_kind: "primary".to_string(),
         };
+        ensure_stable_process_cwd();
         return match block_on(PiAgentService::global().create_session(config)) {
             Ok(summary) => serde_json::to_value(summary)
                 .map(|value| (201, value))
@@ -1874,7 +1876,36 @@ pub fn stop_control_server() {
     }
 }
 
+/// 保证进程 cwd 可读。npm 全局安装会把进程 cwd 留在临时目录，目录被清掉后
+/// `std::env::current_dir()` 返回 ENOENT，Pi SDK 会报 `cwd lookup failed`。
+pub fn ensure_stable_process_cwd() {
+    let cwd_ok = env::current_dir().map(|p| p.exists()).unwrap_or(false);
+    if cwd_ok {
+        return;
+    }
+    let fallback = env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| Some(PathBuf::from("/")));
+    if let Some(path) = fallback {
+        if let Err(error) = env::set_current_dir(&path) {
+            eprintln!(
+                "[control] warn: restore process cwd to {} failed: {error}",
+                path.display()
+            );
+        } else {
+            eprintln!(
+                "[control] restored process cwd to {} (previous cwd was missing)",
+                path.display()
+            );
+        }
+    }
+}
+
 pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Result<(), String> {
+    // npm 全局包安装临时目录可能在进程存活期间被删掉；Pi SDK create_session
+    // 会调 std::env::current_dir()，cwd 失效会直接 500「cwd lookup failed」。
+    ensure_stable_process_cwd();
     let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
         stop_control_server();
