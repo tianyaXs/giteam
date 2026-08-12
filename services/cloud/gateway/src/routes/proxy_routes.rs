@@ -44,6 +44,7 @@ async fn proxy_api(
     }
 
     let claims = require_client(&state, &headers).await?;
+    state.clients.touch(&claims.jti).await;
     let ws_default: Option<(Option<String>,)> =
         sqlx::query_as("SELECT default_device_id FROM workspaces WHERE id = $1")
             .bind(&claims.wid)
@@ -129,6 +130,7 @@ async fn cloud_health(state: &AppState, headers: &HeaderMap) -> ApiResult<Respon
     }
 
     let claims = require_client(state, headers).await?;
+    state.clients.touch(&claims.jti).await;
     let devices = list_devices_for_workspace(state, &claims.wid).await?;
     let selected = resolve_device_id(
         state,

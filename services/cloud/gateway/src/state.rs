@@ -1,3 +1,4 @@
+use crate::clients::ClientHub;
 use crate::config::Config;
 use crate::tunnel::TunnelHub;
 use sqlx::PgPool;
@@ -8,6 +9,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub pool: PgPool,
     pub tunnels: Arc<TunnelHub>,
+    pub clients: Arc<ClientHub>,
 }
 
 impl AppState {
@@ -16,6 +18,7 @@ impl AppState {
             config: Arc::new(config),
             pool,
             tunnels: Arc::new(TunnelHub::new()),
+            clients: Arc::new(ClientHub::new()),
         }
     }
 }

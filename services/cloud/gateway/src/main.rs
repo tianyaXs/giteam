@@ -1,4 +1,5 @@
 mod auth;
+mod clients;
 mod config;
 mod error;
 mod ids;

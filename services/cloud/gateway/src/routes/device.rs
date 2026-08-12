@@ -1,8 +1,12 @@
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{access_key_id, hash_secret, new_id, new_secret};
-use crate::proxy::{lookup_workspace_by_access_key, write_audit};
+use crate::proxy::{
+    find_device_by_token, lookup_workspace_by_access_key, write_audit,
+};
+use crate::auth::bearer_token;
 use crate::state::AppState;
-use axum::routing::post;
+use axum::http::HeaderMap;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,6 +15,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/cloud/v1/device/link/begin", post(link_begin))
         .route("/cloud/v1/device/link/complete", post(link_complete))
+        .route("/cloud/v1/device/clients", get(list_clients))
+        .route("/cloud/v1/device/clients/disconnect", post(disconnect_client))
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,4 +283,89 @@ async fn link_complete(
         device_id,
         device_token,
     }))
+}
+
+async fn require_device_from_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> ApiResult<crate::proxy::DeviceRow> {
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let token = bearer_token(auth)?;
+    find_device_by_token(state, token).await
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListClientsResponse {
+    clients: Vec<crate::clients::ClientSessionView>,
+}
+
+async fn list_clients(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ListClientsResponse>> {
+    let device = require_device_from_headers(&state, &headers).await?;
+    let clients = state.clients.list_for_device(&device.id).await;
+    Ok(Json(ListClientsResponse { clients }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisconnectClientRequest {
+    jti: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DisconnectClientResponse {
+    ok: bool,
+}
+
+async fn disconnect_client(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisconnectClientRequest>,
+) -> ApiResult<Json<DisconnectClientResponse>> {
+    let device = require_device_from_headers(&state, &headers).await?;
+    let jti = body.jti.trim();
+    if jti.is_empty() {
+        return Err(ApiError::BadRequest("jti required".into()));
+    }
+
+    let session = state
+        .clients
+        .get(jti)
+        .await
+        .ok_or_else(|| ApiError::NotFound("client session not found".into()))?;
+    if session.device_id != device.id || session.workspace_id != device.workspace_id {
+        return Err(ApiError::Forbidden("client not owned by this device".into()));
+    }
+
+    let exp = chrono::DateTime::from_timestamp(session.expires_at, 0)
+        .unwrap_or_else(|| Utc::now() + Duration::hours(24));
+    sqlx::query(
+        r#"
+        INSERT INTO jwt_blacklist (jti, workspace_id, expires_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (jti) DO NOTHING
+        "#,
+    )
+    .bind(jti)
+    .bind(&device.workspace_id)
+    .bind(exp)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let _ = state.clients.remove(jti).await;
+    write_audit(
+        &state,
+        Some(&device.workspace_id),
+        "client.disconnected",
+        serde_json::json!({ "jti": jti, "deviceId": device.id }),
+    )
+    .await;
+
+    Ok(Json(DisconnectClientResponse { ok: true }))
 }

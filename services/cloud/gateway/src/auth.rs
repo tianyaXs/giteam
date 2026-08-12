@@ -19,15 +19,16 @@ pub fn issue_client_jwt(
     workspace_id: &str,
     device_id: &str,
     ttl_secs: i64,
-) -> ApiResult<(String, i64)> {
+) -> ApiResult<(String, i64, String)> {
     let now = Utc::now();
     let exp = now + Duration::seconds(ttl_secs);
+    let jti = uuid::Uuid::new_v4().to_string();
     let claims = ClientClaims {
         iss: "giteam-cloud".into(),
         sub: "client".into(),
         wid: workspace_id.to_string(),
         did: device_id.to_string(),
-        jti: uuid::Uuid::new_v4().to_string(),
+        jti: jti.clone(),
         iat: now.timestamp(),
         exp: exp.timestamp(),
     };
@@ -37,7 +38,7 @@ pub fn issue_client_jwt(
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .map_err(|e| ApiError::Internal(e.into()))?;
-    Ok((token, exp.timestamp()))
+    Ok((token, exp.timestamp(), jti))
 }
 
 pub fn verify_client_jwt(secret: &str, token: &str) -> ApiResult<ClientClaims> {

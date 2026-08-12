@@ -13,6 +13,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/cloud/v1/auth/redeem", post(redeem))
         .route("/cloud/v1/auth/revoke", post(revoke))
+        .route("/cloud/v1/auth/heartbeat", post(heartbeat))
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +22,8 @@ struct RedeemRequest {
     access_key: String,
     #[serde(default)]
     device_id: Option<String>,
+    #[serde(default)]
+    client_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,12 +92,35 @@ async fn redeem(
         }
     };
 
-    let (token, expires_at) = issue_client_jwt(
+    let (token, expires_at, jti) = issue_client_jwt(
         &state.config.jwt_secret,
         &ws.id,
         &selected,
         state.config.jwt_ttl_secs,
     )?;
+
+    let client_name = body
+        .client_name
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    state
+        .clients
+        .register(&jti, &ws.id, &selected, &client_name, expires_at)
+        .await;
+
+    write_audit(
+        &state,
+        Some(&ws.id),
+        "client.redeemed",
+        serde_json::json!({
+            "jti": jti,
+            "deviceId": selected,
+            "clientName": client_name,
+        }),
+    )
+    .await;
 
     Ok(Json(RedeemResponse {
         workspace_id: ws.id,
@@ -132,6 +158,8 @@ async fn revoke(
     .await
     .map_err(|e| ApiError::Internal(e.into()))?;
 
+    let _ = state.clients.remove(&claims.jti).await;
+
     write_audit(
         &state,
         Some(&claims.wid),
@@ -141,4 +169,38 @@ async fn revoke(
     .await;
 
     Ok(Json(RevokeResponse { ok: true }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeartbeatResponse {
+    ok: bool,
+    last_seen_at: i64,
+}
+
+async fn heartbeat(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<HeartbeatResponse>> {
+    let claims = require_client(&state, &headers).await?;
+    // Re-register if presence was lost (gateway restart) so desktop still sees the phone.
+    if state.clients.get(&claims.jti).await.is_none() {
+        state
+            .clients
+            .register(
+                &claims.jti,
+                &claims.wid,
+                &claims.did,
+                "移动设备",
+                claims.exp,
+            )
+            .await;
+    } else {
+        state.clients.touch(&claims.jti).await;
+    }
+    let last_seen_at = chrono::Utc::now().timestamp_millis();
+    Ok(Json(HeartbeatResponse {
+        ok: true,
+        last_seen_at,
+    }))
 }
