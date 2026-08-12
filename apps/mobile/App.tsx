@@ -6,6 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { NO_AUTH_TOKEN } from "./src/api/controlApi";
 import { interactionToQuestionRequest } from "./src/api/agent/bridge";
 import { createMobileAgentClient } from "./src/api/agent/client";
+import { setCloudSessionInvalidationHandler } from "./src/api/agent/errors";
 import type { AgentInteraction } from "./src/api/agent/types";
 import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
 import { AlbumPickerOverlay } from "./src/components/chat/MediaOverlays";
@@ -1079,6 +1080,7 @@ export default function App() {
     setActiveSession,
     setToken,
     setPairCode,
+    setDeviceId,
     setRepoPath,
     setProjects,
     setMessages,
@@ -1092,6 +1094,15 @@ export default function App() {
     setStatus,
     pushConnLog,
   });
+
+  useEffect(() => {
+    setCloudSessionInvalidationHandler((reason) => {
+      pushConnLog(`cloud session invalidated → login: ${reason}`, "error");
+      onResetAuth(reason);
+    });
+    return () => setCloudSessionInvalidationHandler(null);
+  }, [onResetAuth, pushConnLog]);
+
   const onSwitchProject = useProjectSwitchAction({
     repoPath,
     sessionCacheRef,

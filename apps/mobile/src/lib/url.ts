@@ -1,6 +1,8 @@
 export function normalizeBaseUrlForClient(rawBaseUrl: string, opts?: { defaultScheme?: 'http' | 'https' }): string {
-  const raw = rawBaseUrl.trim();
+  let raw = rawBaseUrl.trim();
   if (!raw) return '';
+  // 容忍粘贴「giteam-cloud:http://…/login」或带路径的管理台地址
+  raw = raw.replace(/^giteam-cloud:\s*/i, '');
   try {
     const scheme = opts?.defaultScheme === 'https' ? 'https' : 'http';
     const parsed = new URL(raw.startsWith('http://') || raw.startsWith('https://') ? raw : `${scheme}://${raw}`);

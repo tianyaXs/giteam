@@ -9,6 +9,7 @@ import { useDiscoveredDeviceConnector } from "../discovery/useDiscoveredDeviceCo
 import { useDiscoverController } from "../discovery/useDiscoverController";
 import { usePairingController } from "../pairing/usePairingController";
 import type { ProjectOption } from "../workspace/catalogUtils";
+import type { ConnectionMode } from "../../lib/connectionMode";
 
 type RefreshProjectsCatalogOptions = {
   baseUrl?: string;
@@ -21,7 +22,7 @@ export function useMobileConnectionFlow(params: {
   serverUrl: string;
   serverUrlInput: string;
   pairCode: string;
-  connectionMode: "local" | "cloud";
+  connectionMode: ConnectionMode;
   accessKey: string;
   deviceId: string;
   pairCodeMapRef: MutableRefObject<Record<string, string>>;
@@ -37,7 +38,7 @@ export function useMobileConnectionFlow(params: {
   setServerUrlTouched: Dispatch<SetStateAction<boolean>>;
   setPreferHttps: Dispatch<SetStateAction<boolean>>;
   setPairCode: Dispatch<SetStateAction<string>>;
-  setConnectionMode: Dispatch<SetStateAction<"local" | "cloud">>;
+  setConnectionMode: Dispatch<SetStateAction<ConnectionMode>>;
   setAccessKey: Dispatch<SetStateAction<string>>;
   setDeviceId: Dispatch<SetStateAction<string>>;
   setToken: Dispatch<SetStateAction<string>>;

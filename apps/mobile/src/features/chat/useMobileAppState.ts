@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ComposerAttachment } from "../media/types";
 import type { ModelOption, ProjectOption } from "../workspace/catalogUtils";
 import type { ComposerAgentName, SessionItem } from "./mobileAppConfig";
+import type { ConnectionMode } from "../../lib/connectionMode";
 import type {
   MobileChatMessage,
   MobileRenderedTurn,
@@ -18,7 +19,7 @@ export function useMobileAppState() {
   const [serverUrlTouched, setServerUrlTouched] = useState(false);
   const [preferHttps, setPreferHttps] = useState(false);
   const [pairCode, setPairCode] = useState("");
-  const [connectionMode, setConnectionMode] = useState<"local" | "cloud">("local");
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("local");
   const [accessKey, setAccessKey] = useState("");
   const [deviceId, setDeviceId] = useState("");
   const [repoPath, setRepoPath] = useState("");

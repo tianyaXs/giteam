@@ -1,6 +1,10 @@
 import EventSource from 'react-native-sse';
 import { getActiveDeviceId } from '../connectionContext';
 import { NO_AUTH_TOKEN } from '../controlApi';
+import {
+  createAgentApiError,
+  notifyCloudSessionInvalidation
+} from './errors';
 import type {
   AgentEvent,
   AgentEventSubscription,
@@ -37,14 +41,6 @@ function normalizeBaseUrl(input: string): string {
 function newRunId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function normalizeApiError(value: unknown, fallback: string): Error {
-  if (value && typeof value === 'object' && 'error' in value) {
-    const message = (value as { error?: unknown }).error;
-    if (typeof message === 'string' && message.trim()) return new Error(message);
-  }
-  return new Error(fallback);
 }
 
 export type MobileAgentClient = {
@@ -108,8 +104,23 @@ export function createMobileAgentClient(config: MobileAgentClientConfig): Mobile
         ...(ctrl ? { signal: ctrl.signal } : {})
       });
       const text = await response.text();
-      const value = text ? JSON.parse(text) : null;
-      if (!response.ok) throw normalizeApiError(value, `Agent API request failed (${response.status})`);
+      let value: unknown = null;
+      if (text) {
+        try {
+          value = JSON.parse(text);
+        } catch {
+          value = { message: text };
+        }
+      }
+      if (!response.ok) {
+        const err = createAgentApiError(
+          response.status,
+          value,
+          `Agent API request failed (${response.status})`
+        );
+        notifyCloudSessionInvalidation(err);
+        throw err;
+      }
       return value as T;
     } finally {
       if (timeout) clearTimeout(timeout);

@@ -1,14 +1,16 @@
 /** Process-wide cloud routing extras for agent HTTP/SSE clients. */
 
+import type { ConnectionRoute } from '../lib/connectionMode';
+
 let activeDeviceId = '';
 let activeAccessKey = '';
-let connectionMode: 'local' | 'cloud' = 'local';
+let connectionMode: ConnectionRoute = 'local';
 
-export function getConnectionMode(): 'local' | 'cloud' {
+export function getConnectionMode(): ConnectionRoute {
   return connectionMode;
 }
 
-export function setConnectionMode(mode: 'local' | 'cloud') {
+export function setConnectionMode(mode: ConnectionRoute | 'custom') {
   connectionMode = mode === 'cloud' ? 'cloud' : 'local';
 }
 

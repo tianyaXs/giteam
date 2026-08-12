@@ -1,4 +1,8 @@
 import { useCallback } from 'react';
+import {
+  setActiveAccessKey,
+  setActiveDeviceId
+} from '../../api/connectionContext';
 import { toText } from '../../lib/text';
 
 export function useSessionLifecycleActions(params: {
@@ -16,6 +20,8 @@ export function useSessionLifecycleActions(params: {
   setActiveSession: (sessionId: string) => void;
   setToken: (value: string) => void;
   setPairCode: (value: string) => void;
+  setDeviceId?: (value: string) => void;
+  setAccessKey?: (value: string) => void;
   setRepoPath: (value: string) => void;
   setProjects: (value: any[]) => void;
   setMessages: (value: any[]) => void;
@@ -46,6 +52,7 @@ export function useSessionLifecycleActions(params: {
     setModelCatalogStatus,
     setModelOptions,
     setPairCode,
+    setDeviceId,
     setProjects,
     setRenderedTurns,
     setRepoPath,
@@ -101,10 +108,13 @@ export function useSessionLifecycleActions(params: {
     stopStream
   ]);
 
-  const onResetAuth = useCallback(() => {
+  const onResetAuth = useCallback((statusText?: string) => {
     stopStream();
     setToken('');
     setPairCode('');
+    setDeviceId?.('');
+    setActiveDeviceId('');
+    setActiveAccessKey('');
     setRepoPath('');
     setProjects([]);
     setActiveSession('');
@@ -125,8 +135,8 @@ export function useSessionLifecycleActions(params: {
     setStartupSessionHydrating(false);
     setModelCatalogStatus?.('idle');
     setModelOptions?.([]);
-    setStatus('已退出授权');
-    pushConnLog('reset auth');
+    setStatus(toText(statusText).trim() || '已退出授权');
+    pushConnLog(`reset auth reason=${toText(statusText).trim() || 'manual'}`);
   }, [
     bumpOptimisticVersion,
     optimisticUserIdAliasRef,
@@ -139,6 +149,7 @@ export function useSessionLifecycleActions(params: {
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,
     setActiveSession,
+    setDeviceId,
     setMessages,
     setModelCatalogStatus,
     setModelOptions,

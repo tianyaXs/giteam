@@ -9,6 +9,7 @@ import {
   setConnectionMode as setConnectionContextMode
 } from '../../api/connectionContext';
 import { toText } from '../../lib/text';
+import type { ConnectionMode } from '../../lib/connectionMode';
 
 type ProjectOptionLike = {
   worktree: string;
@@ -29,7 +30,7 @@ export function useBootstrapPersistence(params: {
   serverUrlTouched: boolean;
   preferHttps: boolean;
   pairCode: string;
-  connectionMode: 'local' | 'cloud';
+  connectionMode: ConnectionMode;
   accessKey: string;
   deviceId: string;
   repoPath: string;
@@ -46,7 +47,7 @@ export function useBootstrapPersistence(params: {
   setServerUrlTouched: (value: boolean) => void;
   setPreferHttps: (value: boolean) => void;
   setPairCode: (value: string) => void;
-  setConnectionMode: (value: 'local' | 'cloud') => void;
+  setConnectionMode: (value: ConnectionMode) => void;
   setAccessKey: (value: string) => void;
   setDeviceId: (value: string) => void;
   setRepoPath: (value: string) => void;
@@ -143,7 +144,7 @@ export function useBootstrapPersistence(params: {
         setServerUrlTouched(Boolean((prefs as any).serverUrlTouched));
         setPreferHttps(Boolean((prefs as any).preferHttps));
         setPairCode(prefs.pairCode);
-        setConnectionMode(prefs.connectionMode === 'cloud' ? 'cloud' : 'local');
+        setConnectionMode(prefs.connectionMode);
         setAccessKey(prefs.accessKey || '');
         setDeviceId(prefs.deviceId || '');
         setConnectionContextMode(prefs.connectionMode === 'cloud' ? 'cloud' : 'local');

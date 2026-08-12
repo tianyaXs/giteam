@@ -19,6 +19,7 @@ import type { DiscoveredDevice } from '../../discovery';
 import { toText } from '../../lib/text';
 import { buildConnectionBaseUrlCandidates, normalizeBaseUrlForClient } from '../../lib/url';
 import { getDefaultCloudBaseUrl } from '../../config/cloud';
+import type { ConnectionMode } from '../../lib/connectionMode';
 
 export { getDefaultCloudBaseUrl };
 
@@ -53,7 +54,7 @@ type UsePairingControllerParams = {
   preferHttps: boolean;
   serverUrlInput: string;
   pairCode: string;
-  connectionMode: 'local' | 'cloud';
+  connectionMode: ConnectionMode;
   accessKey: string;
   deviceId: string;
   setBusy: (value: boolean) => void;
@@ -64,7 +65,7 @@ type UsePairingControllerParams = {
   setToken: (value: string) => void;
   setRepoPath: (value: string) => void;
   setProjects: (value: ProjectOption[]) => void;
-  setConnectionModeState: (value: 'local' | 'cloud') => void;
+  setConnectionModeState: (value: ConnectionMode) => void;
   setAccessKey: (value: string) => void;
   setDeviceId: (value: string) => void;
   pushConnLog: (message: string, level?: 'info' | 'error') => void;
@@ -334,7 +335,7 @@ export function usePairingController(params: UsePairingControllerParams) {
           nextToken = toText(res.token).trim();
         }
         setConnectionMode('local');
-        setConnectionModeState('local');
+        setConnectionModeState(connectionMode === 'custom' ? 'custom' : 'local');
         setActiveAccessKey('');
         setActiveDeviceId('');
         setAccessKey('');
@@ -384,6 +385,7 @@ export function usePairingController(params: UsePairingControllerParams) {
     },
     [
       accessKey,
+      connectionMode,
       connectWithCloudAccessKey,
       deviceId,
       onCloseDiscoverRef,
@@ -557,7 +559,11 @@ export function usePairingController(params: UsePairingControllerParams) {
 
   const onAuthSubmit = useCallback(async () => {
     if (connectionMode === 'cloud') {
-      await connectWithCloudAccessKey(serverUrlInput || getDefaultCloudBaseUrl(), accessKey || pairCode, deviceId);
+      await connectWithCloudAccessKey(getDefaultCloudBaseUrl(), accessKey || pairCode, deviceId);
+      return;
+    }
+    if (connectionMode === 'local' && !toText(serverUrlInput).trim()) {
+      setStatus('请填写服务地址，或扫码自动填入');
       return;
     }
     await connectWithAddressAndCode(serverUrlInput, pairCode);
@@ -568,7 +574,8 @@ export function usePairingController(params: UsePairingControllerParams) {
     connectionMode,
     deviceId,
     pairCode,
-    serverUrlInput
+    serverUrlInput,
+    setStatus
   ]);
 
   const onSelectCloudDevice = useCallback(
@@ -579,8 +586,10 @@ export function usePairingController(params: UsePairingControllerParams) {
   );
 
   const onCloseScanner = useCallback(() => {
+    setScannerLockedBoth(false);
+    setScannerReady(false);
     setScannerOpen(false);
-  }, []);
+  }, [setScannerLockedBoth]);
 
   const onScannerReady = useCallback(() => {
     setScannerReady(true);

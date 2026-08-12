@@ -1,5 +1,5 @@
 import React from 'react';
-import { StatusBar, View } from 'react-native';
+import { StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AppRenderBoundary } from '../components/AppRenderBoundary';
@@ -28,11 +28,11 @@ export function MobileAppRouter(props: {
   onAuthSubmit: () => void;
   onBarcodeScanned: (event: any) => void;
   onCancelScanner: () => void;
-  connectionMode: 'local' | 'cloud';
+  connectionMode: 'local' | 'cloud' | 'custom';
   accessKey: string;
   devicePickerOpen?: boolean;
   pendingDevices?: Array<{ id: string; name: string; online: boolean }>;
-  onChangeConnectionMode: (mode: 'local' | 'cloud') => void;
+  onChangeConnectionMode: (mode: 'local' | 'cloud' | 'custom') => void;
   onChangeAccessKey: (value: string) => void;
   onChangePairCode: (value: string) => void;
   onChangeServerUrl: (value: string) => void;
@@ -110,6 +110,7 @@ export function MobileAppRouter(props: {
     pairPromptOpen,
     pairPromptValue,
     safeStyle,
+    scannerLocked,
     scannerOpen,
     serverUrlInput,
     startupStyles,
@@ -150,12 +151,60 @@ export function MobileAppRouter(props: {
     );
   }
 
+  if (!authed) {
+    return (
+      <>
+        <AppRenderBoundary name="auth-screen" styles={startupStyles}>
+          <AuthConnectScreen
+            styles={startupStyles}
+            backgroundColor={backgroundColor}
+            busy={busy}
+            statusText={statusText}
+            connectionMode={connectionMode}
+            serverUrlInput={serverUrlInput}
+            pairCode={pairCode}
+            accessKey={accessKey}
+            devicePickerOpen={devicePickerOpen}
+            pendingDevices={pendingDevices}
+            launchOverlay={launchOverlay}
+            onChangeConnectionMode={onChangeConnectionMode}
+            onChangeServerUrl={onChangeServerUrl}
+            onChangePairCode={onChangePairCode}
+            onChangeAccessKey={onChangeAccessKey}
+            onOpenScanner={onOpenScanner}
+            onResetStatus={onResetAuthStatus}
+            onSubmit={onAuthSubmit}
+            onSelectCloudDevice={onSelectCloudDevice}
+            onCloseDevicePicker={onCloseDevicePicker}
+          />
+        </AppRenderBoundary>
+        {scannerOpen ? (
+          <View style={styles.scannerOverlayHost}>
+            <ScannerConnectScreen
+              styles={startupStyles}
+              CameraViewCompat={CameraViewCompat}
+              locked={scannerLocked}
+              onCancel={onCancelScanner}
+              onPickFromAlbum={onPickQrFromAlbum}
+              onRescan={onRescanScanner}
+              onCameraReady={onScannerReady}
+              onMountError={onMountScannerError}
+              onBarcodeScanned={onBarcodeScanned}
+            />
+          </View>
+        ) : null}
+        {albumPickerOverlay}
+      </>
+    );
+  }
+
   if (scannerOpen) {
     return (
       <>
         <ScannerConnectScreen
           styles={startupStyles}
           CameraViewCompat={CameraViewCompat}
+          locked={scannerLocked}
           onCancel={onCancelScanner}
           onPickFromAlbum={onPickQrFromAlbum}
           onRescan={onRescanScanner}
@@ -164,38 +213,6 @@ export function MobileAppRouter(props: {
           onBarcodeScanned={onBarcodeScanned}
         />
         {albumPickerOverlay}
-      </>
-    );
-  }
-
-  if (!authed) {
-    return (
-      <>
-      <AppRenderBoundary name="auth-screen" styles={startupStyles}>
-        <AuthConnectScreen
-          styles={startupStyles}
-          backgroundColor={backgroundColor}
-          busy={busy}
-          statusText={statusText}
-          connectionMode={connectionMode}
-          serverUrlInput={serverUrlInput}
-          pairCode={pairCode}
-          accessKey={accessKey}
-          devicePickerOpen={devicePickerOpen}
-          pendingDevices={pendingDevices}
-          launchOverlay={launchOverlay}
-          onChangeConnectionMode={onChangeConnectionMode}
-          onChangeServerUrl={onChangeServerUrl}
-          onChangePairCode={onChangePairCode}
-          onChangeAccessKey={onChangeAccessKey}
-          onOpenScanner={onOpenScanner}
-          onResetStatus={onResetAuthStatus}
-          onSubmit={onAuthSubmit}
-          onSelectCloudDevice={onSelectCloudDevice}
-          onCloseDevicePicker={onCloseDevicePicker}
-        />
-      </AppRenderBoundary>
-      {albumPickerOverlay}
       </>
     );
   }
@@ -212,3 +229,11 @@ export function MobileAppRouter(props: {
     </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  scannerOverlayHost: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
+    elevation: 100
+  }
+});

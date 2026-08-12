@@ -1,4 +1,5 @@
 import { mmkvGetString, mmkvSetString } from './mmkv';
+import { parseConnectionMode, type ConnectionMode } from '../lib/connectionMode';
 import { toText } from '../lib/text';
 
 export const PREF_KEY = 'giteam.mobile.v3';
@@ -15,8 +16,8 @@ export type Prefs = {
   model: string;
   agent: 'build' | 'plan';
   autoAcceptPermissions: boolean;
-  /** local = LAN control; cloud = relay gateway */
-  connectionMode: 'local' | 'cloud';
+  /** local = LAN; cloud = relay; custom = manual URL */
+  connectionMode: ConnectionMode;
   accessKey: string;
   deviceId: string;
 };
@@ -56,7 +57,7 @@ export function loadPrefs(): Prefs {
       model: toText(merged.model),
       agent: (merged as any).agent === 'plan' ? 'plan' : 'build',
       autoAcceptPermissions: Boolean((merged as any).autoAcceptPermissions),
-      connectionMode: (merged as any).connectionMode === 'cloud' ? 'cloud' : 'local',
+      connectionMode: parseConnectionMode((merged as any).connectionMode),
       accessKey: toText((merged as any).accessKey),
       deviceId: toText((merged as any).deviceId)
     };

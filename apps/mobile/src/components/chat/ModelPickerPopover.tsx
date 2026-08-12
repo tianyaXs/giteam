@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Modal,
+  BackHandler,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,18 +24,20 @@ import { toText } from '../../lib/text';
 import { closeModalAfterAnimation } from '../../lib/modalClose';
 
 /**
- * 模型菜单：与展开后的模型选择器同宽、同色，向上浮出（分体卡片）。
- * 用 Modal 根节点与菜单实测高度算 top，避免 Dimensions/statusBar 错位撑大空隙。
+ * 模型菜单：与展开后的模型选择器同宽、同色，向上弹出（分体卡片）。
+ *
+ * 不用 Modal（Android 上与 measureInWindow 差状态栏）。
+ * 同窗口绝对层：先量宿主偏移铺满 window，再按 anchor 算 top。
+ * 所有测量只锁定一次，避免 onLayout/measure 回写造成上下抖。
  */
 type ModelOption = { id: string; label: string; provider: string };
-type Frame = { x: number; y: number; width: number; height: number };
+type Pt = { x: number; y: number };
 
 const OPEN_MS = 220;
 const CLOSE_MS = 160;
 const FALLBACK_MENU_WIDTH = 220;
 const MENU_RADIUS = 26;
-/** 与按钮之间的分体间距（对齐上一版 git） */
-const GAP_ABOVE_BUTTON = 8;
+const GAP_ABOVE_BUTTON = 6;
 
 function shortModelLabel(label: string): string {
   const raw = toText(label).trim();
@@ -44,15 +47,15 @@ function shortModelLabel(label: string): string {
 }
 
 export function ModelPickerPopover(props: {
+  inputModelLabel?: string;
   modelOptions: ModelOption[];
   selectedModel: string;
   onSelectModel: (id: string) => void;
+  onOpenModelManager?: () => void;
   open: boolean;
   onClose: () => void;
-  anchor?: Frame | null;
-  /** 与模型选择器同色底 */
+  anchor?: { x: number; y: number; width: number; height: number } | null;
   surfaceColor?: string;
-  /** 与模型选择器图标/文字同色 */
   contentColor?: string;
 }) {
   const {
@@ -68,8 +71,14 @@ export function ModelPickerPopover(props: {
   const { colors } = useMobileTheme();
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const progress = useSharedValue(0);
-  const rootRef = useRef<View>(null);
-  const [rootFrame, setRootFrame] = useState<Frame | null>(null);
+  const hostRef = useRef<View>(null);
+  const shiftLocked = useRef(false);
+  const originLocked = useRef(false);
+  const heightLocked = useRef(false);
+  const openedAnim = useRef(false);
+
+  const [shift, setShift] = useState<Pt | null>(null);
+  const [origin, setOrigin] = useState<Pt | null>(null);
   const [menuHeight, setMenuHeight] = useState(0);
 
   const menuMaxHeight = Math.min(280, windowHeight * 0.42);
@@ -80,47 +89,55 @@ export function ModelPickerPopover(props: {
     return FALLBACK_MENU_WIDTH;
   }, [anchor]);
 
-  const measureRoot = useCallback(() => {
-    rootRef.current?.measureInWindow((x, y, width, height) => {
-      if (width > 0 && height > 0) {
-        setRootFrame({ x, y, width, height });
-      }
-    });
-  }, []);
+  const positioned = Boolean(anchor && origin && menuHeight > 0);
 
-  useLayoutEffect(() => {
-    if (!open) {
-      setRootFrame(null);
-      setMenuHeight(0);
+  const menuLeft = useMemo(() => {
+    if (!anchor || !origin) return 16;
+    return Math.round(anchor.x - origin.x);
+  }, [anchor, origin]);
+
+  const menuTop = useMemo(() => {
+    if (!anchor || !origin || menuHeight <= 0) return 0;
+    return Math.max(8, Math.round(anchor.y - origin.y - menuHeight - GAP_ABOVE_BUTTON));
+  }, [anchor, origin, menuHeight]);
+
+  const resetLocks = useCallback(() => {
+    shiftLocked.current = false;
+    originLocked.current = false;
+    heightLocked.current = false;
+    openedAnim.current = false;
+    setShift(null);
+    setOrigin(null);
+    setMenuHeight(0);
+    progress.value = 0;
+  }, [progress]);
+
+  const onHostLayout = useCallback(() => {
+    if (!hostRef.current) return;
+    if (!shiftLocked.current) {
+      shiftLocked.current = true;
+      hostRef.current.measureInWindow((x, y) => {
+        setShift({ x: Math.round(x), y: Math.round(y) });
+      });
       return;
     }
-    measureRoot();
-  }, [open, measureRoot, anchor]);
-
-  const placement = useMemo(() => {
-    if (!anchor) {
-      return { right: 16, top: Math.max(24, windowHeight - 280), ready: true as const };
+    if (!originLocked.current && shift) {
+      originLocked.current = true;
+      hostRef.current.measureInWindow((x, y) => {
+        setOrigin({ x: Math.round(x), y: Math.round(y) });
+      });
     }
-    if (!rootFrame || menuHeight <= 0) {
-      return { right: 16, top: 0, ready: false as const };
-    }
-    const right = Math.max(8, rootFrame.x + rootFrame.width - (anchor.x + anchor.width));
-    const top = Math.round(anchor.y - rootFrame.y - menuHeight - GAP_ABOVE_BUTTON);
-    return { right, top: Math.max(8, top), ready: true as const };
-  }, [anchor, rootFrame, menuHeight, windowHeight]);
+  }, [shift]);
 
-  // fallback：根节点未量到时仍用 window 公式，避免空白
-  const fallbackBottom = useMemo(() => {
-    if (!anchor) return 96;
-    return Math.max(10, windowHeight - anchor.y + GAP_ABOVE_BUTTON);
-  }, [anchor, windowHeight]);
-
-  const fallbackRight = useMemo(() => {
-    if (!anchor) return 16;
-    return Math.max(10, windowWidth - (anchor.x + anchor.width));
-  }, [anchor, windowWidth]);
+  const onMenuLayout = useCallback((h: number) => {
+    if (heightLocked.current || h <= 0) return;
+    heightLocked.current = true;
+    setMenuHeight(Math.ceil(h));
+  }, []);
 
   const startOpen = useCallback(() => {
+    if (openedAnim.current) return;
+    openedAnim.current = true;
     progress.value = 0;
     progress.value = withTiming(1, {
       duration: OPEN_MS,
@@ -142,12 +159,25 @@ export function ModelPickerPopover(props: {
   );
 
   useEffect(() => {
-    if (open && (placement.ready || !anchor)) startOpen();
-  }, [open, placement.ready, anchor, startOpen]);
+    if (!open) resetLocks();
+  }, [open, resetLocks]);
+
+  useEffect(() => {
+    if (open && positioned) startOpen();
+  }, [open, positioned, startOpen]);
 
   const handleClose = useCallback(() => {
     closeModalAfterAnimation(startClose, onClose, CLOSE_MS);
   }, [startClose, onClose]);
+
+  useEffect(() => {
+    if (!open || Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [open, handleClose]);
 
   const handleSelectModel = useCallback(
     (id: string) => {
@@ -165,7 +195,7 @@ export function ModelPickerPopover(props: {
     opacity: interpolate(progress.value, [0, 0.2, 1], [0, 1, 1], Extrapolation.CLAMP),
     transform: [
       {
-        translateY: interpolate(progress.value, [0, 1], [12, 0], Extrapolation.CLAMP)
+        translateY: interpolate(progress.value, [0, 1], [10, 0], Extrapolation.CLAMP)
       }
     ]
   }));
@@ -177,81 +207,97 @@ export function ModelPickerPopover(props: {
 
   if (!open) return null;
 
-  const useMeasured = placement.ready && !!anchor;
-
   return (
-    <Modal transparent visible={open} animationType="none" statusBarTranslucent onRequestClose={handleClose}>
-      <View ref={rootRef} style={styles.root} pointerEvents="box-none" onLayout={measureRoot}>
-        <Animated.View style={[styles.backdrop, backdropStyle]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} accessibilityLabel="关闭模型选择" />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.menu,
-            menuStyle,
-            {
-              width: menuWidth,
-              backgroundColor: sheetBg,
-              borderRadius: MENU_RADIUS,
-              ...(useMeasured
-                ? { right: placement.right, top: placement.top }
-                : anchor
-                  ? { right: fallbackRight, bottom: fallbackBottom, opacity: 0 }
-                  : { right: fallbackRight, bottom: fallbackBottom }),
+    <View
+      ref={hostRef}
+      collapsable={false}
+      pointerEvents="box-none"
+      onLayout={onHostLayout}
+      style={[
+        styles.host,
+        shift
+          ? {
+              top: -shift.y,
+              left: -shift.x,
+              width: windowWidth,
+              height: windowHeight
             }
-          ]}
-          onLayout={(e) => {
-            const h = Math.ceil(e.nativeEvent.layout.height);
-            if (h > 0 && h !== menuHeight) setMenuHeight(h);
-          }}
+          : styles.hostPending
+      ]}
+    >
+      <Animated.View style={[styles.backdrop, backdropStyle]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} accessibilityLabel="关闭模型选择" />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.menu,
+          menuStyle,
+          {
+            width: menuWidth,
+            left: menuLeft,
+            top: positioned ? menuTop : -9999,
+            backgroundColor: sheetBg,
+            borderRadius: MENU_RADIUS
+          }
+        ]}
+        onLayout={(e) => onMenuLayout(e.nativeEvent.layout.height)}
+      >
+        <ScrollView
+          style={{ maxHeight: menuMaxHeight }}
+          contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+          overScrollMode="never"
+          scrollEventThrottle={16}
         >
-          <ScrollView
-            style={{ maxHeight: menuMaxHeight }}
-            contentContainerStyle={styles.listContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-          >
-            {modelOptions.map((opt) => {
-              const active = selectedModel.trim() === opt.id;
-              return (
-                <Pressable
-                  key={opt.id}
-                  style={[styles.item, active ? { backgroundColor: activeBg } : null]}
-                  onPress={() => handleSelectModel(opt.id)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: active }}
-                >
-                  <ProviderIcon
-                    providerId={opt.provider || opt.id}
-                    size={18}
-                    color={fg}
-                    backgroundColor="transparent"
-                    padded={false}
-                  />
-                  <Text numberOfLines={1} style={[styles.itemTitle, { color: fg }]}>
-                    {shortModelLabel(opt.label || opt.id)}
-                  </Text>
-                  {active ? <View style={[styles.dot, { backgroundColor: fg }]} /> : null}
-                </Pressable>
-              );
-            })}
-            {modelOptions.length === 0 ? (
-              <View style={styles.emptyWrap}>
-                <Text style={[styles.empty, { color: mutedFg }]}>暂无可用模型</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-        </Animated.View>
-      </View>
-    </Modal>
+          {modelOptions.map((opt) => {
+            const active = selectedModel.trim() === opt.id;
+            return (
+              <Pressable
+                key={opt.id}
+                style={[styles.item, active ? { backgroundColor: activeBg } : null]}
+                onPress={() => handleSelectModel(opt.id)}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+              >
+                <ProviderIcon
+                  providerId={opt.provider || opt.id}
+                  size={18}
+                  color={fg}
+                  backgroundColor="transparent"
+                  padded={false}
+                />
+                <Text numberOfLines={1} style={[styles.itemTitle, { color: fg }]}>
+                  {shortModelLabel(opt.label || opt.id)}
+                </Text>
+                {active ? <View style={[styles.dot, { backgroundColor: fg }]} /> : null}
+              </Pressable>
+            );
+          })}
+          {modelOptions.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <Text style={[styles.empty, { color: mutedFg }]}>暂无可用模型</Text>
+            </View>
+          ) : null}
+        </ScrollView>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1
+  host: {
+    position: 'absolute',
+    zIndex: 10000,
+    elevation: 10000
+  },
+  hostPending: {
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
