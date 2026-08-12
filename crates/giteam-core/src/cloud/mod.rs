@@ -9,7 +9,8 @@ pub use config::{
     CloudAccessKeyRecord, CloudLinkSettings, DEFAULT_CLOUD_BASE_URL, rename_access_key_local,
 };
 pub use http::{
-    link_begin, link_complete, link_device, link_device_with_opts, LinkBeginResponse,
-    LinkCompleteResponse, LinkDeviceOptions,
+    disconnect_mobile_client, link_begin, link_complete, link_device, link_device_with_opts,
+    list_mobile_clients, LinkBeginResponse, LinkCompleteResponse, LinkDeviceOptions,
+    MobileClientSession,
 };
 pub use tunnel::{start_cloud_tunnel_background, stop_cloud_tunnel, tunnel_running};

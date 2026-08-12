@@ -215,3 +215,74 @@ pub fn link_device_with_opts(
     super::config::set_cloud_link_settings(&settings)?;
     Ok(settings)
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileClientSession {
+    pub jti: String,
+    pub workspace_id: String,
+    pub device_id: String,
+    pub client_name: String,
+    pub connected_at: i64,
+    pub last_seen_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListClientsResponse {
+    clients: Vec<MobileClientSession>,
+}
+
+/// List online mobile clients for the local linked desktop device.
+pub fn list_mobile_clients() -> Result<Vec<MobileClientSession>, String> {
+    let settings = super::config::get_cloud_link_settings();
+    if settings.device_token.trim().is_empty() || settings.cloud_base_url.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let url = join_url(&settings.cloud_base_url, "/cloud/v1/device/clients");
+    let resp = client()?
+        .get(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.device_token.trim()),
+        )
+        .send()
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("list clients HTTP {status}: {text}"));
+    }
+    let parsed: ListClientsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("list clients parse: {e}; body={text}"))?;
+    Ok(parsed.clients)
+}
+
+/// Disconnect a mobile client session (blacklist JWT).
+pub fn disconnect_mobile_client(jti: &str) -> Result<(), String> {
+    let jti = jti.trim();
+    if jti.is_empty() {
+        return Err("jti required".into());
+    }
+    let settings = super::config::get_cloud_link_settings();
+    if settings.device_token.trim().is_empty() || settings.cloud_base_url.trim().is_empty() {
+        return Err("cloud link incomplete".into());
+    }
+    let url = join_url(&settings.cloud_base_url, "/cloud/v1/device/clients/disconnect");
+    let resp = client()?
+        .post(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.device_token.trim()),
+        )
+        .json(&serde_json::json!({ "jti": jti }))
+        .send()
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("disconnect client HTTP {status}: {text}"));
+    }
+    Ok(())
+}
