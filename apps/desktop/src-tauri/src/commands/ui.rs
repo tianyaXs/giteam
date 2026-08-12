@@ -273,6 +273,8 @@ pub fn set_window_theme(app: AppHandle, window: Window, theme: &str) -> Result<(
         .set_theme(value)
         .map_err(|e| format!("failed to set window theme: {e}"))?;
     persist_theme(&app, theme);
+    #[cfg(target_os = "macos")]
+    crate::macos_context_menu::reapply(&app);
     Ok(())
 }
 

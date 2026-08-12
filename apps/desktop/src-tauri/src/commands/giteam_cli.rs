@@ -417,6 +417,19 @@ pub fn start_managed_mobile_service() {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CloudAccessKeyView {
+    pub id: String,
+    pub name: String,
+    pub access_key: String,
+    pub workspace_id: String,
+    pub cloud_base_url: String,
+    pub created_at_ms: i64,
+    pub last_used_at_ms: i64,
+    pub active: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudLinkStatusView {
     pub enabled: bool,
     pub cloud_base_url: String,
@@ -424,21 +437,44 @@ pub struct CloudLinkStatusView {
     pub device_id: String,
     pub device_name: String,
     pub access_key: String,
+    pub key_name: String,
     pub tunnel_running: bool,
+    pub access_keys: Vec<CloudAccessKeyView>,
 }
 
-#[tauri::command]
-pub fn giteam_cloud_status() -> Result<CloudLinkStatusView, String> {
+fn cloud_status_view() -> CloudLinkStatusView {
     let settings = giteam_core::cloud::get_cloud_link_settings();
-    Ok(CloudLinkStatusView {
+    let active = settings.access_key.clone();
+    let access_keys = settings
+        .access_keys
+        .iter()
+        .map(|k| CloudAccessKeyView {
+            id: k.id.clone(),
+            name: k.name.clone(),
+            access_key: k.access_key.clone(),
+            workspace_id: k.workspace_id.clone(),
+            cloud_base_url: k.cloud_base_url.clone(),
+            created_at_ms: k.created_at_ms,
+            last_used_at_ms: k.last_used_at_ms,
+            active: k.access_key == active,
+        })
+        .collect();
+    CloudLinkStatusView {
         enabled: settings.enabled,
         cloud_base_url: settings.cloud_base_url,
         workspace_id: settings.workspace_id,
         device_id: settings.device_id,
         device_name: settings.device_name,
         access_key: settings.access_key,
+        key_name: settings.key_name,
         tunnel_running: giteam_core::cloud::tunnel_running(),
-    })
+        access_keys,
+    }
+}
+
+#[tauri::command]
+pub fn giteam_cloud_status() -> Result<CloudLinkStatusView, String> {
+    Ok(cloud_status_view())
 }
 
 #[tauri::command]
@@ -446,8 +482,20 @@ pub fn giteam_cloud_link(
     url: Option<String>,
     access_key: Option<String>,
     name: Option<String>,
+    force_new: Option<bool>,
+    key_name: Option<String>,
 ) -> Result<CloudLinkStatusView, String> {
+    let existing = giteam_core::cloud::get_cloud_link_settings();
     let base = url
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let saved = existing.cloud_base_url.trim().to_string();
+            if saved.is_empty() {
+                None
+            } else {
+                Some(saved)
+            }
+        })
         .unwrap_or_else(|| giteam_core::cloud::DEFAULT_CLOUD_BASE_URL.to_string())
         .trim()
         .trim_end_matches('/')
@@ -456,23 +504,19 @@ pub fn giteam_cloud_link(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "giteam-desktop".to_string());
     let version = env!("CARGO_PKG_VERSION").to_string();
-    let settings = giteam_core::cloud::link_device(
+    let settings = giteam_core::cloud::link_device_with_opts(
         &base,
         &device_name,
         &version,
         access_key.as_deref(),
+        giteam_core::cloud::LinkDeviceOptions {
+            force_new: force_new.unwrap_or(false),
+            key_name,
+        },
     )?;
     let port = control::get_control_server_settings()?.port;
     let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
-    Ok(CloudLinkStatusView {
-        enabled: settings.enabled,
-        cloud_base_url: settings.cloud_base_url,
-        workspace_id: settings.workspace_id,
-        device_id: settings.device_id,
-        device_name: settings.device_name,
-        access_key: settings.access_key,
-        tunnel_running: giteam_core::cloud::tunnel_running(),
-    })
+    Ok(cloud_status_view())
 }
 
 #[tauri::command]
@@ -482,7 +526,60 @@ pub fn giteam_cloud_unlink() -> Result<CloudLinkStatusView, String> {
     settings.enabled = false;
     settings.device_token.clear();
     giteam_core::cloud::set_cloud_link_settings(&settings)?;
-    giteam_cloud_status()
+    Ok(cloud_status_view())
+}
+
+#[tauri::command]
+pub fn giteam_cloud_forget_key(key_id: String) -> Result<CloudLinkStatusView, String> {
+    let _ = giteam_core::cloud::forget_access_key_local(&key_id)?;
+    Ok(cloud_status_view())
+}
+
+#[tauri::command]
+pub fn giteam_cloud_rename_key(key_id: String, name: String) -> Result<CloudLinkStatusView, String> {
+    let _ = giteam_core::cloud::rename_access_key_local(&key_id, &name)?;
+    Ok(cloud_status_view())
+}
+
+#[tauri::command]
+pub fn giteam_cloud_use_key(access_key: String) -> Result<CloudLinkStatusView, String> {
+    let key = access_key.trim();
+    if key.is_empty() {
+        return Err("accessKey required".into());
+    }
+    let settings = giteam_core::cloud::get_cloud_link_settings();
+    let record = settings.access_keys.iter().find(|k| k.access_key == key);
+    let base = record
+        .map(|k| k.cloud_base_url.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let saved = settings.cloud_base_url.trim().to_string();
+            if saved.is_empty() {
+                None
+            } else {
+                Some(saved)
+            }
+        })
+        .unwrap_or_else(|| giteam_core::cloud::DEFAULT_CLOUD_BASE_URL.to_string());
+    let name = record.map(|k| k.name.clone());
+    let linked = giteam_core::cloud::link_device_with_opts(
+        &base,
+        if settings.device_name.trim().is_empty() {
+            "giteam-desktop"
+        } else {
+            settings.device_name.as_str()
+        },
+        env!("CARGO_PKG_VERSION"),
+        Some(key),
+        giteam_core::cloud::LinkDeviceOptions {
+            force_new: false,
+            key_name: name,
+        },
+    )?;
+    let _ = linked;
+    let port = control::get_control_server_settings()?.port;
+    let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
+    Ok(cloud_status_view())
 }
 
 #[tauri::command]

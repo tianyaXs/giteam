@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Switch } from "../ui/switch";
 import { SegmentedControl } from "../ui/segmented";
 import { NavigatorPreview } from "./NavigatorPreview";
-import { CloudRelaySettingsCard } from "./CloudRelaySettingsCard";
+import { ServiceSettingsPanel } from "./ServiceSettingsPanel";
 
 type ControlServerSettingsDraft = {
   enabled: boolean;
@@ -60,7 +60,7 @@ const SETTINGS_TEXT = {
     workspace: "工作区", workspaceKicker: "布局", workspaceDesc: "控制左侧导航中工作区模块是否显示。",
     models: "模型", modelsKicker: "模型", modelsDesc: "管理服务商、默认模型和模型显示状态。", modelsEmpty: "暂无模型信息。",
     dependencies: "插件", dependenciesKicker: "扩展", dependenciesDesc: "检查并管理 Git、Entire 等桌面运行时插件；giteam 用于手机端连接，可按需安装。",
-    api: "接口", apiKicker: "连接", apiDesc: "管理移动端控制服务与 Giteam 连接参数。",
+    api: "服务", apiKicker: "服务", apiDesc: "管理局域网控制、云端与私有部署连接。",
     skills: "技能", skillsKicker: "扩展", skillsDesc: "管理已安装技能，并配置技能市场的搜索能力。",
     updates: "关于", updatesKicker: "应用", updatesDesc: "查看当前版本，并检查、安装桌面端更新。",
     notifications: "通知", notificationsKicker: "提醒", notificationsDesc: "控制哪些事件会发送系统通知。",
@@ -95,7 +95,7 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     workspace: "工作區", workspaceKicker: "版面", workspaceDesc: "控制右側模組按鈕是否顯示，保留常用工作區。",
     models: "模型", modelsKicker: "模型", modelsDesc: "管理服務商、預設模型和模型顯示狀態。", modelsEmpty: "暫無模型資訊。",
     dependencies: "外掛", dependenciesKicker: "擴充", dependenciesDesc: "檢查並管理 Git、Entire 等桌面執行時外掛；giteam 用於行動端連線，可按需安裝。",
-    api: "介面", apiKicker: "連線", apiDesc: "管理行動端控制服務與 Giteam 連線參數。",
+    api: "服務", apiKicker: "服務", apiDesc: "管理區域網路控制、雲端與私有部署連線。",
     skills: "技能", skillsKicker: "擴充", skillsDesc: "管理已安裝技能，並設定技能市場搜尋能力。",
     updates: "關於", updatesKicker: "應用", updatesDesc: "查看目前版本，並檢查、安裝桌面端更新。",
     notifications: "通知", notificationsKicker: "提醒", notificationsDesc: "控制哪些事件會傳送系統通知。",
@@ -119,7 +119,7 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", uninstall: "解除安裝", installing: "安裝中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
   },
   "en-US": {
-    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Check and manage desktop runtime plugins such as Git and Entire; giteam is optional for mobile connection.", api: "API", apiKicker: "Connection", apiDesc: "Manage mobile control service and Giteam connection settings.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, auth, and QR pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Port used by the mobile control service.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
+    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Check and manage desktop runtime plugins such as Git and Entire; giteam is optional for mobile connection.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Worktree", worktreeDesc: "Show branch and worktree topology.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Mobile Control", mobileControlReady: "Configure mobile connection service, port, auth, and QR pairing.", mobileControlMissing: "Install the giteam dependency before enabling mobile control.", service: "Service", serviceDesc: "Enable or disable the mobile control service.", port: "Port", portDesc: "Port used by the mobile control service.", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -1190,88 +1190,46 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: text.api,
         description: text.apiDesc,
         content: (
-          <div className="flex flex-col gap-6">
-            <section className="flex flex-col gap-2">
-              <div className="px-1 text-sm font-medium text-muted-foreground">{text.apiKicker}</div>
-              <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
-                <CardContent className="p-0">
-                  <div className="grid gap-6 p-4 sm:grid-cols-[minmax(0,1fr)_144px]">
-                    <div className="flex min-w-0 flex-col gap-5">
-                      <div className="min-w-0">
-                        <strong className="block text-sm font-semibold text-foreground">{text.connectionAddress}</strong>
-                        <Button
-                          variant="ghost"
-                          className="mt-1 h-auto max-w-full justify-start px-0 py-1 text-left font-mono text-[13px] text-muted-foreground hover:bg-transparent"
-                          title={text.copyUrl}
-                          disabled={!props.controlSettings.enabled || !props.controlConnectionUrl}
-                          onClick={props.onCopyControlUrl}
-                        >
-                          <span className="truncate">
-                            {props.controlSettings.enabled
-                              ? (props.controlConnectionUrl || text.qrWaiting).replace(/^https?:\/\//i, "")
-                              : text.qrDisabled}
-                          </span>
-                        </Button>
-                      </div>
-                      <div>
-                        <strong className="block text-sm font-semibold text-foreground">{text.authCode}</strong>
-                        <div className="mt-2 flex items-center gap-2">
-                          <div className="inline-flex h-8 min-w-28 items-center justify-center rounded-md border border-border bg-muted px-3 font-mono text-sm font-semibold tracking-[0.18em] text-foreground">
-                            {!props.controlSettings.enabled
-                              ? "------"
-                              : props.controlSettings.authMode === "none"
-                                ? text.noAuth
-                                : props.controlPairCode || "------"}
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title={text.refreshCode}
-                            disabled={!props.controlSettings.enabled || props.controlBusy || props.controlSettings.authMode === "none"}
-                            onClick={props.onRefreshControlPairCode}
-                          >
-                            <RefreshIcon />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex size-36 items-center justify-center rounded-lg border border-border bg-background p-3">
-                      {props.controlSettings.enabled && props.controlPairQrUrl ? (
-                        <img className="size-full rounded-md object-contain" src={props.controlPairQrUrl} alt="Mobile pair QR code" />
-                      ) : (
-                        <div className="text-center text-[13px] leading-5 text-muted-foreground">
-                          {props.controlSettings.enabled ? text.qrWaiting : text.qrDisabled}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </section>
-            {!props.controlInstalled ? (
-              <SettingsGroup
-                title={text.mobileControl}
-                entries={[{
-                  title: text.mobileControl,
-                  description: text.mobileControlMissing,
-                  action: (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      title={text.installDependencyTitle}
-                      onClick={props.onOpenRuntimeSetup}
-                    >
-                      {text.installFirst}
-                    </Button>
-                  )
-                }]}
-                wide
-              />
-            ) : (
-              <SettingsGroup title={text.mobileControl} entries={entriesBySection.mobile} wide />
-            )}
-            <CloudRelaySettingsCard />
-          </div>
+          <ServiceSettingsPanel
+            controlSettings={props.controlSettings}
+            controlBusy={props.controlBusy}
+            controlConnectionUrl={props.controlConnectionUrl}
+            controlPairCode={props.controlPairCode}
+            controlPairQrUrl={props.controlPairQrUrl}
+            onCopyControlUrl={props.onCopyControlUrl}
+            onRefreshControlPairCode={props.onRefreshControlPairCode}
+            connectionAddress={text.connectionAddress}
+            authCode={text.authCode}
+            copyUrl={text.copyUrl}
+            refreshCode={text.refreshCode}
+            noAuth={text.noAuth}
+            qrWaiting={text.qrWaiting}
+            qrDisabled={text.qrDisabled}
+            mobileControlEntries={
+              !props.controlInstalled ? (
+                <SettingsGroup
+                  title={text.mobileControl}
+                  entries={[{
+                    title: text.mobileControl,
+                    description: text.mobileControlMissing,
+                    action: (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        title={text.installDependencyTitle}
+                        onClick={props.onOpenRuntimeSetup}
+                      >
+                        {text.installFirst}
+                      </Button>
+                    )
+                  }]}
+                  wide
+                />
+              ) : (
+                <SettingsGroup title={text.mobileControl} entries={entriesBySection.mobile} wide />
+              )
+            }
+          />
         )
       },
       ...(REMOTE_REPO_MODULE_ENABLED
@@ -1416,7 +1374,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div
             className={cn(
               "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
-              active.id === "models" || active.id === "skillsmp"
+              active.id === "models" || active.id === "skillsmp" || active.id === "mobile"
                 ? "max-w-[1120px]"
                 : "max-w-[680px]"
             )}

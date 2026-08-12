@@ -15,11 +15,13 @@ mod macos_context_menu {
     use objc2::sel;
     use objc2_app_kit::{NSEvent, NSMenu, NSView, NSWindow, NSWindowButton};
     use objc2_foundation::NSPoint;
-    use tauri::{App, Manager};
+    use tauri::{App, AppHandle, Manager, WebviewWindow, WindowEvent};
 
     static PATCHED: AtomicBool = AtomicBool::new(false);
-    const TRAFFIC_LIGHT_OFFSET_X: f64 = 6.0;
-    const TRAFFIC_LIGHT_OFFSET_Y: f64 = -7.0;
+
+    // 严禁改动此处！请勿改动！
+    const TRAFFIC_LIGHT_X: f64 = 16.0;
+    const TRAFFIC_LIGHT_Y: f64 = 26.0;
 
     // Instead of suppressing menuForEvent: (which also breaks the JS contextmenu
     // event chain), we let the native menu build normally and intercept
@@ -35,21 +37,72 @@ mod macos_context_menu {
         menu.removeAllItems();
     }
 
-    fn offset_standard_window_button(window: &NSWindow, button: NSWindowButton) {
-        let Some(button) = window.standardWindowButton(button) else {
+    /// 官方 wry `inset_traffic_lights` 同款算法（见 wry wry_web_view_parent.rs）。
+    unsafe fn inset_traffic_lights(native_window: &NSWindow, x: f64, y: f64) {
+        let Some(close) = native_window.standardWindowButton(NSWindowButton::CloseButton) else {
             return;
         };
-        let frame = button.frame();
-        button.setFrameOrigin(NSPoint::new(
-            frame.origin.x + TRAFFIC_LIGHT_OFFSET_X,
-            frame.origin.y + TRAFFIC_LIGHT_OFFSET_Y,
-        ));
+        let Some(mini) =
+            native_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
+        else {
+            return;
+        };
+        let zoom = native_window.standardWindowButton(NSWindowButton::ZoomButton);
+        let Some(title_bar) = close.superview() else {
+            return;
+        };
+        let Some(title_bar_container) = title_bar.superview() else {
+            return;
+        };
+
+        let close_frame = close.frame();
+        let title_bar_frame_height = close_frame.size.height + y;
+        let mut title_bar_rect = title_bar_container.frame();
+        title_bar_rect.size.height = title_bar_frame_height;
+        title_bar_rect.origin.y = native_window.frame().size.height - title_bar_frame_height;
+        title_bar_container.setFrame(title_bar_rect);
+
+        let space_between = mini.frame().origin.x - close_frame.origin.x;
+        let mut buttons = vec![close, mini];
+        if let Some(zoom) = zoom {
+            buttons.push(zoom);
+        }
+        for (index, button) in buttons.into_iter().enumerate() {
+            let mut rect = button.frame();
+            rect.origin.x = x + (index as f64) * space_between;
+            button.setFrameOrigin(NSPoint::new(rect.origin.x, rect.origin.y));
+        }
     }
 
-    fn align_standard_window_buttons(window: &NSWindow) {
-        offset_standard_window_button(window, NSWindowButton::CloseButton);
-        offset_standard_window_button(window, NSWindowButton::MiniaturizeButton);
-        offset_standard_window_button(window, NSWindowButton::ZoomButton);
+    fn position_traffic_lights(window: &WebviewWindow) {
+        // 必须走 with_webview → NSView::window()，与历史可用路径一致。
+        // ns_window() 裸指针强转在 objc2 下不可靠，会导致“改了没变化”。
+        let _ = window.with_webview(|webview| unsafe {
+            let native_view = &*webview.inner().cast::<NSView>();
+            if let Some(native_window) = native_view.window() {
+                inset_traffic_lights(&native_window, TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y);
+            }
+        });
+    }
+
+    fn patch_context_menu(window: &WebviewWindow) {
+        let _ = window.with_webview(|webview| unsafe {
+            let view = &*webview.inner().cast::<AnyObject>();
+            let cls = view.class();
+            if let Some(method) = cls.instance_method(sel!(willOpenMenu:withEvent:)) {
+                let replacement: Imp = std::mem::transmute(
+                    suppress_will_open_menu
+                        as unsafe extern "C-unwind" fn(&AnyObject, Sel, &NSMenu, &NSEvent),
+                );
+                method.set_implementation(replacement);
+            }
+        });
+    }
+
+    pub fn reapply(app: &AppHandle) {
+        if let Some(window) = app.get_webview_window("main") {
+            position_traffic_lights(&window);
+        }
     }
 
     pub fn install(app: &App) {
@@ -61,26 +114,29 @@ mod macos_context_menu {
             return;
         };
 
-        let _ = window.with_webview(|webview| unsafe {
-            let native_view = &*webview.inner().cast::<NSView>();
-            if let Some(native_window) = native_view.window() {
-                align_standard_window_buttons(&native_window);
+        position_traffic_lights(&window);
+        patch_context_menu(&window);
+
+        let reapply_window = window.clone();
+        window.on_window_event(move |event| match event {
+            WindowEvent::Resized(_)
+            | WindowEvent::Focused(_)
+            | WindowEvent::ThemeChanged(_)
+            | WindowEvent::ScaleFactorChanged { .. } => {
+                position_traffic_lights(&reapply_window);
             }
+            _ => {}
+        });
 
-            let view = &*webview.inner().cast::<AnyObject>();
-            let cls = view.class();
-
-            // willOpenMenu:withEvent: is called on NSView right before the
-            // context menu is presented.  Clearing the items here makes the
-            // menu empty so nothing native is shown, but the right-click
-            // event has already propagated through the responder chain and
-            // reaches the web view / JS layer.
-            if let Some(method) = cls.instance_method(sel!(willOpenMenu:withEvent:)) {
-                let replacement: Imp = std::mem::transmute(
-                    suppress_will_open_menu
-                        as unsafe extern "C-unwind" fn(&AnyObject, Sel, &NSMenu, &NSEvent),
-                );
-                method.set_implementation(replacement);
+        // 主题 / 钳制尺寸 / 首帧 layout 会把按钮打回默认位，延迟再钉一次。
+        let delayed = app.handle().clone();
+        std::thread::spawn(move || {
+            for delay_ms in [50_u64, 250, 1000] {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                let _ = delayed.run_on_main_thread({
+                    let handle = delayed.clone();
+                    move || reapply(&handle)
+                });
             }
         });
     }
@@ -392,6 +448,9 @@ fn main() {
             commands::giteam_cli::giteam_cloud_status,
             commands::giteam_cli::giteam_cloud_link,
             commands::giteam_cli::giteam_cloud_unlink,
+            commands::giteam_cli::giteam_cloud_forget_key,
+            commands::giteam_cli::giteam_cloud_rename_key,
+            commands::giteam_cli::giteam_cloud_use_key,
             commands::giteam_cli::giteam_cloud_qr_payload,
             commands::control::set_mobile_model_state_from_desktop,
             commands::control::get_mobile_model_state_for_desktop,

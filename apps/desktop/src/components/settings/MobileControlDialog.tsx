@@ -54,7 +54,7 @@ export function MobileControlDialog({
           <div className="flex min-w-0 flex-col gap-1.5">
             <DialogTitle className="text-2xl">Mobile Control API</DialogTitle>
             <DialogDescription className="text-[15px] leading-7">
-              Configure the mobile control service, authentication mode, and QR pairing.
+              配置局域网移动端控制服务、认证与扫码配对。云端 Access Key 请在设置 → 接口 → 云端中维护。
             </DialogDescription>
           </div>
           <div className="flex items-center gap-3">
@@ -148,11 +148,7 @@ export function MobileControlDialog({
             <CardHeader>
               <CardTitle>QR Connection</CardTitle>
               <CardDescription>
-                {!serviceEnabled
-                  ? "Enable the service to generate a QR code for mobile pairing."
-                  : authNoAuth
-                    ? "Scan to connect directly (No Auth mode)."
-                    : "Scan, then connect on mobile with pair code."}
+                局域网二维码含服务地址与配对码，供手机「局域网」模式扫码。
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">

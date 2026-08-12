@@ -201,6 +201,20 @@ export function PlusIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEleme
   );
 }
 
+export function TrashIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M7.5 4.5V3.75C7.5 3.05964 8.05964 2.5 8.75 2.5H11.25C11.9404 2.5 12.5 3.05964 12.5 3.75V4.5M4 4.5H16M14.5 4.5V15.25C14.5 16.2165 13.7165 17 12.75 17H7.25C6.2835 17 5.5 16.2165 5.5 15.25V4.5M8.5 8V13.5M11.5 8V13.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
 export function RefreshIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
   return (
     <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
@@ -286,6 +300,47 @@ export function LinkIcon(props: React.SVGProps<SVGSVGElement>): React.ReactEleme
         strokeLinecap="round"
         strokeLinejoin="round"
         strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+/** 云端服务类型 */
+export function CloudServiceIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M7.5 17.5H16.2C18.85 17.5 21 15.45 21 12.9C21 10.55 19.2 8.6 16.9 8.35C16.15 5.9 13.9 4.2 11.25 4.2C8.15 4.2 5.55 6.4 5.1 9.35C3.25 9.75 1.9 11.4 1.9 13.35C1.9 15.6 3.7 17.5 5.9 17.5H7.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.6"
+      />
+    </svg>
+  );
+}
+
+/** 局域网服务类型 */
+export function LanServiceIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path d="M5 9.2C8.9 5.6 15.1 5.6 19 9.2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <path d="M7.8 12.2C10.4 9.9 13.6 9.9 16.2 12.2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <path d="M10.4 15.2C11.4 14.3 12.6 14.3 13.6 15.2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <circle cx="12" cy="18.2" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** 私有部署服务类型 */
+export function PrivateServiceIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path
+        d="M6 19.5V8.8L12 4.5L18 8.8V19.5H14.2V13.8H9.8V19.5H6Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.6"
       />
     </svg>
   );
