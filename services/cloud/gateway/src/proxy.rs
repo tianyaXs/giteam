@@ -46,6 +46,10 @@ pub fn is_allowed_path(method: &Method, path: &str) -> bool {
     if path_only == "/api/v1/repository/list" && *method == Method::GET {
         return true;
     }
+    // Mobile model catalog over cloud relay (read-only).
+    if path_only == "/api/v1/admin/mobile/model-state" && *method == Method::GET {
+        return true;
+    }
     if path_only.starts_with("/api/v1/agent/") {
         return true;
     }
@@ -95,6 +99,40 @@ pub async fn lookup_workspace_by_access_key(
         return Err(ApiError::Unauthorized("invalid access_key".into()));
     }
     let aki = crate::ids::access_key_id(key);
+    let expected_hash = hash_secret(key);
+
+    // Prefer named keys table (multi-key).
+    let keyed: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT workspace_id, key_hash
+        FROM access_keys
+        WHERE id = $1 AND status = 'active'
+        "#,
+    )
+    .bind(&aki)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    if let Some((workspace_id, key_hash)) = keyed {
+        if key_hash != expected_hash {
+            return Err(ApiError::Unauthorized("invalid access_key".into()));
+        }
+        let ws: Option<WorkspaceRow> = sqlx::query_as(
+            r#"
+            SELECT id, access_key_hash, access_key_id, default_device_id, status
+            FROM workspaces
+            WHERE id = $1 AND status = 'active'
+            "#,
+        )
+        .bind(&workspace_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+        return ws.ok_or_else(|| ApiError::Unauthorized("invalid access_key".into()));
+    }
+
+    // Legacy fallback: single key columns on workspaces.
     let row: Option<WorkspaceRow> = sqlx::query_as(
         r#"
         SELECT id, access_key_hash, access_key_id, default_device_id, status
@@ -108,7 +146,7 @@ pub async fn lookup_workspace_by_access_key(
     .map_err(|e| ApiError::Internal(e.into()))?;
 
     let ws = row.ok_or_else(|| ApiError::Unauthorized("invalid access_key".into()))?;
-    if ws.access_key_hash != hash_secret(key) {
+    if ws.access_key_hash != expected_hash {
         return Err(ApiError::Unauthorized("invalid access_key".into()));
     }
     Ok(ws)

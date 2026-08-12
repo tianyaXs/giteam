@@ -23,6 +23,9 @@ struct LinkBeginRequest {
     /// Join existing workspace when provided.
     #[serde(default)]
     access_key: Option<String>,
+    /// Display name for a newly minted access key (create workspace path).
+    #[serde(default)]
+    key_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +73,12 @@ async fn link_begin(
         let access_key = new_secret("gtm_aks", 24);
         let aki = access_key_id(&access_key);
         let hash = hash_secret(&access_key);
+        let key_name = body
+            .key_name
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "默认".to_string());
         sqlx::query(
             r#"
             INSERT INTO workspaces (id, access_key_hash, access_key_id, status)
@@ -82,11 +91,24 @@ async fn link_begin(
         .execute(&state.pool)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO access_keys (id, workspace_id, name, key_hash, status)
+            VALUES ($1, $2, $3, $4, 'active')
+            "#,
+        )
+        .bind(&aki)
+        .bind(&workspace_id)
+        .bind(&key_name)
+        .bind(&hash)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
         write_audit(
             &state,
             Some(&workspace_id),
             "workspace.created",
-            serde_json::json!({}),
+            serde_json::json!({ "accessKeyId": aki, "keyName": key_name }),
         )
         .await;
         (workspace_id, access_key)

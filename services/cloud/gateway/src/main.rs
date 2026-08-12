@@ -37,6 +37,9 @@ async fn main() -> anyhow::Result<()> {
     sqlx::raw_sql(include_str!("../migrations/001_init.sql"))
         .execute(&pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/002_access_keys.sql"))
+        .execute(&pool)
+        .await?;
 
     let state = AppState::new(config.clone(), pool);
     let mut app = Router::new()

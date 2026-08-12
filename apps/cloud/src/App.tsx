@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import {
   adminFetch,
   getAdminToken,
-  getGatewayUrl,
   setAdminToken,
   setGatewayUrl,
   type AdminDevice,
@@ -44,7 +43,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 function LoginPage() {
   const nav = useNavigate();
-  const [gateway, setGateway] = useState(getGatewayUrl());
   const [token, setToken] = useState(getAdminToken());
   const [error, setError] = useState("");
 
@@ -54,7 +52,8 @@ function LoginPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setGatewayUrl(gateway);
+    // Same-origin only: console is served by the gateway it manages.
+    setGatewayUrl("");
     setAdminToken(token);
     try {
       await adminFetch<Metrics>("/cloud/v1/admin/metrics");
@@ -71,16 +70,7 @@ function LoginPage() {
         className="w-full max-w-md bg-[var(--card)] border border-[var(--border)] rounded-xl p-6 flex flex-col gap-4"
       >
         <h1 className="text-xl font-semibold">Giteam Cloud</h1>
-        <p className="text-sm text-[var(--muted)]">使用 ADMIN_TOKEN 登录 Gateway 管理面。</p>
-        <label className="flex flex-col gap-1 text-sm">
-          Gateway URL
-          <input
-            className="border border-[var(--border)] rounded-md px-3 py-2"
-            value={gateway}
-            placeholder="留空 = 当前站点（同域部署）"
-            onChange={(e) => setGateway(e.target.value)}
-          />
-        </label>
+        <p className="text-sm text-[var(--muted)]">使用 ADMIN_TOKEN 登录本站 Gateway 管理面。</p>
         <label className="flex flex-col gap-1 text-sm">
           Admin Token
           <input
@@ -103,7 +93,6 @@ function LoginPage() {
 }
 
 function SettingsPage() {
-  const [gateway, setGateway] = useState(getGatewayUrl());
   const [token, setToken] = useState(getAdminToken());
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -111,7 +100,7 @@ function SettingsPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaved(false);
-    setGatewayUrl(gateway);
+    setGatewayUrl("");
     setAdminToken(token);
     try {
       await adminFetch<Metrics>("/cloud/v1/admin/metrics");
@@ -134,15 +123,6 @@ function SettingsPage() {
         onSubmit={onSubmit}
         className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-6 flex flex-col gap-4"
       >
-        <label className="flex flex-col gap-1 text-sm">
-          Gateway URL
-          <input
-            className="border border-[var(--border)] rounded-md px-3 py-2"
-            value={gateway}
-            placeholder="留空 = 当前站点（同域部署）"
-            onChange={(e) => setGateway(e.target.value)}
-          />
-        </label>
         <label className="flex flex-col gap-1 text-sm">
           Admin Token
           <input
