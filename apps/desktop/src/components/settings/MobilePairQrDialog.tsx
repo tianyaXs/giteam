@@ -157,7 +157,6 @@ export function MobilePairQrDialog({
       margin: 2,
       width: 320,
       errorCorrectionLevel: "M",
-      color: { dark: "#0a0a0a", light: "#ffffff" },
     })
       .then((url) => {
         if (!cancelled) setCloudQrUrl(url);
