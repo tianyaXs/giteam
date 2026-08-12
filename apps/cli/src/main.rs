@@ -134,14 +134,18 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum CloudCommands {
-    #[command(about = "Link this machine to the cloud gateway")]
+    #[command(about = "Link this machine to the cloud gateway (reuses saved access key by default)")]
     Link {
         #[arg(long, help = "Cloud gateway base URL")]
         url: Option<String>,
-        #[arg(long = "access-key", help = "Join an existing workspace")]
+        #[arg(long = "access-key", help = "Join an existing workspace / use a specific key")]
         access_key: Option<String>,
         #[arg(long, help = "Device display name")]
         name: Option<String>,
+        #[arg(long = "key-name", help = "Name for a newly minted access key")]
+        key_name: Option<String>,
+        #[arg(long = "new", help = "Force mint a new workspace access key (do not reuse local key)")]
+        force_new: bool,
         #[arg(long)]
         json: bool,
     },
@@ -150,13 +154,25 @@ enum CloudCommands {
         #[arg(long)]
         json: bool,
     },
-    #[command(about = "Disable cloud link and stop tunnel")]
+    #[command(about = "Disable cloud link and stop tunnel (keeps saved access keys)")]
     Unlink {
         #[arg(long)]
         json: bool,
     },
     #[command(about = "Print mobile QR payload JSON for cloud pairing")]
     Qr {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "List locally saved cloud access keys")]
+    Keys {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Remove a key from the local vault (does not revoke on server)")]
+    ForgetKey {
+        #[arg(help = "access key id (aki_…) or full gtm_aks_… secret")]
+        key: String,
         #[arg(long)]
         json: bool,
     },
@@ -2889,9 +2905,21 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
             url,
             access_key,
             name,
+            key_name,
+            force_new,
             json,
         } => {
+            let existing = cloud::get_cloud_link_settings();
             let base = url
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    let saved = existing.cloud_base_url.trim().to_string();
+                    if saved.is_empty() {
+                        None
+                    } else {
+                        Some(saved)
+                    }
+                })
                 .unwrap_or_else(|| cloud::DEFAULT_CLOUD_BASE_URL.to_string())
                 .trim()
                 .trim_end_matches('/')
@@ -2902,11 +2930,18 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
                     .unwrap_or_else(|_| "giteam-cli".to_string())
             });
             let version = env!("CARGO_PKG_VERSION").to_string();
-            let settings = cloud::link_device(
+            if force_new && key_name.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                return Err("creating a new key requires --key-name (e.g. --key-name phone)".into());
+            }
+            let settings = cloud::link_device_with_opts(
                 &base,
                 &device_name,
                 &version,
                 access_key.as_deref(),
+                cloud::LinkDeviceOptions {
+                    force_new,
+                    key_name,
+                },
             )?;
             let port = control::get_control_server_settings()?.port;
             let _ = cloud::start_cloud_tunnel_background(port);
@@ -2917,6 +2952,7 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
                 println!("  cloud_base_url: {}", settings.cloud_base_url);
                 println!("  workspace_id:   {}", settings.workspace_id);
                 println!("  device_id:      {}", settings.device_id);
+                println!("  key_name:       {}", settings.key_name);
                 println!("  access_key:     {}", settings.access_key);
                 println!("  tunnel:         {}", if cloud::tunnel_running() { "starting/running" } else { "not running (start control service)" });
                 println!();
@@ -2985,6 +3021,43 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
                 "accessKey": settings.access_key,
             });
             println!("{}", serde_json::to_string_pretty(&qr).unwrap_or_default());
+            Ok(())
+        }
+        CloudCommands::Keys { json } => {
+            let settings = cloud::get_cloud_link_settings();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&settings.access_keys).unwrap_or_default()
+                );
+            } else if settings.access_keys.is_empty() {
+                println!("(no saved access keys)");
+            } else {
+                for k in &settings.access_keys {
+                    let mark = if k.access_key == settings.access_key {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!(
+                        "{} {}  {}  {}",
+                        mark,
+                        k.name,
+                        k.id,
+                        k.access_key
+                    );
+                }
+                println!("(* = active)");
+            }
+            Ok(())
+        }
+        CloudCommands::ForgetKey { key, json } => {
+            let settings = cloud::forget_access_key_local(&key)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&settings).unwrap_or_default());
+            } else {
+                println!("forgot local key record: {key}");
+            }
             Ok(())
         }
     }

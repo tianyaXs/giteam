@@ -5,9 +5,11 @@ mod http;
 mod tunnel;
 
 pub use config::{
-    get_cloud_link_settings, set_cloud_link_settings, CloudLinkSettings, DEFAULT_CLOUD_BASE_URL,
+    forget_access_key_local, get_cloud_link_settings, remember_access_key, set_cloud_link_settings,
+    CloudAccessKeyRecord, CloudLinkSettings, DEFAULT_CLOUD_BASE_URL,
 };
 pub use http::{
-    link_begin, link_complete, link_device, LinkBeginResponse, LinkCompleteResponse,
+    link_begin, link_complete, link_device, link_device_with_opts, LinkBeginResponse,
+    LinkCompleteResponse, LinkDeviceOptions,
 };
 pub use tunnel::{start_cloud_tunnel_background, stop_cloud_tunnel, tunnel_running};
