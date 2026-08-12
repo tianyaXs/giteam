@@ -577,12 +577,14 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
 
 function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSummary {
   const updatedAt = summary.updatedAtMs > 0 ? summary.updatedAtMs : Date.now();
+  const parentId = String(summary.parentSessionId || "").trim();
   return {
     id: summary.sessionId,
     // 标题来自后端派生的首条用户消息摘要；空会话回退 id 前缀。
     title: String(summary.title || "").trim() || `Session ${summary.sessionId.slice(0, 8)}`,
     createdAt: updatedAt,
-    updatedAt
+    updatedAt,
+    ...(parentId ? { parentId } : {})
   };
 }
 
