@@ -3123,6 +3123,9 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
                 cloud::LinkDeviceOptions {
                     force_new,
                     key_name,
+                    // CLI 不传 tunnel_owner：保留已存值；首次 link 为空 → 视为 cli，
+                    // 由本 CLI 进程负责 tunnel（control.rs 判 owner != "desktop" 才拉）。
+                    tunnel_owner: None,
                 },
             )?;
             let port = control::get_control_server_settings()?.port;
