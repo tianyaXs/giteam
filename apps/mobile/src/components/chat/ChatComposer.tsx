@@ -31,6 +31,7 @@ import { toText } from '../../lib/text';
 import { ProviderIcon } from '../ProviderIcon';
 import { IdleReasoningPill } from './IdleReasoningPill';
 import { ComposerSendDragHandle } from './ComposerSendDragHandle';
+import { ComposerSendGlyph } from './ComposerSendGlyph';
 import { ModelPickerPopover } from './ModelPickerPopover';
 import type { MobileThinkingLevel } from './thinkingLevels';
 
@@ -341,18 +342,35 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   const modelIconColor = colors.isDark ? '#1A1A1F' : '#FFFFFF';
   // 展开态：干净中性底 + 细边框层次
   const dockBg = colors.isDark ? '#2A2A2E' : '#FFFFFF';
-  const sendBg = canAbortNow
-    ? colors.text
-    : canSendNow
-      ? (colors.isDark ? '#FFFFFF' : '#1A1A1F')
-      : colors.isDark
-        ? 'rgba(255,255,255,0.12)'
-        : '#D0D0D6';
-  const sendIcon = canAbortNow
-    ? colors.background
-    : canSendNow
-      ? (colors.isDark ? '#1A1A1F' : '#FFFFFF')
-      : colors.muted;
+  // 对齐桌面 contrast 圆钮（截图）：实心深色圆 + 白色图标，轻阴影，无粗描边
+  const sendActiveFill = colors.isDark ? '#F4F4F5' : '#1A1A1F';
+  const sendActiveIcon = colors.isDark ? '#1A1A1F' : '#FFFFFF';
+  const sendBg = canAbortNow || canSendNow
+    ? sendActiveFill
+    : colors.isDark
+      ? 'rgba(255,255,255,0.12)'
+      : '#E8E8ED';
+  const sendIcon = canAbortNow || canSendNow ? sendActiveIcon : colors.muted;
+  const sendChromeStyle = useMemo(
+    () =>
+      canAbortNow || canSendNow
+        ? {
+            backgroundColor: sendBg,
+            borderWidth: 0,
+            shadowColor: '#000',
+            shadowOpacity: colors.isDark ? 0.35 : 0.12,
+            shadowRadius: 2,
+            shadowOffset: { width: 0, height: 1 },
+            elevation: 2
+          }
+        : {
+            backgroundColor: sendBg,
+            borderWidth: 0,
+            shadowOpacity: 0,
+            elevation: 0
+          },
+    [canAbortNow, canSendNow, colors.isDark, sendBg]
+  );
 
   const focusInput = useCallback(() => {
     inputRef.current?.focus();
@@ -976,13 +994,19 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       enabled={showIdleOrb}
                       backgroundColor={sendBg}
                       iconColor={sendIcon}
+                      chromeStyle={sendChromeStyle}
                       swipeX={swipeX}
                       rowWidth={idleRowW}
                       onCommitIdle={commitSwipeToIdle}
                     />
                   ) : (
                     <Pressable
-                      style={[sendActive ? styles.actionBtnSend : styles.actionBtnDisabled, { backgroundColor: sendBg }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={canAbortNow ? '停止生成' : '发送'}
+                      style={[
+                        sendActive ? styles.actionBtnSend : styles.actionBtnDisabled,
+                        sendChromeStyle
+                      ]}
                       onPress={() => {
                         if (canAbortNow) {
                           onAbort();
@@ -995,7 +1019,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       disabled={!sendActive}
                     >
                       <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                        <Feather name={canAbortNow ? 'square' : 'arrow-up'} size={canAbortNow ? 14 : 18} color={sendIcon} />
+                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={20} />
                       </RNAnimated.View>
                     </Pressable>
                   )}

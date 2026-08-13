@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { Feather } from '@expo/vector-icons';
+import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -11,14 +10,16 @@ import Animated, {
   withSpring,
   withTiming
 } from 'react-native-reanimated';
+import { ComposerSendGlyph } from './ComposerSendGlyph';
 
-/** 与 styles.actionBtnSend / actionBtnDisabled 同尺寸 */
+/** 与桌面 size-8 圆钮同尺寸 */
 const BTN_SIZE = 32;
 
 type ComposerSendDragHandleProps = {
   enabled: boolean;
   backgroundColor: string;
   iconColor: string;
+  chromeStyle?: StyleProp<ViewStyle>;
   /** 与输入框左滑共用的位移 */
   swipeX: SharedValue<number>;
   rowWidth: SharedValue<number>;
@@ -29,7 +30,7 @@ type ComposerSendDragHandleProps = {
  * 空输入时的普通发送钮外观；向左拖动可跟手进入待机。
  */
 export const ComposerSendDragHandle = React.memo(function ComposerSendDragHandle(props: ComposerSendDragHandleProps) {
-  const { enabled, backgroundColor, iconColor, swipeX, rowWidth, onCommitIdle } = props;
+  const { enabled, backgroundColor, iconColor, chromeStyle, swipeX, rowWidth, onCommitIdle } = props;
   const press = useSharedValue(0);
 
   const gesture = useMemo(
@@ -91,10 +92,10 @@ export const ComposerSendDragHandle = React.memo(function ComposerSendDragHandle
       <Animated.View
         accessibilityRole="button"
         accessibilityLabel="拖动以回到待机输入"
-        style={[styles.btn, shellStyle, { backgroundColor }]}
+        style={[styles.btn, { backgroundColor }, chromeStyle, shellStyle]}
       >
         <View pointerEvents="none">
-          <Feather name="arrow-up" size={18} color={iconColor} />
+          <ComposerSendGlyph busy={false} color={iconColor} size={20} />
         </View>
       </Animated.View>
     </GestureDetector>

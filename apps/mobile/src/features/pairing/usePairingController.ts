@@ -259,13 +259,47 @@ export function usePairingController(params: UsePairingControllerParams) {
           `cloud redeem url=${cloudBaseUrl} key=yes device=${preferredDeviceId || 'auto'}`
         );
         let redeemed;
-        try {
-          redeemed = await redeemCloudAccess({
+        const redeemOnce = async (deviceId?: string) =>
+          redeemCloudAccess({
             cloudBaseUrl,
             accessKey: key,
-            deviceId: preferredDeviceId || undefined,
+            deviceId: deviceId || undefined,
             clientName: defaultMobileClientName()
           });
+
+        const redeemWithRetry = async (deviceId?: string) => {
+          let lastErr: unknown;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            try {
+              const result = await redeemOnce(deviceId);
+              const online = (result.devices || []).filter((d) => d.online);
+              if (online.length > 0) return result;
+              const offlineErr = new Error(
+                '电脑端云端中继未连接：请在桌面端设置 → 服务确认「中继已连接」后再试'
+              ) as CloudRedeemError;
+              offlineErr.code = 'no_device_online';
+              offlineErr.devices = result.devices;
+              lastErr = offlineErr;
+            } catch (err) {
+              const e = err as CloudRedeemError;
+              lastErr = err;
+              const code = toText(e.code);
+              // 新建 Key 后隧道握手可能慢半拍，短暂重试。
+              if (code !== 'no_device_online' && code !== 'device_offline') {
+                throw err;
+              }
+            }
+            if (attempt < 4) {
+              pushConnLog(`cloud redeem wait relay attempt=${attempt + 1}`, 'info');
+              setStatus('等待电脑端中继上线…');
+              await new Promise((r) => setTimeout(r, 700 + attempt * 300));
+            }
+          }
+          throw lastErr;
+        };
+
+        try {
+          redeemed = await redeemWithRetry(preferredDeviceId || undefined);
         } catch (firstErr) {
           // 本地/二维码里的 deviceId 可能属于旧 workspace；清掉后让网关自动选在线设备。
           const first = firstErr as CloudRedeemError;
@@ -279,11 +313,7 @@ export function usePairingController(params: UsePairingControllerParams) {
               'info'
             );
             setDeviceId('');
-            redeemed = await redeemCloudAccess({
-              cloudBaseUrl,
-              accessKey: key,
-              clientName: defaultMobileClientName()
-            });
+            redeemed = await redeemWithRetry(undefined);
           } else {
             throw firstErr;
           }

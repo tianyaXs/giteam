@@ -276,7 +276,6 @@ export const composerStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#10A37F",
     marginLeft: 2,
   },
 
