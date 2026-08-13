@@ -2,7 +2,6 @@ use super::pi_agent::{
     default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
     AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
 };
-use futures::executor::block_on;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +15,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// pi agent 调用必须在 tokio runtime 上执行。
+///
+/// `web_search`/`web_fetch` 等网络工具用 async `reqwest`（rustls），依赖 tokio reactor；
+/// control server 的同步 HTTP 线程本身无 tokio 上下文，若用 `futures::executor::block_on`
+/// 跑 pi，turn 进入 reqwest 时会 panic（连接 EOF + run 状态未清理 + session 锁死）。
+/// 这里用进程级单例 tokio runtime 承载所有 pi 调用，与桌面 Tauri 路径行为对齐。
+/// `handle_connection` 是独立 `thread::spawn`（非 tokio 线程），在其中调 `block_on` 安全。
+static PI_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+fn pi_runtime() -> &'static tokio::runtime::Runtime {
+    PI_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("failed to build pi tokio runtime")
+    })
+}
+
+/// 在 pi 专属 tokio runtime 上同步驱动 future（替代原 `futures::executor::block_on`）。
+fn pi_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    pi_runtime().block_on(future)
+}
 
 const DEFAULT_CONTROL_SERVER_HOST: &str = "0.0.0.0";
 const DEFAULT_CONTROL_SERVER_PORT: u16 = 4100;
@@ -1285,7 +1307,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             session_kind: "primary".to_string(),
         };
         ensure_stable_process_cwd();
-        return match block_on(PiAgentService::global().create_session(config)) {
+        return match pi_block_on(PiAgentService::global().create_session(config)) {
             Ok(summary) => serde_json::to_value(summary)
                 .map(|value| (201, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1301,7 +1323,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            return match block_on(PiAgentService::global().session_summary(session_id)) {
+            return match pi_block_on(PiAgentService::global().session_summary(session_id)) {
                 Ok(session) => serde_json::to_value(session)
                     .map(|value| (200, value))
                     .unwrap_or_else(|error| {
@@ -1310,7 +1332,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 Err(error) => pi_error_response(error),
             };
         }
-        return match block_on(PiAgentService::global().list_sessions()) {
+        return match pi_block_on(PiAgentService::global().list_sessions()) {
             Ok(sessions) => serde_json::to_value(sessions)
                 .map(|value| (200, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1364,7 +1386,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if session_id.is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().messages(session_id)) {
+        return match pi_block_on(PiAgentService::global().messages(session_id)) {
             Ok(messages) => serde_json::to_value(messages)
                 .map(|value| (200, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1399,7 +1421,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 events.push(event);
             }
         });
-        let result = block_on(PiAgentService::global().prompt(
+        let result = pi_block_on(PiAgentService::global().prompt(
             request.session_id.as_str(),
             run_id.as_str(),
             request.prompt,
@@ -1678,7 +1700,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "sessionId, provider and modelId are required" }),
             );
         }
-        return match block_on(PiAgentService::global().set_model(
+        return match pi_block_on(PiAgentService::global().set_model(
             request.session_id.as_str(),
             request.provider.as_str(),
             request.model_id.as_str(),
@@ -1705,7 +1727,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "sessionId and level are required" }),
             );
         }
-        return match block_on(PiAgentService::global().set_thinking_level(
+        return match pi_block_on(PiAgentService::global().set_thinking_level(
             request.session_id.as_str(),
             request.level.as_str(),
         )) {
@@ -1728,7 +1750,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if request.session_id.trim().is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().set_session_options(
+        return match pi_block_on(PiAgentService::global().set_session_options(
             request.session_id.as_str(),
             request.enabled_tools,
             request.append_system_prompt,
@@ -1789,7 +1811,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if request.session_id.trim().is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().set_auto_approve(
+        return match pi_block_on(PiAgentService::global().set_auto_approve(
             request.session_id.as_str(),
             request.enabled,
         )) {
