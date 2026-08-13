@@ -42,6 +42,8 @@ type UsePromptActionsParams = {
   setPrompt: (value: string | ((prev: string) => string)) => void;
   /** 发送成功路径：立刻清空并抑制 IME 回填 */
   clearPromptAfterSend: (sentText?: string) => void;
+  /** 中断 / 发送失败时立刻放开停止门闩 */
+  releaseTurnAwaiting: () => void;
   setSlashOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   setImageAttachments: (value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => void;
 
@@ -49,6 +51,7 @@ type UsePromptActionsParams = {
   setActiveSession: (sessionId: string) => void;
   startStream: (targetSessionId: string, runId?: string) => void;
   stopStream: () => void;
+  setStreaming: (value: boolean | ((prev: boolean) => boolean)) => void;
   syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number; tailOnly?: boolean }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
   refreshSessionsFromServer: (targetRepoPath?: string) => Promise<any>;
@@ -94,10 +97,12 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setToken,
     startStream,
     stopStream,
+    setStreaming,
     syncSessionMessages,
     syncSessionStatus,
     token,
-    upsertOptimisticUserMessage
+    upsertOptimisticUserMessage,
+    releaseTurnAwaiting
   } = params;
 
   const sendInFlightRef = useRef(false);
@@ -130,10 +135,17 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('有图片处理失败，请删除后重试');
       return;
     }
-    // 校验通过后立刻清空输入，避免异步建会话/中文 IME 回填导致「发出去了字还在」
+    // 校验通过后立刻闩门并清空输入，避免异步建会话 / IME 回填导致字还在或壳层闪待机。
     clearPromptAfterSend(payloadPrompt);
     sendInFlightRef.current = true;
     setBusy(true);
+    // 立刻视为本轮在飞：覆盖新建会话 / SSE 首包前的空隙，避免停止钮闪回可发送。
+    setStreaming(true);
+    // 已有会话：同步标 busy，让停止钮与 sessionWorking 同帧生效（新会话等 create 后再标）。
+    const existingSid = toText(sessionIdRef.current).trim();
+    if (existingSid) {
+      setSessionStatusMap((prev) => ({ ...prev, [existingSid]: { type: 'busy' } }));
+    }
     if (images.length > 0) {
       setImageAttachments((prev) => prev.map((img) => ({ ...img, status: 'uploading', statusText: '发送中' })));
     }
@@ -290,9 +302,14 @@ export function usePromptActions(params: UsePromptActionsParams) {
           markMessageSendPerf(perf, 'send.sync_tail.error', { reason: String(syncError) });
         })
         .finally(() => {
-          delete sessionActiveRunIdRef.current[targetSessionId];
           delete pendingPromptSessionRef.current[targetSessionId];
-          setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
+          // activeRun / idle 由 SSE finalizeRun 收尾；此处抢清会在尾同步窗口把停止钮闪成可发送。
+          // 兜底：若 SSE 长时间未 finalize，再释放门闩。
+          setTimeout(() => {
+            if (sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+            delete sessionActiveRunIdRef.current[targetSessionId];
+            setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
+          }, 12_000);
           finishMessageSendPerf(perf, 'success', {
             userVisible: perf.userVisibleMarked ? 1 : 0,
             assistantVisible: perf.assistantVisibleMarked ? 1 : 0
@@ -354,6 +371,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
         setStatus(`发送失败: ${msg}`);
       }
       abortMessageSendPerf(perf, msg);
+      releaseTurnAwaiting();
+      setStreaming(false);
     } finally {
       sendInFlightRef.current = false;
       setBusy(false);
@@ -375,6 +394,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     prompt,
     pushConnLog,
     refreshSessionsFromServer,
+    releaseTurnAwaiting,
     repoPath,
     sentAttachmentCacheRef,
     serverUrl,
@@ -388,6 +408,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setSessionStatusMap,
     setSlashOpen,
     setStatus,
+    setStreaming,
     setToken,
     startStream,
     syncSessionMessages,
@@ -403,19 +424,20 @@ export function usePromptActions(params: UsePromptActionsParams) {
     }
     if (abortInFlightRef.current) return;
     abortInFlightRef.current = true;
+    const activeRunId = toText(sessionActiveRunIdRef.current[sid]).trim();
     setBusy(true);
     stopStream();
     delete pendingPromptSessionRef.current[sid];
+    delete sessionActiveRunIdRef.current[sid];
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
+    releaseTurnAwaiting();
     try {
-      const activeRunId = toText(sessionActiveRunIdRef.current[sid]).trim();
       if (!activeRunId) {
         setStatus('当前会话没有进行中的运行');
         return;
       }
       pushConnLog(`POST agent.abort sid=${sid} run=${activeRunId}`);
       await createMobileAgentClient({ baseUrl: serverUrl, token }).abort(activeRunId);
-      delete sessionActiveRunIdRef.current[sid];
       setStatus('已请求中断');
       const tailLimit = Math.max(
         initialSessionLimit,
@@ -439,6 +461,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     initialSessionLimit,
     pendingPromptSessionRef,
     pushConnLog,
+    releaseTurnAwaiting,
     serverUrl,
     sessionActiveRunIdRef,
     sessionIdRef,

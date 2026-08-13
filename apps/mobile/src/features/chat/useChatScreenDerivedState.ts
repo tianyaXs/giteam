@@ -48,14 +48,15 @@ export function useChatScreenDerivedState(params: {
   const localSending = localPendingCount > 0;
 
   const remoteSessionWorking = useMemo(() => {
-    if (latestTurnMeta.hasError) return false;
-    // busy/retry 优先：勿因「已有 assistant + streaming 被提前清掉」误判 idle（输入框会闪回待机特效）。
+    // busy/retry / streaming 优先：工具错误气泡不应把停止钮打成可发送。
     if (currentSessionStatus.type === 'busy' || currentSessionStatus.type === 'retry') return true;
     if (streaming) return true;
+    if (latestTurnMeta.hasError) return false;
     return false;
   }, [currentSessionStatus, latestTurnMeta.hasError, streaming]);
 
   const sessionWorking = useMemo(() => {
+    // localSending 覆盖乐观气泡尚未标 busy/streaming 的空隙
     if (localSending) return true;
     return remoteSessionWorking;
   }, [localSending, remoteSessionWorking]);

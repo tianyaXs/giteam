@@ -56,7 +56,13 @@ export function resolveReachableCloudBaseUrl(candidate: string, fallback = getDe
 }
 
 export async function getCloudStatus(): Promise<CloudLinkStatus> {
-  return invoke<CloudLinkStatus>("giteam_cloud_status");
+  const status = await invoke<CloudLinkStatus>("giteam_cloud_status");
+  // Rust defaults / older installs may persist loopback; remap for release builds
+  // where VITE_DEFAULT_CLOUD_BASE_URL points at the public gateway.
+  return {
+    ...status,
+    cloudBaseUrl: resolveReachableCloudBaseUrl(status.cloudBaseUrl),
+  };
 }
 
 export async function linkCloud(args?: {
@@ -66,7 +72,7 @@ export async function linkCloud(args?: {
   forceNew?: boolean;
   keyName?: string;
 }): Promise<CloudLinkStatus> {
-  const url = (args?.url?.trim() || getDefaultCloudBaseUrl()).replace(/\/$/, "");
+  const url = resolveReachableCloudBaseUrl(args?.url?.trim() || getDefaultCloudBaseUrl());
   return invoke<CloudLinkStatus>("giteam_cloud_link", {
     url,
     accessKey: args?.accessKey ?? null,
@@ -88,8 +94,13 @@ export async function renameCloudKey(keyId: string, name: string): Promise<Cloud
   return invoke<CloudLinkStatus>("giteam_cloud_rename_key", { keyId, name });
 }
 
-export async function useCloudKey(accessKey: string): Promise<CloudLinkStatus> {
-  return invoke<CloudLinkStatus>("giteam_cloud_use_key", { accessKey });
+export async function useCloudKey(accessKey: string, cloudBaseUrl?: string): Promise<CloudLinkStatus> {
+  // Reuse link path so loopback URLs on old key records are remapped.
+  return linkCloud({
+    url: resolveReachableCloudBaseUrl(cloudBaseUrl || ""),
+    accessKey,
+    forceNew: false,
+  });
 }
 
 export async function getCloudQrPayload(): Promise<CloudQrPayload> {

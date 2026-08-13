@@ -1,7 +1,7 @@
 import React from 'react';
 import Svg, { Path, Rect } from 'react-native-svg';
 
-/** 对齐桌面 AgentComposer SendIcon：细描边上箭头 / 实心圆角停止方块。 */
+/** 对齐桌面 AgentComposer SendIcon：细描边上箭头 / 实心圆角停止方块。统一 20 视口，避免 Send/Stop 切换「一大一小」。 */
 export function ComposerSendGlyph(props: {
   busy: boolean;
   color: string;
@@ -9,10 +9,10 @@ export function ComposerSendGlyph(props: {
 }) {
   const size = props.size ?? 20;
   if (props.busy) {
-    // 圆钮内停止块放大：约 15/24，对比感强于旧版 12/24，并略大于桌面 13 以适配触控圆钮。
+    // 固定 14×14 方块（相对 24 viewBox），Send/Stop 外框同 size 时视觉重量接近。
     return (
       <Svg width={size} height={size} viewBox="0 0 24 24" accessibilityElementsHidden>
-        <Rect x={4.5} y={4.5} width={15} height={15} rx={3.25} fill={props.color} />
+        <Rect x={5} y={5} width={14} height={14} rx={3} fill={props.color} />
       </Svg>
     );
   }

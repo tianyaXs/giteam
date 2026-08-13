@@ -119,7 +119,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       storeResetAgentStreamStores(d.getAgentStreamStores());
       d.setStreamTodoCard(null);
     }
-    d.setStreaming(false);
+    // 已知 run 在飞：保持 streaming，勿先 false 再 true（会抖成可发送 / 待机粒子）。
+    d.setStreaming(true);
 
     d.sessionActiveRunIdRef.current[targetSessionId] = runId;
     const streamRunId = d.streamRunIdRef.current;
@@ -258,7 +259,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       streamClosed = true;
       d.sessionStatusEpochRef.current += 1;
       d.streamSessionRef.current = '';
-      delete d.sessionActiveRunIdRef.current[sid];
+      // activeRun 留到 sync finally 再清：避免中途 session.status=idle 把 streaming 打掉导致停止钮闪一下。
       if (d.streamRef.current) {
         d.streamRef.current.close();
         d.streamRef.current = null;
@@ -279,6 +280,9 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       d.setStatus(failedError ? `运行失败: ${failedError}` : '本轮回复完成');
       void d.syncSessionMessages(sid, { tailOnly: true }).finally(() => {
         if (d.streamRunIdRef.current !== streamRunId || d.sessionIdRef.current !== sid) return;
+        if (d.sessionActiveRunIdRef.current[sid] === runId) {
+          delete d.sessionActiveRunIdRef.current[sid];
+        }
         d.setStreaming(false);
         d.setSessionStatusMap((prev: Record<string, any>) => ({
           ...prev,
@@ -417,6 +421,10 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           return;
         case 'session.status': {
           const legacy = agentStatusToLegacy(event.status);
+          // 本 run 未结束时忽略 idle：工具间隙 / 审批前后 gateway 可能短暂报 idle，会抖掉停止钮。
+          if (legacy.type === 'idle' && d.sessionActiveRunIdRef.current[sid]) {
+            return;
+          }
           d.setSessionStatusMap((prev: Record<string, any>) => ({ ...prev, [sid]: legacy }));
           // busy/retry 拉高 streaming；idle 仅在本 run 已结束后才清，避免过程中抖回待机。
           if (legacy.type === 'busy' || legacy.type === 'retry') {
@@ -465,7 +473,10 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
 
     const onError = (error: unknown) => {
       if (!isCurrentStream()) return;
-      d.setStreaming(false);
+      // run 仍在飞时保持 streaming：瞬时 SSE 抖动不应放行发送钮。
+      if (!d.sessionActiveRunIdRef.current[targetSessionId]) {
+        d.setStreaming(false);
+      }
       const detail = (() => {
         try {
           const raw = (error as any)?.data;

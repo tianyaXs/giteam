@@ -74,12 +74,47 @@ export function useComposerUiController(props: {
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
   const imageQueueBusy = imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading');
   const imageQueueFailed = imageAttachments.some((img) => img.status === 'failed');
-  // 发送按钮可点态只看「有没有可发内容」；勿绑全局 busy。
-  // busy 会在建会话/发请求短暂为 true，绑上会导致输入后按钮仍是灰的（偶发）。
-  // 中止同理：会话在跑且输入为空时显示停止，busy 只在 onAbort 内做互斥。
-  const composerWillAbort = sessionWorking && !hasSendAction;
-  const canSendNow = hasSendAction && !imageQueueBusy && !imageQueueFailed;
-  const canAbortNow = composerWillAbort;
+  /**
+   * 发送门闩：清空输入的同一帧就置位，覆盖「prompt 已空、sessionWorking 尚未 true」的空隙。
+   * ChatGPT/Claude：发送后按钮保持 Stop，直至本轮真正结束；不因短窗 streaming 抖动闪回可发送。
+   */
+  const [turnAwaiting, setTurnAwaiting] = useState(false);
+  /** 本轮是否已经见过 sessionWorking；未见过前用长 hold（新建会话 / 建连可能 >1s）。 */
+  const sawWorkingThisTurnRef = useRef(false);
+
+  useEffect(() => {
+    if (!sessionWorking) return;
+    sawWorkingThisTurnRef.current = true;
+    setTurnAwaiting(true);
+  }, [sessionWorking]);
+
+  useEffect(() => {
+    if (sessionWorking) return;
+    if (!turnAwaiting) return;
+    // 发送失败回填输入：本轮从未进入 working，立刻放行，勿卡 30s。
+    if (hasSendAction && !sawWorkingThisTurnRef.current) {
+      setTurnAwaiting(false);
+      return;
+    }
+    // 尚未进入 working：拉长 hold，避免 createSession / 首包前误放行成可发送。
+    // 已进入 working 再变 false：短 debounce，吃掉 SSE 重连 / status 抖一下。
+    const holdMs = sawWorkingThisTurnRef.current ? 480 : 30_000;
+    const timer = setTimeout(() => {
+      setTurnAwaiting(false);
+      sawWorkingThisTurnRef.current = false;
+    }, holdMs);
+    return () => clearTimeout(timer);
+  }, [hasSendAction, sessionWorking, turnAwaiting]);
+
+  const releaseTurnAwaiting = useCallback(() => {
+    sawWorkingThisTurnRef.current = false;
+    setTurnAwaiting(false);
+  }, []);
+
+  // 等待中永远优先 Stop（即使草稿未空）；结束后才允许发送。
+  const turnInFlight = sessionWorking || turnAwaiting;
+  const canAbortNow = turnInFlight;
+  const canSendNow = hasSendAction && !turnInFlight && !imageQueueBusy && !imageQueueFailed;
 
   const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
   const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || 1) / 4)));
@@ -106,6 +141,9 @@ export function useComposerUiController(props: {
   const clearPromptAfterSend = useCallback((sentText?: string) => {
     const cleared = toText(sentText).trim();
     lastClearedPromptRef.current = cleared;
+    // 先闩门再清空：避免清空后一帧落入「空输入 + 非 working」→ 待机粒子闪现。
+    sawWorkingThisTurnRef.current = false;
+    setTurnAwaiting(true);
     // 仅挡住 IME 回填同一段；合法重输不同内容会立刻放行
     suppressPromptChangeUntilRef.current = Date.now() + 320;
     setPrompt('');
@@ -194,6 +232,7 @@ export function useComposerUiController(props: {
     if (hasSendAction) setAttachmentMenuOpen(false);
   }, [hasSendAction]);
 
+  // 仅附件菜单切换时做图标过渡；勿绑 hasSendAction，否则清空/Stop 切换会缩放闪成「两套按钮」。
   useEffect(() => {
     actionIconAnim.setValue(0.7);
     Animated.timing(actionIconAnim, {
@@ -202,7 +241,7 @@ export function useComposerUiController(props: {
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true
     }).start();
-  }, [actionIconAnim, attachmentMenuOpen, hasSendAction]);
+  }, [actionIconAnim, attachmentMenuOpen]);
 
   useEffect(() => {
     Animated.timing(attachmentToggleAnim, {
@@ -255,6 +294,7 @@ export function useComposerUiController(props: {
     recentScrollerHeight,
     canSendNow,
     canAbortNow,
+    releaseTurnAwaiting,
     handlePromptChange,
     clearPromptAfterSend,
     handleSlashSelect,

@@ -235,8 +235,6 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   const [scrubbing, setScrubbing] = useState(false);
   /** 待机行总宽（React state：粒子场 / 布局；shared：宽度动画） */
   const [idleRowWidth, setIdleRowWidth] = useState(0);
-  /** 生成刚结束短暂保持输入 dock，避免闪回待机粒子 */
-  const [abortSettleOpen, setAbortSettleOpen] = useState(false);
   const lastLayoutHRef = useRef(0);
   const idleRowW = useSharedValue(0);
   /** 0=待机比例，1=模型区展开 */
@@ -256,8 +254,16 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   /** 用户在有内容会话上手动左滑进入待机；避免 hydration 又拉回输入框 */
   const userChoseIdleRef = useRef(false);
 
-  const idle = !composerOpen && !hasPrompt && !canAbortNow && !abortSettleOpen;
-  const keepDockOpen = hasPrompt || canAbortNow || abortSettleOpen;
+  /**
+   * Shell 与按钮态解耦（对齐 ChatGPT/Claude）：
+   * - standby：待机粒子双钮
+   * - docked：输入条（可为空、可发送、可停止）
+   * 发送/等待/结束都保持 docked；仅用户左滑才回 standby。
+   */
+  const shellDocked =
+    composerOpen || hasPrompt || canAbortNow || (hasConversationContent && !userChoseIdleRef.current);
+  const idle = !shellDocked;
+  const keepDockOpen = shellDocked;
   const selectedOption = modelOptions.find((m) => m.id === selectedModel.trim());
   const providerId = toText(selectedOption?.provider || selectedModel).trim() || 'synthetic';
   const modelDisplayLabel = shortModelLabel(toText(inputModelLabel || selectedOption?.label || selectedModel));
@@ -421,7 +427,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
 
   const closeInput = useCallback(
     (mode: 'animate' | 'snap' = 'animate', opts?: { force?: boolean }) => {
-      // 等待回复（停止按钮态）：即使键盘收起 / 点空白也不回到待机胶囊
+      // 等待回复：blur / 收键盘不得回待机（壳层与停止钮同闩）。
       if (canAbortNow) return;
       if (toText(promptRef.current).trim()) return;
       // 有内容会话：仅左滑（force）可回待机；点空白 / 失焦 / 收键盘不收回
@@ -468,7 +474,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     closeInput('snap', { force: true });
   }, [canAbortNow, closeInput]);
 
-  const canSwipeToIdle = (composerOpen || keepDockOpen) && !canAbortNow && !hasPrompt;
+  const canSwipeToIdle = (composerOpen || keepDockOpen) && !canAbortNow && !hasPrompt && !canSendNow;
   const showIdleOrb = canSwipeToIdle;
 
   const dockSwipeGesture = useMemo(
@@ -597,7 +603,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     setComposerOpen(true);
   }, [composerOpen, dockMode, hasConversationContent, keepDockOpen, swipeX]);
 
-  const wasAbortingRef = useRef(false);
+  const wasAwaitingRef = useRef(false);
   useEffect(() => {
     if (hasPrompt || canAbortNow) {
       closingRef.current = false;
@@ -605,43 +611,30 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
       swipeX.value = 0;
       dockMode.value = 1;
       setComposerOpen(true);
-      if (canAbortNow) setAbortSettleOpen(true);
-      wasAbortingRef.current = canAbortNow;
+      wasAwaitingRef.current = canAbortNow;
       return;
     }
-    // 等待结束下降沿：有内容会话保持输入框；短暂 settle 防止待机特效闪现。
-    if (wasAbortingRef.current && !canAbortNow && !hasPrompt) {
-      wasAbortingRef.current = false;
+    // 等待结束：有内容保持 docked；空会话也不自动回待机（避免粒子闪），由用户左滑。
+    if (wasAwaitingRef.current && !canAbortNow) {
+      wasAwaitingRef.current = false;
       setComposerOpen(true);
       dockMode.value = 1;
       swipeX.value = 0;
-      setAbortSettleOpen(true);
-      const settleTimer = setTimeout(() => setAbortSettleOpen(false), 420);
-      if (!hasConversationContent) {
-        // 新会话无内容：settle 后再收回，避免粒子闪一下
-        const closeTimer = setTimeout(() => {
-          setAbortSettleOpen(false);
-          closeInput('animate');
-        }, 420);
-        return () => {
-          clearTimeout(settleTimer);
-          clearTimeout(closeTimer);
-        };
-      }
-      return () => clearTimeout(settleTimer);
+      return;
     }
-    wasAbortingRef.current = false;
-  }, [hasPrompt, canAbortNow, closeInput, hasConversationContent, dockMode, swipeX]);
+    wasAwaitingRef.current = false;
+  }, [hasPrompt, canAbortNow, dockMode, swipeX]);
 
   useEffect(() => {
-    // 键盘收起：仅新会话（无内容）回到待机；有内容会话保持输入框
+    // 键盘收起：生成中 / 有内容会话不回待机；仅空会话且非等待可收回
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const sub = Keyboard.addListener(hideEvent, () => {
       if (canAbortNow) return;
+      if (hasConversationContent) return;
       if (!toText(promptRef.current).trim()) closeInput('animate');
     });
     return () => sub.remove();
-  }, [canAbortNow, closeInput]);
+  }, [canAbortNow, closeInput, hasConversationContent]);
 
   // 两侧始终用明确 width（勿用 flex：Reanimated 会残留 flex:1 把右侧挤没）
   const leftSlotStyle = useAnimatedStyle(() => {
@@ -1003,6 +996,8 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       setComposerOpen(true);
                     }}
                     onBlur={() => {
+                      // 失焦不自动待机：等待中 / 有会话内容时保持 docked（对齐主流 IM）。
+                      if (canAbortNow || hasConversationContent) return;
                       if (!toText(promptRef.current).trim()) closeInput('animate');
                     }}
                   />
@@ -1031,13 +1026,19 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                           return;
                         }
                         if (!canSendNow) return;
-                        inputRef.current?.blur();
+                        // 先发送（clearPrompt 内置 turnAwaiting 门闩），再失焦；
+                        // 若先 blur，会在 working 未置位时空窗误关 dock。
+                        closingRef.current = false;
+                        userChoseIdleRef.current = false;
+                        dockMode.value = 1;
+                        setComposerOpen(true);
                         onSend();
+                        requestAnimationFrame(() => inputRef.current?.blur());
                       }}
                       disabled={!sendActive}
                     >
                       <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={canAbortNow ? 22 : 20} />
+                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={20} />
                       </RNAnimated.View>
                     </Pressable>
                   )}

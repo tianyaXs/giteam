@@ -16,6 +16,7 @@ import {
   getDefaultCloudBaseUrl,
   linkCloud,
   renameCloudKey,
+  resolveReachableCloudBaseUrl,
   useCloudKey,
   type CloudAccessKeyRecord,
   type CloudLinkStatus,
@@ -81,9 +82,11 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
   const [renameError, setRenameError] = useState("");
   const [copiedKeyId, setCopiedKeyId] = useState("");
 
+  // Cloud mode: never keep loopback from Rust defaults / old cloud-link.json —
+  // rewrite to the build-time public gateway (same as QR pairing).
   const baseUrl =
     mode === "cloud"
-      ? (status?.cloudBaseUrl || defaultCloud).replace(/\/$/, "")
+      ? resolveReachableCloudBaseUrl(status?.cloudBaseUrl || defaultCloud, defaultCloud)
       : privateUrl.trim().replace(/\/$/, "");
 
   const hasActiveKey = Boolean(status?.accessKey?.trim());
@@ -195,7 +198,15 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
       setCreateError("");
       await ensureRelayAfterLink();
     } catch (e) {
-      setCreateError(String(e));
+      const raw = String(e);
+      const looksLocal =
+        /127\.0\.0\.1|localhost/i.test(raw) ||
+        /127\.0\.0\.1|localhost/i.test(baseUrl || defaultCloud);
+      setCreateError(
+        looksLocal
+          ? `${raw}\n云端模式不应使用本机 127.0.0.1。请重试（已自动改连发布默认 Gateway），或改用「私有」填写正确地址；仍失败可删除本机 giteam 目录下的 cloud-link.json 后重开应用。`
+          : raw,
+      );
     } finally {
       setBusy(false);
     }
@@ -239,7 +250,7 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
   async function onActivate(key: CloudAccessKeyRecord) {
     setBusy(true);
     try {
-      await useCloudKey(key.accessKey);
+      await useCloudKey(key.accessKey, key.cloudBaseUrl);
       await ensureRelayAfterLink();
     } catch (e) {
       setError(String(e));
