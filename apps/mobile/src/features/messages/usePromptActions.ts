@@ -178,8 +178,14 @@ export function usePromptActions(params: UsePromptActionsParams) {
           appendSystemPrompt: agentOptions.appendSystemPrompt
         });
         targetSessionId = created.sessionId;
-        if (autoAcceptPermissions) {
-          void client.setAutoApprove(targetSessionId, true).catch(() => undefined);
+        // 必须 await：否则 prompt 里工具可能在 autoApprove 生效前就进入审批。
+        try {
+          await client.setAutoApprove(targetSessionId, autoAcceptPermissions);
+        } catch (approveError) {
+          pushConnLog(
+            `agent.auto-approve warn enabled=${autoAcceptPermissions ? 1 : 0} ${String(approveError)}`,
+            'info'
+          );
         }
         markMessageSendPerf(perf, 'send.create_session.done', {
           ms: Math.round(performance.now() - createStartedAt),
@@ -199,8 +205,13 @@ export function usePromptActions(params: UsePromptActionsParams) {
           .catch((optionsError) => {
             pushConnLog(`agent.session-options warn ${String(optionsError)}`, 'info');
           });
-        if (autoAcceptPermissions) {
-          void client.setAutoApprove(targetSessionId, true).catch(() => undefined);
+        try {
+          await client.setAutoApprove(targetSessionId, autoAcceptPermissions);
+        } catch (approveError) {
+          pushConnLog(
+            `agent.auto-approve warn enabled=${autoAcceptPermissions ? 1 : 0} ${String(approveError)}`,
+            'info'
+          );
         }
       }
       if (optimisticMessage.attachments?.length) {
@@ -259,8 +270,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
         sid: targetSessionId
       });
       pushConnLog(`agent.prompt success, sessionId=${targetSessionId} runId=${res.runId}`);
-      // pending 保留到 tail sync 结束，避免中间 applyTurnWindow 过早摘掉乐观气泡
-      delete sessionActiveRunIdRef.current[targetSessionId];
+      // pending / activeRun 保留到 tail sync 结束，避免完成瞬间 busy→idle 抖一下输入框。
       markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: targetSessionId });
       const syncStartedAt = performance.now();
       void syncSessionMessages(targetSessionId, {
@@ -280,7 +290,9 @@ export function usePromptActions(params: UsePromptActionsParams) {
           markMessageSendPerf(perf, 'send.sync_tail.error', { reason: String(syncError) });
         })
         .finally(() => {
+          delete sessionActiveRunIdRef.current[targetSessionId];
           delete pendingPromptSessionRef.current[targetSessionId];
+          setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
           finishMessageSendPerf(perf, 'success', {
             userVisible: perf.userVisibleMarked ? 1 : 0,
             assistantVisible: perf.assistantVisibleMarked ? 1 : 0

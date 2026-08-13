@@ -119,7 +119,7 @@ export function useAgentStreamRuntime(params: UseAgentStreamRuntimeParams) {
       if (shouldFollowStream) {
         latest.forceScrollToLatestUntilRef.current = Date.now() + 45000;
       }
-    }, 48);
+    }, 24);
   }, [getParams, renderStreamWindow, shouldFollowLatest]);
 
   return {

@@ -204,6 +204,14 @@ export function useOptimisticUserMessages(params: {
       const keepBaseTurns = base.renderedTurns.length > 0;
       const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
       const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
+      // 流式 assistant 在权威 user 进表前会落成 orphan turn；并入乐观轮，过程文案才能出现在气泡下方。
+      const orphanItems: MobileRenderedTurn['items'] = [];
+      while (nextTurns.length > 0) {
+        const last = nextTurns[nextTurns.length - 1]!;
+        if (last.userMessage) break;
+        nextTurns.pop();
+        orphanItems.unshift(...last.items);
+      }
       const existingTurnIds = new Set(nextTurns.map((turn) => turn.id));
       const existingMessageIds = new Set(nextMessages.map((message) => message.id));
       const existingUserTexts = new Set(
@@ -215,6 +223,7 @@ export function useOptimisticUserMessages(params: {
       const aliasedLocalIds = new Set(Object.values(alias));
       const pending = optimistic.length > 1 ? [optimistic[optimistic.length - 1]!] : optimistic;
       let appended = 0;
+      let orphanAttached = false;
       for (const item of pending) {
         const turnId = `turn:optimistic:${item.id}`;
         const text = toText(item.text).trim();
@@ -232,26 +241,72 @@ export function useOptimisticUserMessages(params: {
           });
           existingMessageIds.add(item.id);
         }
+        const items = !orphanAttached && orphanItems.length > 0 ? [...orphanItems] : [];
+        if (items.length > 0) orphanAttached = true;
+        const itemSig = items
+          .map((timelineItem, index) => {
+            if (timelineItem.kind === 'chat') {
+              return `chat:${index}:${timelineItem.message.role}:${toText(timelineItem.message.text).length}`;
+            }
+            if (timelineItem.kind === 'think') {
+              return `think:${index}:${timelineItem.card.finished ? 1 : 0}:${toText(timelineItem.card.text).length}`;
+            }
+            if (timelineItem.kind === 'event') {
+              return `event:${index}:${toText(timelineItem.event.status)}:${toText(timelineItem.event.detail).length}`;
+            }
+            if (timelineItem.kind === 'toolBatch') {
+              return `toolBatch:${index}:${toText(timelineItem.batch.status)}:${timelineItem.batch.events?.length || 0}`;
+            }
+            if (timelineItem.kind === 'context') {
+              return `context:${index}:${toText(timelineItem.context.summary).length}`;
+            }
+            return `${timelineItem.kind}:${index}`;
+          })
+          .join('|');
         nextTurns.push({
           id: turnId,
           createdAt: item.createdAt,
           userMessage: { id: item.id, role: 'user', text: item.text, createdAt: item.createdAt, attachments: item.attachments },
-          items: [],
-          signature: `optimistic:${item.id}:${item.text.length}:${item.attachments?.length || 0}`
+          items,
+          signature: [`optimistic:${item.id}:${item.text.length}:${item.attachments?.length || 0}`, itemSig].filter(Boolean).join('|')
         });
         existingTurnIds.add(turnId);
         if (text) existingUserTexts.add(text);
         appended += 1;
       }
-      if (appended === 0) {
+      if (!orphanAttached && orphanItems.length > 0) {
+        nextTurns.push({
+          id: `turn:orphan-assistant:overlay:${orphanItems[0]?.createdAt || Date.now()}`,
+          createdAt: orphanItems[0]?.createdAt || Date.now(),
+          items: orphanItems,
+          signature: ['user:none', `orphan:${orphanItems.length}`].join('|')
+        });
+      }
+      if (appended === 0 && orphanItems.length === 0) {
         markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.skip', {
           ms: Math.round(performance.now() - overlayStartedAt)
         });
         return base;
       }
+      if (appended === 0 && orphanItems.length > 0) {
+        // 只重挂 orphan，不算新乐观气泡。
+        markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.orphan_only', {
+          ms: Math.round(performance.now() - overlayStartedAt),
+          orphanItems: orphanItems.length
+        });
+        return {
+          ...base,
+          chatMessages: nextMessages,
+          renderedTurns: nextTurns,
+          visibleTurnCount: Math.max(base.visibleTurnCount, nextTurns.length),
+          totalTurnCount: Math.max(base.totalTurnCount, nextTurns.length),
+          hasUserTurn: base.hasUserTurn || nextTurns.some((turn) => !!turn.userMessage)
+        };
+      }
       markMessageSendPerfForSession(sessionIdRef.current, 'list.overlay_optimistic.done', {
         ms: Math.round(performance.now() - overlayStartedAt),
         appended,
+        orphanItems: orphanAttached ? orphanItems.length : 0,
         turns: nextTurns.length
       });
       return {

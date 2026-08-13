@@ -236,15 +236,17 @@ export function buildRenderedTurns(timeline: MobileTimelineItem[]): MobileRender
   }
 
   flush();
-  if (pendingAssistant.length > 0 && out.length > 0) {
-    const last = out[out.length - 1];
-    last.items = [...last.items, ...pendingAssistant];
-    last.signature = [
-      last.userMessage
-        ? `user:${toText(last.userMessage.id)}:${toText(last.userMessage.text).length}`
-        : 'user:none',
-      ...last.items.map(itemSignature)
-    ].join('|');
+  // 权威 user 尚未进 rawRows（仅有乐观气泡）时，assistant 不能挂到上一轮，
+  // 否则列表底部乐观轮永远是空的，流式内容要等最终 sync 才「一口气」出现。
+  if (pendingAssistant.length > 0) {
+    seq += 1;
+    const createdAt = pendingAssistant[0]?.createdAt || Date.now();
+    out.push({
+      id: `turn:orphan-assistant:${seq}:${createdAt}`,
+      createdAt,
+      items: pendingAssistant,
+      signature: ['user:none', ...pendingAssistant.map(itemSignature)].join('|')
+    });
   }
   return out;
 }

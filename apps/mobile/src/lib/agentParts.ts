@@ -348,8 +348,7 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
         break;
       }
       const firstId = String((batch[0] as any)?.id || "");
-      const lastId = String((batch[batch.length - 1] as any)?.id || "");
-      out.push({ kind: "context", key: `context:${firstId || i}:${lastId || i}`, parts: batch });
+      out.push({ kind: "context", key: `context:${firstId || i}`, parts: batch });
       continue;
     }
     if (t === "reasoning") {
@@ -366,8 +365,7 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
         break;
       }
       const firstId = String((batch[0] as any)?.id || "");
-      const lastId = String((batch[batch.length - 1] as any)?.id || "");
-      out.push({ kind: "reasoning", key: `reasoning:${firstId || i}:${lastId || i}`, parts: batch });
+      out.push({ kind: "reasoning", key: `reasoning:${firstId || i}`, parts: batch });
       continue;
     }
     const pid = String((cur as any)?.id || "");

@@ -106,6 +106,14 @@ export function ingestSnapshotPartsIntoBucket(prev: StreamPartBucket, parts: any
     byId[pid] = mergeStreamPart(prev.byId[pid], { ...part, id: pid });
   });
   if (apiOrder.length <= 0) return prev;
+  // 保留快照里没有、但直播流已写入的 part（避免 tail sync 把正在打的字冲掉）。
+  for (const pid of prev.order) {
+    if (byId[pid]) continue;
+    const live = prev.byId[pid];
+    if (!live || !shouldStoreStreamPart(live)) continue;
+    byId[pid] = live;
+    apiOrder.push(pid);
+  }
   return { order: apiOrder, byId };
 }
 
@@ -273,7 +281,8 @@ export function upsertStreamPartRecord(
   if (!sid || !mid || !shouldStoreStreamPart(part)) return;
   const partStore = stores.part.current[sid];
   const bucket = partStore[mid] || emptyStreamPartBucket();
-  upsertStreamPartBucket(bucket, { ...part, messageID: mid });
+  // 对齐桌面：live 按到达序追加，避免按 partId 重排导致过程块跳动。
+  upsertStreamPartBucket(bucket, { ...part, messageID: mid }, { preserveApiOrder: true });
   partStore[mid] = bucket;
 }
 

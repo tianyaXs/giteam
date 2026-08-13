@@ -167,7 +167,21 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
 
     const applyTextDelta = (sid: string, kind: 'text' | 'reasoning', event: AgentEvent['event']) => {
       const messageId = toText(event.messageId).trim();
-      if (!messageId || !storeCanApplyStreamPartUpdate(stores(), sid, messageId)) return;
+      if (!messageId) return;
+      // 对齐桌面 ensureLocalAssistant：delta 可能早于 message.started，先建 assistant 坑再收字。
+      storeEnsureStreamSessionStores(stores(), sid);
+      const roles = stores().messageRole.current[sid] || {};
+      if (roles[messageId] !== 'assistant') {
+        stores().messageRole.current[sid] = { ...roles, [messageId]: 'assistant' };
+      }
+      if (!stores().message.current[sid]?.[messageId]) {
+        stores().message.current[sid][messageId] = {
+          id: messageId,
+          role: 'assistant',
+          time: { created: Date.now() }
+        };
+      }
+      if (!storeCanApplyStreamPartUpdate(stores(), sid, messageId)) return;
       const index = Math.max(0, Number(event.index || 0));
       const part = streamTextPart(messageId, kind, index, '');
       const partId = part.id as string;
@@ -260,15 +274,16 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           parts: []
         }]);
       }
-      d.setStreaming(false);
-      d.setSessionStatusMap((prev: Record<string, any>) => ({
-        ...prev,
-        [sid]: failedError ? { type: 'idle' } : { type: 'idle' }
-      }));
+      // 先刷一帧 live，再 merge sync；streaming/busy 延后到 sync 结束再清，避免输入框闪回待机。
+      if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
       d.setStatus(failedError ? `运行失败: ${failedError}` : '本轮回复完成');
       void d.syncSessionMessages(sid, { tailOnly: true }).finally(() => {
         if (d.streamRunIdRef.current !== streamRunId || d.sessionIdRef.current !== sid) return;
         d.setStreaming(false);
+        d.setSessionStatusMap((prev: Record<string, any>) => ({
+          ...prev,
+          [sid]: { type: 'idle' }
+        }));
       });
     };
 
@@ -291,6 +306,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
             storePublishStreamRows(stores(), sid);
           }
           d.setStreaming(true);
+          if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
           return;
         }
         case 'message.delta':
@@ -402,12 +418,19 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
         case 'session.status': {
           const legacy = agentStatusToLegacy(event.status);
           d.setSessionStatusMap((prev: Record<string, any>) => ({ ...prev, [sid]: legacy }));
-          d.setStreaming(legacy.type === 'busy');
+          // busy/retry 拉高 streaming；idle 仅在本 run 已结束后才清，避免过程中抖回待机。
+          if (legacy.type === 'busy' || legacy.type === 'retry') {
+            d.setStreaming(true);
+          } else if (!d.sessionActiveRunIdRef.current[sid]) {
+            d.setStreaming(false);
+          }
           if (event.status === 'failed' && event.error) d.setStatus(String(event.error));
           return;
         }
         case 'interaction.requested':
           if (event.interaction) d.onInteractionRequested(event.interaction);
+          // 审批弹出前强制刷一帧，保证工具前的过程文案已可见。
+          if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
           return;
         case 'interaction.resolved':
           if (event.id) d.onInteractionResolved(toText(event.id));
@@ -478,8 +501,11 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     const subscription = client.subscribeEvents(targetSessionId, runId, onEvent, onError);
     d.streamRef.current = subscription;
     d.setStreaming(true);
-    // 订阅建立后立刻对齐一次权威快照，避免漏掉订阅前的事件。
-    void d.syncSessionMessages(targetSessionId, { tailOnly: true });
+    // 新发送的 prompt 尚未落库时 tail sync 抢跑只会拿到旧快照，反而干扰 live delta。
+    // 锁屏同 run 重连才需要立刻对齐权威快照。
+    if (softReconnect) {
+      void d.syncSessionMessages(targetSessionId, { tailOnly: true });
+    }
     void d.syncSessionStatus(targetSessionId);
   }, [getDeps, stopStream]);
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createMobileAgentClient } from '../../api/agent/client';
 import { interactionToQuestionRequest } from '../../api/agent/bridge';
+import type { PermissionInteraction } from '../../lib/agentPermissions';
 import { toText } from '../../lib/text';
 import { loadQuestionDismissals, saveQuestionDismissal } from '../../storage/questionDismissals';
 import type { AgentStreamStoreRefs } from '../messages/agentStreamStore';
@@ -51,6 +52,7 @@ type UseQuestionControllerParams = {
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
   initialSessionLimit: number;
   initialMessageFetchLimit: number;
+  onPermissionsSynced?: (items: PermissionInteraction[]) => void;
 };
 
 export function useQuestionController({
@@ -70,7 +72,8 @@ export function useQuestionController({
   syncSessionMessages,
   syncSessionStatus,
   initialSessionLimit,
-  initialMessageFetchLimit
+  initialMessageFetchLimit,
+  onPermissionsSynced
 }: UseQuestionControllerParams) {
   const [questionRequests, setQuestionRequests] = useState<QuestionRequest[]>([]);
   const [dismissedQuestions, setDismissedQuestions] = useState<Set<string>>(() => new Set());
@@ -175,9 +178,15 @@ export function useQuestionController({
         const requests = interactions
           .map((interaction) => interactionToQuestionRequest(interaction))
           .filter(Boolean) as QuestionRequest[];
+        const permissions = interactions.filter(
+          (item): item is PermissionInteraction => item.kind === 'permission'
+        );
+        onPermissionsSynced?.(permissions);
         questionListLastFullRefreshRef.current[sid] = Date.now();
-        if (requests.length > 0) {
-          pushConnLog(`interaction.list ok count=${requests.length} ids=${requests.map((r) => r.id).join(',')}`);
+        if (requests.length > 0 || permissions.length > 0) {
+          pushConnLog(
+            `interaction.list ok questions=${requests.length} permissions=${permissions.length}`
+          );
         }
         delete questionListBackoffRef.current[sid];
         requests.forEach((req) => upsertStreamQuestion(getAgentStreamStores(), req));
@@ -216,6 +225,7 @@ export function useQuestionController({
   }, [
     dismissedQuestions,
     getAgentStreamStores,
+    onPermissionsSynced,
     pushConnLog,
     refreshQuestionRequestsFromStore,
     repoPath,

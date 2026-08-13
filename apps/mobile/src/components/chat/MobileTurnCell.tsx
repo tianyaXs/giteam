@@ -560,23 +560,50 @@ function ThinkPreviewLines(props: {
   textColor: string;
 }) {
   const { active, styles, mutedColor, textColor } = props;
-  const hasContent = toText(props.text).trim().length > 0;
+  const content = toText(props.text).trim();
+  const hasContent = content.length > 0;
+  const lines = content
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  // 折叠态也要露出过程文案：取末尾几行，避免只剩「已完成思考」。
+  const previewLines = (lines.length ? lines : []).slice(active ? -3 : -2);
   const label = active ? (hasContent ? '思考中' : '正在思考…') : '已完成思考';
 
   return (
-    <View style={styles.thinkFlowRow}>
-      <View style={[styles.thinkFlowPill, { borderColor: 'transparent', backgroundColor: 'transparent' }]}>
-        {active ? (
-          <View style={styles.thinkFlowDots}>
-            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.55 }]} />
-            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.8 }]} />
-            <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 1 }]} />
-          </View>
-        ) : null}
-        <Text numberOfLines={1} style={[styles.thinkFlowLine, { color: textColor }]}>
-          {label}
-        </Text>
+    <View style={styles.thinkFlowContent}>
+      <View style={styles.thinkFlowRow}>
+        <View style={[styles.thinkFlowPill, { borderColor: 'transparent', backgroundColor: 'transparent' }]}>
+          {active ? (
+            <View style={styles.thinkFlowDots}>
+              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.55 }]} />
+              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.8 }]} />
+              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 1 }]} />
+            </View>
+          ) : null}
+          <Text numberOfLines={1} style={[styles.thinkFlowLine, { color: textColor }]}>
+            {label}
+          </Text>
+        </View>
       </View>
+      {previewLines.length > 0 ? (
+        <View style={styles.thinkFlowSteps}>
+          {previewLines.map((step, index) => (
+            <View key={`${index}:${step.slice(0, 24)}`} style={styles.thinkFlowStepRow}>
+              <View
+                style={
+                  active && index === previewLines.length - 1
+                    ? styles.thinkFlowStepDotLive
+                    : [styles.thinkFlowStepDot, { backgroundColor: mutedColor }]
+                }
+              />
+              <Text numberOfLines={2} style={[styles.thinkFlowStepText, { color: mutedColor }]}>
+                {step}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }

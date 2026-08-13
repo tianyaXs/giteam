@@ -269,11 +269,15 @@ export function useSessionMessageSync<Cell>(params: {
           const authoritativeTail = !before && opts?.reason === 'tailOnly';
           let merged: any[];
           if (authoritativeTail) {
+            // 对齐桌面：结束不对齐整表 wipe。即使 prevRaw 为空，也只 merge/ingest，保留 live parts。
             if (prevRaw.length > 0) {
               merged = mergeMessageRows(prevRaw, incoming);
               ingestStreamRows(targetSessionId, incoming);
+              // ingest 已把 live compose 写回 rawRows；以 store 为准，避免丢掉未入库的过程文本。
+              const published = sessionRawMapRef.current[targetSessionId] || merged;
+              merged = mergeMessageRows(published, incoming);
             } else {
-              merged = replaceStreamRows(targetSessionId, incoming);
+              merged = ingestStreamRows(targetSessionId, incoming);
             }
           } else if (before || prevRaw.length > 0) {
             merged = mergeMessageRows(prevRaw, incoming);
@@ -676,19 +680,10 @@ export function useSessionMessageSync<Cell>(params: {
             return lastTurn.items.some((item: any) => item.kind === 'error');
           })();
           const statusIdle = !statusInfo || statusInfo.type === 'idle';
-          const latestTurnHasAssistant = (() => {
-            const lastTurn = rendered.renderedTurns[rendered.renderedTurns.length - 1];
-            if (!lastTurn) return false;
-            return lastTurn.items.some((item: any) => {
-              if (item.kind === 'think') return !!toText(item.card?.text).trim();
-              if (item.kind === 'context' || item.kind === 'event' || item.kind === 'toolBatch') return true;
-              if (item.kind === 'chat' && item.message?.role === 'assistant') {
-                return !!toText(item.message.text).trim();
-              }
-              return false;
-            });
-          })();
-          if ((!rendered.writing && statusIdle) || latestTurnHasError || latestTurnHasAssistant) {
+          if (
+            !pendingPromptSessionRef.current[targetSessionId]
+            && ((!rendered.writing && statusIdle) || latestTurnHasError)
+          ) {
             setStreaming(false);
             setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
           }

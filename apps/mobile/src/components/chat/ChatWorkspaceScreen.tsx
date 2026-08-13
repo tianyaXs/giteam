@@ -5,6 +5,9 @@ import { Drawer } from 'react-native-drawer-layout';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 import { QuestionDock } from '../QuestionDock';
+import { PermissionDock } from '../PermissionDock';
+import type { PermissionInteraction } from '../../lib/agentPermissions';
+import type { AgentPermissionReply } from '../../lib/agentPermissions';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatConversationStage } from './ChatConversationStage';
 import { ImagePreviewOverlay } from './MediaOverlays';
@@ -89,6 +92,10 @@ type ChatWorkspaceScreenProps = {
   questionSubmitError?: string;
   onReplyQuestion: (requestId: string, answers: string[][]) => void;
   onDismissQuestion: (requestId: string) => void;
+  activePermissionRequest?: PermissionInteraction | null;
+  permissionSubmitState?: string;
+  permissionSubmitError?: string;
+  onReplyPermission?: (requestId: string, reply: AgentPermissionReply) => void;
   composerProps: React.ComponentProps<typeof ChatComposer>;
   /** idle/loading 时空会话不提示「去配置模型」 */
   modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
@@ -99,6 +106,10 @@ type ChatWorkspaceScreenProps = {
 export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, ChatWorkspaceScreenProps>(function ChatWorkspaceScreen(props, ref) {
   const {
     activeQuestionRequest,
+    activePermissionRequest = null,
+    permissionSubmitState = 'idle',
+    permissionSubmitError,
+    onReplyPermission,
     chatViewabilityConfig,
     composerProps,
     currentSessionTitle,
@@ -346,6 +357,16 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
                 styles={styles}
                 onToggle={onToggleTodoDock}
                 onClose={onDismissTodoDock}
+              />
+            </View>
+          ) : null}
+          {activePermissionRequest && onReplyPermission ? (
+            <View key={activePermissionRequest.id} style={styles.questionDockWrap}>
+              <PermissionDock
+                request={activePermissionRequest}
+                submitState={(permissionSubmitState as any) || 'idle'}
+                submitError={permissionSubmitError}
+                onReply={onReplyPermission}
               />
             </View>
           ) : null}

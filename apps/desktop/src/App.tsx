@@ -1282,6 +1282,7 @@ export function App() {
   const agentSelectionIntentRef = useRef<AgentSelectionIntent | null>(null);
   // agentSessions 列表镜像，供 refresh 锚定排序与 bootstrap 首选读取，避免闭包读到旧列表。
   const agentSessionsRef = useRef<AgentChatSession[]>([]);
+  const activeAgentSessionIdRef = useRef("");
   const sidebarAgentSessionRequestSeqRef = useRef<Record<string, number>>({});
   const agentRunIdBySessionRef = useRef<Record<string, string>>({});
   const controlMobilePollTokenRef = useRef(0);
@@ -2605,6 +2606,90 @@ export function App() {
 
   function updateAgentSessionById(sessionId: string, updater: (session: AgentChatSession) => AgentChatSession) {
     setAgentSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
+  }
+
+  /** 手机/HTTP 远程 run：把权威消息写入对应会话（可 upsert），不依赖「当前是否打开该会话」。 */
+  async function applyRemoteAgentSessionSnapshot(
+    sessionId: string,
+    opts?: { repoPath?: string; reason?: string }
+  ) {
+    const sid = sessionId.trim();
+    if (!sid) return;
+    const eventRepoPath = String(opts?.repoPath || "").trim();
+    const currentPath = normalizeWorkspacePath(repoPath);
+    const sameWorkspace =
+      !eventRepoPath || !currentPath || normalizeWorkspacePath(eventRepoPath) === currentPath;
+    const targetRepo =
+      (eventRepoPath
+        ? repos.find((repo) => normalizeWorkspacePath(repo.path) === normalizeWorkspacePath(eventRepoPath))
+        : null) || selectedRepo;
+    appendAgentDebugLog(
+      `session.remote.sync sid=${sid} reason=${opts?.reason || "event"} sameWorkspace=${sameWorkspace ? 1 : 0}`
+    );
+    try {
+      if (sameWorkspace) {
+        await refreshAgentSessions().catch(() => {});
+      } else if (targetRepo) {
+        await refreshSidebarRepoSessions(targetRepo, { silent: true }).catch(() => {});
+      }
+      const page = await fetchAgentDetailedMessagePage(
+        sid,
+        "",
+        200,
+        Date.now(),
+        eventRepoPath || repoPath
+      );
+      setAgentDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+      const firstUser = page.items.find((item) => item.role === "user" && String(item.content || "").trim());
+      const title =
+        clipAgentSessionTitle(firstUser?.content) ||
+        `Session ${sid.slice(0, 8)}`;
+      const nextSession: AgentChatSession = {
+        id: sid,
+        title,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: page.items,
+        turnStart: 0,
+        loaded: true,
+        nextCursor: undefined,
+        hasMore: false
+      };
+      if (sameWorkspace) {
+        setAgentSessions((prev) => {
+          const existing = prev.find((session) => session.id === sid);
+          if (existing) {
+            return prev.map((session) =>
+              session.id === sid
+                ? {
+                    ...session,
+                    title: session.title.trim() || title,
+                    messages: page.items,
+                    loaded: true,
+                    nextCursor: undefined,
+                    hasMore: false,
+                    updatedAt: Date.now()
+                  }
+                : session
+            );
+          }
+          return [nextSession, ...prev];
+        });
+      }
+      if (targetRepo?.id) {
+        const cached = agentSessionsRef.current.find((session) => session.id === sid);
+        upsertSidebarAgentSession(targetRepo.id, {
+          ...(sameWorkspace && cached ? cached : nextSession),
+          title: (sameWorkspace && cached?.title.trim()) || title,
+          messages: page.items,
+          loaded: true,
+          updatedAt: Date.now()
+        });
+      }
+      void syncAgentInteractions(sid).catch(() => {});
+    } catch (error) {
+      appendAgentDebugLog(`session.remote.sync.error sid=${sid} ${String(error)}`);
+    }
   }
 
   function beginAgentSessionHydration(sessionId: string) {
@@ -7218,6 +7303,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     agentSessionsRef.current = agentSessions;
   }, [agentSessions]);
 
+  useEffect(() => {
+    activeAgentSessionIdRef.current = activeAgentSessionId;
+  }, [activeAgentSessionId]);
+
   // 对齐 effect：后台数据通道。只派生 stale 提示信号，绝不替用户改写 active。
   // 首次选中交由 bootstrap 显式 selectAgentSession；列表瞬空时保留 active 不抖；
   // active 真失效（既不在列表也不在任何 sidebar）时置 stale 提示用户手动切换。
@@ -7331,51 +7420,89 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [applyAgentModelVisibility]);
 
   // 手机经云端/HTTP 发 prompt 时，桌面自己的 subscribeEvents 不会挂上该 runId。
-  // 这里收全局 agent 事件：若是当前会话，完成后刷新消息；并刷新会话列表。
+  // 全局 hook 把远程 run 写回「对应会话」：不要求当前正打开它；观看中则顺带节流刷新。
+  const applyRemoteAgentSessionSnapshotRef = useRef(applyRemoteAgentSessionSnapshot);
+  applyRemoteAgentSessionSnapshotRef.current = applyRemoteAgentSessionSnapshot;
+
   useEffect(() => {
     let cancelled = false;
-    let refreshTimer: number | undefined;
+    let terminalTimer: number | undefined;
+    let streamTimer: number | undefined;
+    const pendingBySid = new Map<string, string>();
+
+    const flush = (sid: string, reason: string, repoPathHint?: string) => {
+      if (cancelled || !sid) return;
+      const localRun = String(agentRunIdBySessionRef.current[sid] || "").trim();
+      // 桌面自己发起的 prompt 由本地 finalize 负责，避免双写打架。
+      if (localRun) return;
+      void applyRemoteAgentSessionSnapshotRef.current(sid, {
+        repoPath: repoPathHint,
+        reason
+      });
+    };
+
     const unlistenPromise = listen<{
       sessionId?: string;
       runId?: string;
+      repoPath?: string;
       event?: { type?: string };
     }>("giteam://agent-event", (event) => {
       const payload = event.payload;
       const sid = String(payload?.sessionId || "").trim();
       if (!sid) return;
+      const runId = String(payload?.runId || "").trim();
+      const localRun = String(agentRunIdBySessionRef.current[sid] || "").trim();
+      if (localRun && (!runId || localRun === runId)) return;
+
       const type = String(payload?.event?.type || "");
+      const repoPathHint = String(payload?.repoPath || "").trim();
+      if (type === "interaction.requested" || type === "interaction.resolved") {
+        void syncAgentInteractions(sid).catch(() => {});
+      }
+
       const terminal =
         type === "run.completed" ||
         type === "run.failed" ||
-        type === "session.status" ||
-        type === "turn.completed" ||
         type === "message.completed";
-      if (!terminal) return;
-      if (refreshTimer) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        if (cancelled) return;
-        void refreshAgentSessions().catch(() => {});
-        if (sid === activeAgentSessionId) {
-          void fetchAgentDetailedMessagePage(sid, "", 200, Date.now())
-            .then((page) => {
-              if (cancelled) return;
-              updateAgentSessionById(sid, (session) => ({
-                ...session,
-                messages: page.items,
-                loaded: true,
-                updatedAt: Date.now(),
-              }));
-            })
-            .catch(() => {});
-        }
-      }, 250);
+      const streamHint =
+        type === "message.started" ||
+        type === "message.delta" ||
+        type === "reasoning.delta" ||
+        type === "tool.completed" ||
+        type === "session.status";
+
+      if (terminal) {
+        pendingBySid.set(sid, repoPathHint);
+        if (terminalTimer) window.clearTimeout(terminalTimer);
+        terminalTimer = window.setTimeout(() => {
+          const entries = [...pendingBySid.entries()];
+          pendingBySid.clear();
+          for (const [pendingSid, hint] of entries) {
+            flush(pendingSid, type || "terminal", hint);
+          }
+        }, 200);
+        return;
+      }
+
+      // 正在看该会话时，过程中也节流拉一次，避免全程空白只等 run 结束。
+      if (streamHint && sid === activeAgentSessionIdRef.current) {
+        pendingBySid.set(sid, repoPathHint);
+        if (streamTimer) return;
+        streamTimer = window.setTimeout(() => {
+          streamTimer = undefined;
+          const hint = pendingBySid.get(sid) || repoPathHint;
+          pendingBySid.delete(sid);
+          flush(sid, type || "stream", hint);
+        }, 450);
+      }
     });
     return () => {
       cancelled = true;
-      if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (terminalTimer) window.clearTimeout(terminalTimer);
+      if (streamTimer) window.clearTimeout(streamTimer);
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [activeAgentSessionId]);
+  }, []);
 
   useEffect(() => {
     if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;

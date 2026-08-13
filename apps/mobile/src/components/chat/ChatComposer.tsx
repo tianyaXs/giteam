@@ -235,6 +235,8 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   const [scrubbing, setScrubbing] = useState(false);
   /** 待机行总宽（React state：粒子场 / 布局；shared：宽度动画） */
   const [idleRowWidth, setIdleRowWidth] = useState(0);
+  /** 生成刚结束短暂保持输入 dock，避免闪回待机粒子 */
+  const [abortSettleOpen, setAbortSettleOpen] = useState(false);
   const lastLayoutHRef = useRef(0);
   const idleRowW = useSharedValue(0);
   /** 0=待机比例，1=模型区展开 */
@@ -254,8 +256,8 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   /** 用户在有内容会话上手动左滑进入待机；避免 hydration 又拉回输入框 */
   const userChoseIdleRef = useRef(false);
 
-  const idle = !composerOpen && !hasPrompt && !canAbortNow;
-  const keepDockOpen = hasPrompt || canAbortNow;
+  const idle = !composerOpen && !hasPrompt && !canAbortNow && !abortSettleOpen;
+  const keepDockOpen = hasPrompt || canAbortNow || abortSettleOpen;
   const selectedOption = modelOptions.find((m) => m.id === selectedModel.trim());
   const providerId = toText(selectedOption?.provider || selectedModel).trim() || 'synthetic';
   const modelDisplayLabel = shortModelLabel(toText(inputModelLabel || selectedOption?.label || selectedModel));
@@ -603,14 +605,30 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
       swipeX.value = 0;
       dockMode.value = 1;
       setComposerOpen(true);
+      if (canAbortNow) setAbortSettleOpen(true);
       wasAbortingRef.current = canAbortNow;
       return;
     }
-    // 等待结束下降沿：新会话可收回；有内容会话保持输入框
+    // 等待结束下降沿：有内容会话保持输入框；短暂 settle 防止待机特效闪现。
     if (wasAbortingRef.current && !canAbortNow && !hasPrompt) {
       wasAbortingRef.current = false;
-      if (!hasConversationContent) closeInput('animate');
-      return;
+      setComposerOpen(true);
+      dockMode.value = 1;
+      swipeX.value = 0;
+      setAbortSettleOpen(true);
+      const settleTimer = setTimeout(() => setAbortSettleOpen(false), 420);
+      if (!hasConversationContent) {
+        // 新会话无内容：settle 后再收回，避免粒子闪一下
+        const closeTimer = setTimeout(() => {
+          setAbortSettleOpen(false);
+          closeInput('animate');
+        }, 420);
+        return () => {
+          clearTimeout(settleTimer);
+          clearTimeout(closeTimer);
+        };
+      }
+      return () => clearTimeout(settleTimer);
     }
     wasAbortingRef.current = false;
   }, [hasPrompt, canAbortNow, closeInput, hasConversationContent, dockMode, swipeX]);
@@ -1019,7 +1037,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       disabled={!sendActive}
                     >
                       <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={20} />
+                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={canAbortNow ? 22 : 20} />
                       </RNAnimated.View>
                     </Pressable>
                   )}

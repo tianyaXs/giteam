@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { toText } from '../../lib/text';
 import type { MobileChatMessage, MobileRenderedTurn, SessionStatusInfo } from '../../types';
-import { conversationHasAssistantAfterUser } from './assistantTurnState';
 
 export function useChatScreenDerivedState(params: {
   sessionId: string;
@@ -48,20 +47,13 @@ export function useChatScreenDerivedState(params: {
 
   const localSending = localPendingCount > 0;
 
-  const assistantTurnReady = useMemo(
-    () => conversationHasAssistantAfterUser(renderedTurns, messages),
-    [messages, renderedTurns]
-  );
-
   const remoteSessionWorking = useMemo(() => {
     if (latestTurnMeta.hasError) return false;
-    if (!streaming && assistantTurnReady) {
-      if (currentSessionStatus.type === 'retry') return true;
-      return false;
-    }
+    // busy/retry 优先：勿因「已有 assistant + streaming 被提前清掉」误判 idle（输入框会闪回待机特效）。
     if (currentSessionStatus.type === 'busy' || currentSessionStatus.type === 'retry') return true;
-    return streaming;
-  }, [assistantTurnReady, currentSessionStatus, latestTurnMeta.hasError, streaming]);
+    if (streaming) return true;
+    return false;
+  }, [currentSessionStatus, latestTurnMeta.hasError, streaming]);
 
   const sessionWorking = useMemo(() => {
     if (localSending) return true;

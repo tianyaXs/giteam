@@ -8,6 +8,10 @@ import { interactionToQuestionRequest } from "./src/api/agent/bridge";
 import { createMobileAgentClient } from "./src/api/agent/client";
 import { setCloudSessionInvalidationHandler } from "./src/api/agent/errors";
 import type { AgentInteraction } from "./src/api/agent/types";
+import {
+  type AgentPermissionReply,
+  type PermissionInteraction,
+} from "./src/lib/agentPermissions";
 import { ChatWorkspaceScreen, type ChatWorkspaceScreenHandle } from "./src/components/chat/ChatWorkspaceScreen";
 import { AlbumPickerOverlay } from "./src/components/chat/MediaOverlays";
 import { MobileLaunchOverlay } from "./src/components/chat/MobileLaunchOverlay";
@@ -327,6 +331,10 @@ export default function App() {
     streamDebug,
     setStreaming,
   });
+  const [permissionRequests, setPermissionRequests] = useState<PermissionInteraction[]>([]);
+  const [permissionSubmitState, setPermissionSubmitState] = useState<
+    Record<string, { status: "idle" | "submitting" | "submitted" | "failed"; error?: string }>
+  >({});
   const {
     activeQuestionRequest,
     dismissedQuestions,
@@ -361,7 +369,69 @@ export default function App() {
     syncSessionStatus,
     initialSessionLimit: INITIAL_SESSION_LIMIT,
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
+    onPermissionsSynced: (items) => {
+      setPermissionRequests(items);
+    },
   });
+
+  const activePermissionRequest = useMemo(
+    () => permissionRequests[0] || null,
+    [permissionRequests]
+  );
+
+  useEffect(() => {
+    setPermissionRequests([]);
+    setPermissionSubmitState({});
+  }, [sessionId]);
+
+  // 切到已有会话时，把本地 auto 开关同步到该 session hub（否则旧会话仍按默认关审批）。
+  useEffect(() => {
+    const sid = toText(sessionId).trim();
+    if (!sid || !token || !authed) return;
+    void createMobileAgentClient({ baseUrl: serverUrl, token })
+      .setAutoApprove(sid, autoAcceptPermissions)
+      .then(() => {
+        pushConnLog(
+          `agent.auto-approve sync enabled=${autoAcceptPermissions ? 1 : 0} sid=${sid}`
+        );
+      })
+      .catch((e) => {
+        pushConnLog(`agent.auto-approve sync error ${String(e)}`, "error");
+      });
+  }, [authed, autoAcceptPermissions, pushConnLog, serverUrl, sessionId, token]);
+
+  const handlePermissionReply = useCallback(
+    (requestId: string, reply: AgentPermissionReply) => {
+      setPermissionSubmitState((prev) => ({
+        ...prev,
+        [requestId]: { status: "submitting" },
+      }));
+      setStatus(
+        reply === "reject" ? "正在拒绝工具…" : reply === "always" ? "正在始终允许…" : "正在允许一次…"
+      );
+      void createMobileAgentClient({ baseUrl: serverUrl, token })
+        .replyInteraction(requestId, { decision: reply })
+        .then(() => {
+          setPermissionSubmitState((prev) => ({
+            ...prev,
+            [requestId]: { status: "submitted" },
+          }));
+          setPermissionRequests((prev) => prev.filter((item) => item.id !== requestId));
+          pushConnLog(`interaction.permission.reply ok ${requestId} ${reply}`);
+          setStatus(reply === "reject" ? "已拒绝工具" : "已批准工具");
+        })
+        .catch((e) => {
+          const msg = String(e);
+          setPermissionSubmitState((prev) => ({
+            ...prev,
+            [requestId]: { status: "failed", error: msg },
+          }));
+          pushConnLog(`interaction.permission.reply error ${requestId} ${msg}`, "error");
+          setStatus(`工具批准失败：${msg}`);
+        });
+    },
+    [pushConnLog, serverUrl, setStatus, token]
+  );
 
   const handleAgentInteractionRequested = useCallback(
     (interaction: AgentInteraction) => {
@@ -373,17 +443,52 @@ export default function App() {
         }
         return;
       }
-      // permission：手机端沿用自动接受策略（服务端 autoApprove），这里仅记录日志。
-      pushConnLog(
-        `interaction.permission tool=${interaction.tool} risk=${interaction.risk}`,
-      );
+      if (interaction.kind === "permission") {
+        pushConnLog(
+          `interaction.permission tool=${interaction.tool} risk=${interaction.risk}`
+        );
+        // 本地已开 auto 但服务端尚未生效（竞态）时，直接代批一次，避免卡住。
+        if (autoAcceptPermissions) {
+          void createMobileAgentClient({ baseUrl: serverUrl, token })
+            .replyInteraction(interaction.id, { decision: "once" })
+            .then(() => {
+              pushConnLog(`interaction.permission.auto-reply ok ${interaction.id}`);
+            })
+            .catch((e) => {
+              pushConnLog(
+                `interaction.permission.auto-reply error ${interaction.id} ${String(e)}`,
+                "error"
+              );
+              setPermissionRequests((prev) => {
+                const next = prev.filter((item) => item.id !== interaction.id);
+                return [...next, interaction];
+              });
+              setStatus(`等待批准：${interaction.tool || "tool"}`);
+            });
+          return;
+        }
+        setPermissionRequests((prev) => {
+          const next = prev.filter((item) => item.id !== interaction.id);
+          return [...next, interaction];
+        });
+        setPermissionSubmitState((prev) => {
+          const { [interaction.id]: _drop, ...rest } = prev;
+          return rest;
+        });
+        setStatus(`等待批准：${interaction.tool || "tool"}`);
+        return;
+      }
     },
     [
+      autoAcceptPermissions,
       dismissedQuestions,
       getAgentStreamStores,
       pushConnLog,
       refreshQuestionRequestsFromStore,
-    ],
+      serverUrl,
+      setStatus,
+      token,
+    ]
   );
 
   const handleAgentInteractionResolved = useCallback(
@@ -391,10 +496,16 @@ export default function App() {
       const sid = sessionIdRef.current;
       if (sid) removeStreamQuestion(getAgentStreamStores(), sid, interactionId);
       setQuestionRequests((prev) =>
-        prev.filter((row) => row.id !== interactionId),
+        prev.filter((row) => row.id !== interactionId)
       );
+      setPermissionRequests((prev) => prev.filter((row) => row.id !== interactionId));
+      setPermissionSubmitState((prev) => {
+        if (!prev[interactionId]) return prev;
+        const { [interactionId]: _drop, ...rest } = prev;
+        return rest;
+      });
     },
-    [getAgentStreamStores, sessionIdRef, setQuestionRequests],
+    [getAgentStreamStores, sessionIdRef, setQuestionRequests]
   );
 
   const { startStream: startStreamManager, stopStream: stopStreamManager } =
@@ -719,6 +830,9 @@ export default function App() {
     if (!sid || streaming || localSending) return;
     if (!conversationHasAssistantAfterUser(renderedTurns, messages)) return;
     if (sessionStatusMap[sid]?.type !== "busy") return;
+    // 跑还在（pending prompt / active run）时不要强行 idle，否则停止钮与待机粒子会闪一下。
+    if (pendingPromptSessionRef.current[sid]) return;
+    if (sessionActiveRunIdRef.current[sid]) return;
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: "idle" } }));
   }, [localSending, messages, renderedTurns, sessionId, sessionStatusMap, streaming, setSessionStatusMap]);
 
@@ -812,8 +926,26 @@ export default function App() {
     chatWorkspaceRef.current?.openDrawer('left');
   }, []);
   const handleToggleAutoAccept = useCallback(() => {
-    setAutoAcceptPermissions((value) => !value);
-  }, [setAutoAcceptPermissions]);
+    setAutoAcceptPermissions((prev) => {
+      const next = !prev;
+      const sid = toText(sessionIdRef.current).trim();
+      if (sid && token) {
+        void createMobileAgentClient({ baseUrl: serverUrl, token })
+          .setAutoApprove(sid, next)
+          .then(() => {
+            pushConnLog(`agent.auto-approve ok enabled=${next ? 1 : 0} sid=${sid}`);
+            setStatus(next ? '已开启自动批准工具' : '已关闭自动批准工具');
+          })
+          .catch((e) => {
+            pushConnLog(`agent.auto-approve error ${String(e)}`, 'error');
+            setStatus(`自动批准同步失败：${String(e)}`);
+          });
+      } else {
+        setStatus(next ? '已开启自动批准（下次发送时生效）' : '已关闭自动批准');
+      }
+      return next;
+    });
+  }, [pushConnLog, serverUrl, sessionIdRef, setAutoAcceptPermissions, setStatus, token]);
   const handleBeforeOpenNotebookDrawer = useCallback(() => {
     // 浮层自管 open/close：其全屏 overlay 拦截点击，开启时无法触发抽屉按钮。
   }, []);
@@ -1541,6 +1673,18 @@ export default function App() {
       }
       onReplyQuestion={handleQuestionReply}
       onDismissQuestion={handleQuestionDismiss}
+      activePermissionRequest={activePermissionRequest}
+      permissionSubmitState={
+        activePermissionRequest
+          ? permissionSubmitState[activePermissionRequest.id]?.status || "idle"
+          : "idle"
+      }
+      permissionSubmitError={
+        activePermissionRequest
+          ? permissionSubmitState[activePermissionRequest.id]?.error
+          : undefined
+      }
+      onReplyPermission={handlePermissionReply}
       composerProps={composerProps}
       modelCatalogStatus={modelCatalogStatus}
       previewImage={previewImage}
