@@ -4,7 +4,7 @@ use crate::proxy::{list_devices_for_workspace, require_admin, write_audit, Devic
 use crate::state::AppState;
 use axum::extract::{Path, Query};
 use axum::http::HeaderMap;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -13,7 +13,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/cloud/v1/admin/metrics", get(metrics))
         .route("/cloud/v1/admin/workspaces", get(list_workspaces))
-        .route("/cloud/v1/admin/workspaces/{id}", get(get_workspace))
+        .route(
+            "/cloud/v1/admin/workspaces/{id}",
+            get(get_workspace).delete(delete_workspace),
+        )
         .route(
             "/cloud/v1/admin/workspaces/{id}/access-key/rotate",
             post(admin_rotate_key),
@@ -36,6 +39,7 @@ pub fn router() -> Router<AppState> {
             post(revoke_devices_batch),
         )
         .route("/cloud/v1/admin/devices/{id}/revoke", post(revoke_device))
+        .route("/cloud/v1/admin/devices/{id}", delete(delete_device))
         .route("/cloud/v1/admin/jwt/revoke", post(revoke_jwt))
         .route("/cloud/v1/admin/audit", get(list_audit))
 }
@@ -153,7 +157,11 @@ async fn list_workspaces(
         r#"
         SELECT COUNT(*) FROM workspaces
         WHERE ($1::text IS NULL OR id ILIKE $1 OR access_key_id ILIKE $1)
-          AND ($2::text = '' OR status = $2)
+          AND (
+            ($2::text = '' AND status <> 'disabled')
+            OR $2::text = 'all'
+            OR ($2::text <> '' AND $2::text <> 'all' AND status = $2)
+          )
         "#,
     )
     .bind(&like)
@@ -167,7 +175,11 @@ async fn list_workspaces(
         SELECT id, status, access_key_id, default_device_id, created_at
         FROM workspaces
         WHERE ($1::text IS NULL OR id ILIKE $1 OR access_key_id ILIKE $1)
-          AND ($2::text = '' OR status = $2)
+          AND (
+            ($2::text = '' AND status <> 'disabled')
+            OR $2::text = 'all'
+            OR ($2::text <> '' AND $2::text <> 'all' AND status = $2)
+          )
         ORDER BY created_at DESC
         LIMIT $3 OFFSET $4
         "#,
@@ -384,6 +396,39 @@ async fn enable_workspace(
     set_workspace_status(&state, &id, "active").await
 }
 
+async fn delete_workspace(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<OkResponse>> {
+    require_admin(&state, &headers).await?;
+    // Collect device ids first so we can drop live tunnels.
+    let device_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM devices WHERE workspace_id = $1")
+        .bind(&id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    for (device_id,) in &device_ids {
+        state.tunnels.force_unregister(device_id).await;
+    }
+    let result = sqlx::query("DELETE FROM workspaces WHERE id = $1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("workspace not found".into()));
+    }
+    write_audit(
+        &state,
+        Some(&id),
+        "workspace.deleted",
+        serde_json::json!({ "deviceCount": device_ids.len() }),
+    )
+    .await;
+    Ok(Json(OkResponse { ok: true }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceListQuery {
@@ -460,7 +505,11 @@ async fn list_devices(
         r#"
         SELECT COUNT(*) FROM devices
         WHERE ($1::text IS NULL OR id ILIKE $1 OR name ILIKE $1 OR workspace_id ILIKE $1 OR client_version ILIKE $1)
-          AND ($2::text = '' OR status = $2)
+          AND (
+            ($2::text = '' AND status <> 'revoked')
+            OR $2::text = 'all'
+            OR ($2::text <> '' AND $2::text <> 'all' AND status = $2)
+          )
           AND ($3::text = '' OR workspace_id = $3)
           AND (
             $4::text[] IS NULL
@@ -483,7 +532,11 @@ async fn list_devices(
         SELECT id, workspace_id, name, client_version, status, last_seen_at, created_at
         FROM devices
         WHERE ($1::text IS NULL OR id ILIKE $1 OR name ILIKE $1 OR workspace_id ILIKE $1 OR client_version ILIKE $1)
-          AND ($2::text = '' OR status = $2)
+          AND (
+            ($2::text = '' AND status <> 'revoked')
+            OR $2::text = 'all'
+            OR ($2::text <> '' AND $2::text <> 'all' AND status = $2)
+          )
           AND ($3::text = '' OR workspace_id = $3)
           AND (
             $4::text[] IS NULL
@@ -561,6 +614,42 @@ async fn revoke_device(
 ) -> ApiResult<Json<OkResponse>> {
     require_admin(&state, &headers).await?;
     let _ = revoke_one_device(&state, &id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn delete_device(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<OkResponse>> {
+    require_admin(&state, &headers).await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT workspace_id FROM devices WHERE id = $1")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    let (workspace_id,) = row.ok_or_else(|| ApiError::NotFound("device not found".into()))?;
+    state.tunnels.force_unregister(&id).await;
+    // Clear default pointer if this device was the workspace default.
+    let _ = sqlx::query(
+        "UPDATE workspaces SET default_device_id = NULL WHERE id = $1 AND default_device_id = $2",
+    )
+    .bind(&workspace_id)
+    .bind(&id)
+    .execute(&state.pool)
+    .await;
+    sqlx::query("DELETE FROM devices WHERE id = $1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    write_audit(
+        &state,
+        Some(&workspace_id),
+        "device.deleted",
+        serde_json::json!({ "deviceId": id }),
+    )
+    .await;
     Ok(Json(OkResponse { ok: true }))
 }
 

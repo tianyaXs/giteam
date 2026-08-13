@@ -449,7 +449,7 @@ function DevicesPage() {
   }
 
   async function revoke(id: string) {
-    if (!confirm(`撤销设备 ${id}？`)) return;
+    if (!confirm(`撤销设备 ${id}？（软删除，默认列表不再显示）`)) return;
     setBusy(true);
     try {
       await adminFetch(`/cloud/v1/admin/devices/${encodeURIComponent(id)}/revoke`, {
@@ -463,10 +463,25 @@ function DevicesPage() {
     }
   }
 
+  async function removeDevice(id: string) {
+    if (!confirm(`永久删除设备 ${id}？工作空间会保留。`)) return;
+    setBusy(true);
+    try {
+      await adminFetch(`/cloud/v1/admin/devices/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revokeBatch() {
     const ids = [...selected];
     if (ids.length === 0) return;
-    if (!confirm(`批量撤销 ${ids.length} 台设备？`)) return;
+    if (!confirm(`批量撤销 ${ids.length} 台设备？（默认列表不再显示）`)) return;
     setBusy(true);
     try {
       await adminFetch<{ ok: boolean; revoked: number }>("/cloud/v1/admin/devices/revoke-batch", {
@@ -520,9 +535,10 @@ function DevicesPage() {
               list.resetPage();
             }}
           >
-            <option value="">全部</option>
+            <option value="">有效（隐藏已撤销）</option>
             <option value="active">active</option>
             <option value="revoked">revoked</option>
+            <option value="all">全部（含已撤销）</option>
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
@@ -618,7 +634,7 @@ function DevicesPage() {
                   <td className="p-3 text-xs text-[var(--muted)]">
                     {d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "—"}
                   </td>
-                  <td className="p-3 text-right">
+                  <td className="p-3 text-right space-x-2 whitespace-nowrap">
                     {d.status !== "revoked" ? (
                       <button
                         className="text-xs border border-[var(--border)] rounded px-2 py-1"
@@ -629,6 +645,14 @@ function DevicesPage() {
                         Revoke
                       </button>
                     ) : null}
+                    <button
+                      className="text-xs border border-[var(--bad)] text-[var(--bad)] rounded px-2 py-1"
+                      onClick={() => void removeDevice(d.id)}
+                      type="button"
+                      disabled={busy}
+                    >
+                      删除
+                    </button>
                   </td>
                 </tr>
               ))
@@ -719,6 +743,21 @@ function WorkspacesPage() {
     }
   }
 
+  async function removeWorkspace(id: string) {
+    if (!confirm(`永久删除 workspace ${id}？其下设备也会一并删除。`)) return;
+    setBusy(true);
+    try {
+      await adminFetch(`/cloud/v1/admin/workspaces/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const items = data?.items ?? [];
 
   return (
@@ -762,9 +801,10 @@ function WorkspacesPage() {
               list.resetPage();
             }}
           >
-            <option value="">全部</option>
+            <option value="">有效（隐藏已禁用）</option>
             <option value="active">active</option>
             <option value="disabled">disabled</option>
+            <option value="all">全部（含已禁用）</option>
           </select>
         </label>
         <button
@@ -833,6 +873,14 @@ function WorkspacesPage() {
                     >
                       {w.status === "disabled" ? "Enable" : "Disable"}
                     </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="text-xs border border-[var(--bad)] text-[var(--bad)] rounded px-2 py-1"
+                      onClick={() => void removeWorkspace(w.id)}
+                    >
+                      删除
+                    </button>
                   </td>
                 </tr>
               ))
@@ -854,6 +902,7 @@ function WorkspacesPage() {
 
 function WorkspaceDetailPage() {
   const { id = "" } = useParams();
+  const nav = useNavigate();
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState("");
   const [rotatedKey, setRotatedKey] = useState("");
@@ -909,11 +958,26 @@ function WorkspaceDetailPage() {
   }
 
   async function revoke(deviceId: string) {
-    if (!confirm(`撤销设备 ${deviceId}？`)) return;
+    if (!confirm(`撤销设备 ${deviceId}？（软删除）`)) return;
     setBusy(true);
     try {
       await adminFetch(`/cloud/v1/admin/devices/${encodeURIComponent(deviceId)}/revoke`, {
         method: "POST",
+      });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeDevice(deviceId: string) {
+    if (!confirm(`永久删除设备 ${deviceId}？工作空间会保留。`)) return;
+    setBusy(true);
+    try {
+      await adminFetch(`/cloud/v1/admin/devices/${encodeURIComponent(deviceId)}`, {
+        method: "DELETE",
       });
       await load();
     } catch (e) {
@@ -937,6 +1001,20 @@ function WorkspaceDetailPage() {
     } catch (e) {
       setError(String(e));
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeWorkspace() {
+    if (!confirm(`永久删除此 workspace？其下设备也会一并删除。`)) return;
+    setBusy(true);
+    try {
+      await adminFetch(`/cloud/v1/admin/workspaces/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      nav("/workspaces");
+    } catch (e) {
+      setError(String(e));
       setBusy(false);
     }
   }
@@ -991,6 +1069,14 @@ function WorkspaceDetailPage() {
                 onClick={() => void toggleWorkspace()}
               >
                 {detail.status === "disabled" ? "Enable" : "Disable"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                className="w-fit text-xs border border-[var(--bad)] text-[var(--bad)] rounded px-2 py-1"
+                onClick={() => void removeWorkspace()}
+              >
+                删除工作空间
               </button>
               <Link
                 className="w-fit text-xs border border-[var(--border)] rounded px-2 py-1"
@@ -1057,6 +1143,14 @@ function WorkspaceDetailPage() {
                             onClick={() => void revoke(d.id)}
                           >
                             Revoke
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            className="text-xs border border-[var(--bad)] text-[var(--bad)] rounded px-2 py-1"
+                            onClick={() => void removeDevice(d.id)}
+                          >
+                            删除
                           </button>
                         </td>
                       </tr>
