@@ -7330,6 +7330,53 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     };
   }, [applyAgentModelVisibility]);
 
+  // 手机经云端/HTTP 发 prompt 时，桌面自己的 subscribeEvents 不会挂上该 runId。
+  // 这里收全局 agent 事件：若是当前会话，完成后刷新消息；并刷新会话列表。
+  useEffect(() => {
+    let cancelled = false;
+    let refreshTimer: number | undefined;
+    const unlistenPromise = listen<{
+      sessionId?: string;
+      runId?: string;
+      event?: { type?: string };
+    }>("giteam://agent-event", (event) => {
+      const payload = event.payload;
+      const sid = String(payload?.sessionId || "").trim();
+      if (!sid) return;
+      const type = String(payload?.event?.type || "");
+      const terminal =
+        type === "run.completed" ||
+        type === "run.failed" ||
+        type === "session.status" ||
+        type === "turn.completed" ||
+        type === "message.completed";
+      if (!terminal) return;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        void refreshAgentSessions().catch(() => {});
+        if (sid === activeAgentSessionId) {
+          void fetchAgentDetailedMessagePage(sid, "", 200, Date.now())
+            .then((page) => {
+              if (cancelled) return;
+              updateAgentSessionById(sid, (session) => ({
+                ...session,
+                messages: page.items,
+                loaded: true,
+                updatedAt: Date.now(),
+              }));
+            })
+            .catch(() => {});
+        }
+      }, 250);
+    });
+    return () => {
+      cancelled = true;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [activeAgentSessionId]);
+
   useEffect(() => {
     if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
     // Load settings after the dialog paints to avoid blocking navigation.

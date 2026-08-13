@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -225,6 +225,18 @@ pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelop
             }
         }
     }
+    if let Some(hook) = UI_EVENT_HOOK.get() {
+        hook(event);
+    }
+}
+
+type UiEventHook = Arc<dyn Fn(&AgentEventEnvelope) + Send + Sync>;
+
+static UI_EVENT_HOOK: OnceLock<UiEventHook> = OnceLock::new();
+
+/// Desktop registers a hook so HTTP/mobile prompts also emit into the Tauri UI.
+pub fn set_ui_event_hook(hook: UiEventHook) {
+    let _ = UI_EVENT_HOOK.set(hook);
 }
 
 #[derive(Debug)]

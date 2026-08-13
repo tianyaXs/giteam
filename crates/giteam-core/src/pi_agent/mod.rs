@@ -16,7 +16,9 @@ mod tools;
 mod types;
 
 pub use browser_controller::{BrowserAction, BrowserActionResult, BrowserController};
-pub use events::{AgentEvent, AgentEventEnvelope, PiEventTranslator, AGENT_EVENT_SCHEMA_VERSION};
+pub use events::{
+    set_ui_event_hook, AgentEvent, AgentEventEnvelope, PiEventTranslator, AGENT_EVENT_SCHEMA_VERSION,
+};
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
 pub use prompt::default_system_prompt;
 pub use providers::{

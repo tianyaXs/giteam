@@ -300,6 +300,14 @@ fn main() {
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
+            // 手机/HTTP control 发起的 prompt 也要把 agent 事件打进桌面 UI。
+            {
+                let handle = app.handle().clone();
+                giteam_core::pi_agent::set_ui_event_hook(std::sync::Arc::new(move |event| {
+                    let _ = handle.emit("giteam://agent-event", event);
+                }));
+            }
+
             // 手机端模型开关双向同步：后台线程轮询 mobile-model-state.json，
             // updatedAt 变化时 emit 给前端 apply（手机端 toggle → control server
             // 合并写文件 → 这里 30s 内感知 → 前端 diff 应用 enabled/hidden →
