@@ -1921,7 +1921,11 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
             {
                 let port = settings.port;
                 drop(guard);
-                let _ = crate::cloud::start_cloud_tunnel_background(port);
+                // 配置未变：仅 CLI 进程（owner != desktop）且 tunnel 未运行时才拉，
+                // 已运行则幂等跳过（避免误掐已连好的 tunnel）。
+                if should_cli_own_tunnel() && !crate::cloud::tunnel_running() {
+                    let _ = crate::cloud::start_cloud_tunnel_background(port);
+                }
                 return Ok(());
             }
         }
@@ -1950,10 +1954,20 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
             settings,
         });
         drop(guard);
-        let _ = crate::cloud::start_cloud_tunnel_background(port);
+        // 桌面场景 owner=desktop，tunnel 由桌面进程独占，CLI service 不拉。
+        if should_cli_own_tunnel() {
+            let _ = crate::cloud::start_cloud_tunnel_background(port);
+        }
         return Ok(());
     }
     Err("failed to lock control runtime".to_string())
+}
+
+/// 只有 owner != "desktop" 时，CLI service 进程才负责拉 cloud tunnel。
+/// owner 为空（CLI-only 用户）视为 cli；owner=desktop（桌面用户）让位给桌面进程，
+/// 消除桌面 Tauri 进程与 CLI service 子进程抢 gateway 同一 device slot 的抖动。
+fn should_cli_own_tunnel() -> bool {
+    crate::cloud::get_cloud_link_settings().tunnel_owner != "desktop"
 }
 
 pub fn start_control_server() -> Result<(), String> {

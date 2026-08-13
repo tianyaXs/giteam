@@ -53,6 +53,8 @@ pub struct LinkDeviceOptions {
     pub force_new: bool,
     /// Name for a newly minted key (ignored when joining with an existing key).
     pub key_name: Option<String>,
+    /// Who owns the cloud tunnel: "desktop" or "cli". None = keep existing value.
+    pub tunnel_owner: Option<String>,
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -195,6 +197,10 @@ pub fn link_device_with_opts(
         key_name: existing.key_name.clone(),
         device_name: device_name.to_string(),
         access_keys: existing.access_keys.clone(),
+        tunnel_owner: opts
+            .tunnel_owner
+            .clone()
+            .unwrap_or_else(|| existing.tunnel_owner.clone()),
     };
     let name = opts
         .key_name

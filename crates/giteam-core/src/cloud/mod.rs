@@ -13,4 +13,7 @@ pub use http::{
     list_mobile_clients, LinkBeginResponse, LinkCompleteResponse, LinkDeviceOptions,
     MobileClientSession,
 };
-pub use tunnel::{start_cloud_tunnel_background, stop_cloud_tunnel, tunnel_running};
+pub use tunnel::{
+    start_cloud_tunnel_and_wait, start_cloud_tunnel_background, stop_cloud_tunnel,
+    tunnel_connected, tunnel_running, wait_until_tunnel_connected,
+};
