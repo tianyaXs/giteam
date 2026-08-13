@@ -1,0 +1,8 @@
+# Thin overlay on previously pushed runtime image (avoids rebuilding rust/node bases).
+# Build from repo root after local console + zigbuild:
+#   docker build --platform linux/amd64 -f services/cloud/Dockerfile.overlay -t ... .
+ARG BASE_IMAGE=indemind-cn-beijing.cr.volces.com/indemind-dev/giteam-cloud:0.1.7
+FROM --platform=linux/amd64 ${BASE_IMAGE}
+COPY services/cloud/gateway/target/x86_64-unknown-linux-gnu/release/giteam-cloud-gateway /usr/local/bin/giteam-cloud-gateway
+COPY services/cloud/gateway/migrations /app/migrations
+COPY apps/cloud/dist /app/static
