@@ -718,15 +718,15 @@ fn ws_url(cloud_base_url: &str) -> Result<String, String> {
         return Err("empty cloud base url".into());
     }
     if let Some(rest) = base.strip_prefix("https://") {
-        Ok(format!("wss://{rest}/cloud/v1/device/tunnel"))
+        Ok(format!("wss://{rest}/cloud/v1/tunnel"))
     } else if let Some(rest) = base.strip_prefix("http://") {
-        Ok(format!("ws://{rest}/cloud/v1/device/tunnel"))
+        Ok(format!("ws://{rest}/cloud/v1/tunnel"))
     } else if let Some(rest) = base.strip_prefix("wss://") {
-        Ok(format!("wss://{rest}/cloud/v1/device/tunnel"))
+        Ok(format!("wss://{rest}/cloud/v1/tunnel"))
     } else if let Some(rest) = base.strip_prefix("ws://") {
-        Ok(format!("ws://{rest}/cloud/v1/device/tunnel"))
+        Ok(format!("ws://{rest}/cloud/v1/tunnel"))
     } else {
-        Ok(format!("ws://{base}/cloud/v1/device/tunnel"))
+        Ok(format!("ws://{base}/cloud/v1/tunnel"))
     }
 }
 
