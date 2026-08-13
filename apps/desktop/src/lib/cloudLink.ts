@@ -20,6 +20,8 @@ export type CloudLinkStatus = {
   accessKey: string;
   keyName: string;
   tunnelRunning: boolean;
+  /** Gateway WebSocket is up; required for mobile redeem to see this device online. */
+  tunnelConnected: boolean;
   accessKeys: CloudAccessKeyRecord[];
 };
 

@@ -398,6 +398,26 @@ pub fn start_managed_mobile_service() {
     if cli_installed() {
         let _ = sync_cli_bootstrap_settings();
     }
+    // Cloud tunnel 自动重连：桌面进程是 tunnel 归属方（owner=desktop）。
+    // 老配置无 owner → 迁移为 desktop；已 link 则后台拉起（非阻塞，发配置即返回）。
+    ensure_desktop_tunnel_owner();
+    let settings = giteam_core::cloud::get_cloud_link_settings();
+    if settings.enabled && !settings.device_token.trim().is_empty() {
+        if let Ok(cs) = control::get_control_server_settings() {
+            if cs.port > 0 {
+                let _ = giteam_core::cloud::start_cloud_tunnel_background(cs.port);
+            }
+        }
+    }
+}
+
+/// 桌面进程首次启动把空的 tunnel_owner 迁移为 "desktop"（这台机有桌面端 → 归桌面）。
+fn ensure_desktop_tunnel_owner() {
+    let mut settings = giteam_core::cloud::get_cloud_link_settings();
+    if settings.tunnel_owner.trim().is_empty() {
+        settings.tunnel_owner = "desktop".to_string();
+        let _ = giteam_core::cloud::set_cloud_link_settings(&settings);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -424,6 +444,8 @@ pub struct CloudLinkStatusView {
     pub access_key: String,
     pub key_name: String,
     pub tunnel_running: bool,
+    /// True only after Gateway WebSocket handshake succeeds.
+    pub tunnel_connected: bool,
     pub access_keys: Vec<CloudAccessKeyView>,
 }
 
@@ -453,6 +475,7 @@ fn cloud_status_view() -> CloudLinkStatusView {
         access_key: settings.access_key,
         key_name: settings.key_name,
         tunnel_running: giteam_core::cloud::tunnel_running(),
+        tunnel_connected: giteam_core::cloud::tunnel_connected(),
         access_keys,
     }
 }
@@ -497,10 +520,19 @@ pub fn giteam_cloud_link(
         giteam_core::cloud::LinkDeviceOptions {
             force_new: force_new.unwrap_or(false),
             key_name,
+            tunnel_owner: Some("desktop".into()),
         },
     )?;
+    let _ = settings;
     let port = control::get_control_server_settings()?.port;
-    let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
+    // Block until WS is up so create/switch returns with「中继已连接」.
+    let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
+        port,
+        std::time::Duration::from_secs(6),
+    )?;
+    if !ready {
+        eprintln!("[giteam-cloud] link finished but tunnel not ready within timeout");
+    }
     Ok(cloud_status_view())
 }
 
@@ -559,11 +591,18 @@ pub fn giteam_cloud_use_key(access_key: String) -> Result<CloudLinkStatusView, S
         giteam_core::cloud::LinkDeviceOptions {
             force_new: false,
             key_name: name,
+            tunnel_owner: Some("desktop".into()),
         },
     )?;
     let _ = linked;
     let port = control::get_control_server_settings()?.port;
-    let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
+    let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
+        port,
+        std::time::Duration::from_secs(6),
+    )?;
+    if !ready {
+        eprintln!("[giteam-cloud] use_key finished but tunnel not ready within timeout");
+    }
     Ok(cloud_status_view())
 }
 

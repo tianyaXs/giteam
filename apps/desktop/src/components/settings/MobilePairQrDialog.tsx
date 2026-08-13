@@ -64,8 +64,15 @@ export function MobilePairQrDialog({
   const [nowTick, setNowTick] = useState(0);
 
   const cloudReady = Boolean(
+    cloudStatus?.accessKey &&
+      cloudStatus.workspaceId &&
+      cloudStatus.cloudBaseUrl &&
+      cloudStatus.tunnelConnected
+  );
+  const cloudLinked = Boolean(
     cloudStatus?.accessKey && cloudStatus.workspaceId && cloudStatus.cloudBaseUrl
   );
+  const cloudConnecting = cloudLinked && !cloudStatus?.tunnelConnected;
   const localReady = Boolean(localEnabled && localQrUrl);
   const showingCloud = mode === "cloud";
   const primaryClient = clients[0] || null;
@@ -120,18 +127,28 @@ export function MobilePairQrDialog({
   useEffect(() => {
     if (!open || !showingCloud) return;
     void refreshClients();
+    void refreshCloudStatus();
+    // Wait for tunnel handshake before treating QR as scannable.
+    const pollMs = cloudStatus?.tunnelConnected ? 4000 : 1200;
     const poll = window.setInterval(() => {
       void refreshClients();
       void refreshCloudStatus();
-    }, 4000);
+    }, pollMs);
     const tick = window.setInterval(() => setNowTick((n) => n + 1), 15000);
     return () => {
       window.clearInterval(poll);
       window.clearInterval(tick);
     };
-  }, [open, showingCloud, refreshClients, refreshCloudStatus]);
+  }, [
+    open,
+    showingCloud,
+    refreshClients,
+    refreshCloudStatus,
+    cloudStatus?.tunnelConnected,
+  ]);
 
   const cloudPayload = useMemo(() => {
+    if (!cloudReady) return "";
     if (!cloudStatus?.accessKey || !cloudStatus.workspaceId) return "";
     const cloudBaseUrl = resolveReachableCloudBaseUrl(
       cloudStatus.cloudBaseUrl || getDefaultCloudBaseUrl()
@@ -143,7 +160,7 @@ export function MobilePairQrDialog({
       workspaceId: cloudStatus.workspaceId,
       accessKey: cloudStatus.accessKey,
     });
-  }, [cloudStatus]);
+  }, [cloudReady, cloudStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,8 +193,10 @@ export function MobilePairQrDialog({
     ? "移动设备接入"
     : showingCloud
       ? cloudReady
-        ? "移动设备接入"
-        : "先在设置 → 服务中创建 API Key"
+        ? "中继已连接 · 扫码接入"
+        : cloudConnecting
+          ? "正在连接云端中继，请稍候…"
+          : "先在设置 → 服务中创建 API Key"
       : localReady
         ? localNoAuth
           ? "局域网免验证 · 扫码直连"
@@ -229,7 +248,7 @@ export function MobilePairQrDialog({
             >
               {(
                 [
-                  ["cloud", "云端", cloudReady],
+                  ["cloud", "云端", cloudLinked],
                   ["local", "局域网", localReady],
                 ] as const
               ).map(([id, label, ready]) => {
@@ -328,14 +347,16 @@ export function MobilePairQrDialog({
                         {loading && showingCloud
                           ? "加载中…"
                           : showingCloud
-                            ? "暂无云端密钥"
+                            ? cloudConnecting
+                              ? "正在连接云端中继…"
+                              : "暂无云端密钥"
                             : "局域网服务未开启"}
                       </div>
                     )}
                   </div>
                 </div>
 
-                {!hasQr && onOpenServiceSettings ? (
+                {!hasQr && !cloudConnecting && onOpenServiceSettings ? (
                   <Button
                     size="sm"
                     variant="contrast"

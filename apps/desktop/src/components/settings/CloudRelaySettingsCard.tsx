@@ -86,6 +86,24 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
       ? (status?.cloudBaseUrl || defaultCloud).replace(/\/$/, "")
       : privateUrl.trim().replace(/\/$/, "");
 
+  const hasActiveKey = Boolean(status?.accessKey?.trim());
+  const tunnelConnected = Boolean(status?.tunnelConnected);
+  const tunnelRunning = Boolean(status?.tunnelRunning);
+  const relayLabel = !hasActiveKey
+    ? "未创建密钥"
+    : tunnelConnected
+      ? "中继已连接"
+      : tunnelRunning
+        ? "中继连接中…"
+        : "中继未连接";
+  const relayTone = !hasActiveKey
+    ? "text-muted-foreground"
+    : tunnelConnected
+      ? "text-emerald-600 dark:text-emerald-400"
+      : tunnelRunning
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-destructive";
+
   const refresh = useCallback(async () => {
     try {
       const next = await getCloudStatus();
@@ -99,9 +117,24 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
   useEffect(() => {
     if (!active) return;
     void refresh();
-    const t = setInterval(() => void refresh(), 8000);
+    // Connecting: poll faster so UI / QR can flip to ready ASAP.
+    const intervalMs = status?.tunnelConnected ? 8000 : 1500;
+    const t = setInterval(() => void refresh(), intervalMs);
     return () => clearInterval(t);
-  }, [refresh, active]);
+  }, [refresh, active, status?.tunnelConnected]);
+
+  async function ensureRelayAfterLink() {
+    // Backend already waits until tunnelConnected; refresh once (+ brief fallback).
+    const next = await getCloudStatus();
+    setStatus(next);
+    if (next.tunnelConnected) return;
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => window.setTimeout(r, 120));
+      const again = await getCloudStatus();
+      setStatus(again);
+      if (again.tunnelConnected) return;
+    }
+  }
 
   const keys = useMemo(() => {
     const all = status?.accessKeys || [];
@@ -160,7 +193,7 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
       setNewKeyName("");
       setCreateOpen(false);
       setCreateError("");
-      await refresh();
+      await ensureRelayAfterLink();
     } catch (e) {
       setCreateError(String(e));
     } finally {
@@ -207,7 +240,7 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
     setBusy(true);
     try {
       await useCloudKey(key.accessKey);
-      await refresh();
+      await ensureRelayAfterLink();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -247,8 +280,11 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
         </label>
       ) : null}
 
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold text-foreground">API Keys</h3>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h3 className="text-base font-semibold text-foreground">API Keys</h3>
+          <div className={`text-[12px] ${relayTone}`}>{relayLabel}</div>
+        </div>
         <Button
           size="sm"
           variant="contrast"
@@ -303,11 +339,16 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
                   <td className="px-2 py-3 font-mono text-[12px] text-muted-foreground">
                     <button
                       type="button"
-                      className="max-w-[280px] break-all text-left hover:text-foreground"
+                      className="relative max-w-[280px] break-all text-left hover:text-foreground"
                       title="点击复制密钥"
                       onClick={() => void onCopyKey(k)}
                     >
-                      {copiedKeyId === k.id ? "已复制" : k.accessKey || "—"}
+                      <span>{k.accessKey || "—"}</span>
+                      {copiedKeyId === k.id ? (
+                        <span className="pointer-events-none absolute -right-1 -top-2 rounded bg-foreground px-1.5 py-0.5 text-[10px] font-sans font-medium text-background shadow-sm">
+                          已复制
+                        </span>
+                      ) : null}
                     </button>
                   </td>
                   <td className="px-2 py-3 whitespace-nowrap">
@@ -394,7 +435,7 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
               取消
             </Button>
             <Button variant="contrast" size="sm" disabled={busy} onClick={() => void onCreateKey()}>
-              {busy ? "创建中…" : "创建"}
+              {busy ? "连接中…" : "创建"}
             </Button>
           </DialogFooter>
         </DialogContent>
