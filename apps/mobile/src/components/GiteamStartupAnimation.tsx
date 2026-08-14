@@ -9,7 +9,7 @@ type GiteamStartupAnimationProps = {
   fontFamily?: string;
 };
 
-/** 与桌面端同款 mark；加载时旋转。 */
+/** 与桌面端同款 mark；加载时旋转。浅色=白底深标，深色=深底白标。 */
 const APP_ICON_MARK = require('../../assets/app-icon-mark.png');
 
 export function GiteamStartupAnimation(props: GiteamStartupAnimationProps) {
@@ -110,23 +110,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   iconWrap: {
-    width: 96,
-    height: 96,
+    width: 72,
+    height: 72,
     alignItems: 'center',
     justifyContent: 'center'
   },
   icon: {
-    width: 72,
-    height: 72
+    width: 48,
+    height: 48
   },
   wordmarkWrap: {
-    marginTop: 14,
+    marginTop: 12,
     paddingHorizontal: 10,
     alignSelf: 'center'
   },
   wordmark: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 26,
+    lineHeight: 32,
     letterSpacing: -0.4,
     fontWeight: '600',
     ...(Platform.OS === 'android'

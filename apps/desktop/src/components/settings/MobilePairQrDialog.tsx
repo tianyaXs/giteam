@@ -224,6 +224,8 @@ export function MobilePairQrDialog({
       <DialogContent
         className="z-[2501] w-[min(400px,calc(100vw-32px))] overflow-hidden border-border/80 p-0 shadow-2xl"
         overlayClassName="z-[2500] bg-black/45 backdrop-blur-[2px]"
+        // 打开时不要自动聚焦首个「云端」按钮，否则会出现一圈系统蓝框。
+        onOpenAutoFocus={(event) => event.preventDefault()}
       >
         <div className="relative overflow-hidden px-6 pb-6 pt-7">
           <div
@@ -261,7 +263,7 @@ export function MobilePairQrDialog({
                     aria-selected={active}
                     onClick={() => setMode(id)}
                     className={cn(
-                      "rounded-full px-4 py-1.5 text-[13px] font-medium transition-colors",
+                      "rounded-full px-4 py-1.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-0",
                       active
                         ? "bg-foreground text-background shadow-sm"
                         : "text-muted-foreground hover:text-foreground",

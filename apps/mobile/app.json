@@ -9,8 +9,8 @@
       "backgroundColor": "#FFFFFF",
       "resizeMode": "contain",
       "dark": {
-        "image": "./assets/splash-icon-dark.png",
-        "backgroundColor": "#1B1B1D",
+        "image": "./assets/splash-icon-light.png",
+        "backgroundColor": "#FFFFFF",
         "resizeMode": "contain"
       }
     },
@@ -32,7 +32,7 @@
       "package": "io.giteam.mobile",
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
       },
       "splash": {
@@ -40,8 +40,8 @@
         "backgroundColor": "#FFFFFF",
         "resizeMode": "contain",
         "dark": {
-          "image": "./assets/splash-icon-dark.png",
-          "backgroundColor": "#1B1B1D",
+          "image": "./assets/splash-icon-light.png",
+          "backgroundColor": "#FFFFFF",
           "resizeMode": "contain"
         }
       }
