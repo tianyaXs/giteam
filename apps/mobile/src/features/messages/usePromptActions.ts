@@ -232,7 +232,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
         bindMessageSendSession(perf, targetSessionId);
         requestSessionId = targetSessionId;
         paintOptimistic(targetSessionId);
-        // 必须 await：否则 prompt 里工具可能在 autoApprove 生效前就进入审批。
+        // 新会话 hub 默认关审批；必须在 prompt 前写入，否则首轮工具会卡审批。
         try {
           await client.setAutoApprove(targetSessionId, autoAcceptPermissions);
         } catch (approveError) {
@@ -243,24 +243,30 @@ export function usePromptActions(params: UsePromptActionsParams) {
         }
       } else {
         bindMessageSendSession(perf, targetSessionId);
-        // Build/Plan 模式热切换：与桌面端一致，prompt 前同步工具白名单与系统提示追加段。
+        // Plan 白名单已迁到后端 subagent；composerAgentSessionOptions 现为空。
+        // 旧逻辑每次仍 POST session-options → 桌面端丢弃 handle 并重载整段 jsonl，
+        // 经云端中继可达数秒～十余秒，表现为「发出去很久才开始回」。
         const agentOptions = composerAgentSessionOptions(composerAgent);
-        await client
-          .setSessionOptions(targetSessionId, {
-            ...(agentOptions.enabledTools ? { enabledTools: agentOptions.enabledTools } : {}),
-            appendSystemPrompt: agentOptions.appendSystemPrompt
-          })
-          .catch((optionsError) => {
-            pushConnLog(`agent.session-options warn ${String(optionsError)}`, 'info');
+        const hasSessionOptionPatch =
+          (Array.isArray(agentOptions.enabledTools) && agentOptions.enabledTools.length > 0) ||
+          Boolean(toText(agentOptions.appendSystemPrompt).trim());
+        if (hasSessionOptionPatch) {
+          markMessageSendPerf(perf, 'send.session_options.begin');
+          const optionsStartedAt = performance.now();
+          await client
+            .setSessionOptions(targetSessionId, {
+              ...(agentOptions.enabledTools ? { enabledTools: agentOptions.enabledTools } : {}),
+              appendSystemPrompt: agentOptions.appendSystemPrompt
+            })
+            .catch((optionsError) => {
+              pushConnLog(`agent.session-options warn ${String(optionsError)}`, 'info');
+            });
+          markMessageSendPerf(perf, 'send.session_options.done', {
+            ms: Math.round(performance.now() - optionsStartedAt)
           });
-        try {
-          await client.setAutoApprove(targetSessionId, autoAcceptPermissions);
-        } catch (approveError) {
-          pushConnLog(
-            `agent.auto-approve warn enabled=${autoAcceptPermissions ? 1 : 0} ${String(approveError)}`,
-            'info'
-          );
         }
+        // 已有会话的 auto-approve 由 sessionId/开关 effect 同步；发送路径再 await 只会多堵一趟中继。
+        // 若 effect 尚未落盘，permission 交互处仍有本地 auto 代批兜底。
       }
       setSlashOpen(false);
       setImageAttachments([]);

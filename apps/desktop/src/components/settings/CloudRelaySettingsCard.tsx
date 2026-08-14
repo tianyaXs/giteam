@@ -121,7 +121,8 @@ export function CloudRelaySettingsCard({ mode, active = true }: CloudRelaySettin
     if (!active) return;
     void refresh();
     // Connecting: poll faster so UI / QR can flip to ready ASAP.
-    const intervalMs = status?.tunnelConnected ? 8000 : 1500;
+    // 已连接时也要较快轮询：半开/重连窗口内 8s 会让 UI 长时间谎报「中继已连接」。
+    const intervalMs = status?.tunnelConnected ? 2000 : 1200;
     const t = setInterval(() => void refresh(), intervalMs);
     return () => clearInterval(t);
   }, [refresh, active, status?.tunnelConnected]);

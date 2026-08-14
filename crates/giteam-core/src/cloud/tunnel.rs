@@ -377,26 +377,65 @@ async fn run_tunnel_loop(
     set_tunnel_connected(true);
     eprintln!("[giteam-cloud] tunnel connected to {url}");
 
-    let mut ping_tick = tokio::time::interval(Duration::from_secs(15));
+    // 对齐 ngrok：heartbeat_interval ≈ 10s，heartbeat_tolerance ≈ 15s。
+    // 只发 ping 不够；必须在容差内收到对应 pong，否则判定半开并重连。
+    let mut ping_tick = tokio::time::interval(Duration::from_secs(10));
     ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_inbound = tokio::time::Instant::now();
+    let mut last_pong = tokio::time::Instant::now();
+    let mut awaiting_pong_since: Option<tokio::time::Instant> = None;
+    const HEARTBEAT_TOLERANCE: Duration = Duration::from_secs(15);
+    const STALE_AFTER: Duration = Duration::from_secs(45);
 
     loop {
         tokio::select! {
             biased;
             _ = &mut cancel => break,
             _ = ping_tick.tick() => {
+                if last_inbound.elapsed() > STALE_AFTER {
+                    eprintln!(
+                        "[giteam-cloud] tunnel stale: no inbound for {}s, reconnecting",
+                        STALE_AFTER.as_secs()
+                    );
+                    break;
+                }
+                if let Some(since) = awaiting_pong_since {
+                    if since.elapsed() > HEARTBEAT_TOLERANCE {
+                        eprintln!(
+                            "[giteam-cloud] heartbeat timeout: no pong within {}s, reconnecting",
+                            HEARTBEAT_TOLERANCE.as_secs()
+                        );
+                        break;
+                    }
+                    // 上一发 ping 还在等 pong，跳过本轮，避免通道堆积。
+                    continue;
+                }
                 let frame = TunnelFrame::Ping { v: 1, ts: chrono::Utc::now().timestamp_millis() };
                 let text = serde_json::to_string(&frame).map_err(|e| e.to_string())?;
-                if out_tx.send(Message::Text(text.into())).await.is_err() {
-                    break;
+                // 绝不能 await 占满的 out 通道：否则 stream 再也读不到 Close。
+                match out_tx.try_send(Message::Text(text.into())) {
+                    Ok(()) => {
+                        awaiting_pong_since = Some(tokio::time::Instant::now());
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        eprintln!("[giteam-cloud] tunnel outbound backed up; reconnecting");
+                        break;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                 }
             }
             Some(msg) = out_rx.recv() => {
-                if sink.send(msg).await.is_err() {
+                if tokio::time::timeout(Duration::from_secs(10), sink.send(msg))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .is_none()
+                {
                     break;
                 }
             }
             msg = stream.next() => {
+                last_inbound = tokio::time::Instant::now();
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         let frame: TunnelFrame = serde_json::from_str(&text)
@@ -434,11 +473,21 @@ async fn run_tunnel_loop(
                             TunnelFrame::Ping { ts, .. } => {
                                 let pong = TunnelFrame::Pong { v: 1, ts };
                                 let text = serde_json::to_string(&pong).map_err(|e| e.to_string())?;
-                                if out_tx.send(Message::Text(text.into())).await.is_err() {
-                                    break;
+                                match out_tx.try_send(Message::Text(text.into())) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        eprintln!("[giteam-cloud] tunnel outbound backed up on pong; reconnecting");
+                                        break;
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                                 }
                             }
-                            TunnelFrame::Pong { .. } | TunnelFrame::Hello { .. } => {}
+                            TunnelFrame::Pong { .. } => {
+                                last_pong = tokio::time::Instant::now();
+                                awaiting_pong_since = None;
+                                let _ = last_pong;
+                            }
+                            TunnelFrame::Hello { .. } => {}
                             other => {
                                 eprintln!(
                                     "[giteam-cloud] ignore frame: {:?}",
@@ -448,9 +497,18 @@ async fn run_tunnel_loop(
                         }
                     }
                     Some(Ok(Message::Ping(bin))) => {
-                        if out_tx.send(Message::Pong(bin)).await.is_err() {
-                            break;
+                        match out_tx.try_send(Message::Pong(bin)) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                eprintln!("[giteam-cloud] tunnel outbound backed up on ws-pong; reconnecting");
+                                break;
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => break,
                         }
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        last_pong = tokio::time::Instant::now();
+                        awaiting_pong_since = None;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(_)) => {}

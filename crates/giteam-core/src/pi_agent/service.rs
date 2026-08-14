@@ -1391,6 +1391,41 @@ impl PiAgentService {
         append_system_prompt: Option<String>,
     ) -> Result<PiSessionSummary, PiAgentError> {
         self.ensure_not_running(session_id)?;
+        // 选项未变时直接返回：避免「空 patch / 重复调用」仍丢弃 handle 并重载整段 jsonl。
+        // 手机端经云端中继时，这种无意义重建会被放大成数秒～十余秒的发送阻塞。
+        let unchanged = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records.get(session_id).map(|record| {
+                    record.enabled_tools == enabled_tools
+                        && record.append_system_prompt == append_system_prompt
+                })
+            })
+            .unwrap_or(false);
+        if unchanged {
+            let session = self.get_session(session_id).await?;
+            let state = {
+                let handle = session.handle.lock().await;
+                handle
+                    .state()
+                    .await
+                    .map_err(|error| PiAgentError::Sdk(error.to_string()))?
+            };
+            return Ok(PiSessionSummary {
+                session_id: state.session_id.unwrap_or_else(|| session_id.to_string()),
+                repo_path: session.repo_path.clone(),
+                provider: state.provider,
+                model: state.model_id,
+                message_count: state.message_count,
+                updated_at_ms: self.record_updated_at_ms(session_id),
+                title: self.record_title(session_id),
+                session_kind: self.record_session_kind(session_id),
+                parent_session_id: self.record_parent_session_id(session_id),
+                parent_tool_call_id: self.record_parent_tool_call_id(session_id),
+            });
+        }
         // 1. 更新持久化 record（锁内短改即释）。
         if let Ok(mut records) = self.records.lock() {
             if let Some(record) = records.get_mut(session_id) {

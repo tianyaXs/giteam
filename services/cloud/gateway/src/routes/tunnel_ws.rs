@@ -59,6 +59,13 @@ async fn handle_socket(
         .await;
 
     tracing::info!(%device_id, %workspace_id, %name, "tunnel connected");
+    crate::proxy::write_audit(
+        &state,
+        Some(&workspace_id),
+        "device.tunnel_connected",
+        serde_json::json!({ "deviceId": device_id, "name": name }),
+    )
+    .await;
     let _ = sqlx::query("UPDATE devices SET last_seen_at = NOW() WHERE id = $1")
         .bind(&device_id)
         .execute(&state.pool)
@@ -76,8 +83,38 @@ async fn handle_socket(
         }
     }
 
+    // 对齐 ngrok：服务端也检测 liveness。设备长时间无入站帧 → 主动踢掉半开连接，
+    // 避免 redeem 仍看到「幽灵在线」或桌面 CLOSE_WAIT 占着槽。
+    let mut last_inbound = tokio::time::Instant::now();
+    let mut idle_tick = tokio::time::interval(std::time::Duration::from_secs(10));
+    idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+    let mut server_ping = tokio::time::interval(std::time::Duration::from_secs(20));
+    server_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
+            _ = idle_tick.tick() => {
+                if last_inbound.elapsed() > IDLE_AFTER {
+                    tracing::warn!(
+                        %device_id,
+                        idle_secs = IDLE_AFTER.as_secs(),
+                        "tunnel idle timeout; closing"
+                    );
+                    break;
+                }
+            }
+            _ = server_ping.tick() => {
+                let frame = TunnelFrame::Ping {
+                    v: 1,
+                    ts: chrono::Utc::now().timestamp_millis(),
+                };
+                if let Ok(text) = serde_json::to_string(&frame) {
+                    if sink.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
             maybe_out = outbound_rx.recv() => {
                 match maybe_out {
                     Some(frame) => {
@@ -96,12 +133,16 @@ async fn handle_socket(
             maybe_msg = stream.next() => {
                 match maybe_msg {
                     Some(Ok(Message::Text(text))) => {
+                        last_inbound = tokio::time::Instant::now();
                         match serde_json::from_str::<TunnelFrame>(&text) {
                             Ok(TunnelFrame::Ping { ts, .. }) => {
                                 let _ = state.tunnels.send_to_device(
                                     &device_id,
                                     TunnelFrame::Pong { v: 1, ts },
                                 ).await;
+                            }
+                            Ok(TunnelFrame::Pong { .. }) => {
+                                // desktop 对 server ping 的应答；只刷新 liveness。
                             }
                             Ok(frame) => {
                                 state.tunnels.handle_frame(&device_id, frame).await;
@@ -116,12 +157,18 @@ async fn handle_socket(
                             .await;
                     }
                     Some(Ok(Message::Ping(bin))) => {
+                        last_inbound = tokio::time::Instant::now();
                         if sink.send(Message::Pong(bin)).await.is_err() {
                             break;
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => {
+                        last_inbound = tokio::time::Instant::now();
+                    }
                     Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(_)) => {}
+                    Some(Ok(_)) => {
+                        last_inbound = tokio::time::Instant::now();
+                    }
                     Some(Err(_)) => break,
                 }
             }
@@ -130,4 +177,11 @@ async fn handle_socket(
 
     state.tunnels.unregister(&device_id, generation).await;
     tracing::info!(%device_id, "tunnel disconnected");
+    crate::proxy::write_audit(
+        &state,
+        Some(&workspace_id),
+        "device.tunnel_disconnected",
+        serde_json::json!({ "deviceId": device_id, "name": name }),
+    )
+    .await;
 }

@@ -129,7 +129,7 @@ export function MobilePairQrDialog({
     void refreshClients();
     void refreshCloudStatus();
     // Wait for tunnel handshake before treating QR as scannable.
-    const pollMs = cloudStatus?.tunnelConnected ? 4000 : 1200;
+    const pollMs = cloudStatus?.tunnelConnected ? 2000 : 1000;
     const poll = window.setInterval(() => {
       void refreshClients();
       void refreshCloudStatus();
