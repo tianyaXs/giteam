@@ -169,7 +169,40 @@ export function usePromptActions(params: UsePromptActionsParams) {
       imageCount: images.length,
       log: pushConnLog
     });
+    const paintOptimistic = (sid: string) => {
+      if (optimisticMessage.attachments?.length) {
+        sentAttachmentCacheRef.current[sid] = {
+          ...(sentAttachmentCacheRef.current[sid] || {}),
+          [`id:${optimisticMessage.id}`]: {
+            at: Date.now(),
+            attachments: optimisticMessage.attachments
+          },
+          [`text:${toText(payloadPrompt).trim()}`]: {
+            at: Date.now(),
+            attachments: optimisticMessage.attachments
+          }
+        };
+      }
+      markMessageSendPerf(perf, 'send.optimistic.upsert.begin');
+      upsertOptimisticUserMessage(sid, optimisticMessage);
+      markMessageSendPerf(perf, 'send.optimistic.upsert.done');
+      const listStartedAt = performance.now();
+      appendOptimisticTurnAndStick(optimisticMessage);
+      markMessageSendPerf(perf, 'send.list_window.append_done', {
+        ms: Math.round(performance.now() - listStartedAt)
+      });
+      pendingPromptSessionRef.current[sid] = {
+        id: optimisticMessage.id,
+        startedAt: Date.now()
+      };
+      setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'busy' } }));
+    };
     let requestSessionId = '';
+    // 已有会话：先上屏再走网络，避免 setSessionOptions 等云端往返把气泡卡住几秒。
+    if (existingSid) {
+      requestSessionId = existingSid;
+      paintOptimistic(existingSid);
+    }
     const client = createMobileAgentClient({ baseUrl: serverUrl, token });
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
@@ -190,6 +223,15 @@ export function usePromptActions(params: UsePromptActionsParams) {
           appendSystemPrompt: agentOptions.appendSystemPrompt
         });
         targetSessionId = created.sessionId;
+        markMessageSendPerf(perf, 'send.create_session.done', {
+          ms: Math.round(performance.now() - createStartedAt),
+          sid: targetSessionId
+        });
+        // 先切会话再画气泡：setActiveSession 会清空列表，顺序反了会丢乐观消息。
+        setActiveSession(targetSessionId);
+        bindMessageSendSession(perf, targetSessionId);
+        requestSessionId = targetSessionId;
+        paintOptimistic(targetSessionId);
         // 必须 await：否则 prompt 里工具可能在 autoApprove 生效前就进入审批。
         try {
           await client.setAutoApprove(targetSessionId, autoAcceptPermissions);
@@ -199,12 +241,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
             'info'
           );
         }
-        markMessageSendPerf(perf, 'send.create_session.done', {
-          ms: Math.round(performance.now() - createStartedAt),
-          sid: targetSessionId
-        });
-        setActiveSession(targetSessionId);
-        bindMessageSendSession(perf, targetSessionId);
       } else {
         bindMessageSendSession(perf, targetSessionId);
         // Build/Plan 模式热切换：与桌面端一致，prompt 前同步工具白名单与系统提示追加段。
@@ -226,33 +262,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
           );
         }
       }
-      if (optimisticMessage.attachments?.length) {
-        sentAttachmentCacheRef.current[targetSessionId] = {
-          ...(sentAttachmentCacheRef.current[targetSessionId] || {}),
-          [`id:${optimisticMessage.id}`]: {
-            at: Date.now(),
-            attachments: optimisticMessage.attachments
-          },
-          [`text:${toText(payloadPrompt).trim()}`]: {
-            at: Date.now(),
-            attachments: optimisticMessage.attachments
-          }
-        };
-      }
-      markMessageSendPerf(perf, 'send.optimistic.upsert.begin');
-      upsertOptimisticUserMessage(targetSessionId, optimisticMessage);
-      markMessageSendPerf(perf, 'send.optimistic.upsert.done');
-      const listStartedAt = performance.now();
-      appendOptimisticTurnAndStick(optimisticMessage);
-      markMessageSendPerf(perf, 'send.list_window.append_done', {
-        ms: Math.round(performance.now() - listStartedAt)
-      });
       setSlashOpen(false);
       setImageAttachments([]);
-      pendingPromptSessionRef.current[targetSessionId] = {
-        id: optimisticMessage.id,
-        startedAt: Date.now()
-      };
       requestSessionId = targetSessionId;
       setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'busy' } }));
       const runId = client.newRunId();
