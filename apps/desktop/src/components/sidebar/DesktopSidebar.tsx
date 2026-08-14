@@ -388,19 +388,23 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
 
       <SidebarFooter className="shrink-0 p-2">
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="default" className="h-9 pr-10 text-sm [&>svg]:size-[18px]" onClick={onOpenSettings}>
+          <SidebarMenuItem className="flex items-center gap-1">
+            {/* 设置与手机入口并排独立高亮，避免设置 hover/active 背景盖住手机图标 */}
+            <SidebarMenuButton
+              size="default"
+              className="h-9 min-w-0 flex-1 text-sm [&>svg]:size-[18px]"
+              onClick={onOpenSettings}
+            >
               <Settings />
               <span className="truncate">{text.settings}</span>
               <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
             </SidebarMenuButton>
-            <SidebarMenuAction
+            <button
               type="button"
               title={mobileClientConnected ? "手机已连接" : "连接你的手机"}
               aria-label={mobileClientConnected ? "手机已连接" : "连接你的手机"}
-              className="right-1.5 top-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-              onClick={(event) => {
-                event.stopPropagation();
+              className="flex size-9 shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent text-muted-foreground outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2"
+              onClick={() => {
                 onOpenMobilePairQr();
               }}
             >
@@ -410,7 +414,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
                   <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500 ring-2 ring-sidebar" />
                 ) : null}
               </span>
-            </SidebarMenuAction>
+            </button>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
