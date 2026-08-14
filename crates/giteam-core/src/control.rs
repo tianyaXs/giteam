@@ -1,5 +1,5 @@
 use super::pi_agent::{
-    default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
+    default_data_dir, AgentEvent, AgentEventReceiver, AgentEventSink,
     AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
 };
 use rusqlite::Connection;
@@ -1414,34 +1414,38 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         let run_id = request
             .run_id
             .unwrap_or_else(|| format!("control-{}-{}", request.session_id, now_unix_secs()));
-        let events: Arc<Mutex<Vec<AgentEventEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
-        let events_for_sink = Arc::clone(&events);
-        let sink: AgentEventSink = Arc::new(move |event| {
-            if let Ok(mut events) = events_for_sink.lock() {
-                events.push(event);
+        // 后台化执行：prompt 会阻塞到整个 run 完成（联网搜索等可远超云端网关 120s
+        // unary 超时），若在 HTTP handler 内同步等待，网关会先返回 504、而本地 run
+        // 仍在跑，手机端误判发送失败。事件全量经 subscribe_events → SSE 通道下发
+        //（含最终 run.completed/run.failed 终态），响应体只需立即回 runId。
+        // sink 留空：事件不缺通道，仅 HTTP 响应不再攒 events 数组。
+        let response = serde_json::json!({
+            "runId": run_id,
+            "message": Value::Null,
+            "events": [],
+        });
+        let sink: AgentEventSink = Arc::new(|_event| {});
+        let session_id = request.session_id.clone();
+        thread::spawn(move || {
+            let result = pi_block_on(PiAgentService::global().prompt(
+                session_id.as_str(),
+                run_id.as_str(),
+                request.prompt,
+                request.images,
+                sink,
+            ));
+            if let Err(error) = result {
+                eprintln!("[control] background agent prompt failed: {error}");
+                // 早期失败（session 不存在等）发生在任何事件之前，SSE 订阅者
+                // 收不到终态会悬等；补发 run.failed 让手机端走正常失败收尾。
+                PiAgentService::global().publish_run_failed(
+                    session_id.as_str(),
+                    run_id.as_str(),
+                    &error.to_string(),
+                );
             }
         });
-        let result = pi_block_on(PiAgentService::global().prompt(
-            request.session_id.as_str(),
-            run_id.as_str(),
-            request.prompt,
-            request.images,
-            sink,
-        ));
-        return match result {
-            Ok(message) => {
-                let events = events.lock().map(|items| items.clone()).unwrap_or_default();
-                (
-                    200,
-                    serde_json::json!({
-                        "runId": run_id,
-                        "message": message,
-                        "events": events,
-                    }),
-                )
-            }
-            Err(error) => pi_error_response(error),
-        };
+        return (200, response);
     }
 
     if req.method == "POST" && req.path == "/api/v1/agent/abort" {

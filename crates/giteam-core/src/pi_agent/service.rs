@@ -446,6 +446,31 @@ impl PiAgentService {
         receiver
     }
 
+    /// 向 (session_id, run_id) 的 SSE 订阅者广播 run.failed 终态。
+    /// control server 的 prompt 已后台化（HTTP 立即返回），早期失败（session 不存在、
+    /// 图片读盘失败等）发生在任何 pi 事件之前，若不补发终态，手机端 SSE 会悬等心跳。
+    pub fn publish_run_failed(&self, session_id: &str, run_id: &str, error: &str) {
+        let event = AgentEventEnvelope {
+            schema_version: super::events::AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("failed-{run_id}-{}", uuid::Uuid::new_v4()),
+            sequence: u64::MAX,
+            repo_path: String::new(),
+            session_id: session_id.to_string(),
+            run_id: Some(run_id.to_string()),
+            timestamp_ms: u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or_default(),
+            )
+            .unwrap_or_default(),
+            event: super::AgentEvent::RunFailed {
+                error: error.to_string(),
+            },
+        };
+        publish_event(&self.subscribers, &event);
+    }
+
     pub async fn create_session(
         &self,
         config: PiSessionConfig,

@@ -113,6 +113,8 @@ export function isAgentRenderablePart(
   const t = String((p as any)?.type || "");
   if (t === "text") return !!String((p as any)?.text ?? "").trim();
   if (t === "reasoning") {
+    // redacted（加密思考）无明文 text，仍需渲染占位卡，不能按空文本过滤。
+    if ((p as any)?.redacted === true) return true;
     return showReasoningSummaries && !!String((p as any)?.text ?? "").trim();
   }
   if (t === "step-start" || t === "step-finish" || t === "patch") return false;

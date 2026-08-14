@@ -168,7 +168,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       }
     };
 
-    const applyTextDelta = (sid: string, kind: 'text' | 'reasoning', event: AgentEvent['event']) => {
+    const applyTextDelta = (sid: string, kind: 'text' | 'reasoning', event: AgentEvent['event'], serverTs = 0) => {
       const messageId = toText(event.messageId).trim();
       if (!messageId) return;
       // 对齐桌面 ensureLocalAssistant：delta 可能早于 message.started，先建 assistant 坑再收字。
@@ -178,10 +178,11 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
         stores().messageRole.current[sid] = { ...roles, [messageId]: 'assistant' };
       }
       if (!stores().message.current[sid]?.[messageId]) {
+        // created 统一服务端时钟（envelope.timestampMs），理由同 message.started。
         stores().message.current[sid][messageId] = {
           id: messageId,
           role: 'assistant',
-          time: { created: Date.now() }
+          time: { created: serverTs > 0 ? serverTs : Date.now() }
         };
       }
       if (!storeCanApplyStreamPartUpdate(stores(), sid, messageId)) return;
@@ -308,7 +309,13 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           stores().messageRole.current[sid] = { ...(stores().messageRole.current[sid] || {}), [messageId]: 'assistant' };
           storeEnsureStreamSessionStores(stores(), sid);
           if (!stores().message.current[sid]?.[messageId]) {
-            stores().message.current[sid][messageId] = { id: messageId, role: 'assistant', time: { created: Date.now() } };
+            // created 用服务端 envelope.timestampMs：与权威 user 行同源时钟，
+            // 防止两端时钟毫秒差把 assistant 排到本条 user 之前（错挂上一轮）。
+            stores().message.current[sid][messageId] = {
+              id: messageId,
+              role: 'assistant',
+              time: { created: Number(envelope.timestampMs) > 0 ? Number(envelope.timestampMs) : Date.now() }
+            };
             storePublishStreamRows(stores(), sid);
           }
           d.setStreaming(true);
@@ -316,10 +323,10 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           return;
         }
         case 'message.delta':
-          applyTextDelta(sid, 'text', event);
+          applyTextDelta(sid, 'text', event, Number(envelope.timestampMs) || 0);
           return;
         case 'reasoning.delta':
-          applyTextDelta(sid, 'reasoning', event);
+          applyTextDelta(sid, 'reasoning', event, Number(envelope.timestampMs) || 0);
           return;
         case 'toolCall.started': {
           const toolCallId = toText(event.toolCallId).trim();

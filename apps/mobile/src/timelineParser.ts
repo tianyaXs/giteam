@@ -646,11 +646,18 @@ export function parseConversation(raw: unknown): ParsedConversation {
 
       if (group.kind === 'reasoning') {
         flushAssistantTextRun(partCreatedAt);
+        // redacted（加密思考，gpt5.6 等 OpenAI Responses 系）无明文 text：
+        // 不渲染占位说明，仅保证 hasAssistantRenderable 计数（纯思考轮不触发空会话 fallback）。
+        const hasRedacted = group.parts.some((part: any) => part?.redacted === true);
         const text = group.parts
           .map((part: any) => normalizeText(part?.text))
           .filter(Boolean)
           .join('\n\n');
-        if (!text) continue;
+        if (!text && !hasRedacted) continue;
+        if (hasRedacted) {
+          hasAssistantRenderable = true;
+          continue;
+        }
         const lastPart: any = group.parts[group.parts.length - 1];
         const partFinished = Boolean(lastPart?.finish || lastPart?.time?.end || lastPart?.time?.completed);
         timelineRows.push({

@@ -126,7 +126,20 @@ export function agentMessageToLegacyRow(
       if (customType.includes('compaction')) parts.push({ id: `${id}:compaction`, type: 'compaction' });
       continue;
     }
-    // toolResult / redactedReasoning：toolResult 由 indexToolResults 关联进 toolCall。
+    if (part.type === 'redactedReasoning') {
+      // OpenAI Responses 系（gpt5.6 等）的加密思考：映射为 redacted 占位 reasoning part，
+      // 否则纯思考轮转换后 parts 为空 → timeline 空 →「本轮会话只有系统事件」fallback。
+      // 对齐桌面端 App.tsx 的 { type: "reasoning", redacted: true } 处理。
+      parts.push({
+        id: `${id}:redacted:${parts.length}`,
+        type: 'reasoning',
+        text: '',
+        redacted: true,
+        ...(opts?.live ? {} : { time: { end: created } })
+      });
+      continue;
+    }
+    // toolResult：由 indexToolResults 关联进 toolCall。
   }
 
   const info: Record<string, any> = {

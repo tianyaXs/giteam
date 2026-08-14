@@ -204,6 +204,10 @@ export function usePromptActions(params: UsePromptActionsParams) {
       paintOptimistic(existingSid);
     }
     const client = createMobileAgentClient({ baseUrl: serverUrl, token });
+    // runId 需在 catch 中判「SSE 是否仍跟踪本次 run」，故提升到 try 外声明。
+    let runId = '';
+    // 传输层误报（网关 120s 超时等）被吞时，busy/streaming 保持，finally 不再复位。
+    let swallowedTransportError = false;
     try {
       let targetSessionId = toText(sessionIdRef.current).trim();
       const normalizedModel = model.trim();
@@ -272,7 +276,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setImageAttachments([]);
       requestSessionId = targetSessionId;
       setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'busy' } }));
-      const runId = client.newRunId();
+      runId = client.newRunId();
       sessionActiveRunIdRef.current[targetSessionId] = runId;
       markMessageSendPerf(perf, 'send.stream.start');
       startStream(targetSessionId, runId);
@@ -298,44 +302,42 @@ export function usePromptActions(params: UsePromptActionsParams) {
         ms: Math.round(performance.now() - networkStartedAt),
         sid: targetSessionId
       });
-      pushConnLog(`agent.prompt success, sessionId=${targetSessionId} runId=${res.runId}`);
-      // pending / activeRun 保留到 tail sync 结束，避免完成瞬间 busy→idle 抖一下输入框。
-      markMessageSendPerf(perf, 'send.sync_tail.begin', { sid: targetSessionId });
-      const syncStartedAt = performance.now();
-      void syncSessionMessages(targetSessionId, {
-        limit: Math.max(
-          initialSessionLimit,
-          Number(sessionVisibleTurnCountRef.current[targetSessionId] || 0),
-          Number(sessionTotalTurnCountRef.current[targetSessionId] || 0)
-        ),
-        tailOnly: true
-      })
-        .then(() => {
-          markMessageSendPerf(perf, 'send.sync_tail.done', {
-            ms: Math.round(performance.now() - syncStartedAt)
-          });
-        })
-        .catch((syncError) => {
-          markMessageSendPerf(perf, 'send.sync_tail.error', { reason: String(syncError) });
-        })
-        .finally(() => {
-          delete pendingPromptSessionRef.current[targetSessionId];
-          // activeRun / idle 由 SSE finalizeRun 收尾；此处抢清会在尾同步窗口把停止钮闪成可发送。
-          // 兜底：若 SSE 长时间未 finalize，再释放门闩。
-          setTimeout(() => {
-            if (sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
-            delete sessionActiveRunIdRef.current[targetSessionId];
-            setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
-          }, 12_000);
-          finishMessageSendPerf(perf, 'success', {
-            userVisible: perf.userVisibleMarked ? 1 : 0,
-            assistantVisible: perf.assistantVisibleMarked ? 1 : 0
-          });
-        });
+      pushConnLog(`agent.prompt accepted, sessionId=${targetSessionId} runId=${res.runId}`);
+      // prompt 已后台化（HTTP 立即返回 runId），run 进度与终态全由 SSE 驱动。
+      // 这里不再做完成语义的尾同步——那会与流式渲染竞争；只在 SSE 迟迟不发事件时
+      // 兜底对账一次。
+      delete pendingPromptSessionRef.current[targetSessionId];
+      setTimeout(() => {
+        if (sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+        pushConnLog(`SSE no events for run=${runId}, fallback tail sync`, 'info');
+        void syncSessionMessages(targetSessionId, { tailOnly: true }).catch(() => {});
+      }, 8_000);
       void refreshSessionsFromServer();
       pushConnLog(`POST agent.prompt ok sid=${targetSessionId}`);
       setStatus('已发送');
+      finishMessageSendPerf(perf, 'accepted', {
+        userVisible: perf.userVisibleMarked ? 1 : 0,
+        assistantVisible: perf.assistantVisibleMarked ? 1 : 0
+      });
     } catch (e) {
+      const msg = String(e);
+      // 网关/网络层误报防护：prompt 是阻塞到 run 完成的长请求，云端 unary 代理 120s 超时
+      // 会先于 run 结束返回 504/网络错误。此时 SSE 若仍在跟踪该 run（activeRunId 未清），
+      // 说明 run 真实存活——不退回输入框、不摘乐观气泡，交由 SSE 的 run.failed/completed 收尾。
+      const sseStillTrackingRun =
+        !!requestSessionId &&
+        toText(sessionActiveRunIdRef.current[requestSessionId]).trim() === runId;
+      const transportLikeError = /50[234]|gateway|timeout|network|failed to fetch|aborted/i.test(msg);
+      if (sseStillTrackingRun && transportLikeError) {
+        pushConnLog(`POST prompt transport error swallowed (SSE tracking run) sid=${requestSessionId} run=${runId} msg=${msg}`, 'info');
+        markMessageSendPerf(perf, 'send.network.gateway_timeout_swallowed');
+        // 保持 busy/streaming 与乐观气泡；结尾仍走一次 tail sync 对账。
+        void syncSessionMessages(requestSessionId, { tailOnly: true }).catch(() => {});
+        setStatus('回复仍在生成中');
+        // busy/streaming 的释放交给 SSE finalizeRun；finally 里跳过。
+        swallowedTransportError = true;
+        return;
+      }
       const currentSessionId = toText(sessionIdRef.current).trim();
       const failedSessionId = requestSessionId || currentSessionId;
       if (failedSessionId) {
@@ -349,7 +351,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
         setPrompt((prev) => prev || payloadPrompt);
         setImageAttachments(images.map((img) => ({ ...img, status: 'ready', statusText: '就绪' })));
       }
-      const msg = String(e);
       pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
       // eslint-disable-next-line no-console
       console.error('[onSendPrompt] error:', msg, 'images:', images.length, 'dataUrl lengths:', images.map((i) => i.dataUrl?.length || 0));
@@ -392,6 +393,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStreaming(false);
     } finally {
       sendInFlightRef.current = false;
+      if (swallowedTransportError) return;
       setBusy(false);
     }
   }, [
