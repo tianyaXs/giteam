@@ -313,6 +313,7 @@ export default function App() {
     recordStreamMessageRoles,
     renderStreamWindow,
     scheduleStreamRender,
+    flushStreamRenderNow,
     resetAgentStreamStores,
   } = useAgentStreamRuntime({
     initialSessionLimit: INITIAL_SESSION_LIMIT,
@@ -539,6 +540,7 @@ export default function App() {
       onInteractionResolved: handleAgentInteractionResolved,
       renderStreamWindow,
       scheduleStreamRender,
+      flushStreamRenderNow,
     });
   streamManagerHandleRef.current = {
     startStream: startStreamManager,
@@ -673,6 +675,7 @@ export default function App() {
     reconcileOptimisticUserMessages,
     stabilizeServerUserTurnIds,
     overlayOptimisticTurns,
+    hasPendingOptimisticUser,
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages,
   } = useOptimisticUserMessages({
@@ -716,6 +719,7 @@ export default function App() {
     reconcileOptimisticUserMessages,
     stabilizeServerUserTurnIds,
     overlayOptimisticTurns,
+    hasPendingOptimisticUser,
     setMessages,
     setRenderedTurns,
     setSessions,

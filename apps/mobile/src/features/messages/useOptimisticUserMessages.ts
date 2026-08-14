@@ -398,6 +398,16 @@ export function useOptimisticUserMessages(params: {
     [applyTurnWindowRef, forceScrollToLatestUntilRef, initialSessionLimit, markFollowLatest, messagesRef, renderedTurnsRef, sessionIdRef, sessionVisibleTurnCountRef, setMessages, setRenderedTurns]
   );
 
+  const hasPendingOptimisticUser = useCallback(
+    (targetSessionId: string) => {
+      const sid = toText(targetSessionId).trim();
+      if (!sid) return false;
+      const pending = sessionOptimisticUserMapRef.current[sid];
+      return Array.isArray(pending) && pending.length > 0;
+    },
+    [sessionOptimisticUserMapRef]
+  );
+
   const clearSessionOptimisticMessages = useCallback(
     (targetSessionId: string) => {
       const sid = toText(targetSessionId).trim();
@@ -425,6 +435,7 @@ export function useOptimisticUserMessages(params: {
     reconcileOptimisticUserMessages,
     stabilizeServerUserTurnIds,
     overlayOptimisticTurns,
+    hasPendingOptimisticUser,
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages
   };

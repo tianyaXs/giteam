@@ -32,7 +32,7 @@ export interface AgentStreamManagerDeps {
   streamSessionRef: React.MutableRefObject<string>;
   sessionActiveRunIdRef: React.MutableRefObject<Record<string, string>>;
   sessionStatusEpochRef: React.MutableRefObject<number>;
-  streamRenderTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
+  streamRenderTimerRef: React.MutableRefObject<number | null>;
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
   sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   getAgentStreamStores: () => AgentStreamStoreRefs;
@@ -43,7 +43,7 @@ export interface AgentStreamManagerDeps {
   setToken: (value: string) => void;
   setSessionStatusMap: (value: React.SetStateAction<Record<string, any>>) => void;
   setStreamTodoCard: (value: any) => void;
-  applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
+  applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string, opts?: { streaming?: boolean }) => any;
   syncSessionMessages: (targetSessionId: string, opts?: { limit?: number; fetchLimit?: number; tailOnly?: boolean }) => Promise<any>;
   syncSessionStatus: (targetSessionId?: string) => Promise<any>;
   buildLiveTodoCard: (sid: string, todos: any[]) => any;
@@ -51,6 +51,8 @@ export interface AgentStreamManagerDeps {
   onInteractionResolved: (interactionId: string) => void;
   renderStreamWindow: (targetSessionId: string) => void;
   scheduleStreamRender: (targetSessionId: string) => void;
+  /** 越过 rAF 合帧立即渲染（离散事件：工具/交互/子代理状态变更）。 */
+  flushStreamRenderNow: (targetSessionId: string) => void;
 }
 
 function isAbortLikeStreamError(detail: string) {
@@ -77,8 +79,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       d.streamRef.current.close();
       d.streamRef.current = null;
     }
-    if (d.streamRenderTimerRef.current) {
-      clearTimeout(d.streamRenderTimerRef.current);
+    if (d.streamRenderTimerRef.current != null) {
+      cancelAnimationFrame(d.streamRenderTimerRef.current);
       d.streamRenderTimerRef.current = null;
     }
     d.streamSessionRef.current = '';
@@ -111,8 +113,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       d.streamRef.current.close();
       d.streamRef.current = null;
     }
-    if (d.streamRenderTimerRef.current) {
-      clearTimeout(d.streamRenderTimerRef.current);
+    if (d.streamRenderTimerRef.current != null) {
+      cancelAnimationFrame(d.streamRenderTimerRef.current);
       d.streamRenderTimerRef.current = null;
     }
     if (!softReconnect) {
@@ -324,6 +326,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           if (!toolCallId) return;
           toolCallMessageMap[toolCallId] = activeMessageId;
           upsertToolPart(sid, toolCallId, toText(event.toolName) || 'tool', { status: 'running' });
+          // 离散事件即时冲刷（对齐桌面端 tool.started 的 flushStreamUpdates）。
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'toolCall.delta':
@@ -331,15 +335,18 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
           return;
         case 'tool.started':
           upsertToolPart(sid, toText(event.toolCallId), toText(event.toolName) || 'tool', { status: 'running', input: event.input });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         case 'tool.progress':
           upsertToolPart(sid, toText(event.toolCallId), toText(event.toolName) || 'tool', { status: 'running', output: event.output });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         case 'tool.completed':
           upsertToolPart(sid, toText(event.toolCallId), toText(event.toolName) || 'tool', {
             status: event.isError ? 'error' : 'completed',
             output: event.output
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         case 'subagent.started': {
           const toolCallId = toText(event.parentToolCallId).trim();
@@ -358,6 +365,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               description: event.description
             }
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'subagent.progress': {
@@ -371,6 +379,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               elapsedMs: event.elapsedMs
             }
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'subagent.completed': {
@@ -386,6 +395,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               summary: event.summary
             }
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'subagent.failed': {
@@ -399,6 +409,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               summary: event.error
             }
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'subagent.aborted': {
@@ -412,6 +423,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               summary: '子任务已中止'
             }
           });
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         }
         case 'message.completed':
@@ -437,11 +449,12 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
         }
         case 'interaction.requested':
           if (event.interaction) d.onInteractionRequested(event.interaction);
-          // 审批弹出前强制刷一帧，保证工具前的过程文案已可见。
-          if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
+          // 审批弹出前强制即时刷一帧（不等 rAF），保证工具前的过程文案/卡片已可见。
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         case 'interaction.resolved':
           if (event.id) d.onInteractionResolved(toText(event.id));
+          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
           return;
         case 'runtime.retry':
           d.setSessionStatusMap((prev: Record<string, any>) => ({

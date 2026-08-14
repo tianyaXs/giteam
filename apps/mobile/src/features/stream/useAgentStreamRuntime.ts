@@ -14,7 +14,7 @@ import {
 type UseAgentStreamRuntimeParams = {
   initialSessionLimit: number;
   sessionIdRef: React.MutableRefObject<string>;
-  streamRenderTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
+  streamRenderTimerRef: React.MutableRefObject<number | null>;
   messageContentHRef: React.MutableRefObject<number>;
   messageViewportHRef: React.MutableRefObject<number>;
   messageScrollYRef: React.MutableRefObject<number>;
@@ -23,7 +23,7 @@ type UseAgentStreamRuntimeParams = {
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
   sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   getAgentStreamStores: () => AgentStreamStoreRefs;
-  applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string) => any;
+  applyTurnWindow: (targetSessionId: string, visibleTurnCount: number, nextCursorHint?: string, opts?: { streaming?: boolean }) => any;
   scrollToLatest: (animated?: boolean) => void;
   streamDebug: (event: string, meta?: Record<string, unknown>) => void;
   setStreaming: (value: boolean | ((prev: boolean) => boolean)) => void;
@@ -90,7 +90,7 @@ export function useAgentStreamRuntime(params: UseAgentStreamRuntimeParams) {
     markMessageSendPerfForSession(targetSessionId, 'stream.render_window.begin');
     const totalTurns = Math.max(1, Number(d.sessionTotalTurnCountRef.current[targetSessionId] || d.initialSessionLimit));
     const visibleTurns = Math.max(d.initialSessionLimit, Number(d.sessionVisibleTurnCountRef.current[targetSessionId] || d.initialSessionLimit));
-    const rendered = d.applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns));
+    const rendered = d.applyTurnWindow(targetSessionId, Math.min(totalTurns, visibleTurns), undefined, { streaming: true });
     const last = rendered.renderedTurns[rendered.renderedTurns.length - 1];
     markMessageSendPerfForSession(targetSessionId, 'stream.render_window.done', {
       ms: Math.round(performance.now() - renderStartedAt),
@@ -107,10 +107,13 @@ export function useAgentStreamRuntime(params: UseAgentStreamRuntimeParams) {
     });
   }, [getParams]);
 
+  // rAF 帧对齐：一帧内无论来多少 delta 只渲染一次，且与 vsync 同步。
+  // 原 setTimeout(24ms) 不对齐帧、上限 ~41fps，主线程忙时还会再推迟，
+  // 表现为文字阶梯式跳动/攒批。rAF 让「事件到达 → 下一帧必渲染」。
   const scheduleStreamRender = useCallback((targetSessionId: string) => {
     const d = getParams();
-    if (d.streamRenderTimerRef.current) return;
-    d.streamRenderTimerRef.current = setTimeout(() => {
+    if (d.streamRenderTimerRef.current != null) return;
+    d.streamRenderTimerRef.current = requestAnimationFrame(() => {
       const latest = getParams();
       latest.streamRenderTimerRef.current = null;
       if (targetSessionId !== latest.sessionIdRef.current) return;
@@ -119,7 +122,23 @@ export function useAgentStreamRuntime(params: UseAgentStreamRuntimeParams) {
       if (shouldFollowStream) {
         latest.forceScrollToLatestUntilRef.current = Date.now() + 45000;
       }
-    }, 24);
+    });
+  }, [getParams, renderStreamWindow, shouldFollowLatest]);
+
+  // 即时冲刷：工具/交互等离散事件（对齐桌面端 tool.started 里的 flushStreamUpdates），
+  // 越过 rAF 合帧立刻渲染，保证「搜索/审批」等过程状态第一时间可见。
+  const flushStreamRenderNow = useCallback((targetSessionId: string) => {
+    const d = getParams();
+    if (d.streamRenderTimerRef.current != null) {
+      cancelAnimationFrame(d.streamRenderTimerRef.current);
+      d.streamRenderTimerRef.current = null;
+    }
+    if (targetSessionId !== d.sessionIdRef.current) return;
+    const shouldFollowStream = shouldFollowLatest();
+    renderStreamWindow(targetSessionId);
+    if (shouldFollowStream) {
+      d.forceScrollToLatestUntilRef.current = Date.now() + 45000;
+    }
   }, [getParams, renderStreamWindow, shouldFollowLatest]);
 
   return {
@@ -129,6 +148,7 @@ export function useAgentStreamRuntime(params: UseAgentStreamRuntimeParams) {
     recordStreamMessageRoles,
     renderStreamWindow,
     scheduleStreamRender,
+    flushStreamRenderNow,
     resetAgentStreamStores
   };
 }

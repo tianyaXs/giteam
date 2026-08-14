@@ -92,9 +92,9 @@ export function useMobileAppRefs() {
   const sessionVisibleTurnCountRef = useRef<Record<string, number>>({});
   const sessionTotalTurnCountRef = useRef<Record<string, number>>({});
   const streamRunIdRef = useRef(0);
-  const streamRenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  // rAF 句柄（RN 里 requestAnimationFrame 返回 number）；与 setTimeout id 同构，
+  // 统一经 cancelStreamRender 取消，避免把 rAF id 误当 timeout clear。
+  const streamRenderTimerRef = useRef<number | null>(null);
   const sessionStatusEpochRef = useRef(0);
   const busySinceRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
@@ -109,6 +109,7 @@ export function useMobileAppRefs() {
       targetSessionId: string,
       visibleTurnCount: number,
       nextCursorHint?: string,
+      opts?: { streaming?: boolean },
     ) => any
   >(() => ({
     chatMessages: [],
@@ -136,11 +137,13 @@ export function useMobileAppRefs() {
     targetSessionId: string,
     visibleTurnCount: number,
     nextCursorHint?: string,
+    opts?: { streaming?: boolean },
   ) {
     return applyTurnWindowRef.current(
       targetSessionId,
       visibleTurnCount,
       nextCursorHint,
+      opts,
     );
   }
 
