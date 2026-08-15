@@ -212,12 +212,16 @@ export const mediaStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(15,23,42,0.34)",
-    borderWidth: 1.5,
-    borderColor: "#252526",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.55)",
   },
 
-  albumSelectBadgeOn: { backgroundColor: "#d4d4d4" },
+  albumSelectBadgeOn: {
+    backgroundColor: "#10A37F",
+    borderWidth: 0,
+    borderColor: "transparent",
+  },
 
   qrAlbumSelectBadge: {
     position: "absolute",
@@ -228,18 +232,20 @@ export const mediaStyles = {
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 2,
-    borderColor: "#252526",
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.5)",
   },
 
   qrAlbumSelectBadgeOn: {
-    backgroundColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "#10A37F",
+    borderWidth: 0,
+    borderColor: "transparent",
   },
 
-  albumSelectText: { color: "#252526", fontSize: 12, fontWeight: "800" },
+  albumSelectText: { color: "transparent", fontSize: 12, fontWeight: "700" },
 
-  albumSelectTextOn: { color: "#252526" },
+  albumSelectTextOn: { color: "#FFFFFF" },
 
   albumEmptyText: {
     width: "100%",
@@ -251,15 +257,57 @@ export const mediaStyles = {
 
   imagePreviewOverlay: {
     ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: "transparent",
     zIndex: 10000,
     elevation: 10000,
   },
 
   imagePreviewBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.72)",
+    backgroundColor: "rgba(0,0,0,0.92)",
+  },
+
+  imagePreviewSafe: {
+    flex: 1,
+  },
+
+  imagePreviewToolbar: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+
+  imagePreviewCloseHit: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+
+  imagePreviewCloseTxt: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+
+  imagePreviewStage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+
+  imagePreviewImage: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "transparent",
   },
 
   imagePreviewCard: {
@@ -271,13 +319,6 @@ export const mediaStyles = {
     gap: 10,
   },
 
-  imagePreviewToolbar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 8,
-  },
-
   imagePreviewButton: {
     paddingHorizontal: 12,
     paddingVertical: 7,
@@ -286,13 +327,6 @@ export const mediaStyles = {
   },
 
   imagePreviewButtonText: { color: "#d4d4d4", fontSize: 13, fontWeight: "600" },
-
-  imagePreviewImage: {
-    width: "100%",
-    height: 520,
-    borderRadius: 12,
-    backgroundColor: "#1e1e1e",
-  },
 
   photoCameraScreen: {
     flex: 1,

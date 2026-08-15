@@ -91,16 +91,14 @@ export function buildAgentImageAttachmentsFromParts(parts: AgentDetailedPart[] |
 
 export function mergeAgentMessageAttachments(prev: AgentChatMessage[] | undefined, next: AgentChatMessage[]) {
   const prevById = new Map<string, NonNullable<AgentChatMessage["attachments"]>>();
-  const prevByContent = new Map<string, NonNullable<AgentChatMessage["attachments"]>>();
   (Array.isArray(prev) ? prev : []).forEach((msg) => {
     if (msg.role !== "user" || !msg.attachments?.length) return;
     if (msg.id) prevById.set(msg.id, msg.attachments);
-    const text = msg.content.trim();
-    if (text) prevByContent.set(text, msg.attachments);
   });
   return next.map((msg) => {
     if (msg.role !== "user" || msg.attachments?.length) return msg;
-    const attachments = prevById.get(msg.id) || prevByContent.get(msg.content.trim());
+    // 仅按消息 id 合并附件，避免相同文案把上轮图片串到新消息。
+    const attachments = prevById.get(msg.id);
     return attachments?.length ? { ...msg, attachments } : msg;
   });
 }

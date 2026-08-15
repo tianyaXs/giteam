@@ -14,6 +14,7 @@ type AttachmentAssetInput = {
   filename: string;
   mime?: string;
   dataUrl?: string;
+  sourceAssetId?: string;
 };
 
 export function inferMimeFromFilename(filename: string): string {
@@ -28,15 +29,18 @@ export function inferMimeFromFilename(filename: string): string {
 
 export function useAttachmentProcessor(props: {
   setStatus: (message: string) => void;
+  imageAttachments: ComposerAttachment[];
   setImageAttachments: React.Dispatch<React.SetStateAction<ComposerAttachment[]>>;
   setAttachmentMenuOpen: (open: boolean) => void;
   onQrScanFromAlbum?: (uri: string) => Promise<void>;
 }) {
-  const { onQrScanFromAlbum, setAttachmentMenuOpen, setImageAttachments, setStatus } = props;
+  const { imageAttachments, onQrScanFromAlbum, setAttachmentMenuOpen, setImageAttachments, setStatus } = props;
   const [photoCameraOpen, setPhotoCameraOpen] = useState(false);
   const [photoCameraReady, setPhotoCameraReady] = useState(false);
   const [photoCameraBusy, setPhotoCameraBusy] = useState(false);
   const photoCameraRef = useRef<any>(null);
+  const imageAttachmentsRef = useRef<ComposerAttachment[]>(imageAttachments);
+  imageAttachmentsRef.current = imageAttachments;
 
   const fileUriToDataUrl = useCallback(
     async (uri: string, fallbackMime: string): Promise<string> => {
@@ -95,45 +99,57 @@ export function useAttachmentProcessor(props: {
 
   const appendAssetsAsAttachments = useCallback(
     async (items: AttachmentAssetInput[]) => {
+      if (items.length <= 0) return;
       try {
-        if (items.length > 0) setStatus('正在处理图片...');
-        await Promise.all(
-          items.map(async (item, idx) => {
-            const id = `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`;
-            const initialMime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
-            setImageAttachments((prev) => [
-              ...prev,
-              {
-                id,
-                uri: item.uri,
-                filename: item.filename,
-                mime: initialMime,
-                dataUrl: item.dataUrl || '',
-                status: 'processing',
-                statusText: '压缩中'
-              }
-            ]);
-            try {
-              const prepared = await compressImageForSend(item);
-              const mime = toText(prepared.mime).trim() || inferMimeFromFilename(prepared.filename);
-              const dataUrl = prepared.dataUrl || (await fileUriToDataUrl(prepared.uri, mime));
-              if (!dataUrl || dataUrl.length <= 20) throw new Error('empty image data');
-              const next = {
-                id,
-                uri: prepared.uri,
-                filename: prepared.filename,
-                mime,
-                dataUrl,
-                status: 'ready' as const,
-                statusText: '就绪'
-              } satisfies ComposerAttachment;
-              setImageAttachments((prev) => prev.map((img) => (img.id === id ? next : img)));
-            } catch (e) {
-              setImageAttachments((prev) => prev.map((img) => (img.id === id ? { ...img, status: 'failed', statusText: '处理失败' } : img)));
-              throw e;
-            }
-          })
-        );
+        setStatus('正在处理图片...');
+        const stamp = Date.now();
+        const placeholders: ComposerAttachment[] = items.map((item, idx) => {
+          const id = `img-${stamp}-${idx}-${Math.random().toString(36).slice(2, 8)}`;
+          const initialMime = toText(item.mime).trim() || inferMimeFromFilename(item.filename);
+          const sourceAssetId = toText(item.sourceAssetId).trim() || undefined;
+          return {
+            id,
+            uri: item.uri,
+            filename: item.filename,
+            mime: initialMime,
+            dataUrl: item.dataUrl || '',
+            sourceAssetId,
+            status: 'processing' as const,
+            statusText: '压缩中'
+          };
+        });
+        // 一次插入全部占位缩略图，避免 N 次 setState 连闪。
+        setImageAttachments((prev) => [...prev, ...placeholders]);
+
+        // 逐张压缩，每张之间让出一帧，降低与 UI 抢主线程。
+        for (let i = 0; i < placeholders.length; i += 1) {
+          const placeholder = placeholders[i];
+          const item = items[i];
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          });
+          try {
+            const prepared = await compressImageForSend(item);
+            const mime = toText(prepared.mime).trim() || inferMimeFromFilename(prepared.filename);
+            const dataUrl = prepared.dataUrl || (await fileUriToDataUrl(prepared.uri, mime));
+            if (!dataUrl || dataUrl.length <= 20) throw new Error('empty image data');
+            const next: ComposerAttachment = {
+              id: placeholder.id,
+              uri: prepared.uri,
+              filename: prepared.filename,
+              mime,
+              dataUrl,
+              sourceAssetId: placeholder.sourceAssetId,
+              status: 'ready',
+              statusText: '就绪'
+            };
+            setImageAttachments((prev) => prev.map((img) => (img.id === placeholder.id ? next : img)));
+          } catch {
+            setImageAttachments((prev) =>
+              prev.map((img) => (img.id === placeholder.id ? { ...img, status: 'failed', statusText: '处理失败' } : img))
+            );
+          }
+        }
         setStatus('图片已添加');
       } catch (e) {
         setStatus(`处理图片失败: ${String(e)}`);
@@ -142,10 +158,55 @@ export function useAttachmentProcessor(props: {
     [compressImageForSend, fileUriToDataUrl, setImageAttachments, setStatus]
   );
 
+  const getAttachedAlbumAssets = useCallback((): Array<{ id: string; uri: string; filename: string }> => {
+    return imageAttachmentsRef.current
+      .map((img) => {
+        const sourceId = toText(img.sourceAssetId).trim();
+        if (!sourceId) return null;
+        return { id: sourceId, uri: img.uri, filename: img.filename };
+      })
+      .filter(Boolean) as Array<{ id: string; uri: string; filename: string }>;
+  }, []);
+
+  const syncAlbumAssetsToAttachments = useCallback(
+    async (selected: Array<{ id: string; uri: string; filename: string; mime: string }>) => {
+      const selectedIds = new Set(selected.map((item) => item.id));
+      const prev = imageAttachmentsRef.current;
+      // 取消勾选的相册图从附件栏移除；非相册来源附件保留。
+      const kept = prev.filter((img) => {
+        const sourceId = toText(img.sourceAssetId).trim();
+        if (!sourceId) return true;
+        return selectedIds.has(sourceId);
+      });
+      const keptSourceIds = new Set(
+        kept.map((img) => toText(img.sourceAssetId).trim()).filter(Boolean)
+      );
+      if (kept.length !== prev.length) {
+        setImageAttachments(kept);
+        imageAttachmentsRef.current = kept;
+      }
+      const toAdd = selected.filter((item) => !keptSourceIds.has(item.id));
+      if (toAdd.length > 0) {
+        await appendAssetsAsAttachments(
+          toAdd.map((item) => ({
+            uri: item.uri,
+            filename: item.filename,
+            mime: item.mime,
+            sourceAssetId: item.id
+          }))
+        );
+      } else if (kept.length !== prev.length) {
+        setStatus(kept.length > 0 ? '已更新图片' : '已清空相册图片');
+      }
+    },
+    [appendAssetsAsAttachments, setImageAttachments, setStatus]
+  );
+
   const albumPicker = useAlbumPickerController({
     setStatus,
     inferMimeFromFilename,
-    onAppendAssets: appendAssetsAsAttachments,
+    getAttachedAlbumAssets,
+    onSyncAlbumAssets: syncAlbumAssetsToAttachments,
     onPickForQrScan: onQrScanFromAlbum
       ? async (item) => onQrScanFromAlbum(item.uri)
       : undefined

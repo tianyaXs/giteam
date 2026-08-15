@@ -144,18 +144,17 @@ export function useTurnWindowController(params: {
       const nextCache = { ...(sentAttachmentCacheRef.current[targetSessionId] || {}) };
       for (const message of rendered.chatMessages) {
         if (message.role !== 'user' || !message.attachments?.length) continue;
-        const text = toText(message.text).trim();
         nextCache[`id:${message.id}`] = { at: cacheNow, attachments: message.attachments };
-        if (text) nextCache[`text:${text}`] = { at: cacheNow, attachments: message.attachments };
       }
       sentAttachmentCacheRef.current[targetSessionId] = nextCache;
       const cachedAttachments = sentAttachmentCacheRef.current[targetSessionId] || {};
       const now = Date.now();
       const withPersistedAttachments = (message: MobileChatMessage): MobileChatMessage => {
         if (message.role !== 'user') return message;
-        const key = toText(message.text).trim();
-        const cached = cachedAttachments[`id:${message.id}`] || cachedAttachments[`text:${key}`];
+        // 只按消息 id 回填附件，禁止按相同文案串图（否则「这是什么」第二次会误挂上轮图片）。
+        const cached = cachedAttachments[`id:${message.id}`];
         if (cached && now - cached.at < 24 * 60 * 60 * 1000 && cached.attachments.length) {
+          if ((message.attachments?.length || 0) > 0) return message;
           return { ...message, attachments: cached.attachments };
         }
         if (message.attachments?.length) return message;

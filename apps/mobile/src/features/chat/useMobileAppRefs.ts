@@ -46,6 +46,8 @@ export function useMobileAppRefs() {
   const sessionIdRef = useRef("");
   const streamSessionRef = useRef("");
   const sessionActiveRunIdRef = useRef<Record<string, string>>({});
+  /** 当前 run 是否已收到过至少一条 SSE agent 事件（用于避免「仍在跑」被误报成 no events）。 */
+  const sessionRunEventSeenRef = useRef<Record<string, boolean>>({});
   const projectsRef = useRef<ProjectOption[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
   const messagesRef = useRef<MobileChatMessage[]>([]);
@@ -75,6 +77,15 @@ export function useMobileAppRefs() {
   const pendingPromptSessionRef = useRef<
     Record<string, { id: string; startedAt: number }>
   >({});
+  /** 本轮发送快照：失败时把附件收回输入区缩略图（待重发），避免像已发出。 */
+  const pendingSendBundleRef = useRef<{
+    optimisticId: string;
+    text: string;
+    images: import("../media/types").ComposerAttachment[];
+    fromComposer: boolean;
+    sessionId: string;
+    runId: string;
+  } | null>(null);
   const renderRegressionRetryRef = useRef<Record<string, number>>({});
   const streamMessageRoleRef = useRef<Record<string, Record<string, string>>>(
     {},
@@ -152,6 +163,7 @@ export function useMobileAppRefs() {
     sessionIdRef,
     streamSessionRef,
     sessionActiveRunIdRef,
+    sessionRunEventSeenRef,
     projectsRef,
     sessionsRef,
     messagesRef,
@@ -164,6 +176,7 @@ export function useMobileAppRefs() {
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     renderRegressionRetryRef,
     streamMessageRoleRef,
     streamMessageStoreRef,

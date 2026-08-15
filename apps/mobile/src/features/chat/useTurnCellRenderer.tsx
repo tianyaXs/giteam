@@ -26,8 +26,10 @@ export function useTurnCellRenderer(params: {
   handleThinkCardToggle: (id: string) => void;
   handleTimelineQuestionToggle: (id: string) => void;
   handleTimelineTabChange: (questionId: string, tabIndex: number) => void;
-  prepareCellLayoutAdjustment: (cellId: string, previousHeight: number) => void;
-  settleCellLayoutAdjustment: (cellId: string, nextHeight: number, previousHeight?: number) => void;
+  /** @deprecated 展开高度改由 LegendList MVCP.size 处理，可省略 */
+  prepareCellLayoutAdjustment?: (cellId: string, previousHeight: number) => void;
+  /** @deprecated 同上 */
+  settleCellLayoutAdjustment?: (cellId: string, nextHeight: number, previousHeight?: number) => void;
   liveQuestionTurnId: string;
   sessionWorking: boolean;
   styles: Record<string, any>;
@@ -47,90 +49,80 @@ export function useTurnCellRenderer(params: {
     handleThinkCardToggle,
     handleTimelineQuestionToggle,
     handleTimelineTabChange,
-    prepareCellLayoutAdjustment,
-    settleCellLayoutAdjustment,
     liveQuestionTurnId,
     sessionWorking,
     styles,
     thinkingPulse
   } = params;
 
-  const rememberCellHeight = useCallback((id: string, height: number) => {
-    const key = toText(id).trim();
-    if (!key || !Number.isFinite(height) || height <= 0) return;
-    const prev = chatCellHeightMapRef.current[key] || 0;
-    settleCellLayoutAdjustment(key, height, prev);
-    if (Math.abs(prev - height) <= 1) return;
-    chatCellHeightMapRef.current[key] = height;
-  }, [chatCellHeightMapRef, settleCellLayoutAdjustment]);
+  // 仅缓存实测高度；不再 settle scroll（官方：size 变化交给 maintainVisibleContentPosition）。
+  const rememberCellHeight = useCallback(
+    (id: string, height: number) => {
+      const key = toText(id).trim();
+      if (!key || !Number.isFinite(height) || height <= 0) return;
+      const prev = chatCellHeightMapRef.current[key] || 0;
+      if (Math.abs(prev - height) <= 1) return;
+      chatCellHeightMapRef.current[key] = height;
+    },
+    [chatCellHeightMapRef]
+  );
 
-  const renderTurnCell = useCallback(({ item }: { item: DisplayedTurnCell; index: number }) => {
-    const interaction = interactionByCellId[item.id] || {
-      interactionSignature: '',
-      isLastVisible: false,
-      expandedThinkIds: {},
-      expandedTimelineQuestionIds: {},
-      timelineQuestionTabs: {}
-    };
-    const prepareInteraction = () => {
-      prepareCellLayoutAdjustment(item.id, chatCellHeightMapRef.current[item.id] || 0);
-    };
+  const renderTurnCell = useCallback(
+    ({ item }: { item: DisplayedTurnCell; index: number }) => {
+      const interaction = interactionByCellId[item.id] || {
+        interactionSignature: '',
+        isLastVisible: false,
+        expandedThinkIds: {},
+        expandedTimelineQuestionIds: {},
+        timelineQuestionTabs: {}
+      };
 
-    const isUserOnlyCell = !!item.userMessage && item.items.length === 0;
+      const isUserOnlyCell = !!item.userMessage && item.items.length === 0;
 
-    return (
-      <MobileTurnCell
-        bodyFontFamily={bodyFontFamily}
-        styles={styles}
-        turn={item}
-        streaming={sessionWorking && interaction.isLastVisible && !isUserOnlyCell}
-        isLastTurn={interaction.isLastVisible}
-        thinkingPulse={thinkingPulse}
-        hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}
-        liveQuestions={liveQuestionTurnId === (item.parentTurnId || item.id) ? activeQuestionsForTurn : []}
-        interaction={interaction}
-        exploringStatus={interaction.isLastVisible && !isUserOnlyCell ? exploringStatus : undefined}
-        exploringActions={interaction.isLastVisible && !isUserOnlyCell ? exploringActions : undefined}
-        onQuestionReply={handleQuestionReply}
-        onCopyMessage={handleCopyMessage}
-        onOpenImage={handleOpenPreviewImage}
-        onCopyImage={handleCopyImage}
-        onToggleTimelineQuestion={(id) => {
-          prepareInteraction();
-          handleTimelineQuestionToggle(id);
-        }}
-        onToggleThinkCard={(id) => {
-          prepareInteraction();
-          handleThinkCardToggle(id);
-        }}
-        onChangeTimelineTab={handleTimelineTabChange}
-        onBeforeLocalLayoutChange={prepareInteraction}
-        onMeasuredHeight={rememberCellHeight}
-      />
-    );
-  }, [
-    activeQuestionsForTurn,
-    bodyFontFamily,
-    chatCellHeightMapRef,
-    exploringStatus,
-    exploringActions,
-    interactionByCellId,
-    handleCopyImage,
-    handleCopyMessage,
-    handleOpenPreviewImage,
-    handleQuestionReply,
-    handleThinkCardToggle,
-    handleTimelineQuestionToggle,
-    handleTimelineTabChange,
-    liveQuestionTurnId,
-    prepareCellLayoutAdjustment,
-    rememberCellHeight,
-    sessionWorking,
-    styles,
-    thinkingPulse
-  ]);
+      return (
+        <MobileTurnCell
+          bodyFontFamily={bodyFontFamily}
+          styles={styles}
+          turn={item}
+          streaming={sessionWorking && interaction.isLastVisible && !isUserOnlyCell}
+          isLastTurn={interaction.isLastVisible}
+          thinkingPulse={thinkingPulse}
+          hasLiveQuestion={liveQuestionTurnId === (item.parentTurnId || item.id)}
+          liveQuestions={liveQuestionTurnId === (item.parentTurnId || item.id) ? activeQuestionsForTurn : []}
+          interaction={interaction}
+          exploringStatus={interaction.isLastVisible && !isUserOnlyCell ? exploringStatus : undefined}
+          exploringActions={interaction.isLastVisible && !isUserOnlyCell ? exploringActions : undefined}
+          onQuestionReply={handleQuestionReply}
+          onCopyMessage={handleCopyMessage}
+          onOpenImage={handleOpenPreviewImage}
+          onCopyImage={handleCopyImage}
+          onToggleTimelineQuestion={handleTimelineQuestionToggle}
+          onToggleThinkCard={handleThinkCardToggle}
+          onChangeTimelineTab={handleTimelineTabChange}
+          onMeasuredHeight={rememberCellHeight}
+        />
+      );
+    },
+    [
+      activeQuestionsForTurn,
+      bodyFontFamily,
+      exploringStatus,
+      exploringActions,
+      interactionByCellId,
+      handleCopyImage,
+      handleCopyMessage,
+      handleOpenPreviewImage,
+      handleQuestionReply,
+      handleThinkCardToggle,
+      handleTimelineQuestionToggle,
+      handleTimelineTabChange,
+      liveQuestionTurnId,
+      rememberCellHeight,
+      sessionWorking,
+      styles,
+      thinkingPulse
+    ]
+  );
 
-  return {
-    renderTurnCell
-  };
+  return { renderTurnCell };
 }

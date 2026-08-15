@@ -122,6 +122,7 @@ type ChatComposerProps = {
   attachmentPanelVisible: boolean;
   attachmentToggleAnim: RNAnimated.Value;
   attachmentPanelStyle: any;
+  attachmentBubbleItemStyles?: readonly any[];
   actionIconAnim: RNAnimated.Value;
   inputModelLabel?: string;
   composerModeOptions?: ComposerModeOption[];
@@ -173,6 +174,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     attachmentMenuOpen,
     attachmentPanelStyle,
     attachmentPanelVisible,
+    attachmentBubbleItemStyles = [],
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
@@ -850,7 +852,6 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
 
   return (
     <>
-      {attachmentPanelVisible ? <Pressable style={styles.attachmentBackdrop} onPress={onDismissAttachmentPanel} /> : null}
       <View
         style={{
           marginHorizontal: H_INSET,
@@ -874,9 +875,27 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
               <Pressable key={img.id} style={styles.attachmentTile} onPress={() => onOpenAttachmentPreview({ uri: img.uri, filename: img.filename })}>
                 <Image source={{ uri: img.uri }} style={styles.attachmentThumb} resizeMode="cover" />
                 {img.status && img.status !== 'ready' ? (
-                  <View style={img.status === 'failed' ? [styles.attachmentStateOverlay, styles.attachmentStateFailed] : styles.attachmentStateOverlay}>
-                    {img.status === 'processing' || img.status === 'uploading' ? <ActivityIndicator size="small" color={colors.text} /> : null}
-                    <Text style={styles.attachmentStateText}>{img.statusText || (img.status === 'failed' ? '失败' : '处理中')}</Text>
+                  <View
+                    style={[
+                      styles.attachmentStateOverlay,
+                      img.status === 'failed'
+                        ? styles.attachmentStateFailed
+                        : img.status === 'pending_retry'
+                          ? styles.attachmentStateRetry
+                          : null
+                    ]}
+                  >
+                    {img.status === 'processing' || img.status === 'uploading' ? (
+                      <ActivityIndicator size="small" color={colors.text} />
+                    ) : null}
+                    <Text
+                      style={
+                        img.status === 'pending_retry' ? styles.attachmentStateRetryText : styles.attachmentStateText
+                      }
+                    >
+                      {img.statusText ||
+                        (img.status === 'failed' ? '失败' : img.status === 'pending_retry' ? '待重发' : '处理中')}
+                    </Text>
                   </View>
                 ) : null}
                 <Pressable style={styles.attachmentRemove} onPress={() => onRemoveAttachment(img.id)} hitSlop={8}>
@@ -893,12 +912,46 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
           style={[
             {
               borderRadius: BTN_RADIUS,
-              backgroundColor: showDock ? dockBg : 'transparent'
+              backgroundColor: showDock ? dockBg : 'transparent',
+              zIndex: 4
             },
             dockShadowOuter,
             dockShadowInner
           ]}
         >
+          {attachmentPanelVisible ? (
+            <View style={styles.attachmentBubbleDock} pointerEvents="box-none">
+              <View style={styles.attachmentBubbleRow}>
+                {(
+                  [
+                    { key: 'camera', label: '拍照', icon: 'camera' as const, onPress: onCaptureCamera },
+                    { key: 'album', label: '相册', icon: 'image' as const, onPress: onOpenAlbumPicker },
+                    { key: 'file', label: '文件', icon: 'folder' as const, onPress: onPickFile }
+                  ] as const
+                ).map((action, index) => (
+                  <RNAnimated.View key={action.key} style={attachmentBubbleItemStyles[index]}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={action.label}
+                      onPress={action.onPress}
+                      style={[
+                        styles.attachmentBubble,
+                        {
+                          backgroundColor: colors.card,
+                          borderColor: colors.isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)'
+                        }
+                      ]}
+                    >
+                      <View style={[styles.attachmentBubbleIcon, { backgroundColor: colors.primarySoft }]}>
+                        <Feather name={action.icon} size={16} color={colors.primary} />
+                      </View>
+                      <Text style={[styles.attachmentBubbleLabel, { color: colors.text }]}>{action.label}</Text>
+                    </Pressable>
+                  </RNAnimated.View>
+                ))}
+              </View>
+            </View>
+          ) : null}
           <View
             collapsable={false}
             style={{
@@ -1075,86 +1128,6 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
               </Pressable>
             ))}
           </ScrollView>
-        ) : null}
-
-        {attachmentPanelVisible ? (
-          <RNAnimated.View style={[styles.attachmentPanel, attachmentPanelStyle]}>
-            <View style={styles.attachmentMenuRow}>
-              <Pressable
-                style={[styles.attachmentMenuCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-                onPress={onCaptureCamera}
-              >
-                <View style={[styles.attachmentMenuIconShell, { backgroundColor: colors.primarySoft, borderColor: colors.border }]}>
-                  <Feather name="camera" size={22} color={colors.primary} />
-                </View>
-                <Text style={[styles.attachmentMenuLabel, { color: colors.text }]}>拍照</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.attachmentMenuCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-                onPress={onOpenAlbumPicker}
-              >
-                <View style={[styles.attachmentMenuIconShell, { backgroundColor: colors.primarySoft, borderColor: colors.border }]}>
-                  <Feather name="image" size={22} color={colors.primary} />
-                </View>
-                <Text style={[styles.attachmentMenuLabel, { color: colors.text }]}>相册</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.attachmentMenuCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-                onPress={onPickFile}
-              >
-                <View style={[styles.attachmentMenuIconShell, { backgroundColor: colors.primarySoft, borderColor: colors.border }]}>
-                  <Feather name="folder" size={22} color={colors.primary} />
-                </View>
-                <Text style={[styles.attachmentMenuLabel, { color: colors.text }]}>文件</Text>
-              </Pressable>
-            </View>
-            <View style={styles.recentHeaderRow}>
-              <Text style={[styles.recentHeaderTitle, { color: colors.muted }]}>最近图片</Text>
-            </View>
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
-              style={[styles.recentScroller, { height: recentScrollerHeight }]}
-              contentContainerStyle={styles.recentScrollerContent}
-              scrollEventThrottle={16}
-              onScroll={(evt) => {
-                const y = Number(evt.nativeEvent.contentOffset?.y || 0);
-                const viewportH = Number(evt.nativeEvent.layoutMeasurement?.height || 0);
-                const contentH = Number(evt.nativeEvent.contentSize?.height || 0);
-                onRecentScroll(y, viewportH, contentH);
-              }}
-            >
-              <View style={styles.recentGrid}>
-                {recentImages.map((item) => (
-                  <Pressable key={item.id} style={styles.recentThumbCard} onPress={() => onAttachRecentImage(item)}>
-                    <Image source={{ uri: item.uri }} style={styles.recentThumbImage} resizeMode="cover" />
-                  </Pressable>
-                ))}
-                {recentImages.length === 0 && recentImagesLoading ? (
-                  <View style={styles.recentLoadingState}>
-                    <ActivityIndicator size="small" color={colors.muted} />
-                    <Text style={styles.recentLoadingText}>Loading recent images</Text>
-                  </View>
-                ) : null}
-                {recentImages.length === 0 && !recentImagesLoading ? (
-                  <View style={styles.recentEmptyState}>
-                    <Feather name="image" size={18} color={colors.muted} />
-                    <Text style={styles.recentEmptyText}>No recent images</Text>
-                  </View>
-                ) : null}
-                {recentImagesLoadingMore ? (
-                  <View style={styles.recentLoadingMore}>
-                    <ActivityIndicator size="small" />
-                  </View>
-                ) : null}
-                {recentImagesHasNext && !recentImagesLoadingMore ? (
-                  <View style={styles.recentLoadHint}>
-                    <Text style={styles.recentLoadHintText}>Scroll to load more</Text>
-                  </View>
-                ) : null}
-              </View>
-            </ScrollView>
-          </RNAnimated.View>
         ) : null}
       </View>
 

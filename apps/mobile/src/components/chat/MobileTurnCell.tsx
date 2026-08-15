@@ -29,6 +29,15 @@ import { AnimatedCollapsibleContent } from '../AccordionBody';
 const enteredBubbleKeys = new Set<string>();
 const ENTER_FRESH_MS = 6000;
 
+/** 聊天时间线展开：与 Moirai AnimatedCollapsibleContent 同款 reveal。 */
+function TimelineExpand(props: { open: boolean; children: React.ReactNode }) {
+  return (
+    <AnimatedCollapsibleContent open={props.open} mode="slide" durationMs={240}>
+      {props.children}
+    </AnimatedCollapsibleContent>
+  );
+}
+
 function takeBubbleEnter(key: string, createdAt: number): boolean {
   const id = toText(key).trim();
   if (!id) return false;
@@ -121,7 +130,16 @@ function todoMeta(card: MobileTodoCard) {
   return { total, done, active };
 }
 
-function MarkdownMessage(props: {
+function InstantExpand(props: { open: boolean; children: React.ReactNode; style?: any }) {
+  // 兼容旧调用：统一走 slide 模式（有滑动，无高度补间）。
+  return (
+    <TimelineExpand open={props.open}>
+      {props.style ? <View style={props.style}>{props.children}</View> : props.children}
+    </TimelineExpand>
+  );
+}
+
+const MarkdownMessage = React.memo(function MarkdownMessage(props: {
   bodyFontFamily: string;
   styles: Record<string, any>;
   text: string;
@@ -243,7 +261,7 @@ function MarkdownMessage(props: {
   }, [flowAnim, streaming]);
 
   return (
-    <View style={styles.markdownBlock}>
+    <View style={styles.markdownBlock} collapsable={false}>
       <Animated.View
         style={{
           opacity: flowAnim.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] }),
@@ -271,7 +289,13 @@ function MarkdownMessage(props: {
       </Animated.View>
     </View>
   );
-}
+}, (prev, next) =>
+  prev.text === next.text &&
+  prev.streaming === next.streaming &&
+  prev.tone === next.tone &&
+  prev.bodyFontFamily === next.bodyFontFamily &&
+  prev.styles === next.styles
+);
 
 function renderMarkdown(
   styles: Record<string, any>,
@@ -511,7 +535,7 @@ function ExploringStatusPill(props: {
       </Pressable>
 
       {allActions.length > 0 ? (
-        <AnimatedCollapsibleContent open={isExpanded}>
+        <InstantExpand open={isExpanded}>
           <View style={styles.exploringStatusListCard}>
             {allActions.map((action, index) => (
               <ToolActivityRow
@@ -524,7 +548,7 @@ function ExploringStatusPill(props: {
               />
             ))}
           </View>
-        </AnimatedCollapsibleContent>
+        </InstantExpand>
       ) : null}
     </View>
   );
@@ -552,57 +576,92 @@ function TodoStatusBadge(props: { status: 'pending' | 'in_progress' | 'completed
   return <View style={pulse ? styles.todoStatusPending : styles.todoStatusPending} />;
 }
 
-function ThinkPreviewLines(props: {
+function ThinkActivityRow(props: {
   styles: Record<string, any>;
   text: string;
   active: boolean;
   mutedColor: string;
-  textColor: string;
+  labelColor: string;
 }) {
-  const { active, styles, mutedColor, textColor } = props;
+  const { active, styles, mutedColor, labelColor } = props;
   const content = toText(props.text).trim();
-  const hasContent = content.length > 0;
-  const lines = content
-    .split(/\r?\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  // 折叠态也要露出过程文案：取末尾几行，避免只剩「已完成思考」。
-  const previewLines = (lines.length ? lines : []).slice(active ? -3 : -2);
-  const label = active ? (hasContent ? '思考中' : '正在思考…') : '已完成思考';
+  // 与桌面 ReasoningGroup / 移动端 toolBatch 一致：标签旁始终保留末行预览，展开不拆掉表头避免抖高。
+  const preview =
+    content
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/^[-*•\d.\s]+/, '').trim())
+      .filter(Boolean)
+      .slice(-1)[0] || (content ? '整理推理摘要' : '');
+  const label = active ? '思考中' : '已思考';
 
   return (
-    <View style={styles.thinkFlowContent}>
-      <View style={styles.thinkFlowRow}>
-        <View style={[styles.thinkFlowPill, { borderColor: 'transparent', backgroundColor: 'transparent' }]}>
-          {active ? (
-            <View style={styles.thinkFlowDots}>
-              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.55 }]} />
-              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 0.8 }]} />
-              <View style={[styles.thinkFlowDot, { backgroundColor: mutedColor, opacity: 1 }]} />
-            </View>
-          ) : null}
-          <Text numberOfLines={1} style={[styles.thinkFlowLine, { color: textColor }]}>
-            {label}
-          </Text>
-        </View>
-      </View>
-      {previewLines.length > 0 ? (
-        <View style={styles.thinkFlowSteps}>
-          {previewLines.map((step, index) => (
-            <View key={`${index}:${step.slice(0, 24)}`} style={styles.thinkFlowStepRow}>
-              <View
-                style={
-                  active && index === previewLines.length - 1
-                    ? styles.thinkFlowStepDotLive
-                    : [styles.thinkFlowStepDot, { backgroundColor: mutedColor }]
-                }
-              />
-              <Text numberOfLines={2} style={[styles.thinkFlowStepText, { color: mutedColor }]}>
-                {step}
-              </Text>
-            </View>
-          ))}
-        </View>
+    <View style={styles.activityPressable}>
+      <Text
+        style={[
+          styles.activityLabel,
+          { color: labelColor },
+          active ? styles.activityLabelActive : null
+        ]}
+      >
+        {label}
+      </Text>
+      {preview ? (
+        <Text numberOfLines={1} style={[styles.activityPreview, { color: mutedColor }]}>
+          {preview}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ErrorActivityRow(props: {
+  styles: Record<string, any>;
+  title: string;
+  preview: string;
+  expanded: boolean;
+  labelColor: string;
+  mutedColor: string;
+  expandable: boolean;
+  onToggle: () => void;
+  children?: React.ReactNode;
+}) {
+  const {
+    children,
+    expandable,
+    expanded,
+    labelColor,
+    mutedColor,
+    onToggle,
+    preview,
+    styles,
+    title
+  } = props;
+  // 表头始终保留预览行（对齐「已运行 N 条」），避免展开瞬间改表头高度造成列表抖。
+  const header = (
+    <View style={styles.activityPressable}>
+      <Text style={[styles.activityLabel, { color: labelColor }]}>{title}</Text>
+      {preview ? (
+        <Text numberOfLines={1} style={[styles.activityPreview, { color: mutedColor }]}>
+          {preview}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  return (
+    <View style={styles.errorWrap} accessibilityRole="alert" accessibilityLabel={`${title}${preview ? `: ${preview}` : ''}`}>
+      {expandable ? (
+        <Pressable onPress={onToggle}>{header}</Pressable>
+      ) : (
+        header
+      )}
+      {/*
+        slide 模式：布局瞬时占高 + 下滑淡入，避免高度手风琴多帧破坏同回合 Markdown。
+      */}
+      {expandable ? (
+        <TimelineExpand open={expanded}>
+          <View style={styles.errorExpandBody}>{children}</View>
+        </TimelineExpand>
       ) : null}
     </View>
   );
@@ -616,14 +675,27 @@ function UserAttachmentStrip(props: {
 }) {
   const items = Array.isArray(props.attachments) ? props.attachments : [];
   if (items.length <= 0) return null;
+
   return (
-    <View style={props.styles.userAttachmentStrip}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={props.styles.userAttachmentScroller}
+      contentContainerStyle={props.styles.userAttachmentStrip}
+      keyboardShouldPersistTaps="handled"
+    >
       {items.map((item) => (
-        <Pressable key={item.id} onPress={() => props.onOpen(item)} onLongPress={() => props.onCopy(item.uri)} delayLongPress={260}>
+        <Pressable
+          key={item.id}
+          onPress={() => props.onOpen(item)}
+          onLongPress={() => props.onCopy(item.uri)}
+          delayLongPress={260}
+          style={props.styles.userAttachmentThumbWrap}
+        >
           <Image source={{ uri: item.uri }} style={props.styles.userAttachmentImage} resizeMode="cover" />
         </Pressable>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -923,12 +995,12 @@ function EventCardView(props: {
           </View>
           <Text numberOfLines={2} style={styles.eventDetail}>{description}</Text>
         </Pressable>
-        <AnimatedCollapsibleContent open={expanded}>
+        <InstantExpand open={expanded}>
           <View style={styles.eventExpandBody}>
             {sessionHint ? <Text style={styles.eventMeta}>{`session ${sessionHint.slice(0, 12)}…`}</Text> : null}
             {eventOutput ? <Text style={styles.eventOutput}>{eventOutput}</Text> : null}
           </View>
-        </AnimatedCollapsibleContent>
+        </InstantExpand>
       </View>
     );
   }
@@ -960,11 +1032,11 @@ function EventCardView(props: {
                 {eventOutput}
               </Text>
             ) : null}
-            <AnimatedCollapsibleContent open={expanded && !!eventOutput}>
+            <InstantExpand open={expanded && !!eventOutput}>
               <Text style={[styles.bashTerminalOutput, isError ? styles.bashTerminalOutputError : null]}>
                 {eventOutput}
               </Text>
-            </AnimatedCollapsibleContent>
+            </InstantExpand>
           </View>
         </Pressable>
       </View>
@@ -1031,7 +1103,7 @@ function EventCardView(props: {
             </Text>
           ) : null}
         </Pressable>
-        <AnimatedCollapsibleContent open={expanded}>
+        <InstantExpand open={expanded}>
           <View style={styles.eventExpandBody}>
             {writeMeta ? <Text style={styles.eventMeta}>{writeMeta}</Text> : null}
             {writeDetail ? <Text style={detailStyle}>{writeDetail}</Text> : null}
@@ -1064,7 +1136,7 @@ function EventCardView(props: {
             ) : null}
             {eventOutput ? <Text style={outputStyle}>{eventOutput}</Text> : null}
           </View>
-        </AnimatedCollapsibleContent>
+        </InstantExpand>
       </View>
     );
   }
@@ -1083,18 +1155,18 @@ function EventCardView(props: {
         <Text numberOfLines={2} style={detailStyle}>{detail}</Text>
         {eventOutput && !expanded ? <Text numberOfLines={3} style={outputStyle}>{eventOutput}</Text> : null}
       </Pressable>
-      <AnimatedCollapsibleContent open={expanded}>
+      <InstantExpand open={expanded}>
         <View style={styles.eventExpandBody}>
           {eventMeta ? <Text style={styles.eventMeta}>{eventMeta}</Text> : null}
           {eventOutput ? <Text style={outputStyle}>{eventOutput}</Text> : null}
         </View>
-      </AnimatedCollapsibleContent>
+      </InstantExpand>
     </View>
   );
 }
 
 /** 与桌面端 ToolBatchGroup 对齐：相邻同类工具收成一个可折叠批组，标签用
- *  「已运行 N 条命令 / 已编辑 N 个文件 / 联网 N 次 / 已浏览 N 次」。 */
+ *  「已运行 N 条命令 / 已编辑 N 个文件 / 已查询 N 次 / 已浏览 N 次」。 */
 function ToolBatchCardView(props: {
   styles: Record<string, any>;
   batch: MobileToolBatchCard;
@@ -1112,7 +1184,7 @@ function ToolBatchCardView(props: {
   const label = shell
     ? (running ? '运行中' : '已运行')
     : web
-      ? (running ? '联网中' : '联网')
+      ? (running ? '查询中' : '已查询')
       : browser
         ? (running ? '浏览中' : '已浏览')
         : (running ? '编辑中' : '已编辑');
@@ -1123,7 +1195,7 @@ function ToolBatchCardView(props: {
         <Text style={running ? styles.toolBatchLabelActive : styles.toolBatchLabel}>{label}</Text>
         <Text style={styles.toolBatchCount}>{`${batch.events.length} ${noun}`}</Text>
       </Pressable>
-      <AnimatedCollapsibleContent open={expanded}>
+      <InstantExpand open={expanded}>
         <View style={styles.toolBatchList}>
           {batch.events.map((event) => (
             <EventCardView
@@ -1135,7 +1207,7 @@ function ToolBatchCardView(props: {
             />
           ))}
         </View>
-      </AnimatedCollapsibleContent>
+      </InstantExpand>
     </View>
   );
 }
@@ -1167,7 +1239,6 @@ export const MobileTurnCell = React.memo(
     onToggleTimelineQuestion: (id: string) => void;
     onToggleThinkCard: (id: string) => void;
     onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
-    onBeforeLocalLayoutChange: () => void;
     onMeasuredHeight: (id: string, height: number) => void;
   }) {
     const {
@@ -1181,7 +1252,6 @@ export const MobileTurnCell = React.memo(
       onChangeTimelineTab,
       onCopyImage,
       onCopyMessage,
-      onBeforeLocalLayoutChange,
       onMeasuredHeight,
       onOpenImage,
       onQuestionReply,
@@ -1197,11 +1267,12 @@ export const MobileTurnCell = React.memo(
     const [expandedContextIds, setExpandedContextIds] = useState<Record<string, boolean>>({});
     const [expandedEventIds, setExpandedEventIds] = useState<Record<string, boolean>>({});
     const [expandedBatchIds, setExpandedBatchIds] = useState<Record<string, boolean>>({});
+    const [expandedErrorIds, setExpandedErrorIds] = useState<Record<string, boolean>>({});
     const measuredHeightRef = useRef(0);
+    // 展开高度变化交给 LegendList maintainVisibleContentPosition.size，不再预写 scroll 补偿。
     const toggleLocalExpansion = useCallback((apply: () => void) => {
-      onBeforeLocalLayoutChange();
       apply();
-    }, [onBeforeLocalLayoutChange]);
+    }, []);
 
     return (
       <View
@@ -1222,21 +1293,30 @@ export const MobileTurnCell = React.memo(
             variant="user"
           >
             <View style={styles.bubbleUserWrap}>
-              <Pressable
-                style={[
-                  styles.bubbleUser,
-                  {
-                    // ChatGPT 风格：用户消息中性浅灰气泡（右下角留小尖角），不用品牌绿大面积铺色。
-                    backgroundColor: colors.isDark ? colors.card : colors.sidebar,
-                    borderBottomRightRadius: 6
-                  }
-                ]}
-                onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))}
-                delayLongPress={280}
-              >
-                <UserAttachmentStrip attachments={turn.userMessage.attachments} onOpen={onOpenImage} onCopy={onCopyImage} styles={styles} />
-                {toText(turn.userMessage.text).trim() ? <Text style={[styles.bubbleUserText, { color: colors.text }]}>{toText(turn.userMessage.text || '...')}</Text> : null}
-              </Pressable>
+              <UserAttachmentStrip
+                attachments={turn.userMessage.attachments}
+                onOpen={onOpenImage}
+                onCopy={onCopyImage}
+                styles={styles}
+              />
+              {toText(turn.userMessage.text).trim() ? (
+                <Pressable
+                  style={[
+                    styles.bubbleUser,
+                    {
+                      // ChatGPT 风格：用户消息中性浅灰气泡（右下角留小尖角），不用品牌绿大面积铺色。
+                      backgroundColor: colors.isDark ? colors.card : colors.sidebar,
+                      borderBottomRightRadius: 6
+                    }
+                  ]}
+                  onLongPress={() => onCopyMessage(toText(turn.userMessage?.text))}
+                  delayLongPress={280}
+                >
+                  <Text style={[styles.bubbleUserText, { color: colors.text }]}>
+                    {toText(turn.userMessage.text || '...')}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </BubbleEnter>
         ) : null}
@@ -1267,7 +1347,11 @@ export const MobileTurnCell = React.memo(
                 <View style={styles.contextCard}>
                   <Pressable
                     style={styles.contextPressable}
-                    onPress={() => toggleLocalExpansion(() => setExpandedContextIds((prev) => ({ ...prev, [item.context.id]: !prev[item.context.id] })))}
+                    onPress={() =>
+                      toggleLocalExpansion(() =>
+                        setExpandedContextIds((prev) => ({ ...prev, [item.context.id]: !prev[item.context.id] }))
+                      )
+                    }
                   >
                     <View style={styles.contextHeadRow}>
                       <View style={styles.contextHeadMain}>
@@ -1284,7 +1368,7 @@ export const MobileTurnCell = React.memo(
                     </View>
                   </Pressable>
                   {tools.length > 0 ? (
-                    <AnimatedCollapsibleContent open={expanded}>
+                    <InstantExpand open={expanded}>
                       <View style={styles.contextTools}>
                         {tools.map((tool) => (
                           <ToolActivityRow
@@ -1296,7 +1380,7 @@ export const MobileTurnCell = React.memo(
                           />
                         ))}
                       </View>
-                    </AnimatedCollapsibleContent>
+                    </InstantExpand>
                   ) : null}
                 </View>
               </View>
@@ -1351,14 +1435,44 @@ export const MobileTurnCell = React.memo(
             );
           }
           if (item.kind === 'error') {
+            const title = toText(item.error.title || '运行失败') || '运行失败';
+            const body = toText(item.error.text || '').trim();
+            const code = toText(item.error.code).trim();
+            const paused =
+              /^(已暂停|已中止|aborted)$/i.test(body) || /中止|暂停|已停止|abort/i.test(body) || /暂停|中止/.test(title);
+            const label = paused ? '已暂停' : title;
+            const preview = paused
+              ? ''
+              : body
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .find(Boolean) || body;
+            const long = !paused && (body.length > 96 || body.includes('\n') || Boolean(code));
+            const expanded = !!expandedErrorIds[item.error.id];
+            const labelColor = colors.isDark ? '#FCA5A5' : '#B91C1C';
             return (
-              <View key={item.error.id} style={styles.errorWrap}>
-                <View style={styles.errorCard}>
-                  <Text style={styles.errorTitle}>{toText(item.error.title || 'Run failed')}</Text>
-                  {toText(item.error.code) ? <Text style={styles.errorCode}>{toText(item.error.code)}</Text> : null}
-                  <View style={styles.bubbleContent}>{renderMarkdown(styles, bodyFontFamily, toText(item.error.text || 'Unknown error'), 'assistant', false)}</View>
-                </View>
-              </View>
+              <ErrorActivityRow
+                key={item.error.id}
+                styles={styles}
+                title={label}
+                preview={preview}
+                expanded={expanded}
+                expandable={long}
+                labelColor={labelColor}
+                mutedColor={colors.muted}
+                onToggle={() =>
+                  toggleLocalExpansion(() =>
+                    setExpandedErrorIds((prev) => ({ ...prev, [item.error.id]: !prev[item.error.id] }))
+                  )
+                }
+              >
+                {code ? (
+                  <Text style={[styles.errorCode, { color: colors.isDark ? '#b35656' : '#DC2626' }]}>{code}</Text>
+                ) : null}
+                {body ? (
+                  <Text style={[styles.errorBodyText, { color: colors.muted }]}>{body}</Text>
+                ) : null}
+              </ErrorActivityRow>
             );
           }
           if (item.kind === 'todo') {
@@ -1377,42 +1491,23 @@ export const MobileTurnCell = React.memo(
             if (!card) return null;
             const isThinkExpanded = !!interaction.expandedThinkIds[card.id];
             const contentText = normalizeReasoningText(card.text);
+            const thinkActive = streaming && isLastTurn && !card.finished;
             return (
               <View key={card.id} style={styles.thinkWrap}>
-                <Pressable
-                  style={
-                    isThinkExpanded
-                      ? [styles.thinkCardExpanded, { backgroundColor: colors.isDark ? colors.card : colors.sidebar }]
-                      : styles.thinkCard
-                  }
-                  onPress={() => onToggleThinkCard(card.id)}
-                >
-                  {isThinkExpanded ? (
-                    <View style={styles.thinkExpandedHead}>
-                      <Text style={[styles.thinkExpandedTitle, { color: colors.muted }]}>思考过程</Text>
-                      <Text style={[styles.thinkToggleText, { color: colors.muted }]}>收起</Text>
-                    </View>
-                  ) : (
-                    <ThinkPreviewLines
-                      active={streaming && isLastTurn && !card.finished}
-                      styles={styles}
-                      text={contentText}
-                      mutedColor={colors.muted}
-                      textColor={colors.muted}
-                    />
-                  )}
+                <Pressable style={styles.thinkCard} onPress={() => onToggleThinkCard(card.id)}>
+                  <ThinkActivityRow
+                    active={thinkActive}
+                    styles={styles}
+                    text={contentText}
+                    mutedColor={colors.muted}
+                    labelColor={thinkActive ? colors.text : colors.muted}
+                  />
                 </Pressable>
-                <AnimatedCollapsibleContent open={isThinkExpanded}>
-                  <View
-                    style={[
-                      styles.bubbleContent,
-                      styles.thinkExpandBody,
-                      { backgroundColor: colors.isDark ? colors.card : colors.sidebar }
-                    ]}
-                  >
-                    {renderMarkdown(styles, bodyFontFamily, contentText, 'think', streaming && isLastTurn && !card.finished)}
+                <TimelineExpand open={isThinkExpanded}>
+                  <View style={[styles.bubbleContent, styles.thinkExpandBody]}>
+                    {renderMarkdown(styles, bodyFontFamily, contentText, 'think', thinkActive)}
                   </View>
-                </AnimatedCollapsibleContent>
+                </TimelineExpand>
               </View>
             );
           }
@@ -1447,6 +1542,5 @@ export const MobileTurnCell = React.memo(
     prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion &&
     prev.onToggleThinkCard === next.onToggleThinkCard &&
     prev.onChangeTimelineTab === next.onChangeTimelineTab &&
-    prev.onBeforeLocalLayoutChange === next.onBeforeLocalLayoutChange &&
     prev.onMeasuredHeight === next.onMeasuredHeight
 );

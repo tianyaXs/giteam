@@ -186,6 +186,35 @@ export async function cloudHeartbeat(args: {
   }
 }
 
+/** 手机端主动退出：吊销 JWT 并从桌面「已连接客户端」列表移除。 */
+export async function revokeCloudAccess(args: {
+  cloudBaseUrl: string;
+  token: string;
+}): Promise<void> {
+  const baseUrl = normalizeBaseUrl(args.cloudBaseUrl);
+  const tk = String(args.token || '').trim();
+  if (!baseUrl || !tk || tk === NO_AUTH_TOKEN) return;
+  const url = `${baseUrl}/cloud/v1/auth/revoke`;
+  const result = await fetchTextWithTrace(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      ...authHeaders(tk)
+    }
+  });
+  if (!result.ok) {
+    const err = new Error(`revoke failed: HTTP ${result.status}`) as CloudRedeemError;
+    try {
+      const parsed = JSON.parse(result.text);
+      err.code = String(parsed?.code || '');
+      err.message = String(parsed?.message || err.message);
+    } catch {
+      // keep
+    }
+    throw err;
+  }
+}
+
 export async function getClientRepositories(args: {
   baseUrl: string;
   token: string;

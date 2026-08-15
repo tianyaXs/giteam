@@ -218,12 +218,14 @@ export default function App() {
     optimisticUserIdAliasRef,
     sentAttachmentCacheRef,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     renderRegressionRetryRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
     streamRunIdRef,
     streamRenderTimerRef,
     sessionActiveRunIdRef,
+    sessionRunEventSeenRef,
     sessionStatusEpochRef,
     busySinceRef,
     appStateRef,
@@ -236,6 +238,9 @@ export default function App() {
     getAgentStreamStores,
     applyTurnWindow,
   } = useMobileAppRefs();
+  const settlePendingSendBundleRef = useRef<
+    (sid: string, runId: string, outcome: "completed" | "failed") => void
+  >(() => {});
   const openAlbumPickerForQrScanRef = React.useRef<(() => Promise<void>) | undefined>(undefined);
   const scanQrFromImageUriRef = React.useRef<((uri: string) => Promise<void>) | undefined>(undefined);
   const pushConnLog = useConnectionLogger();
@@ -268,6 +273,7 @@ export default function App() {
     messageContentHRef,
     messageUserScrollingRef,
     chatViewabilityConfig,
+    chatViewableRange,
     onChatViewableItemsChanged,
     scrollToLatest,
     jumpToLatest,
@@ -520,6 +526,7 @@ export default function App() {
       streamRunIdRef,
       streamSessionRef,
       sessionActiveRunIdRef,
+      sessionRunEventSeenRef,
       sessionStatusEpochRef,
       streamRenderTimerRef,
       sessionVisibleTurnCountRef,
@@ -541,6 +548,9 @@ export default function App() {
       renderStreamWindow,
       scheduleStreamRender,
       flushStreamRenderNow,
+      onRunSettled: (sid, runId, outcome) => {
+        settlePendingSendBundleRef.current(sid, runId, outcome);
+      },
     });
   streamManagerHandleRef.current = {
     startStream: startStreamManager,
@@ -857,6 +867,7 @@ export default function App() {
     actionIconAnim,
     attachmentToggleAnim,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     recentScrollerHeight,
     canSendNow,
     canAbortNow,
@@ -878,9 +889,11 @@ export default function App() {
   const {
     albumPickerOpen,
     albumPickerPurpose,
+    albumExitMode,
     albumImages,
     albumImagesLoading,
     albumImagesLoadingMore,
+    freshAlbumImageIdSet,
     mediaAlbums,
     selectedMediaAlbumId,
     albumSelectedIds,
@@ -904,6 +917,7 @@ export default function App() {
     attachRecentImage,
   } = useAttachmentProcessor({
     setStatus,
+    imageAttachments,
     setImageAttachments,
     setAttachmentMenuOpen,
     onQrScanFromAlbum: async (uri) => {
@@ -1202,6 +1216,8 @@ export default function App() {
   });
   sessionMessageSyncRef.current = sessionMessageSync;
   const { onNewSession, onResetAuth } = useSessionLifecycleActions({
+    serverUrl,
+    token,
     sessionIdRef,
     sessionRawMapRef,
     sessionOptimisticUserMapRef,
@@ -1234,7 +1250,7 @@ export default function App() {
   useEffect(() => {
     setCloudSessionInvalidationHandler((reason) => {
       pushConnLog(`cloud session invalidated → login: ${reason}`, "error");
-      onResetAuth(reason);
+      void onResetAuth(reason);
     });
     return () => setCloudSessionInvalidationHandler(null);
   }, [onResetAuth, pushConnLog]);
@@ -1356,7 +1372,7 @@ export default function App() {
       closeDrawer,
       setPrompt,
     });
-  const { copyMessageText, onAbort, onSendPrompt } = usePromptActions({
+  const { copyMessageText, onAbort, onSendPrompt, settlePendingSendBundle } = usePromptActions({
     authed,
     serverUrl,
     token,
@@ -1371,9 +1387,11 @@ export default function App() {
     initialMessageFetchLimit: INITIAL_MESSAGE_FETCH_LIMIT,
     sessionIdRef,
     sessionActiveRunIdRef,
+    sessionRunEventSeenRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     sentAttachmentCacheRef,
     setStatus,
     setBusy,
@@ -1397,6 +1415,7 @@ export default function App() {
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages,
   });
+  settlePendingSendBundleRef.current = settlePendingSendBundle;
   const { composerModeOptions, inputModelLabel } = useComposerPresentationState(
     {
       model,
@@ -1409,16 +1428,20 @@ export default function App() {
     serverUrl,
     token,
   });
-  // 切模型时同步到服务端已有会话（agentClient.setModel 全工程首次接线）。
+  // 切模型时同步到服务端已有会话。
   // ref="provider/modelId" → setModel(sessionId, provider, modelId)。
+  // 失败必须打日志：prompt 请求体不带 model，全靠会话上的 provider/model。
   const handlePersistSessionModel = useCallback(async (sid: string, modelRef: string) => {
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || !serverUrl) return;
+    const provider = modelRef.slice(0, slash);
+    const modelId = modelRef.slice(slash + 1);
     try {
       await createMobileAgentClient({ baseUrl: serverUrl, token })
-        .setModel(sid, modelRef.slice(0, slash), modelRef.slice(slash + 1));
-    } catch {
-      // 静默：本地已切换，服务端同步失败不阻塞 UI
+        .setModel(sid, provider, modelId);
+      pushConnLog(`POST agent.model ok sid=${sid} model=${modelRef}`);
+    } catch (e) {
+      pushConnLog(`POST agent.model failed sid=${sid} model=${modelRef} ${String(e)}`, 'error');
     }
   }, [serverUrl, token]);
   const {
@@ -1454,6 +1477,7 @@ export default function App() {
     setModel,
   });
   const {
+    collapseTodoDock,
     dismissedTodoCardId,
     dismissTodoDock,
     latestTodoCard,
@@ -1461,6 +1485,8 @@ export default function App() {
     toggleTodoDock,
   } = useTodoDockController({
     displayedTurns,
+    displayedTurnCells,
+    viewableRange: chatViewableRange,
     sessionId,
     sessionWorking,
     streamTodoCard,
@@ -1518,13 +1544,16 @@ export default function App() {
     albumImages,
     albumImagesLoading,
     albumImagesLoadingMore,
+    freshAlbumImageIdSet,
     albumPickerOpen,
     albumPickerPurpose,
+    albumExitMode,
     albumSelectedIds,
     albumSelectedSet,
     attachRecentImage,
     attachmentMenuOpen,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     attachmentPanelVisible,
     attachmentToggleAnim,
     canAbortNow,
@@ -1666,6 +1695,7 @@ export default function App() {
       todoDockCollapsed={todoDockCollapsed}
       thinkingPulse={thinkingPulse}
       onToggleTodoDock={toggleTodoDock}
+      onCollapseTodoDock={collapseTodoDock}
       onDismissTodoDock={dismissTodoDock}
       activeQuestionRequest={activeQuestionRequest}
       questionSubmitState={
@@ -1699,9 +1729,9 @@ export default function App() {
     />
   );
 
-  const albumPickerOverlay = albumPickerOpen ? (
+  const albumPickerOverlay = (
     <AlbumPickerOverlay {...albumPickerProps} />
-  ) : null;
+  );
 
   return (
     <SafeAreaProvider>

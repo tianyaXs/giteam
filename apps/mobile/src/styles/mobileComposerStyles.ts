@@ -14,6 +14,107 @@ export const composerStyles = {
     marginBottom: 8,
   },
 
+  todoProgressBubbleRoot: {
+    position: "absolute",
+    top: 52,
+    right: 0,
+    left: 0,
+    bottom: 0,
+    zIndex: 40,
+    elevation: 40,
+  },
+
+  todoProgressBubbleBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "transparent",
+  },
+
+  todoProgressBubbleAnchor: {
+    position: "absolute",
+    top: 10,
+    right: 12,
+    alignItems: "flex-end",
+    maxWidth: 280,
+  },
+
+  todoProgressBubble: {
+    minWidth: 40,
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+
+  todoProgressBubbleText: {
+    fontSize: 12,
+    fontWeight: "600",
+    fontVariant: ["tabular-nums"],
+    includeFontPadding: false,
+  },
+
+  todoProgressMenuWrap: {
+    marginTop: 8,
+    width: 248,
+    maxWidth: "86%",
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+
+  todoProgressMenuHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+
+  todoProgressMenuTitle: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+
+  todoProgressMenuCount: {
+    fontSize: 12,
+    fontWeight: "600",
+    fontVariant: ["tabular-nums"],
+  },
+
+  todoProgressMenuScroll: {
+    maxHeight: 220,
+  },
+
+  todoProgressMenuScrollContent: {
+    gap: 8,
+    paddingBottom: 2,
+  },
+
+  todoProgressMenuRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+
+  todoProgressMenuRowText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "400",
+  },
+
   todoSwipeShell: {
     borderRadius: 22,
     overflow: "hidden",
@@ -92,12 +193,49 @@ export const composerStyles = {
     zIndex: 3,
   },
 
-  attachmentBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    top: 58,
-    bottom: 86,
-    backgroundColor: "rgba(248,245,238,0.62)",
-    zIndex: 2,
+  // attachmentBackdrop 已移除：附件面板不再使用灰色遮罩
+
+  attachmentBubbleDock: {
+    position: "absolute",
+    left: 2,
+    bottom: "100%",
+    marginBottom: 10,
+    zIndex: 20,
+  },
+
+  attachmentBubbleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  attachmentBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+
+  attachmentBubbleIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  attachmentBubbleLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    includeFontPadding: false,
   },
 
   inputRow: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -422,7 +560,12 @@ export const composerStyles = {
 
   attachmentStateFailed: { backgroundColor: "rgba(185,28,28,0.68)" },
 
+  /** 发送失败收回：轻遮罩 + 待重发，避免像处理失败那样刺眼 */
+  attachmentStateRetry: { backgroundColor: "rgba(37,37,38,0.52)" },
+
   attachmentStateText: { color: "#252526", fontSize: 10, fontWeight: "700" },
+
+  attachmentStateRetryText: { color: "rgba(255,255,255,0.92)", fontSize: 10, fontWeight: "700" },
 
   attachmentChip: {},
 
@@ -430,23 +573,23 @@ export const composerStyles = {
 
   attachmentRemove: {
     position: "absolute",
-    right: 4,
-    top: 4,
-    width: 20,
-    height: 20,
+    right: 3,
+    top: 3,
+    width: 18,
+    height: 18,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.72)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.7)",
+    backgroundColor: "rgba(0,0,0,0.28)",
+    borderWidth: 0,
   },
 
   attachmentRemoveTxt: {
-    color: "#252526",
-    fontSize: 14,
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 13,
     lineHeight: 14,
-    fontWeight: "700",
+    fontWeight: "500",
+    includeFontPadding: false,
   },
 
   imagePickBtn: {
@@ -469,37 +612,8 @@ export const composerStyles = {
 
   attachmentPanel: {
     paddingTop: 12,
-    gap: 12,
+    gap: 10,
   },
-
-  attachmentMenuRow: { flexDirection: "row", gap: 8 },
-
-  attachmentMenuCard: {
-    flex: 1,
-    minHeight: 88,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#2d2d2d",
-    backgroundColor: "#252526",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-
-  attachmentMenuIcon: { fontSize: 24 },
-
-  attachmentMenuIconShell: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1e1e1e",
-    borderWidth: 1,
-    borderColor: "#2d2d2d",
-  },
-
-  attachmentMenuLabel: { color: "#d4d4d4", fontSize: 14, fontWeight: "500" },
 
   recentHeaderRow: { flexDirection: "row", alignItems: "center" },
 

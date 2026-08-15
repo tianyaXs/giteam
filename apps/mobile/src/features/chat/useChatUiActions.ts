@@ -96,13 +96,13 @@ export function useChatUiActions(params: {
     setComposerAgent(mode);
   }, [setComposerAgent]);
 
-  // 选模型回调：ModelPickerPopover 选中后自管关闭浮层，这里只切模型 + 同步服务端已有会话。
+  // 选模型回调：ModelPickerPopover 选中后自管关闭浮层，这里切本地 model 并同步已有会话。
+  // 发送路径还会再 await setModel（prompt 体不含 model），避免静默失败导致仍跑旧供应商。
   const handleComposerPickerModel = useCallback((id: string) => {
     const ref = toText(id);
     setModel(ref);
-    // 同步到服务端已有会话（新会话由 createSession 用当前 model）。
     const sid = toText(sessionId).trim();
-    if (sid) onPersistSessionModel(sid, ref);
+    if (sid) void onPersistSessionModel(sid, ref);
   }, [onPersistSessionModel, sessionId, setModel]);
 
   return {

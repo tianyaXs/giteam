@@ -144,8 +144,7 @@ export function useOptimisticUserMessages(params: {
             sentAttachmentCacheRef.current[sid] = {
               ...(sentAttachmentCacheRef.current[sid] || {}),
               [`id:${matched.id}`]: { at: Date.now(), attachments: local.attachments },
-              [`id:${local.id}`]: { at: Date.now(), attachments: local.attachments },
-              [`text:${text}`]: { at: Date.now(), attachments: local.attachments }
+              [`id:${local.id}`]: { at: Date.now(), attachments: local.attachments }
             };
           }
           usedIds.add(matched.id);
@@ -204,6 +203,53 @@ export function useOptimisticUserMessages(params: {
       const keepBaseTurns = base.renderedTurns.length > 0;
       const nextMessages = keepBaseTurns ? [...base.chatMessages] : [];
       const nextTurns = keepBaseTurns ? [...base.renderedTurns] : [];
+      const pending = optimistic.length > 1 ? [optimistic[optimistic.length - 1]!] : optimistic;
+      const anchorText = toText(pending[0]?.text).trim();
+      const anchorCreatedAt = Number(pending[0]?.createdAt || 0) || 0;
+
+      // 权威 user 尚未进 rawRows 时，新一轮 SSE 会被 buildRenderedTurns 挂到「上一轮」末尾，
+      // 表现就是工具/事件卡片出现在刚发送的用户气泡上方。按乐观文案把错挂尾部剥成 orphan。
+      if (anchorText && nextTurns.length > 0) {
+        const lastIdx = nextTurns.length - 1;
+        const last = nextTurns[lastIdx]!;
+        const lastUserText = toText(last.userMessage?.text).trim();
+        if (last.userMessage && lastUserText && lastUserText !== anchorText) {
+          let lastAssistantChatIdx = -1;
+          for (let i = 0; i < last.items.length; i += 1) {
+            const row = last.items[i];
+            if (row.kind === 'chat' && row.message.role === 'assistant') lastAssistantChatIdx = i;
+          }
+          const kept: MobileRenderedTurn['items'] = [];
+          const peeled: MobileRenderedTurn['items'] = [];
+          last.items.forEach((row, index) => {
+            if (row.kind === 'chat' && row.message.role === 'user') {
+              kept.push(row);
+              return;
+            }
+            const at = Number(row.createdAt || 0) || 0;
+            const afterCompletedReply = lastAssistantChatIdx >= 0 && index > lastAssistantChatIdx;
+            const afterOptimisticSend = anchorCreatedAt > 0 && at >= anchorCreatedAt;
+            // 上一轮还没产出 assistant 文本时，用发送时刻兜底，避免整段工具粘在旧气泡下。
+            const beforeAnyAssistantReply = lastAssistantChatIdx < 0 && (afterOptimisticSend || at <= 0);
+            if (afterCompletedReply || afterOptimisticSend || beforeAnyAssistantReply) peeled.push(row);
+            else kept.push(row);
+          });
+          if (peeled.length > 0) {
+            nextTurns[lastIdx] = {
+              ...last,
+              items: kept,
+              signature: `${last.signature}|peeled:${peeled.length}`
+            };
+            nextTurns.push({
+              id: `turn:orphan-assistant:peeled:${peeled[0]?.createdAt || Date.now()}`,
+              createdAt: peeled[0]?.createdAt || Date.now(),
+              items: peeled,
+              signature: ['user:none', `peeled:${peeled.length}`].join('|')
+            });
+          }
+        }
+      }
+
       // 流式 assistant 在权威 user 进表前会落成 orphan turn；并入乐观轮，过程文案才能出现在气泡下方。
       const orphanItems: MobileRenderedTurn['items'] = [];
       while (nextTurns.length > 0) {
@@ -221,7 +267,6 @@ export function useOptimisticUserMessages(params: {
       );
       const alias = optimisticUserIdAliasRef.current[toText(sessionIdRef.current).trim()] || {};
       const aliasedLocalIds = new Set(Object.values(alias));
-      const pending = optimistic.length > 1 ? [optimistic[optimistic.length - 1]!] : optimistic;
       let appended = 0;
       let orphanAttached = false;
       for (const item of pending) {

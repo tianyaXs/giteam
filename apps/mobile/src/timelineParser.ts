@@ -7,6 +7,7 @@ import {
   summarizeAgentContextProgress,
   summarizeAgentContextToolCounts
 } from './lib/agentParts';
+import { humanizeAgentError } from './lib/humanizeAgentError';
 import type {
   MobileChatMessage,
   MobileContextCard,
@@ -577,8 +578,8 @@ export function parseConversation(raw: unknown): ParsedConversation {
           createdAt,
           error: {
             id: `error:${id}`,
-            title: 'Run failed',
-            text: errText,
+            title: '运行失败',
+            text: humanizeAgentError(errText),
             code: errCode,
             createdAt
           }
@@ -759,14 +760,14 @@ export function parseConversation(raw: unknown): ParsedConversation {
     const userOnly = normalizedTimeline.filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat' && t.message.role === 'user');
     const stable: MobileTimelineItem[] = userOnly.map((t) => t);
     stable.push({
-      kind: 'think',
+      kind: 'error',
       createdAt: Date.now(),
-      card: {
-        id: 'think:size-limit-loop',
-        title: 'System',
-        text: '服务端检测到 size-limit 循环（synthetic+compaction）。本轮没有有效 assistant 正文或工具事件，请更换模型或清理上游上下文后重试。',
-        createdAt: Date.now(),
-        finished: true
+      error: {
+        id: 'error:size-limit-loop',
+        title: '运行失败',
+        text: '服务端检测到上下文超限循环（size-limit）。本轮没有有效回复，请更换模型或清理上游上下文后重试。',
+        code: 'size_limit_loop',
+        createdAt: Date.now()
       }
     });
     const chatMessages = stable
@@ -788,31 +789,34 @@ export function parseConversation(raw: unknown): ParsedConversation {
     chatMessages.push(m);
   }
 
+  // 仅有 compaction/系统 part、无可展示正文时：不再塞说明性 think 文案。
+  // 若 raw 里带有明确 error，则渲染为错误事件；否则保持空时间线（用户气泡仍由 turns 层展示）。
   if (normalizedTimeline.length === 0 && raw.length > 0) {
-    let fallbackText = '';
+    let errText = '';
+    let errCode = '';
     for (let i = raw.length - 1; i >= 0; i -= 1) {
       const item: any = (raw as any[])[i];
-      const parts = Array.isArray(item?.parts) ? item.parts : [];
-      const text = collectParts(parts, 'text')
-        .map((p: any) => normalizeText(p?.text))
-        .find(Boolean);
+      const info = item?.info || {};
+      const text = errorText(info?.error);
       if (text) {
-        fallbackText = text;
+        errText = text;
+        errCode = normalizeText(info?.error?.code) || normalizeText(info?.error?.data?.code);
         break;
       }
     }
-    const text = fallbackText || '本轮会话只有系统事件（如 compaction），暂无可展示正文。';
-    normalizedTimeline.push({
-      kind: 'think',
-      createdAt: Date.now(),
-      card: {
-        id: 'think:fallback',
-        title: 'System',
-        text,
+    if (errText && !isAbortLikeMessageError(errText, errCode)) {
+      normalizedTimeline.push({
+        kind: 'error',
         createdAt: Date.now(),
-        finished: true
-      }
-    });
+        error: {
+          id: 'error:fallback',
+          title: '运行失败',
+          text: humanizeAgentError(errText),
+          code: errCode || undefined,
+          createdAt: Date.now()
+        }
+      });
+    }
   }
 
   if (writing && hasAssistantRenderable && !hasError) {

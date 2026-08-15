@@ -20,6 +20,7 @@ import {
   upsertStreamPartRecord as storeUpsertStreamPartRecord,
   type AgentStreamStoreRefs
 } from '../messages/agentStreamStore';
+import { humanizeAgentError } from '../../lib/humanizeAgentError';
 
 export interface AgentStreamManagerDeps {
   authed: boolean;
@@ -31,6 +32,7 @@ export interface AgentStreamManagerDeps {
   streamRunIdRef: React.MutableRefObject<number>;
   streamSessionRef: React.MutableRefObject<string>;
   sessionActiveRunIdRef: React.MutableRefObject<Record<string, string>>;
+  sessionRunEventSeenRef: React.MutableRefObject<Record<string, boolean>>;
   sessionStatusEpochRef: React.MutableRefObject<number>;
   streamRenderTimerRef: React.MutableRefObject<number | null>;
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
@@ -53,6 +55,8 @@ export interface AgentStreamManagerDeps {
   scheduleStreamRender: (targetSessionId: string) => void;
   /** 越过 rAF 合帧立即渲染（离散事件：工具/交互/子代理状态变更）。 */
   flushStreamRenderNow: (targetSessionId: string) => void;
+  /** prompt 已接受后由 SSE 终态收口：成功清快照，失败把附件收回输入区。 */
+  onRunSettled?: (sid: string, runId: string, outcome: 'completed' | 'failed') => void;
 }
 
 function isAbortLikeStreamError(detail: string) {
@@ -125,6 +129,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     d.setStreaming(true);
 
     d.sessionActiveRunIdRef.current[targetSessionId] = runId;
+    d.sessionRunEventSeenRef.current[runId] = false;
     const streamRunId = d.streamRunIdRef.current;
     d.streamSessionRef.current = targetSessionId;
 
@@ -268,24 +273,33 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
         d.streamRef.current = null;
       }
       if (failedError) {
+        const friendly = humanizeAgentError(failedError);
         storeIngestStreamRows(stores(), sid, [{
           info: {
             id: `error:${runId}`,
             role: 'assistant',
-            error: { message: failedError },
+            error: { message: friendly },
             time: { created: Date.now(), completed: Date.now() }
           },
           parts: []
         }]);
+        d.setStatus(`运行失败: ${friendly}`);
+      } else {
+        d.setStatus('本轮回复完成');
+      }
+      try {
+        d.onRunSettled?.(sid, runId, failedError ? 'failed' : 'completed');
+      } catch {
+        // ignore settle errors — 不阻断流收口
       }
       // 先刷一帧 live，再 merge sync；streaming/busy 延后到 sync 结束再清，避免输入框闪回待机。
       if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
-      d.setStatus(failedError ? `运行失败: ${failedError}` : '本轮回复完成');
       void d.syncSessionMessages(sid, { tailOnly: true }).finally(() => {
         if (d.streamRunIdRef.current !== streamRunId || d.sessionIdRef.current !== sid) return;
         if (d.sessionActiveRunIdRef.current[sid] === runId) {
           delete d.sessionActiveRunIdRef.current[sid];
         }
+        delete d.sessionRunEventSeenRef.current[runId];
         d.setStreaming(false);
         d.setSessionStatusMap((prev: Record<string, any>) => ({
           ...prev,
@@ -301,6 +315,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       if (!event?.type) return;
       const sid = targetSessionId;
       d.streamDebug('sse.agent.event', { sid, type: event.type, seq: envelope.sequence });
+      d.sessionRunEventSeenRef.current[runId] = true;
       switch (event.type) {
         case 'message.started': {
           const messageId = toText(event.messageId).trim();

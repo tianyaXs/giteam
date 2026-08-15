@@ -16,30 +16,91 @@ type CollapsibleProps = {
   open: boolean;
   children: React.ReactNode;
   durationMs?: number;
+  /**
+   * height: 高度补间（侧栏等）。
+   * slide: 与 Moirai `AnimatedCollapsibleContent` 一致 —— opacity + translateY(-8→0) + scale，不做 height。
+   */
+  mode?: 'height' | 'slide';
+  /** 仅 height 模式：展开时内容初始下移量 */
+  shiftY?: number;
   style?: StyleProp<ViewStyle>;
 };
 
 /**
- * 内容列表展开：高度自顶向下生长 + 淡入。
- *
- * 不直接照搬 Moirai 的「无高度、translateY:-8」方案——在 LegendList
- * `maintainVisibleContentPosition.size` 下，瞬间增高会把点击行顶上去，
- * 负向 translateY / 居中 scale 也会看起来像往上展开。
+ * 内容列表展开。
+ * 聊天时间线请用 mode="slide"（对齐 Moirai）；侧栏等可用默认 height。
  */
 export function AnimatedCollapsibleContent(props: CollapsibleProps) {
   return <AccordionBody {...props} />;
 }
 
 /**
- * 高度手风琴：事件列表 / 侧栏项目树 / 设置供应商列表共用。
+ * Moirai 同款 reveal：布局瞬时占高，240ms opacity + 上滑 8px + 微缩放。
+ * @see Moirai apps/mobile/components/ui/animated-collapsible-content.tsx
+ */
+function SlideRevealBody(props: CollapsibleProps) {
+  const { open, children, durationMs = DEFAULT_DURATION_MS, style } = props;
+  const progress = useSharedValue(open ? 1 : 0);
+  const [present, setPresent] = useState(open);
+
+  useEffect(() => {
+    let removeTimer: ReturnType<typeof setTimeout> | undefined;
+    if (open) {
+      setPresent(true);
+    }
+    progress.value = withTiming(open ? 1 : 0, {
+      duration: durationMs,
+      easing: Easing.out(Easing.cubic)
+    });
+    if (!open) {
+      removeTimer = setTimeout(() => setPresent(false), durationMs);
+    }
+    return () => {
+      if (removeTimer) clearTimeout(removeTimer);
+    };
+  }, [durationMs, open, progress]);
+
+  const containerStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 0.35, 1], [0, 0.72, 1]),
+    transform: [
+      { translateY: interpolate(progress.value, [0, 1], [-8, 0]) },
+      { scale: interpolate(progress.value, [0, 1], [0.992, 1]) }
+    ]
+  }));
+
+  if (!present && !open) return null;
+
+  return (
+    <Animated.View
+      style={[styles.fullWidth, containerStyle, style]}
+      pointerEvents={open ? 'auto' : 'none'}
+    >
+      <View collapsable={false} pointerEvents="box-none" style={styles.fullWidth}>
+        {children}
+      </View>
+    </Animated.View>
+  );
+}
+
+/**
+ * mode=slide → Moirai reveal；默认 height → 侧栏手风琴。
  */
 export function AccordionBody(props: CollapsibleProps) {
-  const { open, children, durationMs = DEFAULT_DURATION_MS, style } = props;
+  if ((props.mode || 'height') === 'slide') {
+    return <SlideRevealBody {...props} />;
+  }
+  return <HeightTweenBody {...props} />;
+}
+
+function HeightTweenBody(props: CollapsibleProps) {
+  const { open, children, durationMs = DEFAULT_DURATION_MS, shiftY = 6, style } = props;
   const measuredHeight = useSharedValue(0);
   const progress = useSharedValue(open ? 1 : 0);
   const [mounted, setMounted] = useState(open);
   const openRef = useRef(open);
   openRef.current = open;
+  const shiftYRef = useRef(shiftY);
+  shiftYRef.current = shiftY;
 
   const finishClose = useCallback(() => {
     if (!openRef.current) setMounted(false);
@@ -71,13 +132,19 @@ export function AccordionBody(props: CollapsibleProps) {
   const containerStyle = useAnimatedStyle(() => ({
     height: measuredHeight.value * progress.value,
     overflow: 'hidden' as const,
-    opacity: interpolate(progress.value, [0, 0.45, 1], [0, 0.85, 1])
+    opacity: interpolate(progress.value, [0, 0.35, 1], [0, 1, 1])
   }));
 
-  // 内容贴顶裁切：高度变大 = 自上而下露出。轻微正向 translateY，避免往上窜。
-  const contentStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: interpolate(progress.value, [0, 1], [6, 0]) }]
-  }));
+  // 内容贴顶裁切：高度变大 = 自上而下露出。
+  const contentStyle = useAnimatedStyle(() => {
+    const shift = shiftYRef.current;
+    if (!shift) {
+      return { transform: [{ translateY: 0 }] };
+    }
+    return {
+      transform: [{ translateY: interpolate(progress.value, [0, 1], [shift, 0]) }]
+    };
+  });
 
   return (
     <Animated.View style={[containerStyle, styles.fullWidth, style]} pointerEvents={open ? 'auto' : 'none'}>

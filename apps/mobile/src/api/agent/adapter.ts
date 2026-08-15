@@ -128,7 +128,7 @@ export function agentMessageToLegacyRow(
     }
     if (part.type === 'redactedReasoning') {
       // OpenAI Responses 系（gpt5.6 等）的加密思考：映射为 redacted 占位 reasoning part，
-      // 否则纯思考轮转换后 parts 为空 → timeline 空 →「本轮会话只有系统事件」fallback。
+      // 否则纯思考轮转换后 parts 为空，时间线无正文（不再注入说明性 fallback 文案）。
       // 对齐桌面端 App.tsx 的 { type: "reasoning", redacted: true } 处理。
       parts.push({
         id: `${id}:redacted:${parts.length}`,

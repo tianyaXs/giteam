@@ -545,7 +545,7 @@ function ToolBatchGroup({
     : shell
       ? "运行中"
       : web
-        ? "联网中"
+        ? "查询中"
         : browser
           ? "浏览中"
           : "编辑中";
@@ -554,7 +554,7 @@ function ToolBatchGroup({
     : shell
       ? "已运行"
       : web
-        ? "联网"
+        ? "已查询"
         : browser
           ? "已浏览"
           : "已编辑";

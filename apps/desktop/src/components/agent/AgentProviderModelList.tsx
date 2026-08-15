@@ -37,9 +37,12 @@ export function AgentProviderModelList(props: AgentProviderModelListProps) {
   return (
     <>
       {props.models.map((modelId) => {
-        const ref = `${props.configuredProviderId}/${modelId}`;
+        // 开关/选中必须按「当前供应商 + modelId」区分；不能用 configuredProviderId，
+        // 否则 zai/glm-5.2 与 indemind/glm-5.2 会共用同一条 enabled 状态（同名串开关）。
+        const ref = `${props.providerId}/${modelId}`;
         const refNorm = normalizeModelRef(ref);
-        const configured = (props.configuredModelsByProvider[props.configuredProviderId] ?? []).includes(modelId);
+        const configured = (props.configuredModelsByProvider[props.configuredProviderId] ?? []).includes(modelId)
+          || (props.configuredModelsByProvider[props.providerId] ?? []).includes(modelId);
         const locallyEnabled = !!refNorm && props.enabledModels.has(refNorm);
         const hidden = !!refNorm && props.hiddenModels.has(refNorm);
         // 打开哪个，模型选择器才显示哪个：开关只反映用户显式启用，
@@ -48,6 +51,7 @@ export function AgentProviderModelList(props: AgentProviderModelListProps) {
         const modelDisplay =
           props.modelNamesByProvider[props.providerId]?.[modelId] ||
           props.configuredModelNamesByProvider[props.configuredProviderId]?.[modelId] ||
+          props.configuredModelNamesByProvider[props.providerId]?.[modelId] ||
           modelId;
 
         return (

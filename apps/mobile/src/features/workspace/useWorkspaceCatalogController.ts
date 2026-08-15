@@ -198,19 +198,27 @@ export function useWorkspaceCatalogController(params: {
         }
         return merged;
       } catch (e) {
-        pushConnLog(`GET agent.sessions error ${String(e)}`, 'error');
-        setStatus((prev) => (prev.includes('sessions failed') ? prev : `会话同步失败: ${String(e)}`));
+        const msg = String(e);
+        // 列表拉取默认 12s 超时；与长工具轮/消息同步并发时容易 Abort，属可忽略噪音。
+        if (/AbortError|aborted|timeout/i.test(msg)) {
+          pushConnLog(`GET agent.sessions skipped ${msg}`, 'info');
+          return sessionsRef.current;
+        }
+        pushConnLog(`GET agent.sessions error ${msg}`, 'error');
+        setStatus((prev) => (prev.includes('sessions failed') ? prev : `会话同步失败: ${msg}`));
         return sessionsRef.current;
       }
     };
 
-    const applyModelOptions = (options: ModelOption[], source: string) => {
+    const applyModelOptions = (options: ModelOption[], source: string, preferredActive?: string) => {
       const prevIds = new Set(modelOptionsRef.current.map((x) => x.id));
       const hasNew = options.some((x) => !prevIds.has(x.id));
       setModelOptions(options);
       setModel((prev) => {
         const current = prev.trim();
         if (current && options.some((x) => x.id === current)) return prev;
+        const preferred = toText(preferredActive).trim();
+        if (preferred && options.some((x) => x.id === preferred)) return preferred;
         return options[0]?.id || prev;
       });
       pushConnLog(`${source} ok models=${options.length}`);
@@ -300,7 +308,7 @@ export function useWorkspaceCatalogController(params: {
         const options = refs
           .map((ref) => toModelOption(ref, labelById))
           .filter((opt): opt is ModelOption => !!opt);
-        applyModelOptions(options, 'GET mobile-model-state');
+        applyModelOptions(options, 'GET mobile-model-state', toText(state.activeModel));
       };
 
       try {

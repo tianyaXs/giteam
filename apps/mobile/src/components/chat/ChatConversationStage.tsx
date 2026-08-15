@@ -7,7 +7,7 @@ import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from '../../featur
 import { getActiveMessageSendTrace, markMessageSendPerf } from '../../features/messages/messageSendPerf';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 
-/** LegendList 位置保持：历史前插（data）与流式尺寸变化（size）都不打断当前视口。 */
+/** LegendList 位置保持：按官方聊天/前插指南开启 data+size，交给列表锚点，勿再手写 scroll 补偿。 */
 const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { data: true, size: true } as const;
 
 const LATEST_JUMP_SIZE = 40;
@@ -230,8 +230,15 @@ function ChatConversationStageImpl(props: {
             onLayout={onListLayout}
             data={displayedTurnCells}
             initialScrollIndex={initialScrollIndex}
+            // 动态行以实测为准；200 仅作首屏分配提示（官方：不必贴实测均值）。
             estimatedItemSize={200}
             maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}
+            // 官方 Chat Interfaces：非 inverted 聊天列表底部对齐 + 贴底增长。
+            alignItemsAtEnd
+            maintainScrollAtEnd
+            maintainScrollAtEndThreshold={0.12}
+            // 行内有展开态；不开 recycleItems，避免虚拟化复用串开合状态（官方 Recycling 警告）。
+            recycleItems={false}
             alwaysBounceVertical
             bounces
             overScrollMode="always"

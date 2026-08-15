@@ -46,6 +46,17 @@ function shortModelLabel(label: string): string {
   return s.length > 28 ? `${s.slice(0, 26)}…` : s;
 }
 
+/** 同名模型跨供应商时加 provider 前缀，避免选择器看起来「只有一个」。 */
+function pickerModelLabel(opt: ModelOption, duplicateShortLabels: Set<string>): string {
+  const short = shortModelLabel(opt.label || opt.id);
+  const provider = toText(opt.provider).trim();
+  if (provider && duplicateShortLabels.has(short)) {
+    const prefix = provider.includes('.') ? provider.slice(provider.lastIndexOf('.') + 1) : provider;
+    return `${prefix}/${short}`;
+  }
+  return short;
+}
+
 export function ModelPickerPopover(props: {
   inputModelLabel?: string;
   modelOptions: ModelOption[];
@@ -88,6 +99,19 @@ export function ModelPickerPopover(props: {
     if (w >= 48) return w;
     return FALLBACK_MENU_WIDTH;
   }, [anchor]);
+
+  const duplicateShortLabels = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const opt of modelOptions) {
+      const short = shortModelLabel(opt.label || opt.id);
+      counts.set(short, (counts.get(short) || 0) + 1);
+    }
+    const dup = new Set<string>();
+    for (const [label, count] of counts) {
+      if (count > 1) dup.add(label);
+    }
+    return dup;
+  }, [modelOptions]);
 
   const positioned = Boolean(anchor && origin && menuHeight > 0);
 
@@ -270,7 +294,7 @@ export function ModelPickerPopover(props: {
                   padded={false}
                 />
                 <Text numberOfLines={1} style={[styles.itemTitle, { color: fg }]}>
-                  {shortModelLabel(opt.label || opt.id)}
+                  {pickerModelLabel(opt, duplicateShortLabels)}
                 </Text>
                 {active ? <View style={[styles.dot, { backgroundColor: fg }]} /> : null}
               </Pressable>

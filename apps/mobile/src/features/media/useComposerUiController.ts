@@ -38,6 +38,11 @@ export function useComposerUiController(props: {
   const actionIconAnim = useRef(new Animated.Value(1)).current;
   const attachmentPanelAnim = useRef(new Animated.Value(0)).current;
   const attachmentToggleAnim = useRef(new Animated.Value(0)).current;
+  const attachmentBubbleAnims = useRef([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0)
+  ]).current;
 
   const builtinSlashCommands = useMemo<SlashCommandLike[]>(() => [
     { id: 'builtin-new', trigger: 'new', title: 'New session', description: '开始一个新会话', source: 'builtin' },
@@ -73,6 +78,7 @@ export function useComposerUiController(props: {
   const hasPromptText = promptText.length > 0;
   const hasSendAction = hasPromptText || imageAttachments.length > 0;
   const imageQueueBusy = imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading');
+  // pending_retry 是发送失败收回，可直接重发，不当作处理失败拦截。
   const imageQueueFailed = imageAttachments.some((img) => img.status === 'failed');
   /**
    * 发送门闩：清空输入的同一帧就置位，覆盖「prompt 已空、sessionWorking 尚未 true」的空隙。
@@ -126,17 +132,35 @@ export function useComposerUiController(props: {
       {
         translateY: attachmentPanelAnim.interpolate({
           inputRange: [0, 1],
-          outputRange: [18, 0]
+          outputRange: [56, 0]
         })
       },
       {
         scale: attachmentPanelAnim.interpolate({
           inputRange: [0, 1],
-          outputRange: [0.96, 1]
+          outputRange: [0.98, 1]
         })
       }
     ]
   } as const;
+
+  const attachmentBubbleItemStyles = attachmentBubbleAnims.map((anim) => ({
+    opacity: anim,
+    transform: [
+      {
+        translateY: anim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [14, 0]
+        })
+      },
+      {
+        scale: anim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.72, 1]
+        })
+      }
+    ]
+  })) as const;
 
   const clearPromptAfterSend = useCallback((sentText?: string) => {
     const cleared = toText(sentText).trim();
@@ -253,26 +277,35 @@ export function useComposerUiController(props: {
 
     if (attachmentMenuOpen) {
       setAttachmentPanelVisible(true);
-      Animated.spring(attachmentPanelAnim, {
-        toValue: 1,
-        stiffness: 220,
-        damping: 22,
-        mass: 0.9,
-        useNativeDriver: true
-      }).start();
-      void loadRecentImages();
+      attachmentBubbleAnims.forEach((anim) => anim.setValue(0));
+      Animated.stagger(
+        55,
+        attachmentBubbleAnims.map((anim) =>
+          Animated.spring(anim, {
+            toValue: 1,
+            stiffness: 280,
+            damping: 18,
+            mass: 0.7,
+            useNativeDriver: true
+          })
+        )
+      ).start();
       return;
     }
 
-    Animated.timing(attachmentPanelAnim, {
-      toValue: 0,
-      duration: 180,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true
-    }).start(({ finished }) => {
+    Animated.parallel(
+      attachmentBubbleAnims.map((anim) =>
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 140,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true
+        })
+      )
+    ).start(({ finished }) => {
       if (finished) setAttachmentPanelVisible(false);
     });
-  }, [attachmentMenuOpen, attachmentPanelAnim, attachmentToggleAnim, loadRecentImages]);
+  }, [attachmentBubbleAnims, attachmentMenuOpen, attachmentToggleAnim]);
 
   return {
     prompt,
@@ -291,6 +324,7 @@ export function useComposerUiController(props: {
     actionIconAnim,
     attachmentToggleAnim,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     recentScrollerHeight,
     canSendNow,
     canAbortNow,

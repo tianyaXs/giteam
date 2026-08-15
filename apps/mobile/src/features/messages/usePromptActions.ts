@@ -32,9 +32,18 @@ type UsePromptActionsParams = {
   initialMessageFetchLimit: number;
   sessionIdRef: React.MutableRefObject<string>;
   sessionActiveRunIdRef: React.MutableRefObject<Record<string, string>>;
+  sessionRunEventSeenRef: React.MutableRefObject<Record<string, boolean>>;
   sessionVisibleTurnCountRef: React.MutableRefObject<Record<string, number>>;
   sessionTotalTurnCountRef: React.MutableRefObject<Record<string, number>>;
   pendingPromptSessionRef: React.MutableRefObject<Record<string, { id: string; startedAt: number }>>;
+  pendingSendBundleRef: React.MutableRefObject<{
+    optimisticId: string;
+    text: string;
+    images: ComposerAttachment[];
+    fromComposer: boolean;
+    sessionId: string;
+    runId: string;
+  } | null>;
   sentAttachmentCacheRef: React.MutableRefObject<Record<string, Record<string, { at: number; attachments: NonNullable<OptimisticUserMessage['attachments']> }>>>;
   setStatus: (value: string | ((prev: string) => string)) => void;
   setBusy: (value: boolean | ((prev: boolean) => boolean)) => void;
@@ -77,6 +86,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     model,
     pairCode,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     prompt,
     pushConnLog,
     refreshSessionsFromServer,
@@ -84,6 +94,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     sentAttachmentCacheRef,
     serverUrl,
     sessionActiveRunIdRef,
+    sessionRunEventSeenRef,
     sessionIdRef,
     sessionVisibleTurnCountRef,
     sessionTotalTurnCountRef,
@@ -162,6 +173,19 @@ export function usePromptActions(params: UsePromptActionsParams) {
         filename: img.filename
       }))
     };
+    // 快照附件：失败时收回输入区缩略图；成功则由 SSE 终态清掉。
+    pendingSendBundleRef.current = {
+      optimisticId: optimisticMessage.id,
+      text: payloadPrompt,
+      images: images.map((img) => ({
+        ...img,
+        status: 'ready',
+        statusText: '就绪'
+      })),
+      fromComposer: customPrompt === undefined,
+      sessionId: existingSid,
+      runId: ''
+    };
     const perf = startMessageSendPerf({
       optimisticId: optimisticMessage.id,
       targetSid: sessionIdRef.current,
@@ -174,10 +198,6 @@ export function usePromptActions(params: UsePromptActionsParams) {
         sentAttachmentCacheRef.current[sid] = {
           ...(sentAttachmentCacheRef.current[sid] || {}),
           [`id:${optimisticMessage.id}`]: {
-            at: Date.now(),
-            attachments: optimisticMessage.attachments
-          },
-          [`text:${toText(payloadPrompt).trim()}`]: {
             at: Date.now(),
             attachments: optimisticMessage.attachments
           }
@@ -196,6 +216,37 @@ export function usePromptActions(params: UsePromptActionsParams) {
         startedAt: Date.now()
       };
       setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'busy' } }));
+      // 乐观气泡已带图：清空输入区，避免「会话里一份 + 输入区一份」双显。
+      if (images.length > 0) {
+        setImageAttachments([]);
+      }
+      if (pendingSendBundleRef.current?.optimisticId === optimisticMessage.id) {
+        pendingSendBundleRef.current = {
+          ...pendingSendBundleRef.current,
+          sessionId: sid
+        };
+      }
+    };
+    const restoreFailedSendToComposer = (sid: string) => {
+      const bundle = pendingSendBundleRef.current;
+      pendingSendBundleRef.current = null;
+      if (sid) {
+        dropOptimisticUserMessage(sid, optimisticMessage.id);
+        const cache = sentAttachmentCacheRef.current[sid];
+        if (cache) {
+          delete cache[`id:${optimisticMessage.id}`];
+        }
+        delete pendingPromptSessionRef.current[sid];
+      }
+      if (!bundle?.fromComposer && customPrompt !== undefined) return;
+      const restoreText = bundle?.text || payloadPrompt;
+      const restoreImages = (bundle?.images || images).map((img) => ({
+        ...img,
+        status: 'pending_retry' as const,
+        statusText: '待重发'
+      }));
+      setPrompt((prev) => prev || restoreText);
+      setImageAttachments(restoreImages);
     };
     let requestSessionId = '';
     // 已有会话：先上屏再走网络，避免 setSessionOptions 等云端往返把气泡卡住几秒。
@@ -247,6 +298,24 @@ export function usePromptActions(params: UsePromptActionsParams) {
         }
       } else {
         bindMessageSendSession(perf, targetSessionId);
+        // 已有会话：prompt 请求体不含 model，必须在发之前把当前选择落到会话上。
+        // 否则 UI 显示 zai/glm，实际仍跑创建会话时的 indemind/luna（日志已复现）。
+        if (requestProvider && requestModelId) {
+          markMessageSendPerf(perf, 'send.set_model.begin');
+          const setModelStartedAt = performance.now();
+          try {
+            await client.setModel(targetSessionId, requestProvider, requestModelId);
+            pushConnLog(`POST agent.model ok sid=${targetSessionId} model=${modelRef}`);
+          } catch (modelError) {
+            pushConnLog(
+              `POST agent.model failed sid=${targetSessionId} model=${modelRef} ${String(modelError)}`,
+              'error'
+            );
+          }
+          markMessageSendPerf(perf, 'send.set_model.done', {
+            ms: Math.round(performance.now() - setModelStartedAt)
+          });
+        }
         // Plan 白名单已迁到后端 subagent；composerAgentSessionOptions 现为空。
         // 旧逻辑每次仍 POST session-options → 桌面端丢弃 handle 并重载整段 jsonl，
         // 经云端中继可达数秒～十余秒，表现为「发出去很久才开始回」。
@@ -273,11 +342,18 @@ export function usePromptActions(params: UsePromptActionsParams) {
         // 若 effect 尚未落盘，permission 交互处仍有本地 auto 代批兜底。
       }
       setSlashOpen(false);
-      setImageAttachments([]);
       requestSessionId = targetSessionId;
       setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'busy' } }));
       runId = client.newRunId();
       sessionActiveRunIdRef.current[targetSessionId] = runId;
+      sessionRunEventSeenRef.current[runId] = false;
+      if (pendingSendBundleRef.current?.optimisticId === optimisticMessage.id) {
+        pendingSendBundleRef.current = {
+          ...pendingSendBundleRef.current,
+          sessionId: targetSessionId,
+          runId
+        };
+      }
       markMessageSendPerf(perf, 'send.stream.start');
       startStream(targetSessionId, runId);
       const imagesPayload = images
@@ -304,11 +380,11 @@ export function usePromptActions(params: UsePromptActionsParams) {
       });
       pushConnLog(`agent.prompt accepted, sessionId=${targetSessionId} runId=${res.runId}`);
       // prompt 已后台化（HTTP 立即返回 runId），run 进度与终态全由 SSE 驱动。
-      // 这里不再做完成语义的尾同步——那会与流式渲染竞争；只在 SSE 迟迟不发事件时
-      // 兜底对账一次。
+      // 仅当 8s 内仍无任何 SSE agent 事件时才兜底对账；长工具轮有事件但未结束不算异常。
       delete pendingPromptSessionRef.current[targetSessionId];
       setTimeout(() => {
         if (sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+        if (sessionRunEventSeenRef.current[runId]) return;
         pushConnLog(`SSE no events for run=${runId}, fallback tail sync`, 'info');
         void syncSessionMessages(targetSessionId, { tailOnly: true }).catch(() => {});
       }, 8_000);
@@ -343,14 +419,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
       if (failedSessionId) {
         setSessionStatusMap((prev) => ({ ...prev, [failedSessionId]: { type: 'idle' } }));
       }
-      if (currentSessionId) {
-        delete pendingPromptSessionRef.current[currentSessionId];
-        dropOptimisticUserMessage(currentSessionId, optimisticMessage.id);
-      }
-      if (customPrompt === undefined) {
-        setPrompt((prev) => prev || payloadPrompt);
-        setImageAttachments(images.map((img) => ({ ...img, status: 'ready', statusText: '就绪' })));
-      }
+      // 发送失败：撤回「已发出」观感，把附件收回输入区缩略图并标待重发。
+      restoreFailedSendToComposer(failedSessionId || currentSessionId);
       pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
       // eslint-disable-next-line no-console
       console.error('[onSendPrompt] error:', msg, 'images:', images.length, 'dataUrl lengths:', images.map((i) => i.dataUrl?.length || 0));
@@ -410,6 +480,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     model,
     pairCode,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     prompt,
     pushConnLog,
     refreshSessionsFromServer,
@@ -417,6 +488,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
     repoPath,
     sentAttachmentCacheRef,
     serverUrl,
+    sessionActiveRunIdRef,
+    sessionRunEventSeenRef,
     sessionIdRef,
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,
@@ -448,6 +521,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     stopStream();
     delete pendingPromptSessionRef.current[sid];
     delete sessionActiveRunIdRef.current[sid];
+    pendingSendBundleRef.current = null;
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     releaseTurnAwaiting();
     try {
@@ -479,6 +553,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     clearSessionOptimisticMessages,
     initialSessionLimit,
     pendingPromptSessionRef,
+    pendingSendBundleRef,
     pushConnLog,
     releaseTurnAwaiting,
     serverUrl,
@@ -495,6 +570,20 @@ export function usePromptActions(params: UsePromptActionsParams) {
     token
   ]);
 
+  const settlePendingSendBundle = useCallback(
+    (_sid: string, runId: string, _outcome: 'completed' | 'failed') => {
+      const bundle = pendingSendBundleRef.current;
+      if (!bundle) return;
+      const pendingRun = toText(bundle.runId).trim();
+      const settledRun = toText(runId).trim();
+      if (pendingRun && settledRun && pendingRun !== settledRun) return;
+      // SSE 终态只清快照。附件收回输入区仅在 prompt HTTP 失败路径处理，
+      // 避免「消息已落库」时会话与输入区双份带图。
+      pendingSendBundleRef.current = null;
+    },
+    [pendingSendBundleRef]
+  );
+
   const copyMessageText = useCallback(async (text: string) => {
     const value = toText(text).trim();
     if (!value) return;
@@ -510,6 +599,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
   return {
     copyMessageText,
     onAbort,
-    onSendPrompt
+    onSendPrompt,
+    settlePendingSendBundle
   };
 }

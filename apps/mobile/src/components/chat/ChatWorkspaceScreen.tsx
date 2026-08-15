@@ -11,7 +11,7 @@ import type { AgentPermissionReply } from '../../lib/agentPermissions';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatConversationStage } from './ChatConversationStage';
 import { ImagePreviewOverlay } from './MediaOverlays';
-import { MobileTodoCardView } from './MobileTurnCell';
+import { MobileTodoProgressBubble } from './MobileTodoProgressBubble';
 type NotebookColors = {
   shell: string;
   main: string;
@@ -86,6 +86,7 @@ type ChatWorkspaceScreenProps = {
   todoDockCollapsed: boolean;
   thinkingPulse: boolean;
   onToggleTodoDock: () => void;
+  onCollapseTodoDock: () => void;
   onDismissTodoDock: () => void;
   activeQuestionRequest: QuestionRequestLike | null;
   questionSubmitState: string;
@@ -137,6 +138,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     onContentSizeChange,
     onDismissQuestion,
     onDismissTodoDock,
+    onCollapseTodoDock,
     onJumpToLatest,
     onListLayout,
     anchorSessionToLatest,
@@ -162,7 +164,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     showStreamTopGlow,
     streamTopGlowAnim,
     styles,
-    suppressFloatingDocks,
+    suppressFloatingDocks: _suppressFloatingDocks,
     thinkingPulse,
     todoDockCollapsed,
     windowWidth
@@ -335,31 +337,6 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             onOpenModelSettings={composerProps.onOpenModelManager}
             onBlankPress={dismissComposer}
           />
-          {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id && !suppressFloatingDocks ? (
-            <View
-              pointerEvents="box-none"
-              style={[
-                styles.todoDockWrap,
-                {
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  bottom: 16,
-                  zIndex: 30
-                }
-              ]}
-            >
-              <MobileTodoCardView
-                card={latestTodoCard}
-                compact
-                collapsed={todoDockCollapsed}
-                pulse={thinkingPulse}
-                styles={styles}
-                onToggle={onToggleTodoDock}
-                onClose={onDismissTodoDock}
-              />
-            </View>
-          ) : null}
           {activePermissionRequest && onReplyPermission ? (
             <View key={activePermissionRequest.id} style={styles.questionDockWrap}>
               <PermissionDock
@@ -384,6 +361,17 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
         </Animated.View>
         <ChatComposer ref={composerRef} {...composerProps} />
       </KeyboardAvoidingView>
+      {/* 进度气泡挂在顶栏下方，不随滚动 suppress，并可跟视口 todo 切换 */}
+      {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id ? (
+        <MobileTodoProgressBubble
+          card={latestTodoCard}
+          expanded={!todoDockCollapsed}
+          busy={thinkingPulse}
+          styles={styles}
+          onToggle={onToggleTodoDock}
+          onCollapse={onCollapseTodoDock}
+        />
+      ) : null}
     </View>
   );
 

@@ -1,11 +1,16 @@
 import { useCallback } from 'react';
+import { NO_AUTH_TOKEN, revokeCloudAccess } from '../../api/controlApi';
 import {
+  clearCloudConnectionExtras,
+  getConnectionMode,
   setActiveAccessKey,
   setActiveDeviceId
 } from '../../api/connectionContext';
 import { toText } from '../../lib/text';
 
 export function useSessionLifecycleActions(params: {
+  serverUrl: string;
+  token: string;
   sessionIdRef: React.MutableRefObject<string>;
   sessionRawMapRef: React.MutableRefObject<Record<string, any[]>>;
   sessionOptimisticUserMapRef: React.MutableRefObject<Record<string, any[]>>;
@@ -41,12 +46,14 @@ export function useSessionLifecycleActions(params: {
     pushConnLog,
     renderRegressionRetryRef,
     resetAgentStreamStores,
+    serverUrl,
     sessionIdRef,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,
     sessionRawMapRef,
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,
+    setAccessKey,
     setActiveSession,
     setMessages,
     setModelCatalogStatus,
@@ -62,7 +69,8 @@ export function useSessionLifecycleActions(params: {
     setStartupSessionHydrating,
     setStatus,
     setToken,
-    stopStream
+    stopStream,
+    token
   } = params;
 
   const onNewSession = useCallback(() => {
@@ -108,13 +116,26 @@ export function useSessionLifecycleActions(params: {
     stopStream
   ]);
 
-  const onResetAuth = useCallback((statusText?: string) => {
+  const onResetAuth = useCallback(async (statusText?: string) => {
+    // 云端模式先吊销 JWT，否则桌面端 list_clients 会在 90s TTL 内仍显示「手机已连接」。
+    const base = toText(serverUrl).trim();
+    const tk = toText(token).trim();
+    if (getConnectionMode() === 'cloud' && base && tk && tk !== NO_AUTH_TOKEN) {
+      try {
+        await revokeCloudAccess({ cloudBaseUrl: base, token: tk });
+        pushConnLog('cloud revoke ok');
+      } catch (e) {
+        pushConnLog(`cloud revoke warn ${String(e)}`, 'info');
+      }
+    }
     stopStream();
     setToken('');
     setPairCode('');
     setDeviceId?.('');
+    setAccessKey?.('');
     setActiveDeviceId('');
     setActiveAccessKey('');
+    clearCloudConnectionExtras();
     setRepoPath('');
     setProjects([]);
     setActiveSession('');
@@ -143,11 +164,13 @@ export function useSessionLifecycleActions(params: {
     pushConnLog,
     renderRegressionRetryRef,
     resetAgentStreamStores,
+    serverUrl,
     sessionMessageSyncRef,
     sessionOptimisticUserMapRef,
     sessionRawMapRef,
     sessionTotalTurnCountRef,
     sessionVisibleTurnCountRef,
+    setAccessKey,
     setActiveSession,
     setDeviceId,
     setMessages,
@@ -163,7 +186,8 @@ export function useSessionLifecycleActions(params: {
     setStartupSessionHydrating,
     setStatus,
     setToken,
-    stopStream
+    stopStream,
+    token
   ]);
 
   return {

@@ -21,13 +21,16 @@ export function useChatWorkspacePanelProps(params: {
   albumImages: AlbumPickerProps['albumImages'];
   albumImagesLoading: boolean;
   albumImagesLoadingMore: boolean;
+  freshAlbumImageIdSet?: Set<string>;
   albumPickerOpen: boolean;
   albumPickerPurpose: 'attachment' | 'qr-scan';
+  albumExitMode?: 'slide' | 'quick';
   albumSelectedIds: string[];
   albumSelectedSet: Set<string>;
   attachRecentImage: (item: RecentImageItem) => Promise<void>;
   attachmentMenuOpen: boolean;
   attachmentPanelStyle: any;
+  attachmentBubbleItemStyles?: ChatComposerProps['attachmentBubbleItemStyles'];
   attachmentPanelVisible: boolean;
   attachmentToggleAnim: ChatComposerProps['attachmentToggleAnim'];
   canAbortNow: boolean;
@@ -84,13 +87,16 @@ export function useChatWorkspacePanelProps(params: {
     albumImages,
     albumImagesLoading,
     albumImagesLoadingMore,
+    freshAlbumImageIdSet,
     albumPickerOpen,
     albumPickerPurpose,
+    albumExitMode = 'slide',
     albumSelectedIds,
     albumSelectedSet,
     attachRecentImage,
     attachmentMenuOpen,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     attachmentPanelVisible,
     attachmentToggleAnim,
     canAbortNow,
@@ -163,6 +169,7 @@ export function useChatWorkspacePanelProps(params: {
     attachmentPanelVisible,
     attachmentToggleAnim,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     actionIconAnim,
     inputModelLabel,
     composerModeOptions,
@@ -205,6 +212,7 @@ export function useChatWorkspacePanelProps(params: {
     actionIconAnim,
     attachmentMenuOpen,
     attachmentPanelStyle,
+    attachmentBubbleItemStyles,
     attachmentPanelVisible,
     attachmentToggleAnim,
     canAbortNow,
@@ -252,6 +260,7 @@ export function useChatWorkspacePanelProps(params: {
   const albumPickerProps = useMemo<AlbumPickerProps>(() => ({
     styles,
     open: albumPickerOpen,
+    exitMode: albumExitMode,
     purpose: albumPickerPurpose,
     mediaAlbums,
     selectedMediaAlbumId,
@@ -260,6 +269,7 @@ export function useChatWorkspacePanelProps(params: {
     albumImagesLoading,
     albumImagesLoadingMore,
     albumImages,
+    freshAlbumImageIdSet,
     onClose: closeAlbumPicker,
     onConfirm: handleConfirmAlbumSelection,
     onSelectAlbum: selectMediaAlbum,
@@ -269,6 +279,8 @@ export function useChatWorkspacePanelProps(params: {
     albumImages,
     albumImagesLoading,
     albumImagesLoadingMore,
+    freshAlbumImageIdSet,
+    albumExitMode,
     albumPickerOpen,
     albumPickerPurpose,
     albumSelectedIds,

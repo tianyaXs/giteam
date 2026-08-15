@@ -23,7 +23,7 @@ export function toolDisplayName(tool: string): string {
   if (tool === "bash") return "bash";
   if (tool === "bash_output") return "输出";
   if (tool === "kill_shell") return "终止";
-  if (tool === "web_fetch") return "联网";
+  if (tool === "web_fetch") return "查询";
   if (tool === "web_search") return "搜索";
   if (tool === "browser_use") return "浏览器";
   if (tool === "question") return "提问";
@@ -38,7 +38,7 @@ export function toolMode(tool: string): string {
   if (tool === "bash") return "命令";
   if (tool === "bash_output") return "输出";
   if (tool === "kill_shell") return "终止";
-  if (tool === "web_fetch" || tool === "web_search") return "联网";
+  if (tool === "web_fetch" || tool === "web_search") return "查询";
   if (tool === "browser_use") return "浏览";
   if (tool === "question") return "等待";
   return "";
