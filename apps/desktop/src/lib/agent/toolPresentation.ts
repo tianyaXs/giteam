@@ -24,7 +24,7 @@ export function toolDisplayName(tool: string): string {
   if (tool === "bash_output") return "输出";
   if (tool === "kill_shell") return "终止";
   if (tool === "web_fetch") return "查询";
-  if (tool === "web_search") return "搜索";
+  if (tool === "web_search") return "查询";
   if (tool === "browser_use") return "浏览器";
   if (tool === "question") return "提问";
   return tool || "tool";

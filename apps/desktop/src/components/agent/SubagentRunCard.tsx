@@ -1,12 +1,15 @@
 /**
- * 子 agent 行：挂在「执行中 / 已完成」批组内。
- * 标题用真实 description；展开区单层滚动，耗时运行中本地 tick。
+ * 子 agent 行：对齐移动端 Task 逻辑。
+ * - 标签层：「任务 描述 · 当前工具」（运行中标签脉冲）
+ * - 展开区：最近 3 步窗口 + 更早一步淡出不可点；无「更早 N 步」文案
+ * - 内部步骤默认收起；定高窗口避免新增步骤顶抖外层标签
  */
 import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentDetailedPart, AgentTodoItem } from "../../lib/agentSessions";
 import { readAgentTodosFromPart } from "../../lib/agentParts";
 import { resolveTaskCardTitle } from "../../lib/subagentRun";
+import { toolDisplayName } from "../../lib/agent/toolPresentation";
 import { cn } from "../../lib/utils";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
@@ -25,6 +28,8 @@ export type SubagentRunCardProps = {
   onOpenToolFile?: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
 };
+
+const TASK_STEP_WINDOW = 3;
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -73,6 +78,32 @@ function summarizeTimeline(timeline: AgentDetailedPart[]): string {
     tools > 0 && reads === 0 && searches === 0 ? `${tools} 个工具` : ""
   ].filter(Boolean);
   return bits.join("，");
+}
+
+function TaskStepWindowRow(props: {
+  step: AgentDetailedPart;
+  faded?: boolean;
+  onOpenToolFile?: (target: AgentToolFileTarget) => void;
+  onOpenBrowserUrl?: (url: string) => void;
+  onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
+}) {
+  const { faded = false, onOpenBrowserUrl, onOpenTaskSession, onOpenToolFile, step } = props;
+  return (
+    <div
+      className={cn("min-w-0", faded && "pointer-events-none opacity-[0.28]")}
+      aria-hidden={faded || undefined}
+    >
+      <AgentExecutionPartView
+        part={step}
+        shellToolPartsExpanded={false}
+        editToolPartsExpanded={false}
+        listItem
+        onOpenToolFile={onOpenToolFile || (() => undefined)}
+        onOpenBrowserUrl={onOpenBrowserUrl}
+        onOpenTaskSession={onOpenTaskSession}
+      />
+    </div>
+  );
 }
 
 export function SubagentRunCard({
@@ -208,8 +239,12 @@ export function SubagentRunCard({
     ? Math.max(reportedElapsedMs, effectiveStartedAt > 0 ? nowMs - effectiveStartedAt : 0)
     : reportedElapsedMs;
 
-  // 展开区不滚动：只展示最近若干步，避免拉出长卡片顶到右侧进度轨。
-  const visibleToolSteps = toolSteps.length > 8 ? toolSteps.slice(-8) : toolSteps;
+  // 窗口：最新 3 条可交互；再早 1 条淡出占位，不写「更早 N 步」
+  const windowSteps = toolSteps.slice(-TASK_STEP_WINDOW);
+  const fadedStep =
+    toolSteps.length > TASK_STEP_WINDOW
+      ? toolSteps[toolSteps.length - TASK_STEP_WINDOW - 1]
+      : null;
 
   const statusLabel = isError
     ? "失败"
@@ -218,19 +253,29 @@ export function SubagentRunCard({
       : running
         ? "进行中"
         : "完成";
-  const metaLine = useMemo(() => {
-    const explored = summarizeTimeline(timeline);
-    const phaseBit = running
+  // 标签层：描述 · 当前工具（中文映射，对齐移动端）；展开区不再单独写「正在执行」
+  const titlePreview = useMemo(() => {
+    const rawLive = running
       ? (currentToolName || (childPhase === "responding" ? "模型响应中" : ""))
       : "";
+    const liveTool =
+      rawLive && rawLive !== "模型响应中" ? toolDisplayName(rawLive) : rawLive;
+    if (liveTool && description && description !== liveTool) return `${description} · ${liveTool}`;
+    if (liveTool) return liveTool;
+    return description;
+  }, [childPhase, currentToolName, description, running]);
+
+  const metaLine = useMemo(() => {
+    const explored = summarizeTimeline(timeline);
     const bits = [
       subagentType,
       explored || (toolCount > 0 ? `${toolCount} 个工具` : ""),
-      formatElapsed(elapsedMs),
-      phaseBit
+      formatElapsed(elapsedMs)
     ].filter(Boolean);
     return bits.join(" · ");
-  }, [subagentType, timeline, toolCount, elapsedMs, running, currentToolName, childPhase]);
+  }, [subagentType, timeline, toolCount, elapsedMs]);
+
+  const taskLabel = isError || interrupted ? "任务失败" : "任务";
 
   return (
     <Collapsible
@@ -246,16 +291,24 @@ export function SubagentRunCard({
           type="button"
           variant="ghost"
           className={cn(
-            "h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
+            "h-auto min-h-[28px] w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
             listItem ? "py-1" : "py-1.5"
           )}
         >
-          <span className="flex min-w-0 items-start gap-2 overflow-hidden">
-            <ActivityDot active={running} error={isError || interrupted} />
+          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+            <span
+              className={cn(
+                "shrink-0 text-xs font-medium text-foreground/80",
+                running && "animate-pulse",
+                (isError || interrupted) && "text-destructive"
+              )}
+            >
+              {taskLabel}
+            </span>
             <span className="min-w-0 flex-1 overflow-hidden">
               <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  {description}
+                <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                  {titlePreview}
                 </span>
                 <span
                   className={cn(
@@ -275,7 +328,7 @@ export function SubagentRunCard({
                 />
               </span>
               {metaLine ? (
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground/80">
                   {metaLine}
                 </span>
               ) : null}
@@ -286,11 +339,11 @@ export function SubagentRunCard({
 
       <AnimatedCollapsibleContent open={open}>
         <CollapsibleContent forceMount>
-          {/* 与标题文字列对齐（点 + gap），无边框/底色/滚动，宽度收住不顶右侧进度轨 */}
+          {/* 与标题文字列对齐，无边框/底色/滚动；步骤区定高避免顶抖 */}
           <div className="flex min-w-0 max-w-md gap-2 pb-1">
-            <span className="mt-[5px] size-1.5 shrink-0 opacity-0" aria-hidden />
+            <span className="w-[28px] shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
-              {summary ? (
+              {summary && summary !== description ? (
                 <div className="text-[12.5px] leading-5 text-muted-foreground">
                   <MarkdownLite source={summary} />
                 </div>
@@ -311,39 +364,40 @@ export function SubagentRunCard({
                 </div>
               ) : null}
 
-              {visibleToolSteps.length > 0 ? (
-                <div className="flex min-w-0 flex-col">
-                  {toolSteps.length > visibleToolSteps.length ? (
-                    <div className="py-0.5 text-[11px] text-muted-foreground/70">
-                      更早 {toolSteps.length - visibleToolSteps.length} 步…
-                    </div>
-                  ) : null}
-                  {visibleToolSteps.map((step, index) => {
-                    const key = normalizeText((step as { id?: string }).id) || `step-${index}`;
-                    return (
-                      <AgentExecutionPartView
-                        key={key}
-                        part={step}
-                        shellToolPartsExpanded={false}
-                        editToolPartsExpanded={false}
-                        listItem
-                        onOpenToolFile={onOpenToolFile || (() => undefined)}
-                        onOpenBrowserUrl={onOpenBrowserUrl}
-                        onOpenTaskSession={onOpenTaskSession}
-                      />
-                    );
-                  })}
-                </div>
-              ) : null}
+              <div className="flex h-[88px] min-w-0 flex-col justify-end gap-0.5 overflow-hidden">
+                {fadedStep ? (
+                  <TaskStepWindowRow
+                    key={`fade:${normalizeText((fadedStep as { id?: string }).id) || "step"}`}
+                    step={fadedStep}
+                    faded
+                    onOpenToolFile={onOpenToolFile}
+                    onOpenBrowserUrl={onOpenBrowserUrl}
+                    onOpenTaskSession={onOpenTaskSession}
+                  />
+                ) : null}
+                {windowSteps.map((step, index) => {
+                  const key = normalizeText((step as { id?: string }).id) || `step-${index}`;
+                  return (
+                    <TaskStepWindowRow
+                      key={key}
+                      step={step}
+                      onOpenToolFile={onOpenToolFile}
+                      onOpenBrowserUrl={onOpenBrowserUrl}
+                      onOpenTaskSession={onOpenTaskSession}
+                    />
+                  );
+                })}
+                {windowSteps.length === 0 && !summary && childTodos.length === 0 ? (
+                  <div className="py-0.5 text-[11px] text-muted-foreground/70">
+                    {running ? "等待子任务步骤…" : "暂无执行步骤"}
+                  </div>
+                ) : null}
+              </div>
 
               {prompt && !running ? (
                 <pre className="max-w-full whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground/80">
                   {prompt}
                 </pre>
-              ) : null}
-
-              {!summary && visibleToolSteps.length === 0 && !prompt && childTodos.length === 0 ? (
-                <div className="text-[11px] text-muted-foreground/70">—</div>
               ) : null}
 
               {childSessionId && (completed || isError || interrupted) ? (
