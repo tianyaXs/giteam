@@ -1616,6 +1616,7 @@ export default function App() {
     model,
     modelOptions,
     notebookColors,
+    onSpeechStatus: setStatus,
     prompt,
     recentImages,
     recentImagesHasNext,

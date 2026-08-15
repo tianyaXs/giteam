@@ -23,8 +23,10 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 import { setThemeOverride, useThemeOverride } from '../../features/theme/useThemeOverride';
+import { useSpeechInputSetting } from '../../features/speech/useSpeechInputSetting';
 import { SettingsModelsPanel } from '../../features/workspace/ModelManagerScreen';
 import { toText } from '../../lib/text';
+import { resolveSpeechInputMode } from '../../lib/speech/speechInputStrategy';
 import type { ProjectTreeNode, DrawerSessionRow } from '../../features/chat/useLeftDrawerController';
 import { AccordionBody } from '../AccordionBody';
 import { MobileConfirmDialog } from './MobileConfirmDialog';
@@ -734,6 +736,8 @@ export function ConnectionDrawer(props: {
   const [language, setLanguage] = React.useState<'zh-CN' | 'en'>('zh-CN');
   const languageLabel = language === 'zh-CN' ? '简体中文' : 'English';
   const [tab, setTab] = React.useState<'general' | 'models'>(settingsTab);
+  const speechInput = useSpeechInputSetting();
+  const showSpeechDownloadUi = resolveSpeechInputMode() === 'offline';
 
   React.useEffect(() => {
     setTab(settingsTab);
@@ -877,7 +881,6 @@ export function ConnectionDrawer(props: {
               dividerColor={divider}
               textColor={p.text}
               mutedColor={p.faint}
-              last
               trailing={
                 <Pressable
                   accessibilityRole="switch"
@@ -909,6 +912,105 @@ export function ConnectionDrawer(props: {
                 </Pressable>
               }
             />
+            <SettingsRow
+              title="语音输入"
+              dividerColor={divider}
+              textColor={p.text}
+              mutedColor={p.faint}
+              last={!showSpeechDownloadUi}
+              trailing={
+                <Pressable
+                  accessibilityRole="switch"
+                  accessibilityState={{
+                    checked: speechInput.enabled,
+                    disabled: speechInput.downloading
+                  }}
+                  onPress={() => {
+                    if (speechInput.downloading) return;
+                    speechInput.toggle();
+                  }}
+                  hitSlop={6}
+                  style={{
+                    width: 46,
+                    height: 28,
+                    borderRadius: 999,
+                    paddingHorizontal: 2,
+                    opacity: speechInput.downloading ? 0.55 : 1,
+                    backgroundColor: speechInput.enabled
+                      ? colors.primary
+                      : colors.isDark
+                        ? '#39393D'
+                        : '#E5E5EA',
+                    alignItems: speechInput.enabled ? 'flex-end' : 'flex-start',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 999,
+                      backgroundColor: '#FFFFFF'
+                    }}
+                  />
+                </Pressable>
+              }
+            />
+            {showSpeechDownloadUi ? (
+              <View
+                style={{
+                  paddingHorizontal: 16,
+                  paddingTop: 4,
+                  paddingBottom: 14,
+                  gap: 8,
+                  borderBottomWidth: 0
+                }}
+              >
+                {speechInput.downloading ? (
+                  <>
+                    <RNText style={{ fontSize: 13, color: p.faint }}>
+                      {speechInput.progressLabel}
+                    </RNText>
+                    <View
+                      style={{
+                        height: 6,
+                        borderRadius: 999,
+                        overflow: 'hidden',
+                        backgroundColor: colors.isDark
+                          ? 'rgba(255,255,255,0.08)'
+                          : 'rgba(0,0,0,0.06)'
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: `${Math.max(2, Math.min(100, speechInput.progressPercent))}%`,
+                          height: '100%',
+                          borderRadius: 999,
+                          backgroundColor: colors.primary
+                        }}
+                      />
+                    </View>
+                  </>
+                ) : speechInput.errorMessage ? (
+                  <>
+                    <RNText style={{ fontSize: 13, color: p.danger }}>{speechInput.errorMessage}</RNText>
+                    <Pressable onPress={speechInput.retryDownload} hitSlop={6}>
+                      <RNText style={{ fontSize: 14, fontWeight: '500', color: colors.primary }}>
+                        重试下载
+                      </RNText>
+                    </Pressable>
+                  </>
+                ) : (
+                  <RNText style={{ fontSize: 12, color: p.faint }}>
+                    {speechInput.enabled && speechInput.modelReady
+                      ? '离线语音模型已就绪'
+                      : speechInput.modelReady
+                        ? '已下载，开启后显示语音按钮'
+                        : `开启后下载约 ${speechInput.sizeHintMb} MB 离线模型`}
+                  </RNText>
+                )}
+              </View>
+            ) : null}
           </View>
 
           <Pressable

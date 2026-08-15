@@ -4,15 +4,17 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "postinstall": "node scripts/patch-expo-modules-core.js && patch-package",
+    "postinstall": "node scripts/patch-expo-modules-core.js && patch-package && node scripts/clean-sherpa-empty-jni.mjs",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "eas:whoami": "eas whoami",
     "eas:apk": "eas build -p android --profile preview",
-    "eas:apk:non-interactive": "eas build -p android --profile preview --non-interactive"
+    "eas:apk:non-interactive": "eas build -p android --profile preview --non-interactive",
+    "fetch:sherpa-asr": "node scripts/fetch-sherpa-asr-model.mjs"
   },
   "dependencies": {
+    "@dr.pogodin/react-native-fs": "^2.40.0",
     "@legendapp/list": "^3.3.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native/virtualized-lists": "^0.83.6",
@@ -21,6 +23,7 @@
     "clsx": "^2.1.1",
     "color": "^4.2.3",
     "expo": "^55.0.24",
+    "expo-audio": "~55.0.16",
     "expo-blur": "~55.0.8",
     "expo-camera": "~55.0.18",
     "expo-clipboard": "~55.0.13",
@@ -33,6 +36,7 @@
     "expo-media-library": "~55.0.17",
     "expo-mesh-gradient": "~55.0.16",
     "expo-network": "~55.0.14",
+    "expo-speech-recognition": "^56.0.1",
     "expo-splash-screen": "~55.0.21",
     "expo-system-ui": "~55.0.20",
     "hoist-non-react-statics": "^3.3.2",
@@ -47,6 +51,7 @@
     "react-native-mmkv": "^3.3.3",
     "react-native-reanimated": "^4.3.1",
     "react-native-safe-area-context": "~5.6.2",
+    "react-native-sherpa-onnx": "^0.4.3",
     "react-native-sse": "^1.2.1",
     "react-native-streamdown": "^0.1.1",
     "react-native-svg": "15.15.3",

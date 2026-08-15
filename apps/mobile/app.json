@@ -26,6 +26,25 @@
         {
           "photosPermission": "用于从系统相册选择包含二维码的图片。"
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "用于语音输入，把说话内容转成文字发送给助手。",
+          "speechRecognitionPermission": "用于把语音转成文字，以便在对话框中发送。",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.tts",
+            "com.google.android.as",
+            "com.huawei.vassistant"
+          ]
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "用于语音输入，把说话内容转成文字发送给助手。"
+        }
       ]
     ],
     "android": {
@@ -54,6 +73,8 @@
     "ios": {
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "用于从系统相册选择包含二维码的图片。",
+        "NSMicrophoneUsageDescription": "用于语音输入，把说话内容转成文字发送给助手。",
+        "NSSpeechRecognitionUsageDescription": "用于把语音转成文字，以便在对话框中发送。",
         "NSLocalNetworkUsageDescription": "用于连接同一局域网内的 Giteam Desktop 控制服务。",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,

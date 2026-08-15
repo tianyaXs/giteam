@@ -3,6 +3,7 @@ import { LegendList } from '@legendapp/list/react-native';
 import { Animated, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { getDisplayedCellItemType } from '../../features/chat/displayedCells';
+import { isFocusBlockingEventCell } from '../../features/chat/focusBlankTap';
 import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from '../../features/chat/sessionSwitchPerf';
 import { getActiveMessageSendTrace, markMessageSendPerf } from '../../features/messages/messageSendPerf';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
@@ -56,7 +57,7 @@ function ChatConversationStageImpl(props: {
   /** idle/loading：连接中；error：拉取失败；ready：可判断是否有模型 */
   modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   onOpenModelSettings?: () => void;
-  /** 单击列表空白区（不含气泡/事件行；已做滑动/长按/防抖过滤） */
+  /** 单击列表（滑动不算）；仅点到事件/工具批次时不切换专注 chrome */
   onBlankPress?: () => void;
 }) {
   const {
@@ -133,10 +134,10 @@ function ChatConversationStageImpl(props: {
     void onLoadOlderMessages();
   }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
 
-  /** 空白单击：与滚动/长按/点在消息内容上区分，避免展开事件详情时误触专注 chrome。 */
-  const TAP_SLOP = 10;
-  const TAP_MAX_MS = 320;
-  const BLANK_DEBOUNCE_MS = 480;
+  /** 空白单击：与滚动区分。仅「事件/工具批次」单元格拦截，消息气泡可退出专注。 */
+  const TAP_SLOP = 28;
+  const TAP_MAX_MS = 520;
+  const BLANK_DEBOUNCE_MS = 220;
   const tapGestureRef = useRef<{
     x: number;
     y: number;
@@ -148,20 +149,20 @@ function ChatConversationStageImpl(props: {
     active: false,
     startedAt: 0
   });
-  /** 触摸落在 turn 单元格上则为 true → 不算空白。 */
-  const contentTouchRef = useRef(false);
+  /** 触摸落在事件/工具批次单元格上则为 true。 */
+  const eventTouchRef = useRef(false);
   const lastBlankPressAtRef = useRef(0);
 
   const handleScrollBeginDrag = useCallback(() => {
     tapGestureRef.current.active = false;
-    contentTouchRef.current = false;
+    eventTouchRef.current = false;
     onScrollBeginDrag();
   }, [onScrollBeginDrag]);
 
   const handleListTouchStart = useCallback((evt: any) => {
     const t = evt?.nativeEvent?.touches?.[0];
     if (!t) return;
-    contentTouchRef.current = false;
+    eventTouchRef.current = false;
     tapGestureRef.current = {
       x: t.pageX,
       y: t.pageY,
@@ -184,10 +185,10 @@ function ChatConversationStageImpl(props: {
 
   const handleListTouchEnd = useCallback(() => {
     const gesture = tapGestureRef.current;
-    const hitContent = contentTouchRef.current;
+    const hitEvent = eventTouchRef.current;
     tapGestureRef.current.active = false;
-    contentTouchRef.current = false;
-    if (!gesture.active || hitContent) return;
+    eventTouchRef.current = false;
+    if (!gesture.active || hitEvent) return;
     const elapsed = Date.now() - gesture.startedAt;
     if (elapsed > TAP_MAX_MS) return;
     const now = Date.now();
@@ -198,22 +199,24 @@ function ChatConversationStageImpl(props: {
 
   const handleListTouchCancel = useCallback(() => {
     tapGestureRef.current.active = false;
-    contentTouchRef.current = false;
+    eventTouchRef.current = false;
   }, []);
 
   const renderListItem = useCallback(
-    (info: { item: any; index: number }) => (
-      <View
-        collapsable={false}
-        onStartShouldSetResponderCapture={() => {
-          // 捕获阶段标记：点在气泡/事件详情上不算空白，不切换专注 chrome。
-          contentTouchRef.current = true;
-          return false;
-        }}
-      >
-        {renderTurnCell(info)}
-      </View>
-    ),
+    (info: { item: any; index: number }) => {
+      const blockFocusTap = isFocusBlockingEventCell(info.item);
+      return (
+        <View
+          collapsable={false}
+          onStartShouldSetResponderCapture={() => {
+            if (blockFocusTap) eventTouchRef.current = true;
+            return false;
+          }}
+        >
+          {renderTurnCell(info)}
+        </View>
+      );
+    },
     [renderTurnCell]
   );
 

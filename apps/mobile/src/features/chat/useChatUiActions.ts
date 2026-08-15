@@ -84,8 +84,8 @@ export function useChatUiActions(params: {
     void pickImageFromLibrary('file');
   }, [pickImageFromLibrary, setAttachmentMenuOpen]);
 
-  const handleSendPrompt = useCallback(() => {
-    void onSendPrompt();
+  const handleSendPrompt = useCallback((customPrompt?: string) => {
+    void onSendPrompt(customPrompt);
   }, [onSendPrompt]);
 
   const handleAbortPrompt = useCallback(() => {

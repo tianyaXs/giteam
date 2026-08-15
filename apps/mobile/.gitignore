@@ -1,0 +1,4 @@
+# Local Sherpa ASR artifacts (large; sync via scripts/fetch-sherpa-asr-model.mjs)
+vendor/sherpa-asr-cache/
+vendor/sherpa-asr-models/
+android/app/src/main/assets/models/

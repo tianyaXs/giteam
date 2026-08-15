@@ -49,7 +49,7 @@ export function useChatWorkspacePanelProps(params: {
   handlePickAttachmentFile: () => void;
   handlePromptChange: (value: string) => void;
   handleRemoveAttachment: (id: string) => void;
-  handleSendPrompt: () => void;
+  handleSendPrompt: (customPrompt?: string) => void | Promise<void>;
   handleSlashSelect: (trigger: string) => void;
   handleToggleAttachmentMenu: () => void;
   imageAttachments: ComposerAttachment[];
@@ -62,6 +62,7 @@ export function useChatWorkspacePanelProps(params: {
   modelOptions: ModelOption[];
   notebookColors: { left: string };
   onOpenModelManager: () => void;
+  onSpeechStatus?: (message: string) => void;
   hasConversationContent: boolean;
   sessionId: string;
   prompt: string;
@@ -129,6 +130,7 @@ export function useChatWorkspacePanelProps(params: {
     modelOptions,
     notebookColors,
     onOpenModelManager,
+    onSpeechStatus,
     hasConversationContent,
     sessionId,
     prompt,
@@ -200,6 +202,7 @@ export function useChatWorkspacePanelProps(params: {
     onRemoveAttachment: handleRemoveAttachment,
     onAbort: handleAbortPrompt,
     onSend: handleSendPrompt,
+    onSpeechStatus,
     onSelectSlash: handleSlashSelect,
     onCaptureCamera: handleCaptureCamera,
     onOpenAlbumPicker: handleOpenAlbumPicker,
@@ -242,6 +245,7 @@ export function useChatWorkspacePanelProps(params: {
     model,
     modelOptions,
     onOpenModelManager,
+    onSpeechStatus,
     onThinkingLevelChange,
     prompt,
     recentImages,

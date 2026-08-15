@@ -68,8 +68,6 @@ export const chatStyles = {
   },
   focusAbortFabWrap: {
     position: "absolute",
-    right: 18,
-    bottom: 28,
     zIndex: 50,
     elevation: 50,
   },

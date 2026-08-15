@@ -3,6 +3,7 @@ import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from '
 import { Feather } from '@expo/vector-icons';
 import { Drawer } from 'react-native-drawer-layout';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, {
   Easing as ReEasing,
   interpolate,
@@ -22,6 +23,12 @@ import { ComposerSendGlyph } from './ComposerSendGlyph';
 import { ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoProgressBubble } from './MobileTodoProgressBubble';
 
+/** 与 ChatComposer 输入条右下角发送/停止钮对齐 */
+const COMPOSER_H_INSET = 16;
+const COMPOSER_DOCK_PAD_X = 6;
+const COMPOSER_DOCK_HEIGHT = 52;
+const COMPOSER_ACTION_BTN = 32;
+const COMPOSER_MIN_BOTTOM_PAD = 10;
 const TOP_BAR_HEIGHT = 52;
 type NotebookColors = {
   shell: string;
@@ -185,6 +192,11 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   } = props;
   const { colors: themeColors } = useMobileTheme();
   const themeDark = themeColors.isDark;
+  const insets = useSafeAreaInsets();
+  const focusAbortBottom =
+    Math.max(COMPOSER_MIN_BOTTOM_PAD, insets.bottom) +
+    (COMPOSER_DOCK_HEIGHT - COMPOSER_ACTION_BTN) / 2;
+  const focusAbortRight = COMPOSER_H_INSET + COMPOSER_DOCK_PAD_X;
   const [activeNotebookPanel, setActiveNotebookPanel] = useState<NotebookPanel>('');
   const [mainRoute, setMainRoute] = useState<MainRoute>('chat');
   const activeNotebookPanelRef = useRef<NotebookPanel>('');
@@ -567,7 +579,11 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
       {canAbortNow ? (
         <Reanimated.View
           pointerEvents={focusChrome ? 'auto' : 'none'}
-          style={[styles.focusAbortFabWrap, focusAbortAnimStyle]}
+          style={[
+            styles.focusAbortFabWrap,
+            { right: focusAbortRight, bottom: focusAbortBottom },
+            focusAbortAnimStyle
+          ]}
         >
           <Pressable
             accessibilityRole="button"

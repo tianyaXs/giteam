@@ -76,7 +76,10 @@ export function useComposerUiController(props: {
 
   const promptText = prompt.trim();
   const hasPromptText = promptText.length > 0;
-  const hasSendAction = hasPromptText || imageAttachments.length > 0;
+  /** 附件单独不算「可发送态」：无文本时右侧保持语音钮，支持选图后语音输入。 */
+  const hasSendAction = hasPromptText;
+  /** 轮次闩门恢复：有草稿文本或仍挂着附件都算用户侧还有内容。 */
+  const hasComposerDraft = hasPromptText || imageAttachments.length > 0;
   const imageQueueBusy = imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading');
   // pending_retry 是发送失败收回，可直接重发，不当作处理失败拦截。
   const imageQueueFailed = imageAttachments.some((img) => img.status === 'failed');
@@ -98,7 +101,7 @@ export function useComposerUiController(props: {
     if (sessionWorking) return;
     if (!turnAwaiting) return;
     // 发送失败回填输入：本轮从未进入 working，立刻放行，勿卡 30s。
-    if (hasSendAction && !sawWorkingThisTurnRef.current) {
+    if (hasComposerDraft && !sawWorkingThisTurnRef.current) {
       setTurnAwaiting(false);
       return;
     }
@@ -110,7 +113,7 @@ export function useComposerUiController(props: {
       sawWorkingThisTurnRef.current = false;
     }, holdMs);
     return () => clearTimeout(timer);
-  }, [hasSendAction, sessionWorking, turnAwaiting]);
+  }, [hasComposerDraft, sessionWorking, turnAwaiting]);
 
   const releaseTurnAwaiting = useCallback(() => {
     sawWorkingThisTurnRef.current = false;
@@ -120,7 +123,7 @@ export function useComposerUiController(props: {
   // 等待中永远优先 Stop（即使草稿未空）；结束后才允许发送。
   const turnInFlight = sessionWorking || turnAwaiting;
   const canAbortNow = turnInFlight;
-  const canSendNow = hasSendAction && !turnInFlight && !imageQueueBusy && !imageQueueFailed;
+  const canSendNow = hasPromptText && !turnInFlight && !imageQueueBusy && !imageQueueFailed;
 
   const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
   const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || 1) / 4)));
@@ -253,8 +256,8 @@ export function useComposerUiController(props: {
   }, [loadRecentImages, recentImagesHasNext]);
 
   useEffect(() => {
-    if (hasSendAction) setAttachmentMenuOpen(false);
-  }, [hasSendAction]);
+    if (hasComposerDraft) setAttachmentMenuOpen(false);
+  }, [hasComposerDraft]);
 
   // 仅附件菜单切换时做图标过渡；勿绑 hasSendAction，否则清空/Stop 切换会缩放闪成「两套按钮」。
   useEffect(() => {

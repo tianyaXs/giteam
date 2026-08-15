@@ -1,4 +1,4 @@
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -32,8 +32,18 @@ import { ProviderIcon } from '../ProviderIcon';
 import { IdleReasoningPill } from './IdleReasoningPill';
 import { ComposerSendDragHandle } from './ComposerSendDragHandle';
 import { ComposerSendGlyph } from './ComposerSendGlyph';
+import { ComposerMicGlyph } from './ComposerMicGlyph';
 import { ModelPickerPopover } from './ModelPickerPopover';
 import type { MobileThinkingLevel } from './thinkingLevels';
+import { useComposerSpeechInput } from '../../features/speech/useComposerSpeechInput';
+import { useSpeechInputVoiceUiAvailable } from '../../features/speech/useSpeechInputSetting';
+import {
+  ensureSpeechMicPermission,
+  openSpeechSettings
+} from '../../lib/speech/speechMicPermission';
+import { warmSherpaAsrRuntime } from '../../lib/speech/sherpaAsrRuntime';
+import { resolveSpeechInputMode } from '../../lib/speech/speechInputStrategy';
+import { humanizeSpeechError } from '../../lib/speechTranscript';
 
 /**
  * 待机：左粒子胶囊 + 右模型圆钮（仅新会话默认）。
@@ -53,7 +63,7 @@ type ComposerAttachment = {
   filename: string;
   mime: string;
   dataUrl: string;
-  status?: 'processing' | 'ready' | 'uploading' | 'failed';
+  status?: 'processing' | 'ready' | 'uploading' | 'failed' | 'pending_retry';
   statusText?: string;
 };
 
@@ -93,6 +103,8 @@ const MODEL_BTN_WIDTH = BTN_HEIGHT;
 const SETUP_BTN_WIDTH = 108;
 /** 仅 opacity/transform，可走原生驱动 */
 const EXPAND_MS = 260;
+/** 按住说话：上移超过该距离进入「松开取消」 */
+const VOICE_CANCEL_DY = 56;
 
 const IDLE_LAYER_STYLE = {
   ...StyleSheet.absoluteFillObject,
@@ -150,7 +162,10 @@ type ChatComposerProps = {
   onOpenAttachmentPreview: (img: { uri: string; filename?: string }) => void;
   onRemoveAttachment: (id: string) => void;
   onAbort: () => void;
-  onSend: () => void;
+  /** 可带语音转写文本直接发送（仍附带已选图片）。 */
+  onSend: (customPrompt?: string) => void;
+  /** 语音权限/识别失败等提示。 */
+  onSpeechStatus?: (message: string) => void;
   onSelectSlash: (trigger: string) => void;
   onCaptureCamera: () => void;
   onOpenAlbumPicker: () => void;
@@ -198,6 +213,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     onRemoveAttachment,
     onSelectSlash,
     onSend,
+    onSpeechStatus,
     onToggleAttachmentMenu,
     prompt,
     recentImages,
@@ -227,6 +243,184 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   const idleRightBtnWSv = useSharedValue(idleRightBtnW);
   const inputRef = useRef<TextInput>(null);
   const modelBtnRef = useRef<View>(null);
+  const voiceUiAvailable = useSpeechInputVoiceUiAvailable();
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceInterim, setVoiceInterim] = useState('');
+  const [voiceHolding, setVoiceHolding] = useState(false);
+  const [voiceCancelArmed, setVoiceCancelArmed] = useState(false);
+  const voiceHoldLockRef = useRef(false);
+  const voiceCancelArmedRef = useRef(false);
+  /** 当前一次按住对应的 startListening Promise；松手时先等它结束再 stop，避免闪一下。 */
+  const voiceStartPromiseRef = useRef<Promise<boolean> | null>(null);
+  const voicePressScale = useSharedValue(1);
+
+  const {
+    startListening,
+    stopListening,
+    abortListening,
+    phase: voicePhase
+  } = useComposerSpeechInput({
+    enabled: !canAbortNow,
+    onInterim: setVoiceInterim,
+    onError: (code) => {
+      onSpeechStatus?.(humanizeSpeechError(code));
+      setVoiceHolding(false);
+      setVoiceCancelArmed(false);
+      voiceHoldLockRef.current = false;
+      voiceCancelArmedRef.current = false;
+      voiceStartPromiseRef.current = null;
+    }
+  });
+
+  useEffect(() => {
+    // 仅在用户改回文本输入（有草稿）时退出语音模式。
+    // 发送后 canAbortNow=true 不应清掉 voiceMode，否则回复结束后会停在文本模式。
+    if (!hasPrompt || !voiceMode) return;
+    void abortListening();
+    setVoiceMode(false);
+    setVoiceHolding(false);
+    setVoiceCancelArmed(false);
+    setVoiceInterim('');
+    voiceHoldLockRef.current = false;
+    voiceCancelArmedRef.current = false;
+    voiceStartPromiseRef.current = null;
+  }, [abortListening, hasPrompt, voiceMode]);
+
+  useEffect(() => {
+    if (voiceUiAvailable || !voiceMode) return;
+    void abortListening();
+    setVoiceMode(false);
+    setVoiceHolding(false);
+    setVoiceCancelArmed(false);
+    setVoiceInterim('');
+    voiceHoldLockRef.current = false;
+    voiceCancelArmedRef.current = false;
+    voiceStartPromiseRef.current = null;
+  }, [abortListening, voiceMode, voiceUiAvailable]);
+
+  const enterVoiceMode = useCallback(() => {
+    if (!voiceUiAvailable || canAbortNow || hasPrompt) return;
+    Keyboard.dismiss();
+    setVoiceInterim('');
+    setVoiceMode(true);
+    // 进入按住说话前先申请权限 / 预热，避免按住瞬间弹权限框导致 pressOut 立刻触发
+    void (async () => {
+      const permission = await ensureSpeechMicPermission();
+      if (permission !== 'granted') {
+        setVoiceMode(false);
+        onSpeechStatus?.(
+          humanizeSpeechError(permission === 'settings' ? 'settings' : permission)
+        );
+        if (permission === 'settings') openSpeechSettings();
+        return;
+      }
+      if (resolveSpeechInputMode() === 'offline') {
+        void warmSherpaAsrRuntime();
+      }
+    })();
+  }, [canAbortNow, hasPrompt, onSpeechStatus, voiceUiAvailable]);
+
+  const exitVoiceMode = useCallback(() => {
+    void abortListening();
+    setVoiceMode(false);
+    setVoiceHolding(false);
+    setVoiceCancelArmed(false);
+    setVoiceInterim('');
+    voiceHoldLockRef.current = false;
+    voiceCancelArmedRef.current = false;
+    voiceStartPromiseRef.current = null;
+  }, [abortListening]);
+
+  const setVoiceCancelArmedSafe = useCallback((armed: boolean) => {
+    if (voiceCancelArmedRef.current === armed) return;
+    voiceCancelArmedRef.current = armed;
+    setVoiceCancelArmed(armed);
+  }, []);
+
+  const onVoicePressIn = useCallback(() => {
+    if (canAbortNow || voiceHoldLockRef.current) return;
+    voiceHoldLockRef.current = true;
+    voiceCancelArmedRef.current = false;
+    setVoiceCancelArmed(false);
+    setVoiceHolding(true);
+    setVoiceInterim('');
+    const startPromise = startListening();
+    voiceStartPromiseRef.current = startPromise;
+    void startPromise.then((ok) => {
+      if (voiceStartPromiseRef.current !== startPromise) return;
+      if (!ok) {
+        setVoiceHolding(false);
+        setVoiceCancelArmed(false);
+        voiceHoldLockRef.current = false;
+        voiceCancelArmedRef.current = false;
+        voiceStartPromiseRef.current = null;
+      }
+    });
+  }, [canAbortNow, startListening]);
+
+  const finishVoiceHold = useCallback(() => {
+    if (!voiceHoldLockRef.current) return;
+    void (async () => {
+      const cancelled = voiceCancelArmedRef.current;
+      voiceCancelArmedRef.current = false;
+      setVoiceCancelArmed(false);
+
+      const startPromise = voiceStartPromiseRef.current;
+      voiceStartPromiseRef.current = null;
+      if (startPromise) {
+        await startPromise;
+      }
+
+      if (cancelled) {
+        await stopListening({ discard: true });
+        setVoiceHolding(false);
+        voiceHoldLockRef.current = false;
+        setVoiceInterim('');
+        return;
+      }
+
+      setVoiceInterim('正在识别…');
+      const text = await stopListening();
+      setVoiceHolding(false);
+      voiceHoldLockRef.current = false;
+      setVoiceInterim('');
+      const trimmed = toText(text).trim();
+      // 没听清 / 没说话：静默取消，不弹提示、不发送；保持语音模式
+      if (!trimmed) return;
+      // 发送后仍留在语音模式，回复结束后可继续按住说话
+      onSend(trimmed);
+      requestAnimationFrame(() => inputRef.current?.blur());
+    })();
+  }, [onSend, stopListening]);
+
+  const voiceHoldGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .minDistance(0)
+        .onBegin(() => {
+          'worklet';
+          voicePressScale.value = withSpring(0.94, { damping: 18, stiffness: 420, mass: 0.6 });
+          runOnJS(onVoicePressIn)();
+        })
+        .onUpdate((evt) => {
+          'worklet';
+          runOnJS(setVoiceCancelArmedSafe)(evt.translationY < -VOICE_CANCEL_DY);
+        })
+        .onFinalize(() => {
+          'worklet';
+          voicePressScale.value = withSpring(1, { damping: 16, stiffness: 320, mass: 0.7 });
+          runOnJS(finishVoiceHold)();
+        }),
+    [finishVoiceHold, onVoicePressIn, setVoiceCancelArmedSafe, voicePressScale]
+  );
+
+  const voicePressStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: voicePressScale.value }]
+  }));
+
+  const showVoiceEntry = voiceUiAvailable && !canAbortNow && !hasPrompt && !voiceMode;
+  const showVoicePtt = voiceUiAvailable && !canAbortNow && voiceMode;
+  const showSendBtn = !canAbortNow && hasPrompt;
   // 仅用户点「聊天」后才展开；避免 Fast Refresh / 误 focus 卡住展开态把右侧模型藏掉
   const [composerOpen, setComposerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -355,15 +549,16 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   // 对齐桌面 contrast 圆钮（截图）：实心深色圆 + 白色图标，轻阴影，无粗描边
   const sendActiveFill = colors.isDark ? '#F4F4F5' : '#1A1A1F';
   const sendActiveIcon = colors.isDark ? '#1A1A1F' : '#FFFFFF';
-  const sendBg = canAbortNow || canSendNow
+  const actionBtnLit = canAbortNow || canSendNow || showVoiceEntry || showVoicePtt;
+  const sendBg = actionBtnLit
     ? sendActiveFill
     : colors.isDark
       ? 'rgba(255,255,255,0.12)'
       : '#E8E8ED';
-  const sendIcon = canAbortNow || canSendNow ? sendActiveIcon : colors.muted;
+  const sendIcon = actionBtnLit ? sendActiveIcon : colors.muted;
   const sendChromeStyle = useMemo(
     () =>
-      canAbortNow || canSendNow
+      actionBtnLit
         ? {
             backgroundColor: sendBg,
             borderWidth: 0,
@@ -379,7 +574,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
             shadowOpacity: 0,
             elevation: 0
           },
-    [canAbortNow, canSendNow, colors.isDark, sendBg]
+    [actionBtnLit, colors.isDark, sendBg]
   );
 
   const focusInput = useCallback(() => {
@@ -476,7 +671,13 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     closeInput('snap', { force: true });
   }, [canAbortNow, closeInput]);
 
-  const canSwipeToIdle = (composerOpen || keepDockOpen) && !canAbortNow && !hasPrompt && !canSendNow;
+  // 按住说话模式下禁止整条 dock 左滑，否则会吞掉 Pressable 的按住反馈
+  const canSwipeToIdle =
+    (composerOpen || keepDockOpen) &&
+    !canAbortNow &&
+    !hasPrompt &&
+    !canSendNow &&
+    !voiceMode;
   const showIdleOrb = canSwipeToIdle;
 
   const dockSwipeGesture = useMemo(
@@ -863,7 +1064,42 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
           reportLayoutHeight(h);
         }}
       >
-        <View style={{ marginHorizontal: H_INSET }}>
+        <View style={{ marginHorizontal: H_INSET, position: 'relative' }}>
+          {showVoicePtt && voiceHolding ? (
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: '100%',
+                marginBottom: 14,
+                alignItems: 'center',
+                zIndex: 20
+              }}
+            >
+              <View
+                style={{
+                  minWidth: 112,
+                  paddingHorizontal: 16,
+                  paddingVertical: 9,
+                  borderRadius: 18,
+                  alignItems: 'center',
+                  backgroundColor: voiceCancelArmed
+                    ? colors.isDark
+                      ? 'rgba(220,70,70,0.92)'
+                      : 'rgba(220,55,55,0.94)'
+                    : colors.isDark
+                      ? 'rgba(0,0,0,0.55)'
+                      : 'rgba(0,0,0,0.42)'
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>
+                  {voiceCancelArmed ? '松开取消' : '上移取消'}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           {imageAttachments.length > 0 ? (
           <ScrollView
             horizontal
@@ -1021,40 +1257,91 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                     </RNAnimated.View>
                   </Pressable>
 
-                  <TextInput
-                    ref={inputRef}
-                    style={[
-                      styles.inputMain,
-                      {
-                        color: colors.text,
-                        flex: 1,
-                        minHeight: 44,
-                        maxHeight: 44,
-                        paddingTop: Platform.OS === 'ios' ? 12 : 10,
-                        paddingBottom: Platform.OS === 'ios' ? 12 : 10,
-                        paddingHorizontal: 8,
-                        backgroundColor: 'transparent'
-                      }
-                    ]}
-                    value={toText(prompt)}
-                    onChangeText={onPromptChange}
-                    placeholder="询问任何问题"
-                    placeholderTextColor={colors.muted}
-                    multiline={false}
-                    onFocus={() => {
-                      closingRef.current = false;
-                      userChoseIdleRef.current = false;
-                      swipeX.value = 0;
-                      dockMode.value = 1;
-                      resetIdleBalance();
-                      setComposerOpen(true);
-                    }}
-                    onBlur={() => {
-                      // 失焦不自动待机：等待中 / 有会话内容时保持 docked（对齐主流 IM）。
-                      if (canAbortNow || hasConversationContent) return;
-                      if (!toText(promptRef.current).trim()) closeInput('animate');
-                    }}
-                  />
+                  {showVoicePtt ? (
+                    <GestureDetector gesture={voiceHoldGesture}>
+                      <Reanimated.View
+                        accessibilityRole="button"
+                        accessibilityLabel="按住说话，上移取消"
+                        style={[
+                          {
+                            flex: 1,
+                            minHeight: 44,
+                            maxHeight: 44,
+                            marginHorizontal: 6,
+                            borderRadius: 18,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            // 按住用主题 soft 色反馈，避免灰底；取消态透明
+                            backgroundColor: voiceCancelArmed
+                              ? 'transparent'
+                              : voiceHolding
+                                ? colors.primarySoft
+                                : 'transparent'
+                          },
+                          voicePressStyle
+                        ]}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            color: voiceCancelArmed
+                              ? colors.isDark
+                                ? '#FF8A8A'
+                                : '#D14343'
+                              : voiceHolding
+                                ? colors.text
+                                : colors.muted,
+                            fontSize: voiceHolding ? 16 : 15,
+                            fontWeight: '600'
+                          }}
+                        >
+                          {voiceCancelArmed
+                            ? '松开取消'
+                            : voiceHolding
+                              ? voiceInterim ||
+                                (voicePhase === 'starting' ? '正在启动…' : '正在听…')
+                              : voiceInterim === '正在识别…'
+                                ? '正在识别…'
+                                : '按住 说话'}
+                        </Text>
+                      </Reanimated.View>
+                    </GestureDetector>
+                  ) : (
+                    <TextInput
+                      ref={inputRef}
+                      style={[
+                        styles.inputMain,
+                        {
+                          color: colors.text,
+                          flex: 1,
+                          minHeight: 44,
+                          maxHeight: 44,
+                          paddingTop: Platform.OS === 'ios' ? 12 : 10,
+                          paddingBottom: Platform.OS === 'ios' ? 12 : 10,
+                          paddingHorizontal: 8,
+                          backgroundColor: 'transparent'
+                        }
+                      ]}
+                      value={toText(prompt)}
+                      onChangeText={onPromptChange}
+                      placeholder="询问任何问题"
+                      placeholderTextColor={colors.muted}
+                      multiline={false}
+                      onFocus={() => {
+                        closingRef.current = false;
+                        userChoseIdleRef.current = false;
+                        swipeX.value = 0;
+                        dockMode.value = 1;
+                        resetIdleBalance();
+                        setComposerOpen(true);
+                      }}
+                      onBlur={() => {
+                        // 失焦不自动待机：等待中 / 有会话内容时保持 docked（对齐主流 IM）。
+                        if (canAbortNow || hasConversationContent) return;
+                        if (!toText(promptRef.current).trim()) closeInput('animate');
+                      }}
+                    />
+                  )}
 
                   {showIdleOrb ? (
                     <ComposerSendDragHandle
@@ -1065,18 +1352,37 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       swipeX={swipeX}
                       rowWidth={idleRowW}
                       onCommitIdle={commitSwipeToIdle}
+                      onPress={enterVoiceMode}
+                      voiceEntryAvailable={showVoiceEntry}
                     />
+                  ) : showVoicePtt ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="切回文字输入"
+                      style={[styles.actionBtnSend, sendChromeStyle]}
+                      onPress={exitVoiceMode}
+                    >
+                      <MaterialCommunityIcons name="keyboard-outline" size={20} color={sendIcon} />
+                    </Pressable>
                   ) : (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={canAbortNow ? '停止生成' : '发送'}
+                      accessibilityLabel={
+                        canAbortNow ? '停止生成' : showVoiceEntry ? '语音输入' : '发送'
+                      }
                       style={[
-                        sendActive ? styles.actionBtnSend : styles.actionBtnDisabled,
+                        canAbortNow || showSendBtn || showVoiceEntry
+                          ? styles.actionBtnSend
+                          : styles.actionBtnDisabled,
                         sendChromeStyle
                       ]}
                       onPress={() => {
                         if (canAbortNow) {
                           onAbort();
+                          return;
+                        }
+                        if (showVoiceEntry) {
+                          enterVoiceMode();
                           return;
                         }
                         if (!canSendNow) return;
@@ -1089,10 +1395,16 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                         onSend();
                         requestAnimationFrame(() => inputRef.current?.blur());
                       }}
-                      disabled={!sendActive}
+                      disabled={!(canAbortNow || showSendBtn || showVoiceEntry)}
                     >
                       <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                        <ComposerSendGlyph busy={canAbortNow} color={sendIcon} size={20} />
+                        {canAbortNow ? (
+                          <ComposerSendGlyph busy color={sendIcon} size={20} />
+                        ) : showVoiceEntry ? (
+                          <ComposerMicGlyph color={sendIcon} size={20} />
+                        ) : (
+                          <ComposerSendGlyph busy={false} color={sendIcon} size={20} />
+                        )}
                       </RNAnimated.View>
                     </Pressable>
                   )}
