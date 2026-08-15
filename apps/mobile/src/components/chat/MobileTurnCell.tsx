@@ -363,6 +363,9 @@ function toolLabel(tool: string) {
   if (normalized === 'edit') return '编辑';
   if (normalized === 'apply_patch' || normalized === 'patch') return 'Patch';
   if (normalized === 'bash') return 'bash';
+  if (normalized === 'web_search' || normalized === 'web_fetch') return '查询';
+  if (normalized === 'browser_use') return '浏览';
+  if (normalized === 'question') return '提问';
   return normalized || '工具';
 }
 
@@ -461,7 +464,9 @@ function ExploringStatusPill(props: {
   isExpanded?: boolean;
 }) {
   const { status, styles, currentActions = [], completedActions = [], onToggleExpand, isExpanded = false } = props;
+  const { colors } = useMobileTheme();
   const isRunning = status.title === '探索中';
+  const exploreTone = timelineActivityColors(colors, { active: isRunning });
   const pulseAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -486,7 +491,7 @@ function ExploringStatusPill(props: {
   if (isRunning) {
     const waveOpacity = pulseAnim.interpolate({
       inputRange: [0, 0.5, 1],
-      outputRange: [0.28, 0.82, 0.28],
+      outputRange: [0.45, 1, 0.45],
     });
     const waveScale = pulseAnim.interpolate({
       inputRange: [0, 0.5, 1],
@@ -500,6 +505,7 @@ function ExploringStatusPill(props: {
           style={[
             styles.exploringThinkingText,
             {
+              color: exploreTone.label,
               opacity: waveOpacity,
               transform: [{ scale: waveScale }],
             },
@@ -516,14 +522,14 @@ function ExploringStatusPill(props: {
       <Pressable onPress={onToggleExpand} style={styles.exploringStatusCard}>
         <View style={styles.exploringStatusHead}>
           <View style={styles.exploringStatusTitleWrap}>
-            <Text style={styles.exploringStatusTitle}>{status.title}</Text>
+            <Text style={[styles.exploringStatusTitle, { color: exploreTone.label }]}>{status.title}</Text>
           </View>
         </View>
-        <Text style={styles.exploringStatusText} numberOfLines={1} ellipsizeMode="tail">
+        <Text style={[styles.exploringStatusText, { color: exploreTone.label }]} numberOfLines={1} ellipsizeMode="tail">
           {status.summary}
         </Text>
         {status.detail ? (
-          <Text style={styles.exploringStatusMeta} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={[styles.exploringStatusMeta, { color: exploreTone.preview }]} numberOfLines={1} ellipsizeMode="tail">
             {status.detail}
           </Text>
         ) : null}
@@ -662,6 +668,168 @@ function ErrorActivityRow(props: {
         <TimelineExpand open={expanded}>
           <View style={styles.errorExpandBody}>{children}</View>
         </TimelineExpand>
+      ) : null}
+    </View>
+  );
+}
+
+/** 时间线活动标签色：浅色提高对比，深色保持克制灰 */
+function timelineActivityColors(
+  colors: { isDark: boolean; text: string; muted: string },
+  opts?: { active?: boolean; failed?: boolean }
+) {
+  const active = !!opts?.active;
+  const failed = !!opts?.failed;
+  if (colors.isDark) {
+    return {
+      label: failed ? '#FCA5A5' : active ? '#D4D4D8' : '#A1A1AA',
+      preview: '#A1A1AA'
+    };
+  }
+  return {
+    label: failed ? '#B91C1C' : active ? '#27272A' : '#3F3F46',
+    preview: '#52525B'
+  };
+}
+/** 行内预览：优先真实任务描述；无描述时才退回 explore/plan 类型词 */
+function taskActivityPreview(
+  subagent: string,
+  description: string,
+  currentTool?: string
+): string {
+  const desc = toText(description).trim();
+  if (desc) {
+    const short = desc.split(/[，,。.\n]/)[0]?.trim() || desc;
+    return short.length > 28 ? `${short.slice(0, 28)}…` : short;
+  }
+  const tool = toText(currentTool).trim();
+  if (tool) return toolLabel(tool);
+  const sub = toText(subagent).trim().toLowerCase();
+  if (sub === 'explore' || sub === 'exploration' || sub === 'explorer') return '探索';
+  if (sub === 'plan' || sub === 'planner') return '规划';
+  if (sub === 'general' || sub === 'build' || sub === 'coder') return '执行';
+  if (sub) return sub;
+  return '进行中';
+}
+
+/**
+ * Task 行：对齐分组标签「已运行 N 条」样式 ——「任务 描述 · 当前工具」；
+ * 运行中标签脉冲；当前工具拼在标签层，不在展开区重复「正在执行」。
+ */
+function TaskActivityRow(props: {
+  styles: Record<string, any>;
+  running: boolean;
+  failed: boolean;
+  preview: string;
+  liveTool?: string;
+  labelColor: string;
+  mutedColor: string;
+}) {
+  const { failed, labelColor, liveTool, mutedColor, preview, running, styles } = props;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!running) {
+      pulseAnim.setValue(0);
+      return;
+    }
+    pulseAnim.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true
+        })
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [pulseAnim, running]);
+
+  const label = running ? '任务' : failed ? '任务失败' : '任务';
+  const labelOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.52, 1]
+  });
+  // 标签层动态拼接当前工具（中文映射），避免在展开区再写「正在执行」
+  const liveLabel = liveTool ? toolLabel(liveTool) : '';
+  const previewText =
+    running && liveLabel
+      ? preview && preview !== liveLabel
+        ? `${preview} · ${liveLabel}`
+        : liveLabel
+      : preview;
+
+  return (
+    <View style={[styles.activityRow, styles.taskActivityRowStable]} accessibilityLabel={`${label} ${previewText}`}>
+      <Animated.Text
+        style={[
+          styles.activityLabel,
+          { color: labelColor },
+          running ? { opacity: labelOpacity } : null
+        ]}
+      >
+        {label}
+      </Animated.Text>
+      {previewText ? (
+        <Text numberOfLines={1} style={[styles.activityPreview, { color: mutedColor, flex: 1, minWidth: 0 }]}>
+          {previewText}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const TASK_STEP_WINDOW = 3;
+
+/**
+ * 任务内步骤：默认收起一行；窗口内可点开详情；窗口外淡出且不可展开。
+ * 不用完整 EventCardView，避免收起态仍露出 output 造成「默认展开」观感。
+ */
+function TaskStepCompactRow(props: {
+  styles: Record<string, any>;
+  event: MobileEventCard;
+  faded?: boolean;
+  expandable?: boolean;
+  mutedColor: string;
+  labelColor: string;
+}) {
+  const { event, expandable = true, faded = false, labelColor, mutedColor, styles } = props;
+  const [open, setOpen] = useState(false);
+  const label = toolLabel(toText(event.title));
+  const detail = toText(event.detail) || toText(event.meta);
+  const output = toText(event.output);
+  const canToggle = expandable && !faded;
+
+  return (
+    <View style={[styles.taskStepRow, faded ? styles.taskStepRowFaded : null]} pointerEvents={faded ? 'none' : 'auto'}>
+      <Pressable
+        disabled={!canToggle}
+        onPress={() => {
+          if (!canToggle) return;
+          setOpen((v) => !v);
+        }}
+        style={styles.taskStepHead}
+      >
+        <Text style={[styles.taskStepLabel, { color: labelColor }]}>{label}</Text>
+        {detail ? (
+          <Text numberOfLines={1} style={[styles.taskStepDetail, { color: mutedColor }]}>
+            {detail}
+          </Text>
+        ) : null}
+      </Pressable>
+      {canToggle && open && output ? (
+        <Text style={[styles.taskStepOutput, { color: mutedColor }]}>{output}</Text>
       ) : null}
     </View>
   );
@@ -959,6 +1127,7 @@ function EventCardView(props: {
   onToggle: () => void;
 }) {
   const { event, expanded, onToggle, styles } = props;
+  const { colors } = useMobileTheme();
   const status = toText(event.status).toLowerCase();
   const isRunning = status === 'running' || status === 'pending';
   const title = toText(event.title || 'Event');
@@ -984,21 +1153,72 @@ function EventCardView(props: {
 
   if (isTaskEvent) {
     const subagent = toText((event as any).taskSubagent) || 'plan';
-    const description = toText(event.detail) || toText(event.mode) || '子任务';
-    const sessionHint = toText((event as any).taskSessionId);
+    const description = toText(event.detail).trim();
+    const failed = status === 'error' || status === 'failed';
+    const currentTool = toText((event as any).taskCurrentTool);
+    // 标签层只用任务描述；当前工具经 liveTool 动态拼上，不再塞进 preview 造成抖动
+    const preview = taskActivityPreview(subagent, description, '');
+    const taskSteps = Array.isArray((event as any).taskSteps) ? ((event as any).taskSteps as MobileEventCard[]) : [];
+    const taskSummary = toText((event as any).taskSummary) || toText(event.output);
+    const taskTone = timelineActivityColors(colors, { active: isRunning, failed });
+    const labelColor = taskTone.label;
+    const mutedColor = taskTone.preview;
+    // 窗口：最新 3 条可交互；再早 1 条淡出占位，不写「更早 N 步」
+    const windowSteps = taskSteps.slice(-TASK_STEP_WINDOW);
+    const fadedStep =
+      taskSteps.length > TASK_STEP_WINDOW ? taskSteps[taskSteps.length - TASK_STEP_WINDOW - 1] : null;
+
     return (
-      <View style={styles.eventWrap}>
-        <Pressable disabled={!eventExpandable} onPress={onToggle} style={styles.eventCard}>
-          <View style={styles.eventHead}>
-            <Text style={styles.eventTitle}>{`Task · ${subagent}`}</Text>
-            <Text style={styles.eventMode}>{isRunning ? '运行中' : status === 'error' ? '失败' : '完成'}</Text>
-          </View>
-          <Text numberOfLines={2} style={styles.eventDetail}>{description}</Text>
+      <View style={styles.toolBatchWrap}>
+        <Pressable
+          onPress={onToggle}
+          style={[styles.toolBatchHead, styles.taskActivityHeadStable]}
+          accessibilityRole="button"
+          accessibilityLabel={`任务 ${preview}${currentTool ? ` ${currentTool}` : ''}${isRunning ? '进行中' : failed ? '失败' : '已完成'}`}
+        >
+          <TaskActivityRow
+            styles={styles}
+            running={isRunning}
+            failed={failed}
+            preview={preview}
+            liveTool={isRunning ? currentTool : ''}
+            labelColor={labelColor}
+            mutedColor={mutedColor}
+          />
         </Pressable>
         <InstantExpand open={expanded}>
-          <View style={styles.eventExpandBody}>
-            {sessionHint ? <Text style={styles.eventMeta}>{`session ${sessionHint.slice(0, 12)}…`}</Text> : null}
-            {eventOutput ? <Text style={styles.eventOutput}>{eventOutput}</Text> : null}
+          <View style={styles.toolBatchList}>
+            {taskSummary && taskSummary !== description ? (
+              <Text style={[styles.eventDetail, { color: mutedColor, paddingLeft: 0 }]}>{taskSummary}</Text>
+            ) : null}
+            <View style={styles.taskStepWindow}>
+              {fadedStep ? (
+                <TaskStepCompactRow
+                  key={`fade:${fadedStep.id}`}
+                  styles={styles}
+                  event={fadedStep}
+                  faded
+                  expandable={false}
+                  mutedColor={mutedColor}
+                  labelColor={labelColor}
+                />
+              ) : null}
+              {windowSteps.map((step) => (
+                <TaskStepCompactRow
+                  key={step.id}
+                  styles={styles}
+                  event={step}
+                  expandable
+                  mutedColor={mutedColor}
+                  labelColor={labelColor}
+                />
+              ))}
+              {windowSteps.length === 0 && !taskSummary ? (
+                <Text style={[styles.eventMeta, { color: mutedColor, paddingLeft: 0 }]}>
+                  {isRunning ? '等待子任务步骤…' : '暂无执行步骤'}
+                </Text>
+              ) : null}
+            </View>
           </View>
         </InstantExpand>
       </View>
@@ -1176,6 +1396,7 @@ function ToolBatchCardView(props: {
   onToggleEvent: (eventId: string) => void;
 }) {
   const { batch, expanded, expandedEventIds, onToggle, onToggleEvent, styles } = props;
+  const { colors } = useMobileTheme();
   const running = batch.status === 'running';
   const shell = batch.batchKind === 'shell';
   const web = batch.batchKind === 'web';
@@ -1188,12 +1409,18 @@ function ToolBatchCardView(props: {
       : browser
         ? (running ? '浏览中' : '已浏览')
         : (running ? '编辑中' : '已编辑');
+  // 浅色下提高对比；深色保持克制灰，避免发白抢戏
+  const batchTone = timelineActivityColors(colors, { active: running });
+  const labelColor = batchTone.label;
+  const countColor = batchTone.preview;
 
   return (
     <View style={styles.toolBatchWrap}>
       <Pressable style={styles.toolBatchHead} onPress={onToggle}>
-        <Text style={running ? styles.toolBatchLabelActive : styles.toolBatchLabel}>{label}</Text>
-        <Text style={styles.toolBatchCount}>{`${batch.events.length} ${noun}`}</Text>
+        <Text style={[running ? styles.toolBatchLabelActive : styles.toolBatchLabel, { color: labelColor }]}>
+          {label}
+        </Text>
+        <Text style={[styles.toolBatchCount, { color: countColor }]}>{`${batch.events.length} ${noun}`}</Text>
       </Pressable>
       <InstantExpand open={expanded}>
         <View style={styles.toolBatchList}>
@@ -1240,6 +1467,8 @@ export const MobileTurnCell = React.memo(
     onToggleThinkCard: (id: string) => void;
     onChangeTimelineTab: (questionId: string, tabIndex: number) => void;
     onMeasuredHeight: (id: string, height: number) => void;
+    /** 上一格是助手正文时，收紧与本标签的间距（对齐标签↔标签） */
+    afterAssistantBody?: boolean;
   }) {
     const {
       bodyFontFamily,
@@ -1259,8 +1488,8 @@ export const MobileTurnCell = React.memo(
       onToggleTimelineQuestion,
       streaming,
       styles,
-      thinkingPulse,
-      turn
+      turn,
+      afterAssistantBody = false
     } = props;
     const [isExploringExpanded, setIsExploringExpanded] = useState(false);
     const { colors } = useMobileTheme();
@@ -1273,10 +1502,17 @@ export const MobileTurnCell = React.memo(
     const toggleLocalExpansion = useCallback((apply: () => void) => {
       apply();
     }, []);
+    const isUserOnlyCell = !!turn.userMessage && turn.items.length === 0;
+    const isItemOnlyCell = !turn.userMessage && turn.items.length > 0;
 
     return (
       <View
-        style={styles.turnWrap}
+        style={[
+          styles.turnWrap,
+          isUserOnlyCell ? styles.turnUserOnly : null,
+          isItemOnlyCell ? styles.turnItemOnly : null,
+          afterAssistantBody ? styles.turnLabelAfterBody : null
+        ]}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           if (h <= 0) return;
@@ -1342,6 +1578,9 @@ export const MobileTurnCell = React.memo(
           if (item.kind === 'context') {
             const tools = Array.isArray(item.context.tools) ? item.context.tools : [];
             const expanded = !!expandedContextIds[item.context.id];
+            const contextActive = toText(item.context.status).toLowerCase() === 'running'
+              || toText(item.context.title).includes('探索中');
+            const contextTone = timelineActivityColors(colors, { active: contextActive });
             return (
               <View key={item.context.id} style={styles.contextWrap}>
                 <View style={styles.contextCard}>
@@ -1356,11 +1595,15 @@ export const MobileTurnCell = React.memo(
                     <View style={styles.contextHeadRow}>
                       <View style={styles.contextHeadMain}>
                         <View style={styles.contextInlineSummaryRow}>
-                          <Text style={styles.contextInlineTitle}>{toText(item.context.title || '已探索')}</Text>
-                          <Text style={styles.contextSummary}>{toText(item.context.summary || '已收集上下文')}</Text>
+                          <Text style={[styles.contextInlineTitle, { color: contextTone.label }]}>
+                            {toText(item.context.title || '已探索')}
+                          </Text>
+                          <Text style={[styles.contextSummary, { color: contextTone.preview }]}>
+                            {toText(item.context.summary || '已收集上下文')}
+                          </Text>
                         </View>
                         {toText(item.context.detail) ? (
-                          <Text numberOfLines={1} style={styles.contextDetail}>
+                          <Text numberOfLines={1} style={[styles.contextDetail, { color: contextTone.preview }]}>
                             {toText(item.context.detail)}
                           </Text>
                         ) : null}
@@ -1426,11 +1669,18 @@ export const MobileTurnCell = React.memo(
             );
           }
           if (item.kind === 'divider') {
+            const label = toText(item.divider.label || '会话已压缩');
+            const interrupt = /已打断|已暂停|已中止|已停止/.test(label);
             return (
-              <View key={item.divider.id} style={styles.dividerWrap}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerLabel}>{toText(item.divider.label || '会话已压缩')}</Text>
-                <View style={styles.dividerLine} />
+              <View
+                key={item.divider.id}
+                style={interrupt ? styles.interruptDividerWrap : styles.dividerWrap}
+              >
+                <View style={interrupt ? styles.interruptDividerLine : styles.dividerLine} />
+                <Text style={interrupt ? styles.interruptDividerLabel : styles.dividerLabel}>
+                  {interrupt ? '已打断' : label}
+                </Text>
+                <View style={interrupt ? styles.interruptDividerLine : styles.dividerLine} />
               </View>
             );
           }
@@ -1492,6 +1742,7 @@ export const MobileTurnCell = React.memo(
             const isThinkExpanded = !!interaction.expandedThinkIds[card.id];
             const contentText = normalizeReasoningText(card.text);
             const thinkActive = streaming && isLastTurn && !card.finished;
+            const thinkTone = timelineActivityColors(colors, { active: thinkActive });
             return (
               <View key={card.id} style={styles.thinkWrap}>
                 <Pressable style={styles.thinkCard} onPress={() => onToggleThinkCard(card.id)}>
@@ -1499,8 +1750,8 @@ export const MobileTurnCell = React.memo(
                     active={thinkActive}
                     styles={styles}
                     text={contentText}
-                    mutedColor={colors.muted}
-                    labelColor={thinkActive ? colors.text : colors.muted}
+                    mutedColor={thinkTone.preview}
+                    labelColor={thinkTone.label}
                   />
                 </Pressable>
                 <TimelineExpand open={isThinkExpanded}>
@@ -1533,11 +1784,12 @@ export const MobileTurnCell = React.memo(
     prev.streaming === next.streaming &&
     prev.isLastTurn === next.isLastTurn &&
     prev.interaction.interactionSignature === next.interaction.interactionSignature &&
-    prev.thinkingPulse === next.thinkingPulse &&
+    // thinkingPulse 仅作顶栏 busy 指示，未参与本组件绘制；勿纳入 memo，否则每 480ms 整格重绘导致列表抖动
     prev.hasLiveQuestion === next.hasLiveQuestion &&
     prev.liveQuestions === next.liveQuestions &&
     prev.exploringStatus === next.exploringStatus &&
     prev.exploringActions === next.exploringActions &&
+    prev.afterAssistantBody === next.afterAssistantBody &&
     prev.onCopyMessage === next.onCopyMessage &&
     prev.onToggleTimelineQuestion === next.onToggleTimelineQuestion &&
     prev.onToggleThinkCard === next.onToggleThinkCard &&

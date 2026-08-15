@@ -73,6 +73,12 @@ export type MobileEventCard = {
   }>;
   taskSessionId?: string;
   taskSubagent?: string;
+  /** 子 agent 内执行的工具步骤（对齐桌面 SubagentRunCard.timeline） */
+  taskSteps?: MobileEventCard[];
+  taskSummary?: string;
+  taskToolCount?: number;
+  /** 子任务当前正在跑的工具名（progress / childEvent） */
+  taskCurrentTool?: string;
   createdAt?: number;
 };
 

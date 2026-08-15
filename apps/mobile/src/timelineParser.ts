@@ -8,6 +8,7 @@ import {
   summarizeAgentContextToolCounts
 } from './lib/agentParts';
 import { humanizeAgentError } from './lib/humanizeAgentError';
+import { readTaskTimeline } from './lib/subagentTimeline';
 import type {
   MobileChatMessage,
   MobileContextCard,
@@ -86,6 +87,8 @@ function toolMode(tool: string): string {
   if (tool === 'read' || tool === 'list' || tool === 'ls' || tool === 'glob' || tool === 'grep') return '读取';
   if (tool === 'find' || tool === 'search') return '搜索';
   if (tool === 'write' || tool === 'edit' || tool === 'apply_patch') return '写入';
+  if (tool === 'web_fetch' || tool === 'web_search') return '查询';
+  if (tool === 'browser_use') return '浏览';
   // bash 不再挂「命令」模式标签，由终端块直接呈现
   return '';
 }
@@ -383,10 +386,18 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
     return normalizeText(m?.[1] || '');
   })();
   const taskSubagent = normalizeText(state?.input?.subagent_type) || normalizeText(metadata?.subagentType);
+  const promptLine = (() => {
+    const prompt = normalizeText(state?.input?.prompt) || normalizeText(metadata?.prompt);
+    if (!prompt) return '';
+    const line = prompt.split(/\r?\n/).map((s) => s.trim()).find(Boolean) || '';
+    return line.length > 120 ? `${line.slice(0, 120).trimEnd()}…` : line;
+  })();
   const taskDescription =
     normalizeText(metadata?.description)
     || normalizeText(state?.input?.description)
+    || promptLine
     || normalizeText(metadata?.summary);
+  const taskCurrentTool = normalizeText(metadata?.currentToolName);
   const fileDiff = normalizeEditFileDiff(tool, state, metadata);
   const patchFiles = tool === 'apply_patch' ? normalizePatchFiles(metadata) : undefined;
   const primaryDetail =
@@ -401,6 +412,33 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
   const detail =
     primaryDetail ||
     (errorText ? errorText.replace(/^Error:\s*/i, '').trim() : '');
+  const taskSummary = tool === 'task'
+    ? (normalizeText(metadata?.summary) || (status === 'completed' || status === 'error' ? outputText : ''))
+    : '';
+  const taskToolCount = tool === 'task' ? Number(metadata?.toolCount || 0) || 0 : 0;
+  const taskSteps = tool === 'task'
+    ? readTaskTimeline(metadata as Record<string, unknown>).map((step) => {
+        const stepStatus = normalizeText(step.status).toLowerCase() || 'running';
+        const stepOutput = typeof step.output === 'string' ? step.output : '';
+        const stepError = step.isError || stepStatus === 'error';
+        const showStepOutput = !!stepOutput && (stepError || step.toolName === 'bash');
+        return {
+          id: `${id}:step:${step.id}`,
+          title: step.toolName || 'tool',
+          detail:
+            toolDetail(step.toolName || 'tool', step.input)
+            || (stepError && stepOutput ? stepOutput.replace(/^Error:\s*/i, '').trim() : '')
+            || '',
+          mode: toolMode(step.toolName || 'tool'),
+          status: stepStatus,
+          meta: step.toolName === 'bash'
+            ? normalizeText((step.input as any)?.command)
+            : normalizeText((step.input as any)?.path || (step.input as any)?.filePath),
+          output: showStepOutput ? stepOutput : '',
+          createdAt
+        } as MobileEventCard;
+      })
+    : undefined;
   return {
     id,
     title: tool,
@@ -412,11 +450,15 @@ function buildToolEvent(part: any, id: string, createdAt: number): MobileEventCa
       : normalizeText(state?.input?.path || state?.input?.filePath || metadata?.path || metadata?.filePath),
     fileDiff,
     patchFiles,
-    output: tool === 'task' ? (normalizeText(metadata?.summary) || outputText) : output,
+    output: tool === 'task' ? taskSummary : output,
     taskSessionId,
     taskSubagent,
+    taskSteps,
+    taskSummary: taskSummary || undefined,
+    taskToolCount: taskToolCount || undefined,
+    taskCurrentTool: tool === 'task' ? (taskCurrentTool || undefined) : undefined,
     createdAt
-  };
+  } as MobileEventCard;
 }
 
 function mergeAdjacentContextItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
@@ -570,23 +612,40 @@ export function parseConversation(raw: unknown): ParsedConversation {
     const errText = errorText(info?.error);
     const errCode = normalizeText(info?.error?.code) || normalizeText(info?.error?.data?.code);
     const hasAssistantError = !!errText;
-    if (hasAssistantError && !isAbortLikeMessageError(errText, errCode)) {
-      timelineRows.push({
-        order: seq++,
-        item: {
-          kind: 'error',
-          createdAt,
-          error: {
-            id: `error:${id}`,
-            title: '运行失败',
-            text: humanizeAgentError(errText),
-            code: errCode,
-            createdAt
+    if (hasAssistantError) {
+      if (isAbortLikeMessageError(errText, errCode)) {
+        // 手动/系统中断：用横线打断标识，不走「运行失败」红标
+        timelineRows.push({
+          order: seq++,
+          item: {
+            kind: 'divider',
+            createdAt,
+            divider: {
+              id: `interrupt:${id}`,
+              label: '已打断',
+              createdAt
+            }
           }
-        }
-      });
-      hasAssistantRenderable = true;
-      hasError = true;
+        });
+        hasAssistantRenderable = true;
+      } else {
+        timelineRows.push({
+          order: seq++,
+          item: {
+            kind: 'error',
+            createdAt,
+            error: {
+              id: `error:${id}`,
+              title: '运行失败',
+              text: humanizeAgentError(errText),
+              code: errCode,
+              createdAt
+            }
+          }
+        });
+        hasAssistantRenderable = true;
+        hasError = true;
+      }
     }
     const renderParts = parts.filter((p: any) => isAgentRenderablePart(p, true));
     let groupIndex = 0;
@@ -830,6 +889,14 @@ export function parseConversation(raw: unknown): ParsedConversation {
 }
 
 function isAbortLikeMessageError(text: string, code: string) {
-  const merged = `${normalizeText(text)} ${normalizeText(code)}`.toLowerCase();
-  return merged.includes('messageabortederror') || merged.includes('the operation was aborted');
+  const raw = normalizeText(text);
+  const merged = `${raw} ${normalizeText(code)}`.toLowerCase();
+  if (
+    merged.includes('messageabortederror') ||
+    merged.includes('the operation was aborted') ||
+    /\baborted\b/.test(merged)
+  ) {
+    return true;
+  }
+  return /已暂停|已中止|已打断|已停止|中止|暂停/.test(raw);
 }

@@ -5,10 +5,23 @@ import type { DisplayedTurnCell } from './displayedCells';
 import { MobileTurnCell } from '../../components/chat/MobileTurnCell';
 import type { TurnCellInteractionState } from './useInteractiveTurnCells';
 
+function isAssistantBodyCell(cell: DisplayedTurnCell | undefined): boolean {
+  if (!cell || cell.userMessage) return false;
+  const item = cell.items[0];
+  return !!item && item.kind === 'chat' && item.message?.role !== 'user';
+}
+
+function isTimelineLabelCell(cell: DisplayedTurnCell): boolean {
+  if (cell.userMessage) return false;
+  const kind = cell.items[0]?.kind;
+  return kind === 'event' || kind === 'think' || kind === 'toolBatch' || kind === 'error' || kind === 'context';
+}
+
 export function useTurnCellRenderer(params: {
   activeQuestionsForTurn: MobileQuestionCard[];
   bodyFontFamily: string;
   chatCellHeightMapRef: React.MutableRefObject<Record<string, number>>;
+  displayedTurnCells: DisplayedTurnCell[];
   interactionByCellId: Record<string, TurnCellInteractionState>;
   exploringStatus?: {
     title: string;
@@ -39,6 +52,7 @@ export function useTurnCellRenderer(params: {
     activeQuestionsForTurn,
     bodyFontFamily,
     chatCellHeightMapRef,
+    displayedTurnCells,
     exploringStatus,
     exploringActions,
     interactionByCellId,
@@ -68,7 +82,7 @@ export function useTurnCellRenderer(params: {
   );
 
   const renderTurnCell = useCallback(
-    ({ item }: { item: DisplayedTurnCell; index: number }) => {
+    ({ item, index }: { item: DisplayedTurnCell; index: number }) => {
       const interaction = interactionByCellId[item.id] || {
         interactionSignature: '',
         isLastVisible: false,
@@ -78,6 +92,8 @@ export function useTurnCellRenderer(params: {
       };
 
       const isUserOnlyCell = !!item.userMessage && item.items.length === 0;
+      const afterAssistantBody =
+        isTimelineLabelCell(item) && isAssistantBodyCell(displayedTurnCells[index - 1]);
 
       return (
         <MobileTurnCell
@@ -92,6 +108,7 @@ export function useTurnCellRenderer(params: {
           interaction={interaction}
           exploringStatus={interaction.isLastVisible && !isUserOnlyCell ? exploringStatus : undefined}
           exploringActions={interaction.isLastVisible && !isUserOnlyCell ? exploringActions : undefined}
+          afterAssistantBody={afterAssistantBody}
           onQuestionReply={handleQuestionReply}
           onCopyMessage={handleCopyMessage}
           onOpenImage={handleOpenPreviewImage}
@@ -106,6 +123,7 @@ export function useTurnCellRenderer(params: {
     [
       activeQuestionsForTurn,
       bodyFontFamily,
+      displayedTurnCells,
       exploringStatus,
       exploringActions,
       interactionByCellId,

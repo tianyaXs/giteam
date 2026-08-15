@@ -1205,7 +1205,9 @@ export default function App() {
     setSessionHistoryRetryHint,
     setLoadingOlder,
     setStreaming,
+    setSessionStatusMap,
     setSessionSwitchingTo,
+    sessionActiveRunIdRef,
     ingestStreamRows,
     replaceStreamRows,
     recordStreamMessageRoles,
@@ -1220,10 +1222,13 @@ export default function App() {
     streamDebug,
   });
   sessionMessageSyncRef.current = sessionMessageSync;
-  const { onNewSession, onResetAuth } = useSessionLifecycleActions({
+  const { onNewSession, onArchiveSession, onResetAuth } = useSessionLifecycleActions({
     serverUrl,
     token,
+    repoPath,
+    sessions,
     sessionIdRef,
+    sessionCacheRef,
     sessionRawMapRef,
     sessionOptimisticUserMapRef,
     optimisticUserIdAliasRef,
@@ -1238,10 +1243,12 @@ export default function App() {
     setToken,
     setPairCode,
     setDeviceId,
+    setAccessKey,
     setRepoPath,
     setProjects,
     setMessages,
     setRenderedTurns,
+    setSessions,
     setSessionNextCursor,
     setSessionHasMore,
     setSessionHistoryRetryHint,
@@ -1419,6 +1426,24 @@ export default function App() {
     dropOptimisticUserMessage,
     appendOptimisticTurnAndStick,
     clearSessionOptimisticMessages,
+    injectInterruptMarker: (targetSessionId: string) => {
+      const sid = String(targetSessionId || '').trim();
+      if (!sid) return;
+      // 稳定 id：abort 后 sync 再注入时 upsert，不会叠多条「已打断」
+      const id = `interrupt:manual:${sid}`;
+      ingestStreamRows(sid, [
+        {
+          info: {
+            id,
+            role: 'assistant',
+            error: { message: '已打断' },
+            time: { created: Date.now(), completed: Date.now() }
+          },
+          parts: []
+        }
+      ]);
+      scheduleStreamRender(sid);
+    },
   });
   settlePendingSendBundleRef.current = settlePendingSendBundle;
   const { composerModeOptions, inputModelLabel } = useComposerPresentationState(
@@ -1507,6 +1532,7 @@ export default function App() {
     activeQuestionsForTurn,
     bodyFontFamily: FONT_MIXED_BODY_REGULAR,
     chatCellHeightMapRef,
+    displayedTurnCells,
     exploringStatus,
     exploringActions,
     interactionByCellId,
@@ -1626,6 +1652,9 @@ export default function App() {
       closeSettings();
       handleDrawerSessionSelect(sessionId, worktree, active);
     },
+    onArchiveSession: (sessionId, worktree) => {
+      void onArchiveSession(sessionId, worktree);
+    },
     onShowMoreSessions: handleShowMoreSessions,
     onOpenSettings: () => openSettingsDrawer('general'),
     onCloseSettings: closeSettings,
@@ -1666,6 +1695,7 @@ export default function App() {
       currentSessionTitle={currentSessionTitle}
       showStreamTopGlow={showStreamTopGlow}
       streamTopGlowAnim={streamTopGlowAnim}
+      focusMode={sessionWorking}
       renderedTurnsLength={renderedTurns.length}
       currentWorkspaceName={currentWorkspaceName}
       chatListMountKey={chatListMountKey}

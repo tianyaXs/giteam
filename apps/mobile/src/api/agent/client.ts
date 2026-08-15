@@ -14,6 +14,7 @@ import type {
   AgentModelInfo,
   AgentPromptResult,
   AgentProviderInfo,
+  AgentRunStatus,
   AgentRuntimeInfo,
   AgentSessionSummary,
   CreateAgentSessionInput,
@@ -48,6 +49,8 @@ export type MobileAgentClient = {
   createSession(input: CreateAgentSessionInput): Promise<AgentSessionSummary>;
   listSessions(): Promise<AgentSessionSummary[]>;
   getSession(sessionId: string): Promise<AgentSessionSummary>;
+  /** 查询 run 是否仍在服务端 active_runs（SSE 对账用，勿与 interaction-idle 混淆）。 */
+  getRunStatus(runId: string): Promise<AgentRunStatus>;
   deleteSession(sessionId: string): Promise<boolean>;
   getMessages(sessionId: string): Promise<AgentMessage[]>;
   /** 阻塞到 run 完成；流式进度走 subscribeEvents。 */
@@ -73,7 +76,8 @@ export type MobileAgentClient = {
     sessionId: string,
     runId: string,
     onEvent: (event: AgentEvent) => void,
-    onError?: (error: unknown) => void
+    onError?: (error: unknown) => void,
+    options?: { afterSeq?: number }
   ): AgentEventSubscription;
   /** 生成 runId，便于在 prompt 前先订阅事件流。 */
   newRunId(): string;
@@ -138,6 +142,8 @@ export function createMobileAgentClient(config: MobileAgentClientConfig): Mobile
     listSessions: () => request<AgentSessionSummary[]>('/api/v1/agent/session'),
     getSession: (sessionId) =>
       request<AgentSessionSummary>(`/api/v1/agent/session?sessionId=${encodeURIComponent(sessionId)}`),
+    getRunStatus: (runId) =>
+      request<AgentRunStatus>(`/api/v1/agent/run?runId=${encodeURIComponent(runId)}`),
     deleteSession: async (sessionId) =>
       (await request<{ deleted: boolean }>(
         `/api/v1/agent/session?sessionId=${encodeURIComponent(sessionId)}`,
@@ -197,10 +203,15 @@ export function createMobileAgentClient(config: MobileAgentClientConfig): Mobile
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input)
     }),
-    subscribeEvents(sessionId, runId, onEvent, onError) {
-      const url = `${root}/api/v1/agent/stream?sessionId=${encodeURIComponent(sessionId)}&runId=${encodeURIComponent(runId)}`;
+    subscribeEvents(sessionId, runId, onEvent, onError, options) {
+      const afterSeq = Math.max(0, Math.floor(Number(options?.afterSeq) || 0));
+      const afterQs = afterSeq > 0 ? `&afterSeq=${encodeURIComponent(String(afterSeq))}` : '';
+      const url = `${root}/api/v1/agent/stream?sessionId=${encodeURIComponent(sessionId)}&runId=${encodeURIComponent(runId)}${afterQs}`;
+      const headers: Record<string, string> = { ...authHeaders() };
+      // 与 query afterSeq 双写：标准 SSE 客户端可走 Last-Event-ID。
+      if (afterSeq > 0) headers['Last-Event-ID'] = String(afterSeq);
       const source = new EventSource<'agent' | 'ready'>(url, {
-        headers: { ...authHeaders() },
+        headers,
         // 长连接保活由服务端 20s 心跳负责，这里禁用客户端过早断开。
         pollingInterval: 0
       });

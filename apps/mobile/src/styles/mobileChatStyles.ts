@@ -66,6 +66,26 @@ export const chatStyles = {
     flex: 1,
     minHeight: 0,
   },
+  focusAbortFabWrap: {
+    position: "absolute",
+    right: 18,
+    bottom: 28,
+    zIndex: 50,
+    elevation: 50,
+  },
+  /** 对齐普通模式 actionBtnSend：32 圆钮 + 轻阴影，避免专注态 FAB 偏大偏重。 */
+  focusAbortFab: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
   streamTopGlowTrack: {
     position: "absolute",
     top: 0,
@@ -263,6 +283,23 @@ export const chatStyles = {
   },
 
   turnWrap: { width: "100%", alignSelf: "stretch", gap: 10 },
+  /** flatten 后 user 独占一行：上方少留（上轮回复 Markdown 已有底边距），下方够开与首条回复的距离 */
+  turnUserOnly: {
+    paddingTop: 4,
+    paddingBottom: 14,
+  },
+  /** 时间线条目默认间距（标签↔标签保持这个节奏） */
+  turnItemOnly: {
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  /**
+   * 紧跟在助手正文后的首个事件/思考/工具标签：
+   * 抵消正文段末 paragraph marginBottom，使「正文→标签」与「标签→标签」视觉间距一致。
+   */
+  turnLabelAfterBody: {
+    marginTop: -10,
+  },
   historyOverlay: {
     position: "absolute",
     top: 6,
@@ -318,6 +355,26 @@ export const chatStyles = {
   },
   dividerLine: { flex: 1, height: 1, backgroundColor: "#3c3c3c" },
   dividerLabel: { color: "#9da5b4", fontSize: 11 },
+  interruptDividerWrap: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  interruptDividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(157,165,180,0.45)",
+  },
+  interruptDividerLabel: {
+    color: "#9da5b4",
+    fontSize: 12,
+    fontWeight: "600",
+    fontFamily: FONT_UI_MEDIUM,
+    letterSpacing: 0.2,
+  },
   /** 与 toolBatchWrap 同宽同边距，保证「思考中 / 运行失败」与「已运行」左缘对齐 */
   errorWrap: {
     width: "96%",
@@ -343,7 +400,7 @@ export const chatStyles = {
   },
   activityLabel: {
     flexShrink: 0,
-    color: "#A3A3A3",
+    color: "#52525B",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
@@ -356,10 +413,57 @@ export const chatStyles = {
   activityPreview: {
     flex: 1,
     minWidth: 0,
-    color: "#A3A3A3",
+    color: "#71717A",
     fontSize: 11,
     lineHeight: 15,
     fontWeight: "400",
+    fontFamily: FONT_UI_REGULAR,
+  },
+  taskActivityRowStable: {
+    minHeight: 17,
+  },
+  taskActivityHeadStable: {
+    minHeight: 25,
+  },
+  /** 最近 3 步窗口：定高裁切，新增步骤不顶外层标签；更早一步淡出叠在上方 */
+  taskStepWindow: {
+    height: 88,
+    overflow: "hidden",
+    justifyContent: "flex-end",
+    gap: 2,
+  },
+  taskStepRow: {
+    minHeight: 22,
+    justifyContent: "center",
+  },
+  taskStepRowFaded: {
+    opacity: 0.28,
+  },
+  taskStepHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 22,
+  },
+  taskStepLabel: {
+    flexShrink: 0,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+    fontFamily: FONT_UI_MEDIUM,
+  },
+  taskStepDetail: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: FONT_UI_REGULAR,
+  },
+  taskStepOutput: {
+    marginTop: 2,
+    marginBottom: 2,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: FONT_UI_REGULAR,
   },
   errorExpandBody: {
@@ -653,14 +757,14 @@ export const chatStyles = {
     minHeight: 25,
   },
   toolBatchLabel: {
-    color: "#A3A3A3",
+    color: "#52525B",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
     fontFamily: FONT_UI_MEDIUM,
   },
   toolBatchLabelActive: {
-    color: "#A3A3A3",
+    color: "#3F3F46",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
@@ -668,7 +772,7 @@ export const chatStyles = {
   },
   toolBatchCount: {
     flex: 1,
-    color: "#A3A3A3",
+    color: "#71717A",
     fontSize: 11,
     lineHeight: 15,
     fontFamily: FONT_UI_REGULAR,
@@ -692,7 +796,7 @@ export const chatStyles = {
     alignSelf: "flex-start",
   },
   contextInlineTitle: {
-    color: "#A3A3A3",
+    color: "#3F3F46",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
@@ -722,8 +826,8 @@ export const chatStyles = {
   contextBadgeTextRunning: { color: "#10A37F" },
   contextBadgeTextDone: { color: "#7a6045" },
   contextTitle: { color: "#6a4126", fontSize: 12, fontWeight: "700" },
-  contextSummary: { color: "#A3A3A3", fontSize: 12.5, lineHeight: 18, fontFamily: FONT_UI_REGULAR, flexShrink: 1 },
-  contextDetail: { color: "#a18c76", fontSize: 11, lineHeight: 16, fontFamily: FONT_UI_REGULAR },
+  contextSummary: { color: "#52525B", fontSize: 12.5, lineHeight: 18, fontFamily: FONT_UI_REGULAR, flexShrink: 1 },
+  contextDetail: { color: "#71717A", fontSize: 11, lineHeight: 16, fontFamily: FONT_UI_REGULAR },
   contextTools: {
     gap: 9,
     marginTop: 6,
@@ -1174,10 +1278,9 @@ export const chatStyles = {
   bubbleUserWrap: {
     width: "100%",
     alignItems: "flex-end",
-    marginTop: 1,
     gap: 8,
   },
-  bubbleAssistantWrap: { width: "100%", alignItems: "flex-start", marginTop: 1 },
+  bubbleAssistantWrap: { width: "100%", alignItems: "flex-start" },
   bubbleUser: {
     maxWidth: "80%",
     alignSelf: "flex-end",
@@ -1217,7 +1320,7 @@ export const chatStyles = {
     paddingBottom: 0,
   },
   exploringThinkingText: {
-    color: "#A3A3A3",
+    color: "#3F3F46",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
@@ -1248,14 +1351,14 @@ export const chatStyles = {
     gap: 6,
   },
   exploringStatusTitle: {
-    color: "#A3A3A3",
+    color: "#3F3F46",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
     fontFamily: FONT_UI_MEDIUM,
   },
   exploringStatusText: {
-    color: "#A3A3A3",
+    color: "#3F3F46",
     fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
@@ -1263,7 +1366,7 @@ export const chatStyles = {
     flexShrink: 1,
   },
   exploringStatusMeta: {
-    color: "#938778",
+    color: "#52525B",
     fontSize: 11,
     lineHeight: 16,
     fontFamily: FONT_UI_REGULAR,

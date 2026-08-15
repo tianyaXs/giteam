@@ -1,5 +1,6 @@
 import { mergeAgentStreamText } from '../../lib/agentParts';
 import { toText } from '../../lib/text';
+import { mergeToolPartState } from '../../lib/subagentTimeline';
 import { mergeMessageRows } from './turns';
 
 export type RefLike<T> = { current: T };
@@ -61,6 +62,10 @@ export function mergeStreamPart(prev: any, incoming: any) {
   const incomingText = typeof incoming?.text === 'string' ? incoming.text : '';
   if (prevText || incomingText) {
     next.text = mergeAgentStreamText(prevText, incomingText);
+  }
+  // tool part：深合并 state.metadata，保留 subagent timeline（打断后 sync 常无此字段）
+  if (prev?.state || incoming?.state) {
+    next.state = mergeToolPartState(prev?.state, incoming?.state);
   }
   return next;
 }

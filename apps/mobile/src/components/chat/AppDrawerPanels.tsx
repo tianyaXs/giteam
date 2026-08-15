@@ -27,6 +27,7 @@ import { SettingsModelsPanel } from '../../features/workspace/ModelManagerScreen
 import { toText } from '../../lib/text';
 import type { ProjectTreeNode, DrawerSessionRow } from '../../features/chat/useLeftDrawerController';
 import { AccordionBody } from '../AccordionBody';
+import { MobileConfirmDialog } from './MobileConfirmDialog';
 
 /**
  * ChatGPT 风格中性色板（抽屉自持，与 themes.ts 数值协调）。
@@ -175,10 +176,12 @@ const SessionRowView = React.memo(function SessionRowView(props: {
   palette: DrawerPalette;
   indent?: boolean;
   onSelect: (sessionId: string, worktree: string, active: boolean) => void;
+  onRequestArchive?: (session: DrawerSessionRow) => void;
 }) {
-  const { session, palette: p, indent, onSelect } = props;
+  const { session, palette: p, indent, onSelect, onRequestArchive } = props;
   const busy = session.status === 'busy' || session.status === 'retry';
   const title = toText(session.title).trim() || '新会话';
+
   return (
     <HoverRow
       active={session.active}
@@ -186,6 +189,7 @@ const SessionRowView = React.memo(function SessionRowView(props: {
       radius={10}
       marginH={8}
       onPress={() => onSelect(session.id, session.worktree, session.active)}
+      onLongPress={onRequestArchive ? () => onRequestArchive(session) : undefined}
     >
       <View
         style={{
@@ -343,12 +347,14 @@ export function SessionListDrawer(props: {
   onNewSession: () => void;
   onChangeSessionSearch: (value: string) => void;
   onSelectSession: (sessionId: string, worktree: string, active: boolean) => void;
+  onArchiveSession?: (sessionId: string, worktree: string) => void;
   onShowMore: (worktree: string) => void;
   onOpenSettings?: () => void;
 }) {
   const {
     isEmpty,
     currentWorkspaceName,
+    onArchiveSession,
     onChangeSessionSearch,
     onNewSession,
     onOpenSettings,
@@ -367,9 +373,46 @@ export function SessionListDrawer(props: {
   const searchInputRef = useRef<TextInput>(null);
   const searchProgress = useSharedValue(0);
   const searching = sessionSearch.trim().length > 0 || searchOpen;
+  const [archiveDialog, setArchiveDialog] = useState<
+    | { mode: 'confirm'; sessionId: string; worktree: string; title: string }
+    | { mode: 'blocked' }
+    | null
+  >(null);
 
   // 抽屉铺满到底；底栏自行吃 insets.bottom，避免 SafeArea 底边露出突兀白条
   const footerPad = Math.max(10, insets.bottom);
+
+  const requestArchiveSession = useCallback(
+    (session: DrawerSessionRow) => {
+      if (!onArchiveSession) return;
+      const busy = session.status === 'busy' || session.status === 'retry';
+      if (busy) {
+        setArchiveDialog({ mode: 'blocked' });
+        return;
+      }
+      setArchiveDialog({
+        mode: 'confirm',
+        sessionId: session.id,
+        worktree: session.worktree,
+        title: toText(session.title).trim() || '新会话'
+      });
+    },
+    [onArchiveSession]
+  );
+
+  const closeArchiveDialog = useCallback(() => {
+    setArchiveDialog(null);
+  }, []);
+
+  const confirmArchiveDialog = useCallback(() => {
+    if (!archiveDialog || archiveDialog.mode !== 'confirm' || !onArchiveSession) {
+      setArchiveDialog(null);
+      return;
+    }
+    const { sessionId, worktree } = archiveDialog;
+    setArchiveDialog(null);
+    onArchiveSession(sessionId, worktree);
+  }, [archiveDialog, onArchiveSession]);
 
   const focusSearchInput = React.useCallback(() => {
     searchInputRef.current?.focus();
@@ -493,6 +536,7 @@ export function SessionListDrawer(props: {
                 session={session}
                 palette={p}
                 onSelect={onSelectSession}
+                onRequestArchive={onArchiveSession ? requestArchiveSession : undefined}
               />
             ))}
             {searchSessionRows.length === 0 ? (
@@ -576,6 +620,7 @@ export function SessionListDrawer(props: {
                           palette={p}
                           indent
                           onSelect={onSelectSession}
+                          onRequestArchive={onArchiveSession ? requestArchiveSession : undefined}
                         />
                       ))}
                       {project.showMore ? (
@@ -634,6 +679,24 @@ export function SessionListDrawer(props: {
           </View>
         </Pressable>
       </View>
+
+      <MobileConfirmDialog
+        visible={!!archiveDialog}
+        title={archiveDialog?.mode === 'blocked' ? '无法归档' : '归档会话'}
+        message={
+          archiveDialog?.mode === 'blocked'
+            ? '进行中的会话不能归档，请先等待结束或停止生成。'
+            : archiveDialog?.mode === 'confirm'
+              ? `确定归档「${archiveDialog.title}」吗？归档后侧栏将不再显示该会话。`
+              : ''
+        }
+        cancelLabel="取消"
+        confirmLabel={archiveDialog?.mode === 'blocked' ? '知道了' : '归档'}
+        destructive={archiveDialog?.mode === 'confirm'}
+        noticeOnly={archiveDialog?.mode === 'blocked'}
+        onCancel={closeArchiveDialog}
+        onConfirm={confirmArchiveDialog}
+      />
     </View>
   );
 }

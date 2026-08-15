@@ -21,6 +21,7 @@ import {
   type AgentStreamStoreRefs
 } from '../messages/agentStreamStore';
 import { humanizeAgentError } from '../../lib/humanizeAgentError';
+import { applySubagentChildEventToMetadata, mergeToolPartState } from '../../lib/subagentTimeline';
 
 export interface AgentStreamManagerDeps {
   authed: boolean;
@@ -64,6 +65,12 @@ function isAbortLikeStreamError(detail: string) {
   return text.includes('messageabortederror') || text.includes('the operation was aborted') || text.includes('aborted');
 }
 
+/** SSE 丢 delta / 丢 run.completed 时，靠磁盘对账兜底的间隔。 */
+const BUSY_SYNC_WATCHDOG_MS = 8000;
+/** 断流后按 afterSeq soft-reconnect 的上限与基础退避。 */
+const SSE_SOFT_RECONNECT_MAX = 5;
+const SSE_SOFT_RECONNECT_BASE_MS = 400;
+
 /**
  * pi_agent SSE 流管理：订阅 /api/v1/agent/stream（sessionId + runId），
  * 事件 → legacy 行 store → parseConversation 渲染契约保持不变。
@@ -71,11 +78,20 @@ function isAbortLikeStreamError(detail: string) {
 export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
   const depsRef = useRef(deps);
   depsRef.current = deps;
+  const busyWatchdogRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const getDeps = useCallback(() => depsRef.current, []);
 
+  const clearBusyWatchdog = useCallback(() => {
+    if (busyWatchdogRef.current != null) {
+      clearInterval(busyWatchdogRef.current);
+      busyWatchdogRef.current = null;
+    }
+  }, []);
+
   const stopStream = useCallback(() => {
     const d = getDeps();
+    clearBusyWatchdog();
     d.streamRunIdRef.current += 1;
     d.sessionStatusEpochRef.current += 1;
     if (d.streamRef.current) {
@@ -91,7 +107,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     storeResetAgentStreamStores(d.getAgentStreamStores());
     d.setStreamTodoCard(null);
     d.setStreaming(false);
-  }, [getDeps]);
+  }, [clearBusyWatchdog, getDeps]);
 
   const startStream = useCallback((targetSessionId: string, explicitRunId?: string) => {
     const d = getDeps();
@@ -110,6 +126,7 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     const prevRun = toText(d.sessionActiveRunIdRef.current[targetSessionId]).trim();
     const softReconnect = prevSid === targetSessionId && prevRun === runId;
 
+    clearBusyWatchdog();
     d.streamRunIdRef.current += 1;
     d.sessionStatusEpochRef.current += 1;
     if (d.streamRef.current) {
@@ -136,10 +153,20 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     const client = createMobileAgentClient({ baseUrl: d.serverUrl, token: d.token });
     const stores = () => d.getAgentStreamStores();
     let streamClosed = false;
+    let lastSeq = 0;
+    let softReconnectAttempts = 0;
+    let softReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let sseGeneration = 0;
+    const clearSoftReconnect = () => {
+      if (softReconnectTimer != null) {
+        clearTimeout(softReconnectTimer);
+        softReconnectTimer = null;
+      }
+    };
+    // 不依赖 streamRef：soft-reconnect 关旧开新的间隙里 ref 可能为空，对账仍需认当前 run。
     const isCurrentStream = () =>
       !streamClosed &&
       d.streamRunIdRef.current === streamRunId &&
-      d.streamRef.current != null &&
       d.streamSessionRef.current === targetSessionId &&
       d.sessionIdRef.current === targetSessionId;
 
@@ -241,18 +268,18 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
     const applyMessageCompleted = (sid: string, message: AgentMessage) => {
       const row = agentMessageToLegacyRow(message, undefined, { live: false });
       if (!row) return;
-      // 保留流式期间已写入的 tool output/status（message.completed 不携带结果）。
+      // 保留流式期间已写入的 tool output/status/metadata（message.completed 不携带 timeline）。
       for (const part of row.parts) {
         if (part?.type !== 'tool') continue;
         const stored = storeGetStoredStreamPart(stores(), sid, row.info.id, part.id);
         if (stored?.state) {
-          part.state = {
+          part.state = mergeToolPartState(stored.state, {
             ...part.state,
             status: stored.state.status === 'error' ? 'error' : part.state.status,
             input: Object.keys(part.state?.input || {}).length > 0 ? part.state.input : stored.state.input,
             output: part.state.output || stored.state.output || '',
             error: part.state.error || stored.state.error
-          };
+          });
         }
       }
       row.info.time = { ...(row.info.time || {}), completed: Date.now() };
@@ -263,11 +290,13 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
 
     const finalizeRun = (sid: string, failedError?: string) => {
       if (!isCurrentStream()) return;
+      clearBusyWatchdog();
+      clearSoftReconnect();
       d.pushConnLog(failedError ? `SSE run.failed ${failedError}` : 'SSE run.completed');
       streamClosed = true;
+      sseGeneration += 1;
       d.sessionStatusEpochRef.current += 1;
       d.streamSessionRef.current = '';
-      // activeRun 留到 sync finally 再清：避免中途 session.status=idle 把 streaming 打掉导致停止钮闪一下。
       if (d.streamRef.current) {
         d.streamRef.current.close();
         d.streamRef.current = null;
@@ -287,25 +316,44 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       } else {
         d.setStatus('本轮回复完成');
       }
+      // 立刻释放 busy/停止钮：tail sync 在长调研会话可达数十秒，若等 sync.finally 会「消息已结束但按钮不恢复」。
+      if (d.sessionActiveRunIdRef.current[sid] === runId) {
+        delete d.sessionActiveRunIdRef.current[sid];
+      }
+      delete d.sessionRunEventSeenRef.current[runId];
+      d.setStreaming(false);
+      d.setSessionStatusMap((prev: Record<string, any>) => ({
+        ...prev,
+        [sid]: { type: 'idle' }
+      }));
       try {
         d.onRunSettled?.(sid, runId, failedError ? 'failed' : 'completed');
       } catch {
         // ignore settle errors — 不阻断流收口
       }
-      // 先刷一帧 live，再 merge sync；streaming/busy 延后到 sync 结束再清，避免输入框闪回待机。
       if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
-      void d.syncSessionMessages(sid, { tailOnly: true }).finally(() => {
-        if (d.streamRunIdRef.current !== streamRunId || d.sessionIdRef.current !== sid) return;
-        if (d.sessionActiveRunIdRef.current[sid] === runId) {
-          delete d.sessionActiveRunIdRef.current[sid];
+      void d.syncSessionMessages(sid, { tailOnly: true }).catch(() => undefined);
+    };
+
+    /** 云隧道丢 SSE 时常见：磁盘已写完，手机端却一直转圈。对账磁盘 + 服务端 active_runs。 */
+    const reconcileFromServer = async (reason: string) => {
+      if (!isCurrentStream()) return;
+      if (d.sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+      try {
+        await d.syncSessionMessages(targetSessionId, { tailOnly: true });
+        if (!isCurrentStream()) return;
+        if (d.sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+        // 勿用 syncSessionStatus：它只反映待裁决 interaction，流式中几乎总是 idle。
+        const runStatus = await client.getRunStatus(runId);
+        if (!isCurrentStream()) return;
+        if (d.sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+        if (!runStatus?.active) {
+          d.pushConnLog(`SSE reconcile settle inactive sid=${targetSessionId} via=${reason}`);
+          finalizeRun(targetSessionId);
         }
-        delete d.sessionRunEventSeenRef.current[runId];
-        d.setStreaming(false);
-        d.setSessionStatusMap((prev: Record<string, any>) => ({
-          ...prev,
-          [sid]: { type: 'idle' }
-        }));
-      });
+      } catch (error) {
+        d.pushConnLog(`SSE reconcile error via=${reason} ${String(error)}`, 'info');
+      }
     };
 
     const onEvent = (envelope: AgentEvent) => {
@@ -313,6 +361,13 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
       if (envelope.sessionId !== targetSessionId || envelope.runId !== runId) return;
       const event = envelope.event;
       if (!event?.type) return;
+      const seq = Number(envelope.sequence);
+      // replay + live 重叠时按 sequence 去重；u64::MAX 等异常 seq 仍放行终态。
+      if (Number.isFinite(seq) && seq > 0 && seq < Number.MAX_SAFE_INTEGER) {
+        if (seq <= lastSeq) return;
+        lastSeq = seq;
+      }
+      softReconnectAttempts = 0;
       const sid = targetSessionId;
       d.streamDebug('sse.agent.event', { sid, type: event.type, seq: envelope.sequence });
       d.sessionRunEventSeenRef.current[runId] = true;
@@ -401,7 +456,30 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               elapsedMs: event.elapsedMs
             }
           });
-          if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
+          if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
+          return;
+        }
+        case 'subagent.childEvent': {
+          const toolCallId = toText(event.parentToolCallId).trim();
+          const nested = event.event;
+          if (!toolCallId || !nested || typeof nested !== 'object') return;
+          toolCallMessageMap[toolCallId] = toolCallMessageMap[toolCallId] || activeMessageId;
+          const messageId = toolCallMessageMap[toolCallId] || activeMessageId;
+          if (!messageId) return;
+          const existing = storeGetStoredStreamPart(stores(), sid, messageId, toolCallId);
+          const prevMeta =
+            existing?.state?.metadata && typeof existing.state.metadata === 'object'
+              ? (existing.state.metadata as Record<string, unknown>)
+              : {};
+          const nextMeta = applySubagentChildEventToMetadata(prevMeta, nested as any);
+          if (event.childSessionId) {
+            nextMeta.sessionId = event.childSessionId;
+          }
+          upsertToolPart(sid, toolCallId, 'task', {
+            status: toText(existing?.state?.status) || 'running',
+            metadata: nextMeta
+          });
+          if (sid === d.sessionIdRef.current) d.scheduleStreamRender(sid);
           return;
         }
         case 'subagent.completed': {
@@ -414,7 +492,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
               sessionId: event.childSessionId,
               toolCount: event.toolCount,
               elapsedMs: event.elapsedMs,
-              summary: event.summary
+              summary: event.summary,
+              currentToolName: ''
             }
           });
           if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
@@ -428,7 +507,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
             output: event.error,
             metadata: {
               sessionId: event.childSessionId,
-              summary: event.error
+              summary: event.error,
+              currentToolName: ''
             }
           });
           if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
@@ -442,7 +522,8 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
             output: '子任务已中止',
             metadata: {
               sessionId: event.childSessionId,
-              summary: '子任务已中止'
+              summary: '子任务已中止',
+              currentToolName: ''
             }
           });
           if (sid === d.sessionIdRef.current) d.flushStreamRenderNow(sid);
@@ -538,22 +619,72 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
             d.pushConnLog(`SSE auto pairAuth retry error ${String(err)}`, 'error');
             d.setStatus(String(err));
           });
-      } else {
-        d.setStatus(detail ? `流断开: ${detail}` : '流断开');
+        return;
       }
+
+      const stillBusy = d.sessionActiveRunIdRef.current[targetSessionId] === runId;
+      if (stillBusy && softReconnectAttempts < SSE_SOFT_RECONNECT_MAX) {
+        softReconnectAttempts += 1;
+        const delay = SSE_SOFT_RECONNECT_BASE_MS * 2 ** (softReconnectAttempts - 1);
+        d.pushConnLog(
+          `SSE soft-reconnect #${softReconnectAttempts}/${SSE_SOFT_RECONNECT_MAX} afterSeq=${lastSeq} in ${delay}ms`
+        );
+        clearSoftReconnect();
+        softReconnectTimer = setTimeout(() => {
+          softReconnectTimer = null;
+          if (!isCurrentStream()) return;
+          if (d.sessionActiveRunIdRef.current[targetSessionId] !== runId) return;
+          attachSubscription(lastSeq);
+        }, delay);
+        return;
+      }
+
+      d.setStatus(detail ? `流断开: ${detail}` : '流断开');
+      // 重连耗尽：立即用磁盘/状态对账，避免干等到用户点打断才刷出已完成正文。
+      void reconcileFromServer('sse_error');
+    };
+
+    const attachSubscription = (afterSeq: number) => {
+      if (!isCurrentStream()) return;
+      sseGeneration += 1;
+      const gen = sseGeneration;
+      if (d.streamRef.current) {
+        d.streamRef.current.close();
+        d.streamRef.current = null;
+      }
+      const subscription = client.subscribeEvents(
+        targetSessionId,
+        runId,
+        (envelope) => {
+          if (gen !== sseGeneration) return;
+          onEvent(envelope);
+        },
+        (error) => {
+          if (gen !== sseGeneration) return;
+          onError(error);
+        },
+        { afterSeq }
+      );
+      d.streamRef.current = subscription;
+      d.setStreaming(true);
     };
 
     d.pushConnLog(`SSE connect sid=${targetSessionId} run=${runId}`);
-    const subscription = client.subscribeEvents(targetSessionId, runId, onEvent, onError);
-    d.streamRef.current = subscription;
-    d.setStreaming(true);
+    attachSubscription(0);
     // 新发送的 prompt 尚未落库时 tail sync 抢跑只会拿到旧快照，反而干扰 live delta。
     // 锁屏同 run 重连才需要立刻对齐权威快照。
     if (softReconnect) {
       void d.syncSessionMessages(targetSessionId, { tailOnly: true });
     }
     void d.syncSessionStatus(targetSessionId);
-  }, [getDeps, stopStream]);
+
+    // busy 看门狗：云隧道半开/丢包时 message.delta 与 run.completed 都可能到不了手机，
+    // 但 jsonl 已在桌面写完。周期性 tail sync + status，对账到 idle 则自动收口。
+    clearBusyWatchdog();
+    busyWatchdogRef.current = setInterval(() => {
+      void reconcileFromServer('watchdog');
+    }, BUSY_SYNC_WATCHDOG_MS);
+  }, [clearBusyWatchdog, getDeps, stopStream]);
 
   return { startStream, stopStream };
 }

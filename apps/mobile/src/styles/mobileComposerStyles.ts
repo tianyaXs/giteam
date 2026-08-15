@@ -37,6 +37,30 @@ export const composerStyles = {
     maxWidth: 280,
   },
 
+  /** morph 外壳：宽高/圆角由动画驱动 */
+  todoProgressMorphShell: {
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 6,
+    alignItems: "stretch",
+  },
+
+  todoProgressCollapsedLayer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  todoProgressMenuLayer: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+  },
+
   todoProgressBubble: {
     minWidth: 40,
     height: 32,
@@ -50,6 +74,40 @@ export const composerStyles = {
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 5,
+  },
+
+  /** 已在 morph 外壳内，去掉重复描边与阴影 */
+  todoProgressBubbleInMorph: {
+    borderWidth: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+    backgroundColor: "transparent",
+  },
+
+  /** 气泡 morph 成菜单后的内容（尺寸由外壳动画） */
+  todoProgressMorphMenu: {
+    width: 248,
+    maxWidth: "86%",
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+
+  todoProgressMorphMenuInShell: {
+    width: "100%",
+    maxWidth: "100%",
+    borderWidth: 0,
+    borderRadius: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+    backgroundColor: "transparent",
   },
 
   todoProgressBubbleText: {

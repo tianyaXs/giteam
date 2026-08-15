@@ -55,6 +55,24 @@ function toolCallToLegacyPart(part: Extract<AgentPart, { type: 'toolCall' }>, re
   const toolCallId = String(part.toolCallId || '').trim();
   const result = toolCallId ? results.get(toolCallId) : undefined;
   const status = result ? (result.isError ? 'error' : 'completed') : 'completed';
+  const enriched = part as Extract<AgentPart, { type: 'toolCall' }> & {
+    details?: Record<string, unknown>;
+    timeline?: unknown[];
+    childSessionId?: string;
+    subagentType?: string;
+    description?: string;
+    summary?: string;
+    toolCount?: number;
+  };
+  const details = enriched.details && typeof enriched.details === 'object' ? enriched.details : {};
+  const metadata: Record<string, unknown> = { ...details };
+  if (Array.isArray(enriched.timeline)) metadata.timeline = enriched.timeline;
+  else if (Array.isArray((details as any).timeline)) metadata.timeline = (details as any).timeline;
+  if (enriched.childSessionId) metadata.sessionId = enriched.childSessionId;
+  if (enriched.subagentType) metadata.subagentType = enriched.subagentType;
+  if (enriched.description) metadata.description = enriched.description;
+  if (enriched.summary) metadata.summary = enriched.summary;
+  if (enriched.toolCount != null) metadata.toolCount = enriched.toolCount;
   return {
     id: toolCallId || `toolcall:${part.toolName}`,
     callID: toolCallId || undefined,
@@ -63,9 +81,9 @@ function toolCallToLegacyPart(part: Extract<AgentPart, { type: 'toolCall' }>, re
     state: {
       status,
       input: part.input && typeof part.input === 'object' ? part.input : {},
-      output: result?.output || '',
+      output: result?.output || enriched.summary || '',
       error: result?.isError ? result.output || 'tool failed' : undefined,
-      metadata: {}
+      metadata
     }
   };
 }

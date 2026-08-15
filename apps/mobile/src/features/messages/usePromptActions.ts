@@ -69,6 +69,8 @@ type UsePromptActionsParams = {
   dropOptimisticUserMessage: (targetSessionId: string, id: string) => void;
   appendOptimisticTurnAndStick: (message: OptimisticUserMessage) => void;
   clearSessionOptimisticMessages: (targetSessionId: string) => void;
+  /** 手动中断后立刻写入「已打断」时间线条目 */
+  injectInterruptMarker?: (targetSessionId: string) => void;
 };
 
 export function usePromptActions(params: UsePromptActionsParams) {
@@ -83,6 +85,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     imageAttachments,
     initialMessageFetchLimit,
     initialSessionLimit,
+    injectInterruptMarker,
     model,
     pairCode,
     pendingPromptSessionRef,
@@ -523,7 +526,13 @@ export function usePromptActions(params: UsePromptActionsParams) {
     delete sessionActiveRunIdRef.current[sid];
     pendingSendBundleRef.current = null;
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
+    setStreaming(false);
     releaseTurnAwaiting();
+    try {
+      injectInterruptMarker?.(sid);
+    } catch {
+      // ignore local marker errors
+    }
     try {
       if (!activeRunId) {
         setStatus('当前会话没有进行中的运行');
@@ -531,13 +540,19 @@ export function usePromptActions(params: UsePromptActionsParams) {
       }
       pushConnLog(`POST agent.abort sid=${sid} run=${activeRunId}`);
       await createMobileAgentClient({ baseUrl: serverUrl, token }).abort(activeRunId);
-      setStatus('已请求中断');
+      setStatus('已打断');
       const tailLimit = Math.max(
         initialSessionLimit,
         Number(sessionVisibleTurnCountRef.current[sid] || 0),
         Number(sessionTotalTurnCountRef.current[sid] || 0)
       );
       await syncSessionMessages(sid, { limit: tailLimit, tailOnly: true });
+      // sync 后可能冲掉本地打断标识；再注入一次确保列表可见
+      try {
+        injectInterruptMarker?.(sid);
+      } catch {
+        // ignore
+      }
       clearSessionOptimisticMessages(sid);
       void syncSessionStatus(sid);
       pushConnLog('POST abort ok');
@@ -552,6 +567,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     authed,
     clearSessionOptimisticMessages,
     initialSessionLimit,
+    injectInterruptMarker,
     pendingPromptSessionRef,
     pendingSendBundleRef,
     pushConnLog,
@@ -564,6 +580,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     setBusy,
     setSessionStatusMap,
     setStatus,
+    setStreaming,
     stopStream,
     syncSessionMessages,
     syncSessionStatus,
@@ -571,17 +588,23 @@ export function usePromptActions(params: UsePromptActionsParams) {
   ]);
 
   const settlePendingSendBundle = useCallback(
-    (_sid: string, runId: string, _outcome: 'completed' | 'failed') => {
+    (sid: string, runId: string, _outcome: 'completed' | 'failed') => {
       const bundle = pendingSendBundleRef.current;
-      if (!bundle) return;
-      const pendingRun = toText(bundle.runId).trim();
-      const settledRun = toText(runId).trim();
-      if (pendingRun && settledRun && pendingRun !== settledRun) return;
-      // SSE 终态只清快照。附件收回输入区仅在 prompt HTTP 失败路径处理，
-      // 避免「消息已落库」时会话与输入区双份带图。
-      pendingSendBundleRef.current = null;
+      if (bundle) {
+        const pendingRun = toText(bundle.runId).trim();
+        const settledRun = toText(runId).trim();
+        if (!pendingRun || !settledRun || pendingRun === settledRun) {
+          // SSE 终态只清快照。附件收回输入区仅在 prompt HTTP 失败路径处理，
+          // 避免「消息已落库」时会话与输入区双份带图。
+          pendingSendBundleRef.current = null;
+        }
+      }
+      const targetSid = toText(sid).trim();
+      if (targetSid) clearSessionOptimisticMessages(targetSid);
+      // 本轮已结束：立刻放开发送门闩，勿再等 sessionWorking debounce。
+      releaseTurnAwaiting();
     },
-    [pendingSendBundleRef]
+    [clearSessionOptimisticMessages, pendingSendBundleRef, releaseTurnAwaiting]
   );
 
   const copyMessageText = useCallback(async (text: string) => {

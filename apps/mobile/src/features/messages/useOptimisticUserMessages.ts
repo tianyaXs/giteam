@@ -129,8 +129,11 @@ export function useOptimisticUserMessages(params: {
             if (!matchesOptimisticText(serverText)) return false;
             if ((item.attachments?.length || 0) !== (local.attachments?.length || 0)) return false;
             const serverCreatedAt = Number(item.createdAt || 0) || 0;
-            if (serverCreatedAt < local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS) return false;
-            if (serverCreatedAt > local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS) return false;
+            // createdAt 缺失时只比文案，勿因 0 时间戳把乐观层永久卡住（停止钮不恢复）。
+            if (serverCreatedAt > 0) {
+              if (serverCreatedAt < local.createdAt - OPTIMISTIC_MATCH_PAST_GRACE_MS) return false;
+              if (serverCreatedAt > local.createdAt + OPTIMISTIC_MATCH_FUTURE_WINDOW_MS) return false;
+            }
             return true;
           }) || null;
         if (matched) {

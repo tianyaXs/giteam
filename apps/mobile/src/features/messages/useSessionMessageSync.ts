@@ -74,7 +74,9 @@ export function useSessionMessageSync<Cell>(params: {
   setSessionHistoryRetryHint: Dispatch<SetStateAction<Record<string, string>>>;
   setLoadingOlder: Dispatch<SetStateAction<boolean>>;
   setStreaming: Dispatch<SetStateAction<boolean>>;
+  setSessionStatusMap: Dispatch<SetStateAction<Record<string, SessionStatusInfo>>>;
   setSessionSwitchingTo: Dispatch<SetStateAction<string>>;
+  sessionActiveRunIdRef: MutableRefObject<Record<string, string>>;
   ingestStreamRows: (targetSessionId: string, rows: any[]) => any[];
   replaceStreamRows: (targetSessionId: string, rows: any[]) => any[];
   recordStreamMessageRoles: (targetSessionId: string, rows: any[]) => void;
@@ -122,6 +124,8 @@ export function useSessionMessageSync<Cell>(params: {
     setSessionSwitchingTo,
     setStatus,
     setStreaming,
+    setSessionStatusMap,
+    sessionActiveRunIdRef,
     streamDebug,
     syncSessionStatus,
     token,
@@ -679,12 +683,22 @@ export function useSessionMessageSync<Cell>(params: {
             if (!lastTurn) return false;
             return lastTurn.items.some((item: any) => item.kind === 'error');
           })();
-          const statusIdle = !statusInfo || statusInfo.type === 'idle';
+          // statusInfo 缺省（tailOnly）不得当成 idle；interaction-only idle 也不能在有
+          // SSE 跟踪的 activeRun 时清 busy——助手正文≥64 字后 writing=false，会误杀进行中的 run。
+          const statusIdle = statusInfo?.type === 'idle';
+          const hasTrackedActiveRun = Boolean(toText(sessionActiveRunIdRef.current[targetSessionId]).trim());
           if (
             !pendingPromptSessionRef.current[targetSessionId]
+            && !hasTrackedActiveRun
+            && statusInfo != null
             && ((!rendered.writing && statusIdle) || latestTurnHasError)
           ) {
             setStreaming(false);
+            setSessionStatusMap((prev) => {
+              const cur = prev[targetSessionId];
+              if (!cur || cur.type === 'idle') return prev;
+              return { ...prev, [targetSessionId]: { type: 'idle' } };
+            });
             setStatus((prev) => (toText(prev).includes('流式响应中') ? '' : prev));
           }
           return rendered;
@@ -833,6 +847,8 @@ export function useSessionMessageSync<Cell>(params: {
     setSessionSwitchingTo,
     setStatus,
     setStreaming,
+    setSessionStatusMap,
+    sessionActiveRunIdRef,
     streamDebug,
     syncSessionStatus,
     token,

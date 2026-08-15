@@ -15,6 +15,7 @@ export function useNotebookDrawerRenderers(params: {
   onNewSession: () => void;
   onChangeSessionSearch: (value: string) => void;
   onSelectSession: (sessionId: string, worktree: string, active: boolean) => void;
+  onArchiveSession?: (sessionId: string, worktree: string) => void;
   onShowMoreSessions: (worktree: string) => void;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
@@ -38,6 +39,7 @@ export function useNotebookDrawerRenderers(params: {
     onToggleAutoAccept,
     onPressProject,
     onSelectSession,
+    onArchiveSession,
     onShowMoreSessions,
     projectTrees,
     searchSessionRows,
@@ -59,6 +61,7 @@ export function useNotebookDrawerRenderers(params: {
         onNewSession={onNewSession}
         onChangeSessionSearch={onChangeSessionSearch}
         onSelectSession={onSelectSession}
+        onArchiveSession={onArchiveSession}
         onShowMore={onShowMoreSessions}
         onOpenSettings={onOpenSettings}
       />
@@ -66,6 +69,7 @@ export function useNotebookDrawerRenderers(params: {
     [
       currentWorkspaceName,
       isSessionListEmpty,
+      onArchiveSession,
       onChangeSessionSearch,
       onNewSession,
       onOpenSettings,

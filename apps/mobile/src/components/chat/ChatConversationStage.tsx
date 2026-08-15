@@ -56,7 +56,7 @@ function ChatConversationStageImpl(props: {
   /** idle/loading：连接中；error：拉取失败；ready：可判断是否有模型 */
   modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   onOpenModelSettings?: () => void;
-  /** 点击空白 / 开始滚列表时收回输入框 */
+  /** 单击列表空白区（不含气泡/事件行；已做滑动/长按/防抖过滤） */
   onBlankPress?: () => void;
 }) {
   const {
@@ -133,10 +133,89 @@ function ChatConversationStageImpl(props: {
     void onLoadOlderMessages();
   }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
 
+  /** 空白单击：与滚动/长按/点在消息内容上区分，避免展开事件详情时误触专注 chrome。 */
+  const TAP_SLOP = 10;
+  const TAP_MAX_MS = 320;
+  const BLANK_DEBOUNCE_MS = 480;
+  const tapGestureRef = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    startedAt: number;
+  }>({
+    x: 0,
+    y: 0,
+    active: false,
+    startedAt: 0
+  });
+  /** 触摸落在 turn 单元格上则为 true → 不算空白。 */
+  const contentTouchRef = useRef(false);
+  const lastBlankPressAtRef = useRef(0);
+
   const handleScrollBeginDrag = useCallback(() => {
-    onBlankPress?.();
+    tapGestureRef.current.active = false;
+    contentTouchRef.current = false;
     onScrollBeginDrag();
-  }, [onBlankPress, onScrollBeginDrag]);
+  }, [onScrollBeginDrag]);
+
+  const handleListTouchStart = useCallback((evt: any) => {
+    const t = evt?.nativeEvent?.touches?.[0];
+    if (!t) return;
+    contentTouchRef.current = false;
+    tapGestureRef.current = {
+      x: t.pageX,
+      y: t.pageY,
+      active: true,
+      startedAt: Date.now()
+    };
+  }, []);
+
+  const handleListTouchMove = useCallback((evt: any) => {
+    if (!tapGestureRef.current.active) return;
+    const t = evt?.nativeEvent?.touches?.[0];
+    if (!t) return;
+    if (
+      Math.abs(t.pageX - tapGestureRef.current.x) > TAP_SLOP ||
+      Math.abs(t.pageY - tapGestureRef.current.y) > TAP_SLOP
+    ) {
+      tapGestureRef.current.active = false;
+    }
+  }, []);
+
+  const handleListTouchEnd = useCallback(() => {
+    const gesture = tapGestureRef.current;
+    const hitContent = contentTouchRef.current;
+    tapGestureRef.current.active = false;
+    contentTouchRef.current = false;
+    if (!gesture.active || hitContent) return;
+    const elapsed = Date.now() - gesture.startedAt;
+    if (elapsed > TAP_MAX_MS) return;
+    const now = Date.now();
+    if (now - lastBlankPressAtRef.current < BLANK_DEBOUNCE_MS) return;
+    lastBlankPressAtRef.current = now;
+    onBlankPress?.();
+  }, [onBlankPress]);
+
+  const handleListTouchCancel = useCallback(() => {
+    tapGestureRef.current.active = false;
+    contentTouchRef.current = false;
+  }, []);
+
+  const renderListItem = useCallback(
+    (info: { item: any; index: number }) => (
+      <View
+        collapsable={false}
+        onStartShouldSetResponderCapture={() => {
+          // 捕获阶段标记：点在气泡/事件详情上不算空白，不切换专注 chrome。
+          contentTouchRef.current = true;
+          return false;
+        }}
+      >
+        {renderTurnCell(info)}
+      </View>
+    ),
+    [renderTurnCell]
+  );
 
   const settingsLinkColor = colors.isDark ? '#FFFFFF' : '#1A1A1F';
 
@@ -253,10 +332,14 @@ function ChatConversationStageImpl(props: {
             onMomentumScrollEnd={onMomentumScrollEnd}
             onScroll={onScroll}
             onContentSizeChange={onContentSizeChange}
+            onTouchStart={handleListTouchStart}
+            onTouchMove={handleListTouchMove}
+            onTouchEnd={handleListTouchEnd}
+            onTouchCancel={handleListTouchCancel}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             extraData={listExtraData}
-            renderItem={renderTurnCell}
+            renderItem={renderListItem}
             onStartReached={handleStartReached}
             onStartReachedThreshold={0.15}
             ListHeaderComponent={null}

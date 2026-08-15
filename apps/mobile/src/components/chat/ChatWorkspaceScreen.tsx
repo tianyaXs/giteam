@@ -1,8 +1,16 @@
-import React, { useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Drawer } from 'react-native-drawer-layout';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import Reanimated, {
+  Easing as ReEasing,
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming
+} from 'react-native-reanimated';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 import { QuestionDock } from '../QuestionDock';
 import { PermissionDock } from '../PermissionDock';
@@ -10,8 +18,11 @@ import type { PermissionInteraction } from '../../lib/agentPermissions';
 import type { AgentPermissionReply } from '../../lib/agentPermissions';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatConversationStage } from './ChatConversationStage';
+import { ComposerSendGlyph } from './ComposerSendGlyph';
 import { ImagePreviewOverlay } from './MediaOverlays';
 import { MobileTodoProgressBubble } from './MobileTodoProgressBubble';
+
+const TOP_BAR_HEIGHT = 52;
 type NotebookColors = {
   shell: string;
   main: string;
@@ -102,6 +113,8 @@ type ChatWorkspaceScreenProps = {
   modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   previewImage: { uri: string; filename?: string } | null;
   onClosePreviewImage: () => void;
+  /** 发送后进入专注模式：收起顶栏与输入区，结束后滑出 */
+  focusMode?: boolean;
 };
 
 export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, ChatWorkspaceScreenProps>(function ChatWorkspaceScreen(props, ref) {
@@ -118,6 +131,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     currentWorkspaceName,
     dismissedTodoCardId,
     displayedTurnCells,
+    focusMode = false,
     historyProgressWidth,
     inputDockHeight,
     latestTodoCard,
@@ -176,10 +190,135 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   const activeNotebookPanelRef = useRef<NotebookPanel>('');
   const openNotifiedPanelRef = useRef<NotebookPanel>('');
   const composerRef = useRef<ChatComposerHandle>(null);
+  /** 专注模式下用户单击唤出 chrome 后置 true；再次单击可收起 */
+  const [focusChromePinned, setFocusChromePinned] = useState(false);
+  /**
+   * 仅在收起/展开动画期间为 true：此时顶栏走裁切动画。
+   * 动画结束后若已离开专注资格，再回到静态顶栏布局。
+   */
+  const [chromeLayoutLocked, setChromeLayoutLocked] = useState(false);
+  /**
+   * 列表 inset 的专注态：进入收起时立刻收紧；整个专注资格期内保持收紧
+   * （含 pin 展开顶栏/输入），离开资格且动画结束后再恢复，避免展开时列表上跳。
+   */
+  const [layoutChromeCollapsed, setLayoutChromeCollapsed] = useState(false);
+  const focusProgress = useSharedValue(0);
+  const dockHeightSV = useSharedValue(Math.max(72, inputDockHeight || 88));
+  const focusEligible =
+    focusMode && !activeQuestionRequest && !activePermissionRequest;
+  const focusEligibleRef = useRef(focusEligible);
+  focusEligibleRef.current = focusEligible;
+  /** true = 顶栏/输入收起中 */
+  const focusChrome = focusEligible && !focusChromePinned;
+  const canAbortNow = !!composerProps.canAbortNow;
+  /**
+   * 静止静态顶栏：仅在完全离开专注资格后使用。
+   * 专注资格期内（含 pinned 展开）始终走动画包装，避免 pin/unpin 结束 remount 顶栏造成列表跳。
+   */
+  const chromeAtRest = !focusEligible && !chromeLayoutLocked;
+
+  const finishExpandLayout = useCallback(() => {
+    setChromeLayoutLocked(false);
+    // pin 展开时仍在专注资格内：保持 inset 收紧，不要在这时撑高 padding
+    if (!focusEligibleRef.current) {
+      setLayoutChromeCollapsed(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    dockHeightSV.value = Math.max(72, Number(inputDockHeight) || 88);
+  }, [dockHeightSV, inputDockHeight]);
+
+  useEffect(() => {
+    // 进入/退出专注资格时复位 pin；新一轮发送从收起态开始
+    setFocusChromePinned(false);
+  }, [focusEligible]);
+
+  useEffect(() => {
+    if (focusChrome) {
+      setChromeLayoutLocked(true);
+      setLayoutChromeCollapsed(true);
+      focusProgress.value = withTiming(1, {
+        duration: 280,
+        easing: ReEasing.bezier(0.22, 1, 0.36, 1)
+      });
+      return;
+    }
+    // 展开：先让顶栏/Composer 动画占回空间；inset 仅在离开资格后恢复
+    focusProgress.value = withTiming(
+      0,
+      {
+        duration: 360,
+        easing: ReEasing.bezier(0.16, 1, 0.3, 1)
+      },
+      (finished) => {
+        if (finished) runOnJS(finishExpandLayout)();
+      }
+    );
+  }, [finishExpandLayout, focusChrome, focusProgress]);
+
+  // 资格被硬切掉且已在展开静止态时，确保 inset 不卡住
+  useEffect(() => {
+    if (focusEligible || focusChrome || chromeLayoutLocked) return;
+    if (layoutChromeCollapsed) setLayoutChromeCollapsed(false);
+  }, [chromeLayoutLocked, focusChrome, focusEligible, layoutChromeCollapsed]);
+
+  const topBarAnimStyle = useAnimatedStyle(() => {
+    const p = focusProgress.value;
+    return {
+      height: interpolate(p, [0, 1], [TOP_BAR_HEIGHT, 0]),
+      opacity: interpolate(p, [0, 1], [1, 0]),
+      overflow: 'hidden' as const
+    };
+  });
+
+  /**
+   * 不用 height 裁切（会先吃掉底部 safe-area，恢复后输入框像上移）。
+   * 仅用 opacity + 负 margin 收起占位；p=0 时等价于改造前「无额外样式」。
+   */
+  const composerAnimStyle = useAnimatedStyle(() => {
+    const p = focusProgress.value;
+    const h = Math.max(72, dockHeightSV.value);
+    return {
+      opacity: interpolate(p, [0, 1], [1, 0]),
+      marginBottom: interpolate(p, [0, 1], [0, -h])
+    };
+  });
+
+  const todoRootAnimStyle = useAnimatedStyle(() => ({
+    top: interpolate(focusProgress.value, [0, 1], [TOP_BAR_HEIGHT, 8])
+  }));
+
+  const focusAbortAnimStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(focusProgress.value, [0.35, 1], [0, 1]),
+    transform: [
+      { translateY: interpolate(focusProgress.value, [0.35, 1], [20, 0]) },
+      { scale: interpolate(focusProgress.value, [0.35, 1], [0.82, 1]) }
+    ]
+  }));
 
   const dismissComposer = useCallback(() => {
     composerRef.current?.collapse();
   }, []);
+
+  /**
+   * 列表空白单击（已由 ConversationStage 过滤掉消息/事件详情点击）：
+   * - 专注资格内：切换顶栏/输入显隐
+   * - 非专注：只收起输入扩展（不进入专注）
+   */
+  const handleContentTap = useCallback(() => {
+    if (focusEligible) {
+      setFocusChromePinned((prev) => !prev);
+      return;
+    }
+    dismissComposer();
+  }, [dismissComposer, focusEligible]);
+
+  const handleStageScrollBeginDrag = useCallback(() => {
+    // 滚动只收起输入扩展，不切换专注 chrome（与单击区分）
+    dismissComposer();
+    onScrollBeginDrag();
+  }, [dismissComposer, onScrollBeginDrag]);
 
   const setNotebookPanel = useCallback((next: NotebookPanel) => {
     activeNotebookPanelRef.current = next;
@@ -264,35 +403,88 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   const mainContent = (
     <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main }]}>
       <StatusBar barStyle={themeDark ? 'light-content' : 'dark-content'} backgroundColor={notebookColors.shell} />
-      <View style={[styles.topBar, { backgroundColor: notebookColors.main, borderBottomColor: notebookColors.line }]}>
-        <Pressable
-          accessibilityLabel="打开左侧面板"
-          hitSlop={8}
-          onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
-          style={styles.topNavButton}
+      {chromeAtRest ? (
+        <View
+          style={[
+            styles.topBar,
+            {
+              backgroundColor: notebookColors.main,
+              borderBottomColor: notebookColors.line
+            }
+          ]}
         >
-          <Feather
-            name="menu"
-            size={22}
-            color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
-          />
-        </Pressable>
-        <View style={styles.topBrand}>
-          {showNotebookSessionTitle ? (
-            <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>
-              {compactSessionTitle}
-            </Text>
-          ) : null}
+          <Pressable
+            accessibilityLabel="打开左侧面板"
+            hitSlop={8}
+            onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
+            style={styles.topNavButton}
+          >
+            <Feather
+              name="menu"
+              size={22}
+              color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
+            />
+          </Pressable>
+          <View style={styles.topBrand}>
+            {showNotebookSessionTitle ? (
+              <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>
+                {compactSessionTitle}
+              </Text>
+            ) : null}
+          </View>
+          <Pressable
+            accessibilityLabel="新建会话"
+            hitSlop={8}
+            onPress={() => onNewSession?.()}
+            style={styles.topNavButton}
+          >
+            <Feather name="edit" size={20} color={notebookColors.text} />
+          </Pressable>
         </View>
-        <Pressable
-          accessibilityLabel="新建会话"
-          hitSlop={8}
-          onPress={() => onNewSession?.()}
-          style={styles.topNavButton}
+      ) : (
+        <Reanimated.View
+          pointerEvents={focusChrome ? 'none' : 'auto'}
+          style={[{ overflow: 'hidden', backgroundColor: notebookColors.main }, topBarAnimStyle]}
         >
-          <Feather name="edit" size={20} color={notebookColors.text} />
-        </Pressable>
-      </View>
+          <View
+            style={[
+              styles.topBar,
+              {
+                backgroundColor: notebookColors.main,
+                borderBottomColor: notebookColors.line
+              }
+            ]}
+          >
+            <Pressable
+              accessibilityLabel="打开左侧面板"
+              hitSlop={8}
+              onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
+              style={styles.topNavButton}
+            >
+              <Feather
+                name="menu"
+                size={22}
+                color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
+              />
+            </Pressable>
+            <View style={styles.topBrand}>
+              {showNotebookSessionTitle ? (
+                <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>
+                  {compactSessionTitle}
+                </Text>
+              ) : null}
+            </View>
+            <Pressable
+              accessibilityLabel="新建会话"
+              hitSlop={8}
+              onPress={() => onNewSession?.()}
+              style={styles.topNavButton}
+            >
+              <Feather name="edit" size={20} color={notebookColors.text} />
+            </Pressable>
+          </View>
+        </Reanimated.View>
+      )}
       {/* 整块内容区 + 输入框一起被键盘顶起（比 Sticky 分轨更稳） */}
       <KeyboardAvoidingView
         behavior="padding"
@@ -303,7 +495,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           <ChatConversationStage
             styles={styles}
             windowWidth={windowWidth}
-            inputDockHeight={inputDockHeight}
+            inputDockHeight={layoutChromeCollapsed ? 24 : inputDockHeight}
             notebookColors={notebookColors}
             showStreamTopGlow={showStreamTopGlow}
             streamTopGlowAnim={streamTopGlowAnim}
@@ -311,12 +503,16 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             currentWorkspaceName={currentWorkspaceName}
             messageScrollRef={messageScrollRef}
             shouldSuppressLoadOlder={shouldSuppressLoadOlder}
-            messageBottomInset={messageBottomInset}
+            messageBottomInset={
+              layoutChromeCollapsed
+                ? Math.max(48, messageBottomInset * 0.35)
+                : messageBottomInset
+            }
             displayedTurnCells={displayedTurnCells}
             chatViewabilityConfig={chatViewabilityConfig}
             onChatViewableItemsChanged={onChatViewableItemsChanged}
             loadingOlder={loadingOlder}
-            onScrollBeginDrag={onScrollBeginDrag}
+            onScrollBeginDrag={handleStageScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}
             onMomentumScrollEnd={onMomentumScrollEnd}
@@ -335,7 +531,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             hasEnabledModels={(composerProps.modelOptions?.length || 0) > 0}
             modelCatalogStatus={modelCatalogStatus}
             onOpenModelSettings={composerProps.onOpenModelManager}
-            onBlankPress={dismissComposer}
+            onBlankPress={handleContentTap}
           />
           {activePermissionRequest && onReplyPermission ? (
             <View key={activePermissionRequest.id} style={styles.questionDockWrap}>
@@ -359,8 +555,37 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             </View>
           ) : null}
         </Animated.View>
-        <ChatComposer ref={composerRef} {...composerProps} />
+        {/* 与改造前相同：自然高度；专注态仅淡出+负 margin 收占位，不锁 height */}
+        <Reanimated.View
+          style={composerAnimStyle}
+          pointerEvents={focusChrome ? 'none' : 'auto'}
+        >
+          <ChatComposer ref={composerRef} {...composerProps} />
+        </Reanimated.View>
       </KeyboardAvoidingView>
+
+      {canAbortNow ? (
+        <Reanimated.View
+          pointerEvents={focusChrome ? 'auto' : 'none'}
+          style={[styles.focusAbortFabWrap, focusAbortAnimStyle]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="停止生成"
+            onPress={() => composerProps.onAbort?.()}
+            style={[
+              styles.focusAbortFab,
+              {
+                backgroundColor: themeDark ? '#F4F4F5' : '#1A1A1F',
+                shadowOpacity: themeDark ? 0.35 : 0.12
+              }
+            ]}
+          >
+            <ComposerSendGlyph busy color={themeDark ? '#1A1A1F' : '#FFFFFF'} size={20} />
+          </Pressable>
+        </Reanimated.View>
+      ) : null}
+
       {/* 进度气泡挂在顶栏下方，不随滚动 suppress，并可跟视口 todo 切换 */}
       {latestTodoCard && dismissedTodoCardId !== latestTodoCard.id ? (
         <MobileTodoProgressBubble
@@ -368,6 +593,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
           expanded={!todoDockCollapsed}
           busy={thinkingPulse}
           styles={styles}
+          rootStyle={todoRootAnimStyle}
           onToggle={onToggleTodoDock}
           onCollapse={onCollapseTodoDock}
         />

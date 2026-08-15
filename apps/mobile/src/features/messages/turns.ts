@@ -1,4 +1,5 @@
 import { mergeAgentStreamText } from '../../lib/agentParts';
+import { mergeToolPartState } from '../../lib/subagentTimeline';
 import { parseConversation } from '../../timelineParser';
 import type { MobileChatMessage, MobileEventCard, MobileRenderedTurn, MobileTimelineItem } from '../../types';
 
@@ -108,6 +109,9 @@ function mergeMessagePart(prev: any, incoming: any): any {
   if (prevText || incomingText) {
     next.text = mergeAgentStreamText(prevText, incomingText);
   }
+  if (prev?.state || incoming?.state) {
+    next.state = mergeToolPartState(prev?.state, incoming?.state);
+  }
   return next;
 }
 
@@ -157,7 +161,14 @@ function itemSignature(item: MobileTimelineItem): string {
   if (item.kind === 'chat') return `${timelineStableKey(item)}:${item.message.role}:${toText(item.message.text).length}`;
   if (item.kind === 'think') return `${timelineStableKey(item)}:${item.card.finished ? 1 : 0}:${toText(item.card.text).length}`;
   if (item.kind === 'event') {
-    return `${timelineStableKey(item)}:${toText(item.event.status)}:${toText(item.event.detail).length}:${toText(item.event.output).length}`;
+    const steps = Array.isArray(item.event.taskSteps) ? item.event.taskSteps.length : 0;
+    const lastStep = Array.isArray(item.event.taskSteps) && item.event.taskSteps.length > 0
+      ? item.event.taskSteps[item.event.taskSteps.length - 1]
+      : null;
+    const stepSig = lastStep
+      ? `${toText(lastStep.id)}:${toText(lastStep.status)}`
+      : '0';
+    return `${timelineStableKey(item)}:${toText(item.event.status)}:${toText(item.event.detail).length}:${toText(item.event.output).length}:steps:${steps}:${stepSig}:${toText(item.event.taskCurrentTool)}`;
   }
   if (item.kind === 'todo') {
     const items = Array.isArray(item.todo.items) ? item.todo.items.map((todo) => `${todo.id}:${todo.status}`).join(',') : '';

@@ -23,6 +23,12 @@ export type AgentRuntimeInfo = {
   };
 };
 
+export type AgentRunStatus = {
+  runId: string;
+  active: boolean;
+  sessionId?: string | null;
+};
+
 export type AgentSessionSummary = {
   sessionId: string;
   repoPath: string;

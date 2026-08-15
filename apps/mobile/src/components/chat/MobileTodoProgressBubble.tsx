@@ -7,9 +7,21 @@ import {
   Text,
   View
 } from 'react-native';
+import Reanimated, {
+  Easing,
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming
+} from 'react-native-reanimated';
 import type { MobileTodoCard } from '../../types';
 import { toText } from '../../lib/text';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
+
+const COLLAPSED_H = 32;
+const EXPANDED_W = 248;
+const MORPH_MS = 280;
 
 function todoMeta(card: MobileTodoCard) {
   const items = Array.isArray(card.items) ? card.items : [];
@@ -21,6 +33,11 @@ function todoMeta(card: MobileTodoCard) {
     items[items.length - 1] ||
     null;
   return { total, done, active };
+}
+
+function estimateMenuHeight(itemCount: number) {
+  // head ~34 + rows ~26 + padding；滚动区上限约 220
+  return Math.min(42 + 8 + Math.max(1, itemCount) * 26 + 10, 42 + 220 + 10);
 }
 
 function StatusDot(props: {
@@ -64,7 +81,7 @@ function StatusDot(props: {
 }
 
 /**
- * 生成中默认仅右上角进度气泡（如 0/1）；点击展开轻薄菜单，点空白收起。
+ * 进度胶囊：点击后同一外壳 morph 成任务菜单（宽高/圆角插值 + 内容交叉淡入）。
  */
 export const MobileTodoProgressBubble = React.memo(function MobileTodoProgressBubble(props: {
   card: MobileTodoCard;
@@ -73,14 +90,19 @@ export const MobileTodoProgressBubble = React.memo(function MobileTodoProgressBu
   onToggle: () => void;
   onCollapse: () => void;
   styles: Record<string, any>;
+  /** 专注模式等场景下覆盖根定位（如 top） */
+  rootStyle?: object;
 }) {
-  const { busy, card, expanded, onCollapse, onToggle, styles } = props;
+  const { busy, card, expanded, onCollapse, onToggle, rootStyle, styles } = props;
   const { colors } = useMobileTheme();
   const meta = useMemo(() => todoMeta(card), [card]);
   const label = `${meta.done}/${meta.total || 0}`;
   const appearAnim = useRef(new Animated.Value(0)).current;
-  const expandAnim = useRef(new Animated.Value(expanded ? 1 : 0)).current;
-  const [menuMounted, setMenuMounted] = useState(expanded);
+
+  const expand = useSharedValue(expanded ? 1 : 0);
+  const collapsedW = useSharedValue(56);
+  const expandedH = useSharedValue(estimateMenuHeight(meta.total));
+  const [menuPresent, setMenuPresent] = useState(expanded);
 
   useEffect(() => {
     appearAnim.setValue(0);
@@ -94,27 +116,23 @@ export const MobileTodoProgressBubble = React.memo(function MobileTodoProgressBu
   }, [appearAnim, card.id]);
 
   useEffect(() => {
-    if (expanded) {
-      setMenuMounted(true);
-      Animated.spring(expandAnim, {
-        toValue: 1,
-        stiffness: 280,
-        damping: 22,
-        mass: 0.8,
-        useNativeDriver: true
-      }).start();
-      return;
-    }
-    Animated.timing(expandAnim, {
-      toValue: 0,
-      duration: 160,
-      useNativeDriver: true
-    }).start(({ finished }) => {
-      if (finished) setMenuMounted(false);
-    });
-  }, [expandAnim, expanded]);
+    expandedH.value = Math.max(expandedH.value, estimateMenuHeight(meta.total));
+  }, [expandedH, meta.total]);
 
-  const bubbleStyle = {
+  useEffect(() => {
+    if (expanded) setMenuPresent(true);
+    expand.value = withTiming(
+      expanded ? 1 : 0,
+      { duration: MORPH_MS, easing: Easing.out(Easing.cubic) },
+      (finished) => {
+        if (finished && !expanded) {
+          runOnJS(setMenuPresent)(false);
+        }
+      }
+    );
+  }, [expand, expanded]);
+
+  const shellStyle = {
     opacity: appearAnim,
     transform: [
       {
@@ -126,100 +144,137 @@ export const MobileTodoProgressBubble = React.memo(function MobileTodoProgressBu
       {
         scale: appearAnim.interpolate({
           inputRange: [0, 1],
-          outputRange: [0.82, 1]
+          outputRange: [0.86, 1]
         })
       }
     ]
   } as const;
 
-  const menuStyle = {
-    opacity: expandAnim,
+  const shellChrome = {
+    backgroundColor: colors.card,
+    borderColor: colors.isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)'
+  };
+
+  const morphShellStyle = useAnimatedStyle(() => {
+    const width = interpolate(expand.value, [0, 1], [collapsedW.value, EXPANDED_W]);
+    const height = interpolate(expand.value, [0, 1], [COLLAPSED_H, expandedH.value]);
+    const borderRadius = interpolate(expand.value, [0, 1], [999, 16]);
+    return {
+      width,
+      height,
+      borderRadius,
+      overflow: 'hidden' as const
+    };
+  });
+
+  const collapsedLayerStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(expand.value, [0, 0.45, 1], [1, 0.15, 0]),
+    transform: [{ scale: interpolate(expand.value, [0, 1], [1, 0.9]) }]
+  }));
+
+  const menuLayerStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(expand.value, [0, 0.35, 1], [0, 0.55, 1]),
     transform: [
-      {
-        translateY: expandAnim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [-8, 0]
-        })
-      },
-      {
-        scale: expandAnim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0.94, 1]
-        })
-      }
+      { translateY: interpolate(expand.value, [0, 1], [-8, 0]) },
+      { scale: interpolate(expand.value, [0, 1], [0.96, 1]) }
     ]
-  } as const;
+  }));
+
+  const backdropAnimStyle = useAnimatedStyle(() => ({
+    opacity: expand.value
+  }));
 
   return (
-    <View pointerEvents="box-none" style={styles.todoProgressBubbleRoot}>
-      {menuMounted ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="收起进度"
-          onPress={onCollapse}
-          style={styles.todoProgressBubbleBackdrop}
-        />
+    <Reanimated.View pointerEvents="box-none" style={[styles.todoProgressBubbleRoot, rootStyle]}>
+      {menuPresent ? (
+        <Reanimated.View
+          pointerEvents={expanded ? 'auto' : 'none'}
+          style={[styles.todoProgressBubbleBackdrop, backdropAnimStyle]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="收起进度"
+            onPress={onCollapse}
+            style={StyleSheet.absoluteFill}
+          />
+        </Reanimated.View>
       ) : null}
 
-      <Animated.View style={[styles.todoProgressBubbleAnchor, bubbleStyle]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`进度 ${label}`}
-          onPress={onToggle}
-          style={[
-            styles.todoProgressBubble,
-            {
-              backgroundColor: colors.card,
-              borderColor: colors.isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)'
-            }
-          ]}
-        >
-          <Text style={[styles.todoProgressBubbleText, { color: colors.muted }]}>{label}</Text>
-        </Pressable>
-
-        {menuMounted ? (
-          <Animated.View
-            pointerEvents={expanded ? 'auto' : 'none'}
-            style={[
-              styles.todoProgressMenuWrap,
-              menuStyle,
-              {
-                backgroundColor: colors.card,
-                borderColor: colors.isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
-              }
-            ]}
+      <Animated.View style={[styles.todoProgressBubbleAnchor, shellStyle]}>
+        <Reanimated.View style={[styles.todoProgressMorphShell, shellChrome, morphShellStyle]}>
+          <Reanimated.View
+            pointerEvents={expanded ? 'none' : 'auto'}
+            style={[styles.todoProgressCollapsedLayer, collapsedLayerStyle]}
           >
-            <View style={styles.todoProgressMenuHead}>
-              <Text style={[styles.todoProgressMenuTitle, { color: colors.muted }]}>进度</Text>
-              <Text style={[styles.todoProgressMenuCount, { color: colors.muted }]}>{label}</Text>
-            </View>
-            <ScrollView
-              style={styles.todoProgressMenuScroll}
-              contentContainerStyle={styles.todoProgressMenuScrollContent}
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`进度 ${label}`}
+              onPress={onToggle}
+              onLayout={(evt) => {
+                if (expanded) return;
+                const w = Math.ceil(evt.nativeEvent.layout.width);
+                if (w > 0 && Math.abs(w - collapsedW.value) > 1) {
+                  collapsedW.value = Math.max(40, w);
+                }
+              }}
+              style={[styles.todoProgressBubble, shellChrome, styles.todoProgressBubbleInMorph]}
             >
-              {card.items.map((item) => {
-                const current = meta.active?.id === item.id && item.status !== 'completed';
-                return (
-                  <View key={item.id} style={styles.todoProgressMenuRow}>
-                    <StatusDot status={item.status} busy={busy} colors={colors} />
-                    <Text
-                      numberOfLines={2}
-                      style={[
-                        styles.todoProgressMenuRowText,
-                        { color: current ? colors.text : colors.muted }
-                      ]}
-                    >
-                      {toText(item.content)}
-                    </Text>
-                  </View>
-                );
-              })}
-            </ScrollView>
-          </Animated.View>
-        ) : null}
+              <Text style={[styles.todoProgressBubbleText, { color: colors.muted }]}>{label}</Text>
+            </Pressable>
+          </Reanimated.View>
+
+          {menuPresent ? (
+            <Reanimated.View
+              pointerEvents={expanded ? 'auto' : 'none'}
+              style={[styles.todoProgressMenuLayer, menuLayerStyle]}
+            >
+              <View
+                style={[styles.todoProgressMorphMenu, styles.todoProgressMorphMenuInShell]}
+                onLayout={(evt) => {
+                  const h = Math.ceil(evt.nativeEvent.layout.height);
+                  if (h > 0 && Math.abs(h - expandedH.value) > 1) {
+                    expandedH.value = h;
+                  }
+                }}
+              >
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="收起进度菜单"
+                  onPress={onToggle}
+                  style={styles.todoProgressMenuHead}
+                >
+                  <Text style={[styles.todoProgressMenuTitle, { color: colors.muted }]}>进度</Text>
+                  <Text style={[styles.todoProgressMenuCount, { color: colors.muted }]}>{label}</Text>
+                </Pressable>
+                <ScrollView
+                  style={styles.todoProgressMenuScroll}
+                  contentContainerStyle={styles.todoProgressMenuScrollContent}
+                  showsVerticalScrollIndicator={false}
+                  nestedScrollEnabled
+                >
+                  {card.items.map((item) => {
+                    const current = meta.active?.id === item.id && item.status !== 'completed';
+                    return (
+                      <View key={item.id} style={styles.todoProgressMenuRow}>
+                        <StatusDot status={item.status} busy={busy} colors={colors} />
+                        <Text
+                          numberOfLines={2}
+                          style={[
+                            styles.todoProgressMenuRowText,
+                            { color: current ? colors.text : colors.muted }
+                          ]}
+                        >
+                          {toText(item.content)}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </Reanimated.View>
+          ) : null}
+        </Reanimated.View>
       </Animated.View>
-    </View>
+    </Reanimated.View>
   );
 });
