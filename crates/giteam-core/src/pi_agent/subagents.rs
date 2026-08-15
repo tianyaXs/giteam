@@ -18,9 +18,13 @@ pub const PLAN_ENABLED_TOOLS: &[&str] = &[
     "web_search",
 ];
 
-/// 子 agent 墙钟超时（秒），对齐 Hermes `delegation.child_timeout_seconds` 默认 600。
+/// 子 agent 墙钟超时（秒）：绝对上限（Hermes 旧默认 600）。
 /// 可用环境变量 `GITEAM_SUBAGENT_TIMEOUT_SECS` 覆盖；`0` = 不限时。
 pub const DEFAULT_CHILD_TIMEOUT_SECS: u64 = 600;
+
+/// 子 agent 无进展超时（秒）：长时间无工具/无流式输出才判死（Hermes stall 方向）。
+/// 可用 `GITEAM_SUBAGENT_STALL_SECS` 覆盖；`0` = 关闭 stall（只靠墙钟）。
+pub const DEFAULT_CHILD_STALL_SECS: u64 = 240;
 
 /// 批并行上限，对齐 Hermes `delegation.max_concurrent_children` 默认 3。
 pub const MAX_CONCURRENT_CHILDREN: usize = 3;
@@ -31,6 +35,10 @@ You are a planning subagent. Explore the codebase and return an actionable plan.
 Do NOT create, edit, or delete files. Do NOT run mutating shell commands.\n\
 Start immediately with read/grep/find/ls — do not spend the first turn on checklists or narration.\n\
 Prefer concrete file/symbol lookups over outlining a plan before you have evidence.\n\
+Context budget: prefer grep/find/ls before large reads; keep each read small \
+(limit ≤ 200, page with offset). Never dump whole files with limit 2000. \
+If a tool result was truncated or spilled to disk, continue with a smaller window \
+instead of re-reading the same huge range.\n\
 Ask clarifying questions only when a requirement is truly ambiguous.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +137,20 @@ pub fn child_timeout_secs() -> Option<std::time::Duration> {
     }
 }
 
+/// 解析子 agent 无进展超时；环境变量优先。
+#[must_use]
+pub fn child_stall_secs() -> Option<std::time::Duration> {
+    let raw = std::env::var("GITEAM_SUBAGENT_STALL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CHILD_STALL_SECS);
+    if raw == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(raw))
+    }
+}
+
 /// TaskTool → PiAgentService 的 spawn 请求。
 #[derive(Debug, Clone)]
 pub struct SubagentSpawnRequest {
@@ -196,6 +218,7 @@ mod tests {
         assert!(prompt.contains("CONTEXT:\n只读，不要改文件"));
         assert!(prompt.contains("WORKSPACE PATH:\n/tmp/repo"));
         assert!(prompt.contains("Start immediately with read/grep/find/ls"));
+        assert!(prompt.contains("Context budget"));
         assert!(prompt.contains("returned to the parent agent as a summary"));
         assert!(!prompt.contains("todowrite"));
         assert!(!prompt.contains("switching to Build"));

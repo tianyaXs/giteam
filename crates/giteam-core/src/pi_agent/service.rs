@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::lock::Mutex as AsyncMutex;
@@ -285,6 +285,8 @@ pub struct PiAgentService {
     catalog_path: Option<PathBuf>,
     active_runs: Mutex<HashMap<String, ActiveRun>>,
     subscribers: Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>,
+    /// 每 run 事件环，供 SSE 重连按 sequence 补洞。
+    event_buffers: super::events::EventBufferBus,
     /// 审批/提问 pending 注册表（PR6），跨 session 共享，按 id 裁决。
     interactions: Arc<InteractionStore>,
     /// 统一 secret vault。`None` 仅用于隔离测试（不触碰真实 vault 与环境变量）。
@@ -358,6 +360,7 @@ impl PiAgentService {
             catalog_path: if load_catalog { catalog_path } else { None },
             active_runs: Mutex::new(HashMap::new()),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
+            event_buffers: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(InteractionStore::new()),
             secrets,
             browser_controller: Mutex::new(None),
@@ -425,6 +428,9 @@ impl PiAgentService {
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers.clear();
         }
+        if let Ok(mut buffers) = self.event_buffers.lock() {
+            buffers.clear();
+        }
         let _ = self.persist_catalog();
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.clear();
@@ -434,8 +440,21 @@ impl PiAgentService {
         }
     }
 
+    /// 订阅 live 事件（after_seq=0，无重放）。
     #[must_use]
     pub fn subscribe_events(&self, session_id: &str, run_id: &str) -> AgentEventReceiver {
+        self.subscribe_events_after(session_id, run_id, 0).1
+    }
+
+    /// 返回 `(replay, live_receiver)`：先挂 live，再快照 ring，避免中间丢帧；
+    /// 与 replay 重叠的 live 事件由客户端按 sequence 去重。
+    #[must_use]
+    pub fn subscribe_events_after(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        after_seq: u64,
+    ) -> (Vec<AgentEventEnvelope>, AgentEventReceiver) {
         let (sender, receiver) = mpsc::channel();
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers
@@ -443,17 +462,34 @@ impl PiAgentService {
                 .or_default()
                 .push(sender);
         }
-        receiver
+        let replay = super::events::replay_events_after(
+            &self.event_buffers,
+            session_id,
+            run_id,
+            after_seq,
+        );
+        (replay, receiver)
+    }
+
+    /// run 是否仍在 `active_runs`；用于 SSE 对账，避免把 interaction-idle 误判成已结束。
+    #[must_use]
+    pub fn run_active_session(&self, run_id: &str) -> Option<String> {
+        self.active_runs
+            .lock()
+            .ok()?
+            .get(run_id)
+            .map(|run| run.session_id.clone())
     }
 
     /// 向 (session_id, run_id) 的 SSE 订阅者广播 run.failed 终态。
     /// control server 的 prompt 已后台化（HTTP 立即返回），早期失败（session 不存在、
     /// 图片读盘失败等）发生在任何 pi 事件之前，若不补发终态，手机端 SSE 会悬等心跳。
     pub fn publish_run_failed(&self, session_id: &str, run_id: &str, error: &str) {
+        let sequence = next_event_sequence(&self.event_buffers, session_id, run_id);
         let event = AgentEventEnvelope {
             schema_version: super::events::AGENT_EVENT_SCHEMA_VERSION,
             event_id: format!("failed-{run_id}-{}", uuid::Uuid::new_v4()),
-            sequence: u64::MAX,
+            sequence,
             repo_path: String::new(),
             session_id: session_id.to_string(),
             run_id: Some(run_id.to_string()),
@@ -468,7 +504,8 @@ impl PiAgentService {
                 error: error.to_string(),
             },
         };
-        publish_event(&self.subscribers, &event);
+        publish_event(&self.subscribers, &self.event_buffers, &event);
+        self.schedule_clear_event_buffer(session_id, run_id);
     }
 
     pub async fn create_session(
@@ -736,10 +773,12 @@ impl PiAgentService {
             translator: Arc::clone(&translator),
             sink: Arc::clone(&sink),
             subscribers: Arc::clone(&self.subscribers),
+            event_buffers: Arc::clone(&self.event_buffers),
         });
         let event_translator = Arc::clone(&translator);
         let event_sink = Arc::clone(&sink);
         let subscribers = Arc::clone(&self.subscribers);
+        let event_buffers = Arc::clone(&self.event_buffers);
         // 重试期间抑制 AgentEnd 映射出的 run.completed/failed，避免前端提前 finalize；
         // 循环结束后再发最终终态事件。
         let accept_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -758,7 +797,7 @@ impl PiAgentService {
                         _ => {}
                     }
                 }
-                publish_event(&subscribers, &event);
+                publish_event(&subscribers, &event_buffers, &event);
                 event_sink(event);
             }
         });
@@ -1087,7 +1126,7 @@ impl PiAgentService {
             _ => None,
         };
         if let Some(event) = terminal {
-            publish_event(&self.subscribers, &event);
+            publish_event(&self.subscribers, &self.event_buffers, &event);
             (sink)(event);
         }
         self.remove_run(run_id);
@@ -1098,10 +1137,12 @@ impl PiAgentService {
             session_id: session_id.into(),
         }) {
             event.event = AgentEvent::SessionStatusChanged { status, error };
-            publish_event(&self.subscribers, &event);
+            publish_event(&self.subscribers, &self.event_buffers, &event);
             (sink)(event);
         }
 
+        // 终态已入环，短暂保留供 SSE 重连补洞；延迟清理避免无限堆积。
+        self.schedule_clear_event_buffer(session_id, run_id);
         result
             .map(|message| AgentMessage::from_pi_assistant(message, Some(run_id.to_string())))
             .map_err(|error| PiAgentError::Sdk(error.to_string()))
@@ -1707,12 +1748,19 @@ impl PiAgentService {
         });
 
         let tool_count = Arc::new(AtomicU32::new(0));
+        let last_progress = Arc::new(Mutex::new(Instant::now()));
         let project_sink: AgentEventSink = {
             let parent_run = parent_run.clone();
             let parent_tool_call_id = request.parent_tool_call_id.clone();
             let child_session_id = child_session_id.clone();
             let tool_count = Arc::clone(&tool_count);
+            let last_progress = Arc::clone(&last_progress);
             Arc::new(move |envelope: AgentEventEnvelope| {
+                if marks_subagent_progress(&envelope.event) {
+                    if let Ok(mut guard) = last_progress.lock() {
+                        *guard = Instant::now();
+                    }
+                }
                 if let AgentEvent::ToolStarted { tool_name, .. } = &envelope.event {
                     let count = tool_count.fetch_add(1, Ordering::Relaxed) + 1;
                     parent_run.publish(AgentEvent::SubagentProgress {
@@ -1731,7 +1779,7 @@ impl PiAgentService {
             })
         };
 
-        // Hermes child_timeout_seconds：墙钟硬超时，防止子 HTTP/工具挂死拖垮父 turn。
+        // 墙钟作绝对上限；stall 检测无工具/无流式输出的挂起（常见于超大上下文下一轮 LLM）。
         let prompt_future = self.prompt(
             &child_session_id,
             &child_run_id,
@@ -1739,34 +1787,56 @@ impl PiAgentService {
             Vec::new(),
             project_sink,
         );
-        let result = match super::subagents::child_timeout_secs() {
-            Some(limit) => match tokio::time::timeout(limit, prompt_future).await {
-                Ok(inner) => inner,
-                Err(_) => {
-                    let _ = self.abort(&child_run_id);
-                    let secs = limit.as_secs();
-                    let count = tool_count.load(Ordering::Relaxed);
-                    let message = if count == 0 {
-                        format!(
-                            "Subagent timed out after {secs}s without making progress \
-                             (no tool calls). Check provider connectivity or raise \
-                             GITEAM_SUBAGENT_TIMEOUT_SECS."
-                        )
-                    } else {
-                        format!(
-                            "Subagent timed out after {secs}s after {count} tool call(s). \
-                             Raise GITEAM_SUBAGENT_TIMEOUT_SECS or narrow the task."
-                        )
-                    };
-                    parent_run.publish(AgentEvent::SubagentFailed {
-                        parent_tool_call_id: request.parent_tool_call_id.clone(),
-                        child_session_id: child_session_id.clone(),
-                        error: message.clone(),
-                    });
-                    return Err(PiAgentError::Sdk(message));
+        let wall = super::subagents::child_timeout_secs();
+        let stall = super::subagents::child_stall_secs();
+        let result = {
+            tokio::pin!(prompt_future);
+            loop {
+                tokio::select! {
+                    inner = &mut prompt_future => break inner,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                        let idle = last_progress
+                            .lock()
+                            .map(|guard| guard.elapsed())
+                            .unwrap_or_default();
+                        let stalled = stall.is_some_and(|limit| idle >= limit);
+                        let wall_hit = wall.is_some_and(|limit| started.elapsed() >= limit);
+                        if !stalled && !wall_hit {
+                            continue;
+                        }
+                        let _ = self.abort(&child_run_id);
+                        let count = tool_count.load(Ordering::Relaxed);
+                        let message = if stalled {
+                            let secs = stall.map(|d| d.as_secs()).unwrap_or(0);
+                            format!(
+                                "Subagent stalled for {secs}s with no tool/stream progress \
+                                 after {count} tool call(s). Context may be too large; \
+                                 narrow the task or raise GITEAM_SUBAGENT_STALL_SECS."
+                            )
+                        } else {
+                            let secs = wall.map(|d| d.as_secs()).unwrap_or(0);
+                            if count == 0 {
+                                format!(
+                                    "Subagent timed out after {secs}s without making progress \
+                                     (no tool calls). Check provider connectivity or raise \
+                                     GITEAM_SUBAGENT_TIMEOUT_SECS."
+                                )
+                            } else {
+                                format!(
+                                    "Subagent timed out after {secs}s after {count} tool call(s). \
+                                     Raise GITEAM_SUBAGENT_TIMEOUT_SECS or narrow the task."
+                                )
+                            }
+                        };
+                        parent_run.publish(AgentEvent::SubagentFailed {
+                            parent_tool_call_id: request.parent_tool_call_id.clone(),
+                            child_session_id: child_session_id.clone(),
+                            error: message.clone(),
+                        });
+                        return Err(PiAgentError::Sdk(message));
+                    }
                 }
-            },
-            None => prompt_future.await,
+            }
         };
 
         let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -1991,13 +2061,42 @@ impl PiAgentService {
             runs.remove(run_id);
         }
     }
+
+    /// 给 SSE 重连留窗口后再清环形缓冲（runId 为 UUID，不会与新 run 冲突）。
+    fn schedule_clear_event_buffer(&self, session_id: &str, run_id: &str) {
+        let buffers = Arc::clone(&self.event_buffers);
+        let session_id = session_id.to_string();
+        let run_id = run_id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(EVENT_BUFFER_RETAIN_SECS));
+            super::events::clear_event_buffer(&buffers, &session_id, &run_id);
+        });
+    }
+}
+
+/// SSE 终态后保留 ring 的秒数，覆盖 soft-reconnect / 弱网补洞窗口。
+const EVENT_BUFFER_RETAIN_SECS: u64 = 120;
+
+fn next_event_sequence(
+    buffers: &super::events::EventBufferBus,
+    session_id: &str,
+    run_id: &str,
+) -> u64 {
+    let key = (session_id.to_string(), run_id.to_string());
+    buffers
+        .lock()
+        .ok()
+        .and_then(|buffers| buffers.get(&key).and_then(|buf| buf.last_sequence()))
+        .map(|seq| seq.saturating_add(1))
+        .unwrap_or(1)
 }
 
 fn publish_event(
     subscribers: &Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>,
+    buffers: &super::events::EventBufferBus,
     event: &AgentEventEnvelope,
 ) {
-    super::events::publish_event(subscribers, event);
+    super::events::publish_event(subscribers, buffers, event);
 }
 
 fn retry_delay_ms(config: &pi::config::Config, attempt: u32) -> u32 {
@@ -2075,12 +2174,19 @@ fn sdk_options_with_factory(
 ) -> pi::sdk::SessionOptions {
     let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
     let browser_controller = config.browser_controller.clone();
+    let spill_dir = (!config.no_session).then(|| config.session_dir.join("tool-outputs"));
+    let tool_budget = if config.session_kind == "subagent" {
+        super::tools::ToolBudgetConfig::for_subagent(spill_dir)
+    } else {
+        super::tools::ToolBudgetConfig::for_primary(spill_dir)
+    };
     let factory = GiteamToolFactory::new(
         Arc::clone(hub),
         config.enabled_tools.as_deref(),
         background_log_dir,
         browser_controller,
         subagent_host,
+        tool_budget,
     );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));
@@ -2125,6 +2231,28 @@ fn assistant_text_summary(message: &AgentMessage) -> String {
     } else {
         text
     }
+}
+
+/// 子 agent stall 监视：工具执行或流式输出都算有进展；纯静默（常见于大上下文 LLM 挂起）不算。
+fn marks_subagent_progress(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::ToolStarted { .. }
+            | AgentEvent::ToolCompleted { .. }
+            | AgentEvent::ToolProgress { .. }
+            | AgentEvent::ToolCallStarted { .. }
+            | AgentEvent::ToolCallDelta { .. }
+            | AgentEvent::MessageStarted { .. }
+            | AgentEvent::MessageDelta { .. }
+            | AgentEvent::MessageCompleted { .. }
+            | AgentEvent::ReasoningDelta { .. }
+            | AgentEvent::TurnStarted { .. }
+            | AgentEvent::TurnCompleted { .. }
+            | AgentEvent::Compaction { .. }
+            | AgentEvent::Retry { .. }
+            | AgentEvent::InteractionRequested { .. }
+            | AgentEvent::InteractionResolved { .. }
+    )
 }
 
 /// Pi 云端默认整请求超时 60s，对子 agent 调研不够。未显式配置环境变量时抬到 30 分钟。
@@ -2537,13 +2665,39 @@ mod tests {
             },
         };
 
-        publish_event(&service.subscribers, &event);
+        publish_event(&service.subscribers, &service.event_buffers, &event);
 
         assert_eq!(
             receiver
                 .recv_timeout(Duration::from_millis(50))
                 .expect("matching subscriber should receive event"),
             event
+        );
+    }
+
+    #[test]
+    fn event_buffer_replays_events_after_seq() {
+        let service = PiAgentService::new();
+        let make = |sequence: u64| AgentEventEnvelope {
+            schema_version: AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("event-{sequence}"),
+            sequence,
+            repo_path: "/tmp/repo".to_string(),
+            session_id: "session-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            timestamp_ms: sequence,
+            event: AgentEvent::RuntimeWarning {
+                message: format!("w{sequence}"),
+            },
+        };
+        publish_event(&service.subscribers, &service.event_buffers, &make(1));
+        publish_event(&service.subscribers, &service.event_buffers, &make(2));
+        publish_event(&service.subscribers, &service.event_buffers, &make(3));
+
+        let (replay, _live) = service.subscribe_events_after("session-1", "run-1", 1);
+        assert_eq!(
+            replay.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            vec![2, 3]
         );
     }
 

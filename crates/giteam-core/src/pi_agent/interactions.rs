@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::channel::oneshot;
 use serde_json::Value;
 
-use super::events::{publish_event, AgentEvent, EventSubscriberBus, PiEventTranslator};
+use super::events::{publish_event, AgentEvent, EventBufferBus, EventSubscriberBus, PiEventTranslator};
 use super::service::AgentEventSink;
 use super::types::{AgentInteraction, AgentInteractionReply};
 
@@ -31,12 +31,13 @@ pub struct InteractionRunContext {
     pub translator: Arc<PiEventTranslator>,
     pub sink: AgentEventSink,
     pub subscribers: EventSubscriberBus,
+    pub event_buffers: EventBufferBus,
 }
 
 impl InteractionRunContext {
     pub fn publish(&self, event: AgentEvent) {
         let envelope = self.translator.envelope(event);
-        publish_event(&self.subscribers, &envelope);
+        publish_event(&self.subscribers, &self.event_buffers, &envelope);
         (self.sink)(envelope);
     }
 }
@@ -543,6 +544,7 @@ mod tests {
                 let _ = sink_tx.send(envelope);
             }),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
+            event_buffers: Arc::new(Mutex::new(HashMap::new())),
         };
         (context, sink_rx)
     }

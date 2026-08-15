@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,6 +11,9 @@ use super::types::AgentInteraction;
 use super::AgentSessionStatus;
 
 pub const AGENT_EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// 每个 run 保留的最近事件数，供 SSE 重连按 sequence 补洞。
+pub const EVENT_RING_CAPACITY: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -210,13 +213,72 @@ pub enum AgentEvent {
 pub type EventSubscriberKey = (String, String);
 pub type EventSubscriberBus =
     Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>;
+pub type EventBufferBus = Arc<Mutex<HashMap<EventSubscriberKey, EventRingBuffer>>>;
 
-/// 向匹配 (session_id, run_id) 的订阅者广播事件（Control SSE 通道）。
-pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelope) {
+/// 单 run 事件环：容量满时丢最旧；重连用 `after(seq)` 取 seq 之后的帧。
+#[derive(Debug, Default)]
+pub struct EventRingBuffer {
+    events: VecDeque<AgentEventEnvelope>,
+    capacity: usize,
+}
+
+impl EventRingBuffer {
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(256)),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn push(&mut self, event: AgentEventEnvelope) {
+        while self.events.len() >= self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    #[must_use]
+    pub fn after(&self, after_seq: u64) -> Vec<AgentEventEnvelope> {
+        self.events
+            .iter()
+            .filter(|event| event.sequence > after_seq)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn last_sequence(&self) -> Option<u64> {
+        self.events.back().map(|event| event.sequence)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// 向匹配 (session_id, run_id) 的订阅者广播事件，并写入环形缓冲供重连补洞。
+pub fn publish_event(
+    subscribers: &EventSubscriberBus,
+    buffers: &EventBufferBus,
+    event: &AgentEventEnvelope,
+) {
     let key = (
         event.session_id.clone(),
         event.run_id.clone().unwrap_or_default(),
     );
+    if let Ok(mut buffers) = buffers.lock() {
+        buffers
+            .entry(key.clone())
+            .or_insert_with(|| EventRingBuffer::with_capacity(EVENT_RING_CAPACITY))
+            .push(event.clone());
+    }
     if let Ok(mut subscribers) = subscribers.lock() {
         if let Some(senders) = subscribers.get_mut(&key) {
             senders.retain(|sender| sender.send(event.clone()).is_ok());
@@ -227,6 +289,30 @@ pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelop
     }
     if let Some(hook) = UI_EVENT_HOOK.get() {
         hook(event);
+    }
+}
+
+/// 取出 sequence > after_seq 的缓冲事件（不含 live 通道）。
+#[must_use]
+pub fn replay_events_after(
+    buffers: &EventBufferBus,
+    session_id: &str,
+    run_id: &str,
+    after_seq: u64,
+) -> Vec<AgentEventEnvelope> {
+    let key = (session_id.to_string(), run_id.to_string());
+    buffers
+        .lock()
+        .ok()
+        .and_then(|buffers| buffers.get(&key).map(|buf| buf.after(after_seq)))
+        .unwrap_or_default()
+}
+
+/// run 结束后可清缓冲，避免无限堆积；重连窗口内保留由调用方决定延迟清理。
+pub fn clear_event_buffer(buffers: &EventBufferBus, session_id: &str, run_id: &str) {
+    let key = (session_id.to_string(), run_id.to_string());
+    if let Ok(mut buffers) = buffers.lock() {
+        buffers.remove(&key);
     }
 }
 

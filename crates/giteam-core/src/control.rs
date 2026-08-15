@@ -1,5 +1,5 @@
 use super::pi_agent::{
-    default_data_dir, AgentEvent, AgentEventReceiver, AgentEventSink,
+    default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
     AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
 };
 use rusqlite::Connection;
@@ -903,13 +903,59 @@ fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
 }
 
 fn write_sse_event(stream: &mut TcpStream, event: &str, payload: &Value) -> Result<(), String> {
+    write_sse_event_with_id(stream, event, None, payload)
+}
+
+fn write_sse_event_with_id(
+    stream: &mut TcpStream,
+    event: &str,
+    id: Option<u64>,
+    payload: &Value,
+) -> Result<(), String> {
     let body =
         serde_json::to_string(payload).map_err(|e| format!("encode sse payload failed: {e}"))?;
-    let chunk = format!("event: {event}\ndata: {body}\n\n");
+    let chunk = match id {
+        Some(id) => format!("id: {id}\nevent: {event}\ndata: {body}\n\n"),
+        None => format!("event: {event}\ndata: {body}\n\n"),
+    };
     write_stream_all(stream, chunk.as_bytes(), "write sse event")?;
     stream
         .flush()
         .map_err(|e| format!("write sse event failed: {e}"))
+}
+
+fn parse_sse_after_seq(req: &HttpRequest) -> u64 {
+    req.query
+        .get("afterSeq")
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| {
+            req.headers
+                .get("last-event-id")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn is_terminal_agent_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::RunCompleted
+            | AgentEvent::RunFailed { .. }
+            | AgentEvent::SessionStatusChanged {
+                status: super::pi_agent::AgentSessionStatus::Idle
+                    | super::pi_agent::AgentSessionStatus::Aborted
+                    | super::pi_agent::AgentSessionStatus::Failed,
+                ..
+            }
+    )
+}
+
+fn write_agent_sse_event(stream: &mut TcpStream, event: &AgentEventEnvelope) -> Result<bool, String> {
+    let terminal = is_terminal_agent_event(&event.event);
+    let payload = serde_json::to_value(event)
+        .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
+    write_sse_event_with_id(stream, "agent", Some(event.sequence), &payload)?;
+    Ok(terminal)
 }
 
 fn extract_bearer(req: &HttpRequest) -> String {
@@ -984,48 +1030,54 @@ fn handle_agent_events_sse(mut stream: TcpStream, req: &HttpRequest) {
         );
         return;
     }
+    let after_seq = parse_sse_after_seq(req);
     if let Err(error) = write_sse_headers(&mut stream) {
         eprintln!("[control] Pi agent SSE headers failed: {error}");
         return;
     }
-    let receiver: AgentEventReceiver =
-        PiAgentService::global().subscribe_events(session_id, run_id);
+    let (replay, receiver): (Vec<AgentEventEnvelope>, AgentEventReceiver) =
+        PiAgentService::global().subscribe_events_after(session_id, run_id, after_seq);
     let _ = write_sse_event(
         &mut stream,
         "ready",
         &serde_json::json!({
             "sessionId": session_id,
             "runId": run_id,
+            "afterSeq": after_seq,
+            "replayCount": replay.len(),
             "mode": "pi-in-process"
         }),
     );
 
+    for event in replay {
+        match write_agent_sse_event(&mut stream, &event) {
+            Ok(true) => {
+                let _ = write_sse_event(
+                    &mut stream,
+                    "end",
+                    &serde_json::json!({ "runId": run_id, "via": "replay" }),
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(_) => return,
+        }
+    }
+
     loop {
         match receiver.recv_timeout(Duration::from_secs(20)) {
             Ok(event) => {
-                let terminal = matches!(
-                    event.event,
-                    AgentEvent::RunCompleted
-                        | AgentEvent::RunFailed { .. }
-                        | AgentEvent::SessionStatusChanged {
-                            status: super::pi_agent::AgentSessionStatus::Idle
-                                | super::pi_agent::AgentSessionStatus::Aborted
-                                | super::pi_agent::AgentSessionStatus::Failed,
-                            ..
-                        }
-                );
-                let payload = serde_json::to_value(&event)
-                    .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
-                if write_sse_event(&mut stream, "agent", &payload).is_err() {
-                    break;
-                }
-                if terminal {
-                    let _ = write_sse_event(
-                        &mut stream,
-                        "end",
-                        &serde_json::json!({ "runId": run_id }),
-                    );
-                    break;
+                match write_agent_sse_event(&mut stream, &event) {
+                    Ok(true) => {
+                        let _ = write_sse_event(
+                            &mut stream,
+                            "end",
+                            &serde_json::json!({ "runId": run_id }),
+                        );
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(_) => break,
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -1464,6 +1516,27 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         return (
             200,
             serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+        );
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/agent/run" {
+        let run_id = req
+            .query
+            .get("runId")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if run_id.is_empty() {
+            return (400, serde_json::json!({ "error": "runId is required" }));
+        }
+        let session_id = PiAgentService::global().run_active_session(run_id);
+        return (
+            200,
+            serde_json::json!({
+                "runId": run_id,
+                "active": session_id.is_some(),
+                "sessionId": session_id,
+            }),
         );
     }
 
