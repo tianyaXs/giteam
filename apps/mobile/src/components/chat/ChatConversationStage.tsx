@@ -233,8 +233,8 @@ function ChatConversationStageImpl(props: {
             // 动态行以实测为准；200 仅作首屏分配提示（官方：不必贴实测均值）。
             estimatedItemSize={200}
             maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}
-            // 官方 Chat Interfaces：非 inverted 聊天列表底部对齐 + 贴底增长。
-            alignItemsAtEnd
+            // 不开启 alignItemsAtEnd：短会话/新发消息从顶部排起（贴底会变成「从下面冒出来」）。
+            // 贴底增长仍保留，流式输出时跟到底。
             maintainScrollAtEnd
             maintainScrollAtEndThreshold={0.12}
             // 行内有展开态；不开 recycleItems，避免虚拟化复用串开合状态（官方 Recycling 警告）。

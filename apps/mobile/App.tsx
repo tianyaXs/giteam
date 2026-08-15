@@ -1,4 +1,5 @@
 import { CameraView } from "expo-camera";
+import * as SystemUI from "expo-system-ui";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -609,6 +610,10 @@ export default function App() {
 
   const statusText = toText(status);
   const notebookColors = useNotebookColors();
+  useEffect(() => {
+    // 跟主题同步 Activity/根窗底色，避免 edge-to-edge 透明导航栏下露出系统浅色底
+    void SystemUI.setBackgroundColorAsync(notebookColors.shell);
+  }, [notebookColors.shell]);
   const {
     scannerOpen,
     scannerLocked,
@@ -1751,7 +1756,7 @@ export default function App() {
             discoveringUi={discoveringUi}
             fontsReady={fontsLoaded}
             fontFamily={FONT_DISPLAY_SERIF}
-            gestureRootStyle={styles.gestureRoot}
+            gestureRootStyle={[styles.gestureRoot, { backgroundColor: notebookColors.shell }]}
             launchOverlay={launchOverlay}
             lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
             onAuthSubmit={() => void onAuthSubmit()}

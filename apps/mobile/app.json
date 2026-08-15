@@ -10,7 +10,7 @@
       "resizeMode": "contain",
       "dark": {
         "image": "./assets/splash-icon-light.png",
-        "backgroundColor": "#FFFFFF",
+        "backgroundColor": "#1B1B1D",
         "resizeMode": "contain"
       }
     },
@@ -41,10 +41,15 @@
         "resizeMode": "contain",
         "dark": {
           "image": "./assets/splash-icon-light.png",
-          "backgroundColor": "#FFFFFF",
+          "backgroundColor": "#1B1B1D",
           "resizeMode": "contain"
         }
       }
+    },
+    "androidNavigationBar": {
+      "backgroundColor": "#1B1B1D",
+      "barStyle": "light-content",
+      "enforceContrast": false
     },
     "ios": {
       "infoPlist": {

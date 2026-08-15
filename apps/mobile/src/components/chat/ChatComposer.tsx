@@ -852,18 +852,19 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
 
   return (
     <>
+      {/* 全宽铺底 + paddingBottom 吃 Home Indicator，避免 margin 空隙露出系统浅色窗底 */}
       <View
         style={{
-          marginHorizontal: H_INSET,
-          marginBottom: bottomPad,
-          backgroundColor: 'transparent'
+          backgroundColor: colors.background,
+          paddingBottom: bottomPad
         }}
         onLayout={(evt) => {
           const h = Math.ceil(Number(evt.nativeEvent.layout?.height || 0));
           reportLayoutHeight(h);
         }}
       >
-        {imageAttachments.length > 0 ? (
+        <View style={{ marginHorizontal: H_INSET }}>
+          {imageAttachments.length > 0 ? (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -1129,6 +1130,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
             ))}
           </ScrollView>
         ) : null}
+        </View>
       </View>
 
       <ModelPickerPopover

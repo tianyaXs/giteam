@@ -297,7 +297,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
       <KeyboardAvoidingView
         behavior="padding"
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 48}
-        style={styles.keyboardAwareContent}
+        style={[styles.keyboardAwareContent, { backgroundColor: notebookColors.main }]}
       >
         <Animated.View style={styles.chatStageViewport}>
           <ChatConversationStage
