@@ -32,7 +32,8 @@ export function useAgentMessageCache() {
     };
   };
 
-  const clearPageInflight = (cacheKey: string) => {
+  const clearPageInflight = (cacheKey: string, task?: Promise<AgentMessagePageCacheEntry>) => {
+    if (task && pageInflightRef.current[cacheKey] !== task) return;
     const next = { ...pageInflightRef.current };
     delete next[cacheKey];
     pageInflightRef.current = next;

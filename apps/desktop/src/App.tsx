@@ -2627,6 +2627,8 @@ export function App() {
       `session.remote.sync sid=${sid} reason=${opts?.reason || "event"} sameWorkspace=${sameWorkspace ? 1 : 0}`
     );
     try {
+      // 丢掉中途拉取的「仅有用户消息」缓存/inflight，否则终态会复用旧 Promise，桌面看不到回复。
+      agentMessageCache.invalidate(eventRepoPath || repoPath, sid);
       if (sameWorkspace) {
         await refreshAgentSessions().catch(() => {});
       } else if (targetRepo) {
@@ -2658,13 +2660,34 @@ export function App() {
       if (sameWorkspace) {
         setAgentSessions((prev) => {
           const existing = prev.find((session) => session.id === sid);
+          const bootstrap = opts?.reason === "remote-bootstrap";
           if (existing) {
+            let nextMessages = page.items;
+            if (bootstrap) {
+              // 启动快照可能还只有用户消息；保留本地已流式写入的 assistant，只补缺失 id。
+              const byId = new Map(existing.messages.map((item) => [item.id, item]));
+              nextMessages = page.items.map((item) => {
+                const live = byId.get(item.id);
+                if (
+                  live?.role === "assistant" &&
+                  String(live.content || "").length > String(item.content || "").length
+                ) {
+                  return { ...item, content: live.content };
+                }
+                return item;
+              });
+              for (const live of existing.messages) {
+                if (!page.items.some((item) => item.id === live.id)) {
+                  nextMessages.push(live);
+                }
+              }
+            }
             return prev.map((session) =>
               session.id === sid
                 ? {
                     ...session,
                     title: session.title.trim() || title,
-                    messages: page.items,
+                    messages: nextMessages,
                     loaded: true,
                     nextCursor: undefined,
                     hasMore: false,
@@ -2689,6 +2712,131 @@ export function App() {
       void syncAgentInteractions(sid).catch(() => {});
     } catch (error) {
       appendAgentDebugLog(`session.remote.sync.error sid=${sid} ${String(error)}`);
+    }
+  }
+
+  /** 手机远程 run 的流式事件：直接写会话气泡/live parts（落盘轮询拿不到 delta）。 */
+  function applyRemoteAgentLiveEvent(envelope: {
+    sessionId?: string;
+    runId?: string;
+    event?: { type?: string; messageId?: string; index?: number; delta?: string; partial?: string; message?: AgentMessage };
+  }) {
+    const sid = String(envelope.sessionId || "").trim();
+    const event = envelope.event;
+    if (!sid || !event) return;
+    const type = String(event.type || "");
+
+    if (
+      type === "message.started" ||
+      type === "message.delta" ||
+      type === "reasoning.delta" ||
+      type === "tool.started" ||
+      type === "toolCall.started" ||
+      type === "session.status"
+    ) {
+      setAgentRunBusyBySession((prev) => (prev[sid] ? prev : { ...prev, [sid]: true }));
+    }
+    if (type === "run.completed" || type === "run.failed") {
+      setAgentRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+    }
+
+    if (type === "message.started") {
+      const mid = String(event.messageId || "").trim();
+      if (!mid) return;
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
+      updateAgentSessionById(sid, (session) => {
+        if (session.messages.some((item) => item.id === mid)) return session;
+        const last = session.messages[session.messages.length - 1];
+        if (last?.role === "assistant" && !String(last.content || "").trim()) {
+          return {
+            ...session,
+            messages: session.messages.map((item, index) =>
+              index === session.messages.length - 1 ? { ...item, id: mid } : item
+            ),
+            updatedAt: Date.now()
+          };
+        }
+        return {
+          ...session,
+          messages: [...session.messages, { id: mid, role: "assistant", content: "" }],
+          updatedAt: Date.now()
+        };
+      });
+      return;
+    }
+
+    if (type === "message.delta") {
+      const mid = String(event.messageId || "").trim();
+      if (!mid) return;
+      const snapshot = String(event.partial || "");
+      const delta = String(event.delta || "");
+      if (!snapshot && !delta) return;
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
+      updateAgentSessionById(sid, (session) => {
+        let found = false;
+        const messages = session.messages.map((item) => {
+          if (item.id !== mid) return item;
+          found = true;
+          const content = snapshot || `${item.content || ""}${delta}`;
+          return content === item.content ? item : { ...item, content };
+        });
+        if (!found) {
+          messages.push({ id: mid, role: "assistant", content: snapshot || delta });
+        }
+        return { ...session, messages, updatedAt: Date.now() };
+      });
+      const textPartId = `text:${Number(event.index) || 0}`;
+      if (snapshot) setAgentLivePartField(mid, textPartId, "text", snapshot);
+      else patchAgentLivePartDelta(mid, textPartId, "text", delta);
+      return;
+    }
+
+    if (type === "reasoning.delta") {
+      const mid = String(event.messageId || "").trim();
+      if (!mid) return;
+      const snapshot = String(event.partial || "");
+      const delta = String(event.delta || "");
+      if (!snapshot && !delta) return;
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
+      const reasoningPartId = `reasoning:${Number(event.index) || 0}`;
+      if (snapshot) setAgentLivePartField(mid, reasoningPartId, "text", snapshot);
+      else patchAgentLivePartDelta(mid, reasoningPartId, "text", delta);
+      return;
+    }
+
+    if (type === "message.completed" && event.message && typeof event.message === "object") {
+      const message = event.message;
+      if (message.role !== "assistant") return;
+      const mapped = agentMessageToChatMessage(message);
+      if (!mapped) return;
+      const toolResults = new Map();
+      setAgentDetailsByMessageId((prev) => ({
+        ...prev,
+        [message.id]: agentMessageToDetailedMessage(message, toolResults)
+      }));
+      updateAgentSessionById(sid, (session) => {
+        const hit = session.messages.findIndex((item) => item.id === mapped.id);
+        const fallback =
+          hit >= 0
+            ? hit
+            : (() => {
+                for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+                  if (session.messages[i]?.role === "assistant") return i;
+                }
+                return -1;
+              })();
+        if (fallback < 0) {
+          return {
+            ...session,
+            messages: [...session.messages, mapped],
+            updatedAt: Date.now()
+          };
+        }
+        const messages = session.messages.slice();
+        messages[fallback] = { ...messages[fallback], ...mapped };
+        return { ...session, messages, updatedAt: Date.now() };
+      });
     }
   }
 
@@ -2859,10 +3007,13 @@ export function App() {
         hasMore: false,
         fetchedAt: Date.now()
       };
-      agentMessageCache.setPageEntry(targetRepoPath, id, entry);
+      // 仅当本 task 仍是当前 inflight 时写入缓存，避免被 force/invalidate 顶替后的旧请求回写脏数据。
+      if (agentMessageCache.getPageInflight(cacheKey) === task) {
+        agentMessageCache.setPageEntry(targetRepoPath, id, entry);
+      }
       return entry;
     })().finally(() => {
-      agentMessageCache.clearPageInflight(cacheKey);
+      agentMessageCache.clearPageInflight(cacheKey, task);
     });
     agentMessageCache.setPageInflight(cacheKey, task);
     return task;
@@ -4476,12 +4627,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   function openMobileControlDialog() {
-    if (!runtimeStatus.giteam.installed) {
-      setError("");
-      setMessage("Install giteam plugin first. Mobile Control API is provided by giteam CLI.");
-      setShowEnvSetup(true);
-      return;
-    }
     setControlPairCodeInfo(null);
     setControlAccessInfo(null);
     setControlSettingsLoaded(false);
@@ -4599,7 +4744,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function closeSettingsModal() {
-    if (settingsMobileVisible && runtimeStatus.giteam.installed && controlSettingsDirty && !controlServerSettingsBusy) {
+    if (settingsMobileVisible && controlSettingsDirty && !controlServerSettingsBusy) {
       void saveControlServerSettingsIfNeeded();
     }
     setShowMobileControlDialog(false);
@@ -7374,21 +7519,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       activeModel: activeAgentModel || agentConfig?.configuredModel || "",
       updatedAt: Date.now(),
     };
-    const url = controlAccessInfo?.port ? `http://127.0.0.1:${controlAccessInfo.port}/api/v1/admin/mobile/model-state` : "";
+    // 仅经 Tauri invoke 写同进程可见性文件；手机 Composer 主路径走 /api/v1/mobile/models。
+    // 不再双写 HTTP PUT（旧 CLI 外置 Host 时代遗留）。
     const timer = window.setTimeout(() => {
       void invoke("set_mobile_model_state_from_desktop", { state: payload }).catch(() => { });
-      if (url) {
-        void fetch(url, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }).catch(() => { });
-      }
     }, 150);
     return () => window.clearTimeout(timer);
   }, [
     activeAgentModel,
-    controlAccessInfo?.port,
     agentConfig?.configuredModel,
     agentConfiguredModelNamesByProvider,
     agentHiddenModels,
@@ -7420,15 +7558,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [applyAgentModelVisibility]);
 
   // 手机经云端/HTTP 发 prompt 时，桌面自己的 subscribeEvents 不会挂上该 runId。
-  // 全局 hook 把远程 run 写回「对应会话」：不要求当前正打开它；观看中则顺带节流刷新。
+  // 全局 hook：流式事件直接写 UI；终态再拉权威快照对账。
   const applyRemoteAgentSessionSnapshotRef = useRef(applyRemoteAgentSessionSnapshot);
   applyRemoteAgentSessionSnapshotRef.current = applyRemoteAgentSessionSnapshot;
+  const applyRemoteAgentLiveEventRef = useRef(applyRemoteAgentLiveEvent);
+  applyRemoteAgentLiveEventRef.current = applyRemoteAgentLiveEvent;
 
   useEffect(() => {
     let cancelled = false;
     let terminalTimer: number | undefined;
-    let streamTimer: number | undefined;
+    let bootstrapTimer: number | undefined;
     const pendingBySid = new Map<string, string>();
+    const bootstrappedRuns = new Set<string>();
 
     const flush = (sid: string, reason: string, repoPathHint?: string) => {
       if (cancelled || !sid) return;
@@ -7445,7 +7586,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       sessionId?: string;
       runId?: string;
       repoPath?: string;
-      event?: { type?: string };
+      event?: {
+        type?: string;
+        messageId?: string;
+        index?: number;
+        delta?: string;
+        partial?: string;
+        message?: AgentMessage;
+      };
     }>("giteam://agent-event", (event) => {
       const payload = event.payload;
       const sid = String(payload?.sessionId || "").trim();
@@ -7463,13 +7611,38 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const terminal =
         type === "run.completed" ||
         type === "run.failed" ||
-        type === "message.completed";
-      const streamHint =
+        (type === "message.completed" && payload?.event?.message?.role === "assistant");
+
+      // 远程流式：正在看该会话时直接灌 delta（不依赖落盘轮询）。
+      if (sid === activeAgentSessionIdRef.current) {
+        applyRemoteAgentLiveEventRef.current(payload);
+        // 首包拉一次权威快照，确保用户消息/会话已进列表。
+        const bootKey = `${sid}:${runId || "norun"}`;
+        if (
+          !bootstrappedRuns.has(bootKey) &&
+          (type === "message.started" ||
+            type === "message.delta" ||
+            type === "session.status" ||
+            type === "message.completed")
+        ) {
+          bootstrappedRuns.add(bootKey);
+          pendingBySid.set(sid, repoPathHint);
+          if (bootstrapTimer) window.clearTimeout(bootstrapTimer);
+          bootstrapTimer = window.setTimeout(() => {
+            bootstrapTimer = undefined;
+            const hint = pendingBySid.get(sid) || repoPathHint;
+            flush(sid, "remote-bootstrap", hint);
+          }, 80);
+        }
+      } else if (
         type === "message.started" ||
         type === "message.delta" ||
-        type === "reasoning.delta" ||
-        type === "tool.completed" ||
-        type === "session.status";
+        type === "message.completed" ||
+        type === "session.status"
+      ) {
+        // 未打开该会话时也灌 live，切回时能看到过程；终态再 snapshot。
+        applyRemoteAgentLiveEventRef.current(payload);
+      }
 
       if (terminal) {
         pendingBySid.set(sid, repoPathHint);
@@ -7481,36 +7654,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             flush(pendingSid, type || "terminal", hint);
           }
         }, 200);
-        return;
-      }
-
-      // 正在看该会话时，过程中也节流拉一次，避免全程空白只等 run 结束。
-      if (streamHint && sid === activeAgentSessionIdRef.current) {
-        pendingBySid.set(sid, repoPathHint);
-        if (streamTimer) return;
-        streamTimer = window.setTimeout(() => {
-          streamTimer = undefined;
-          const hint = pendingBySid.get(sid) || repoPathHint;
-          pendingBySid.delete(sid);
-          flush(sid, type || "stream", hint);
-        }, 450);
       }
     });
     return () => {
       cancelled = true;
       if (terminalTimer) window.clearTimeout(terminalTimer);
-      if (streamTimer) window.clearTimeout(streamTimer);
+      if (bootstrapTimer) window.clearTimeout(bootstrapTimer);
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
   }, []);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr)) return;
     // Load settings after the dialog paints to avoid blocking navigation.
     window.setTimeout(() => {
       void loadControlServerSettings();
     }, 0);
-  }, [showMobileControlDialog, settingsMobileVisible, showMobilePairQr, runtimeStatus.giteam.installed]);
+  }, [showMobileControlDialog, settingsMobileVisible, showMobilePairQr]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7531,7 +7691,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, []);
 
   useEffect(() => {
-    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr) || !runtimeStatus.giteam.installed) return;
+    if (!(showMobileControlDialog || settingsMobileVisible || showMobilePairQr)) return;
     if (!controlSettingsLoaded || !controlServerSettings.enabled) return;
 
     const token = ++controlMobilePollTokenRef.current;
@@ -7564,13 +7724,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     showMobileControlDialog,
     settingsMobileVisible,
     showMobilePairQr,
-    runtimeStatus.giteam.installed,
     controlSettingsLoaded,
     controlServerSettings.enabled
   ]);
 
   useEffect(() => {
-    if (!settingsMobileVisible || !runtimeStatus.giteam.installed) return;
+    if (!settingsMobileVisible) return;
     if (controlServerSettingsBusy || !controlSettingsLoaded || !controlSettingsDirty) return;
     const timer = window.setTimeout(() => {
       void saveControlServerSettingsIfNeeded();
@@ -7578,7 +7737,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     return () => window.clearTimeout(timer);
   }, [
     settingsMobileVisible,
-    runtimeStatus.giteam.installed,
     controlServerSettingsBusy,
     controlSettingsLoaded,
     controlSettingsDirty,
@@ -7590,16 +7748,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   ]);
 
   useEffect(() => {
-    if (runtimeStatus.giteam.installed) return;
-    setShowMobileControlDialog(false);
-  }, [runtimeStatus.giteam.installed]);
-
-  useEffect(() => {
-    if (!runtimeStatus.giteam.installed) {
-      setMobileServiceStatus(null);
-      setMobileServiceStatusError("");
-      return;
-    }
     let stopped = false;
     const poll = async () => {
       try {
@@ -7618,7 +7766,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       stopped = true;
       window.clearInterval(t);
     };
-  }, [runtimeStatus.giteam.installed]);
+  }, []);
 
   useEffect(() => {
     if (!overlayBusy) return;
@@ -9225,7 +9373,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     })
     : "";
   const controlServiceEnabled = controlServerSettings.enabled;
-  const mobileStatus = mobileServiceStatus;
   useEffect(() => {
     let cancelled = false;
     if (!controlPairPayload) {
@@ -10010,12 +10157,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onCodeFontSizeChange={setCodeFontSize}
             controlSettings={controlServerSettings}
             controlBusy={controlServerSettingsBusy}
-            controlInstalled={runtimeStatus.giteam.installed}
+            controlInstalled={true}
             onControlSettingsChange={(next) => setControlServerSettings((prev) => ({ ...prev, ...next }))}
             onSaveControlSettings={() => void saveControlServerSettingsIfNeeded()}
             controlConnectionUrl={controlBaseUrl}
             controlPairCode={controlPairCode}
             controlPairQrUrl={controlPairQrUrl}
+            controlListeningPort={
+              mobileServiceStatus?.listeningPort
+              || controlAccessInfo?.port
+              || 0
+            }
+            controlPortRemapped={Boolean(
+              mobileServiceStatus?.portRemapped
+              || (
+                controlAccessInfo?.preferredPort
+                && controlAccessInfo.port
+                && controlAccessInfo.preferredPort !== controlAccessInfo.port
+              )
+            )}
             controlSettingsDirty={controlSettingsDirty}
             onRefreshControlPairCode={() => {
               void forceRefreshControlPairCode();
@@ -10159,7 +10319,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           />
         ) : null}
 
-        {showMobileControlDialog && runtimeStatus.giteam.installed ? (
+        {showMobileControlDialog ? (
           <MobileControlDialog
             settings={controlServerSettings}
             busy={controlServerSettingsBusy}
