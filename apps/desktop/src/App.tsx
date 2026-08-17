@@ -2726,12 +2726,40 @@ export function App() {
     if (!sid || !event) return;
     const type = String(event.type || "");
 
+    const patchRemoteSession = (
+      titleHint: string | undefined,
+      updater: (session: AgentChatSession) => AgentChatSession
+    ) => {
+      setAgentSessions((prev) => {
+        const existing = prev.find((session) => session.id === sid);
+        if (existing) {
+          return prev.map((session) => (session.id === sid ? updater(session) : session));
+        }
+        const title =
+          clipAgentSessionTitle(titleHint || "") ||
+          `Session ${sid.slice(0, 8)}`;
+        const created: AgentChatSession = {
+          id: sid,
+          title,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [],
+          turnStart: 0,
+          loaded: true,
+          nextCursor: undefined,
+          hasMore: false
+        };
+        return [updater(created), ...prev];
+      });
+    };
+
     if (
       type === "message.started" ||
       type === "message.delta" ||
       type === "reasoning.delta" ||
       type === "tool.started" ||
       type === "toolCall.started" ||
+      type === "message.completed" ||
       type === "session.status"
     ) {
       setAgentRunBusyBySession((prev) => (prev[sid] ? prev : { ...prev, [sid]: true }));
@@ -2741,25 +2769,102 @@ export function App() {
       setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
     }
 
+    if (type === "message.completed" && event.message && typeof event.message === "object") {
+      const message = event.message;
+      const mapped = agentMessageToChatMessage(message);
+      if (!mapped) return;
+      if (mapped.role === "user") {
+        const toolResults = new Map();
+        setAgentDetailsByMessageId((prev) => ({
+          ...prev,
+          [message.id]: agentMessageToDetailedMessage(message, toolResults)
+        }));
+        patchRemoteSession(mapped.content, (session) => {
+          if (session.messages.some((item) => item.id === mapped.id)) {
+            return {
+              ...session,
+              title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
+              messages: session.messages.map((item) => (item.id === mapped.id ? { ...item, ...mapped } : item)),
+              loaded: true,
+              updatedAt: Date.now()
+            };
+          }
+          // 用户消息必须先于 assistant 插入，否则回复会看起来挂在上一轮下面。
+          const last = session.messages[session.messages.length - 1];
+          let messages = session.messages.slice();
+          if (last?.role === "assistant" && !String(last.content || "").trim()) {
+            messages = [...messages.slice(0, -1), mapped, last];
+          } else {
+            messages = [...messages, mapped];
+          }
+          return {
+            ...session,
+            title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
+            messages,
+            loaded: true,
+            updatedAt: Date.now()
+          };
+        });
+        return;
+      }
+      if (mapped.role === "assistant") {
+        const toolResults = new Map();
+        setAgentDetailsByMessageId((prev) => ({
+          ...prev,
+          [message.id]: agentMessageToDetailedMessage(message, toolResults)
+        }));
+        patchRemoteSession(undefined, (session) => {
+          const hit = session.messages.findIndex((item) => item.id === mapped.id);
+          const fallback =
+            hit >= 0
+              ? hit
+              : (() => {
+                  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+                    if (session.messages[i]?.role === "assistant") return i;
+                  }
+                  return -1;
+                })();
+          if (fallback < 0) {
+            return {
+              ...session,
+              messages: [...session.messages, mapped],
+              loaded: true,
+              updatedAt: Date.now()
+            };
+          }
+          const messages = session.messages.slice();
+          messages[fallback] = { ...messages[fallback], ...mapped };
+          return { ...session, messages, loaded: true, updatedAt: Date.now() };
+        });
+      }
+      return;
+    }
+
     if (type === "message.started") {
       const mid = String(event.messageId || "").trim();
       if (!mid) return;
       setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
-      updateAgentSessionById(sid, (session) => {
-        if (session.messages.some((item) => item.id === mid)) return session;
+      patchRemoteSession(undefined, (session) => {
+        if (session.messages.some((item) => item.id === mid)) {
+          return { ...session, loaded: true, updatedAt: Date.now() };
+        }
         const last = session.messages[session.messages.length - 1];
+        // 仅复用「本轮」空 assistant 占位；上一轮已有内容的 assistant 绝不能改 id，
+        // 否则流式回复会像挂在旧消息上。
         if (last?.role === "assistant" && !String(last.content || "").trim()) {
           return {
             ...session,
             messages: session.messages.map((item, index) =>
               index === session.messages.length - 1 ? { ...item, id: mid } : item
             ),
+            loaded: true,
             updatedAt: Date.now()
           };
         }
         return {
           ...session,
           messages: [...session.messages, { id: mid, role: "assistant", content: "" }],
+          loaded: true,
           updatedAt: Date.now()
         };
       });
@@ -2773,7 +2878,7 @@ export function App() {
       const delta = String(event.delta || "");
       if (!snapshot && !delta) return;
       setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
-      updateAgentSessionById(sid, (session) => {
+      patchRemoteSession(undefined, (session) => {
         let found = false;
         const messages = session.messages.map((item) => {
           if (item.id !== mid) return item;
@@ -2784,7 +2889,7 @@ export function App() {
         if (!found) {
           messages.push({ id: mid, role: "assistant", content: snapshot || delta });
         }
-        return { ...session, messages, updatedAt: Date.now() };
+        return { ...session, messages, loaded: true, updatedAt: Date.now() };
       });
       const textPartId = `text:${Number(event.index) || 0}`;
       if (snapshot) setAgentLivePartField(mid, textPartId, "text", snapshot);
@@ -2802,40 +2907,27 @@ export function App() {
       const reasoningPartId = `reasoning:${Number(event.index) || 0}`;
       if (snapshot) setAgentLivePartField(mid, reasoningPartId, "text", snapshot);
       else patchAgentLivePartDelta(mid, reasoningPartId, "text", delta);
-      return;
-    }
-
-    if (type === "message.completed" && event.message && typeof event.message === "object") {
-      const message = event.message;
-      if (message.role !== "assistant") return;
-      const mapped = agentMessageToChatMessage(message);
-      if (!mapped) return;
-      const toolResults = new Map();
-      setAgentDetailsByMessageId((prev) => ({
-        ...prev,
-        [message.id]: agentMessageToDetailedMessage(message, toolResults)
-      }));
-      updateAgentSessionById(sid, (session) => {
-        const hit = session.messages.findIndex((item) => item.id === mapped.id);
-        const fallback =
-          hit >= 0
-            ? hit
-            : (() => {
-                for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-                  if (session.messages[i]?.role === "assistant") return i;
-                }
-                return -1;
-              })();
-        if (fallback < 0) {
+      patchRemoteSession(undefined, (session) => {
+        if (session.messages.some((item) => item.id === mid)) {
+          return { ...session, loaded: true, updatedAt: Date.now() };
+        }
+        const last = session.messages[session.messages.length - 1];
+        if (last?.role === "assistant" && !String(last.content || "").trim()) {
           return {
             ...session,
-            messages: [...session.messages, mapped],
+            messages: session.messages.map((item, index) =>
+              index === session.messages.length - 1 ? { ...item, id: mid } : item
+            ),
+            loaded: true,
             updatedAt: Date.now()
           };
         }
-        const messages = session.messages.slice();
-        messages[fallback] = { ...messages[fallback], ...mapped };
-        return { ...session, messages, updatedAt: Date.now() };
+        return {
+          ...session,
+          messages: [...session.messages, { id: mid, role: "assistant", content: "" }],
+          loaded: true,
+          updatedAt: Date.now()
+        };
       });
     }
   }
@@ -2866,7 +2958,10 @@ export function App() {
   function openSidebarAgentSession(repo: RepositoryEntry, session: ChatSessionSummary) {
     pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
     const cachedSession = agentSessions.find((item) => item.id === session.id) ?? null;
-    const shouldHydrate = selectedRepo?.id !== repo.id || !cachedSession?.loaded;
+    // 远程 run 过程中会话可能已有 live 消息：直接展示，避免 hydration 卡在 getMessages 锁上转圈。
+    const hasLiveMessages = Boolean(cachedSession?.messages?.length);
+    const shouldHydrate =
+      (selectedRepo?.id !== repo.id || !cachedSession?.loaded) && !hasLiveMessages;
     if (shouldHydrate) beginAgentSessionHydration(session.id);
     else endAgentSessionHydration(session.id);
     setAgentSessions((prev) => {
@@ -2879,7 +2974,7 @@ export function App() {
               title: s.title,
               createdAt: session.createdAt,
               updatedAt: session.updatedAt,
-              loaded: s.loaded
+              loaded: hasLiveMessages ? true : s.loaded
             }
             : s
         );
@@ -3219,6 +3314,12 @@ export function App() {
     const id = sessionId.trim();
     if (!id) return;
     appendAgentDebugLog(`session.messages load ${id}`);
+    // 已有 live 远程消息时先结束转圈，后台再对账；避免 prompt 持锁导致长时间空白。
+    const existingBeforeLoad = agentSessionsRef.current.find((session) => session.id === id);
+    if (existingBeforeLoad?.messages?.length) {
+      updateAgentSessionById(id, (session) => ({ ...session, loaded: true }));
+      endAgentSessionHydration(id);
+    }
     try {
       const agentMessages = await agentClient.getMessages(id);
       // 历史是完成态的唯一事实来源：同步构建详情 parts（reasoning/工具卡片），
@@ -3247,17 +3348,34 @@ export function App() {
         }
         return next;
       });
-      const currentSession = agentSessions.find((s) => s.id === id);
+      const currentSession = agentSessionsRef.current.find((s) => s.id === id);
       const baseMapped = agentMessages
         .map(agentMessageToChatMessage)
         .filter((message): message is AgentChatMessage => Boolean(message));
       // 纯文本模型能力分流会丢弃 image block（避免 provider HTTP 400），pi 历史 user message 因此无 image part。
       // 复用 mergeAgentMessageAttachments：按 id/content 把重载前 optimistic 消息里的用户图片补回，
       // 否则回复完成后用户发的图会从气泡消失。
-      const mapped = mergeAgentMessageErrors(
+      let mapped = mergeAgentMessageErrors(
         currentSession?.messages,
         mergeAgentMessageAttachments(currentSession?.messages, baseMapped)
       );
+      // 远程流式可能比 snapshot/history 更新：保留更长的 assistant 正文与尚未入历史的尾部气泡。
+      if (currentSession?.messages?.length) {
+        const byId = new Map(mapped.map((item) => [item.id, item]));
+        mapped = mapped.map((item) => {
+          const live = currentSession.messages.find((row) => row.id === item.id);
+          if (
+            live?.role === "assistant" &&
+            String(live.content || "").length > String(item.content || "").length
+          ) {
+            return { ...item, content: live.content };
+          }
+          return item;
+        });
+        for (const live of currentSession.messages) {
+          if (!byId.has(live.id)) mapped.push(live);
+        }
+      }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
       if (currentSession && currentSession.loaded && currentSession.messages.length > 0) {
         const current = currentSession.messages;

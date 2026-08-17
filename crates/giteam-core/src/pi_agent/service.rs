@@ -270,6 +270,8 @@ struct ManagedSession {
     /// 已安装的 tool call id 清洗包装（见 provider_sanitizer）。pi 切换模型会
     /// 重建 provider 丢弃包装，prompt 前按指针比对重装。
     sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
+    /// prompt 会长时间占用 `handle` 锁；桌面/手机并发 `messages()` 时用此快照避免转圈卡住。
+    message_snapshot: Arc<Mutex<Vec<AgentMessage>>>,
 }
 
 struct ActiveRun {
@@ -593,6 +595,7 @@ impl PiAgentService {
             hub,
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
+            message_snapshot: Arc::new(Mutex::new(Vec::new())),
         });
         let mut sessions = self
             .sessions
@@ -739,12 +742,35 @@ impl PiAgentService {
 
     pub async fn messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, PiAgentError> {
         let session = self.get_session(session_id).await?;
-        let handle = session.handle.lock().await;
-        let messages = handle
-            .messages()
-            .await
-            .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
-        Ok(messages.into_iter().map(AgentMessage::from_pi).collect())
+        // prompt 持锁期间不能阻塞读；否则桌面展开会话列表会一直转圈到整轮回复结束。
+        let locked = {
+            let handle_guard = session.handle.try_lock();
+            if let Some(handle) = handle_guard.as_ref() {
+                Some(
+                    handle
+                        .messages()
+                        .await
+                        .map_err(|error| PiAgentError::Sdk(error.to_string()))?
+                        .into_iter()
+                        .map(AgentMessage::from_pi)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(messages) = locked {
+            if let Ok(mut snap) = session.message_snapshot.lock() {
+                *snap = messages.clone();
+            }
+            Ok(messages)
+        } else {
+            let snap = session
+                .message_snapshot
+                .lock()
+                .map_err(|error| PiAgentError::State(error.to_string()))?;
+            Ok(snap.clone())
+        }
     }
 
     pub async fn prompt(
@@ -779,6 +805,7 @@ impl PiAgentService {
         let event_sink = Arc::clone(&sink);
         let subscribers = Arc::clone(&self.subscribers);
         let event_buffers = Arc::clone(&self.event_buffers);
+        let message_snapshot = Arc::clone(&session.message_snapshot);
         // 重试期间抑制 AgentEnd 映射出的 run.completed/failed，避免前端提前 finalize；
         // 循环结束后再发最终终态事件。
         let accept_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -795,6 +822,16 @@ impl PiAgentService {
                             ..
                         } => return,
                         _ => {}
+                    }
+                }
+                // 同步快照：并发 messages() 在 handle 被占用时可读到用户消息与进行中的 assistant。
+                if let AgentEvent::MessageCompleted { message } = &event.event {
+                    if let Ok(mut snap) = message_snapshot.lock() {
+                        if let Some(pos) = snap.iter().position(|item| item.id == message.id) {
+                            snap[pos] = message.clone();
+                        } else {
+                            snap.push(message.clone());
+                        }
                     }
                 }
                 publish_event(&subscribers, &event_buffers, &event);
@@ -883,6 +920,12 @@ impl PiAgentService {
 
         let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
+            // 持锁前先把当前历史写入快照，避免并发 messages() 读到空列表。
+            if let Ok(current) = handle.messages().await {
+                if let Ok(mut snap) = session.message_snapshot.lock() {
+                    *snap = current.into_iter().map(AgentMessage::from_pi).collect();
+                }
+            }
             // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），
             // 避开 asupersync TLS 的 WSAENOTCONN 10057。必须在 sanitizer 之前安装，
             // 以便清洗包装套在 loopback provider 上。
@@ -1958,6 +2001,7 @@ impl PiAgentService {
             hub,
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
+            message_snapshot: Arc::new(Mutex::new(Vec::new())),
         });
         let mut sessions = self
             .sessions
