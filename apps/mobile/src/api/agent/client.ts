@@ -18,6 +18,7 @@ import type {
   AgentRuntimeInfo,
   AgentSessionSummary,
   CreateAgentSessionInput,
+  MobileModelsResponse,
   MobileModelState,
   PromptAgentInput
 } from './types';
@@ -67,10 +68,11 @@ export type MobileAgentClient = {
   ): Promise<AgentSessionSummary>;
   listProviders(): Promise<AgentProviderInfo[]>;
   listModels(): Promise<AgentModelInfo[]>;
-  /** 桌面端推送的模型启用状态（null = 未推送/旧桌面端，调用方回退 listProviders）。 */
+  /** Composer 主路径：已过滤的轻量模型清单。 */
+  listMobileModels(): Promise<MobileModelsResponse>;
+  /** 兼容旧 Host：完整 model-state（新路径请用 listMobileModels）。 */
   getMobileModelState(): Promise<MobileModelState | null>;
-  /** 写回模型开关变更（双向同步）。后端合并 enabled/hidden 进 state 文件并刷新 updatedAt，
-   *  返回合并后的完整 state。桌面端轮询感知后重算 availableModels 回推。 */
+  /** 写回模型开关变更（双向同步）。 */
   setMobileModelVisibility(input: { enabledModels: string[]; hiddenModels: string[] }): Promise<MobileModelState>;
   subscribeEvents(
     sessionId: string,
@@ -197,6 +199,7 @@ export function createMobileAgentClient(config: MobileAgentClientConfig): Mobile
     }),
     listProviders: () => request<AgentProviderInfo[]>('/api/v1/agent/providers'),
     listModels: () => request<AgentModelInfo[]>('/api/v1/agent/models'),
+    listMobileModels: () => request<MobileModelsResponse>('/api/v1/mobile/models'),
     getMobileModelState: () => request<MobileModelState | null>('/api/v1/admin/mobile/model-state'),
     setMobileModelVisibility: (input) => request<MobileModelState>('/api/v1/admin/mobile/model-visibility', {
       method: 'PUT',

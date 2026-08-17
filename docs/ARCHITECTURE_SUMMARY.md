@@ -117,26 +117,29 @@ Giteam 不是传统意义上的"云同步"，而是**局域网 P2P + 主机代�
 ### 连接流程
 
 ```
-Desktop (Host)                          Mobile (Client)
-     │                                        │
-     │  1. 启动 Control Server (0.0.0.0:4100) │
-     │                                        │
-     │  2. 生成 6 位配对码（24h/7d/永久）      │
-     │◄────────── 3. 局域网发现 ──────────────│
-     │◄────────── 4. 输入配对码 ──────────────│
-     │  5. 验证 → 颁发 Bearer Token            │
-     │◄────────── 6. 后续 API 调用 ───────────│
+Desktop 或 CLI（平级 Host，均内嵌 giteam-core Control）
+     │
+     │  1. 启动 Control Server（偏好端口默认 4100；占用则自动顺延）
+     │
+     │  2. 生成 6 位配对码（24h/7d/永久）
+Mobile
+     │◄────────── 3. 局域网发现 / 扫码 / 云中继 ──────────
+     │◄────────── 4. 配对（或免认证）────────────────────
+     │  5. 验证 → 颁发 Bearer Token
+     │◄────────── 6. 后续 API（含 GET /api/v1/mobile/models）──
 ```
+
+Desktop 与 CLI **可同时运行**（绑定不同端口）。手机连接任一可达 Host；进行中的 Agent 会话不跨进程共享。
 
 ### 关键 API
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/pair` | 配对认证，换取 Token |
-| `GET /api/projects` | 获取仓库列表 |
-| `POST /api/prompt` | 发送 AI 提示词 |
-| `GET /api/messages` | 获取消息历史 |
-| `POST /api/abort` | 中止 AI 生成 |
+| `POST /api/v1/auth/pair` | 配对认证，换取 Token |
+| `GET /api/v1/health` | 健康检查（含 listeningPort） |
+| `GET /api/v1/mobile/models` | 手机 Composer 轻量模型清单 |
+| `GET /api/v1/agent/stream` | Agent SSE 事件流 |
+| `GET /api/v1/repository/list` 等 | 仓库 / Agent 会话等 |
 
 ---
 
@@ -167,14 +170,14 @@ Desktop (Host)                          Mobile (Client)
 | 动画 | Reanimated 4 + Gesture Handler |
 | 长列表 | FlashList |
 
-**架构特点**：Mobile 是"瘦客户端"，本身不执行 Git，所有 Git/AI 操作都通过 `controlApi.ts` 代理到 Desktop。
+**架构特点**：Mobile 是"瘦客户端"，本身不执行 Git；所有 Git/AI 操作通过 `controlApi.ts` / Agent Client 代理到本机 Host（Desktop 内嵌 Control 或 CLI `giteam service`，二者平级）。
 
-### CLI（无头主机）
+### CLI（无头 Host）
 
 | 层级 | 技术 |
 |------|------|
 | 语言 | Rust + clap v4 |
-| 用途 | 环境诊断、独立启动 Control Server |
+| 用途 | 与 Desktop 平级的无头 Host：`giteam service` 内嵌同一套 Control/Pi；另含 doctor / plugin |
 
 ### giteam-core（共享核心）
 
@@ -293,10 +296,11 @@ cargo build --release    # 编译 giteam 二进制
 
 ## 10. 已知架构约束
 
-1. **Mobile 无法离线**：必须连接 Desktop/CLI 的 Control Server，无本地 Git 执行能力。
-2. **Control Server 单实例**：同一时刻只能运行一个 Host。
+1. **Mobile 无法离线**：必须连接 Desktop 或 CLI 的 Control Server，无本地 Git 执行能力。
+2. **同端口互斥、多端口可共存**：偏好端口被占用时自动顺延；Desktop 与 CLI 可同时作为 Host（连哪个用哪个运行时）。
 3. **SQLite 串行化**：rusqlite 在 Tauri 多线程下通过 Mutex 保护，极端高频操作可能阻塞。
 4. **Web 端受限**：浏览器安全策略限制，无法直接访问本地文件系统，需通过 Desktop 代理。
+5. **双 Host 会话隔离**：同机双开时，手机连 A 的进行中 Agent run 不会出现在 B。
 
 ---
 

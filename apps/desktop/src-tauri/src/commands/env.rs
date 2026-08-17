@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -103,11 +104,19 @@ giteam_npm_uninstall() {
 "#;
 
 fn wrap_runtime_script(_name: &str, action: &str, script: &str) -> String {
-    match action {
-        "uninstall" => format!("{UNINSTALL_SHELL_HELPERS}\n{script}"),
-        // runtime bootstrap 依赖 giteam_run_timed / giteam_brew_install 等 helper。
-        "bootstrap" => format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}"),
-        _ => script.to_string(),
+    #[cfg(windows)]
+    {
+        let _ = action;
+        return script.to_string();
+    }
+    #[cfg(not(windows))]
+    {
+        match action {
+            "uninstall" => format!("{UNINSTALL_SHELL_HELPERS}\n{script}"),
+            // runtime bootstrap 依赖 giteam_run_timed / giteam_brew_install 等 helper。
+            "bootstrap" => format!("{BOOTSTRAP_SHELL_HELPERS}\n{script}"),
+            _ => script.to_string(),
+        }
     }
 }
 
@@ -218,37 +227,75 @@ fn now_millis() -> i64 {
 }
 
 fn build_path_env() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut dirs: Vec<String> = std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect();
-    let extras = [
-        format!("{home}/.local/bin"),
-        format!("{home}/.npm-global/bin"),
-        format!("{home}/.cargo/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-        // Homebrew Cask installs Miniconda here; GUI apps often do not inherit this in PATH.
-        "/opt/homebrew/Caskroom/miniconda/base/bin".to_string(),
-        "/opt/homebrew/Caskroom/miniconda3/base/bin".to_string(),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/usr/sbin".to_string(),
-        "/sbin".to_string(),
-    ];
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    let mut extras: Vec<PathBuf> = Vec::new();
+    if !home.is_empty() {
+        let home_path = PathBuf::from(&home);
+        extras.extend([
+            home_path.join(".local").join("bin"),
+            home_path.join(".npm-global").join("bin"),
+            home_path.join(".cargo").join("bin"),
+            home_path.join("miniconda3").join("bin"),
+            home_path.join("anaconda3").join("bin"),
+            home_path.join(".pyenv").join("shims"),
+        ]);
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            extras.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            extras.push(PathBuf::from(&local).join("npm"));
+            extras.push(PathBuf::from(local).join("Programs").join("nodejs"));
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            extras.push(PathBuf::from(pf).join("nodejs"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        extras.extend([
+            PathBuf::from("/opt/homebrew/Caskroom/miniconda/base/bin"),
+            PathBuf::from("/opt/homebrew/Caskroom/miniconda3/base/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/usr/sbin"),
+            PathBuf::from("/sbin"),
+        ]);
+    }
     for dir in extras {
-        if !dir.is_empty() && !dirs.iter().any(|d| d == &dir) {
+        if !dir.as_os_str().is_empty() && !dirs.iter().any(|d| d == &dir) {
             dirs.push(dir);
         }
     }
-    dirs.join(":")
+    std::env::join_paths(dirs)
+        .map(|os| os.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default())
+}
+
+
+#[cfg(windows)]
+fn command_for_path(bin: &std::path::Path) -> Command {
+    let ext = bin
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "cmd" || ext == "bat" {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(bin);
+        cmd
+    } else {
+        Command::new(bin)
+    }
 }
 
 fn append_job_log(job_id: &str, msg: &str) {
@@ -281,64 +328,43 @@ fn set_job_done(job_id: &str, success: bool, exit_code: Option<i32>, err: Option
 /// 开发仓库根目录的 `node_modules/.bin/giteam` 不应让卸载后仍显示为已安装。
 pub(crate) fn check_giteam_npm_global() -> RuntimeDependencyStatus {
     const INSTALL_HINT: &str = "npm install -g giteam@latest";
-    let script = r##"
-BIN=""
-if command -v giteam >/dev/null 2>&1; then
-  BIN=$(command -v giteam)
-fi
-if [ -n "$BIN" ] && printf '%s' "$BIN" | grep -q 'node_modules/.bin'; then
-  BIN=""
-fi
-if [ -z "$BIN" ]; then
-  for p in "$HOME/.npm-global/bin/giteam" "/usr/local/bin/giteam" "/opt/homebrew/bin/giteam" "/opt/homebrew/Caskroom/miniconda/base/bin/giteam" "/opt/homebrew/Caskroom/miniconda3/base/bin/giteam"; do
-    if [ -x "$p" ]; then
-      BIN=$p
-      break
-    fi
-  done
-fi
-if [ -z "$BIN" ]; then
-  printf 'NO_PKG\t\t\t\n'
-  exit 0
-fi
-VER=$("$BIN" --version 2>/dev/null | head -1 | tr -d '\r')
-printf 'OK\t%s\t%s\t\n' "$BIN" "$VER"
-exit 0
-"##;
 
-    let Ok((code, stdout, _)) = run_shell_capture(script, 12) else {
-        return RuntimeDependencyStatus {
-            name: "giteam".to_string(),
-            checked: true,
-            installed: false,
-            path: None,
-            version: None,
-            latest_version: None,
-            update_available: false,
-            install_hint: INSTALL_HINT.to_string(),
-        };
-    };
+    #[cfg(windows)]
+    const NAMES: &[&str] = &["giteam.exe", "giteam.cmd", "giteam.bat", "giteam"];
+    #[cfg(not(windows))]
+    const NAMES: &[&str] = &["giteam"];
 
-    if code != 0 {
-        return RuntimeDependencyStatus {
-            name: "giteam".to_string(),
-            checked: true,
-            installed: false,
-            path: None,
-            version: None,
-            latest_version: None,
-            update_available: false,
-            install_hint: INSTALL_HINT.to_string(),
-        };
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    for path in std::env::split_paths(std::ffi::OsStr::new(&build_path_env())) {
+        if !dirs.iter().any(|d| d == &path) {
+            dirs.push(path);
+        }
     }
 
-    let line = stdout.lines().next().unwrap_or("");
-    let mut parts = line.splitn(4, '\t');
-    let status = parts.next().unwrap_or("").trim();
-    let path = parts.next().unwrap_or("").trim();
-    let ver = parts.next().unwrap_or("").trim();
+    let mut found: Option<PathBuf> = None;
+    for dir in dirs {
+        for name in NAMES {
+            let candidate = dir.join(name);
+            if !candidate.is_file() {
+                continue;
+            }
+            let lossy = candidate.to_string_lossy();
+            if lossy.contains("node_modules")
+                && (lossy.contains(".bin") || lossy.contains("node_modules\\"))
+            {
+                continue;
+            }
+            found = Some(candidate);
+            break;
+        }
+        if found.is_some() {
+            break;
+        }
+    }
 
-    if status != "OK" {
+    let Some(bin) = found else {
         return RuntimeDependencyStatus {
             name: "giteam".to_string(),
             checked: true,
@@ -349,26 +375,55 @@ exit 0
             update_available: false,
             install_hint: INSTALL_HINT.to_string(),
         };
-    }
+    };
 
-    let path_opt = if path.is_empty() {
-        None
-    } else {
-        Some(path.to_string())
+    #[cfg(windows)]
+    let version = {
+        let mut cmd = command_for_path(&bin);
+        cmd.arg("--version")
+            .env("PATH", build_path_env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+        cmd.output().ok().and_then(|o| {
+            if !o.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.lines()
+                .next()
+                .map(|l| l.trim().trim_matches('\r').to_string())
+                .filter(|s| !s.is_empty())
+        })
     };
-    let ver_opt = if ver.is_empty() {
-        None
-    } else {
-        Some(ver.to_string())
+    #[cfg(not(windows))]
+    let version = {
+        let mut cmd = Command::new(&bin);
+        cmd.arg("--version")
+            .env("PATH", build_path_env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.output().ok().and_then(|o| {
+            if !o.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.lines()
+                .next()
+                .map(|l| l.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
     };
-    let installed = path_opt.is_some() && ver_opt.is_some();
 
     RuntimeDependencyStatus {
         name: "giteam".to_string(),
         checked: true,
-        installed,
-        path: path_opt,
-        version: ver_opt,
+        installed: true,
+        path: Some(bin.to_string_lossy().into_owned()),
+        version,
         latest_version: None,
         update_available: false,
         install_hint: INSTALL_HINT.to_string(),
@@ -376,22 +431,80 @@ exit 0
 }
 
 fn check_dep(name: &str, version_args: &[&str], install_hint: &str) -> RuntimeDependencyStatus {
-    // zsh caches `command -v` results; clear the table so uninstall/reinstall reflects immediately.
-    let path_cmd = format!("rehash 2>/dev/null || true; command -v {name}");
-    let path_out = run_shell_capture(&path_cmd, 5)
-        .ok()
-        .filter(|(code, _, _)| *code == 0)
-        .map(|(_, stdout, _)| stdout.trim().to_string())
-        .filter(|s| !s.is_empty());
+    #[cfg(windows)]
+    let path_out = {
+        let mut found: Option<String> = None;
+        let names = [
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            format!("{name}.bat"),
+            name.to_string(),
+        ];
+        let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect())
+            .unwrap_or_default();
+        for path in std::env::split_paths(std::ffi::OsStr::new(&build_path_env())) {
+            if !dirs.iter().any(|d| d == &path) {
+                dirs.push(path);
+            }
+        }
+        for dir in dirs {
+            for candidate_name in &names {
+                let candidate = dir.join(candidate_name);
+                if candidate.is_file() {
+                    found = Some(candidate.to_string_lossy().into_owned());
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found
+    };
+    #[cfg(not(windows))]
+    let path_out = {
+        // zsh caches `command -v` results; clear the table so uninstall/reinstall reflects immediately.
+        let path_cmd = format!("rehash 2>/dev/null || true; command -v {name}");
+        run_shell_capture(&path_cmd, 5)
+            .ok()
+            .filter(|(code, _, _)| *code == 0)
+            .map(|(_, stdout, _)| stdout.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
 
-    let version_script = format!("{} {}", name, version_args.join(" "));
-    let version_out = run_shell_capture(&version_script, 8)
-        .ok()
-        .filter(|(code, _, _)| *code == 0)
-        .map(|(_, stdout, _)| stdout.lines().next().unwrap_or("").trim().to_string())
-        .filter(|s| !s.is_empty());
+    #[cfg(windows)]
+    let version_out = path_out.as_ref().and_then(|bin| {
+        let mut cmd = command_for_path(std::path::Path::new(bin));
+        cmd.args(version_args)
+            .env("PATH", build_path_env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+        cmd.output().ok().and_then(|o| {
+            if !o.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.lines()
+                .next()
+                .map(|l| l.trim().trim_matches('\r').to_string())
+                .filter(|s| !s.is_empty())
+        })
+    });
+    #[cfg(not(windows))]
+    let version_out = {
+        let version_script = format!("{} {}", name, version_args.join(" "));
+        run_shell_capture(&version_script, 8)
+            .ok()
+            .filter(|(code, _, _)| *code == 0)
+            .map(|(_, stdout, _)| stdout.lines().next().unwrap_or("").trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
 
-    // Do not treat a stale `command -v` path as "installed" if the binary is gone or broken.
+    // Do not treat a stale path as "installed" if the binary is gone or broken.
     let installed = path_out.is_some() && version_out.is_some();
 
     RuntimeDependencyStatus {
@@ -424,9 +537,21 @@ pub async fn check_runtime_dependency(name: &str) -> Result<RuntimeDependencySta
 }
 
 fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, String), String> {
-    let mut cmd = Command::new("/bin/zsh");
-    // Use non-interactive zsh so ~/.zshrc cannot pollute stdout (breaks `command -v` parsing).
-    cmd.args(["-fc", script]);
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", script]);
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("/bin/zsh");
+        // Use non-interactive zsh so ~/.zshrc cannot pollute stdout (breaks `command -v` parsing).
+        c.args(["-fc", script]);
+        c
+    };
     cmd.env("PATH", build_path_env());
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -471,6 +596,68 @@ fn run_shell_capture(script: &str, timeout_secs: u64) -> Result<(i32, String, St
 }
 
 fn install_script(name: &str, action: &str) -> Result<&'static str, String> {
+    #[cfg(windows)]
+    {
+        match (name, action) {
+            ("giteam", "install") | ("giteam", "update") => {
+                return Ok(
+                    r#"where npm >nul 2>nul
+if errorlevel 1 (
+  echo npm is required to install giteam CLI ^(not found in PATH^).
+  exit /b 2
+)
+echo [giteam] npm install -g giteam@latest
+call npm install -g giteam@latest
+where giteam
+echo [giteam] install finished"#,
+                );
+            }
+            ("giteam", "uninstall") => {
+                return Ok(
+                    r#"where npm >nul 2>nul
+if errorlevel 1 (
+  echo npm not found; skip uninstall
+  exit /b 0
+)
+echo [giteam] npm uninstall -g giteam
+call npm uninstall -g giteam
+echo giteam uninstall finished."#,
+                );
+            }
+            ("git", "install") => {
+                return Ok(
+                    r#"where git >nul 2>nul
+if not errorlevel 1 (
+  echo git already installed
+  exit /b 0
+)
+where winget >nul 2>nul
+if errorlevel 1 (
+  echo Install Git for Windows manually: https://git-scm.com/download/win
+  exit /b 2
+)
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"#,
+                );
+            }
+            ("git", "uninstall") => {
+                return Ok(
+                    r#"echo Uninstall Git via Windows Settings or winget uninstall Git.Git"#,
+                );
+            }
+            ("entire", _) => {
+                return Err(
+                    "Entire CLI install is not supported on Windows from desktop UI".to_string(),
+                );
+            }
+            (_, "bootstrap") => {
+                return Err(
+                    "Runtime bootstrap is not supported on Windows from desktop UI".to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
     match (name, action) {
         ("git", "install") => Ok(r#"if command -v brew >/dev/null 2>&1; then
   brew install git
@@ -689,12 +876,26 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
     let action_owned = action.to_string();
     let job_id_for_thread = job_id.clone();
     thread::spawn(move || {
-        let mut cmd = Command::new("/bin/zsh");
-        cmd.args(["-fc", &script_owned]);
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", &script_owned]);
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("/bin/zsh");
+            c.args(["-fc", &script_owned]);
+            c
+        };
         cmd.env("PATH", build_path_env());
+        #[cfg(not(windows))]
         if action_owned == "uninstall" || action_owned == "bootstrap" {
             apply_homebrew_offline_env(&mut cmd);
         }
+        let _ = action_owned;
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());

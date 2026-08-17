@@ -2232,13 +2232,28 @@ fn app_support_dir() -> Result<PathBuf, String> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata = appdata.trim();
+            if !appdata.is_empty() {
+                return Ok(PathBuf::from(appdata).join("giteam"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let home = home.trim();
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home).join(".config").join("giteam"));
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_config_home = xdg_config_home.trim();
         if !xdg_config_home.is_empty() {
             return Ok(PathBuf::from(xdg_config_home).join("giteam"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let home = home.trim();
         if !home.is_empty() {
             return Ok(PathBuf::from(home).join(".config").join("giteam"));
@@ -2291,14 +2306,39 @@ fn clear_pid_file_if_matches(expected_pid: u32) {
 }
 
 fn pid_is_alive(pid: u32) -> bool {
-    Command::new("/bin/kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // tasklist prints "INFO: No tasks..." when missing; otherwise a row containing the pid.
+        text.lines().any(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && !line.to_ascii_uppercase().starts_with("INFO:")
+                && line.split_whitespace().any(|tok| tok == pid.to_string())
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("/bin/kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 fn find_pid_by_port(port: u16) -> Option<u32> {
@@ -2306,29 +2346,73 @@ fn find_pid_by_port(port: u16) -> Option<u32> {
 }
 
 fn find_pids_by_port(port: u16) -> Vec<u32> {
-    let output = Command::new("lsof")
-        .arg("-ti")
-        .arg(format!("tcp:{port}"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
     let current_pid = std::process::id();
     let mut pids = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(pid) = line.trim().parse::<u32>() else {
-            continue;
+
+    #[cfg(windows)]
+    {
+        let output = Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
         };
-        if pid != current_pid && !pids.contains(&pid) {
-            pids.push(pid);
+        if !output.status.success() {
+            return Vec::new();
         }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let upper = line.to_ascii_uppercase();
+            if !upper.contains("LISTENING") {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // Proto LocalAddress ForeignAddress State PID
+            if parts.len() < 5 {
+                continue;
+            }
+            let local = parts[1];
+            let local_port = local
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.trim_end_matches(']').parse::<u16>().ok());
+            if local_port != Some(port) {
+                continue;
+            }
+            let Ok(pid) = parts[parts.len() - 1].parse::<u32>() else {
+                continue;
+            };
+            if pid != 0 && pid != current_pid && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        return pids;
     }
-    pids
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("lsof")
+            .arg("-ti")
+            .arg(format!("tcp:{port}"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(pid) = line.trim().parse::<u32>() else {
+                continue;
+            };
+            if pid != current_pid && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        pids
+    }
 }
 
 /// 升级 / reload 前释放控制口：停掉 pid 文件进程，并清掉仍占端口的孤儿实例。
@@ -2479,13 +2563,28 @@ fn wait_for_stopped(port: u16, timeout_ms: u64) -> bool {
 fn runtime_view() -> Result<RuntimeView, String> {
     let control = control::get_control_server_settings()?;
     let log_path = log_file_path()?.display().to_string();
+    let bound = control::control_bound_port().unwrap_or(0);
+    let probe_port = if bound > 0 { bound } else { control.port };
     let pid_state = read_pid_state();
     let pid = pid_state
         .as_ref()
         .map(|v| v.pid)
-        .or_else(|| find_pid_by_port(control.port));
+        .or_else(|| find_pid_by_port(probe_port))
+        .or_else(|| {
+            if probe_port != control.port {
+                find_pid_by_port(control.port)
+            } else {
+                None
+            }
+        });
     let pid_alive = pid.map(pid_is_alive).unwrap_or(false);
-    let health = fetch_health(control.port);
+    let health = fetch_health(probe_port).or_else(|| {
+        if probe_port != control.port {
+            fetch_health(control.port)
+        } else {
+            None
+        }
+    });
     Ok(RuntimeView {
         running: health.is_some(),
         pid,
@@ -2849,19 +2948,42 @@ fn start_background(warmup: bool, json: bool) -> Result<(), String> {
 }
 
 fn signal_pid(pid: u32, force: bool) -> Result<(), String> {
-    let sig = if force { "-KILL" } else { "-TERM" };
-    let status = Command::new("/bin/kill")
-        .arg(sig)
-        .arg(pid.to_string())
-        .status()
-        .map_err(|e| format!("signal process failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "signal process {} failed with status {}",
-            pid, status
-        ))
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("taskkill");
+        if force {
+            cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        } else {
+            cmd.args(["/PID", &pid.to_string()]);
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| format!("signal process failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "signal process {} failed with status {}",
+                pid, status
+            ))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let sig = if force { "-KILL" } else { "-TERM" };
+        let status = Command::new("/bin/kill")
+            .arg(sig)
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| format!("signal process failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "signal process {} failed with status {}",
+                pid, status
+            ))
+        }
     }
 }
 

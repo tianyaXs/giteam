@@ -85,15 +85,23 @@ export type AgentProviderInfo = {
   models: AgentModelInfo[];
 };
 
-/** 桌面端推送的模型启用状态（mobile-model-state.json），供手机端只读同步。
- *  桌面端按 enabled/hidden/connected 过滤后写入；旧桌面端或未推送时整体为 null。
- *  Composer 只信 enabled/available，不再回退 listProviders 全量。 */
+/** Host 提供的轻量 Composer 模型列表（GET /api/v1/mobile/models）。 */
+export type MobileModelsResponse = {
+  models: Array<{
+    id: string;
+    label: string;
+    provider: string;
+    modelId?: string;
+  }>;
+  activeModel?: string;
+  source?: string;
+};
+
+/** 兼容旧端：桌面推送的模型启用状态（mobile-model-state.json）。 */
 export type MobileModelState = {
   repoId?: string;
   repoPath?: string;
-  /** 已启用且未隐藏且供应商已连接的模型 ref（"provider/modelId"）。 */
   availableModels?: string[];
-  /** ref → 显示名。 */
   modelLabels?: Record<string, string>;
   enabledModels?: string[];
   hiddenModels?: string[];

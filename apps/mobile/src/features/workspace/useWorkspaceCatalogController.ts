@@ -225,25 +225,6 @@ export function useWorkspaceCatalogController(params: {
       if (hasNew) triggerRightPulse();
     };
 
-    const refreshModelCatalogFromProviders = async (): Promise<ModelOption[]> => {
-      pushConnLog('GET agent.providers');
-      const providers = await agentClient().listProviders();
-      const options: ModelOption[] = [];
-      for (const provider of providers) {
-        const models = Array.isArray(provider.models) ? provider.models : [];
-        for (const model of models) {
-          if (!model.hasCredential) continue;
-          const id = `${provider.provider}/${model.modelId}`;
-          options.push({
-            id,
-            label: toText(model.name) || model.modelId,
-            provider: provider.provider
-          });
-        }
-      }
-      return options;
-    };
-
     const toModelOption = (ref: string, labelById: Map<string, string>): ModelOption | null => {
       const id = toText(ref).trim();
       if (!id.includes('/')) return null;
@@ -260,79 +241,75 @@ export function useWorkspaceCatalogController(params: {
     const refreshModelCatalog = async (targetRepoPath?: string) => {
       const repo = toText(targetRepoPath || repoPath).trim();
       if (!authed || !repo || !serverUrl) return;
-      // Composer 只展示「开关已开启」的模型，绝不回退成 listProviders 全量。
-      // 先拉轻量 mobile-model-state（~0.2s），providers 全量（可达数秒/数百 KB）只作标签补全，后台跑。
+      // Composer 只打轻量 /api/v1/mobile/models；不再依赖 model-state + 全量 providers。
       setModelCatalogStatus('loading');
-      const labelById = new Map<string, string>();
-      let connectedIds = new Set<string>();
-
-      const applyFromState = (state: Awaited<ReturnType<ReturnType<typeof agentClient>['getMobileModelState']>>) => {
-        if (!state) {
-          pushConnLog('mobile-model-state missing; composer models empty', 'info');
-          applyModelOptions([], 'GET mobile-model-state');
-          return;
-        }
-
-        const labels =
-          state.modelLabels && typeof state.modelLabels === 'object' ? state.modelLabels : {};
-        for (const [ref, label] of Object.entries(labels as Record<string, string>)) {
-          const name = toText(label).trim();
-          if (name) labelById.set(toText(ref), name);
-        }
-
-        const hiddenSet = new Set(
-          (Array.isArray(state.hiddenModels) ? state.hiddenModels : []).map((x) => toText(x).trim()).filter(Boolean)
-        );
-        const enabledList = Array.isArray(state.enabledModels)
-          ? state.enabledModels.map((x) => toText(x).trim()).filter((ref) => ref.includes('/'))
-          : null;
-        const availableList = (Array.isArray(state.availableModels) ? state.availableModels : [])
-          .map((x) => toText(x).trim())
-          .filter((ref) => ref.includes('/'));
-
-        let refs: string[] = [];
-        if (enabledList) {
-          const enabledSet = new Set(enabledList);
-          if (availableList.length > 0) {
-            refs = availableList.filter((ref) => enabledSet.has(ref) && !hiddenSet.has(ref));
-          }
-          for (const ref of enabledList) {
-            if (hiddenSet.has(ref) || refs.includes(ref)) continue;
-            // providers 尚未返回时放行 enabled；有 connectedIds 后再收紧
-            if (connectedIds.size === 0 || connectedIds.has(ref)) refs.push(ref);
-          }
-        } else {
-          refs = availableList.filter((ref) => !hiddenSet.has(ref));
-        }
-
-        const options = refs
-          .map((ref) => toModelOption(ref, labelById))
-          .filter((opt): opt is ModelOption => !!opt);
-        applyModelOptions(options, 'GET mobile-model-state', toText(state.activeModel));
-      };
-
       try {
-        const state = await agentClient().getMobileModelState();
-        applyFromState(state);
+        pushConnLog('GET mobile/models');
+        const payload = await agentClient().listMobileModels();
+        const rows = Array.isArray(payload?.models) ? payload.models : [];
+        const options: ModelOption[] = rows
+          .map((row) => {
+            const id = toText(row?.id).trim();
+            if (!id.includes('/')) return null;
+            const slash = id.indexOf('/');
+            return {
+              id,
+              label: toText(row?.label) || id.slice(slash + 1),
+              provider: toText(row?.provider) || id.slice(0, slash)
+            } satisfies ModelOption;
+          })
+          .filter((opt): opt is ModelOption => !!opt);
+        applyModelOptions(options, 'GET mobile/models', toText(payload?.activeModel));
         setModelCatalogStatus('ready');
       } catch (e) {
-        pushConnLog(`GET mobile-model-state warn ${String(e)}; composer models empty`, 'info');
-        applyModelOptions([], 'GET mobile-model-state');
-        setModelCatalogStatus('error');
-      }
-
-      // 后台补全 providers 标签，并在有凭证集合后收紧 enabled 列表
-      void (async () => {
+        // 旧 Host 无 mobile/models：短暂回退 model-state（不含 providers 全量）。
+        pushConnLog(`GET mobile/models warn ${String(e)}; fallback model-state`, 'info');
         try {
-          const providerOptions = await refreshModelCatalogFromProviders();
-          for (const opt of providerOptions) labelById.set(opt.id, opt.label);
-          connectedIds = new Set(providerOptions.map((opt) => opt.id));
           const state = await agentClient().getMobileModelState();
-          applyFromState(state);
-        } catch (e) {
-          pushConnLog(`GET agent.providers warn ${String(e)}`, 'info');
+          if (!state) {
+            applyModelOptions([], 'GET mobile-model-state');
+            setModelCatalogStatus('error');
+            return;
+          }
+          const labels =
+            state.modelLabels && typeof state.modelLabels === 'object' ? state.modelLabels : {};
+          const labelById = new Map<string, string>();
+          for (const [ref, label] of Object.entries(labels as Record<string, string>)) {
+            const name = toText(label).trim();
+            if (name) labelById.set(toText(ref), name);
+          }
+          const hiddenSet = new Set(
+            (Array.isArray(state.hiddenModels) ? state.hiddenModels : [])
+              .map((x) => toText(x).trim())
+              .filter(Boolean)
+          );
+          const enabledList = Array.isArray(state.enabledModels)
+            ? state.enabledModels.map((x) => toText(x).trim()).filter((ref) => ref.includes('/'))
+            : null;
+          const availableList = (Array.isArray(state.availableModels) ? state.availableModels : [])
+            .map((x) => toText(x).trim())
+            .filter((ref) => ref.includes('/'));
+          let refs: string[] = [];
+          if (enabledList) {
+            const enabledSet = new Set(enabledList);
+            refs = availableList.filter((ref) => enabledSet.has(ref) && !hiddenSet.has(ref));
+            for (const ref of enabledList) {
+              if (!hiddenSet.has(ref) && !refs.includes(ref)) refs.push(ref);
+            }
+          } else {
+            refs = availableList.filter((ref) => !hiddenSet.has(ref));
+          }
+          const options = refs
+            .map((ref) => toModelOption(ref, labelById))
+            .filter((opt): opt is ModelOption => !!opt);
+          applyModelOptions(options, 'GET mobile-model-state', toText(state.activeModel));
+          setModelCatalogStatus('ready');
+        } catch (err) {
+          pushConnLog(`GET mobile-model-state error ${String(err)}`, 'error');
+          applyModelOptions([], 'GET mobile-model-state');
+          setModelCatalogStatus('error');
         }
-      })();
+      }
     };
 
     const refreshProjectsCatalog = async (opts?: { baseUrl?: string; token?: string; preferredRepoPath?: string }) => {

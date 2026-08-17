@@ -20,6 +20,7 @@ export type ControlAccessInfo = {
   enabled: boolean;
   host: string;
   port: number;
+  preferredPort?: number;
   publicBaseUrl: string;
   pairCode: string;
   expiresAt: number;
@@ -32,7 +33,9 @@ export type GiteamMobileServiceStatus = {
   cliInstalled: boolean;
   enabled: boolean;
   port: number;
+  listeningPort: number;
   running: boolean;
+  portRemapped: boolean;
 };
 
 export const DEFAULT_CONTROL_SERVER_SETTINGS: ControlServerSettings = {

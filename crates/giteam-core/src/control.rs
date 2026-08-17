@@ -42,12 +42,15 @@ fn pi_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 const DEFAULT_CONTROL_SERVER_HOST: &str = "0.0.0.0";
 const DEFAULT_CONTROL_SERVER_PORT: u16 = 4100;
 const DEFAULT_PAIR_TTL_MODE: &str = "24h";
+/// preferred 被占用时顺延探测的端口数量（含 preferred 自身共 N+1 次尝试）。
+const CONTROL_PORT_FALLBACK_RANGE: u16 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlServerSettings {
     pub enabled: bool,
     pub host: String,
+    /// 偏好端口（持久化）；实际监听端口见运行时 `bound_port` / health.listeningPort。
     pub port: u16,
     #[serde(default)]
     pub public_base_url: String,
@@ -68,7 +71,11 @@ pub struct ControlPairCodeInfo {
 pub struct ControlAccessInfo {
     pub enabled: bool,
     pub host: String,
+    /// 当前应连接的端口（实际监听端口）。
     pub port: u16,
+    /// 设置里的偏好端口；若与 port 不同说明发生了端口顺延。
+    #[serde(default)]
+    pub preferred_port: u16,
     pub public_base_url: String,
     pub pair_code: String,
     pub expires_at: u64,
@@ -81,7 +88,10 @@ pub struct ControlAccessInfo {
 struct ControlRuntime {
     stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
+    /// 持久化偏好配置（`settings.port` = preferred）。
     settings: ControlServerSettings,
+    /// 本进程实际 bind 成功的端口。
+    bound_port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -258,13 +268,33 @@ fn control_server_settings_path() -> Option<PathBuf> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join(".config")
+                        .join("giteam")
+                        .join("control-server.json"),
+                );
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
             return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let h = home.trim();
         if !h.is_empty() {
             return Some(
@@ -355,6 +385,131 @@ pub fn get_mobile_model_state_for_desktop() -> Result<Value, String> {
     read_mobile_model_state()
 }
 
+/// 启动时若存在旧 mobile-model-state，确保其为合法对象（兼容迁移入口）。
+pub fn migrate_legacy_mobile_model_state_if_needed() {
+    let _ = read_mobile_model_state();
+}
+
+fn json_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Composer 用轻量模型列表：优先读可见性 state，缺省则回退本进程已配置凭据的 Pi 模型。
+fn build_mobile_models_response() -> Result<Value, String> {
+    let state = match read_mobile_model_state()? {
+        Value::Null => None,
+        other => Some(other),
+    };
+
+    let mut label_by_id: HashMap<String, String> = HashMap::new();
+    let mut active_model = String::new();
+    let mut hidden: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enabled: Option<std::collections::HashSet<String>> = None;
+    let mut available: Vec<String> = Vec::new();
+
+    if let Some(ref st) = state {
+        if let Some(obj) = st.as_object() {
+            if let Some(labels) = obj.get("modelLabels").and_then(|v| v.as_object()) {
+                for (k, v) in labels {
+                    if let Some(name) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        label_by_id.insert(k.trim().to_string(), name.to_string());
+                    }
+                }
+            }
+            active_model = obj
+                .get("activeModel")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            for h in json_string_list(obj.get("hiddenModels")) {
+                hidden.insert(h);
+            }
+            let enabled_list = json_string_list(obj.get("enabledModels"));
+            if obj.contains_key("enabledModels") {
+                enabled = Some(enabled_list.into_iter().collect());
+            }
+            available = json_string_list(obj.get("availableModels"))
+                .into_iter()
+                .filter(|r| r.contains('/'))
+                .collect();
+        }
+    }
+
+    // 本进程 Pi：补 label，并在无 state.available 时提供凭据模型全集。
+    let pi_models = PiAgentService::global().list_models().unwrap_or_default();
+    let mut credentialed: Vec<String> = Vec::new();
+    for m in &pi_models {
+        let id = format!("{}/{}", m.provider, m.model_id);
+        if !m.name.trim().is_empty() {
+            label_by_id.entry(id.clone()).or_insert_with(|| m.name.clone());
+        }
+        if m.has_credential {
+            credentialed.push(id);
+        }
+    }
+
+    if available.is_empty() {
+        available = credentialed.clone();
+    }
+
+    let mut refs: Vec<String> = Vec::new();
+    if let Some(enabled_set) = enabled.as_ref() {
+        for r in &available {
+            if enabled_set.contains(r) && !hidden.contains(r) {
+                refs.push(r.clone());
+            }
+        }
+        for r in enabled_set {
+            if hidden.contains(r) || refs.iter().any(|x| x == r) {
+                continue;
+            }
+            if r.contains('/') && (credentialed.is_empty() || credentialed.iter().any(|c| c == r)) {
+                refs.push(r.clone());
+            }
+        }
+    } else {
+        for r in &available {
+            if !hidden.contains(r) {
+                refs.push(r.clone());
+            }
+        }
+    }
+
+    let models: Vec<Value> = refs
+        .into_iter()
+        .filter_map(|id| {
+            let slash = id.find('/')?;
+            let provider = id[..slash].to_string();
+            let model_id = id[slash + 1..].to_string();
+            let label = label_by_id
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| model_id.clone());
+            Some(serde_json::json!({
+                "id": id,
+                "label": label,
+                "provider": provider,
+                "modelId": model_id
+            }))
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "models": models,
+        "activeModel": active_model,
+        "source": if state.is_some() { "visibility+pi" } else { "pi" }
+    }))
+}
+
 fn control_auth_token_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -371,13 +526,33 @@ fn control_auth_token_path() -> Option<PathBuf> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join(".config")
+                        .join("giteam")
+                        .join("control-auth.json"),
+                );
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
             return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let h = home.trim();
         if !h.is_empty() {
             return Some(
@@ -468,7 +643,9 @@ fn read_control_server_settings() -> ControlServerSettings {
 
 fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(), String> {
     let Some(path) = control_server_settings_path() else {
-        return Ok(());
+        return Err(
+            "control server settings path unavailable (set HOME/USERPROFILE/APPDATA)".to_string(),
+        );
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create control config dir failed: {e}"))?;
@@ -503,10 +680,67 @@ fn normalize_control_server_settings(
 fn effective_control_server_settings() -> ControlServerSettings {
     if let Ok(guard) = runtime_cell().lock() {
         if let Some(rt) = guard.as_ref() {
-            return rt.settings.clone();
+            let mut settings = rt.settings.clone();
+            // URL / QR 使用实际监听端口
+            settings.port = rt.bound_port;
+            return settings;
         }
     }
     read_control_server_settings()
+}
+
+/// 本进程 Control 是否在跑。
+pub fn control_is_running() -> bool {
+    runtime_cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|_| ()))
+        .is_some()
+}
+
+/// 本进程实际监听端口（未运行则 None）。
+pub fn control_bound_port() -> Option<u16> {
+    runtime_cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|rt| rt.bound_port))
+}
+
+fn try_bind_control_listener(
+    host: &str,
+    preferred_port: u16,
+) -> Result<(TcpListener, u16), String> {
+    let mut last_err = String::new();
+    for offset in 0..=CONTROL_PORT_FALLBACK_RANGE {
+        let port = match preferred_port.checked_add(offset) {
+            Some(p) if p > 0 => p,
+            _ => continue,
+        };
+        let addr = format!("{host}:{port}");
+        match TcpListener::bind(addr.as_str()) {
+            Ok(listener) => {
+                if offset > 0 {
+                    eprintln!(
+                        "[control] preferred port {preferred_port} in use; listening on {port}"
+                    );
+                }
+                return Ok((listener, port));
+            }
+            Err(e) => {
+                last_err = format!("control server bind failed on {addr}: {e}");
+                if e.kind() != ErrorKind::AddrInUse {
+                    // 非占用类错误（权限等）在 preferred 上直接失败；顺延端口上继续试
+                    if offset == 0 {
+                        return Err(last_err);
+                    }
+                }
+            }
+        }
+    }
+    Err(format!(
+        "control server bind failed: ports {preferred_port}..{} all unavailable ({last_err})",
+        preferred_port.saturating_add(CONTROL_PORT_FALLBACK_RANGE)
+    ))
 }
 
 fn normalize_pair_code_ttl_mode(raw: &str) -> String {
@@ -680,24 +914,33 @@ fn current_bearer_token() -> String {
     token.clone()
 }
 
+fn is_usable_private_v4(v4: std::net::Ipv4Addr) -> bool {
+    let oct = v4.octets();
+    let is_private = oct[0] == 10
+        || (oct[0] == 172 && (16..=31).contains(&oct[1]))
+        || (oct[0] == 192 && oct[1] == 168)
+        || (oct[0] == 100 && (64..=127).contains(&oct[1]));
+    let is_reserved_benchmark = oct[0] == 198 && (oct[1] == 18 || oct[1] == 19);
+    is_private && !is_reserved_benchmark && !v4.is_loopback()
+}
+
+/// 通过 UDP「假连接」读出本机出口网卡地址；多目标兜底（Windows 无外网/防火墙时 8.8.8.8 也可能失败）。
 fn detect_primary_lan_ip() -> Option<String> {
-    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    let _ = sock.connect("8.8.8.8:80");
-    let ip = sock.local_addr().ok()?.ip();
-    if ip.is_loopback() {
-        return None;
-    }
-    if let IpAddr::V4(v4) = ip {
-        let oct = v4.octets();
-        let is_private = oct[0] == 10
-            || (oct[0] == 172 && (16..=31).contains(&oct[1]))
-            || (oct[0] == 192 && oct[1] == 168)
-            || (oct[0] == 100 && (64..=127).contains(&oct[1]));
-        let is_reserved_benchmark = oct[0] == 198 && (oct[1] == 18 || oct[1] == 19);
-        if is_private && !is_reserved_benchmark {
-            return Some(v4.to_string());
+    for target in ["8.8.8.8:80", "1.1.1.1:80", "9.9.9.9:80", "192.168.1.1:80"] {
+        let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
+            continue;
+        };
+        if sock.connect(target).is_err() {
+            continue;
         }
-        return None;
+        let Ok(addr) = sock.local_addr() else {
+            continue;
+        };
+        if let IpAddr::V4(v4) = addr.ip() {
+            if is_usable_private_v4(v4) {
+                return Some(v4.to_string());
+            }
+        }
     }
     None
 }
@@ -1111,6 +1354,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/health" {
         let settings = read_control_server_settings();
         let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
+        let listening = control_bound_port().unwrap_or(settings.port);
         return (
             200,
             serde_json::json!({
@@ -1119,7 +1363,9 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 "service": {
                     "enabled": settings.enabled,
                     "host": settings.host,
-                    "port": settings.port
+                    "port": settings.port,
+                    "listeningPort": listening,
+                    "portRemapped": listening != settings.port
                 },
                 "auth": {
                     "pairCodeTtlMode": mode,
@@ -1177,9 +1423,19 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
-    // 手机端读取桌面端推送的模型启用状态。手机不在 loopback，故用 bearer token
-    // 鉴权（ensure_authorized），而非 ensure_loopback。文件缺失返回 null，
-    // 客户端回退到 GET /api/v1/agent/providers。
+    // 手机 Composer 轻量模型清单：enabled ∩ available − hidden（同源可见性文件 + 本进程 Pi）。
+    if req.method == "GET" && req.path == "/api/v1/mobile/models" {
+        if let Err(e) = ensure_authorized(&req) {
+            return (401, serde_json::json!({ "error": e }));
+        }
+        return match build_mobile_models_response() {
+            Ok(value) => (200, value),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    // 手机端读取桌面端推送的模型启用状态（兼容旧客户端；新客户端优先 /api/v1/mobile/models）。
+    // 手机不在 loopback，故用 bearer token 鉴权（ensure_authorized），而非 ensure_loopback。
     if req.method == "GET" && req.path == "/api/v1/admin/mobile/model-state" {
         if let Err(e) = ensure_authorized(&req) {
             return (401, serde_json::json!({ "error": e }));
@@ -1938,12 +2194,13 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
 }
 
 fn run_control_server_loop(
-    settings: ControlServerSettings,
+    host: String,
+    bound_port: u16,
     listener: TcpListener,
     stop: Arc<AtomicBool>,
 ) {
-    let addr = format!("{}:{}", settings.host, settings.port);
-    eprintln!("[control] listening on http://{}", addr);
+    let addr = format!("{host}:{bound_port}");
+    eprintln!("[control] listening on http://{addr}");
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -1983,9 +2240,10 @@ pub fn ensure_stable_process_cwd() {
         return;
     }
     let fallback = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
-        .or_else(|| Some(PathBuf::from("/")));
+        .or_else(|| env::temp_dir().is_dir().then(env::temp_dir));
     if let Some(path) = fallback {
         if let Err(error) = env::set_current_dir(&path) {
             eprintln!(
@@ -2005,6 +2263,7 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
     // npm 全局包安装临时目录可能在进程存活期间被删掉；Pi SDK create_session
     // 会调 std::env::current_dir()，cwd 失效会直接 500「cwd lookup failed」。
     ensure_stable_process_cwd();
+    migrate_legacy_mobile_model_state_if_needed();
     let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
         stop_control_server();
@@ -2018,7 +2277,7 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
                 && current.settings.public_base_url == settings.public_base_url
                 && current.settings.pair_code_ttl_mode == settings.pair_code_ttl_mode
             {
-                let port = settings.port;
+                let port = current.bound_port;
                 drop(guard);
                 // 配置未变：仅 CLI 进程（owner != desktop）且 tunnel 未运行时才拉，
                 // 已运行则幂等跳过（避免误掐已连好的 tunnel）。
@@ -2034,28 +2293,32 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
                 let _ = join.join();
             }
         }
-        let addr = format!("{}:{}", settings.host, settings.port);
-        let listener = TcpListener::bind(addr.as_str())
-            .map_err(|e| format!("control server bind failed on {addr}: {e}"))?;
+        let (listener, bound_port) =
+            try_bind_control_listener(settings.host.as_str(), settings.port)?;
         listener
             .set_nonblocking(true)
-            .map_err(|e| format!("control server set_nonblocking failed on {addr}: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "control server set_nonblocking failed on {}:{}: {e}",
+                    settings.host, bound_port
+                )
+            })?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
-        let cfg_for_thread = settings.clone();
-        let port = settings.port;
+        let host_for_thread = settings.host.clone();
         let join = thread::spawn(move || {
-            run_control_server_loop(cfg_for_thread, listener, stop_for_thread)
+            run_control_server_loop(host_for_thread, bound_port, listener, stop_for_thread)
         });
         *guard = Some(ControlRuntime {
             stop,
             join: Some(join),
             settings,
+            bound_port,
         });
         drop(guard);
         // 桌面场景 owner=desktop，tunnel 由桌面进程独占，CLI service 不拉。
         if should_cli_own_tunnel() {
-            let _ = crate::cloud::start_cloud_tunnel_background(port);
+            let _ = crate::cloud::start_cloud_tunnel_background(bound_port);
         }
         return Ok(());
     }
@@ -2112,6 +2375,7 @@ pub fn refresh_control_pair_code() -> Result<ControlPairCodeInfo, String> {
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
+    let preferred = read_control_server_settings();
     let settings = effective_control_server_settings();
     let pair = current_pair_code();
     let mut urls: Vec<String> = Vec::new();
@@ -2132,6 +2396,7 @@ pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
         enabled: settings.enabled,
         host: settings.host,
         port: settings.port,
+        preferred_port: preferred.port,
         public_base_url: settings.public_base_url,
         pair_code: pair.code,
         expires_at: pair.expires_at,

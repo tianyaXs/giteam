@@ -28,44 +28,65 @@ fn start_lock() -> &'static Mutex<()> {
 }
 
 fn build_path_env() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut dirs: Vec<String> = std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect();
-    let extras = [
-        format!("{home}/.local/bin"),
-        format!("{home}/.npm-global/bin"),
-        format!("{home}/.cargo/bin"),
-        format!("{home}/miniconda3/bin"),
-        format!("{home}/anaconda3/bin"),
-        format!("{home}/.pyenv/shims"),
-        "/opt/homebrew/Caskroom/miniconda/base/bin".to_string(),
-        "/opt/homebrew/Caskroom/miniconda3/base/bin".to_string(),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/usr/sbin".to_string(),
-        "/sbin".to_string(),
-    ];
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    let mut extras: Vec<PathBuf> = Vec::new();
+    if !home.is_empty() {
+        let home_path = PathBuf::from(&home);
+        extras.extend([
+            home_path.join(".local").join("bin"),
+            home_path.join(".npm-global").join("bin"),
+            home_path.join(".cargo").join("bin"),
+            home_path.join("miniconda3").join("bin"),
+            home_path.join("anaconda3").join("bin"),
+            home_path.join(".pyenv").join("shims"),
+        ]);
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            extras.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            extras.push(PathBuf::from(&local).join("npm"));
+            extras.push(PathBuf::from(local).join("Programs").join("nodejs"));
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            extras.push(PathBuf::from(pf).join("nodejs"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        extras.extend([
+            PathBuf::from("/opt/homebrew/Caskroom/miniconda/base/bin"),
+            PathBuf::from("/opt/homebrew/Caskroom/miniconda3/base/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/usr/sbin"),
+            PathBuf::from("/sbin"),
+        ]);
+    }
     for dir in extras {
-        if !dir.is_empty() && !dirs.iter().any(|d| d == &dir) {
+        if !dir.as_os_str().is_empty() && !dirs.iter().any(|d| d == &dir) {
             dirs.push(dir);
         }
     }
-    dirs.join(":")
+    std::env::join_paths(dirs)
+        .map(|os| os.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default())
 }
 
 fn build_search_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
-    for dir in build_path_env().split(':').filter(|s| !s.trim().is_empty()) {
-        let path = PathBuf::from(dir);
+    for path in std::env::split_paths(std::ffi::OsStr::new(&build_path_env())) {
         if !paths.iter().any(|item| item == &path) {
             paths.push(path);
         }
@@ -74,11 +95,21 @@ fn build_search_paths() -> Vec<PathBuf> {
 }
 
 fn resolve_giteam_binary() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    const NAMES: &[&str] = &["giteam.exe", "giteam.cmd", "giteam.bat", "giteam"];
+    #[cfg(not(windows))]
+    const NAMES: &[&str] = &["giteam"];
+
     for dir in build_search_paths() {
-        let candidate = dir.join("giteam");
-        if candidate.is_file() {
+        for name in NAMES {
+            let candidate = dir.join(name);
+            if !candidate.is_file() {
+                continue;
+            }
             let lossy = candidate.to_string_lossy();
-            if lossy.contains("node_modules/.bin") {
+            if lossy.contains("node_modules")
+                && (lossy.contains(".bin") || lossy.contains("node_modules\\"))
+            {
                 continue;
             }
             return Ok(candidate);
@@ -87,14 +118,38 @@ fn resolve_giteam_binary() -> Result<PathBuf, String> {
     Err("giteam CLI is not installed or not on PATH".to_string())
 }
 
+/// npm 全局在 Windows 上常是 `.cmd` shim；`CreateProcess` 不能直接跑，需经 `cmd /C`。
+#[cfg(windows)]
+fn command_for_giteam(bin: &std::path::Path) -> Command {
+    let ext = bin
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "cmd" || ext == "bat" {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(bin);
+        cmd
+    } else {
+        Command::new(bin)
+    }
+}
+
+#[cfg(not(windows))]
+fn command_for_giteam(bin: &std::path::Path) -> Command {
+    Command::new(bin)
+}
+
 fn service_addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
+#[allow(dead_code)]
 fn service_is_reachable(port: u16) -> bool {
     TcpStream::connect_timeout(&service_addr(port), Duration::from_millis(HTTP_TIMEOUT_MS)).is_ok()
 }
 
+#[allow(dead_code)]
 fn wait_for_service_port(port: u16) -> Result<(), String> {
     let start = std::time::Instant::now();
     while start.elapsed().as_millis() < u128::from(SERVICE_BOOT_TIMEOUT_MS) {
@@ -108,6 +163,7 @@ fn wait_for_service_port(port: u16) -> Result<(), String> {
     ))
 }
 
+#[allow(dead_code)]
 fn http_json(method: &str, port: u16, path: &str, body: Option<&str>) -> Result<Value, String> {
     let mut stream =
         TcpStream::connect_timeout(&service_addr(port), Duration::from_millis(HTTP_TIMEOUT_MS))
@@ -157,16 +213,19 @@ fn http_json(method: &str, port: u16, path: &str, body: Option<&str>) -> Result<
     }
 }
 
+#[allow(dead_code)]
 fn current_pair_from_service(port: u16) -> Result<control::ControlPairCodeInfo, String> {
     let value = http_json("GET", port, "/api/v1/pair/current", None)?;
     serde_json::from_value(value).map_err(|e| format!("invalid pair.current payload: {e}"))
 }
 
+#[allow(dead_code)]
 fn refresh_pair_from_service(port: u16) -> Result<control::ControlPairCodeInfo, String> {
     let value = http_json("POST", port, "/api/v1/pair/request", Some("{}"))?;
     serde_json::from_value(value).map_err(|e| format!("invalid pair.request payload: {e}"))
 }
 
+#[allow(dead_code)]
 fn put_settings_to_service(
     port: u16,
     settings: &control::ControlServerSettings,
@@ -183,6 +242,7 @@ fn put_settings_to_service(
         .map_err(|e| format!("invalid admin control settings payload: {e}"))
 }
 
+#[allow(dead_code)]
 fn access_info_from_service(port: u16) -> Result<control::ControlAccessInfo, String> {
     let value = http_json("GET", port, "/api/v1/admin/control/access-info", None)?;
     serde_json::from_value(value).map_err(|e| format!("invalid admin control access payload: {e}"))
@@ -192,6 +252,7 @@ fn cli_installed() -> bool {
     resolve_giteam_binary().is_ok()
 }
 
+#[allow(dead_code)]
 fn require_cli_installed() -> Result<(), String> {
     if cli_installed() {
         Ok(())
@@ -200,9 +261,10 @@ fn require_cli_installed() -> Result<(), String> {
     }
 }
 
+#[allow(dead_code)]
 fn run_giteam_cli(args: &[&str]) -> Result<String, String> {
     let binary = resolve_giteam_binary()?;
-    let mut cmd = Command::new(binary);
+    let mut cmd = command_for_giteam(&binary);
     cmd.args(args)
         .env("PATH", build_path_env())
         .stdin(Stdio::null())
@@ -230,20 +292,8 @@ fn run_giteam_cli(args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn load_cli_bootstrap_settings() -> Result<control::ControlServerSettings, String> {
-    require_cli_installed()?;
+fn load_host_settings() -> Result<control::ControlServerSettings, String> {
     control::get_control_server_settings()
-}
-
-fn sync_cli_bootstrap_settings() -> Result<control::ControlServerSettings, String> {
-    let settings = load_cli_bootstrap_settings()?;
-    let running = service_is_reachable(settings.port);
-    if settings.enabled == running {
-        return Ok(settings);
-    }
-    let mut synced = settings;
-    synced.enabled = running;
-    control::persist_control_server_settings(synced.clone())
 }
 
 fn stop_managed_giteam_service() {
@@ -255,78 +305,67 @@ fn stop_managed_giteam_service() {
     }
 }
 
-fn start_managed_giteam_service() -> Result<(), String> {
-    let settings = load_cli_bootstrap_settings()?;
-    if !settings.enabled {
-        stop_managed_giteam_service();
-        let _ = run_giteam_cli(&["service", "stop", "--json"]);
-        return Ok(());
-    }
-    if service_is_reachable(settings.port) {
-        return Ok(());
-    }
-    // 清掉桌面旧版直接 spawn 的子进程；真正拉起走 CLI service start，
-    // 以便已启用 launchd/systemd 时由 OS 托管独占端口（避免与自启双开抢 4100）。
+fn start_embedded_host(settings: control::ControlServerSettings) -> Result<u16, String> {
+    // 不再依赖外部 giteam CLI；Desktop 进程内嵌同一套 Control。
     stop_managed_giteam_service();
-    run_giteam_cli(&["service", "start", "--json"])?;
-    if let Err(e) = wait_for_service_port(settings.port) {
-        stop_managed_giteam_service();
-        let _ = run_giteam_cli(&["service", "stop", "--json"]);
-        return Err(e);
-    }
-    Ok(())
+    control::start_control_server_with_settings(settings)?;
+    control::control_bound_port().ok_or_else(|| "control server failed to bind".to_string())
+}
+
+fn stop_embedded_host() {
+    stop_managed_giteam_service();
+    control::stop_control_server();
 }
 
 #[tauri::command]
 pub fn giteam_cli_get_settings() -> Result<control::ControlServerSettings, String> {
-    sync_cli_bootstrap_settings()
+    load_host_settings()
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GiteamMobileServiceStatus {
+    /// CLI 仍可用于无头/doctor；手机 Host 不再依赖它。
     pub cli_installed: bool,
     pub enabled: bool,
+    /// 设置中的偏好端口。
     pub port: u16,
+    /// 本进程实际监听端口（未运行则为 0）。
+    pub listening_port: u16,
     pub running: bool,
+    /// preferred 被占用后发生了顺延。
+    pub port_remapped: bool,
 }
 
 /// Fast status for UI: never starts the service.
 #[tauri::command]
 pub fn giteam_cli_get_mobile_service_status() -> Result<GiteamMobileServiceStatus, String> {
-    let installed = cli_installed();
-    if !installed {
-        return Ok(GiteamMobileServiceStatus {
-            cli_installed: false,
-            enabled: false,
-            port: 0,
-            running: false,
-        });
-    }
-    let settings = sync_cli_bootstrap_settings()?;
-    let running = service_is_reachable(settings.port);
+    let settings = load_host_settings()?;
+    let bound = control::control_bound_port().unwrap_or(0);
+    let running = control::control_is_running();
     Ok(GiteamMobileServiceStatus {
-        cli_installed: true,
+        cli_installed: cli_installed(),
         enabled: settings.enabled,
         port: settings.port,
+        listening_port: bound,
         running,
+        port_remapped: running && bound > 0 && bound != settings.port,
     })
 }
 
-/// Start service in background (never blocks the UI thread).
+/// Start embedded Host in background (never blocks the UI thread).
 #[tauri::command]
 pub fn giteam_cli_start_mobile_service_background() -> Result<(), String> {
-    require_cli_installed()?;
-    let settings = load_cli_bootstrap_settings()?;
+    let settings = load_host_settings()?;
     if !settings.enabled {
         return Err("giteam mobile control service is disabled".to_string());
     }
-    if service_is_reachable(settings.port) {
+    if control::control_is_running() {
         return Ok(());
     }
     std::thread::spawn(move || {
         let _guard = start_lock().lock();
-        let _ = start_managed_giteam_service();
+        let _ = start_embedded_host(settings);
     });
     Ok(())
 }
@@ -335,78 +374,66 @@ pub fn giteam_cli_start_mobile_service_background() -> Result<(), String> {
 pub fn giteam_cli_set_settings(
     settings: control::ControlServerSettings,
 ) -> Result<control::ControlServerSettings, String> {
-    let previous = load_cli_bootstrap_settings()?;
     let saved = control::persist_control_server_settings(settings)?;
-    if previous.enabled && service_is_reachable(previous.port) {
-        if saved.enabled {
-            let applied = put_settings_to_service(previous.port, &saved)?;
-            wait_for_service_port(applied.port)?;
-            return Ok(applied);
-        }
-
-        let _ = run_giteam_cli(&["stop"]);
-        stop_managed_giteam_service();
-        control::stop_control_server();
-        return Ok(saved);
-    }
     if saved.enabled {
-        start_managed_giteam_service()?;
+        let _ = start_embedded_host(saved.clone())?;
     } else {
-        stop_managed_giteam_service();
-        control::stop_control_server();
+        stop_embedded_host();
     }
     Ok(saved)
 }
 
 #[tauri::command]
 pub fn giteam_cli_get_pair_code() -> Result<control::ControlPairCodeInfo, String> {
-    let settings = load_cli_bootstrap_settings()?;
+    let settings = load_host_settings()?;
     if !settings.enabled {
         return Err("giteam mobile control service is disabled".to_string());
     }
-    if !service_is_reachable(settings.port) {
+    if !control::control_is_running() {
         return Err("giteam mobile control service is starting".to_string());
     }
-    current_pair_from_service(settings.port)
+    control::get_control_pair_code()
 }
 
 #[tauri::command]
 pub fn giteam_cli_refresh_pair_code() -> Result<control::ControlPairCodeInfo, String> {
-    let settings = load_cli_bootstrap_settings()?;
+    let settings = load_host_settings()?;
     if !settings.enabled {
         return Err("giteam mobile control service is disabled".to_string());
     }
-    if !service_is_reachable(settings.port) {
+    if !control::control_is_running() {
         return Err("giteam mobile control service is starting".to_string());
     }
-    refresh_pair_from_service(settings.port)
+    control::refresh_control_pair_code()
 }
 
 #[tauri::command]
 pub fn giteam_cli_get_access_info() -> Result<control::ControlAccessInfo, String> {
-    let settings = load_cli_bootstrap_settings()?;
+    let settings = load_host_settings()?;
     if !settings.enabled {
         return Err("giteam mobile control service is disabled".to_string());
     }
-    if !service_is_reachable(settings.port) {
+    if !control::control_is_running() {
         return Err("giteam mobile control service is starting".to_string());
     }
-    access_info_from_service(settings.port)
+    control::get_control_access_info()
 }
 
 pub fn start_managed_mobile_service() {
-    if cli_installed() {
-        let _ = sync_cli_bootstrap_settings();
-    }
     // Cloud tunnel 自动重连：桌面进程是 tunnel 归属方（owner=desktop）。
-    // 老配置无 owner → 迁移为 desktop；已 link 则后台拉起（非阻塞，发配置即返回）。
     ensure_desktop_tunnel_owner();
-    let settings = giteam_core::cloud::get_cloud_link_settings();
-    if settings.enabled && !settings.device_token.trim().is_empty() {
-        if let Ok(cs) = control::get_control_server_settings() {
-            if cs.port > 0 {
-                let _ = giteam_core::cloud::start_cloud_tunnel_background(cs.port);
-            }
+    if let Ok(cs) = load_host_settings() {
+        if cs.enabled {
+            let _ = start_embedded_host(cs);
+        }
+    }
+    let cloud = giteam_core::cloud::get_cloud_link_settings();
+    if cloud.enabled && !cloud.device_token.trim().is_empty() {
+        let port = control::control_bound_port()
+            .or_else(|| load_host_settings().ok().map(|s| s.port))
+            .unwrap_or(0);
+        if port > 0 {
+            let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
         }
     }
 }
@@ -524,7 +551,9 @@ pub fn giteam_cloud_link(
         },
     )?;
     let _ = settings;
-    let port = control::get_control_server_settings()?.port;
+    let port = control::control_bound_port()
+        .or_else(|| control::get_control_server_settings().ok().map(|s| s.port))
+        .unwrap_or(0);
     // Block until WS is up so create/switch returns with「中继已连接」.
     let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
         port,
@@ -595,7 +624,9 @@ pub fn giteam_cloud_use_key(access_key: String) -> Result<CloudLinkStatusView, S
         },
     )?;
     let _ = linked;
-    let port = control::get_control_server_settings()?.port;
+    let port = control::control_bound_port()
+        .or_else(|| control::get_control_server_settings().ok().map(|s| s.port))
+        .unwrap_or(0);
     let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
         port,
         std::time::Duration::from_secs(6),

@@ -308,11 +308,8 @@ fn main() {
                 }));
             }
 
-            // 手机端模型开关双向同步：后台线程轮询 mobile-model-state.json，
-            // updatedAt 变化时 emit 给前端 apply（手机端 toggle → control server
-            // 合并写文件 → 这里 30s 内感知 → 前端 diff 应用 enabled/hidden →
-            // 重算 availableModels push 回手机）。control server 在独立 CLI 子进程，
-            // 无 Tauri event 通道，故走文件 + 轮询（非实时是架构约束，非 bug）。
+            // 手机端模型开关 → 落盘 → 桌面低频轮询同步 UI（可见性仍互通）。
+            // Composer 模型列表主路径为 GET /api/v1/mobile/models，不再依赖高频推送。
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -325,7 +322,7 @@ fn main() {
                             let _ = handle.emit("mobile-model-state-pulled", value);
                             last_updated_at = ts;
                         }
-                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        std::thread::sleep(std::time::Duration::from_secs(60));
                     }
                 });
             }

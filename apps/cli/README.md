@@ -60,11 +60,12 @@ giteam service logs --follow
 giteam service stop
 ```
 
+`giteam service` 与 Desktop「本机 Host」平级：二者都内嵌同一套 `giteam-core` Control/Pi。可同时开启；偏好端口被占用时会自动顺延，手机连哪个 Host 就用哪个运行时。
 ## 命令总览
 
 CLI 目前分成几类职责：
 
-- `service`：控制移动端控制服务的前台/后台运行、日志、系统托管与诊断
+- `service`：无头 Host（与 Desktop 平级）——前台/后台运行、日志、系统托管与诊断
 - `init`：检查本机运行环境，必要时自动安装缺失依赖
 - `plugin`：单独检查、安装、更新、卸载依赖项
 - `pair-code`：查看或刷新移动端配对码

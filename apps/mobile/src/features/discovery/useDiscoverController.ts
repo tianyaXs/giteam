@@ -202,7 +202,7 @@ export function useDiscoverController(params: UseDiscoverControllerParams) {
     })();
     const chosenPrefix = local?.prefix || prefixFromSeed || prefixFromCache || inferDiscoveryPrefixes(serverUrl)[0] || '';
     const prefixes = chosenPrefix ? [chosenPrefix] : [];
-    const port = resolvePortFromSeed(serverUrl, 5100);
+    const port = resolvePortFromSeed(serverUrl, 4100);
     const seedLast = inferSeedLastSegment(serverUrl);
     const hostOrder = buildHostOrder(seedLast);
     pushDiscoverLog(`开始扫描 localIp=${local?.ip || 'n/a'} prefixes=${prefixes.join(',')} port=${port} seedLast=${seedLast} workers<=${DISCOVER_WORKER_LIMIT}`);
@@ -246,22 +246,38 @@ export function useDiscoverController(params: UseDiscoverControllerParams) {
     let cursor = 0;
     const workers = Math.min(DISCOVER_WORKER_LIMIT, queueHosts.length);
     const found = new Map<string, { host: string; port: number; noAuth: boolean; baseUrl: string }>();
+    // 偏好端口可能因占用顺延；每台 host 额外扫一小段端口
+    const portCandidates = Array.from(
+      { length: 11 },
+      (_, i) => port + i
+    ).filter((p) => p > 0 && p <= 65535);
     const runWorker = async () => {
       while (cursor < queueHosts.length && discoverRunRef.current === runId && Date.now() < hardStopAt) {
         if (abortCtrl.signal.aborted) return;
         const host = queueHosts[cursor++];
-        const candidate = `http://${host}:${port}`;
-        let healthInfo: any | null = null;
-        try {
-          healthInfo = await probeHealthFast(candidate, 760, abortCtrl.signal);
-        } catch (e) {
-          pushDiscoverLog(`probe 异常 host=${host} err=${toText(e)}`, 'error');
+        for (const tryPort of portCandidates) {
+          if (abortCtrl.signal.aborted || Date.now() >= hardStopAt) break;
+          const candidate = `http://${host}:${tryPort}`;
+          let healthInfo: any | null = null;
+          try {
+            healthInfo = await probeHealthFast(candidate, 760, abortCtrl.signal);
+          } catch (e) {
+            pushDiscoverLog(`probe 异常 host=${host}:${tryPort} err=${toText(e)}`, 'error');
+          }
+          if (!healthInfo) continue;
+          const key = `${host}:${tryPort}`;
+          if (found.has(key)) continue;
+          const listening =
+            Number(healthInfo?.service?.listeningPort || 0) || tryPort;
+          found.set(key, {
+            host,
+            port: listening,
+            noAuth: Boolean(healthInfo?.auth?.noAuth),
+            baseUrl: `http://${host}:${listening}`
+          });
+          pushDiscoverLog(`命中 ${host}:${listening} noAuth=${Boolean(healthInfo?.auth?.noAuth)}`);
+          break;
         }
-        if (!healthInfo) continue;
-        const key = `${host}:${port}`;
-        if (found.has(key)) continue;
-        found.set(key, { host, port, noAuth: Boolean(healthInfo?.auth?.noAuth), baseUrl: candidate });
-        pushDiscoverLog(`命中 ${key} noAuth=${Boolean(healthInfo?.auth?.noAuth)}`);
       }
     };
 
