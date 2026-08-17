@@ -1,15 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
-import { LegendList } from '@legendapp/list/react-native';
+import { KeyboardAwareLegendList } from '@legendapp/list/keyboard';
 import { Animated, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import type { SharedValue } from 'react-native-reanimated';
 import { getDisplayedCellItemType } from '../../features/chat/displayedCells';
-import { isFocusBlockingEventCell } from '../../features/chat/focusBlankTap';
 import { getActiveSessionSwitchTrace, markSessionSwitchPerf } from '../../features/chat/sessionSwitchPerf';
 import { getActiveMessageSendTrace, markMessageSendPerf } from '../../features/messages/messageSendPerf';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
 
 /** LegendList 位置保持：按官方聊天/前插指南开启 data+size，交给列表锚点，勿再手写 scroll 补偿。 */
 const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { data: true, size: true } as const;
+/** Composer 占位由 contentInsetEndAdjustment 负责，这里只留极小呼吸空。 */
+const CHAT_LIST_CONTENT_BOTTOM_AIR = 12;
 
 const LATEST_JUMP_SIZE = 40;
 
@@ -31,7 +33,8 @@ function ChatConversationStageImpl(props: {
   renderedTurnsLength: number;
   currentWorkspaceName: string;
   messageScrollRef: React.RefObject<any>;
-  messageBottomInset: number;
+  /** 官方 useKeyboardChatComposerInset → 列表底 inset，与 Sticky Composer 同步 */
+  contentInsetEndAdjustment: SharedValue<number>;
   displayedTurnCells: any[];
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
@@ -57,7 +60,7 @@ function ChatConversationStageImpl(props: {
   /** idle/loading：连接中；error：拉取失败；ready：可判断是否有模型 */
   modelCatalogStatus?: 'idle' | 'loading' | 'ready' | 'error';
   onOpenModelSettings?: () => void;
-  /** 单击列表（滑动不算）；仅点到事件/工具批次时不切换专注 chrome */
+  /** 空会话占位点击：收起输入扩展 */
   onBlankPress?: () => void;
 }) {
   const {
@@ -69,7 +72,7 @@ function ChatConversationStageImpl(props: {
     inputDockHeight,
     listRevealReady,
     loadingOlder,
-    messageBottomInset,
+    contentInsetEndAdjustment,
     messageScrollRef,
     modelCatalogStatus = 'ready',
     notebookColors,
@@ -98,10 +101,10 @@ function ChatConversationStageImpl(props: {
   const chatContentContainerStyle = useMemo(
     () => ({
       paddingTop: 4,
-      paddingBottom: messageBottomInset + 20,
+      paddingBottom: CHAT_LIST_CONTENT_BOTTOM_AIR,
       backgroundColor: 'transparent'
     }),
-    [messageBottomInset]
+    []
   );
   const keyExtractor = useCallback((item: any) => `${sessionId || 'draft'}:${item.id}`, [sessionId]);
   const listExtraData = useMemo(
@@ -133,92 +136,6 @@ function ChatConversationStageImpl(props: {
     if (shouldSuppressLoadOlder()) return;
     void onLoadOlderMessages();
   }, [loadingOlder, onLoadOlderMessages, sessionId, shouldSuppressLoadOlder]);
-
-  /** 空白单击：与滚动区分。仅「事件/工具批次」单元格拦截，消息气泡可退出专注。 */
-  const TAP_SLOP = 28;
-  const TAP_MAX_MS = 520;
-  const BLANK_DEBOUNCE_MS = 220;
-  const tapGestureRef = useRef<{
-    x: number;
-    y: number;
-    active: boolean;
-    startedAt: number;
-  }>({
-    x: 0,
-    y: 0,
-    active: false,
-    startedAt: 0
-  });
-  /** 触摸落在事件/工具批次单元格上则为 true。 */
-  const eventTouchRef = useRef(false);
-  const lastBlankPressAtRef = useRef(0);
-
-  const handleScrollBeginDrag = useCallback(() => {
-    tapGestureRef.current.active = false;
-    eventTouchRef.current = false;
-    onScrollBeginDrag();
-  }, [onScrollBeginDrag]);
-
-  const handleListTouchStart = useCallback((evt: any) => {
-    const t = evt?.nativeEvent?.touches?.[0];
-    if (!t) return;
-    eventTouchRef.current = false;
-    tapGestureRef.current = {
-      x: t.pageX,
-      y: t.pageY,
-      active: true,
-      startedAt: Date.now()
-    };
-  }, []);
-
-  const handleListTouchMove = useCallback((evt: any) => {
-    if (!tapGestureRef.current.active) return;
-    const t = evt?.nativeEvent?.touches?.[0];
-    if (!t) return;
-    if (
-      Math.abs(t.pageX - tapGestureRef.current.x) > TAP_SLOP ||
-      Math.abs(t.pageY - tapGestureRef.current.y) > TAP_SLOP
-    ) {
-      tapGestureRef.current.active = false;
-    }
-  }, []);
-
-  const handleListTouchEnd = useCallback(() => {
-    const gesture = tapGestureRef.current;
-    const hitEvent = eventTouchRef.current;
-    tapGestureRef.current.active = false;
-    eventTouchRef.current = false;
-    if (!gesture.active || hitEvent) return;
-    const elapsed = Date.now() - gesture.startedAt;
-    if (elapsed > TAP_MAX_MS) return;
-    const now = Date.now();
-    if (now - lastBlankPressAtRef.current < BLANK_DEBOUNCE_MS) return;
-    lastBlankPressAtRef.current = now;
-    onBlankPress?.();
-  }, [onBlankPress]);
-
-  const handleListTouchCancel = useCallback(() => {
-    tapGestureRef.current.active = false;
-    eventTouchRef.current = false;
-  }, []);
-
-  const renderListItem = useCallback(
-    (info: { item: any; index: number }) => {
-      const blockFocusTap = isFocusBlockingEventCell(info.item);
-      return (
-        <View
-          collapsable={false}
-          onStartShouldSetResponderCapture={() => {
-            if (blockFocusTap) eventTouchRef.current = true;
-            return false;
-          }}
-        >
-          {renderTurnCell(info)}
-        </View>
-      );
-    },
-    [renderTurnCell]
-  );
 
   const settingsLinkColor = colors.isDark ? '#FFFFFF' : '#1A1A1F';
 
@@ -305,10 +222,14 @@ function ChatConversationStageImpl(props: {
       ) : null}
       {showConversationList ? (
         <View style={styles.chatListStage}>
-          <LegendList
+          <KeyboardAwareLegendList
             ref={messageScrollRef}
             style={{ flex: 1, opacity: listRevealReady ? 1 : 0 }}
             contentContainerStyle={chatContentContainerStyle}
+            contentInsetEndAdjustment={contentInsetEndAdjustment}
+            keyboardOffset={0}
+            keyboardLiftBehavior="whenAtEnd"
+            keyboardDismissMode="interactive"
             onLayout={onListLayout}
             data={displayedTurnCells}
             initialScrollIndex={initialScrollIndex}
@@ -317,7 +238,11 @@ function ChatConversationStageImpl(props: {
             maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}
             // 不开启 alignItemsAtEnd：短会话/新发消息从顶部排起（贴底会变成「从下面冒出来」）。
             // 贴底增长仍保留，流式输出时跟到底。
-            maintainScrollAtEnd
+            // 贴底增长：关闭 layout 触发，避免视口/chrome 变化时与 MVCP 互抢反复抖。
+            maintainScrollAtEnd={{
+              animated: false,
+              on: { dataChange: true, itemLayout: true, layout: false }
+            }}
             maintainScrollAtEndThreshold={0.12}
             // 行内有展开态；不开 recycleItems，避免虚拟化复用串开合状态（官方 Recycling 警告）。
             recycleItems={false}
@@ -329,20 +254,16 @@ function ChatConversationStageImpl(props: {
             scrollEventThrottle={16}
             viewabilityConfig={chatViewabilityConfig}
             onViewableItemsChanged={onChatViewableItemsChanged}
-            onScrollBeginDrag={handleScrollBeginDrag}
+            onScrollBeginDrag={onScrollBeginDrag}
             onScrollEndDrag={onScrollEndDrag}
             onMomentumScrollBegin={onMomentumScrollBegin}
             onMomentumScrollEnd={onMomentumScrollEnd}
             onScroll={onScroll}
             onContentSizeChange={onContentSizeChange}
-            onTouchStart={handleListTouchStart}
-            onTouchMove={handleListTouchMove}
-            onTouchEnd={handleListTouchEnd}
-            onTouchCancel={handleListTouchCancel}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             extraData={listExtraData}
-            renderItem={renderListItem}
+            renderItem={renderTurnCell}
             onStartReached={handleStartReached}
             onStartReachedThreshold={0.15}
             ListHeaderComponent={null}

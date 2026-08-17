@@ -54,7 +54,6 @@ export function useChatWorkspacePanelProps(params: {
   handleToggleAttachmentMenu: () => void;
   imageAttachments: ComposerAttachment[];
   inputModelLabel: string;
-  keyboardInset: number;
   loadMoreAlbumImages: () => void;
   mediaAlbums: AlbumPickerProps['mediaAlbums'];
   maybeLoadMoreRecentImages: (y: number, viewportH: number, contentH: number) => void;
@@ -122,7 +121,6 @@ export function useChatWorkspacePanelProps(params: {
     handleToggleAttachmentMenu,
     imageAttachments,
     inputModelLabel,
-    keyboardInset,
     loadMoreAlbumImages,
     mediaAlbums,
     maybeLoadMoreRecentImages,
@@ -193,7 +191,6 @@ export function useChatWorkspacePanelProps(params: {
     recentImagesLoading,
     recentImagesLoadingMore,
     recentImagesHasNext,
-    keyboardInset,
     onLayoutHeight: handleComposerHeight,
     onPromptChange: handlePromptChange,
     onToggleAttachmentMenu: handleToggleAttachmentMenu,
@@ -240,7 +237,6 @@ export function useChatWorkspacePanelProps(params: {
     hasConversationContent,
     imageAttachments,
     inputModelLabel,
-    keyboardInset,
     maybeLoadMoreRecentImages,
     model,
     modelOptions,

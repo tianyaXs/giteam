@@ -22,11 +22,12 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMobileTheme } from '../../features/theme/ThemeProvider';
-import { setThemeOverride, useThemeOverride } from '../../features/theme/useThemeOverride';
+import { useThemeOverride } from '../../features/theme/useThemeOverride';
+import { startThemeCircularReveal } from '../../features/theme/ThemeCircularReveal';
 import { useSpeechInputSetting } from '../../features/speech/useSpeechInputSetting';
+import { useFocusModeSetting } from '../../features/chat/useFocusModeSetting';
 import { SettingsModelsPanel } from '../../features/workspace/ModelManagerScreen';
 import { toText } from '../../lib/text';
-import { resolveSpeechInputMode } from '../../lib/speech/speechInputStrategy';
 import type { ProjectTreeNode, DrawerSessionRow } from '../../features/chat/useLeftDrawerController';
 import { AccordionBody } from '../AccordionBody';
 import { MobileConfirmDialog } from './MobileConfirmDialog';
@@ -732,20 +733,35 @@ export function ConnectionDrawer(props: {
   const p = useDrawerPalette();
   const { colors } = useMobileTheme();
   const override = useThemeOverride();
-  const themeLabel = override === 'light' ? '浅色' : '深色';
+  const themeBtnRef = React.useRef<View>(null);
   const [language, setLanguage] = React.useState<'zh-CN' | 'en'>('zh-CN');
   const languageLabel = language === 'zh-CN' ? '简体中文' : 'English';
   const [tab, setTab] = React.useState<'general' | 'models'>(settingsTab);
   const speechInput = useSpeechInputSetting();
-  const showSpeechDownloadUi = resolveSpeechInputMode() === 'offline';
+  const focusMode = useFocusModeSetting();
+  const showSpeechDownloadUi = speechInput.needsDownload;
 
   React.useEffect(() => {
     setTab(settingsTab);
   }, [settingsTab]);
 
-  const cycleTheme = () => {
-    setThemeOverride(override === 'light' ? 'dark' : 'light');
-  };
+  const startAppearanceReveal = React.useCallback(() => {
+    const to = override === 'light' ? 'dark' : 'light';
+    const node = themeBtnRef.current;
+    if (!node || typeof (node as any).measureInWindow !== 'function') {
+      startThemeCircularReveal({ x: 40, y: 120 }, to);
+      return;
+    }
+    (node as View).measureInWindow((x, y, w, h) => {
+      startThemeCircularReveal(
+        {
+          x: x + w / 2,
+          y: y + h / 2
+        },
+        to
+      );
+    });
+  }, [override]);
 
   const cycleLanguage = () => {
     setLanguage((prev) => (prev === 'zh-CN' ? 'en' : 'zh-CN'));
@@ -862,11 +878,32 @@ export function ConnectionDrawer(props: {
           <View style={{ borderRadius: 12, backgroundColor: cardBg, overflow: 'hidden', marginBottom: 16 }}>
             <SettingsRow
               title="外观"
-              value={themeLabel}
               dividerColor={divider}
               textColor={p.text}
               mutedColor={p.faint}
-              onPress={cycleTheme}
+                  trailing={
+                <View ref={themeBtnRef} collapsable={false}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={override === 'light' ? '切换到深色模式' : '切换到浅色模式'}
+                    hitSlop={8}
+                    onPress={startAppearanceReveal}
+                    style={({ pressed }) => ({
+                      width: 36,
+                      height: 36,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: pressed ? 0.65 : 1
+                    })}
+                  >
+                    <Feather
+                      name={override === 'light' ? 'moon' : 'sun'}
+                      size={20}
+                      color={p.text}
+                    />
+                  </Pressable>
+                </View>
+              }
             />
             <SettingsRow
               title="语言"
@@ -913,35 +950,29 @@ export function ConnectionDrawer(props: {
               }
             />
             <SettingsRow
-              title="语音输入"
+              title="专注模式"
               dividerColor={divider}
               textColor={p.text}
               mutedColor={p.faint}
-              last={!showSpeechDownloadUi}
               trailing={
                 <Pressable
                   accessibilityRole="switch"
-                  accessibilityState={{
-                    checked: speechInput.enabled,
-                    disabled: speechInput.downloading
-                  }}
-                  onPress={() => {
-                    if (speechInput.downloading) return;
-                    speechInput.toggle();
-                  }}
+                  accessibilityLabel="专注模式"
+                  accessibilityHint="生成回复时收起顶栏和输入框"
+                  accessibilityState={{ checked: focusMode.enabled }}
+                  onPress={focusMode.toggle}
                   hitSlop={6}
                   style={{
                     width: 46,
                     height: 28,
                     borderRadius: 999,
                     paddingHorizontal: 2,
-                    opacity: speechInput.downloading ? 0.55 : 1,
-                    backgroundColor: speechInput.enabled
+                    backgroundColor: focusMode.enabled
                       ? colors.primary
                       : colors.isDark
                         ? '#39393D'
                         : '#E5E5EA',
-                    alignItems: speechInput.enabled ? 'flex-end' : 'flex-start',
+                    alignItems: focusMode.enabled ? 'flex-end' : 'flex-start',
                     justifyContent: 'center'
                   }}
                 >
@@ -956,29 +987,40 @@ export function ConnectionDrawer(props: {
                 </Pressable>
               }
             />
-            {showSpeechDownloadUi ? (
+            <View
+              style={{
+                paddingLeft: 16,
+                paddingRight: 16,
+                minHeight: 50,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+                borderBottomColor: divider
+              }}
+            >
               <View
                 style={{
-                  paddingHorizontal: 16,
-                  paddingTop: 4,
-                  paddingBottom: 14,
-                  gap: 8,
-                  borderBottomWidth: 0
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  minWidth: 0
                 }}
               >
-                {speechInput.downloading ? (
+                <RNText style={{ fontSize: 16, color: p.text, flexShrink: 0 }}>语音输入</RNText>
+                {showSpeechDownloadUi && speechInput.downloading ? (
                   <>
-                    <RNText style={{ fontSize: 13, color: p.faint }}>
-                      {speechInput.progressLabel}
-                    </RNText>
                     <View
                       style={{
-                        height: 6,
+                        flex: 1,
+                        height: 4,
                         borderRadius: 999,
                         overflow: 'hidden',
                         backgroundColor: colors.isDark
                           ? 'rgba(255,255,255,0.08)'
-                          : 'rgba(0,0,0,0.06)'
+                          : 'rgba(0,0,0,0.06)',
+                        minWidth: 48
                       }}
                     >
                       <View
@@ -990,27 +1032,79 @@ export function ConnectionDrawer(props: {
                         }}
                       />
                     </View>
+                    <RNText style={{ fontSize: 12, color: p.faint, flexShrink: 0 }}>
+                      {Math.max(0, Math.min(100, speechInput.progressPercent))}%
+                    </RNText>
                   </>
-                ) : speechInput.errorMessage ? (
-                  <>
-                    <RNText style={{ fontSize: 13, color: p.danger }}>{speechInput.errorMessage}</RNText>
-                    <Pressable onPress={speechInput.retryDownload} hitSlop={6}>
-                      <RNText style={{ fontSize: 14, fontWeight: '500', color: colors.primary }}>
-                        重试下载
-                      </RNText>
-                    </Pressable>
-                  </>
-                ) : (
-                  <RNText style={{ fontSize: 12, color: p.faint }}>
-                    {speechInput.enabled && speechInput.modelReady
-                      ? '离线语音模型已就绪'
-                      : speechInput.modelReady
-                        ? '已下载，开启后显示语音按钮'
-                        : `开启后下载约 ${speechInput.sizeHintMb} MB 离线模型`}
+                ) : null}
+                {showSpeechDownloadUi && speechInput.errorMessage && !speechInput.downloading ? (
+                  <RNText
+                    numberOfLines={1}
+                    style={{ flex: 1, fontSize: 12, color: p.danger, minWidth: 0 }}
+                  >
+                    {speechInput.errorMessage}
                   </RNText>
-                )}
+                ) : null}
+                {!showSpeechDownloadUi ? (
+                  <RNText style={{ flex: 1, fontSize: 13, color: p.faint }} numberOfLines={1}>
+                    系统听写
+                  </RNText>
+                ) : null}
               </View>
-            ) : null}
+              {showSpeechDownloadUi ? (
+                speechInput.downloading ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="取消下载"
+                    onPress={speechInput.cancelDownload}
+                    hitSlop={6}
+                    style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1 })}
+                  >
+                    <RNText style={{ fontSize: 15, fontWeight: '500', color: p.faint }}>取消</RNText>
+                  </Pressable>
+                ) : speechInput.errorMessage ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="重试下载语音模型"
+                    onPress={speechInput.retryDownload}
+                    hitSlop={6}
+                    style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1 })}
+                  >
+                    <RNText style={{ fontSize: 15, fontWeight: '500', color: colors.primary }}>
+                      重试
+                    </RNText>
+                  </Pressable>
+                ) : speechInput.modelReady ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="移除语音模型"
+                    onPress={speechInput.removeModel}
+                    hitSlop={8}
+                    style={({ pressed }) => ({
+                      width: 36,
+                      height: 36,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: pressed ? 0.65 : 1
+                    })}
+                  >
+                    <Feather name="trash-2" size={18} color={p.danger} />
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`下载语音模型，约 ${speechInput.sizeHintMb} MB`}
+                    onPress={speechInput.startDownload}
+                    hitSlop={6}
+                    style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1 })}
+                  >
+                    <RNText style={{ fontSize: 15, fontWeight: '500', color: colors.primary }}>
+                      下载
+                    </RNText>
+                  </Pressable>
+                )
+              ) : null}
+            </View>
           </View>
 
           <Pressable

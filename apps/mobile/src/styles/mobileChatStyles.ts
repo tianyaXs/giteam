@@ -24,6 +24,16 @@ export const chatStyles = {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(0,0,0,0.06)",
   },
+  /** 顶栏浮层：视觉收起用 opacity/translate；文档流占位由 paddingTop 一次性切换。
+   * elevation 仅极低值用于 Android 叠层；高 elevation 在部分机型上阴影过重。 */
+  topBarOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 45,
+    elevation: 2,
+  },
   notebookShell: {
     flex: 1,
     backgroundColor: "#1A1A1A",
@@ -66,10 +76,33 @@ export const chatStyles = {
     flex: 1,
     minHeight: 0,
   },
+  /** 浮动 Sticky Composer：列表铺满其下，占位靠 contentInsetEndAdjustment。
+   * elevation 仅极低值叠层；过高会在输入区上沿画出淡阴影边。 */
+  composerStickyDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 30,
+    elevation: 2,
+  },
   focusAbortFabWrap: {
     position: "absolute",
     zIndex: 50,
     elevation: 50,
+  },
+  /** 专注收起时：底部原输入条占位热区，点击唤出输入框（不拦列表滑动）。 */
+  focusComposerRevealWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
+    elevation: 40,
+  },
+  focusComposerRevealHit: {
+    flex: 1,
+    width: "100%",
   },
   /** 对齐普通模式 actionBtnSend：32 圆钮 + 轻阴影，避免专注态 FAB 偏大偏重。 */
   focusAbortFab: {

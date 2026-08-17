@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { SHERPA_ASR_MODEL_SIZE_HINT_BYTES } from '../../lib/speech/sherpaAsrConfig';
 import {
   cancelSherpaAsrModelDownload,
+  deleteSherpaAsrLocalModel,
   downloadSherpaAsrModel,
   isSherpaAsrDownloadInFlight,
   isSherpaAsrLocalModelReady
@@ -18,26 +19,28 @@ import {
 
 export type SpeechInputSettingStatus =
   | 'unavailable'
-  | 'off'
+  | 'native_ready'
   | 'need_download'
   | 'downloading'
   | 'ready';
 
 export type SpeechInputSettingState = {
-  /** 设置开关是否打开 */
+  /** 偏好：离线模型下载完成后为 true；移除后为 false */
   enabled: boolean;
-  /** 模型是否已在本地（或 bundled） */
   modelReady: boolean;
   /** 聊天栏是否展示语音入口 */
   voiceUiAvailable: boolean;
+  /** Android 离线需下载；iOS 等为系统听写 */
+  needsDownload: boolean;
   status: SpeechInputSettingStatus;
   downloading: boolean;
   /** 0–100 */
   progressPercent: number;
-  progressLabel: string;
   sizeHintMb: number;
   errorMessage: string | null;
-  toggle: () => void;
+  startDownload: () => void;
+  cancelDownload: () => void;
+  removeModel: () => void;
   retryDownload: () => void;
 };
 
@@ -46,21 +49,18 @@ function needsModelDownload(): boolean {
 }
 
 function computeStatus(params: {
-  enabled: boolean;
   modelReady: boolean;
   downloading: boolean;
 }): SpeechInputSettingStatus {
+  if (Platform.OS === 'web') return 'unavailable';
   if (params.downloading) return 'downloading';
-  if (!needsModelDownload()) {
-    return params.enabled ? 'ready' : 'off';
-  }
-  if (!params.enabled) return 'off';
+  if (!needsModelDownload()) return 'native_ready';
   if (!params.modelReady) return 'need_download';
   return 'ready';
 }
 
 /**
- * 设置页 + Composer 共用：语音输入开关与按需下载状态。
+ * 设置页 + Composer：语音为「下载 / 移除」模型，下载完成默认开启。
  */
 export function useSpeechInputSetting(): SpeechInputSettingState {
   const [enabled, setEnabled] = useState(() => loadSpeechInputPrefs().enabled);
@@ -73,10 +73,20 @@ export function useSpeechInputSetting(): SpeechInputSettingState {
   const refreshModelReady = useCallback(async () => {
     if (!needsModelDownload()) {
       setModelReady(true);
+      // 系统听写无需下载：保持可用
+      if (!loadSpeechInputPrefs().enabled) {
+        setSpeechInputEnabled(true);
+        setEnabled(true);
+      }
       return true;
     }
     const ready = await isSherpaAsrModelAvailable();
     setModelReady(ready);
+    // 已下载则默认开启（兼容旧数据：模型在本地但 prefs 关闭）
+    if (ready && !loadSpeechInputPrefs().enabled) {
+      setSpeechInputEnabled(true);
+      setEnabled(true);
+    }
     return ready;
   }, []);
 
@@ -91,10 +101,17 @@ export function useSpeechInputSetting(): SpeechInputSettingState {
   }, [refreshModelReady]);
 
   const startDownload = useCallback(async () => {
-    if (!needsModelDownload()) return true;
+    if (!needsModelDownload()) {
+      setSpeechInputEnabled(true);
+      setEnabled(true);
+      return true;
+    }
     if (await isSherpaAsrLocalModelReady()) {
       setModelReady(true);
       setProgressPercent(100);
+      setSpeechInputEnabled(true);
+      setEnabled(true);
+      notifySpeechInputChanged();
       return true;
     }
 
@@ -112,13 +129,15 @@ export function useSpeechInputSetting(): SpeechInputSettingState {
       if (downloadGenRef.current !== gen) return false;
       setModelReady(true);
       setProgressPercent(100);
+      setSpeechInputEnabled(true);
+      setEnabled(true);
       notifySpeechInputChanged();
       return true;
     } catch (error) {
       if (downloadGenRef.current !== gen) return false;
       const message = error instanceof Error ? error.message : String(error);
       if (message !== 'download-cancelled') {
-        setErrorMessage('语音模型下载失败，请检查网络后重试');
+        setErrorMessage('下载失败，请重试');
       }
       setModelReady(false);
       notifySpeechInputChanged();
@@ -130,76 +149,54 @@ export function useSpeechInputSetting(): SpeechInputSettingState {
     }
   }, []);
 
-  const toggle = useCallback(() => {
-    const next = !loadSpeechInputPrefs().enabled;
-    if (!next) {
+  const cancelDownload = useCallback(() => {
+    void cancelSherpaAsrModelDownload();
+    downloadGenRef.current += 1;
+    setDownloading(false);
+    setProgressPercent(0);
+    setErrorMessage(null);
+  }, []);
+
+  const removeModel = useCallback(() => {
+    void (async () => {
       void cancelSherpaAsrModelDownload();
       downloadGenRef.current += 1;
       setDownloading(false);
+      setProgressPercent(0);
+      setErrorMessage(null);
+      await deleteSherpaAsrLocalModel();
+      setModelReady(false);
       setSpeechInputEnabled(false);
       setEnabled(false);
-      setErrorMessage(null);
-      return;
-    }
-
-    setSpeechInputEnabled(true);
-    setEnabled(true);
-    if (!needsModelDownload()) return;
-    void (async () => {
-      const ok = await startDownload();
-      if (!ok) {
-        // 下载失败则关掉开关，避免半开状态
-        setSpeechInputEnabled(false);
-        setEnabled(false);
-      }
+      notifySpeechInputChanged();
     })();
-  }, [startDownload]);
+  }, []);
 
   const retryDownload = useCallback(() => {
-    if (!loadSpeechInputPrefs().enabled) {
-      setSpeechInputEnabled(true);
-      setEnabled(true);
-    }
-    void (async () => {
-      const ok = await startDownload();
-      if (!ok) {
-        setSpeechInputEnabled(false);
-        setEnabled(false);
-      }
-    })();
+    setErrorMessage(null);
+    void startDownload();
   }, [startDownload]);
 
+  const status = computeStatus({ modelReady, downloading });
   const voiceUiAvailable =
-    enabled && (needsModelDownload() ? modelReady : true) && Platform.OS !== 'web';
-
-  const status = computeStatus({ enabled, modelReady, downloading });
-
-  let progressLabel = '';
-  if (status === 'downloading') {
-    progressLabel = `正在下载语音模型… ${progressPercent}%`;
-  } else if (status === 'need_download') {
-    progressLabel = '等待下载语音模型';
-  } else if (errorMessage) {
-    progressLabel = errorMessage;
-  } else if (enabled && modelReady) {
-    progressLabel = '已就绪';
-  } else if (!enabled && modelReady) {
-    progressLabel = '已下载，点击开启';
-  } else {
-    progressLabel = `约 ${Math.round(SHERPA_ASR_MODEL_SIZE_HINT_BYTES / (1024 * 1024))} MB，按需下载`;
-  }
+    Platform.OS !== 'web' &&
+    (needsModelDownload() ? modelReady && enabled : true);
 
   return {
     enabled,
     modelReady,
     voiceUiAvailable,
+    needsDownload: needsModelDownload(),
     status,
     downloading,
     progressPercent,
-    progressLabel,
     sizeHintMb: Math.round(SHERPA_ASR_MODEL_SIZE_HINT_BYTES / (1024 * 1024)),
     errorMessage,
-    toggle,
+    startDownload: () => {
+      void startDownload();
+    },
+    cancelDownload,
+    removeModel,
     retryDownload
   };
 }
@@ -209,13 +206,17 @@ export function useSpeechInputVoiceUiAvailable(): boolean {
   const [available, setAvailable] = useState(false);
 
   const refresh = useCallback(async () => {
-    const prefs = loadSpeechInputPrefs();
-    if (!prefs.enabled) {
+    if (Platform.OS === 'web') {
       setAvailable(false);
       return;
     }
     if (!needsModelDownload()) {
       setAvailable(true);
+      return;
+    }
+    const prefs = loadSpeechInputPrefs();
+    if (!prefs.enabled) {
+      setAvailable(false);
       return;
     }
     setAvailable(await isSherpaAsrModelAvailable());

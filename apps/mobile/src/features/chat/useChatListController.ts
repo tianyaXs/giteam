@@ -99,16 +99,10 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     latestJumpVisibleRef.current = false;
     latestJumpLastChangeRef.current = Date.now();
     setShowLatestJump(false);
+    // 只走列表自带 scrollToEnd（会计入 contentInset）；勿再 scrollToOffset 用 contentH-viewportH，
+    // 否则与 KeyboardAware inset / maintainScrollAtEnd 互抢，流结束/chrome 变化时反复上下抖。
     try {
-      list.scrollToEnd?.({ animated });
-    } catch {}
-    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
-    const contentH = Math.max(0, Number(messageContentHRef.current || 0));
-    const maxOffset = Math.max(0, contentH - viewportH);
-    if (maxOffset <= 0) return;
-    try {
-      list.scrollToOffset?.({ offset: maxOffset, animated });
-      messageScrollYRef.current = maxOffset;
+      void list.scrollToEnd?.({ animated });
     } catch {}
   }, []);
 
@@ -400,13 +394,6 @@ export function useChatListController<Cell extends { id?: string }>(props: {
   const handleContentSizeChange = useCallback((height: number, opts: { loadingOlder: boolean }) => {
     const previousHeight = Math.max(0, Number(messageContentHRef.current || 0));
     const scrollY = Math.max(0, Number(messageScrollYRef.current || 0));
-    const viewportH = Math.max(0, Number(messageViewportHRef.current || 0));
-    const rawDistanceBefore =
-      previousHeight > 0 && viewportH > 0
-        ? Math.max(0, previousHeight - viewportH - scrollY)
-        : 0;
-    const distanceBefore = Math.max(0, rawDistanceBefore - Math.max(0, Number(bottomContentInset || 0)));
-    const wasNearBottom = previousHeight <= 0 || distanceBefore <= chatBottomProximity;
     messageContentHRef.current = Number(height || 0);
     if (opts.loadingOlder) {
       if (previousHeight <= 0) return;
@@ -420,23 +407,10 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       updateLatestJumpVisibility(getVisibleDistanceFromBottom(nextOffset), true);
       return;
     }
-    if (
-      listRevealReadyRef.current
-      && followLatestRef.current
-      && !messageUserScrollingRef.current
-      && wasNearBottom
-      && getVisibleDistanceFromBottom() <= chatBottomProximity
-    ) {
-      scrollListToEnd(false);
-      updateLatestJumpVisibility(getVisibleDistanceFromBottom(), true);
-    }
-  }, [
-    chatBottomProximity,
-    bottomContentInset,
-    getVisibleDistanceFromBottom,
-    scrollListToEnd,
-    updateLatestJumpVisibility
-  ]);
+    // 正向增长交给 LegendList maintainScrollAtEnd / KeyboardChatScrollView；
+    // 这里再 scrollToEnd 会与键盘 inset 动画、composer extraContentPadding 互抢微抖。
+    updateLatestJumpVisibility(getVisibleDistanceFromBottom(), false);
+  }, [getVisibleDistanceFromBottom, updateLatestJumpVisibility]);
 
   const handleListLayout = useCallback((height: number) => {
     messageViewportHRef.current = Number(height || 0);

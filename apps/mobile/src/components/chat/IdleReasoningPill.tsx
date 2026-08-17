@@ -244,14 +244,14 @@ export const IdleReasoningPill = React.memo(function IdleReasoningPill(props: Id
 
   const meta = thinkingMeta(scrubbingUi ? scrubLevel : thinkingLevel);
 
-  // compact：实心底；展开：透明底交给光效层，淡描边勾轮廓（待机无 dock 投影；overflow 会裁掉自阴影故不用）
+  // 浅色铺近白实心底兜底（Shader 失败也不发黑）；深色仍透明交给粒子层画底
   const shellStyle = compact
     ? {
         backgroundColor: palette.bg,
         borderWidth: 0
       }
     : {
-        backgroundColor: 'transparent' as const,
+        backgroundColor: isDark ? ('transparent' as const) : palette.bg,
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: isDark ? 'rgba(255,255,255,0.14)' : 'rgba(60,80,110,0.16)'
       };

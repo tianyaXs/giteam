@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Animated, Keyboard, Platform, Pressable, StatusBar, Text, View } from 'react-native';
+import { Animated, Keyboard, Pressable, StatusBar, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Drawer } from 'react-native-drawer-layout';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, {
   Easing as ReEasing,
   interpolate,
-  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming
@@ -76,7 +75,6 @@ type ChatWorkspaceScreenProps = {
   currentWorkspaceName: string;
   chatListMountKey: string;
   messageScrollRef: React.RefObject<any>;
-  messageBottomInset: number;
   displayedTurnCells: any[];
   chatViewabilityConfig: any;
   onChatViewableItemsChanged: (info: any) => void;
@@ -145,7 +143,6 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     leftDrawer,
     loadingOlder,
     shouldSuppressLoadOlder,
-    messageBottomInset,
     messageScrollRef,
     modelCatalogStatus = 'idle',
     notebookColors,
@@ -202,98 +199,77 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   const activeNotebookPanelRef = useRef<NotebookPanel>('');
   const openNotifiedPanelRef = useRef<NotebookPanel>('');
   const composerRef = useRef<ChatComposerHandle>(null);
-  /** 专注模式下用户单击唤出 chrome 后置 true；再次单击可收起 */
+  /** Sticky Composer 测量节点：只写 contentInsetEndAdjustment，不直接 reportContentInset */
+  const composerShellRef = useRef<View>(null);
+  /** 专注收起时点底部原输入区唤出 chrome 后置 true；离开专注资格后自动清零 */
   const [focusChromePinned, setFocusChromePinned] = useState(false);
-  /**
-   * 仅在收起/展开动画期间为 true：此时顶栏走裁切动画。
-   * 动画结束后若已离开专注资格，再回到静态顶栏布局。
-   */
-  const [chromeLayoutLocked, setChromeLayoutLocked] = useState(false);
-  /**
-   * 列表 inset 的专注态：进入收起时立刻收紧；整个专注资格期内保持收紧
-   * （含 pin 展开顶栏/输入），离开资格且动画结束后再恢复，避免展开时列表上跳。
-   */
-  const [layoutChromeCollapsed, setLayoutChromeCollapsed] = useState(false);
   const focusProgress = useSharedValue(0);
-  const dockHeightSV = useSharedValue(Math.max(72, inputDockHeight || 88));
   const focusEligible =
     focusMode && !activeQuestionRequest && !activePermissionRequest;
-  const focusEligibleRef = useRef(focusEligible);
-  focusEligibleRef.current = focusEligible;
   /** true = 顶栏/输入收起中 */
   const focusChrome = focusEligible && !focusChromePinned;
   const canAbortNow = !!composerProps.canAbortNow;
   /**
-   * 静止静态顶栏：仅在完全离开专注资格后使用。
-   * 专注资格期内（含 pinned 展开）始终走动画包装，避免 pin/unpin 结束 remount 顶栏造成列表跳。
+   * 顶栏占位：专注时一次性收到 0，把高度还给列表；退出时一次性恢复。
+   * 只做跳变、不做 height 插值，避免 maintainScrollAtEnd 每帧追底抖动。
    */
-  const chromeAtRest = !focusEligible && !chromeLayoutLocked;
+  const [topChromeInset, setTopChromeInset] = useState(TOP_BAR_HEIGHT);
 
-  const finishExpandLayout = useCallback(() => {
-    setChromeLayoutLocked(false);
-    // pin 展开时仍在专注资格内：保持 inset 收紧，不要在这时撑高 padding
-    if (!focusEligibleRef.current) {
-      setLayoutChromeCollapsed(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    dockHeightSV.value = Math.max(72, Number(inputDockHeight) || 88);
-  }, [dockHeightSV, inputDockHeight]);
-
-  useEffect(() => {
-    // 进入/退出专注资格时复位 pin；新一轮发送从收起态开始
-    setFocusChromePinned(false);
-  }, [focusEligible]);
+  /**
+   * 只用 shared value 驱动 KeyboardAwareLegendList 的 extraContentPadding。
+   * 不要像官方 hook 那样再 reportContentInset(composerH)：键盘弹起时 ChatScrollView
+   * 已通过 onContentInsetChange 上报「键盘+composer」合成 inset，再写一次会盖掉键盘分量 → 微抖。
+   */
+  const contentInsetEndAdjustment = useSharedValue(Math.max(72, Number(inputDockHeight) || 88));
+  const lastComposerInsetHRef = useRef(Math.max(72, Number(inputDockHeight) || 88));
+  const onComposerLayout = useCallback((event: LayoutChangeEvent) => {
+    const h = Math.round(Number(event.nativeEvent.layout?.height || 0));
+    if (h <= 0) return;
+    if (Math.abs(h - lastComposerInsetHRef.current) <= 2) return;
+    lastComposerInsetHRef.current = h;
+    contentInsetEndAdjustment.value = h;
+  }, [contentInsetEndAdjustment]);
 
   useEffect(() => {
     if (focusChrome) {
-      setChromeLayoutLocked(true);
-      setLayoutChromeCollapsed(true);
+      setTopChromeInset(0);
       focusProgress.value = withTiming(1, {
         duration: 280,
         easing: ReEasing.bezier(0.22, 1, 0.36, 1)
       });
       return;
     }
-    // 展开：先让顶栏/Composer 动画占回空间；inset 仅在离开资格后恢复
-    focusProgress.value = withTiming(
-      0,
-      {
-        duration: 360,
-        easing: ReEasing.bezier(0.16, 1, 0.3, 1)
-      },
-      (finished) => {
-        if (finished) runOnJS(finishExpandLayout)();
-      }
-    );
-  }, [finishExpandLayout, focusChrome, focusProgress]);
 
-  // 资格被硬切掉且已在展开静止态时，确保 inset 不卡住
-  useEffect(() => {
-    if (focusEligible || focusChrome || chromeLayoutLocked) return;
-    if (layoutChromeCollapsed) setLayoutChromeCollapsed(false);
-  }, [chromeLayoutLocked, focusChrome, focusEligible, layoutChromeCollapsed]);
+    if (!focusEligible) {
+      setFocusChromePinned(false);
+    }
+    setTopChromeInset(TOP_BAR_HEIGHT);
+    const from = focusProgress.value;
+    focusProgress.value = withTiming(0, {
+      duration: from < 0.08 ? 200 : 340,
+      easing: ReEasing.bezier(0.16, 1, 0.3, 1)
+    });
+  }, [focusChrome, focusEligible, focusProgress]);
 
+  /**
+   * 顶栏浮层：opacity + 上移收起；占位由 topChromeInset 一次性切换，不在这里改 layout height。
+   */
   const topBarAnimStyle = useAnimatedStyle(() => {
     const p = focusProgress.value;
     return {
-      height: interpolate(p, [0, 1], [TOP_BAR_HEIGHT, 0]),
       opacity: interpolate(p, [0, 1], [1, 0]),
-      overflow: 'hidden' as const
+      transform: [{ translateY: interpolate(p, [0, 1], [0, -TOP_BAR_HEIGHT]) }]
     };
   });
 
   /**
-   * 不用 height 裁切（会先吃掉底部 safe-area，恢复后输入框像上移）。
-   * 仅用 opacity + 负 margin 收起占位；p=0 时等价于改造前「无额外样式」。
+   * 专注收起：仅视觉淡出/微移，保持 Sticky 测量高度与 contentInset 不变。
    */
   const composerAnimStyle = useAnimatedStyle(() => {
     const p = focusProgress.value;
-    const h = Math.max(72, dockHeightSV.value);
     return {
       opacity: interpolate(p, [0, 1], [1, 0]),
-      marginBottom: interpolate(p, [0, 1], [0, -h])
+      transform: [{ translateY: interpolate(p, [0, 1], [0, 16]) }]
     };
   });
 
@@ -309,22 +285,29 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
     ]
   }));
 
+  /** 与打断钮同节奏出现：底部原输入区热区 */
+  const focusRevealAnimStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(focusProgress.value, [0.35, 1], [0, 1])
+  }));
+
+  const focusRevealHitHeight = Math.max(
+    COMPOSER_DOCK_HEIGHT + Math.max(COMPOSER_MIN_BOTTOM_PAD, insets.bottom),
+    Math.round(Number(inputDockHeight) || 0)
+  );
+
   const dismissComposer = useCallback(() => {
     composerRef.current?.collapse();
   }, []);
 
-  /**
-   * 列表空白单击（已由 ConversationStage 过滤掉消息/事件详情点击）：
-   * - 专注资格内：切换顶栏/输入显隐
-   * - 非专注：只收起输入扩展（不进入专注）
-   */
+  /** 空会话占位点击：非专注时收起输入扩展 */
   const handleContentTap = useCallback(() => {
-    if (focusEligible) {
-      setFocusChromePinned((prev) => !prev);
-      return;
-    }
+    if (focusEligible) return;
     dismissComposer();
   }, [dismissComposer, focusEligible]);
+
+  const revealFocusComposer = useCallback(() => {
+    setFocusChromePinned(true);
+  }, []);
 
   const handleStageScrollBeginDrag = useCallback(() => {
     // 滚动只收起输入扩展，不切换专注 chrome（与单击区分）
@@ -415,7 +398,15 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
   const mainContent = (
     <View style={[styles.notebookMainPage, { backgroundColor: notebookColors.main }]}>
       <StatusBar barStyle={themeDark ? 'light-content' : 'dark-content'} backgroundColor={notebookColors.shell} />
-      {chromeAtRest ? (
+      {/* 顶栏浮层：列表区 paddingTop 随专注一次性收放，把高度还给内容 */}
+      <Reanimated.View
+        pointerEvents={focusChrome ? 'none' : 'auto'}
+        style={[
+          styles.topBarOverlay,
+          { backgroundColor: notebookColors.main },
+          topBarAnimStyle
+        ]}
+      >
         <View
           style={[
             styles.topBar,
@@ -453,61 +444,26 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             <Feather name="edit" size={20} color={notebookColors.text} />
           </Pressable>
         </View>
-      ) : (
-        <Reanimated.View
-          pointerEvents={focusChrome ? 'none' : 'auto'}
-          style={[{ overflow: 'hidden', backgroundColor: notebookColors.main }, topBarAnimStyle]}
-        >
-          <View
-            style={[
-              styles.topBar,
-              {
-                backgroundColor: notebookColors.main,
-                borderBottomColor: notebookColors.line
-              }
-            ]}
-          >
-            <Pressable
-              accessibilityLabel="打开左侧面板"
-              hitSlop={8}
-              onPress={activeNotebookPanel === 'left' ? requestCloseDrawer : () => requestOpenDrawer('left')}
-              style={styles.topNavButton}
-            >
-              <Feather
-                name="menu"
-                size={22}
-                color={activeNotebookPanel === 'left' ? notebookColors.ink : notebookColors.text}
-              />
-            </Pressable>
-            <View style={styles.topBrand}>
-              {showNotebookSessionTitle ? (
-                <Text numberOfLines={1} style={[styles.topTitleCompact, { color: notebookColors.text }]}>
-                  {compactSessionTitle}
-                </Text>
-              ) : null}
-            </View>
-            <Pressable
-              accessibilityLabel="新建会话"
-              hitSlop={8}
-              onPress={() => onNewSession?.()}
-              style={styles.topNavButton}
-            >
-              <Feather name="edit" size={20} color={notebookColors.text} />
-            </Pressable>
-          </View>
-        </Reanimated.View>
-      )}
-      {/* 整块内容区 + 输入框一起被键盘顶起（比 Sticky 分轨更稳） */}
-      <KeyboardAvoidingView
-        behavior="padding"
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 48}
-        style={[styles.keyboardAwareContent, { backgroundColor: notebookColors.main }]}
+      </Reanimated.View>
+      {/* 官方聊天结构：列表铺满 + 浮动 Sticky Composer；勿包 KAV，勿与 flex 底栏双占位 */}
+      <View
+        style={[
+          styles.keyboardAwareContent,
+          { backgroundColor: notebookColors.main, paddingTop: topChromeInset }
+        ]}
       >
-        <Animated.View style={styles.chatStageViewport}>
+        <Animated.View
+          style={[
+            styles.chatStageViewport,
+            activeQuestionRequest || activePermissionRequest
+              ? { paddingBottom: Math.max(72, Number(inputDockHeight) || 88) }
+              : null
+          ]}
+        >
           <ChatConversationStage
             styles={styles}
             windowWidth={windowWidth}
-            inputDockHeight={layoutChromeCollapsed ? 24 : inputDockHeight}
+            inputDockHeight={inputDockHeight}
             notebookColors={notebookColors}
             showStreamTopGlow={showStreamTopGlow}
             streamTopGlowAnim={streamTopGlowAnim}
@@ -515,11 +471,7 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             currentWorkspaceName={currentWorkspaceName}
             messageScrollRef={messageScrollRef}
             shouldSuppressLoadOlder={shouldSuppressLoadOlder}
-            messageBottomInset={
-              layoutChromeCollapsed
-                ? Math.max(48, messageBottomInset * 0.35)
-                : messageBottomInset
-            }
+            contentInsetEndAdjustment={contentInsetEndAdjustment}
             displayedTurnCells={displayedTurnCells}
             chatViewabilityConfig={chatViewabilityConfig}
             onChatViewableItemsChanged={onChatViewableItemsChanged}
@@ -567,14 +519,38 @@ export const ChatWorkspaceScreen = React.forwardRef<ChatWorkspaceScreenHandle, C
             </View>
           ) : null}
         </Animated.View>
-        {/* 与改造前相同：自然高度；专注态仅淡出+负 margin 收占位，不锁 height */}
-        <Reanimated.View
-          style={composerAnimStyle}
-          pointerEvents={focusChrome ? 'none' : 'auto'}
+        <KeyboardStickyView
+          offset={{ closed: 0, opened: insets.bottom }}
+          style={[styles.composerStickyDock, { backgroundColor: notebookColors.main }]}
         >
-          <ChatComposer ref={composerRef} {...composerProps} />
+          <Reanimated.View
+            style={composerAnimStyle}
+            pointerEvents={focusChrome ? 'none' : 'auto'}
+          >
+            <View ref={composerShellRef} collapsable={false} onLayout={onComposerLayout}>
+              <ChatComposer ref={composerRef} {...composerProps} />
+            </View>
+          </Reanimated.View>
+        </KeyboardStickyView>
+      </View>
+
+      {focusEligible ? (
+        <Reanimated.View
+          pointerEvents={focusChrome ? 'auto' : 'none'}
+          style={[
+            styles.focusComposerRevealWrap,
+            { height: focusRevealHitHeight },
+            focusRevealAnimStyle
+          ]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="显示输入框"
+            onPress={revealFocusComposer}
+            style={styles.focusComposerRevealHit}
+          />
         </Reanimated.View>
-      </KeyboardAvoidingView>
+      ) : null}
 
       {canAbortNow ? (
         <Reanimated.View

@@ -62,7 +62,7 @@ export function useChatUiActions(params: {
   }, [setExpandedThinkCards]);
 
   const handleComposerHeight = useCallback((height: number) => {
-    if (Math.abs(height - inputDockHeight) > 2) setInputDockHeight(height);
+    if (Math.abs(height - inputDockHeight) > 3) setInputDockHeight(height);
   }, [inputDockHeight, setInputDockHeight]);
 
   const handleRemoveAttachment = useCallback((id: string) => {

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { InteractionManager, useWindowDimensions } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { ThemeCircularRevealHost } from "./src/features/theme/ThemeCircularReveal";
 import { NO_AUTH_TOKEN, cloudHeartbeat } from "./src/api/controlApi";
 import { interactionToQuestionRequest } from "./src/api/agent/bridge";
 import { createMobileAgentClient } from "./src/api/agent/client";
@@ -51,6 +52,7 @@ import { useChatListController } from "./src/features/chat/useChatListController
 import { useChatMotionState } from "./src/features/chat/useChatMotionState";
 import { useChatScreenDerivedState } from "./src/features/chat/useChatScreenDerivedState";
 import { useChatUiActions } from "./src/features/chat/useChatUiActions";
+import { useFocusModeSetting } from "./src/features/chat/useFocusModeSetting";
 import { useChatWorkspaceEvents } from "./src/features/chat/useChatWorkspaceEvents";
 import { useChatWorkspacePanelProps } from "./src/features/chat/useChatWorkspacePanelProps";
 import { useComposerPresentationState } from "./src/features/chat/useComposerPresentationState";
@@ -262,7 +264,7 @@ export default function App() {
     sessionMessageSyncRef,
     sessionRecoveryRef,
   });
-  const messageBottomInset = Math.max(CHAT_LIST_BOTTOM_AIR, Math.round(inputDockHeight + 16));
+  const messageBottomInset = Math.max(CHAT_LIST_BOTTOM_AIR, Math.round(inputDockHeight));
 
   const {
     showLatestJump,
@@ -571,37 +573,12 @@ export default function App() {
       streamTopGlowEnabled: false,
     });
   const appReady = fontsLoaded && loaded;
-  const { keyboardInset, launchOverlayOpacity, launchOverlayVisible } =
+  const { launchOverlayOpacity, launchOverlayVisible } =
     useMobileShellLifecycle({
       appReady,
       setStartupSessionHydrating,
       startupSessionHydrating,
     });
-  const previousKeyboardInsetRef = React.useRef(0);
-  useEffect(() => {
-    const previousInset = previousKeyboardInsetRef.current;
-    previousKeyboardInsetRef.current = keyboardInset;
-    if (previousInset === keyboardInset) return;
-    if (!listRevealReady) return;
-    if (!sessionId && keyboardInset <= 0) return;
-    if (messageUserScrollingRef.current) return;
-    if (!followLatest && !isViewportNearLatest()) return;
-    markFollowLatest(320);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        scrollToLatest(true);
-      });
-    });
-  }, [
-    followLatest,
-    isViewportNearLatest,
-    keyboardInset,
-    listRevealReady,
-    markFollowLatest,
-    messageUserScrollingRef,
-    scrollToLatest,
-    sessionId,
-  ]);
   useGlobalErrorLogger({ pushConnLog });
 
   useEffect(() => {
@@ -843,6 +820,7 @@ export default function App() {
     sessionStatusMap,
     sessionOptimisticUserMapRef,
   });
+  const focusModeSetting = useFocusModeSetting();
 
   useEffect(() => {
     const sid = toText(sessionId).trim();
@@ -1609,7 +1587,6 @@ export default function App() {
     handleToggleAttachmentMenu,
     imageAttachments,
     inputModelLabel,
-    keyboardInset,
     loadMoreAlbumImages,
     mediaAlbums,
     maybeLoadMoreRecentImages,
@@ -1696,12 +1673,11 @@ export default function App() {
       currentSessionTitle={currentSessionTitle}
       showStreamTopGlow={showStreamTopGlow}
       streamTopGlowAnim={streamTopGlowAnim}
-      focusMode={sessionWorking}
+      focusMode={focusModeSetting.enabled && sessionWorking}
       renderedTurnsLength={renderedTurns.length}
       currentWorkspaceName={currentWorkspaceName}
       chatListMountKey={chatListMountKey}
       messageScrollRef={messageScrollRef}
-      messageBottomInset={messageBottomInset}
       displayedTurnCells={displayedTurnCells}
       chatViewabilityConfig={chatViewabilityConfig}
       onChatViewableItemsChanged={onChatViewableItemsChanged}
@@ -1773,61 +1749,62 @@ export default function App() {
     <SafeAreaProvider>
       <KeyboardProvider>
         <MobileAppRouter
-            albumPickerOverlay={albumPickerOverlay}
-            appReady={appReady}
-            authed={authed}
-            backgroundColor={notebookColors.shell}
-            busy={busy}
-            CameraViewCompat={CameraViewCompat}
-            chatScreen={chatScreen}
-            connectProgressScaleX={connectProgressScaleX}
-            connectingDiscoverId={connectingDiscoverId}
-            discoverDeviceRows={discoverDeviceRows}
-            discoverOpen={discoverOpen}
-            discoveringUi={discoveringUi}
-            fontsReady={fontsLoaded}
-            fontFamily={FONT_DISPLAY_SERIF}
-            gestureRootStyle={[styles.gestureRoot, { backgroundColor: notebookColors.shell }]}
-            launchOverlay={launchOverlay}
-            lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
-            onAuthSubmit={() => void onAuthSubmit()}
-            onBarcodeScanned={onBarcodeScanned}
-            onCancelScanner={onCloseScanner}
-            connectionMode={connectionMode}
-            accessKey={accessKey}
-            devicePickerOpen={devicePickerOpen}
-            pendingDevices={pendingDevices}
-            onChangeConnectionMode={setConnectionMode}
-            onChangeAccessKey={setAccessKey}
-            onChangePairCode={setPairCode}
-            onChangeServerUrl={onChangeServerUrl}
-            onCloseDiscover={onCloseDiscover}
-            onConnectDiscoverPress={onConnectDiscoverPress}
-            onMountScannerError={onScannerMountError}
-            onOpenScanner={onOpenScanner}
-            onPairPromptCancel={cancelPairPrompt}
-            onPairPromptChange={setPairPromptValue}
-            onPairPromptConfirm={confirmPairPrompt}
-            onPickQrFromAlbum={() => void onPickQrFromAlbum()}
-            onRescanDiscover={() => void startDiscover()}
-            onRescanScanner={onScannerRescan}
-            onResetAuthStatus={() => setStatus("准备就绪")}
-            onScannerReady={onScannerReady}
-            onSelectCloudDevice={(id) => void onSelectCloudDevice(id)}
-            onCloseDevicePicker={() => setDevicePickerOpen(false)}
-            pairCode={pairCode}
-            pairPromptHostPort={pairPromptHostPort}
-            pairPromptOpen={pairPromptOpen}
-            pairPromptValue={pairPromptValue}
-            safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
-            scanHitCount={scanHitCount}
-            scannerLocked={scannerLocked}
-            scannerOpen={scannerOpen}
-            scannerReady={scannerReady}
-            serverUrlInput={serverUrlInput}
-            startupStyles={styles}
-            statusText={statusText}
-          />
+          albumPickerOverlay={albumPickerOverlay}
+          appReady={appReady}
+          authed={authed}
+          backgroundColor={notebookColors.shell}
+          busy={busy}
+          CameraViewCompat={CameraViewCompat}
+          chatScreen={chatScreen}
+          connectProgressScaleX={connectProgressScaleX}
+          connectingDiscoverId={connectingDiscoverId}
+          discoverDeviceRows={discoverDeviceRows}
+          discoverOpen={discoverOpen}
+          discoveringUi={discoveringUi}
+          fontsReady={fontsLoaded}
+          fontFamily={FONT_DISPLAY_SERIF}
+          gestureRootStyle={[styles.gestureRoot, { backgroundColor: notebookColors.shell }]}
+          launchOverlay={launchOverlay}
+          lastScanAtLabel={lastScanAt ? formatClock(lastScanAt) : ""}
+          onAuthSubmit={() => void onAuthSubmit()}
+          onBarcodeScanned={onBarcodeScanned}
+          onCancelScanner={onCloseScanner}
+          connectionMode={connectionMode}
+          accessKey={accessKey}
+          devicePickerOpen={devicePickerOpen}
+          pendingDevices={pendingDevices}
+          onChangeConnectionMode={setConnectionMode}
+          onChangeAccessKey={setAccessKey}
+          onChangePairCode={setPairCode}
+          onChangeServerUrl={onChangeServerUrl}
+          onCloseDiscover={onCloseDiscover}
+          onConnectDiscoverPress={onConnectDiscoverPress}
+          onMountScannerError={onScannerMountError}
+          onOpenScanner={onOpenScanner}
+          onPairPromptCancel={cancelPairPrompt}
+          onPairPromptChange={setPairPromptValue}
+          onPairPromptConfirm={confirmPairPrompt}
+          onPickQrFromAlbum={() => void onPickQrFromAlbum()}
+          onRescanDiscover={() => void startDiscover()}
+          onRescanScanner={onScannerRescan}
+          onResetAuthStatus={() => setStatus("准备就绪")}
+          onScannerReady={onScannerReady}
+          onSelectCloudDevice={(id) => void onSelectCloudDevice(id)}
+          onCloseDevicePicker={() => setDevicePickerOpen(false)}
+          pairCode={pairCode}
+          pairPromptHostPort={pairPromptHostPort}
+          pairPromptOpen={pairPromptOpen}
+          pairPromptValue={pairPromptValue}
+          safeStyle={[styles.chatSafe, { backgroundColor: notebookColors.shell }]}
+          scanHitCount={scanHitCount}
+          scannerLocked={scannerLocked}
+          scannerOpen={scannerOpen}
+          scannerReady={scannerReady}
+          serverUrlInput={serverUrlInput}
+          startupStyles={styles}
+          statusText={statusText}
+        />
+        <ThemeCircularRevealHost />
       </KeyboardProvider>
     </SafeAreaProvider>
   );

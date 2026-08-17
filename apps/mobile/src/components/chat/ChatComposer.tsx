@@ -119,7 +119,7 @@ const DOCK_SURFACE_STYLE = {
   paddingHorizontal: 6,
   borderRadius: BTN_RADIUS,
   overflow: 'hidden' as const,
-  borderWidth: StyleSheet.hairlineWidth
+  borderWidth: 0
 };
 
 export type ChatComposerHandle = {
@@ -154,7 +154,6 @@ type ChatComposerProps = {
   recentImagesLoading: boolean;
   recentImagesLoadingMore: boolean;
   recentImagesHasNext: boolean;
-  keyboardInset: number;
   onLayoutHeight: (height: number) => void;
   onPromptChange: (value: string) => void;
   onToggleAttachmentMenu: () => void;
@@ -199,7 +198,6 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     selectedModel = '',
     onSelectModel,
     onOpenModelManager,
-    keyboardInset,
     onAbort,
     onAttachRecentImage,
     onCaptureCamera,
@@ -233,8 +231,8 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
 
   const { colors } = useMobileTheme();
   const insets = useSafeAreaInsets();
-  // Sticky 已改为整页 KeyboardAvoidingView；弹起时收掉 Home Indicator 边距，避免输入条悬空
-  const bottomPad = keyboardInset > 0 ? 8 : Math.max(10, insets.bottom);
+  // Sticky Composer：safe-area 恒定由底边距承担；键盘打开时由 KeyboardStickyView opened offset 抵消悬空
+  const bottomPad = Math.max(10, insets.bottom);
   const sendActive = canSendNow || canAbortNow;
 
   const hasPrompt = toText(prompt).trim().length > 0;
@@ -921,7 +919,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
               shadowRadius: 6,
               shadowOffset: { width: 0, height: 2 }
             },
-            android: { elevation: 12 },
+            android: { elevation: 3 },
             default: {}
           })
         : null,
@@ -931,7 +929,8 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
   const reportLayoutHeight = useCallback(
     (h: number) => {
       if (h <= 0) return;
-      if (Math.abs(h - lastLayoutHRef.current) <= 1) return;
+      // 加宽阈值，避免键盘/阴影/亚像素 onLayout 来回跳 1～2px 带动 dock 状态与列表 inset
+      if (Math.abs(h - lastLayoutHRef.current) <= 2) return;
       lastLayoutHRef.current = h;
       onLayoutHeight(h);
     },
@@ -1234,8 +1233,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                   style={[
                     DOCK_SURFACE_STYLE,
                     {
-                      backgroundColor: dockBg,
-                      borderColor: colors.isDark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.1)'
+                      backgroundColor: dockBg
                     }
                   ]}
                   pointerEvents={showDock ? 'auto' : 'none'}

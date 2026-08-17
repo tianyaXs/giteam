@@ -2,13 +2,15 @@ import {
   BlurMask,
   Canvas,
   Circle,
+  Fill,
   Group,
   Rect,
+  Shader,
+  Skia,
   interpolateColors
 } from '@shopify/react-native-skia';
-import { MeshGradientView } from 'expo-mesh-gradient';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import {
   FrameInfo,
   SharedValue,
@@ -17,7 +19,7 @@ import {
   useFrameCallback,
   useSharedValue
 } from 'react-native-reanimated';
-import { IDLE_BG_STOPS_DARK, IDLE_INTENSITY_STOPS } from './thinkingLevels';
+import { IDLE_BG_STOPS_DARK, IDLE_BG_STOPS_LIGHT, IDLE_INTENSITY_STOPS } from './thinkingLevels';
 
 type IdlePillAuraFieldProps = {
   intensity: SharedValue<number>;
@@ -41,9 +43,103 @@ type Seed = {
   soft: boolean;
 };
 
-const COUNT = 48;
-/** 浅色 mesh 降到 ~12fps，避免每帧 setState */
-const LIGHT_FRAME_MS = 80;
+/** 深色粒子数量：略减以降低每帧 draw call，观感仍够。 */
+const COUNT = 36;
+/** 浅色雾：待机低频；scrub 时稍高。勿跑满 60fps（RuntimeShader 全片刷新很贵）。 */
+const LIGHT_FOG_IDLE_DT = 1 / 18;
+const LIGHT_FOG_SCRUB_DT = 1 / 28;
+/** 深色粒子同样限帧，避免后台/待机常驻吃 GPU。 */
+const DARK_PARTICLE_IDLE_DT = 1 / 24;
+const DARK_PARTICLE_SCRUB_DT = 1 / 36;
+
+/**
+ * 浅色 3×3 油膜雾（Skia RuntimeShader）。
+ * 对齐原 MeshGradient 思路，避免 expo-mesh-gradient 在低端机渲黑。
+ */
+const LIGHT_FOG_SKSL = `
+uniform float2 u_size;
+uniform float u_t;
+uniform float u_fill;
+uniform float u_scrub;
+
+float3 lerp3(float3 a, float3 b, float t) {
+  return mix(a, b, clamp(t, 0.0, 1.0));
+}
+
+float3 samplePearl(float u) {
+  float x = fract(u) * 4.0;
+  float i = floor(x);
+  float f = fract(x);
+  float3 a = i < 1.0 ? float3(0.961, 0.969, 0.984)
+           : i < 2.0 ? float3(0.965, 0.961, 0.976)
+           : i < 3.0 ? float3(0.973, 0.961, 0.969)
+                     : float3(0.957, 0.969, 0.961);
+  float3 b = i < 1.0 ? float3(0.965, 0.961, 0.976)
+           : i < 2.0 ? float3(0.973, 0.961, 0.969)
+           : i < 3.0 ? float3(0.957, 0.969, 0.961)
+                     : float3(0.961, 0.969, 0.984);
+  return lerp3(a, b, f);
+}
+
+float3 sampleTint(float u) {
+  float x = fract(u) * 4.0;
+  float i = floor(x);
+  float f = fract(x);
+  float3 a = i < 1.0 ? float3(0.749, 0.847, 0.961)
+           : i < 2.0 ? float3(0.784, 0.753, 0.933)
+           : i < 3.0 ? float3(0.875, 0.753, 0.894)
+                     : float3(0.722, 0.878, 0.800);
+  float3 b = i < 1.0 ? float3(0.784, 0.753, 0.933)
+           : i < 2.0 ? float3(0.875, 0.753, 0.894)
+           : i < 3.0 ? float3(0.722, 0.878, 0.800)
+                     : float3(0.749, 0.847, 0.961);
+  return lerp3(a, b, f);
+}
+
+float3 cellColor(float idx, float fill, float phase) {
+  float depth = 0.06 + pow(clamp(fill, 0.0, 1.0), 1.15) * 0.78;
+  float drift = 0.02 + fill * 0.08;
+  float u = idx * 0.19 + phase * drift * (0.5 + idx * 0.04);
+  return lerp3(samplePearl(u), sampleTint(u + 0.08), depth);
+}
+
+half4 main(float2 xy) {
+  float2 uv = xy / max(u_size, float2(1.0, 1.0));
+  float amp = 0.01 + pow(clamp(u_fill, 0.0, 1.0), 1.25) * 0.175 + u_scrub * 0.04;
+  float2 w = uv;
+  w.x += sin(u_t * 0.42 + uv.y * 2.6) * amp * 1.15 + sin(u_t * 0.17 + 1.1) * amp * 0.35;
+  w.y += cos(u_t * 0.39 + uv.x * 2.3) * amp + cos(u_t * 0.21 + 0.7) * amp * 0.3;
+  w = clamp(w, float2(0.0), float2(1.0));
+
+  // 3×3 控制点 → 2×2 四边形双线性
+  float2 g = w * 2.0;
+  float ix = min(floor(g.x), 1.0);
+  float iy = min(floor(g.y), 1.0);
+  float2 f = float2(g.x - ix, g.y - iy);
+  f = f * f * (3.0 - 2.0 * f);
+
+  float i0 = iy * 3.0 + ix;
+  float i1 = i0 + 1.0;
+  float i2 = i0 + 3.0;
+  float i3 = i0 + 4.0;
+
+  float3 c00 = cellColor(i0, u_fill, u_t);
+  float3 c10 = cellColor(i1, u_fill, u_t);
+  float3 c01 = cellColor(i2, u_fill, u_t);
+  float3 c11 = cellColor(i3, u_fill, u_t);
+
+  float3 col = lerp3(lerp3(c00, c10, f.x), lerp3(c01, c11, f.x), f.y);
+  return half4(col, 1.0);
+}
+`;
+
+const lightFogEffect = (() => {
+  try {
+    return Skia.RuntimeEffect.Make(LIGHT_FOG_SKSL);
+  } catch {
+    return null;
+  }
+})();
 
 function hash01(n: number): number {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -84,6 +180,23 @@ function wrap01(v: number): number {
   'worklet';
   const r = v % 1;
   return r < 0 ? r + 1 : r;
+}
+
+/** 同步 frame callback 与前台/active，避免进后台仍刷 Skia。 */
+function useAuraFrameGate(active: boolean, setActive: (v: boolean) => void) {
+  const setActiveRef = useRef(setActive);
+  setActiveRef.current = setActive;
+  useEffect(() => {
+    const sync = (state: AppStateStatus) => {
+      setActiveRef.current(!!active && state === 'active');
+    };
+    sync(AppState.currentState);
+    const sub = AppState.addEventListener('change', sync);
+    return () => {
+      sub.remove();
+      setActiveRef.current(false);
+    };
+  }, [active]);
 }
 
 function SoftDot(props: {
@@ -148,22 +261,23 @@ function DarkParticleField(props: {
   const { intensity, scrubbing, width, height, borderRadius, active } = props;
 
   const phase = useSharedValue(0);
+  const frameAcc = useSharedValue(0);
   const onFrame = useCallback(
     (info: FrameInfo) => {
       'worklet';
       const rawDt = info.timeSincePreviousFrame;
       const dt = Math.min(0.05, (rawDt == null || rawDt <= 0 ? 16 : rawDt) / 1000);
-      phase.value += dt * speedMulParticles(intensity.value, scrubbing.value);
+      frameAcc.value += dt;
+      const step = scrubbing.value > 0.04 ? DARK_PARTICLE_SCRUB_DT : DARK_PARTICLE_IDLE_DT;
+      if (frameAcc.value < step) return;
+      const advance = frameAcc.value;
+      frameAcc.value = 0;
+      phase.value += advance * speedMulParticles(intensity.value, scrubbing.value);
     },
-    [intensity, phase, scrubbing]
+    [frameAcc, intensity, phase, scrubbing]
   );
   const frameCb = useFrameCallback(onFrame, false);
-  const setFrameActiveRef = useRef(frameCb.setActive);
-  setFrameActiveRef.current = frameCb.setActive;
-  useEffect(() => {
-    setFrameActiveRef.current(!!active);
-    return () => setFrameActiveRef.current(false);
-  }, [active]);
+  useAuraFrameGate(active, frameCb.setActive);
 
   const pillBg = useDerivedValue(() =>
     interpolateColor(intensity.value, IDLE_INTENSITY_STOPS, IDLE_BG_STOPS_DARK)
@@ -190,189 +304,101 @@ function DarkParticleField(props: {
       pointerEvents="none"
       style={[StyleSheet.absoluteFillObject, { borderRadius, overflow: 'hidden' }]}
     >
-      <Canvas style={{ width, height }}>
-        <Rect x={0} y={0} width={width} height={height} color={pillBg} />
-        <Group blendMode="plus">{dots}</Group>
-      </Canvas>
+      {!active ? (
+        <View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: IDLE_BG_STOPS_DARK[Math.min(IDLE_BG_STOPS_DARK.length - 1, 1)] }
+          ]}
+        />
+      ) : (
+        <Canvas style={{ width, height }}>
+          <Rect x={0} y={0} width={width} height={height} color={pillBg} />
+          <Group blendMode="plus">{dots}</Group>
+        </Canvas>
+      )}
     </View>
   );
 }
 
-/**
- * 浅色：液体感淡彩雾（油膜式），低饱和柔融，不做霓虹。
- * 实现：expo-mesh-gradient（非 Skia）。
- */
-const FOG_MESH_BASE = [
-  [0.0, 0.0],
-  [0.5, 0.0],
-  [1.0, 0.0],
-  [0.0, 0.5],
-  [0.5, 0.5],
-  [1.0, 0.5],
-  [0.0, 1.0],
-  [0.5, 1.0],
-  [1.0, 1.0]
-] as const;
-
-const FOG_PEARL = [
-  '#F5F7FB',
-  '#F6F6FA',
-  '#F7F5F9',
-  '#F8F5F7',
-  '#F8F6F4',
-  '#F7F7F3',
-  '#F4F8F5',
-  '#F3F7F8',
-  '#F4F6FA',
-  '#F6F5F9',
-  '#F7F5F7',
-  '#F4F7F6'
-];
-const FOG_TINT = [
-  '#BFD8F5',
-  '#C8C0EE',
-  '#DFC0E4',
-  '#ECC0D4',
-  '#E8CDBE',
-  '#DDD9B8',
-  '#B8E0CC',
-  '#B0DCE2',
-  '#B6D0EC',
-  '#CAC0E6',
-  '#E0C0DA',
-  '#B8DCD0'
-];
-
-function lerpChannel(a: number, b: number, t: number): number {
-  return Math.round(a + (b - a) * t);
-}
-
-function mixHex(a: string, b: string, t: number): string {
-  const u = Math.max(0, Math.min(1, t));
-  const pa = parseInt(a.slice(1), 16);
-  const pb = parseInt(b.slice(1), 16);
-  const r = lerpChannel((pa >> 16) & 255, (pb >> 16) & 255, u);
-  const g = lerpChannel((pa >> 8) & 255, (pb >> 8) & 255, u);
-  const bl = lerpChannel(pa & 255, pb & 255, u);
-  return `#${((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1)}`;
-}
-
-function samplePalette(palette: string[], u: number): string {
-  const n = palette.length;
-  const f = ((u % 1) + 1) % 1;
-  const x = f * n;
-  const i0 = Math.floor(x) % n;
-  const i1 = (i0 + 1) % n;
-  return mixHex(palette[i0], palette[i1], x - Math.floor(x));
-}
-
-function fogMeshColors(intensity: number, phase: number): string[] {
-  const fill = Math.max(0, Math.min(1, intensity));
-  const depth = 0.06 + Math.pow(fill, 1.15) * 0.78;
-  const drift = 0.02 + fill * 0.08;
-  const colors: string[] = [];
-  for (let i = 0; i < 9; i += 1) {
-    const u = i * 0.19 + phase * drift * (0.5 + i * 0.04);
-    const pearl = samplePalette(FOG_PEARL, u);
-    const tint = samplePalette(FOG_TINT, u + 0.08);
-    colors.push(mixHex(pearl, tint, depth));
-  }
-  return colors;
-}
-
-function clamp01(n: number): number {
-  return Math.max(0, Math.min(1, n));
-}
-
-function deformFogPoint(i: number, x: number, y: number, s: number, amp: number): [number, number] {
-  if (i === 0 || i === 2 || i === 6 || i === 8) return [x, y];
-  if (i === 1 || i === 7) {
-    return [clamp01(0.5 + Math.sin(s * 0.38 + i * 0.9) * amp + Math.sin(s * 0.17 + i) * amp * 0.4), y];
-  }
-  if (i === 3 || i === 5) {
-    return [x, clamp01(0.5 + Math.cos(s * 0.36 + i * 0.8) * amp + Math.cos(s * 0.15 + i) * amp * 0.35)];
-  }
-  return [
-    clamp01(0.5 + Math.sin(s * 0.42) * amp * 1.8 + Math.sin(s * 0.19 + 1.2) * amp * 0.7),
-    clamp01(0.5 + Math.cos(s * 0.39) * amp * 1.6 + Math.cos(s * 0.21 + 0.7) * amp * 0.6)
-  ];
-}
-
 function fogSpeed(fill: number, scrub: number): number {
-  return 0.05 + Math.pow(fill, 1.35) * 6.15 + scrub * 1.6;
+  'worklet';
+  // 略降基础转速：限帧后观感仍顺，GPU 压力更小
+  return 0.04 + Math.pow(fill, 1.35) * 4.8 + scrub * 1.35;
 }
 
-function fogAmp(fill: number, scrub: number): number {
-  return 0.01 + Math.pow(fill, 1.25) * 0.175 + scrub * 0.04;
-}
-
+/** 浅色：Skia RuntimeShader 油膜雾；编译失败则退回近白实心底。 */
 function LightAuraField(props: {
   intensity: SharedValue<number>;
   scrubbing: SharedValue<number>;
+  width: number;
+  height: number;
   borderRadius: number;
   active: boolean;
 }) {
-  const { intensity, scrubbing, borderRadius, active } = props;
+  const { intensity, scrubbing, width, height, borderRadius, active } = props;
+  const phase = useSharedValue(0);
+  const frameAcc = useSharedValue(0);
 
-  const [meshColors, setMeshColors] = useState(() => fogMeshColors(intensity.value, 0));
-  const [meshPoints, setMeshPoints] = useState(() => FOG_MESH_BASE.map((p) => [...p] as number[]));
-  const phaseRef = useRef(0);
-  const lastTsRef = useRef(Date.now());
-  const lastPaintRef = useRef(0);
+  const onFrame = useCallback(
+    (info: FrameInfo) => {
+      'worklet';
+      const rawDt = info.timeSincePreviousFrame;
+      const dt = Math.min(0.05, (rawDt == null || rawDt <= 0 ? 16 : rawDt) / 1000);
+      frameAcc.value += dt;
+      const step = scrubbing.value > 0.04 ? LIGHT_FOG_SCRUB_DT : LIGHT_FOG_IDLE_DT;
+      if (frameAcc.value < step) return;
+      const advance = frameAcc.value;
+      frameAcc.value = 0;
+      phase.value += advance * fogSpeed(intensity.value, scrubbing.value);
+    },
+    [frameAcc, intensity, phase, scrubbing]
+  );
+  const frameCb = useFrameCallback(onFrame, false);
+  useAuraFrameGate(active, frameCb.setActive);
 
-  useEffect(() => {
-    if (!active) return;
-    let raf = 0;
-    let mounted = true;
-    lastTsRef.current = Date.now();
-    lastPaintRef.current = 0;
+  const uniforms = useDerivedValue(() => ({
+    u_size: [width, height],
+    u_t: phase.value,
+    u_fill: intensity.value,
+    u_scrub: scrubbing.value
+  }));
 
-    const tick = () => {
-      if (!mounted) return;
-      const now = Date.now();
-      const dt = Math.min(0.05, (now - lastTsRef.current) / 1000);
-      lastTsRef.current = now;
-
-      const fill = intensity.value;
-      const scrub = scrubbing.value;
-      phaseRef.current += dt * fogSpeed(fill, scrub);
-
-      // 相位仍按真时间积分，只降低 React 提交频率
-      if (now - lastPaintRef.current >= LIGHT_FRAME_MS) {
-        lastPaintRef.current = now;
-        const s = phaseRef.current;
-        setMeshPoints(FOG_MESH_BASE.map(([x, y], i) => deformFogPoint(i, x, y, s, fogAmp(fill, scrub))));
-        setMeshColors(fogMeshColors(fill, s));
-      }
-
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      mounted = false;
-      cancelAnimationFrame(raf);
-    };
-  }, [active, intensity, scrubbing]);
+  const fallbackBg = useDerivedValue(() =>
+    interpolateColor(intensity.value, IDLE_INTENSITY_STOPS, IDLE_BG_STOPS_LIGHT)
+  );
 
   return (
     <View
       pointerEvents="none"
       style={[StyleSheet.absoluteFillObject, { borderRadius, overflow: 'hidden' }]}
     >
-      <MeshGradientView
-        style={StyleSheet.absoluteFill}
-        columns={3}
-        rows={3}
-        colors={meshColors}
-        points={meshPoints}
-        smoothsColors
-      />
+      {/* 非待机：卸掉 Canvas，只留近似底色，避免隐藏态仍占 GPU */}
+      {!active ? (
+        <View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: IDLE_BG_STOPS_LIGHT[Math.min(IDLE_BG_STOPS_LIGHT.length - 1, 1)] }
+          ]}
+        />
+      ) : (
+        <Canvas style={{ width, height }}>
+          {lightFogEffect ? (
+            <Fill>
+              <Shader source={lightFogEffect} uniforms={uniforms} />
+            </Fill>
+          ) : (
+            <Rect x={0} y={0} width={width} height={height} color={fallbackBg} />
+          )}
+        </Canvas>
+      )}
     </View>
   );
 }
 
 /**
- * 待机胶囊光效：深色 = Skia 粒子；浅色 = Mesh 淡彩雾。
+ * 待机胶囊光效：深色 = Skia 粒子；浅色 = Skia RuntimeShader 雾（替代 MeshGradient）。
+ * 帧回调限频 + App 进后台暂停；浅色非待机卸载 Canvas。
  */
 export function IdlePillAuraField(props: IdlePillAuraFieldProps) {
   const {
@@ -404,6 +430,8 @@ export function IdlePillAuraField(props: IdlePillAuraFieldProps) {
     <LightAuraField
       intensity={intensity}
       scrubbing={scrubbing}
+      width={width}
+      height={height}
       borderRadius={borderRadius}
       active={active}
     />
