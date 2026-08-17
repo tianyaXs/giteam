@@ -2987,7 +2987,8 @@ export function App() {
     const inflight = agentMessageCache.getPageInflight(cacheKey);
     if (inflight) return inflight;
 
-    const task = (async () => {
+    let task!: Promise<AgentMessagePageCacheEntry>;
+    task = (async () => {
       const agentMessages = await agentClient.getMessages(id);
       const toolResults = agentToolResultsByCallId(agentMessages);
       const detailsById: Record<string, AgentDetailedMessage> = {};
