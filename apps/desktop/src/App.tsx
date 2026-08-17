@@ -1232,6 +1232,11 @@ export function App() {
   const [agentServerMessageIdByLocalId, setAgentServerMessageIdByLocalId] = useState<Record<string, string>>({});
   const [agentLivePartsByServerMessageId, setAgentLivePartsByServerMessageId] = useState<Record<string, AgentDetailedPart[]>>({});
   const agentLivePartsByServerMessageIdRef = useRef<Record<string, AgentDetailedPart[]>>({});
+  const agentDetailsByMessageIdRef = useRef<Record<string, AgentDetailedMessage | null>>({});
+  /** 远程 run：当前挂工具的 assistant 服务端 id（tool.* 事件自身不带 messageId）。 */
+  const remoteAgentServerAssistantIdBySessionRef = useRef<Record<string, string>>({});
+  /** 远程 run：已 message.completed 的 assistant id，禁止再被下一条 message.started 改写。 */
+  const remoteFrozenAssistantIdsBySessionRef = useRef<Record<string, Set<string>>>({});
   const [agentDetailsLoadingByMessageId, setAgentDetailsLoadingByMessageId] = useState<Record<string, boolean>>({});
   const [agentDetailsErrorByMessageId, setAgentDetailsErrorByMessageId] = useState<Record<string, string>>({});
   const [agentDetailsByMessageId, setAgentDetailsByMessageId] = useState<Record<string, AgentDetailedMessage | null>>({});
@@ -2641,7 +2646,11 @@ export function App() {
         Date.now(),
         eventRepoPath || repoPath
       );
-      setAgentDetailsByMessageId((prev) => ({ ...prev, ...page.detailsById }));
+      setAgentDetailsByMessageId((prev) => {
+        const next = { ...prev, ...page.detailsById };
+        agentDetailsByMessageIdRef.current = next;
+        return next;
+      });
       const firstUser = page.items.find((item) => item.role === "user" && String(item.content || "").trim());
       const title =
         clipAgentSessionTitle(firstUser?.content) ||
@@ -2715,11 +2724,75 @@ export function App() {
     }
   }
 
+  /** 远程 assistant 是否已有工具时间线（空 content 的 tool-only 回合也算）。 */
+  function remoteAssistantHasToolTimeline(messageId: string): boolean {
+    const mid = String(messageId || "").trim();
+    if (!mid) return false;
+    const live = agentLivePartsByServerMessageIdRef.current[mid] || [];
+    if (
+      live.some((part) => {
+        const type = String((part as { type?: string }).type || "");
+        const toolName = String((part as { toolName?: string }).toolName || "").trim();
+        const toolCallId = String((part as { toolCallId?: string }).toolCallId || "").trim();
+        return type === "toolCall" || !!toolName || !!toolCallId;
+      })
+    ) {
+      return true;
+    }
+    const detailParts = agentDetailsByMessageIdRef.current[mid]?.parts || [];
+    return detailParts.some((part) => {
+      const type = String((part as { type?: string }).type || "");
+      return type === "toolCall" || !!String((part as { toolCallId?: string }).toolCallId || "").trim();
+    });
+  }
+
+  function migrateRemoteLiveParts(fromId: string, toId: string) {
+    const from = String(fromId || "").trim();
+    const to = String(toId || "").trim();
+    if (!from || !to || from === to) return;
+    commitAgentLiveParts((prev) => {
+      const pending = prev[from];
+      if (!pending?.length) return prev;
+      const existing = prev[to] || [];
+      const merged = [...existing];
+      for (const part of pending) {
+        const id = String((part as { id?: string }).id || "").trim();
+        if (!id || merged.some((item) => String((item as { id?: string }).id || "") === id)) continue;
+        merged.push(part);
+      }
+      const next = { ...prev, [to]: merged };
+      delete next[from];
+      return next;
+    });
+    setAgentDetailsByMessageId((prev) => {
+      const detail = prev[from];
+      if (!detail) return prev;
+      const next = { ...prev, [to]: prev[to] || detail };
+      delete next[from];
+      agentDetailsByMessageIdRef.current = next;
+      return next;
+    });
+  }
+
   /** 手机远程 run 的流式事件：直接写会话气泡/live parts（落盘轮询拿不到 delta）。 */
   function applyRemoteAgentLiveEvent(envelope: {
     sessionId?: string;
     runId?: string;
-    event?: { type?: string; messageId?: string; index?: number; delta?: string; partial?: string; message?: AgentMessage };
+    event?: {
+      type?: string;
+      messageId?: string;
+      index?: number;
+      delta?: string;
+      partial?: string;
+      message?: AgentMessage;
+      toolCallId?: string;
+      toolName?: string;
+      input?: unknown;
+      output?: unknown;
+      isError?: boolean;
+      status?: string;
+      error?: string | null;
+    };
   }) {
     const sid = String(envelope.sessionId || "").trim();
     const event = envelope.event;
@@ -2753,20 +2826,86 @@ export function App() {
       });
     };
 
+    const ensureRemoteAssistantBubble = (mid: string) => {
+      const messageId = mid.trim();
+      if (!messageId) return;
+      remoteAgentServerAssistantIdBySessionRef.current[sid] = messageId;
+      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: messageId }));
+      patchRemoteSession(undefined, (session) => {
+        if (session.messages.some((item) => item.id === messageId)) {
+          return { ...session, loaded: true, updatedAt: Date.now() };
+        }
+        const last = session.messages[session.messages.length - 1];
+        const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
+        // 仅复用真正的空占位；已 completed / 已有工具时间线的 tool-only 气泡绝不能改 id，
+        // 否则 details/live 孤儿化 → 工具数 1↔2 抖动。
+        const canRemap =
+          last?.role === "assistant" &&
+          !String(last.content || "").trim() &&
+          !frozen?.has(last.id) &&
+          !remoteAssistantHasToolTimeline(last.id);
+        if (canRemap) {
+          if (last.id !== messageId) migrateRemoteLiveParts(last.id, messageId);
+          return {
+            ...session,
+            messages: session.messages.map((item, index) =>
+              index === session.messages.length - 1 ? { ...item, id: messageId } : item
+            ),
+            loaded: true,
+            updatedAt: Date.now()
+          };
+        }
+        return {
+          ...session,
+          messages: [...session.messages, { id: messageId, role: "assistant", content: "" }],
+          loaded: true,
+          updatedAt: Date.now()
+        };
+      });
+    };
+
+    const upsertRemoteToolPart = (part: AgentDetailedPart) => {
+      let targetId = String(remoteAgentServerAssistantIdBySessionRef.current[sid] || "").trim();
+      if (!targetId) {
+        targetId = String(agentStreamingAssistantIdBySession[sid] || "").trim();
+      }
+      if (!targetId) return;
+      const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
+      if (frozen?.has(targetId)) {
+        // 已完成回合不再收新工具；等下一条 message.started 再建气泡。
+        return;
+      }
+      upsertAgentLivePart(targetId, part);
+    };
+
     if (
       type === "message.started" ||
       type === "message.delta" ||
       type === "reasoning.delta" ||
       type === "tool.started" ||
       type === "toolCall.started" ||
-      type === "message.completed" ||
-      type === "session.status"
+      type === "message.completed"
     ) {
       setAgentRunBusyBySession((prev) => (prev[sid] ? prev : { ...prev, [sid]: true }));
+    }
+    if (type === "session.status") {
+      const status = String(event.status || "").trim();
+      // 对齐手机：工具间隙可能短暂 idle，不能据此清 busy；终态靠 run.completed/failed。
+      if (status === "running" || status === "busy") {
+        setAgentRunBusyBySession((prev) => (prev[sid] ? prev : { ...prev, [sid]: true }));
+      } else if (status === "aborted" || status === "failed") {
+        setAgentRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
+        setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+        delete remoteAgentServerAssistantIdBySessionRef.current[sid];
+        remoteFrozenAssistantIdsBySessionRef.current[sid]?.clear();
+      }
+      // idle：忽略 busy 翻转（否则会在 run.completed 之后把 busy 再点着，或中途抖掉停止态）。
     }
     if (type === "run.completed" || type === "run.failed") {
       setAgentRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
       setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+      delete remoteAgentServerAssistantIdBySessionRef.current[sid];
+      remoteFrozenAssistantIdsBySessionRef.current[sid]?.clear();
     }
 
     if (type === "message.completed" && event.message && typeof event.message === "object") {
@@ -2775,10 +2914,12 @@ export function App() {
       if (!mapped) return;
       if (mapped.role === "user") {
         const toolResults = new Map();
-        setAgentDetailsByMessageId((prev) => ({
-          ...prev,
-          [message.id]: agentMessageToDetailedMessage(message, toolResults)
-        }));
+        const detailed = agentMessageToDetailedMessage(message, toolResults);
+        setAgentDetailsByMessageId((prev) => {
+          const next = { ...prev, [message.id]: detailed };
+          agentDetailsByMessageIdRef.current = next;
+          return next;
+        });
         patchRemoteSession(mapped.content, (session) => {
           if (session.messages.some((item) => item.id === mapped.id)) {
             return {
@@ -2809,32 +2950,42 @@ export function App() {
       }
       if (mapped.role === "assistant") {
         const toolResults = new Map();
-        setAgentDetailsByMessageId((prev) => ({
-          ...prev,
-          [message.id]: agentMessageToDetailedMessage(message, toolResults)
-        }));
+        const detailed = agentMessageToDetailedMessage(message, toolResults);
+        setAgentDetailsByMessageId((prev) => {
+          const next = { ...prev, [message.id]: detailed };
+          agentDetailsByMessageIdRef.current = next;
+          return next;
+        });
+        // 冻结本回合：后续 message.started 必须新开气泡，不能改写本 id。
+        const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid] || new Set<string>();
+        frozen.add(message.id);
+        remoteFrozenAssistantIdsBySessionRef.current[sid] = frozen;
+        // 把 history 工具并入 live，避免仅有 text:* live 时整表盖掉 details 里的工具。
+        const live = agentLivePartsByServerMessageIdRef.current[message.id] || [];
+        const hasLiveTools = live.some((part) => {
+          const partType = String((part as { type?: string }).type || "");
+          return partType === "toolCall" || !!String((part as { toolCallId?: string }).toolCallId || "").trim();
+        });
+        if (!hasLiveTools) {
+          for (const part of detailed.parts || []) {
+            const partType = String((part as { type?: string }).type || "");
+            if (partType === "toolCall") upsertAgentLivePart(message.id, part);
+          }
+        }
         patchRemoteSession(undefined, (session) => {
           const hit = session.messages.findIndex((item) => item.id === mapped.id);
-          const fallback =
-            hit >= 0
-              ? hit
-              : (() => {
-                  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-                    if (session.messages[i]?.role === "assistant") return i;
-                  }
-                  return -1;
-                })();
-          if (fallback < 0) {
-            return {
-              ...session,
-              messages: [...session.messages, mapped],
-              loaded: true,
-              updatedAt: Date.now()
-            };
+          if (hit >= 0) {
+            const messages = session.messages.slice();
+            messages[hit] = { ...messages[hit], ...mapped };
+            return { ...session, messages, loaded: true, updatedAt: Date.now() };
           }
-          const messages = session.messages.slice();
-          messages[fallback] = { ...messages[fallback], ...mapped };
-          return { ...session, messages, loaded: true, updatedAt: Date.now() };
+          // 禁止把 tools 合并进「另一个」空 content assistant：那会丢 id 绑定。
+          return {
+            ...session,
+            messages: [...session.messages, mapped],
+            loaded: true,
+            updatedAt: Date.now()
+          };
         });
       }
       return;
@@ -2843,31 +2994,62 @@ export function App() {
     if (type === "message.started") {
       const mid = String(event.messageId || "").trim();
       if (!mid) return;
-      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
-      patchRemoteSession(undefined, (session) => {
-        if (session.messages.some((item) => item.id === mid)) {
-          return { ...session, loaded: true, updatedAt: Date.now() };
-        }
-        const last = session.messages[session.messages.length - 1];
-        // 仅复用「本轮」空 assistant 占位；上一轮已有内容的 assistant 绝不能改 id，
-        // 否则流式回复会像挂在旧消息上。
-        if (last?.role === "assistant" && !String(last.content || "").trim()) {
-          return {
-            ...session,
-            messages: session.messages.map((item, index) =>
-              index === session.messages.length - 1 ? { ...item, id: mid } : item
-            ),
-            loaded: true,
-            updatedAt: Date.now()
-          };
-        }
-        return {
-          ...session,
-          messages: [...session.messages, { id: mid, role: "assistant", content: "" }],
-          loaded: true,
-          updatedAt: Date.now()
-        };
-      });
+      ensureRemoteAssistantBubble(mid);
+      return;
+    }
+
+    if (type === "toolCall.started") {
+      const toolCallId = String(event.toolCallId || "").trim();
+      if (!toolCallId) return;
+      upsertRemoteToolPart(
+        buildToolPart({
+          toolCallId,
+          toolName: event.toolName || "",
+          status: "running"
+        })
+      );
+      return;
+    }
+
+    if (type === "tool.started") {
+      const toolCallId = String(event.toolCallId || "").trim();
+      if (!toolCallId) return;
+      upsertRemoteToolPart(
+        buildToolPart({
+          toolCallId,
+          toolName: event.toolName || "",
+          status: "running",
+          input: event.input
+        })
+      );
+      return;
+    }
+
+    if (type === "tool.progress") {
+      const toolCallId = String(event.toolCallId || "").trim();
+      if (!toolCallId) return;
+      upsertRemoteToolPart(
+        buildToolPart({
+          toolCallId,
+          toolName: event.toolName || "",
+          status: "running",
+          output: event.output
+        })
+      );
+      return;
+    }
+
+    if (type === "tool.completed") {
+      const toolCallId = String(event.toolCallId || "").trim();
+      if (!toolCallId) return;
+      upsertRemoteToolPart(
+        buildToolPart({
+          toolCallId,
+          toolName: event.toolName || "",
+          status: event.isError ? "error" : "completed",
+          output: event.output
+        })
+      );
       return;
     }
 
@@ -2877,6 +3059,7 @@ export function App() {
       const snapshot = String(event.partial || "");
       const delta = String(event.delta || "");
       if (!snapshot && !delta) return;
+      remoteAgentServerAssistantIdBySessionRef.current[sid] = mid;
       setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
       patchRemoteSession(undefined, (session) => {
         let found = false;
@@ -2903,32 +3086,10 @@ export function App() {
       const snapshot = String(event.partial || "");
       const delta = String(event.delta || "");
       if (!snapshot && !delta) return;
-      setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: mid }));
+      ensureRemoteAssistantBubble(mid);
       const reasoningPartId = `reasoning:${Number(event.index) || 0}`;
       if (snapshot) setAgentLivePartField(mid, reasoningPartId, "text", snapshot);
       else patchAgentLivePartDelta(mid, reasoningPartId, "text", delta);
-      patchRemoteSession(undefined, (session) => {
-        if (session.messages.some((item) => item.id === mid)) {
-          return { ...session, loaded: true, updatedAt: Date.now() };
-        }
-        const last = session.messages[session.messages.length - 1];
-        if (last?.role === "assistant" && !String(last.content || "").trim()) {
-          return {
-            ...session,
-            messages: session.messages.map((item, index) =>
-              index === session.messages.length - 1 ? { ...item, id: mid } : item
-            ),
-            loaded: true,
-            updatedAt: Date.now()
-          };
-        }
-        return {
-          ...session,
-          messages: [...session.messages, { id: mid, role: "assistant", content: "" }],
-          loaded: true,
-          updatedAt: Date.now()
-        };
-      });
     }
   }
 
@@ -7712,6 +7873,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         delta?: string;
         partial?: string;
         message?: AgentMessage;
+        toolCallId?: string;
+        toolName?: string;
+        input?: unknown;
+        output?: unknown;
+        isError?: boolean;
+        status?: string;
+        error?: string | null;
       };
     }>("giteam://agent-event", (event) => {
       const payload = event.payload;
@@ -7727,10 +7895,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         void syncAgentInteractions(sid).catch(() => {});
       }
 
-      const terminal =
-        type === "run.completed" ||
-        type === "run.failed" ||
-        (type === "message.completed" && payload?.event?.message?.role === "assistant");
+      const terminal = type === "run.completed" || type === "run.failed";
 
       // 远程流式：正在看该会话时直接灌 delta（不依赖落盘轮询）。
       if (sid === activeAgentSessionIdRef.current) {
@@ -7742,7 +7907,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           (type === "message.started" ||
             type === "message.delta" ||
             type === "session.status" ||
-            type === "message.completed")
+            type === "message.completed" ||
+            type === "tool.started" ||
+            type === "toolCall.started")
         ) {
           bootstrappedRuns.add(bootKey);
           pendingBySid.set(sid, repoPathHint);
@@ -7757,9 +7924,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         type === "message.started" ||
         type === "message.delta" ||
         type === "message.completed" ||
-        type === "session.status"
+        type === "session.status" ||
+        type === "tool.started" ||
+        type === "toolCall.started" ||
+        type === "tool.progress" ||
+        type === "tool.completed" ||
+        type === "run.completed" ||
+        type === "run.failed"
       ) {
-        // 未打开该会话时也灌 live，切回时能看到过程；终态再 snapshot。
+        // 未打开该会话时也灌 live（含工具与终态 busy），切回时能看到过程；终态再 snapshot。
         applyRemoteAgentLiveEventRef.current(payload);
       }
 

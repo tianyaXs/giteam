@@ -1247,6 +1247,32 @@ function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
   return rest;
 }
 
+/** live 非空时仍并入 history 里缺失的 toolCall，避免仅有 text:* live 整表盖掉工具 → 数量闪动。 */
+function mergeLiveWithFetchedParts(
+  liveParts: AgentDetailedPart[],
+  fetchedParts: AgentDetailedPart[]
+): AgentDetailedPart[] {
+  if (liveParts.length === 0) return fetchedParts;
+  if (fetchedParts.length === 0) return liveParts;
+  const merged = [...liveParts];
+  const seen = new Set(
+    merged.map((part) =>
+      String((part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || "").trim()
+    ).filter(Boolean)
+  );
+  for (const part of fetchedParts) {
+    const type = String((part as { type?: string }).type || "");
+    if (type !== "toolCall") continue;
+    const id = String(
+      (part as { id?: string }).id || (part as { toolCallId?: string }).toolCallId || ""
+    ).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(part);
+  }
+  return merged;
+}
+
 function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
   const [open, setOpen] = useState(false);
   const phase = String((part as { phase?: string }).phase || "").trim();
@@ -1586,7 +1612,7 @@ export function AgentMessageStream({
       livePartsByServerMessageId[msg.id] ||
       [];
     const detailParts = coalesceRuntimeParts(
-      (liveParts.length > 0 ? liveParts : fetchedParts).map((part) => {
+      mergeLiveWithFetchedParts(liveParts, fetchedParts).map((part) => {
         // 兼容旧 bug：reasoning 流曾被误标成 text，导致思考正文与「思考中」标签分离
         const id = String((part as { id?: string }).id || "").trim();
         const type = String((part as { type?: string }).type || "");
