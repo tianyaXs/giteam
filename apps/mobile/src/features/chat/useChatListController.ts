@@ -178,8 +178,11 @@ export function useChatListController<Cell extends { id?: string }>(props: {
       setFollowLatest(true);
     } else if (listRevealReadyRef.current && anchoredSessionRef.current !== signature) {
       anchoredSessionRef.current = signature;
+      // 列表已揭示：签名变化只更新锚点，务必保持分页可用（避免上次 cleanup 留下 false）。
+      historyPaginationReadyRef.current = true;
       return;
     } else if (anchoredSessionRef.current === signature && listRevealReadyRef.current) {
+      historyPaginationReadyRef.current = true;
       return;
     }
 
@@ -206,10 +209,11 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     };
 
     let revealTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
     let revealAttempts = 0;
     const tryReveal = () => {
-      if (anchorInFlightRef.current !== sid) return;
+      if (cancelled || anchorInFlightRef.current !== sid) return;
       revealAttempts += 1;
       let scrolled = false;
       const forceScroll = forceRevealScrollRef.current;
@@ -230,7 +234,7 @@ export function useChatListController<Cell extends { id?: string }>(props: {
         scrolled = true;
       }
       requestAnimationFrame(() => {
-        if (anchorInFlightRef.current !== sid) return;
+        if (cancelled || anchorInFlightRef.current !== sid) return;
         const forceScrollAgain = forceRevealScrollRef.current;
         const layoutReadyAgain =
           revealAttempts >= 12
@@ -260,9 +264,13 @@ export function useChatListController<Cell extends { id?: string }>(props: {
     }
 
     return () => {
+      cancelled = true;
       if (revealTimeoutId !== null) clearTimeout(revealTimeoutId);
+      // 取消进行中的 reveal 时必须恢复分页门闩，否则 loadingOlder 翻转会
+      // 永久 shouldSuppressLoadOlder，上滑加载更多再也点不动。
       if (anchorInFlightRef.current === sid) {
         anchorInFlightRef.current = '';
+        historyPaginationReadyRef.current = true;
       }
     };
   }, [

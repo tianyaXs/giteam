@@ -854,6 +854,7 @@ export default function App() {
     recentScrollerHeight,
     canSendNow,
     canAbortNow,
+    canSteerNow,
     handlePromptChange,
     clearPromptAfterSend,
     releaseTurnAwaiting,
@@ -1362,7 +1363,7 @@ export default function App() {
       closeDrawer,
       setPrompt,
     });
-  const { copyMessageText, onAbort, onSendPrompt, settlePendingSendBundle } = usePromptActions({
+  const { copyMessageText, onAbort, onSendPrompt, queuedFollowUpsBySession, removeQueuedFollowUp, settlePendingSendBundle } = usePromptActions({
     authed,
     serverUrl,
     token,
@@ -1567,6 +1568,7 @@ export default function App() {
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
+    canSteerNow,
     closeAlbumPicker,
     composerAgent,
     composerModeOptions,
@@ -1609,6 +1611,11 @@ export default function App() {
     styles,
     thinkingLevel,
     onThinkingLevelChange: setThinkingLevel,
+    queuedFollowUps: queuedFollowUpsBySession[sessionId] || [],
+    onRemoveQueuedFollowUp: (id: string) => {
+      if (!sessionId) return;
+      removeQueuedFollowUp(sessionId, id);
+    },
     toggleAlbumImage,
   });
   const { leftDrawer, rightDrawer: settingsContent } = useNotebookDrawerRenderers({

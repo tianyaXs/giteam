@@ -140,11 +140,12 @@ function ChatConversationStageImpl(props: {
   const settingsLinkColor = colors.isDark ? '#FFFFFF' : '#1A1A1F';
 
   useEffect(() => {
-    console.log(`[DEBUG] ChatConversationStage effect: sessionId=${sessionId} cells=${displayedTurnCells.length} loadingOlder=${loadingOlder}`);
-    if (loadingOlder || !sessionId || displayedTurnCells.length <= 0) return;
+    console.log(`[DEBUG] ChatConversationStage effect: sessionId=${sessionId} cells=${displayedTurnCells.length}`);
+    if (!sessionId || displayedTurnCells.length <= 0) return;
     console.log(`[DEBUG] Calling anchorSessionToLatest for ${sessionId} with ${displayedTurnCells.length} cells`);
     return anchorSessionToLatest(sessionId, displayedTurnCells.length);
-  }, [anchorSessionToLatest, displayedTurnCells.length, loadingOlder, sessionId]);
+    // 故意不依赖 loadingOlder：上滑加载更多时取消 reveal 会把分页门闩卡死。
+  }, [anchorSessionToLatest, displayedTurnCells.length, sessionId]);
 
   return (
     <View style={styles.chatBodyWrap}>

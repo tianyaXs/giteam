@@ -375,6 +375,16 @@ export function useAgentStreamManager(deps: AgentStreamManagerDeps) {
         case 'message.started': {
           const messageId = toText(event.messageId).trim();
           if (!messageId) return;
+          // user 的 MessageStart 不能建成 assistant 行，否则会把用户正文渲染成助手流式输出。
+          const startedRole = toText((event as { role?: string }).role).trim().toLowerCase();
+          if (
+            messageId.startsWith('user-') ||
+            startedRole === 'user' ||
+            startedRole === 'tool' ||
+            startedRole === 'custom'
+          ) {
+            return;
+          }
           activeMessageId = messageId;
           stores().messageRole.current[sid] = { ...(stores().messageRole.current[sid] || {}), [messageId]: 'assistant' };
           storeEnsureStreamSessionStores(stores(), sid);

@@ -728,10 +728,16 @@ export function useSessionMessageSync<Cell>(params: {
       }
       olderLoadInFlightRef.current = true;
       pauseFollowLatest?.();
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+      const releaseLoadingFlags = () => {
+        olderLoadInFlightRef.current = false;
+        setLoadingOlder(false);
+      };
       const finishLocalHistoryMutation = () => {
-        setTimeout(() => {
-          olderLoadInFlightRef.current = false;
-          setLoadingOlder(false);
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          settleTimer = null;
+          releaseLoadingFlags();
         }, HISTORY_LOAD_SETTLE_MS);
       };
       rememberCurrentSessionViewport(sid, {
@@ -739,63 +745,45 @@ export function useSessionMessageSync<Cell>(params: {
         visibleCellCount: visibleCellCountRef.current
       });
       setLoadingOlder(true);
-      await waitForHistoryListCommit();
-      if (sid !== sessionIdRef.current) {
-        finishLocalHistoryMutation();
-        return;
-      }
-      const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
-      const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
-      const cursor = toText(sessionNextCursor[sid]).trim();
-      if (cached <= visible && !cursor) {
-        pushConnLog(`chat.history.load skipped sid=${sid} cached=${cached} visible=${visible} no_more=1`);
-        olderLoadInFlightRef.current = false;
-        setLoadingOlder(false);
-        return;
-      }
-      if (cached <= visible && cursor) {
-        pushConnLog(`chat.history.load backfill sid=${sid} turns=${cached} visible=${visible} merged_rows=${(sessionRawMapRef.current[sid] || []).length} cursor=1`);
-      }
-      pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} cursor=${cursor ? 1 : 0}`);
-      if (cached > visible) {
+      let settled = false;
+      try {
+        await waitForHistoryListCommit();
+        if (sid !== sessionIdRef.current) return;
+        const cached = Math.max(0, Number(sessionTotalTurnCountRef.current[sid] || 0));
+        const visible = Math.max(0, Number(sessionVisibleTurnCountRef.current[sid] || 0));
+        // API 消息接口不分页（nextCursor 恒空）；残留 cursor 多来自快照恢复。
+        // 流式 run 中再走远程 getMessages 会长时间挂起 loadingOlder。
+        const activeRun = !!toText(sessionActiveRunIdRef.current[sid]).trim();
+        const staleCursor = toText(sessionNextCursor[sid]).trim();
+        if (cached <= visible) {
+          if (staleCursor) {
+            pushConnLog(
+              `chat.history.load drop_stale_cursor sid=${sid} cached=${cached} visible=${visible} activeRun=${activeRun ? 1 : 0}`
+            );
+            setSessionNextCursor((prev) => ({ ...prev, [sid]: '' }));
+          }
+          setSessionHasMore((prev) => ({ ...prev, [sid]: false }));
+          pushConnLog(`chat.history.load skipped sid=${sid} cached=${cached} visible=${visible} no_more=1`);
+          return;
+        }
+        pushConnLog(`chat.history.load start sid=${sid} cached=${cached} visible=${visible} local_only=1`);
         const nextVisible = Math.min(cached, visible + olderSessionLimit);
         applyTurnWindow(sid, nextVisible);
         pushConnLog(`chat.history.load cached sid=${sid} from=${visible} to=${nextVisible} cached=${cached}`);
         setSessionHasMore((prev) => ({
           ...prev,
-          [sid]: cached > nextVisible || !!toText(sessionNextCursor[sid]).trim()
+          [sid]: cached > nextVisible
         }));
-        finishLocalHistoryMutation();
-        return;
-      }
-      const backoff = cursor ? getOlderCursorBackoff(sid, cursor) : null;
-      if (backoff) {
-        pushConnLog(`chat.history.load backoff sid=${sid} retryMs=${Math.max(0, backoff.retryAt - Date.now())}`);
-        setSessionHistoryRetryHint((prev) => ({
-          ...prev,
-          [sid]: `历史加载失败，${formatRetryDelay(backoff.retryAt - Date.now())}`
-        }));
-        olderLoadInFlightRef.current = false;
-        setLoadingOlder(false);
-        return;
-      }
-      if (cursor) {
-        try {
-          const rendered = await syncSessionMessages(sid, {
-            limit: Math.max(olderSessionLimit, Number(sessionVisibleTurnCountRef.current[sid] || 0) + olderSessionLimit),
-            fetchLimit: FULL_SESSION_FETCH_LIMIT,
-            before: cursor,
-            loadingOlder: true
-          });
-          pushConnLog(`chat.history.load remote ${rendered ? 'done' : 'no-visible-boundary'} sid=${sid}`);
-        } finally {
-          finishLocalHistoryMutation();
+        // 本地 turn window 已足够展示历史；清掉脏 cursor，避免下次误走远程。
+        if (staleCursor) {
+          setSessionNextCursor((prev) => ({ ...prev, [sid]: '' }));
         }
-      } else {
-        pushConnLog(`chat.history.load exhausted sid=${sid} cached=${cached} visible=${visible}`);
-        setSessionHasMore((prev) => ({ ...prev, [sid]: cached > visible }));
-        olderLoadInFlightRef.current = false;
-        setLoadingOlder(false);
+        settled = true;
+        finishLocalHistoryMutation();
+      } catch (error) {
+        pushConnLog(`chat.history.load error sid=${sid} ${String(error)}`, 'error');
+      } finally {
+        if (!settled) releaseLoadingFlags();
       }
     };
 

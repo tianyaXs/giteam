@@ -35,6 +35,8 @@ export function useChatWorkspacePanelProps(params: {
   attachmentToggleAnim: ChatComposerProps['attachmentToggleAnim'];
   canAbortNow: boolean;
   canSendNow: boolean;
+  /** 本轮在飞且有草稿：主按钮转「排队发送」。 */
+  canSteerNow: boolean;
   closeAlbumPicker: () => void;
   composerAgent: ComposerAgentName;
   composerModeOptions: Array<{ key: ComposerAgentName; label: string }>;
@@ -79,6 +81,8 @@ export function useChatWorkspacePanelProps(params: {
   styles: Record<string, any>;
   thinkingLevel: ChatComposerProps['thinkingLevel'];
   onThinkingLevelChange: ChatComposerProps['onThinkingLevelChange'];
+  queuedFollowUps?: ChatComposerProps['queuedFollowUps'];
+  onRemoveQueuedFollowUp?: ChatComposerProps['onRemoveQueuedFollowUp'];
   toggleAlbumImage: (imageId: string) => void;
   confirmAlbumSelection: () => Promise<void>;
 }) {
@@ -101,6 +105,7 @@ export function useChatWorkspacePanelProps(params: {
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
+    canSteerNow,
     closeAlbumPicker,
     composerAgent,
     composerModeOptions,
@@ -146,6 +151,8 @@ export function useChatWorkspacePanelProps(params: {
     styles,
     thinkingLevel,
     onThinkingLevelChange,
+    queuedFollowUps = [],
+    onRemoveQueuedFollowUp,
     toggleAlbumImage
   } = params;
 
@@ -183,6 +190,7 @@ export function useChatWorkspacePanelProps(params: {
     hasConversationContent,
     canSendNow,
     canAbortNow,
+    canSteerNow,
     slashOpen,
     slashActiveIndex,
     slashSuggestions,
@@ -207,7 +215,9 @@ export function useChatWorkspacePanelProps(params: {
     onRecentScroll: maybeLoadMoreRecentImages,
     onAttachRecentImage: handleAttachRecentImage,
     thinkingLevel,
-    onThinkingLevelChange
+    onThinkingLevelChange,
+    queuedFollowUps,
+    onRemoveQueuedFollowUp
   }), [
     actionIconAnim,
     attachmentMenuOpen,
@@ -217,6 +227,7 @@ export function useChatWorkspacePanelProps(params: {
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
+    canSteerNow,
     composerAgent,
     composerModeOptions,
     handleAbortPrompt,
@@ -241,8 +252,10 @@ export function useChatWorkspacePanelProps(params: {
     model,
     modelOptions,
     onOpenModelManager,
+    onRemoveQueuedFollowUp,
     onSpeechStatus,
     onThinkingLevelChange,
+    queuedFollowUps,
     prompt,
     recentImages,
     recentImagesHasNext,

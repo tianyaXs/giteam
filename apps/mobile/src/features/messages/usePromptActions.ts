@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Platform, Vibration } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { pairAuth, redeemCloudAccess } from '../../api/controlApi';
@@ -16,6 +16,12 @@ import {
 } from './messageSendPerf';
 import type { OptimisticUserMessage } from './useOptimisticUserMessages';
 import type { SessionStatusInfo } from '../../types';
+import {
+  consumeQueuedFollowUp,
+  makeQueuedFollowUpId,
+  removeQueuedFollowUpById,
+  type QueuedFollowUp
+} from '../../lib/queuedFollowUps';
 
 type UsePromptActionsParams = {
   authed: boolean;
@@ -121,10 +127,92 @@ export function usePromptActions(params: UsePromptActionsParams) {
 
   const sendInFlightRef = useRef(false);
   const abortInFlightRef = useRef(false);
+  const queuedFollowUpsBySessionRef = useRef<Record<string, QueuedFollowUp[]>>({});
+  const [queuedFollowUpsBySession, setQueuedFollowUpsBySession] = useState<Record<string, QueuedFollowUp[]>>({});
+  const sendQueuedFollowUpRef = useRef<(sessionId: string, text: string) => void>(() => {});
 
-  const onSendPrompt = useCallback(async (customPrompt?: string) => {
+  const replaceQueuedFollowUps = useCallback((sessionId: string, rows: QueuedFollowUp[]) => {
+    const sid = sessionId.trim();
+    if (!sid) return;
+    queuedFollowUpsBySessionRef.current = { ...queuedFollowUpsBySessionRef.current, [sid]: rows };
+    setQueuedFollowUpsBySession((prev) => ({ ...prev, [sid]: rows }));
+  }, []);
+
+  const enqueueFollowUp = useCallback((sessionId: string, content: string) => {
+    const sid = sessionId.trim();
+    const text = content.trim();
+    if (!sid || !text) return;
+    const current = queuedFollowUpsBySessionRef.current[sid] || [];
+    replaceQueuedFollowUps(sid, [...current, { id: makeQueuedFollowUpId(), content: text }]);
+  }, [replaceQueuedFollowUps]);
+
+  const popQueuedFollowUp = useCallback((sessionId: string, committedContent: string) => {
+    const sid = sessionId.trim();
+    if (!sid) return;
+    const current = queuedFollowUpsBySessionRef.current[sid] || [];
+    if (current.length === 0) return;
+    replaceQueuedFollowUps(sid, consumeQueuedFollowUp(current, committedContent).queue);
+  }, [replaceQueuedFollowUps]);
+
+  const removeQueuedFollowUp = useCallback((sessionId: string, followUpId: string) => {
+    const sid = sessionId.trim();
+    const id = followUpId.trim();
+    if (!sid || !id) return;
+    const current = queuedFollowUpsBySessionRef.current[sid] || [];
+    if (current.length === 0) return;
+    replaceQueuedFollowUps(sid, removeQueuedFollowUpById(current, id));
+  }, [replaceQueuedFollowUps]);
+
+  const clearQueuedFollowUps = useCallback((sessionId: string) => {
+    const sid = sessionId.trim();
+    if (!sid) return;
+    if ((queuedFollowUpsBySessionRef.current[sid] || []).length === 0) return;
+    replaceQueuedFollowUps(sid, []);
+  }, [replaceQueuedFollowUps]);
+
+  const reconcileQueuedFollowUps = useCallback((sessionId: string): QueuedFollowUp[] => {
+    const sid = sessionId.trim();
+    if (!sid) return [];
+    const current = queuedFollowUpsBySessionRef.current[sid] || [];
+    if (current.length === 0) return [];
+    return current;
+  }, []);
+
+  const scheduleNextQueuedFollowUp = useCallback((sessionId: string) => {
+    const sid = sessionId.trim();
+    if (!sid) return;
+    setTimeout(() => {
+      if (sendInFlightRef.current || toText(sessionActiveRunIdRef.current[sid]).trim()) return;
+      const next = reconcileQueuedFollowUps(sid)[0];
+      if (!next) return;
+      sendQueuedFollowUpRef.current(sid, next.content);
+    }, 0);
+  }, [reconcileQueuedFollowUps, sessionActiveRunIdRef]);
+
+  const onSendPrompt = useCallback(async (customPrompt?: string, options?: { fromQueue?: boolean }) => {
+    const isQueueFlush = Boolean(options?.fromQueue);
     const payloadPrompt = (customPrompt ?? prompt).trim();
-    const images = imageAttachments.filter((img) => img.status !== 'failed');
+    const images = isQueueFlush ? [] : imageAttachments.filter((img) => img.status !== 'failed');
+    const existingSid = toText(sessionIdRef.current).trim();
+    const hasActiveRun = Boolean(toText(sessionActiveRunIdRef.current[existingSid]).trim());
+    if (!isQueueFlush && (sendInFlightRef.current || hasActiveRun)) {
+      if (!payloadPrompt) {
+        setStatus('请输入补充内容');
+        return;
+      }
+      if (images.length > 0 || imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading' || img.status === 'failed')) {
+        setStatus('运行中暂不支持带图排队，请删除图片或等待本轮结束');
+        return;
+      }
+      if (!authed || !existingSid) {
+        setStatus('没有进行中的会话');
+        return;
+      }
+      enqueueFollowUp(existingSid, payloadPrompt);
+      clearPromptAfterSend(payloadPrompt);
+      setStatus('已排队：当前回复结束后继续');
+      return;
+    }
     if (sendInFlightRef.current) {
       setStatus('正在发送中，请稍候');
       return;
@@ -141,24 +229,26 @@ export function usePromptActions(params: UsePromptActionsParams) {
       setStatus('请输入消息');
       return;
     }
-    if (imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading')) {
-      setStatus('图片还在处理中，请稍等');
-      return;
+    if (!isQueueFlush) {
+      if (imageAttachments.some((img) => img.status === 'processing' || img.status === 'uploading')) {
+        setStatus('图片还在处理中，请稍等');
+        return;
+      }
+      if (imageAttachments.some((img) => img.status === 'failed')) {
+        setStatus('有图片处理失败，请删除后重试');
+        return;
+      }
+      // 校验通过后立刻闩门并清空输入，避免异步建会话 / IME 回填导致字还在或壳层闪待机。
+      clearPromptAfterSend(payloadPrompt);
     }
-    if (imageAttachments.some((img) => img.status === 'failed')) {
-      setStatus('有图片处理失败，请删除后重试');
-      return;
-    }
-    // 校验通过后立刻闩门并清空输入，避免异步建会话 / IME 回填导致字还在或壳层闪待机。
-    clearPromptAfterSend(payloadPrompt);
     sendInFlightRef.current = true;
     setBusy(true);
     // 立刻视为本轮在飞：覆盖新建会话 / SSE 首包前的空隙，避免停止钮闪回可发送。
     setStreaming(true);
     // 已有会话：同步标 busy，让停止钮与 sessionWorking 同帧生效（新会话等 create 后再标）。
-    const existingSid = toText(sessionIdRef.current).trim();
     if (existingSid) {
       setSessionStatusMap((prev) => ({ ...prev, [existingSid]: { type: 'busy' } }));
+      if (isQueueFlush) popQueuedFollowUp(existingSid, payloadPrompt);
     }
     if (images.length > 0) {
       setImageAttachments((prev) => prev.map((img) => ({ ...img, status: 'uploading', statusText: '发送中' })));
@@ -424,6 +514,9 @@ export function usePromptActions(params: UsePromptActionsParams) {
       }
       // 发送失败：撤回「已发出」观感，把附件收回输入区缩略图并标待重发。
       restoreFailedSendToComposer(failedSessionId || currentSessionId);
+      if (isQueueFlush && payloadPrompt && (failedSessionId || currentSessionId)) {
+        enqueueFollowUp(failedSessionId || currentSessionId, payloadPrompt);
+      }
       pushConnLog(`POST prompt error images=${images.length} msg=${msg}`, 'error');
       // eslint-disable-next-line no-console
       console.error('[onSendPrompt] error:', msg, 'images:', images.length, 'dataUrl lengths:', images.map((i) => i.dataUrl?.length || 0));
@@ -477,6 +570,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     clearSessionOptimisticMessages,
     composerAgent,
     dropOptimisticUserMessage,
+    enqueueFollowUp,
     imageAttachments,
     initialMessageFetchLimit,
     initialSessionLimit,
@@ -484,6 +578,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     pairCode,
     pendingPromptSessionRef,
     pendingSendBundleRef,
+    popQueuedFollowUp,
     prompt,
     pushConnLog,
     refreshSessionsFromServer,
@@ -511,6 +606,11 @@ export function usePromptActions(params: UsePromptActionsParams) {
     upsertOptimisticUserMessage
   ]);
 
+  sendQueuedFollowUpRef.current = (sessionId, text) => {
+    if (toText(sessionIdRef.current).trim() !== sessionId.trim()) return;
+    void onSendPrompt(text, { fromQueue: true });
+  };
+
   const onAbort = useCallback(async () => {
     const sid = toText(sessionIdRef.current).trim();
     if (!authed || !sid) {
@@ -525,6 +625,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     delete pendingPromptSessionRef.current[sid];
     delete sessionActiveRunIdRef.current[sid];
     pendingSendBundleRef.current = null;
+    clearQueuedFollowUps(sid);
     setSessionStatusMap((prev) => ({ ...prev, [sid]: { type: 'idle' } }));
     setStreaming(false);
     releaseTurnAwaiting();
@@ -565,6 +666,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
     }
   }, [
     authed,
+    clearQueuedFollowUps,
     clearSessionOptimisticMessages,
     initialSessionLimit,
     injectInterruptMarker,
@@ -588,7 +690,7 @@ export function usePromptActions(params: UsePromptActionsParams) {
   ]);
 
   const settlePendingSendBundle = useCallback(
-    (sid: string, runId: string, _outcome: 'completed' | 'failed') => {
+    (sid: string, runId: string, outcome: 'completed' | 'failed') => {
       const bundle = pendingSendBundleRef.current;
       if (bundle) {
         const pendingRun = toText(bundle.runId).trim();
@@ -603,8 +705,14 @@ export function usePromptActions(params: UsePromptActionsParams) {
       if (targetSid) clearSessionOptimisticMessages(targetSid);
       // 本轮已结束：立刻放开发送门闩，勿再等 sessionWorking debounce。
       releaseTurnAwaiting();
+      if (!targetSid) return;
+      if (outcome === 'failed') {
+        clearQueuedFollowUps(targetSid);
+        return;
+      }
+      scheduleNextQueuedFollowUp(targetSid);
     },
-    [clearSessionOptimisticMessages, pendingSendBundleRef, releaseTurnAwaiting]
+    [clearQueuedFollowUps, clearSessionOptimisticMessages, pendingSendBundleRef, releaseTurnAwaiting, scheduleNextQueuedFollowUp]
   );
 
   const copyMessageText = useCallback(async (text: string) => {
@@ -623,6 +731,8 @@ export function usePromptActions(params: UsePromptActionsParams) {
     copyMessageText,
     onAbort,
     onSendPrompt,
+    queuedFollowUpsBySession,
+    removeQueuedFollowUp,
     settlePendingSendBundle
   };
 }

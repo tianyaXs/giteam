@@ -475,6 +475,16 @@ export const composerStyles = {
     marginLeft: 2,
   },
 
+  /** busy + 有草稿：主按钮转发送后保留的小停止钮 */
+  steerStopMini: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 6,
+  },
+
   actionBtnDisabled: {
     width: 32,
     height: 32,
@@ -581,6 +591,45 @@ export const composerStyles = {
     marginLeft: -2,
     marginRight: -2,
     marginBottom: 1,
+  },
+
+  queuedFollowUpList: {
+    gap: 6,
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+
+  queuedFollowUpHint: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+
+  queuedFollowUpItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+
+  queuedFollowUpArrow: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
+  queuedFollowUpText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+
+  queuedFollowUpRemove: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: -4,
   },
 
   attachmentRow: {

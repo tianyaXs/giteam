@@ -14,6 +14,7 @@ import type {
   AgentModelInfo,
   AgentPromptResult,
   AgentProviderInfo,
+  AgentSteerOutcome,
   AgentRunStatus,
   AgentRuntimeInfo,
   AgentSessionSummary,
@@ -56,6 +57,8 @@ export type MobileAgentClient = {
   getMessages(sessionId: string): Promise<AgentMessage[]>;
   /** 阻塞到 run 完成；流式进度走 subscribeEvents。 */
   prompt(input: PromptAgentInput): Promise<AgentPromptResult>;
+  /** run 进行中排队转向（当前 turn 完成后自动续跑）；idle 表示无活跃 run。 */
+  steer(sessionId: string, message: string): Promise<AgentSteerOutcome>;
   abort(runId: string): Promise<boolean>;
   listInteractions(sessionId?: string): Promise<AgentInteraction[]>;
   replyInteraction(interactionId: string, reply: AgentInteractionReply): Promise<void>;
@@ -163,6 +166,11 @@ export function createMobileAgentClient(config: MobileAgentClientConfig): Mobile
       body: JSON.stringify({ ...input, runId: input.runId?.trim() || newRunId() })
       // 不传超时：prompt 阻塞到 run 完成，可能长达数分钟。
     }, 0),
+    steer: (sessionId, message) => request<AgentSteerOutcome>('/api/v1/agent/steer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, message })
+    }),
     abort: async (runId) => (await request<{ ok: boolean }>('/api/v1/agent/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

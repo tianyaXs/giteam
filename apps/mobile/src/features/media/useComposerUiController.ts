@@ -124,6 +124,8 @@ export function useComposerUiController(props: {
   const turnInFlight = sessionWorking || turnAwaiting;
   const canAbortNow = turnInFlight;
   const canSendNow = hasPromptText && !turnInFlight && !imageQueueBusy && !imageQueueFailed;
+  // 本轮在飞 + 有纯文本草稿：主按钮转为「排队发送」，停止入口由小停止钮/FAB 保留。
+  const canSteerNow = turnInFlight && hasPromptText && !imageQueueBusy && !imageQueueFailed;
 
   const recentTileSize = Math.max(70, Math.floor((Math.max(320, windowWidth - 80) - 18) / 4));
   const recentVisibleRows = Math.max(1, Math.min(3, Math.ceil((recentImages.length || 1) / 4)));
@@ -331,6 +333,7 @@ export function useComposerUiController(props: {
     recentScrollerHeight,
     canSendNow,
     canAbortNow,
+    canSteerNow,
     releaseTurnAwaiting,
     handlePromptChange,
     clearPromptAfterSend,

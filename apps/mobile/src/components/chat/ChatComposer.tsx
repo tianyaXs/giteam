@@ -146,6 +146,10 @@ type ChatComposerProps = {
   onOpenModelManager?: () => void;
   canSendNow: boolean;
   canAbortNow: boolean;
+  /** 本轮在飞且有纯文本草稿：主按钮转「排队发送」，停止移到小停止钮。 */
+  canSteerNow: boolean;
+  queuedFollowUps?: Array<{ id: string; content: string }>;
+  onRemoveQueuedFollowUp?: (id: string) => void;
   slashOpen: boolean;
   slashActiveIndex: number;
   slashSuggestions: SlashCommand[];
@@ -161,7 +165,7 @@ type ChatComposerProps = {
   onOpenAttachmentPreview: (img: { uri: string; filename?: string }) => void;
   onRemoveAttachment: (id: string) => void;
   onAbort: () => void;
-  /** 可带语音转写文本直接发送（仍附带已选图片）。 */
+  /** 可带语音转写文本直接发送（仍附带已选图片）。busy 时同一入口走待发送队列。 */
   onSend: (customPrompt?: string) => void;
   /** 语音权限/识别失败等提示。 */
   onSpeechStatus?: (message: string) => void;
@@ -192,6 +196,9 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
     attachmentToggleAnim,
     canAbortNow,
     canSendNow,
+    canSteerNow,
+    queuedFollowUps = [],
+    onRemoveQueuedFollowUp,
     imageAttachments,
     inputModelLabel,
     modelOptions = [],
@@ -1099,6 +1106,36 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
               </View>
             </View>
           ) : null}
+          {queuedFollowUps.length > 0 ? (
+            <View style={styles.queuedFollowUpList}>
+              <Text style={[styles.queuedFollowUpHint, { color: colors.muted }]}>
+                {canAbortNow ? '将在当前回复结束后继续' : '未发送的跟进'}
+              </Text>
+              {queuedFollowUps.map((item) => (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.queuedFollowUpItem,
+                    { backgroundColor: colors.isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)' }
+                  ]}
+                >
+                  <Text style={[styles.queuedFollowUpArrow, { color: colors.muted }]}>↳</Text>
+                  <Text style={[styles.queuedFollowUpText, { color: colors.muted }]}>{item.content}</Text>
+                  {onRemoveQueuedFollowUp ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="删除待发送"
+                      hitSlop={8}
+                      onPress={() => onRemoveQueuedFollowUp(item.id)}
+                      style={styles.queuedFollowUpRemove}
+                    >
+                      <Feather name="x" size={14} color={colors.muted} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
           {imageAttachments.length > 0 ? (
           <ScrollView
             horizontal
@@ -1363,10 +1400,30 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       <MaterialCommunityIcons name="keyboard-outline" size={20} color={sendIcon} />
                     </Pressable>
                   ) : (
-                    <Pressable
+                    <>
+                      {/* 本轮在飞 + 有草稿：主按钮转「排队发送」，停止移到小停止钮（focus 模式另有 FAB） */}
+                      {canSteerNow ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="停止生成"
+                          onPress={() => {
+                            onAbort();
+                          }}
+                          style={styles.steerStopMini}
+                        >
+                          <ComposerSendGlyph busy color={colors.muted} size={16} />
+                        </Pressable>
+                      ) : null}
+                      <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={
-                        canAbortNow ? '停止生成' : showVoiceEntry ? '语音输入' : '发送'
+                        canSteerNow
+                          ? '排队发送'
+                          : canAbortNow
+                            ? '停止生成'
+                            : showVoiceEntry
+                              ? '语音输入'
+                              : '发送'
                       }
                       style={[
                         canAbortNow || showSendBtn || showVoiceEntry
@@ -1375,6 +1432,15 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                         sendChromeStyle
                       ]}
                       onPress={() => {
+                        if (canSteerNow) {
+                          closingRef.current = false;
+                          userChoseIdleRef.current = false;
+                          dockMode.value = 1;
+                          setComposerOpen(true);
+                          onSend();
+                          requestAnimationFrame(() => inputRef.current?.blur());
+                          return;
+                        }
                         if (canAbortNow) {
                           onAbort();
                           return;
@@ -1396,7 +1462,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                       disabled={!(canAbortNow || showSendBtn || showVoiceEntry)}
                     >
                       <RNAnimated.View style={{ opacity: actionIconAnim, transform: [{ scale: actionIconAnim }] }}>
-                        {canAbortNow ? (
+                        {canAbortNow && !canSteerNow ? (
                           <ComposerSendGlyph busy color={sendIcon} size={20} />
                         ) : showVoiceEntry ? (
                           <ComposerMicGlyph color={sendIcon} size={20} />
@@ -1405,6 +1471,7 @@ const ChatComposerImpl = React.forwardRef<ChatComposerHandle, ChatComposerProps>
                         )}
                       </RNAnimated.View>
                     </Pressable>
+                    </>
                   )}
                 </View>
               </Reanimated.View>

@@ -180,6 +180,8 @@ export type AgentEvent = {
   event: {
     type: string;
     messageId?: string;
+    /** message.started：user/assistant/…；缺省时前端按 assistant 兼容旧事件。 */
+    role?: string;
     delta?: string;
     /** 块级 partial 快照（replace 语义，优先于 delta 拼接）。 */
     partial?: string;
@@ -254,6 +256,11 @@ export type AgentPromptResult = {
   message: AgentMessage;
   events: AgentEvent[];
 };
+
+/** steer 结果：queued=已排队（当前 turn 完成后自动续跑）；idle=无活跃 run。 */
+export type AgentSteerOutcome =
+  | { status: 'queued'; runId: string }
+  | { status: 'idle' };
 
 export type AgentEventSubscription = {
   close: () => void;
