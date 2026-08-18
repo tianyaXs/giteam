@@ -278,6 +278,16 @@ pub fn set_window_theme(app: AppHandle, window: Window, theme: &str) -> Result<(
     Ok(())
 }
 
+/// 前端 setTitleBarStyle / 首屏 layout 后重钉 macOS 三色按钮（正式包冷启动更晚）。
+#[tauri::command]
+pub fn reposition_macos_traffic_lights(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    crate::macos_context_menu::reapply(&app);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn open_external_url(url: &str) -> Result<(), String> {
     let trimmed = url.trim();

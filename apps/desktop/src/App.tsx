@@ -1503,12 +1503,18 @@ export function App() {
   useEffect(() => {
     if (!IS_TAURI) return;
     void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => {
+      .then(async ({ getCurrentWindow }) => {
         const win = getCurrentWindow() as unknown as { setTitleBarStyle?: (style: string) => Promise<void> | void };
         if (typeof win.setTitleBarStyle === "function") {
-          return win.setTitleBarStyle("Overlay");
+          await win.setTitleBarStyle("Overlay");
         }
-        return undefined;
+        // Overlay 重置会打乱三色按钮；正式包挂载更晚，必须在 style 落定后再钉一次。
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("reposition_macos_traffic_lights");
+        } catch {
+          /* noop on non-mac / older builds */
+        }
       })
       .catch(() => {
         /* noop */

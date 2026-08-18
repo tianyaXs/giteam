@@ -19,9 +19,12 @@ mod macos_context_menu {
 
     static PATCHED: AtomicBool = AtomicBool::new(false);
 
-    // 严禁改动此处！请勿改动！
+    // 与 tauri.conf trafficLightPosition 对齐；正式包冷启动会把按钮 origin.y
+    // 清成 0（贴容器底）→ 同样 y 看起来偏下。钉死底部余量复现 tauri:dev
+    // 里 macOS 残留的 origin.y，避免两端不一致。
     const TRAFFIC_LIGHT_X: f64 = 16.0;
-    const TRAFFIC_LIGHT_Y: f64 = 26.0;
+    const TRAFFIC_LIGHT_Y: f64 = 25.0;
+    const TRAFFIC_LIGHT_BOTTOM: f64 = 8.0;
 
     // Instead of suppressing menuForEvent: (which also breaks the JS contextmenu
     // event chain), we let the native menu build normally and intercept
@@ -37,7 +40,7 @@ mod macos_context_menu {
         menu.removeAllItems();
     }
 
-    /// 官方 wry `inset_traffic_lights` 同款算法（见 wry wry_web_view_parent.rs）。
+    /// 官方 wry `inset_traffic_lights` 同款，并显式钉垂直原点，避免冷启动竞态。
     unsafe fn inset_traffic_lights(native_window: &NSWindow, x: f64, y: f64) {
         let Some(close) = native_window.standardWindowButton(NSWindowButton::CloseButton) else {
             return;
@@ -56,6 +59,7 @@ mod macos_context_menu {
         };
 
         let close_frame = close.frame();
+        // title bar 高度 = 按钮高 + 顶 inset；按钮保留底部余量（对齐历史 dev）。
         let title_bar_frame_height = close_frame.size.height + y;
         let mut title_bar_rect = title_bar_container.frame();
         title_bar_rect.size.height = title_bar_frame_height;
@@ -67,9 +71,13 @@ mod macos_context_menu {
         if let Some(zoom) = zoom {
             buttons.push(zoom);
         }
+        let max_bottom = (title_bar_frame_height - close_frame.size.height).max(0.0);
+        let button_y = TRAFFIC_LIGHT_BOTTOM.clamp(0.0, max_bottom);
         for (index, button) in buttons.into_iter().enumerate() {
             let mut rect = button.frame();
             rect.origin.x = x + (index as f64) * space_between;
+            // AppKit y 从容器底向上；钉死底部余量，避免正式包清成 0 后整组下沉。
+            rect.origin.y = button_y;
             button.setFrameOrigin(NSPoint::new(rect.origin.x, rect.origin.y));
         }
     }
@@ -120,6 +128,7 @@ mod macos_context_menu {
         let reapply_window = window.clone();
         window.on_window_event(move |event| match event {
             WindowEvent::Resized(_)
+            | WindowEvent::Moved(_)
             | WindowEvent::Focused(_)
             | WindowEvent::ThemeChanged(_)
             | WindowEvent::ScaleFactorChanged { .. } => {
@@ -128,10 +137,11 @@ mod macos_context_menu {
             _ => {}
         });
 
-        // 主题 / 钳制尺寸 / 首帧 layout 会把按钮打回默认位，延迟再钉一次。
+        // 正式包前端挂载 / setTitleBarStyle / window-state 恢复比 dev 晚，
+        // 主题与首帧 layout 会把按钮打回默认位；拉长延迟再钉几次。
         let delayed = app.handle().clone();
         std::thread::spawn(move || {
-            for delay_ms in [50_u64, 250, 1000] {
+            for delay_ms in [50_u64, 250, 800, 1600, 3200] {
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                 let _ = delayed.run_on_main_thread({
                     let handle = delayed.clone();
@@ -432,6 +442,7 @@ fn main() {
             remote_repo::commands::remote_repo,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,
+            commands::ui::reposition_macos_traffic_lights,
             commands::ui::open_external_url,
             commands::browser_panel::open_browser_embedded,
             commands::browser_panel::select_browser_tab,
