@@ -242,6 +242,11 @@ export type AgentPromptResult = {
   events: AgentEvent[];
 };
 
+/** steer 结果：queued=已排队（当前 turn 完成后自动续跑）；idle=无活跃 run。 */
+export type AgentSteerOutcome =
+  | { status: "queued"; runId: string }
+  | { status: "idle" };
+
 export type AgentEventSubscription = {
   close: () => void;
 };
@@ -255,6 +260,8 @@ export type AgentClient = {
   getSession(sessionId: string): Promise<AgentSessionSummary>;
   getMessages(sessionId: string): Promise<AgentMessage[]>;
   prompt(input: PromptAgentInput): Promise<AgentPromptResult>;
+  /** run 进行中排队转向（当前 turn 完成后自动续跑）；idle 表示无活跃 run。 */
+  steer(sessionId: string, message: string): Promise<AgentSteerOutcome>;
   abort(runId: string): Promise<boolean>;
   deleteSession(sessionId: string): Promise<boolean>;
   listProviders(): Promise<AgentProviderInfo[]>;
@@ -327,6 +334,7 @@ function createTauriAgentClient(): AgentClient {
     getSession: (sessionId) => invoke<AgentSessionSummary>("agent_get_session", { sessionId }),
     getMessages: (sessionId) => invoke<AgentMessage[]>("agent_get_session_messages", { sessionId }),
     prompt: (input) => invoke<AgentPromptResult>("agent_prompt", { request: withRunId(input) }),
+    steer: (sessionId, message) => invoke<AgentSteerOutcome>("agent_steer", { sessionId, message }),
     abort: (runId) => invoke<boolean>("agent_abort", { runId }),
     deleteSession: (sessionId) => invoke<boolean>("agent_delete_session", { sessionId }),
     listProviders: () => invoke<AgentProviderInfo[]>("agent_list_providers"),
@@ -421,6 +429,11 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(withRunId(input)),
+    }),
+    steer: (sessionId, message) => request<AgentSteerOutcome>("/api/v1/agent/steer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, message }),
     }),
     abort: async (runId) => (await request<{ ok: boolean }>("/api/v1/agent/abort", {
       method: "POST",

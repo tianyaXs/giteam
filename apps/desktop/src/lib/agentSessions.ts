@@ -150,3 +150,82 @@ export function filterActiveAgentSessionSummaries(rows: ChatSessionSummary[]): C
 export function sortAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
   return [...rows].sort(compareAgentSessionActivity);
 }
+
+export type AgentQueuedFollowUp = {
+  id: string;
+  content: string;
+};
+
+/**
+ * 已提交的用户句进入时间线；若当前有未冻结的 live assistant，插在它前面。
+ * 待发送跟进不得走这条路径，应留在输入框上方队列。
+ */
+export function commitUserBeforeLiveAssistant(
+  messages: AgentChatMessage[],
+  userMessage: AgentChatMessage,
+  liveAssistantId = ""
+): AgentChatMessage[] {
+  if (messages.some((row) => row.id === userMessage.id)) {
+    return messages.map((row) =>
+      row.id === userMessage.id
+        ? { ...row, ...userMessage, attachments: row.attachments || userMessage.attachments }
+        : row
+    );
+  }
+  const liveId = String(liveAssistantId || "").trim();
+  const liveIdx = liveId ? messages.findIndex((row) => row.id === liveId) : -1;
+  if (liveIdx >= 0) {
+    return [...messages.slice(0, liveIdx), userMessage, ...messages.slice(liveIdx)];
+  }
+  return [...messages, userMessage];
+}
+
+/** Codex：assistant 只追加；禁止插回已有正文前面。 */
+export function appendAssistantMessage(
+  messages: AgentChatMessage[],
+  assistantMessage: AgentChatMessage
+): AgentChatMessage[] {
+  if (messages.some((row) => row.id === assistantMessage.id)) return messages;
+  return [...messages, assistantMessage];
+}
+
+/** 跟进已写入 transcript 时，从预览队列按正文 FIFO 摘掉对应项。 */
+export function consumeQueuedFollowUp(
+  queue: AgentQueuedFollowUp[],
+  committedContent: string
+): { queue: AgentQueuedFollowUp[]; consumed: AgentQueuedFollowUp | null } {
+  if (queue.length === 0) return { queue, consumed: null };
+  const text = committedContent.trim();
+  const idx = text ? queue.findIndex((item) => item.content.trim() === text) : -1;
+  if (idx < 0) return { queue, consumed: null };
+  return {
+    queue: queue.filter((_, index) => index !== idx),
+    consumed: queue[idx] || null
+  };
+}
+
+/** 用户手动取消某条待发送跟进。 */
+export function removeQueuedFollowUpById(
+  queue: AgentQueuedFollowUp[],
+  id: string
+): AgentQueuedFollowUp[] {
+  const target = String(id || "").trim();
+  if (!target || queue.length === 0) return queue;
+  return queue.filter((item) => item.id !== target);
+}
+
+/** 时间线里已经有的用户句不再留在跟进预览里。 */
+export function dropQueuedFollowUpsAlreadyInTranscript(
+  queue: AgentQueuedFollowUp[],
+  messages: AgentChatMessage[]
+): AgentQueuedFollowUp[] {
+  if (queue.length === 0) return queue;
+  const committed = new Set(
+    messages
+      .filter((row) => row.role === "user")
+      .map((row) => String(row.content || "").trim())
+      .filter(Boolean)
+  );
+  if (committed.size === 0) return queue;
+  return queue.filter((item) => !committed.has(item.content.trim()));
+}

@@ -3,6 +3,8 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   buildAgentAssistantRenderGroups,
   buildAgentReplyMarkdownFromParts,
+  collapseDuplicatedAgentContent,
+  dedupeAgentDuplicateTextParts,
   dedupeAgentToolParts,
   isAgentRenderablePart,
   readAgentTodosFromPart,
@@ -932,7 +934,9 @@ function AssistantTimeline({
           return <AgentErrorMessage key={timelineKey} message={message} />;
         }
         if (type === "text") {
-          const text = String((group.part as { text?: string }).text || "").trim();
+          const text = collapseDuplicatedAgentContent(
+            String((group.part as { text?: string }).text || "")
+          );
           if (!text) return null;
           const last = index === displayTimelineGroups.length - 1;
           return (
@@ -1091,6 +1095,13 @@ function AssistantMessage({
     todoItems
   } = row;
 
+  // 时间线里已有 text part 时不必再叠一份 fallback（避免双份正文）。
+  const timelineHasTextPart = renderParts.some((part) => {
+    const type = String((part as { type?: string }).type || "");
+    return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+  });
+  const showFallbackReply = Boolean(fallbackReply) && !timelineHasTextPart;
+
   return (
     <div className="grid min-w-0 gap-2">
       {hasTimeline ? (
@@ -1108,9 +1119,16 @@ function AssistantMessage({
           onOpenBrowserUrl={onOpenBrowserUrl}
           renderMarkdown={renderMarkdown}
         />
-      ) : fallbackReply ? (
-        <AssistantTextBlock text={fallbackReply} streaming={isStreaming} renderMarkdown={renderMarkdown} />
-      ) : isStreaming && !errorMessage ? (
+      ) : null}
+      {/* 插话多回合后常见：live 只剩 tool、「已查询」在时间线，正文只在 msg.content。
+          旧逻辑 hasTimeline 时不渲染 fallback → 前几轮答复闪现后消失。 */}
+      {showFallbackReply ? (
+        <AssistantTextBlock
+          text={fallbackReply}
+          streaming={Boolean(isStreaming && !timelineHasTextPart)}
+          renderMarkdown={renderMarkdown}
+        />
+      ) : !hasTimeline && isStreaming && !errorMessage ? (
         <ThinkingPlaceholder todoItems={todoItems} />
       ) : null}
       {detailsError ? (
@@ -1622,14 +1640,25 @@ export function AgentMessageStream({
         return part;
       })
     );
-    const renderParts = dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart));
+    const renderParts = dedupeAgentDuplicateTextParts(
+      dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart))
+    );
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];
     const timelineGroups = buildDisplayTimelineGroups(
       buildAgentAssistantRenderGroups(renderParts),
       showReasoningSummaries
     );
-    const fallbackReply = errorMessage ? "" : (buildAgentReplyMarkdownFromParts(detailParts) || msg.content || "").trim();
+    // 时间线已有 text part 时 fallbackReply 直接为空：msg.content 与 text part 是同一内容的
+    // 两种存在形式，二者只渲染一个。流式中间态 detailParts 去重后只剩一个 text part，若此时
+    // fallbackReply 仍从 msg.content 取值，就会把「已折叠的完整文本」再叠一份，造成双份正文。
+    const timelineHasTextPart = renderParts.some((part) => {
+      const type = String((part as { type?: string }).type || "");
+      return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+    });
+    const fallbackReply = errorMessage
+      ? ""
+      : (timelineHasTextPart ? "" : (buildAgentReplyMarkdownFromParts(detailParts) || msg.content || "").trim());
     return {
       msg,
       stableKey: msg.id,
@@ -1661,17 +1690,22 @@ export function AgentMessageStream({
       );
     if (row.isAssistant && last?.isAssistant && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
       const rebuildTimeline = (target: AgentMessageRenderRow) => {
-        target.renderParts = coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts));
+        target.renderParts = dedupeAgentDuplicateTextParts(
+          coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts))
+        );
         target.timelineGroups = buildDisplayTimelineGroups(
           buildAgentAssistantRenderGroups(target.renderParts),
           showReasoningSummaries
         );
         target.hasTimeline = target.timelineGroups.length > 0;
-        target.fallbackReply = (
-          buildAgentReplyMarkdownFromParts(target.renderParts) ||
-          target.msg.content ||
-          ""
-        ).trim();
+        const hasTextPart = target.renderParts.some((part) => {
+          const type = String((part as { type?: string }).type || "");
+          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+        });
+        // 有 text part 时不再用 content 做 fallback，避免与时间线正文叠成双份。
+        target.fallbackReply = hasTextPart
+          ? ""
+          : (buildAgentReplyMarkdownFromParts(target.renderParts) || target.msg.content || "").trim();
         if (renderPartsHasFailure(target.renderParts)) {
           target.errorMessage = "";
         } else {
@@ -1713,11 +1747,30 @@ export function AgentMessageStream({
         rebuildTimeline(last);
         return out;
       }
-      // 仅 timeline-only（尚无正文回复）才跨 assistant 拼接：保留思考作分隔后重建时间线。
-      // 两边都已有正文时不合并，避免两轮完整答复粘成一条。
-      // 合并时按 toolCallId 去重：下一回合 tool 常在 message.started 前误写入上一回合，
-      // 不去重会在过程中虚高（3/1/7），结束后 history 对账才回到 2/1/4。
-      if (last.fallbackReply && row.fallbackReply && !pauseMerge) {
+      // 仅空占位/失败卡才跨 assistant 拼接。工具轮与正文轮保持独立单元格（Codex exec cell → agent cell）。
+      if (last.hasTimeline || row.hasTimeline || last.fallbackReply || row.fallbackReply) {
+        // 插话收尾常见：状态层残留两条同文 assistant（磁盘仅一条）。展示层折叠，保留较完整的一条。
+        const lastText = (last.fallbackReply || last.msg.content || "").trim();
+        const rowText = (row.fallbackReply || row.msg.content || "").trim();
+        if (
+          lastText
+          && rowText
+          && lastText === rowText
+          && !last.isStreaming
+          && !row.isStreaming
+          && !last.errorMessage
+          && !row.errorMessage
+        ) {
+          const preferRow =
+            row.renderParts.length > last.renderParts.length
+            || (row.hasTimeline && !last.hasTimeline)
+            || row.msg.content.length >= last.msg.content.length;
+          if (preferRow) {
+            row.stableKey = last.stableKey;
+            out[out.length - 1] = row;
+          }
+          return out;
+        }
         out.push(row);
         return out;
       }

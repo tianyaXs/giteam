@@ -299,7 +299,130 @@ export function mergeAgentStreamText(existingRaw: unknown, incomingRaw: unknown)
   if (existing.startsWith(incoming)) return existing;
   if (existing.endsWith(incoming)) return existing;
   if (incoming.includes(existing)) return incoming;
+  // snapshot/partial 与累加 delta 偶发「近似全文但非前缀」时，旧逻辑会 existing+incoming
+  // 拼成双份正文；完成态再「保更长」会把重复锁死在 UI（会话 jsonl 仍是单份）。
+  const existingNorm = existing.trim();
+  const incomingNorm = incoming.trim();
+  if (existingNorm && incomingNorm) {
+    if (existingNorm === incomingNorm) return existing.length >= incoming.length ? existing : incoming;
+    if (
+      existingNorm.length >= incomingNorm.length
+      && (existingNorm.startsWith(incomingNorm) || existingNorm.endsWith(incomingNorm))
+    ) {
+      return existing;
+    }
+    if (
+      incomingNorm.length >= existingNorm.length
+      && (incomingNorm.startsWith(existingNorm) || incomingNorm.endsWith(existingNorm))
+    ) {
+      return incoming;
+    }
+  }
   return existing + incoming;
+}
+
+/** 若正文是精确双份拼接（含 \n\n / \n 分隔），折叠为单份；用于「保更长」时拒绝重复体。 */
+export function collapseDuplicatedAgentContent(textRaw: string): string {
+  const trimmed = String(textRaw || "").trim();
+  if (trimmed.length < 32) return trimmed;
+  for (const sep of ["\n\n", "\n"] as const) {
+    let idx = trimmed.indexOf(sep);
+    while (idx >= 0) {
+      const left = trimmed.slice(0, idx).trim();
+      const right = trimmed.slice(idx + sep.length).trim();
+      // 正文自身常含 \n\n：不能只按「切成恰好 2 段」判断，要扫每个分隔点。
+      // 阈值不宜过高：短答复（如一行天气）双份拼接也可能只有 ~40 字。
+      if (left.length >= 12 && left === right) return left;
+      idx = trimmed.indexOf(sep, idx + sep.length);
+    }
+  }
+  if (trimmed.length % 2 === 0) {
+    const half = trimmed.length / 2;
+    const a = trimmed.slice(0, half);
+    const b = trimmed.slice(half);
+    if (a === b && a.trim().length >= 12) return a.trim();
+  }
+  return trimmed;
+}
+
+/** 在候选中选更长正文，但先折叠「双份拼接」假更长。 */
+export function pickPreferredAgentContent(...candidates: Array<string | undefined>): string {
+  let best = "";
+  for (const raw of candidates) {
+    const text = collapseDuplicatedAgentContent(String(raw || ""));
+    if (text.length > best.length) best = text;
+  }
+  return best;
+}
+
+/**
+ * 去掉重复正文 text part（同文或互为前缀超集只留一份），保留工具/思考顺序。
+ * soft-append 与未冲刷 delta 竞态时易出现 text:0 + text:soft:0 双份。
+ */
+export function dedupeAgentDuplicateTextParts(
+  parts: AgentDetailedPart[] | undefined | null
+): AgentDetailedPart[] {
+  const rows = Array.isArray(parts) ? parts : [];
+  const out: AgentDetailedPart[] = [];
+  for (const part of rows) {
+    if (!part) continue;
+    const type = String((part as { type?: string }).type || "");
+    if (type !== "text") {
+      out.push(part);
+      continue;
+    }
+    const text = pickPreferredAgentContent(String((part as { text?: string }).text || ""));
+    if (!text) continue;
+    const hit = out.findIndex((item) => {
+      if (String((item as { type?: string }).type || "") !== "text") return false;
+      const prev = pickPreferredAgentContent(String((item as { text?: string }).text || ""));
+      if (!prev) return false;
+      return prev === text || prev.startsWith(text) || text.startsWith(prev);
+    });
+    if (hit < 0) {
+      out.push({ ...(part as object), type: "text", text } as AgentDetailedPart);
+      continue;
+    }
+    const prev = String((out[hit] as { text?: string }).text || "").trim();
+    if (text.length > prev.length) {
+      out[hit] = { ...(out[hit] as object), type: "text", text } as AgentDetailedPart;
+    }
+  }
+  return out;
+}
+
+/**
+ * 过程 part（思考/工具/运行时）始终排在正文 text 之前。
+ * 迟到的 toolCall 若 append 到已有 text 后面，UI 会把「已查询」画到最终回复下面。
+ */
+export function liftAgentProcessPartsBeforeText(
+  parts: AgentDetailedPart[] | undefined | null
+): AgentDetailedPart[] {
+  const rows = Array.isArray(parts) ? parts : [];
+  const process: AgentDetailedPart[] = [];
+  const rest: AgentDetailedPart[] = [];
+  for (const part of rows) {
+    if (!part) continue;
+    const type = String((part as { type?: string }).type || "");
+    const isText = type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+    if (isText) {
+      rest.push(part);
+      continue;
+    }
+    if (
+      type === "toolCall"
+      || type === "reasoning"
+      || type === "runtime.failure"
+      || type === "runtime.retry"
+    ) {
+      process.push(part);
+      continue;
+    }
+    if (rest.length > 0) rest.push(part);
+    else process.push(part);
+  }
+  if (process.length === 0 || rest.length === 0) return rows;
+  return [...process, ...rest];
 }
 
 export function buildAgentReplyMarkdownFromParts(parts: AgentDetailedPart[] | undefined | null): string {
@@ -311,11 +434,11 @@ export function buildAgentReplyMarkdownFromParts(parts: AgentDetailedPart[] | un
     const text = String((p as any)?.text ?? "").trim();
     if (text) out.push(text);
   }
-  return stripGiteamDiagnosticNoise(out.join("\n\n"));
+  return collapseDuplicatedAgentContent(stripGiteamDiagnosticNoise(out.join("\n\n")));
 }
 
 export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | undefined | null): AgentAssistantRenderGroup[] {
-  const rows = Array.isArray(parts) ? parts : [];
+  const rows = liftAgentProcessPartsBeforeText(parts);
   const out: AgentAssistantRenderGroup[] = [];
   let i = 0;
   while (i < rows.length) {

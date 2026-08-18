@@ -123,6 +123,8 @@ type AgentComposerPanelProps = {
   activeSessionBusy: boolean;
   canSubmit: boolean;
   onPrimaryAction: () => void;
+  queuedFollowUps?: Array<{ id: string; content: string }>;
+  onRemoveQueuedFollowUp?: (id: string) => void;
 };
 
 type ComposerEditorProps = {
@@ -540,8 +542,17 @@ function ComposerSubmitButton({
   hasModel: boolean;
   onPrimaryAction: () => void;
 }) {
+  // 单一主按钮态机：有内容 → 可发送（空闲发新消息 / busy 插话）；busy 且无内容 → 停止。
+  const canSteer = activeSessionBusy && canSubmit;
+  const showStop = activeSessionBusy && !canSubmit;
   const disabled = !activeSessionBusy && !canSubmit;
   const idleTitle = !hasModel ? "请先配置并选择模型" : canSubmit ? "发送" : "输入内容后发送";
+  const primaryLabel = canSteer ? "插话发送" : showStop ? "停止" : "发送";
+  const primaryTitle = canSteer
+    ? "发送补充指令（当前任务进行中插话）"
+    : showStop
+      ? "停止生成"
+      : idleTitle;
   return (
     <Button
       className={cn(
@@ -555,12 +566,12 @@ function ComposerSubmitButton({
       )}
       disabled={disabled}
       onClick={onPrimaryAction}
-      aria-label={activeSessionBusy ? "停止" : "发送"}
-      title={activeSessionBusy ? "停止生成" : idleTitle}
+      aria-label={primaryLabel}
+      title={primaryTitle}
       variant={disabled ? "secondary" : "contrast"}
       size="icon"
     >
-      <SendIcon busy={activeSessionBusy} />
+      <SendIcon busy={showStop} />
     </Button>
   );
 }
@@ -622,7 +633,9 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     labels,
     activeSessionBusy,
     canSubmit,
-    onPrimaryAction
+    onPrimaryAction,
+    queuedFollowUps = [],
+    onRemoveQueuedFollowUp
   } = props;
 
   const activeModelDisplay = getModelDisplay(activeModel || "");
@@ -809,6 +822,37 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             onDismiss={onDismissStaleQuestion}
           />
         )) : null}
+
+        {queuedFollowUps.length > 0 ? (
+          <div className="grid gap-1.5 px-1" role="status" aria-live="polite">
+            <div className="text-xs text-muted-foreground">
+              {activeSessionBusy ? "将在当前回复结束后继续" : "未发送的跟进"}
+            </div>
+            {queuedFollowUps.map((item) => (
+              <div
+                key={item.id}
+                className="flex min-w-0 items-start gap-2 rounded-lg bg-muted/45 px-2.5 py-1.5 text-sm text-foreground"
+              >
+                <span className="shrink-0 text-muted-foreground">↳</span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-muted-foreground">
+                  {item.content}
+                </span>
+                {onRemoveQueuedFollowUp ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label="删除待发送"
+                    onClick={() => onRemoveQueuedFollowUp(item.id)}
+                  >
+                    <CloseIcon width={12} height={12} />
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
 
         {showEmptyState ? (
           <div

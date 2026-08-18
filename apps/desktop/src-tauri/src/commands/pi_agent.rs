@@ -53,6 +53,26 @@ pub struct AgentPromptResponse {
     pub events: Vec<AgentEventEnvelope>,
 }
 
+/// steer 结果：queued=已排队（run 进行中的补充指令，当前 turn 完成后
+/// 自动续跑）；idle=无活跃 run，前端应改走普通 agent_prompt 发送。
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum AgentSteerOutcome {
+    Queued { run_id: String },
+    Idle,
+}
+
+#[tauri::command]
+pub fn agent_steer(session_id: String, message: String) -> Result<AgentSteerOutcome, String> {
+    service()
+        .steer(&session_id, &message)
+        .map(|outcome| match outcome {
+            giteam_core::pi_agent::SteerOutcome::Queued { run_id } => AgentSteerOutcome::Queued { run_id },
+            giteam_core::pi_agent::SteerOutcome::Idle => AgentSteerOutcome::Idle,
+        })
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn agent_runtime_info() -> PiRuntimeInfo {
     service().runtime_info()

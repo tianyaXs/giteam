@@ -394,6 +394,7 @@ fn main() {
             commands::pi_agent::agent_get_session,
             commands::pi_agent::agent_get_session_messages,
             commands::pi_agent::agent_prompt,
+            commands::pi_agent::agent_steer,
             commands::pi_agent::agent_abort,
             commands::pi_agent::agent_delete_session,
             commands::pi_agent::agent_list_providers,
